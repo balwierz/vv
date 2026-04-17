@@ -5,11 +5,11 @@ It prints the first *N* rows as an ASCII table — like `pandas.DataFrame.head()
 
 ## Features
 
-- **Multiple input formats** — `.parquet`, `.bam`, `.sam`, `.vcf`, `.gff/.gff3/.gtf`, `.bed`, `.tsv`, `.csv` (and `.gz` variants); unknown extensions are auto-detected by magic bytes / delimiter sniffing
+- **Multiple input formats** — `.parquet`, `.arrow`, `.feather`, `.bam`, `.sam`, `.vcf`, `.gff/.gff3/.gtf`, `.bed`, `.tsv`, `.csv` (and `.gz` variants); unknown extensions are auto-detected by magic bytes / delimiter sniffing
 - **Intelligent header detection** — TSV/CSV files with numeric column names are treated as headerless and auto-numbered
 - **BED files** — always treated as headerless tab-separated; itemRgb column renders as a color bar in the terminal
 - **BAM/CRAM/SAM** — mandatory 11 columns (QNAME…QUAL); optional alignment tags are dropped; genomic coordinates shown with `_` digit grouping
-- **Interactive TUI** — ncurses row browser with arrow/hjkl navigation, activated automatically when output is a terminal; lazy-loads only the rows currently on screen
+- **Interactive TUI** — ncurses row browser with arrow/hjkl navigation and `/` search (case-insensitive, `n`/`N` for next/previous match); activated automatically when output is a terminal; lazy-loads only the rows currently on screen
 - **Pandas-style table** with aligned columns, right-aligned numbers, `∅` for nulls, `…` truncation marker
 - **Full Arrow type support** — integers, floats, booleans, strings, timestamps, dates, decimals, binary, lists, structs, maps, and **dictionary-encoded columns** (values decoded, not raw indices)
 - **Color output** with auto-detection — rich colors in the terminal, plain text when piped
@@ -25,6 +25,7 @@ parquet_viewer [options] <file>
 
 Supported formats:
   .parquet
+  .arrow  .feather             Arrow IPC file / Feather v2
   .bam  .cram                  binary/compressed sequence alignments (htslib)
   .sam                        text sequence alignments
   .vcf  .vcf.gz               variant calls
@@ -36,6 +37,7 @@ Interactive viewer (default when stdout is a terminal):
   -i / --interactive  open the ncurses row browser
   --no-interactive    force plain table output even on a terminal
   Keys: arrows/hjkl navigate, PgUp/PgDn, g/G top/bot, q quit
+        / to search, n/N next/previous match, Esc clear search
 
 Table options:
   -n <rows>           rows to display  (default: 10, 0 = all)

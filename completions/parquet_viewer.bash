@@ -5,7 +5,7 @@ _parquet_viewer() {
     local cur prev words cword
     _init_completion || return
 
-    local file_exts='parquet bam cram sam vcf vcf.gz gff gff.gz gff3 gff3.gz gtf gtf.gz bed bed.gz tsv tsv.gz csv csv.gz'
+    local file_exts='parquet arrow feather bam cram sam vcf vcf.gz gff gff.gz gff3 gff3.gz gtf gtf.gz bed bed.gz tsv tsv.gz csv csv.gz'
 
     case "$prev" in
         -n|-w|-c)

@@ -7,7 +7,7 @@ set -l cmd parquet_viewer
 complete -c $cmd -F
 
 # ── File arguments ───────────────────────────────────────────────────────────
-for ext in parquet bam cram sam vcf vcf.gz gff gff.gz gff3 gff3.gz gtf gtf.gz bed bed.gz tsv tsv.gz csv csv.gz
+for ext in parquet arrow feather bam cram sam vcf vcf.gz gff gff.gz gff3 gff3.gz gtf gtf.gz bed bed.gz tsv tsv.gz csv csv.gz
     complete -c $cmd -F -a "*.$ext"
 end
 

@@ -4,6 +4,8 @@
 #include <arrow/scalar.h>
 #include <arrow/csv/api.h>
 #include <arrow/io/compressed.h>
+#include <arrow/ipc/feather.h>
+#include <arrow/ipc/reader.h>
 #include <arrow/util/compression.h>
 #include <parquet/arrow/reader.h>
 #include <parquet/file_reader.h>
@@ -502,8 +504,53 @@ public:
     }
 };
 
-// Read one '\n'-terminated line from an InputStream; strip trailing '\r'.
-// Returns true if a newline was found; false on EOF (out may still have content).
+// Buffered line reader wrapping an Arrow InputStream.
+// Reads in 8 KiB chunks to amortise per-call overhead — critical for
+// TruncateFieldsStream which processes every data line in GFF/SAM files.
+class LineReader {
+    std::shared_ptr<arrow::io::InputStream> src_;
+    static constexpr int BUF = 8192;
+    char   buf_[BUF];
+    int    pos_ = 0, fill_ = 0;
+    bool   eof_ = false;
+
+    void refill_buf() {
+        auto r = src_->Read(BUF);
+        if (!r.ok() || (*r)->size() == 0) { eof_ = true; return; }
+        fill_ = (int)(*r)->size();
+        std::memcpy(buf_, (*r)->data(), fill_);
+        pos_ = 0;
+    }
+public:
+    explicit LineReader(std::shared_ptr<arrow::io::InputStream> s) : src_(std::move(s)) {}
+
+    // Returns true if a '\n' terminated the line; false on EOF (line may have content).
+    bool read_line(std::string* out) {
+        out->clear();
+        for (;;) {
+            if (pos_ >= fill_) {
+                if (eof_) return false;
+                refill_buf();
+                if (eof_ && pos_ >= fill_) return !out->empty();
+            }
+            while (pos_ < fill_) {
+                char c = buf_[pos_++];
+                if (c == '\n') return true;
+                if (c != '\r') *out += c;
+            }
+        }
+    }
+
+    // Any bytes already fetched from the stream but not yet consumed by read_line.
+    // Use this to create a PrependInputStream after preamble stripping so no
+    // look-ahead bytes are lost.
+    std::string leftover() const {
+        return (pos_ < fill_) ? std::string(buf_ + pos_, fill_ - pos_) : std::string{};
+    }
+};
+
+// Single-byte fallback for seekable streams (preamble strippers that need Seek).
+// Returns true if a newline was found; false on EOF.
 static bool read_stream_line(
     const std::shared_ptr<arrow::io::InputStream>& input, std::string* out)
 {
@@ -628,16 +675,17 @@ static std::vector<std::string> strip_vcf_preamble(
 // Used for SAM (variable optional alignment tags) and GFF3 (occasional extra columns).
 class TruncateFieldsStream : public arrow::io::InputStream {
     std::shared_ptr<arrow::io::InputStream> inner_;
-    int      max_fields_;
-    std::string out_buf_;
-    size_t   out_pos_    = 0;
-    bool     inner_done_ = false;
+    LineReader   lr_;          // buffered reader — avoids one-byte-at-a-time reads
+    int          max_fields_;
+    std::string  out_buf_;
+    size_t       out_pos_    = 0;
+    bool         inner_done_ = false;
 
     bool refill() {
         out_buf_.clear(); out_pos_ = 0;
         std::string line;
         while (line.empty()) {
-            bool ok = read_stream_line(inner_, &line);
+            bool ok = lr_.read_line(&line);
             if (!ok && line.empty()) { inner_done_ = true; return false; }
             if (!ok) inner_done_ = true;
         }
@@ -654,7 +702,7 @@ class TruncateFieldsStream : public arrow::io::InputStream {
 
 public:
     TruncateFieldsStream(std::shared_ptr<arrow::io::InputStream> inner, int max_fields)
-        : inner_(std::move(inner)), max_fields_(max_fields) {}
+        : inner_(inner), lr_(inner), max_fields_(max_fields) {}
 
     arrow::Status Close() override { return inner_->Close(); }
     bool closed() const override { return inner_->closed(); }
@@ -1362,6 +1410,102 @@ public:
     }
 };
 
+// ── Arrow IPC / Feather source ────────────────────────────────────────────────
+
+class IpcSource : public TabularSource {
+    std::string                                    path_;
+    bool                                           is_feather_ = false;
+    std::shared_ptr<arrow::Schema>                 schema_;
+    std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
+    std::vector<int64_t>                           batch_first_row_;
+    int64_t                                        total_rows_ = 0;
+
+    static constexpr int64_t BATCH_ROWS = 65536;
+
+    // Slice a Table into BATCH_ROWS-sized RecordBatches and append to batches_.
+    arrow::Status ingest_table(const std::shared_ptr<arrow::Table>& table) {
+        arrow::TableBatchReader rdr(*table);
+        rdr.set_chunksize(BATCH_ROWS);
+        std::shared_ptr<arrow::RecordBatch> batch;
+        while (true) {
+            ARROW_RETURN_NOT_OK(rdr.ReadNext(&batch));
+            if (!batch) break;
+            batch_first_row_.push_back(total_rows_);
+            total_rows_ += batch->num_rows();
+            batches_.push_back(std::move(batch));
+        }
+        return arrow::Status::OK();
+    }
+
+public:
+    static std::string open(const std::string& path, bool is_feather,
+                             std::unique_ptr<IpcSource>* out) {
+        auto self = std::make_unique<IpcSource>();
+        self->path_       = path;
+        self->is_feather_ = is_feather;
+
+        auto maybe_file = arrow::io::ReadableFile::Open(path);
+        if (!maybe_file.ok())
+            return "Cannot open '" + path + "': " + maybe_file.status().ToString();
+        auto file = maybe_file.ValueOrDie();
+
+        if (is_feather) {
+            auto maybe_rdr = arrow::ipc::feather::Reader::Open(file);
+            if (!maybe_rdr.ok())
+                return "Not a valid Feather file: " + maybe_rdr.status().ToString();
+            auto rdr = maybe_rdr.ValueOrDie();
+            self->schema_ = rdr->schema();
+            std::shared_ptr<arrow::Table> table;
+            auto st = rdr->Read(&table);
+            if (!st.ok()) return "Error reading Feather: " + st.ToString();
+            st = self->ingest_table(table);
+            if (!st.ok()) return "Error batching Feather: " + st.ToString();
+        } else {
+            auto maybe_rdr = arrow::ipc::RecordBatchFileReader::Open(file);
+            if (!maybe_rdr.ok())
+                return "Not a valid Arrow IPC file: " + maybe_rdr.status().ToString();
+            auto rdr = maybe_rdr.ValueOrDie();
+            self->schema_ = rdr->schema();
+            for (int i = 0; i < rdr->num_record_batches(); ++i) {
+                auto maybe_batch = rdr->ReadRecordBatch(i);
+                if (!maybe_batch.ok()) continue;
+                self->batch_first_row_.push_back(self->total_rows_);
+                self->total_rows_ += maybe_batch.ValueOrDie()->num_rows();
+                self->batches_.push_back(maybe_batch.ValueOrDie());
+            }
+        }
+
+        if (self->batches_.empty()) {
+            // Empty file: create one zero-row batch so the schema is visible.
+            self->batch_first_row_.push_back(0);
+            self->batches_.push_back(arrow::RecordBatch::Make(
+                self->schema_, 0, std::vector<std::shared_ptr<arrow::Array>>(
+                    self->schema_->num_fields(),
+                    arrow::MakeArrayOfNull(arrow::utf8(), 0).ValueOrDie())));
+        }
+
+        *out = std::move(self);
+        return "";
+    }
+
+    std::shared_ptr<arrow::Schema> schema()    const override { return schema_; }
+    int64_t total_rows()                        const override { return total_rows_; }
+    int     num_chunks()                        const override { return (int)batches_.size(); }
+    ChunkMeta chunk_meta(int i)                 const override {
+        return {batch_first_row_[i], batches_[i]->num_rows()};
+    }
+    const std::string& path()                   const override { return path_; }
+    std::string footer()                        const override {
+        return std::string("Format: ") + (is_feather_ ? "Feather v2" : "Arrow IPC");
+    }
+
+    arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
+                              std::shared_ptr<arrow::Table>* out) override {
+        *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
+        return arrow::Status::OK();
+    }
+};
+
 // ── Format detection + source factory ────────────────────────────────────────
 // (fends is defined above, near the preamble helpers)
 
@@ -1374,6 +1518,18 @@ static std::string open_source(const std::string& path, const Config& cfg,
 
     if (fends(path, ".parquet")) {
         is_parquet = true;
+    } else if (fends(path, ".arrow")) {
+        std::unique_ptr<IpcSource> src;
+        std::string err = IpcSource::open(path, false, &src);
+        if (!err.empty()) return err;
+        *out = std::move(src);
+        return "";
+    } else if (fends(path, ".feather")) {
+        std::unique_ptr<IpcSource> src;
+        std::string err = IpcSource::open(path, true, &src);
+        if (!err.empty()) return err;
+        *out = std::move(src);
+        return "";
     } else if (fends(path, ".bam") || fends(path, ".cram")) {
         std::unique_ptr<BamSource> src;
         std::string err = BamSource::open(path, &src);
@@ -1395,31 +1551,47 @@ static std::string open_source(const std::string& path, const Config& cfg,
     } else if (fends(path, ".csv")   || fends(path, ".csv.gz")) {
         dk = DelimKind::CSV;
     } else {
-        // Unknown extension: sniff magic bytes for Parquet, else sniff delimiter.
+        // Unknown extension: sniff magic bytes.
+        // Read 8 bytes: enough for Parquet (PAR1), Arrow IPC (ARROW1\0\0),
+        // and Feather v1 (FEA1).
         auto rf = arrow::io::ReadableFile::Open(path);
         if (!rf.ok()) return "Cannot open '" + path + "': " + rf.status().ToString();
-        auto buf = rf.ValueOrDie()->Read(4);
-        if (buf.ok() && buf.ValueOrDie()->size() == 4) {
-            const uint8_t* m = buf.ValueOrDie()->data();
-            is_parquet = (m[0]=='P' && m[1]=='A' && m[2]=='R' && m[3]=='1');
-        }
+        auto buf = rf.ValueOrDie()->Read(8);
         (void)rf.ValueOrDie()->Close();
+        bool is_ipc = false, is_feather = false;
+        if (buf.ok() && (*buf)->size() >= 4) {
+            const uint8_t* m = (*buf)->data();
+            is_parquet = ((*buf)->size() >= 4 &&
+                          m[0]=='P' && m[1]=='A' && m[2]=='R' && m[3]=='1');
+            is_ipc     = ((*buf)->size() >= 8 &&
+                          m[0]=='A' && m[1]=='R' && m[2]=='R' && m[3]=='O' &&
+                          m[4]=='W' && m[5]=='1' && m[6]==0   && m[7]==0);
+            is_feather = ((*buf)->size() >= 4 &&
+                          m[0]=='F' && m[1]=='E' && m[2]=='A' && m[3]=='1');
+        }
+        if (is_ipc || is_feather) {
+            std::unique_ptr<IpcSource> src;
+            std::string err = IpcSource::open(path, is_feather, &src);
+            if (!err.empty()) return err;
+            *out = std::move(src);
+            return "";
+        }
         if (!is_parquet) {
             // Count tabs vs commas in first line to choose delimiter.
             auto rf2 = arrow::io::ReadableFile::Open(path);
             if (!rf2.ok()) return "Cannot open '" + path + "': " + rf2.status().ToString();
-            std::string line;
             auto fh = rf2.ValueOrDie();
-            while (true) {
-                auto r = fh->Read(1);
-                if (!r.ok() || r.ValueOrDie()->size() == 0) break;
-                char c = (char)r.ValueOrDie()->data()[0];
-                if (c == '\n') break;
-                line += c;
-            }
+            std::string line;
+            std::string first_line;
+            auto lb = fh->Read(4096);
             (void)fh->Close();
-            int tabs   = (int)std::count(line.begin(), line.end(), '\t');
-            int commas = (int)std::count(line.begin(), line.end(), ',');
+            if (lb.ok()) {
+                const char* d = (const char*)(*lb)->data();
+                int len = (int)(*lb)->size();
+                for (int i = 0; i < len; ++i) { if (d[i]=='\n') break; first_line += d[i]; }
+            }
+            int tabs   = (int)std::count(first_line.begin(), first_line.end(), '\t');
+            int commas = (int)std::count(first_line.begin(), first_line.end(), ',');
             dk = (tabs >= commas) ? DelimKind::TSV : DelimKind::CSV;
         }
     }
@@ -1518,6 +1690,7 @@ enum : int {
     NCP_BOOL_T,       // true
     NCP_BOOL_F,       // false
     NCP_SEP,          // separator line    (also A_DIM)
+    NCP_SEARCH,       // search-match highlight row
 };
 
 static void nc_str(int y, int x, const std::string& s,
@@ -1546,9 +1719,9 @@ class TableTUI {
     std::vector<bool>        is_rgb_;
     int                      idx_w_ = 1;
 
-    // Dynamic color-pair allocation for RGB cells (pairs NCP_SEP+1 … COLOR_PAIRS-1).
+    // Dynamic color-pair allocation for RGB cells (pairs NCP_SEARCH+1 … COLOR_PAIRS-1).
     std::unordered_map<int,int> rgb_pair_;   // packed 0xRRGGBB → ncurses pair number
-    int                         next_rgb_pair_ = NCP_SEP + 1;
+    int                         next_rgb_pair_ = NCP_SEARCH + 1;
 
     int get_rgb_pair(int r, int g, int b) {
         if (COLORS < 256 || next_rgb_pair_ >= COLOR_PAIRS) return 0;
@@ -1569,12 +1742,116 @@ class TableTUI {
     int     left_col_ = 0;
     int     scr_r_ = 24, scr_c_ = 80;
 
+    // ── Search state ─────────────────────────────────────────────────────────
+    enum class SearchMode { None, Input, Active };
+    SearchMode  search_mode_  = SearchMode::None;
+    std::string search_input_;   // text being typed in the search bar
+    std::string search_query_;   // committed query (empty = no active search)
+    int64_t     search_row_   = -1;   // row highlighted by last match (-1 = none)
+    bool        search_wrap_  = false;  // last search wrapped around
+    bool        search_fail_  = false;  // last search found nothing
+
     static constexpr int HDR_H = 2;
     static constexpr int FTR_H = 1;
     int data_lines() const { return std::max(0, scr_r_ - HDR_H - FTR_H); }
 
     int64_t total_rows() const { return src_.total_rows(); }
     int     num_chunks()  const { return src_.num_chunks(); }
+
+    // ── Search ───────────────────────────────────────────────────────────────
+
+    // Search forward (forward=true) or backward through all loaded chunks.
+    // Returns absolute row index of first match >= from_row (forward) or
+    // <= from_row (backward), or -1 if not found.
+    // Shows "Searching…" in the status line while scanning large files.
+    int64_t find_next(int64_t from_row, bool forward) {
+        if (search_query_.empty()) return -1;
+        std::string q = search_query_;
+        for (auto& c : q) c = (char)std::tolower((unsigned char)c);
+
+        std::vector<int> all_cols;
+        for (int i = 0; i < num_cols_; ++i) all_cols.push_back(i);
+
+        int nc = src_.num_chunks();
+
+        // Check one row: returns true if any column contains q (case-insensitive).
+        auto row_matches = [&](const std::shared_ptr<arrow::Table>& tbl, int64_t local) -> bool {
+            for (int col = 0; col < num_cols_ && col < tbl->num_columns(); ++col) {
+                int64_t off = local;
+                for (auto& arr : tbl->column(col)->chunks()) {
+                    if (off < arr->length()) {
+                        std::string val = cell_to_string(*arr, off);
+                        for (auto& c : val) c = (char)std::tolower((unsigned char)c);
+                        if (val.find(q) != std::string::npos) return true;
+                        break;
+                    }
+                    off -= arr->length();
+                }
+            }
+            return false;
+        };
+
+        if (forward) {
+            for (int c = 0; c < nc; ++c) {
+                auto meta = src_.chunk_meta(c);
+                if (meta.first_row + meta.num_rows <= from_row) continue;
+                // Show progress for slow sources
+                mvprintw(scr_r_-1, 0, " Searching… chunk %d/%d ", c+1, nc);
+                clrtoeol(); refresh();
+                std::shared_ptr<arrow::Table> tbl;
+                if (!src_.read_chunk(c, all_cols, &tbl).ok()) continue;
+                int64_t start = std::max<int64_t>(0, from_row - meta.first_row);
+                for (int64_t r = start; r < tbl->num_rows(); ++r)
+                    if (row_matches(tbl, r)) return meta.first_row + r;
+            }
+        } else {
+            for (int c = nc - 1; c >= 0; --c) {
+                auto meta = src_.chunk_meta(c);
+                if (meta.first_row > from_row) continue;
+                mvprintw(scr_r_-1, 0, " Searching… chunk %d/%d ", c+1, nc);
+                clrtoeol(); refresh();
+                std::shared_ptr<arrow::Table> tbl;
+                if (!src_.read_chunk(c, all_cols, &tbl).ok()) continue;
+                int64_t end = std::min(tbl->num_rows() - 1, from_row - meta.first_row);
+                for (int64_t r = end; r >= 0; --r)
+                    if (row_matches(tbl, r)) return meta.first_row + r;
+            }
+        }
+        return -1;
+    }
+
+    // Commit a search: find the first match, update state, scroll to it.
+    void do_search(bool forward) {
+        if (search_query_.empty()) return;
+        int64_t start;
+        if (search_row_ >= 0) {
+            start = forward ? search_row_ + 1 : search_row_ - 1;
+        } else {
+            start = forward ? top_row_ : top_row_ + data_lines() - 1;
+        }
+        int64_t found = find_next(start, forward);
+        // Wrap around if not found
+        if (found < 0) {
+            int64_t wrap_start = forward ? 0 : (total_rows() >= 0 ? total_rows()-1 : src_.chunk_meta(num_chunks()-1).first_row + src_.chunk_meta(num_chunks()-1).num_rows - 1);
+            found = find_next(wrap_start, forward);
+            search_wrap_ = (found >= 0);
+        } else {
+            search_wrap_ = false;
+        }
+        if (found >= 0) {
+            search_row_  = found;
+            search_fail_ = false;
+            // Scroll so the match is visible
+            int dl = data_lines();
+            if (found < top_row_ || found >= top_row_ + dl) {
+                int64_t tr = total_rows();
+                int64_t mt = (tr >= 0) ? std::max<int64_t>(0, tr - dl) : found;
+                top_row_ = std::min(found, mt);
+            }
+        } else {
+            search_fail_ = true;
+        }
+    }
 
     // ── Cache ────────────────────────────────────────────────────────────────
 
@@ -1684,9 +1961,14 @@ class TableTUI {
         int64_t tr = total_rows();
         if (tr >= 0 && row >= tr) return;
 
-        if (!no_index_)
-            nc_str(sy, 0, " " + fit(std::to_string(row), idx_w_, true) + " ",
-                   A_DIM, NCP_INDEX);
+        bool is_match = (row == search_row_);
+        attr_t row_attr = is_match ? (attr_t)COLOR_PAIR(NCP_SEARCH) : A_NORMAL;
+
+        if (!no_index_) {
+            std::string idx_s = " " + fit(std::to_string(row), idx_w_, true) + " ";
+            if (is_match) nc_str(sy, 0, idx_s, A_BOLD, NCP_SEARCH);
+            else          nc_str(sy, 0, idx_s, A_DIM, NCP_INDEX);
+        }
 
         if (src_.num_chunks() == 0) return;
         int  c  = chunk_for_row(row);
@@ -1699,6 +1981,13 @@ class TableTUI {
         if (local < 0 || local >= (int64_t)it->second.cells.size()) return;
         for (auto& col : vc) {
             const std::string& val = it->second.cells[local][col.col];
+
+            if (is_match) {
+                // Whole row rendered with NCP_SEARCH highlight
+                nc_str(sy, col.x, " " + fit(val, col.w, right_align_[col.col]) + " ",
+                       A_BOLD, NCP_SEARCH);
+                continue;
+            }
 
             if (is_rgb_[col.col]) {
                 int r = 0, gv = 0, bv = 0;
@@ -1723,6 +2012,19 @@ class TableTUI {
     }
 
     void draw_status(const std::vector<ColVis>& vc) {
+        // ── Search-input mode: show a vim-style search bar ───────────────────
+        if (search_mode_ == SearchMode::Input) {
+            std::string bar = "/" + search_input_;
+            if ((int)bar.size() < scr_c_) bar += std::string(scr_c_ - (int)bar.size(), ' ');
+            mvaddnstr(scr_r_ - 1, 0, bar.c_str(), scr_c_);
+            // Position the cursor after the typed text
+            curs_set(1);
+            move(scr_r_ - 1, (int)search_input_.size() + 1);
+            return;
+        }
+        curs_set(0);
+
+        // ── Normal status bar ────────────────────────────────────────────────
         int64_t tr  = total_rows();
         int64_t bot = top_row_ + (int64_t)data_lines();
         if (tr >= 0) bot = std::min(bot, tr);
@@ -1737,9 +2039,17 @@ class TableTUI {
             s += std::to_string(vc.back().col+1)  + "/";
             s += std::to_string(num_cols_);
         }
-        bool need_lr = left_col_ > 0 || (!vc.empty() && vc.back().col < num_cols_-1);
-        if (need_lr) s += "  [</>/h/l]:cols";
-        s += "  [^/v/j/k]:rows  PgUp/Dn  g/G:top/bot  q:quit";
+        // Show search state
+        if (search_mode_ == SearchMode::Active && !search_query_.empty()) {
+            s += "  /" + search_query_;
+            if (search_fail_)         s += " (not found)";
+            else if (search_wrap_)    s += " (wrapped)";
+            s += "  [n/N]:next/prev  [Esc]:clear";
+        } else {
+            bool need_lr = left_col_ > 0 || (!vc.empty() && vc.back().col < num_cols_-1);
+            if (need_lr) s += "  [</>/h/l]:cols";
+            s += "  [^/v/j/k]:rows  PgUp/Dn  g/G:top/bot  /:search  q:quit";
+        }
         if ((int)s.size() < scr_c_) s += std::string(scr_c_ - (int)s.size(), ' ');
         attron(A_REVERSE);
         mvaddnstr(scr_r_ - 1, 0, s.c_str(), scr_c_);
@@ -1778,6 +2088,7 @@ class TableTUI {
         init_pair(NCP_BOOL_T,  COLOR_GREEN,  -1);
         init_pair(NCP_BOOL_F,  COLOR_YELLOW, -1);
         init_pair(NCP_SEP,     COLOR_WHITE,  -1);
+        init_pair(NCP_SEARCH,  COLOR_BLACK,  COLOR_YELLOW);
     }
 
 public:
@@ -1822,11 +2133,48 @@ public:
             draw();
             int ch = getch();
             int dl = data_lines();
+
+            // ── Search input mode ────────────────────────────────────────────
+            if (search_mode_ == SearchMode::Input) {
+                if (ch == '\n' || ch == KEY_ENTER) {
+                    if (!search_input_.empty()) {
+                        search_query_ = search_input_;
+                        search_mode_  = SearchMode::Active;
+                        search_row_   = -1;
+                        do_search(true);
+                    } else {
+                        search_mode_  = SearchMode::None;
+                        search_query_.clear();
+                        search_row_   = -1;
+                    }
+                } else if (ch == 27) {    // Esc — cancel
+                    search_mode_  = SearchMode::None;
+                    search_input_.clear();
+                } else if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
+                    if (!search_input_.empty()) search_input_.pop_back();
+                } else if (ch >= 32 && ch < 127) {
+                    search_input_ += (char)ch;
+                }
+                prefetch();
+                continue;
+            }
+
+            // ── Navigation ───────────────────────────────────────────────────
             int64_t tr = total_rows();
             int64_t max_top = (tr >= 0) ? std::max<int64_t>(0, tr - dl) : top_row_ + dl;
 
             switch (ch) {
-                case 'q': case 'Q': case 27: quit = true; break;
+                case 'q': case 'Q': quit = true; break;
+                case 27:  // Esc: clear search if active, else quit
+                    if (search_mode_ == SearchMode::Active) {
+                        search_mode_  = SearchMode::None;
+                        search_query_.clear();
+                        search_row_   = -1;
+                        search_fail_  = false;
+                    } else {
+                        quit = true;
+                    }
+                    break;
                 case KEY_DOWN: case 'j':
                     if (tr < 0 || top_row_ + dl < tr) ++top_row_; break;
                 case KEY_UP: case 'k':
@@ -1852,6 +2200,16 @@ public:
                     if (left_col_ + 1 < num_cols_) ++left_col_; break;
                 case KEY_LEFT: case 'h':
                     if (left_col_ > 0) --left_col_; break;
+                case '/':
+                    search_mode_  = SearchMode::Input;
+                    search_input_.clear();
+                    break;
+                case 'n':
+                    if (!search_query_.empty()) do_search(true);
+                    break;
+                case 'N':
+                    if (!search_query_.empty()) do_search(false);
+                    break;
                 case KEY_RESIZE: break;
                 default: break;
             }
