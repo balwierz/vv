@@ -706,8 +706,10 @@ public:
     // One-line footer shown after the table / in the TUI status bar.
     virtual std::string footer() const = 0;
     virtual std::string created_by() const { return ""; }
-    // Lines to display before the table (e.g. BED track/browser headers).
-    virtual std::vector<std::string> preamble() const { return {}; }
+    // Header lines shown before the table (BED track/browser lines).
+    virtual std::vector<std::string> preamble_above() const { return {}; }
+    // Meta header lines shown after the schema (VCF/BAM/SAM/GFF).
+    virtual std::vector<std::string> preamble_below() const { return {}; }
     // Post-process a cell value for human-readable display (table view and TUI).
     // NOT called for delimited (--csv/--tsv) output.
     virtual std::string format_cell(int /*col_idx*/, std::string val) const { return val; }
@@ -1039,7 +1041,18 @@ public:
         }
     }
 
-    std::vector<std::string> preamble() const override { return preamble_lines_; }
+    // BED track/browser lines are shown above the table; all other format
+    // preambles (VCF ##INFO/##FILTER, SAM @SQ/@PG, GFF ##) go below the schema.
+    std::vector<std::string> preamble_above() const override {
+        return (kind_ == DelimKind::BED) ? preamble_lines_ : std::vector<std::string>{};
+    }
+    std::vector<std::string> preamble_below() const override {
+        if (kind_ == DelimKind::BED) return {};
+        if (preamble_lines_.size() <= 20) return preamble_lines_;
+        std::vector<std::string> out(preamble_lines_.begin(), preamble_lines_.begin() + 20);
+        out.push_back("... (" + std::to_string(preamble_lines_.size() - 20) + " more header lines)");
+        return out;
+    }
 
     // Per-format: display coordinate columns with '_' digit grouping.
     std::string format_cell(int col_idx, std::string val) const override {
@@ -1331,7 +1344,7 @@ public:
     std::string footer() const override {
         return "Format: " + fmt_name_ + "  |  References: " + std::to_string(num_refs_);
     }
-    std::vector<std::string> preamble() const override { return preamble_lines_; }
+    std::vector<std::string> preamble_below() const override { return preamble_lines_; }
     std::string format_cell(int col_idx, std::string val) const override {
         if (col_idx == 3 || col_idx == 7) return digits_with_sep(val);  // POS, PNEXT
         return val;
@@ -1611,7 +1624,13 @@ class TableTUI {
         load_chunk(c);
         int64_t bot = top_row_ + (int64_t)data_lines() - 1;
         if (total_rows() > 0) bot = std::min(bot, total_rows() - 1);
-        src_.ensure(chunk_for_row(std::max(bot, top_row_)));
+        // While streaming (total unknown), trigger loading of the next unread
+        // chunk so the view advances as the user scrolls down.  When total is
+        // known, seek by row as before.
+        if (total_rows() < 0)
+            src_.ensure(src_.num_chunks());
+        else
+            src_.ensure(chunk_for_row(std::max(bot, top_row_)));
         if (bot > top_row_) load_chunk(chunk_for_row(bot));
     }
 
@@ -1675,6 +1694,9 @@ class TableTUI {
         if (it == cache_.end() || it->second.cells.empty()) return;
 
         int64_t local = row - it->second.first_row;
+        // Guard: row may be beyond the loaded portion of the last chunk
+        // (happens while streaming and the user scrolled ahead of loaded data).
+        if (local < 0 || local >= (int64_t)it->second.cells.size()) return;
         for (auto& col : vc) {
             const std::string& val = it->second.cells[local][col.col];
 
@@ -1727,6 +1749,16 @@ class TableTUI {
     void draw() {
         getmaxyx(stdscr, scr_r_, scr_c_);
         erase();
+        // Once total is known, clamp top_row_ so the last page stays filled.
+        // This handles the case where the user scrolled past EOF while streaming.
+        {
+            int64_t tr = total_rows();
+            int dl2 = data_lines();
+            if (tr >= 0) {
+                int64_t mt = std::max<int64_t>(0, tr - dl2);
+                if (top_row_ > mt) top_row_ = mt;
+            }
+        }
         auto vc = visible_cols();
         draw_header(vc);
         int dl = data_lines();
@@ -1891,8 +1923,8 @@ static void print_table(TabularSource& src, const Config& cfg) {
         columns.push_back(std::move(col));
     }
 
-    // Show BED track/browser header lines above the table
-    for (auto& line : src.preamble())
+    // BED track/browser lines shown above the table
+    for (auto& line : src.preamble_above())
         std::printf("%s%s%s\n", g_color.meta_key, line.c_str(), g_color.reset);
 
     draw_separator(columns);
@@ -1946,6 +1978,9 @@ static void print_table(TabularSource& src, const Config& cfg) {
     if (!src.created_by().empty())
         std::printf("%sCreated by:%s %s\n", g_color.meta_key, g_color.reset,
                     src.created_by().c_str());
+    // VCF/BAM/SAM/GFF meta header lines shown below the schema
+    for (auto& line : src.preamble_below())
+        std::printf("%s%s%s\n", g_color.meta_key, line.c_str(), g_color.reset);
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
