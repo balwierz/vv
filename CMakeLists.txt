@@ -48,6 +48,10 @@ get_target_property(PARQUET_INCLUDE_DIRS ${PARQUET_TARGET} INTERFACE_INCLUDE_DIR
 # ── ncurses ───────────────────────────────────────────────────────────────────
 find_package(Curses REQUIRED)
 
+# ── htslib (BAM support) ─────────────────────────────────────────────────────
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(HTSLIB REQUIRED htslib)
+
 # ── Target ────────────────────────────────────────────────────────────────────
 add_executable(parquet_viewer main.cpp)
 
@@ -55,6 +59,7 @@ target_include_directories(parquet_viewer PRIVATE
     ${ARROW_INCLUDE_DIRS}
     ${PARQUET_INCLUDE_DIRS}
     ${CURSES_INCLUDE_DIRS}
+    ${HTSLIB_INCLUDE_DIRS}
 )
 
 target_link_libraries(parquet_viewer PRIVATE
@@ -62,6 +67,7 @@ target_link_libraries(parquet_viewer PRIVATE
     ${ARROW_TARGET}
     mimalloc-static
     ${CURSES_LIBRARIES}
+    ${HTSLIB_LINK_LIBRARIES}
 )
 
 target_link_options(parquet_viewer PRIVATE -Wl,--gc-sections)
@@ -75,3 +81,4 @@ endif()
 
 message(STATUS "Build type  : ${CMAKE_BUILD_TYPE}")
 message(STATUS "Arrow target: ${ARROW_TARGET}")
+message(STATUS "htslib      : ${HTSLIB_VERSION}")

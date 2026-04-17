@@ -9,6 +9,8 @@
 #include <parquet/file_reader.h>
 #include <parquet/properties.h>
 
+#include <htslib/sam.h>
+
 #include <algorithm>
 #include <clocale>
 #include <cstdint>
@@ -1090,6 +1092,245 @@ public:
     }
 };
 
+// ── BAM source ────────────────────────────────────────────────────────────────
+
+class BamSource : public TabularSource {
+    std::string                           path_;
+    std::shared_ptr<arrow::Schema>        schema_;
+    std::vector<std::string>              preamble_lines_;
+    int                                   num_refs_ = 0;
+
+    mutable htsFile*   hts_ = nullptr;
+    mutable sam_hdr_t* hdr_ = nullptr;
+    mutable bam1_t*    rec_ = nullptr;   // reused across advance() calls
+
+    mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
+    mutable std::vector<int64_t>          batch_first_row_;
+    mutable int64_t                       rows_so_far_ = 0;
+    mutable bool                          all_read_    = false;
+
+    static constexpr int BATCH_SIZE = 32768;
+
+    static constexpr const char NT16[] = "=ACMGRSVTWYHKDBN";
+
+    arrow::Status advance() const {
+        if (all_read_) return arrow::Status::OK();
+
+        arrow::StringBuilder qname_b, rname_b, cigar_b, rnext_b, seq_b, qual_b;
+        arrow::Int32Builder  flag_b, mapq_b;
+        arrow::Int64Builder  pos_b, pnext_b, tlen_b;
+
+        int count = 0, ret = 0;
+        while (count < BATCH_SIZE && (ret = sam_read1(hts_, hdr_, rec_)) >= 0) {
+            ARROW_RETURN_NOT_OK(qname_b.Append(bam_get_qname(rec_)));
+            ARROW_RETURN_NOT_OK(flag_b.Append((int32_t)rec_->core.flag));
+
+            // RNAME / POS
+            if (rec_->core.tid < 0) {
+                ARROW_RETURN_NOT_OK(rname_b.Append("*"));
+                ARROW_RETURN_NOT_OK(pos_b.Append((int64_t)0));
+            } else {
+                ARROW_RETURN_NOT_OK(rname_b.Append(
+                    sam_hdr_tid2name(hdr_, rec_->core.tid)));
+                ARROW_RETURN_NOT_OK(pos_b.Append((int64_t)rec_->core.pos + 1));
+            }
+
+            ARROW_RETURN_NOT_OK(mapq_b.Append((int32_t)rec_->core.qual));
+
+            // CIGAR
+            {
+                uint32_t nc = rec_->core.n_cigar;
+                if (nc == 0) {
+                    ARROW_RETURN_NOT_OK(cigar_b.Append("*"));
+                } else {
+                    std::string cig;
+                    cig.reserve(nc * 5);
+                    const uint32_t* cr = bam_get_cigar(rec_);
+                    for (uint32_t i = 0; i < nc; ++i) {
+                        char buf[16];
+                        int n = std::snprintf(buf, sizeof(buf), "%u%c",
+                                              bam_cigar_oplen(cr[i]),
+                                              bam_cigar_opchr(cr[i]));
+                        cig.append(buf, n);
+                    }
+                    ARROW_RETURN_NOT_OK(cigar_b.Append(cig));
+                }
+            }
+
+            // RNEXT / PNEXT
+            if (rec_->core.mtid < 0) {
+                ARROW_RETURN_NOT_OK(rnext_b.Append("*"));
+                ARROW_RETURN_NOT_OK(pnext_b.Append((int64_t)0));
+            } else if (rec_->core.mtid == rec_->core.tid) {
+                ARROW_RETURN_NOT_OK(rnext_b.Append("="));
+                ARROW_RETURN_NOT_OK(pnext_b.Append((int64_t)rec_->core.mpos + 1));
+            } else {
+                ARROW_RETURN_NOT_OK(rnext_b.Append(
+                    sam_hdr_tid2name(hdr_, rec_->core.mtid)));
+                ARROW_RETURN_NOT_OK(pnext_b.Append((int64_t)rec_->core.mpos + 1));
+            }
+
+            ARROW_RETURN_NOT_OK(tlen_b.Append((int64_t)rec_->core.isize));
+
+            // SEQ
+            {
+                int lq = rec_->core.l_qseq;
+                if (lq == 0) {
+                    ARROW_RETURN_NOT_OK(seq_b.Append("*"));
+                } else {
+                    std::string seq((size_t)lq, ' ');
+                    const uint8_t* s = bam_get_seq(rec_);
+                    for (int i = 0; i < lq; ++i)
+                        seq[i] = NT16[bam_seqi(s, i)];
+                    ARROW_RETURN_NOT_OK(seq_b.Append(seq));
+                }
+            }
+
+            // QUAL (Phred+33; '*' if not stored)
+            {
+                int lq = rec_->core.l_qseq;
+                const uint8_t* q = bam_get_qual(rec_);
+                if (lq == 0 || q[0] == 0xff) {
+                    ARROW_RETURN_NOT_OK(qual_b.Append("*"));
+                } else {
+                    std::string qual((size_t)lq, ' ');
+                    for (int i = 0; i < lq; ++i)
+                        qual[i] = (char)(q[i] + 33);
+                    ARROW_RETURN_NOT_OK(qual_b.Append(qual));
+                }
+            }
+
+            ++count;
+        }
+
+        if (ret < -1)
+            return arrow::Status::IOError("Error reading BAM record from ", path_);
+        if (count == 0) { all_read_ = true; return arrow::Status::OK(); }
+        if (ret < 0) all_read_ = true;   // EOF hit during this batch
+
+        std::shared_ptr<arrow::Array> a[11];
+        ARROW_RETURN_NOT_OK(qname_b.Finish(&a[0]));
+        ARROW_RETURN_NOT_OK(flag_b.Finish(&a[1]));
+        ARROW_RETURN_NOT_OK(rname_b.Finish(&a[2]));
+        ARROW_RETURN_NOT_OK(pos_b.Finish(&a[3]));
+        ARROW_RETURN_NOT_OK(mapq_b.Finish(&a[4]));
+        ARROW_RETURN_NOT_OK(cigar_b.Finish(&a[5]));
+        ARROW_RETURN_NOT_OK(rnext_b.Finish(&a[6]));
+        ARROW_RETURN_NOT_OK(pnext_b.Finish(&a[7]));
+        ARROW_RETURN_NOT_OK(tlen_b.Finish(&a[8]));
+        ARROW_RETURN_NOT_OK(seq_b.Finish(&a[9]));
+        ARROW_RETURN_NOT_OK(qual_b.Finish(&a[10]));
+
+        auto batch = arrow::RecordBatch::Make(schema_, count,
+            {a[0],a[1],a[2],a[3],a[4],a[5],a[6],a[7],a[8],a[9],a[10]});
+        batch_first_row_.push_back(rows_so_far_);
+        rows_so_far_ += count;
+        batches_.push_back(std::move(batch));
+        return arrow::Status::OK();
+    }
+
+public:
+    ~BamSource() {
+        if (rec_) { bam_destroy1(rec_); rec_ = nullptr; }
+        if (hdr_) { sam_hdr_destroy(hdr_); hdr_ = nullptr; }
+        if (hts_) { hts_close(hts_); hts_ = nullptr; }
+    }
+
+    static std::string open(const std::string& path, std::unique_ptr<BamSource>* out) {
+        auto self = std::make_unique<BamSource>();
+        self->path_ = path;
+
+        self->hts_ = hts_open(path.c_str(), "r");
+        if (!self->hts_)
+            return "Cannot open '" + path + "'";
+
+        self->hdr_ = sam_hdr_read(self->hts_);
+        if (!self->hdr_)
+            return "Cannot read BAM/SAM header from '" + path + "'";
+
+        self->rec_ = bam_init1();
+        if (!self->rec_)
+            return "Out of memory allocating BAM record";
+
+        self->num_refs_ = sam_hdr_nref(self->hdr_);
+
+        // Collect preamble lines from the embedded SAM header text (cap at 20)
+        {
+            int total = 0;
+            std::istringstream ss(std::string(self->hdr_->text,
+                                              (size_t)self->hdr_->l_text));
+            std::string line;
+            while (std::getline(ss, line)) {
+                if (line.empty()) continue;
+                ++total;
+                if (total <= 20) self->preamble_lines_.push_back(line);
+            }
+            if (total > 20)
+                self->preamble_lines_.push_back(
+                    "... (" + std::to_string(total - 20) + " more header lines)");
+        }
+
+        self->schema_ = arrow::schema({
+            arrow::field("QNAME", arrow::utf8()),
+            arrow::field("FLAG",  arrow::int32()),
+            arrow::field("RNAME", arrow::utf8()),
+            arrow::field("POS",   arrow::int64()),
+            arrow::field("MAPQ",  arrow::int32()),
+            arrow::field("CIGAR", arrow::utf8()),
+            arrow::field("RNEXT", arrow::utf8()),
+            arrow::field("PNEXT", arrow::int64()),
+            arrow::field("TLEN",  arrow::int64()),
+            arrow::field("SEQ",   arrow::utf8()),
+            arrow::field("QUAL",  arrow::utf8()),
+        });
+
+        auto st = self->advance();
+        if (!st.ok()) return "Error reading '" + path + "': " + st.ToString();
+
+        *out = std::move(self);
+        return "";
+    }
+
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    int64_t total_rows() const override { return all_read_ ? rows_so_far_ : -1; }
+    int     num_chunks() const override { return (int)batches_.size(); }
+    ChunkMeta chunk_meta(int i) const override {
+        return {batch_first_row_[i], batches_[i]->num_rows()};
+    }
+    void ensure(int i) override {
+        while (!all_read_ && (int)batches_.size() <= i)
+            (void)advance();
+    }
+    arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
+                              std::shared_ptr<arrow::Table>* out) override {
+        ensure(i);
+        if (i >= (int)batches_.size())
+            return arrow::Status::IndexError("chunk ", i, " out of range");
+        *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
+        return arrow::Status::OK();
+    }
+    const std::string& path() const override { return path_; }
+    std::string footer() const override {
+        return "Format: BAM  |  References: " + std::to_string(num_refs_);
+    }
+    std::vector<std::string> preamble() const override { return preamble_lines_; }
+    std::string format_cell(int col_idx, std::string val) const override {
+        if (col_idx == 3 || col_idx == 7) return digits_with_sep(val);  // POS, PNEXT
+        return val;
+    }
+    int min_col_width(int col_idx) const override {
+        switch (col_idx) {
+            case 0:  return 10;  // QNAME
+            case 3:  return 9;   // POS
+            case 5:  return 8;   // CIGAR
+            case 7:  return 9;   // PNEXT
+            case 9:  return 10;  // SEQ
+            case 10: return 10;  // QUAL
+            default: return 4;
+        }
+    }
+};
+
 // ── Format detection + source factory ────────────────────────────────────────
 // (fends is defined above, near the preamble helpers)
 
@@ -1102,6 +1343,12 @@ static std::string open_source(const std::string& path, const Config& cfg,
 
     if (fends(path, ".parquet")) {
         is_parquet = true;
+    } else if (fends(path, ".bam")) {
+        std::unique_ptr<BamSource> src;
+        std::string err = BamSource::open(path, &src);
+        if (!err.empty()) return err;
+        *out = std::move(src);
+        return "";
     } else if (fends(path, ".vcf")   || fends(path, ".vcf.gz")) {
         dk = DelimKind::VCF;
     } else if (fends(path, ".gff")   || fends(path, ".gff.gz")  ||
