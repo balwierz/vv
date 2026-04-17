@@ -448,10 +448,16 @@ static void write_csv_field(const std::string& val, char sep) {
     std::putchar('"');
 }
 
-// ── BED preamble helpers ──────────────────────────────────────────────────────
+// Suffix-match helper shared by DelimitedSource::open and open_source.
+static bool fends(const std::string& s, const std::string& sfx) {
+    return s.size() >= sfx.size() &&
+           s.compare(s.size() - sfx.size(), sfx.size(), sfx) == 0;
+}
+
+// ── Preamble helpers and stream wrappers ──────────────────────────────────────
 
 // Minimal InputStream that serves 'prefix' bytes first, then delegates to 'rest'.
-// Used to "put back" the first non-header line when reading gzipped BED files.
+// Used to "put back" the first non-preamble line when reading gzipped files.
 class PrependInputStream : public arrow::io::InputStream {
     std::string  prefix_;
     size_t       pos_ = 0;
@@ -487,6 +493,21 @@ public:
     }
 };
 
+// Read one '\n'-terminated line from an InputStream; strip trailing '\r'.
+// Returns true if a newline was found; false on EOF (out may still have content).
+static bool read_stream_line(
+    const std::shared_ptr<arrow::io::InputStream>& input, std::string* out)
+{
+    out->clear();
+    for (;;) {
+        auto r = input->Read(1);
+        if (!r.ok() || (*r)->size() == 0) return !out->empty();
+        char c = static_cast<char>((*r)->data()[0]);
+        if (c == '\n') return true;
+        if (c != '\r') *out += c;
+    }
+}
+
 // Reads and strips "track"/"browser" preamble lines from the current stream position.
 // For seekable streams (non-gz): leaves the stream positioned at the first data byte.
 // For non-seekable streams (gz): writes the first non-preamble line to *put_back.
@@ -496,22 +517,14 @@ static std::vector<std::string> strip_bed_preamble(
 {
     std::vector<std::string> headers;
     int64_t after_last = 0;
-
     if (seekable) {
         auto rf = std::static_pointer_cast<arrow::io::RandomAccessFile>(input);
         if (auto t = rf->Tell(); t.ok()) after_last = *t;
     }
-
     for (;;) {
         std::string line;
-        for (;;) {
-            auto rbuf = input->Read(1);
-            if (!rbuf.ok() || (*rbuf)->size() == 0) return headers;
-            char c = (char)(*rbuf)->data()[0];
-            if (c == '\n') break;
-            if (c != '\r') line += c;
-        }
-
+        bool ok = read_stream_line(input, &line);
+        if (!ok && line.empty()) break;
         auto has_prefix = [&](const char* p, size_t n) {
             return line.size() >= n && line.compare(0, n, p, n) == 0 &&
                    (line.size() == n || line[n] == ' ' || line[n] == '\t');
@@ -522,6 +535,7 @@ static std::vector<std::string> strip_bed_preamble(
                 auto rf = std::static_pointer_cast<arrow::io::RandomAccessFile>(input);
                 if (auto t = rf->Tell(); t.ok()) after_last = *t;
             }
+            if (!ok) break;
         } else {
             if (seekable) {
                 auto rf = std::static_pointer_cast<arrow::io::RandomAccessFile>(input);
@@ -534,6 +548,131 @@ static std::vector<std::string> strip_bed_preamble(
     }
     return headers;
 }
+
+// Strips lines whose first character equals prefix_char (e.g. '#' for GFF3, '@' for SAM).
+// Seekable: stream left positioned at the first non-preamble line.
+// Non-seekable (gz): first non-preamble line → *put_back.
+static std::vector<std::string> strip_prefix_preamble(
+    const std::shared_ptr<arrow::io::InputStream>& input,
+    char prefix_char, bool seekable, std::string* put_back)
+{
+    std::vector<std::string> preamble;
+    int64_t after_last = 0;
+    if (seekable) {
+        auto rf = std::static_pointer_cast<arrow::io::RandomAccessFile>(input);
+        if (auto t = rf->Tell(); t.ok()) after_last = *t;
+    }
+    for (;;) {
+        std::string line;
+        bool ok = read_stream_line(input, &line);
+        if (!ok && line.empty()) break;
+        if (!line.empty() && line[0] == prefix_char) {
+            preamble.push_back(line);
+            if (seekable) {
+                auto rf = std::static_pointer_cast<arrow::io::RandomAccessFile>(input);
+                if (auto t = rf->Tell(); t.ok()) after_last = *t;
+            }
+            if (!ok) break;
+        } else {
+            if (seekable) {
+                auto rf = std::static_pointer_cast<arrow::io::RandomAccessFile>(input);
+                (void)rf->Seek(after_last);
+            } else if (put_back) {
+                *put_back = line + "\n";
+            }
+            break;
+        }
+    }
+    return preamble;
+}
+
+// VCF: strips ## meta-information lines; reads the #CHROM header line for column names.
+// The #CHROM line is consumed; stream is left at the first data line.
+// *col_names_out is populated from #CHROM; returned vector contains ## lines only.
+static std::vector<std::string> strip_vcf_preamble(
+    const std::shared_ptr<arrow::io::InputStream>& input,
+    std::vector<std::string>* col_names_out)
+{
+    std::vector<std::string> preamble;
+    for (;;) {
+        std::string line;
+        bool ok = read_stream_line(input, &line);
+        if (!ok && line.empty()) break;
+        if (line.size() >= 2 && line[0] == '#' && line[1] == '#') {
+            preamble.push_back(line);
+            if (!ok) break;
+        } else if (!line.empty() && line[0] == '#') {
+            // #CHROM line: strip leading '#', split on tab → column names
+            std::istringstream ss(line.substr(1));
+            std::string tok;
+            while (std::getline(ss, tok, '\t'))
+                col_names_out->push_back(tok);
+            break;
+        } else {
+            break;  // data before #CHROM (malformed); don't consume
+        }
+    }
+    return preamble;
+}
+
+// Wraps an InputStream, truncating each line to at most max_fields tab-separated fields.
+// Used for SAM (variable optional alignment tags) and GFF3 (occasional extra columns).
+class TruncateFieldsStream : public arrow::io::InputStream {
+    std::shared_ptr<arrow::io::InputStream> inner_;
+    int      max_fields_;
+    std::string out_buf_;
+    size_t   out_pos_    = 0;
+    bool     inner_done_ = false;
+
+    bool refill() {
+        out_buf_.clear(); out_pos_ = 0;
+        std::string line;
+        while (line.empty()) {
+            bool ok = read_stream_line(inner_, &line);
+            if (!ok && line.empty()) { inner_done_ = true; return false; }
+            if (!ok) inner_done_ = true;
+        }
+        // Truncate to at most max_fields tab-separated fields
+        int fields = 0;
+        size_t end = line.size();
+        for (size_t i = 0; i < line.size(); ++i) {
+            if (line[i] == '\t' && ++fields == max_fields_) { end = i; break; }
+        }
+        out_buf_ = line.substr(0, end);
+        out_buf_ += '\n';
+        return true;
+    }
+
+public:
+    TruncateFieldsStream(std::shared_ptr<arrow::io::InputStream> inner, int max_fields)
+        : inner_(std::move(inner)), max_fields_(max_fields) {}
+
+    arrow::Status Close() override { return inner_->Close(); }
+    bool closed() const override { return inner_->closed(); }
+    arrow::Result<int64_t> Tell() const override {
+        return arrow::Status::NotImplemented("TruncateFieldsStream::Tell");
+    }
+    arrow::Result<int64_t> Read(int64_t n, void* buf) override {
+        uint8_t* p = static_cast<uint8_t*>(buf);
+        int64_t total = 0;
+        while (n > 0) {
+            if (out_pos_ >= out_buf_.size()) {
+                if (inner_done_ || !refill()) break;
+            }
+            int64_t avail = (int64_t)(out_buf_.size() - out_pos_);
+            int64_t take  = std::min(n, avail);
+            std::memcpy(p, out_buf_.data() + out_pos_, (size_t)take);
+            p += take; out_pos_ += (size_t)take; n -= take; total += take;
+        }
+        return total;
+    }
+    arrow::Result<std::shared_ptr<arrow::Buffer>> Read(int64_t n) override {
+        ARROW_ASSIGN_OR_RAISE(auto buf, arrow::AllocateResizableBuffer(n));
+        ARROW_ASSIGN_OR_RAISE(int64_t actual, Read(n, buf->mutable_data()));
+        ARROW_RETURN_NOT_OK(buf->Resize(actual, false));
+        return std::shared_ptr<arrow::Buffer>(std::move(buf));
+    }
+};
 
 // ── Tabular source abstraction ────────────────────────────────────────────────
 //
@@ -642,7 +781,9 @@ public:
     std::string created_by() const override { return meta_->created_by(); }
 };
 
-// ── Delimited source (CSV / TSV / BED, plain or gzip) ─────────────────────────
+// ── Delimited source (CSV / TSV / BED / VCF / GFF3+GTF / SAM, plain or gzip) ──
+
+enum class DelimKind { CSV, TSV, BED, VCF, GFF, SAM };
 
 // Wrap a single RecordBatch column slice as a single-chunk Table.
 static std::shared_ptr<arrow::Table> batch_slice_to_table(
@@ -663,9 +804,9 @@ static std::shared_ptr<arrow::Table> batch_slice_to_table(
 class DelimitedSource : public TabularSource {
     std::string                           path_;
     char                                  delimiter_;
+    DelimKind                             kind_;
     std::shared_ptr<arrow::Schema>        schema_;
-    std::vector<std::string>              bed_headers_;  // track/browser preamble lines
-    bool                                  is_bed_ = false;
+    std::vector<std::string>              preamble_lines_;
 
     // Growing cache of batches read so far (never evicted).
     mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
@@ -674,35 +815,6 @@ class DelimitedSource : public TabularSource {
     mutable bool                          all_read_    = false;
 
     mutable std::shared_ptr<arrow::csv::StreamingReader> reader_;
-
-    // out_bed_headers: if non-null, strip BED track/browser preamble lines and store them here.
-    static arrow::Result<std::shared_ptr<arrow::csv::StreamingReader>>
-    make_reader(const std::string& path, char delim, bool autogen_names,
-                std::vector<std::string>* out_bed_headers) {
-        ARROW_ASSIGN_OR_RAISE(auto raw, arrow::io::ReadableFile::Open(path));
-        std::shared_ptr<arrow::io::InputStream> input = raw;
-        bool is_gz = path.size() >= 3 &&
-                     path.compare(path.size()-3, 3, ".gz") == 0;
-        if (is_gz) {
-            ARROW_ASSIGN_OR_RAISE(auto codec,
-                arrow::util::Codec::Create(arrow::Compression::GZIP));
-            ARROW_ASSIGN_OR_RAISE(input,
-                arrow::io::CompressedInputStream::Make(codec.get(), raw));
-        }
-        if (out_bed_headers) {
-            std::string put_back;
-            *out_bed_headers = strip_bed_preamble(input, !is_gz, &put_back);
-            if (!put_back.empty())
-                input = std::make_shared<PrependInputStream>(std::move(put_back), input);
-        }
-        auto ropts = arrow::csv::ReadOptions::Defaults();
-        ropts.autogenerate_column_names = autogen_names;
-        auto popts = arrow::csv::ParseOptions::Defaults();
-        popts.delimiter = delim;
-        return arrow::csv::StreamingReader::Make(
-            arrow::io::default_io_context(), input,
-            ropts, popts, arrow::csv::ConvertOptions::Defaults());
-    }
 
     arrow::Status advance() const {
         if (all_read_) return arrow::Status::OK();
@@ -715,52 +827,140 @@ class DelimitedSource : public TabularSource {
         return arrow::Status::OK();
     }
 
+    // Open the file as a (possibly gzip-decompressed) InputStream.
+    static std::string open_stream(const std::string& path, bool is_gz,
+                                    std::shared_ptr<arrow::io::ReadableFile>*  raw_out,
+                                    std::shared_ptr<arrow::io::InputStream>*   input_out) {
+        auto maybe_raw = arrow::io::ReadableFile::Open(path);
+        if (!maybe_raw.ok())
+            return "Cannot open '" + path + "': " + maybe_raw.status().ToString();
+        auto raw = maybe_raw.ValueOrDie();
+        std::shared_ptr<arrow::io::InputStream> input = raw;
+        if (is_gz) {
+            auto mc = arrow::util::Codec::Create(arrow::Compression::GZIP);
+            if (!mc.ok()) return mc.status().ToString();
+            auto ci = arrow::io::CompressedInputStream::Make(mc->get(), raw);
+            if (!ci.ok()) return ci.status().ToString();
+            input = ci.ValueOrDie();
+        }
+        *raw_out   = raw;
+        *input_out = input;
+        return "";
+    }
+
+    // Create a StreamingReader from an already-open stream.
+    static arrow::Result<std::shared_ptr<arrow::csv::StreamingReader>>
+    make_reader(std::shared_ptr<arrow::io::InputStream> input, char delim,
+                bool autogen_names, const std::vector<std::string>& col_names) {
+        auto ropts = arrow::csv::ReadOptions::Defaults();
+        if (!col_names.empty())
+            ropts.column_names = col_names;
+        else
+            ropts.autogenerate_column_names = autogen_names;
+        auto popts = arrow::csv::ParseOptions::Defaults();
+        popts.delimiter = delim;
+        return arrow::csv::StreamingReader::Make(
+            arrow::io::default_io_context(), input,
+            ropts, popts, arrow::csv::ConvertOptions::Defaults());
+    }
+
 public:
-    // Returns empty string on success, error message on failure.
-    static std::string open(const std::string& path, char delim, bool force_no_header,
+    static std::string open(const std::string& path, DelimKind kind,
                              std::unique_ptr<DelimitedSource>* out) {
         auto self = std::make_unique<DelimitedSource>();
         self->path_      = path;
-        self->delimiter_ = delim;
+        self->kind_      = kind;
+        self->delimiter_ = (kind == DelimKind::CSV) ? ',' : '\t';
 
-        // BED convention: no header.
-        bool try_header = !force_no_header;
+        bool is_gz = fends(path, ".gz");
 
-        // For BED files: strip track/browser preamble lines. For TSV/CSV: pass nullptr.
-        std::vector<std::string>* bed_hdr_out = force_no_header ? &self->bed_headers_ : nullptr;
+        std::shared_ptr<arrow::io::ReadableFile>  raw;
+        std::shared_ptr<arrow::io::InputStream>   input;
+        {
+            std::string err = open_stream(path, is_gz, &raw, &input);
+            if (!err.empty()) return err;
+        }
 
-        // Try with header (autogen_names = false means "first row is header").
-        auto r = make_reader(path, delim, /*autogen_names=*/!try_header, bed_hdr_out);
+        // Format-specific preamble stripping and column-name determination.
+        // GFF and SAM wrap the stream in TruncateFieldsStream to handle variable columns.
+        std::vector<std::string> col_names;
+        std::string put_back;
+
+        switch (kind) {
+            case DelimKind::BED:
+                self->preamble_lines_ = strip_bed_preamble(input, !is_gz, &put_back);
+                break;
+            case DelimKind::VCF:
+                self->preamble_lines_ = strip_vcf_preamble(input, &col_names);
+                break;
+            case DelimKind::GFF: {
+                self->preamble_lines_ = strip_prefix_preamble(input, '#', !is_gz, &put_back);
+                col_names = {"seqname","source","feature","start","end",
+                             "score","strand","frame","attributes"};
+                // Rebuild input with put_back then truncate to 9 fields
+                std::shared_ptr<arrow::io::InputStream> base =
+                    put_back.empty() ? input
+                    : std::shared_ptr<arrow::io::InputStream>(
+                        std::make_shared<PrependInputStream>(std::move(put_back), input));
+                input = std::make_shared<TruncateFieldsStream>(base, 9);
+                put_back.clear();
+                break;
+            }
+            case DelimKind::SAM: {
+                self->preamble_lines_ = strip_prefix_preamble(input, '@', !is_gz, &put_back);
+                col_names = {"QNAME","FLAG","RNAME","POS","MAPQ",
+                             "CIGAR","RNEXT","PNEXT","TLEN","SEQ","QUAL"};
+                std::shared_ptr<arrow::io::InputStream> base =
+                    put_back.empty() ? input
+                    : std::shared_ptr<arrow::io::InputStream>(
+                        std::make_shared<PrependInputStream>(std::move(put_back), input));
+                input = std::make_shared<TruncateFieldsStream>(base, 11);
+                put_back.clear();
+                break;
+            }
+            default:
+                break;  // CSV/TSV: no preamble
+        }
+
+        // BED non-gz: put_back still handled here; GFF/SAM already cleared it above.
+        if (!put_back.empty())
+            input = std::make_shared<PrependInputStream>(std::move(put_back), input);
+
+        bool autogen = (kind == DelimKind::BED);
+        auto r = make_reader(input, self->delimiter_, autogen, col_names);
         if (!r.ok()) return "Cannot open '" + path + "': " + r.status().ToString();
         self->reader_ = r.ValueOrDie();
         self->schema_ = self->reader_->schema();
 
-        if (try_header) {
-            // If every column name parses as a number, the first row is data → retry.
+        // For CSV/TSV: if all column names are numeric, the file has no header → retry.
+        if (kind == DelimKind::CSV || kind == DelimKind::TSV) {
             bool all_numeric = self->schema_->num_fields() > 0;
             for (int i = 0; i < self->schema_->num_fields() && all_numeric; ++i) {
                 const std::string& nm = self->schema_->field(i)->name();
-                char* ep;
-                std::strtod(nm.c_str(), &ep);
+                char* ep; std::strtod(nm.c_str(), &ep);
                 if (*ep != '\0') all_numeric = false;
             }
             if (all_numeric) {
-                auto r2 = make_reader(path, delim, /*autogen_names=*/true, nullptr);
-                if (!r2.ok()) return "Cannot reopen '" + path + "': " + r2.status().ToString();
-                self->reader_ = r2.ValueOrDie();
-                self->schema_ = self->reader_->schema();
+                std::shared_ptr<arrow::io::ReadableFile>  raw2;
+                std::shared_ptr<arrow::io::InputStream>   input2;
+                if (open_stream(path, is_gz, &raw2, &input2).empty()) {
+                    auto r2 = make_reader(input2, self->delimiter_, /*autogen=*/true, {});
+                    if (r2.ok()) {
+                        self->reader_ = r2.ValueOrDie();
+                        self->schema_ = self->reader_->schema();
+                    }
+                }
             }
         }
 
-        // For BED files: assign standard column names and record the is_bed flag.
-        if (force_no_header) {
-            self->is_bed_ = true;
+        // BED: assign standard column names based on count and inferred types.
+        if (kind == DelimKind::BED) {
             int nf = self->schema_->num_fields();
             if (nf >= 3) {
                 arrow::FieldVector fields;
                 fields.reserve(nf);
                 for (int i = 0; i < nf; ++i) {
-                    auto f  = self->schema_->field(i);
+                    auto f   = self->schema_->field(i);
                     auto tid = f->type()->id();
                     bool is_int = (tid == arrow::Type::INT8  || tid == arrow::Type::INT16  ||
                                    tid == arrow::Type::INT32 || tid == arrow::Type::INT64  ||
@@ -818,86 +1018,136 @@ public:
     const std::string& path() const override { return path_; }
 
     std::string footer() const override {
-        std::string d(1, delimiter_);
-        if (delimiter_ == '\t') d = "tab";
-        return "Format: delimited (separator: " + d + ")";
+        switch (kind_) {
+            case DelimKind::VCF: return "Format: VCF";
+            case DelimKind::GFF: return "Format: GFF3/GTF";
+            case DelimKind::SAM: return "Format: SAM";
+            case DelimKind::BED: return "Format: BED";
+            default:
+                std::string d(1, delimiter_);
+                if (delimiter_ == '\t') d = "tab";
+                return "Format: delimited (separator: " + d + ")";
+        }
     }
-    std::vector<std::string> preamble() const override { return bed_headers_; }
 
-    // BED columns 1 (Beg) and 2 (End): display integers with _ digit grouping.
+    std::vector<std::string> preamble() const override { return preamble_lines_; }
+
+    // Per-format: display coordinate columns with '_' digit grouping.
     std::string format_cell(int col_idx, std::string val) const override {
-        if (is_bed_ && (col_idx == 1 || col_idx == 2))
-            return digits_with_sep(val);
+        switch (kind_) {
+            case DelimKind::BED:
+                if (col_idx == 1 || col_idx == 2) return digits_with_sep(val);
+                break;
+            case DelimKind::VCF:
+                if (col_idx == 1) return digits_with_sep(val);          // POS
+                break;
+            case DelimKind::GFF:
+                if (col_idx == 3 || col_idx == 4) return digits_with_sep(val); // start, end
+                break;
+            case DelimKind::SAM:
+                if (col_idx == 3 || col_idx == 7) return digits_with_sep(val); // POS, PNEXT
+                break;
+            default: break;
+        }
         return val;
     }
 
     int min_col_width(int col_idx) const override {
-        if (!is_bed_) return 4;
-        switch (col_idx) {
-            case 1: case 2: return 11;  // [Beg / End): "999_999_999"
-            case 3:         return 6;   // Name
-            case 5:         return 3;   // Str (strand: +/-/.)
-            case 8:         return 5;   // RGB bar
-            default:        return 4;
+        switch (kind_) {
+            case DelimKind::BED:
+                switch (col_idx) {
+                    case 1: case 2: return 11;  // [Beg / End): "999_999_999"
+                    case 3:         return 6;   // Name
+                    case 5:         return 3;   // Str (strand: +/-/.)
+                    case 8:         return 5;   // RGB bar
+                    default:        return 4;
+                }
+            case DelimKind::VCF:
+                switch (col_idx) {
+                    case 1:  return 9;   // POS
+                    case 7:  return 12;  // INFO
+                    default: return 4;
+                }
+            case DelimKind::GFF:
+                switch (col_idx) {
+                    case 3: case 4: return 9;   // start / end
+                    case 6:         return 3;   // strand (+/-/.)
+                    case 8:         return 15;  // attributes
+                    default:        return 4;
+                }
+            case DelimKind::SAM:
+                switch (col_idx) {
+                    case 0:  return 10;  // QNAME
+                    case 3:  return 9;   // POS
+                    case 5:  return 8;   // CIGAR
+                    case 7:  return 9;   // PNEXT
+                    case 9:  return 10;  // SEQ
+                    case 10: return 10;  // QUAL
+                    default: return 4;
+                }
+            default: return 4;
         }
     }
 };
 
 // ── Format detection + source factory ────────────────────────────────────────
-
-static bool fends(const std::string& s, const std::string& sfx) {
-    return s.size() >= sfx.size() &&
-           s.compare(s.size() - sfx.size(), sfx.size(), sfx) == 0;
-}
+// (fends is defined above, near the preamble helpers)
 
 // Open any supported file.  Returns empty string on success; error message otherwise.
 static std::string open_source(const std::string& path, const Config& cfg,
                                 std::unique_ptr<TabularSource>* out) {
     // ── Determine file kind ──────────────────────────────────────────────────
-    enum class Kind { Parquet, TSV, TSVGZ, CSV, CSVGZ };
-    Kind kind;
+    bool        is_parquet = false;
+    DelimKind   dk         = DelimKind::TSV;
 
-    if      (fends(path, ".parquet"))                          kind = Kind::Parquet;
-    else if (fends(path, ".bed.gz") || fends(path, ".tsv.gz")) kind = Kind::TSVGZ;
-    else if (fends(path, ".csv.gz"))                           kind = Kind::CSVGZ;
-    else if (fends(path, ".bed")    || fends(path, ".tsv"))    kind = Kind::TSV;
-    else if (fends(path, ".csv"))                              kind = Kind::CSV;
-    else {
+    if (fends(path, ".parquet")) {
+        is_parquet = true;
+    } else if (fends(path, ".vcf")   || fends(path, ".vcf.gz")) {
+        dk = DelimKind::VCF;
+    } else if (fends(path, ".gff")   || fends(path, ".gff.gz")  ||
+               fends(path, ".gff3")  || fends(path, ".gff3.gz") ||
+               fends(path, ".gtf")   || fends(path, ".gtf.gz")) {
+        dk = DelimKind::GFF;
+    } else if (fends(path, ".sam")) {
+        dk = DelimKind::SAM;
+    } else if (fends(path, ".bed")   || fends(path, ".bed.gz")) {
+        dk = DelimKind::BED;
+    } else if (fends(path, ".tsv")   || fends(path, ".tsv.gz")) {
+        dk = DelimKind::TSV;
+    } else if (fends(path, ".csv")   || fends(path, ".csv.gz")) {
+        dk = DelimKind::CSV;
+    } else {
         // Unknown extension: sniff magic bytes for Parquet, else sniff delimiter.
         auto rf = arrow::io::ReadableFile::Open(path);
         if (!rf.ok()) return "Cannot open '" + path + "': " + rf.status().ToString();
         auto buf = rf.ValueOrDie()->Read(4);
-        bool is_parquet = false;
         if (buf.ok() && buf.ValueOrDie()->size() == 4) {
             const uint8_t* m = buf.ValueOrDie()->data();
             is_parquet = (m[0]=='P' && m[1]=='A' && m[2]=='R' && m[3]=='1');
         }
         (void)rf.ValueOrDie()->Close();
-        if (is_parquet) {
-            kind = Kind::Parquet;
-        } else {
-            // Read first line, count tabs vs commas to choose delimiter.
+        if (!is_parquet) {
+            // Count tabs vs commas in first line to choose delimiter.
             auto rf2 = arrow::io::ReadableFile::Open(path);
             if (!rf2.ok()) return "Cannot open '" + path + "': " + rf2.status().ToString();
             std::string line;
-            char c;
             auto fh = rf2.ValueOrDie();
             while (true) {
                 auto r = fh->Read(1);
                 if (!r.ok() || r.ValueOrDie()->size() == 0) break;
-                c = (char)r.ValueOrDie()->data()[0];
+                char c = (char)r.ValueOrDie()->data()[0];
                 if (c == '\n') break;
                 line += c;
             }
             (void)fh->Close();
             int tabs   = (int)std::count(line.begin(), line.end(), '\t');
             int commas = (int)std::count(line.begin(), line.end(), ',');
-            kind = (tabs >= commas) ? Kind::TSV : Kind::CSV;
+            dk = (tabs >= commas) ? DelimKind::TSV : DelimKind::CSV;
         }
     }
 
     // ── Open appropriate source ───────────────────────────────────────────────
-    if (kind == Kind::Parquet) {
+    if (is_parquet) {
         std::unique_ptr<ParquetSource> src;
         std::string err = ParquetSource::open(path, cfg, &src);
         if (!err.empty()) return err;
@@ -905,11 +1155,8 @@ static std::string open_source(const std::string& path, const Config& cfg,
         return "";
     }
 
-    char   delim           = (kind == Kind::CSV || kind == Kind::CSVGZ) ? ',' : '\t';
-    bool   force_no_header = fends(path, ".bed") || fends(path, ".bed.gz");
-
     std::unique_ptr<DelimitedSource> src;
-    std::string err = DelimitedSource::open(path, delim, force_no_header, &src);
+    std::string err = DelimitedSource::open(path, dk, &src);
     if (!err.empty()) return err;
     *out = std::move(src);
     return "";
