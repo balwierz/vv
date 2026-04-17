@@ -1836,7 +1836,18 @@ public:
                 case KEY_PPAGE: case 'b':
                     top_row_ = std::max<int64_t>(0, top_row_ - dl); break;
                 case 'g': case KEY_HOME: top_row_ = 0; break;
-                case 'G': case KEY_END:  top_row_ = max_top; break;
+                case 'G': case KEY_END:
+                    // For streaming sources we must read to EOF before we know
+                    // the last row.  Show a status message and drain the stream.
+                    if (tr < 0) {
+                        mvaddstr(scr_r_ - 1, 0, " Loading to end of file… ");
+                        refresh();
+                        while (src_.total_rows() < 0)
+                            src_.ensure(src_.num_chunks());
+                        tr = total_rows();
+                    }
+                    top_row_ = std::max<int64_t>(0, tr - dl);
+                    break;
                 case KEY_RIGHT: case 'l':
                     if (left_col_ + 1 < num_cols_) ++left_col_; break;
                 case KEY_LEFT: case 'h':
