@@ -95,6 +95,16 @@ cmake --build build -j$(nproc)
 
 The binary is at `build/parquet_viewer`. It is statically linked — copy it anywhere.
 
+### Shell completion
+
+```sh
+# Bash (per-user)
+cp completions/parquet_viewer.bash ~/.local/share/bash-completion/completions/parquet_viewer
+
+# Fish
+cp completions/parquet_viewer.fish ~/.config/fish/completions/
+```
+
 ### Dependencies
 
 All dependencies except glibc are linked statically:
