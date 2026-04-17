@@ -129,7 +129,7 @@ static void print_usage(const char* prog) {
         "Usage: %s [options] <file>\n"
         "\nSupported formats:\n"
         "  .parquet\n"
-        "  .bam                        binary sequence alignments (htslib)\n"
+        "  .bam  .cram                  binary/compressed sequence alignments (htslib)\n"
         "  .sam                        text sequence alignments\n"
         "  .vcf  .vcf.gz               variant calls\n"
         "  .gff  .gff3  .gtf           and .gz variants  genome annotations\n"
@@ -1105,7 +1105,8 @@ class BamSource : public TabularSource {
     std::string                           path_;
     std::shared_ptr<arrow::Schema>        schema_;
     std::vector<std::string>              preamble_lines_;
-    int                                   num_refs_ = 0;
+    int                                   num_refs_   = 0;
+    std::string                           fmt_name_;   // "BAM", "CRAM", or "SAM"
 
     mutable htsFile*   hts_ = nullptr;
     mutable sam_hdr_t* hdr_ = nullptr;
@@ -1261,6 +1262,16 @@ public:
 
         self->num_refs_ = sam_hdr_nref(self->hdr_);
 
+        // Detect exact format (BAM / CRAM / SAM) for the footer
+        {
+            const htsFormat* fmt = hts_get_format(self->hts_);
+            switch (fmt ? fmt->format : unknown_format) {
+                case cram: self->fmt_name_ = "CRAM"; break;
+                case sam:  self->fmt_name_ = "SAM";  break;
+                default:   self->fmt_name_ = "BAM";  break;
+            }
+        }
+
         // Collect preamble lines from the embedded SAM header text (cap at 20)
         {
             int total = 0;
@@ -1318,7 +1329,7 @@ public:
     }
     const std::string& path() const override { return path_; }
     std::string footer() const override {
-        return "Format: BAM  |  References: " + std::to_string(num_refs_);
+        return "Format: " + fmt_name_ + "  |  References: " + std::to_string(num_refs_);
     }
     std::vector<std::string> preamble() const override { return preamble_lines_; }
     std::string format_cell(int col_idx, std::string val) const override {
@@ -1350,7 +1361,7 @@ static std::string open_source(const std::string& path, const Config& cfg,
 
     if (fends(path, ".parquet")) {
         is_parquet = true;
-    } else if (fends(path, ".bam")) {
+    } else if (fends(path, ".bam") || fends(path, ".cram")) {
         std::unique_ptr<BamSource> src;
         std::string err = BamSource::open(path, &src);
         if (!err.empty()) return err;
