@@ -126,6 +126,8 @@ struct Config {
     bool        no_interactive = false;  // --no-interactive
 };
 
+static constexpr const char* kVersion = "1.2.0";
+
 static void print_usage(const char* prog) {
     std::fprintf(stderr,
         "Usage: %s [options] <file>\n"
@@ -153,7 +155,8 @@ static void print_usage(const char* prog) {
         "  --delimiter <sep>   write with a custom single-character delimiter\n"
         "  --no-header         omit the header row\n"
         "  (-n defaults to all rows in this mode; -c still applies)\n"
-        "\n  -h                  show this help\n",
+        "\n  -h / --help         show this help\n"
+        "  -V / --version      print version and exit\n",
         prog);
 }
 
@@ -163,6 +166,8 @@ static Config parse_args(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "-h") || !std::strcmp(argv[i], "--help")) {
             print_usage(argv[0]); std::exit(0);
+        } else if (!std::strcmp(argv[i], "-V") || !std::strcmp(argv[i], "--version")) {
+            std::printf("parquet_viewer %s\n", kVersion); std::exit(0);
         } else if (!std::strcmp(argv[i], "--no-index")) {
             cfg.no_index = true;
         } else if (!std::strcmp(argv[i], "--no-header")) {
