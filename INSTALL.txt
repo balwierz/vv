@@ -1,0 +1,63 @@
+parquet_viewer — Installation
+==============================
+
+Requirements
+------------
+- CMake 3.16 or newer
+- g++ with C++20 support (GCC 10+ or Clang 12+)
+- Apache Arrow + Parquet development libraries
+- htslib development library
+- ncurses development library
+
+On Debian / Ubuntu:
+  sudo apt-get install cmake g++ libarrow-dev libparquet-dev libhts-dev libncurses-dev
+
+On Fedora / RHEL:
+  sudo dnf install cmake gcc-c++ arrow-devel parquet-devel htslib-devel ncurses-devel
+
+On Arch Linux:
+  sudo pacman -S cmake gcc arrow htslib ncurses
+
+Build
+-----
+  cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+  cmake --build build -j$(nproc)
+
+The binary is produced at:
+  build/parquet_viewer
+
+Install (optional)
+------------------
+  sudo cp build/parquet_viewer /usr/local/bin/
+
+Shell completion (optional)
+---------------------------
+  # Bash (per-user)
+  cp completions/parquet_viewer.bash ~/.local/share/bash-completion/completions/parquet_viewer
+
+  # Fish
+  cp completions/parquet_viewer.fish ~/.config/fish/completions/
+
+Portable static binary (Docker, AlmaLinux 8)
+--------------------------------------------
+A fully static binary (glibc >= 2.28 only) can be built from bundled sources
+with no network access inside the container:
+
+  sg docker -c "docker build --network=host -f Dockerfile.almalinux8 \
+                   -t parquet_viewer_build ."
+  mkdir -p dist && docker run --rm -v "$PWD/dist:/out" parquet_viewer_build
+  # binary at ./dist/parquet_viewer
+
+The build pulls every dependency (zlib, zstd, lz4, bz2, xz, libdeflate, brotli,
+snappy, utf8proc, abseil, re2, thrift, ncurses, htslib, Arrow 23.0.1) from
+./docker-sources/ tarballs and links them statically. Parquet compression
+codecs (snappy, zstd, lz4, brotli, bz2) are explicitly enabled in the Arrow
+build. The Arrow stage takes ~20 min on a modern machine; the full image
+~30 min cold.
+
+Notes
+-----
+- mimalloc (v2.1.9) is fetched automatically from GitHub during the CMake configure
+  step — an internet connection is required on first build.
+- Arrow, Parquet, htslib, and ncurses are linked statically where possible; only
+  glibc and htslib remain as shared-library dependencies at runtime.

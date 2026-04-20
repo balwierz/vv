@@ -1,0 +1,294 @@
+# Builds parquet_viewer against glibc 2.28 (AlmaLinux 8) for portability.
+# All sources are bundled in docker-sources/ — no internet needed inside Docker.
+#
+# Build the image (first time ~60-90 min):
+#   docker build --network=host -f Dockerfile.almalinux8 -t parquet_viewer_build .
+#
+# Extract the binary:
+#   mkdir -p dist && docker run --rm -v "$PWD/dist:/out" parquet_viewer_build
+#   # binary at ./dist/parquet_viewer (runs on Linux with glibc >= 2.28)
+
+FROM almalinux:8 AS base
+
+RUN dnf install -y dnf-plugins-core && \
+    dnf config-manager --set-enabled powertools && \
+    dnf install -y \
+        gcc-toolset-12 gcc-toolset-12-gcc-c++ \
+        cmake make ninja-build pkg-config \
+        autoconf automake libtool python3 \
+        patch bzip2 \
+    && dnf clean all
+
+ENV PATH="/opt/rh/gcc-toolset-12/root/usr/bin:${PATH}"
+ENV CC=gcc CXX=g++
+ENV PKG_CONFIG_PATH=/build/static-libs/lib/pkgconfig
+
+WORKDIR /build
+COPY docker-sources/ /build/src/
+
+# Install Boost 1.90 + RapidJSON + xsimd headers (bundled from host)
+RUN tar xf /build/src/boost-headers.tar.gz -C /usr/include/ && \
+    tar xf /build/src/rapidjson-headers.tar.gz -C /usr/include/ && \
+    tar xf /build/src/xsimd.tar.gz -C /usr/include/ && \
+    mkdir -p /usr/share/cmake/xsimd && \
+    mv /usr/include/xsimd/xsimd*.cmake /usr/share/cmake/xsimd/
+
+# ── zlib ──────────────────────────────────────────────────────────────────────
+FROM base AS build-zlib
+RUN tar xf /build/src/zlib.tar.gz && mv zlib-* zlib-src && \
+    cmake -S zlib-src -B zlib-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_C_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DZLIB_BUILD_EXAMPLES=OFF && \
+    cmake --build zlib-bld -j$(nproc) && cmake --install zlib-bld && \
+    rm -f /build/static-libs/lib/libz.so*
+
+# ── zstd ──────────────────────────────────────────────────────────────────────
+FROM base AS build-zstd
+RUN tar xf /build/src/zstd.tar.gz && mv zstd-* zstd-src && \
+    cmake -S zstd-src/build/cmake -B zstd-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_C_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DZSTD_BUILD_SHARED=OFF -DZSTD_BUILD_STATIC=ON \
+        -DZSTD_BUILD_PROGRAMS=OFF -DZSTD_BUILD_TESTS=OFF && \
+    cmake --build zstd-bld -j$(nproc) && cmake --install zstd-bld
+
+# ── lz4 ───────────────────────────────────────────────────────────────────────
+FROM base AS build-lz4
+RUN tar xf /build/src/lz4.tar.gz && mv lz4-* lz4-src && \
+    cmake -S lz4-src/build/cmake -B lz4-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_C_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DBUILD_SHARED_LIBS=OFF && \
+    cmake --build lz4-bld -j$(nproc) && cmake --install lz4-bld
+
+# ── bzip2 ─────────────────────────────────────────────────────────────────────
+FROM base AS build-bzip2
+RUN tar xf /build/src/bzip2.tar.gz && mv bzip2-* bzip2-src && \
+    mkdir -p /build/static-libs/lib /build/static-libs/include && \
+    make -C bzip2-src -j$(nproc) \
+        CFLAGS="-O2 -ffunction-sections -fdata-sections" libbz2.a && \
+    cp bzip2-src/libbz2.a /build/static-libs/lib/ && \
+    cp bzip2-src/bzlib.h  /build/static-libs/include/
+
+# ── xz / lzma ─────────────────────────────────────────────────────────────────
+FROM base AS build-xz
+RUN tar xf /build/src/xz.tar.gz && mv xz-* xz-src && \
+    mkdir xz-bld && cd xz-bld && \
+    CFLAGS="-O2 -ffunction-sections -fdata-sections" \
+    ../xz-src/configure --prefix=/build/static-libs \
+        --disable-shared --enable-static \
+        --disable-xz --disable-xzdec --disable-lzmadec \
+        --disable-lzmainfo --disable-scripts && \
+    make -j$(nproc) && make install
+
+# ── libdeflate ────────────────────────────────────────────────────────────────
+FROM base AS build-deflate
+RUN tar xf /build/src/deflate.tar.gz && mv libdeflate-* deflate-src && \
+    cmake -S deflate-src -B deflate-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_C_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DLIBDEFLATE_BUILD_SHARED_LIB=OFF && \
+    cmake --build deflate-bld -j$(nproc) && cmake --install deflate-bld
+
+# ── brotli ────────────────────────────────────────────────────────────────────
+FROM base AS build-brotli
+RUN tar xf /build/src/brotli.tar.gz && mv brotli-* brotli-src && \
+    cmake -S brotli-src -B brotli-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_C_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DBUILD_SHARED_LIBS=OFF && \
+    cmake --build brotli-bld -j$(nproc) && cmake --install brotli-bld
+
+# ── snappy ────────────────────────────────────────────────────────────────────
+FROM base AS build-snappy
+RUN tar xf /build/src/snappy.tar.gz && mv snappy-* snappy-src && \
+    cmake -S snappy-src -B snappy-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_CXX_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DSNAPPY_BUILD_TESTS=OFF -DSNAPPY_BUILD_BENCHMARKS=OFF && \
+    cmake --build snappy-bld -j$(nproc) && cmake --install snappy-bld
+
+# ── utf8proc ──────────────────────────────────────────────────────────────────
+FROM base AS build-utf8proc
+RUN tar xf /build/src/utf8proc.tar.gz && mv utf8proc-* utf8proc-src && \
+    cmake -S utf8proc-src -B utf8proc-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_C_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DBUILD_SHARED_LIBS=OFF && \
+    cmake --build utf8proc-bld -j$(nproc) && cmake --install utf8proc-bld
+
+# ── abseil-cpp ────────────────────────────────────────────────────────────────
+FROM base AS build-absl
+RUN tar xf /build/src/absl.tar.gz && mv abseil-cpp-* absl-src && \
+    cmake -S absl-src -B absl-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_CXX_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DCMAKE_CXX_STANDARD=17 \
+        -DABSL_BUILD_TESTING=OFF && \
+    cmake --build absl-bld -j$(nproc) && cmake --install absl-bld
+
+# ── re2 (needs abseil) ────────────────────────────────────────────────────────
+FROM base AS build-re2
+COPY --from=build-absl /build/static-libs /build/static-libs
+RUN tar xf /build/src/re2.tar.gz && mv re2-* re2-src && \
+    cmake -S re2-src -B re2-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_PREFIX_PATH=/build/static-libs \
+        -DCMAKE_CXX_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DBUILD_SHARED_LIBS=OFF -DRE2_BUILD_TESTING=OFF && \
+    cmake --build re2-bld -j$(nproc) && cmake --install re2-bld
+
+# ── thrift ────────────────────────────────────────────────────────────────────
+FROM base AS build-thrift
+RUN tar xf /build/src/thrift.tar.gz && mv thrift-* thrift-src && \
+    cmake -S thrift-src -B thrift-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_CXX_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DBUILD_COMPILER=OFF -DBUILD_TESTING=OFF \
+        -DBUILD_TUTORIALS=OFF -DBUILD_EXAMPLES=OFF \
+        -DWITH_LIBEVENT=OFF -DWITH_ZLIB=OFF -DWITH_OPENSSL=OFF \
+        -DWITH_JAVASCRIPT=OFF -DWITH_NODEJS=OFF \
+        -DWITH_PYTHON=OFF -DWITH_JAVA=OFF -DWITH_ERLANG=OFF \
+        -DWITH_GO=OFF -DWITH_HASKELL=OFF -DWITH_PERL=OFF \
+        -DWITH_PHP=OFF -DWITH_RUBY=OFF -DWITH_SWIFT=OFF && \
+    cmake --build thrift-bld -j$(nproc) && cmake --install thrift-bld
+
+# ── ncurses ───────────────────────────────────────────────────────────────────
+FROM base AS build-ncurses
+RUN tar xf /build/src/ncurses.tar.gz && mv ncurses-* ncurses-src && \
+    mkdir ncurses-bld && cd ncurses-bld && \
+    CFLAGS="-O2 -ffunction-sections -fdata-sections" \
+    ../ncurses-src/configure --prefix=/build/static-libs \
+        --disable-shared --enable-static --with-termlib \
+        --enable-widec --without-ada --without-cxx-binding \
+        --without-manpages --without-progs --without-tests \
+        --with-fallbacks=xterm-256color,xterm,vt100,ansi && \
+    make -j$(nproc) && make install
+
+# ── htslib (static, no network backends) ─────────────────────────────────────
+FROM base AS build-htslib
+COPY --from=build-zlib  /build/static-libs /build/static-libs
+COPY --from=build-bzip2 /build/static-libs /build/static-libs
+COPY --from=build-xz    /build/static-libs /build/static-libs
+RUN tar xf /build/src/htslib.tar.bz2 && mv htslib-* htslib-src && \
+    cd htslib-src && \
+    CFLAGS="-O2 -ffunction-sections -fdata-sections" \
+    CPPFLAGS="-I/build/static-libs/include" \
+    LDFLAGS="-L/build/static-libs/lib" \
+    ./configure --prefix=/build/static-libs \
+        --disable-libcurl --disable-gcs --disable-s3 \
+        --disable-plugins && \
+    make -j$(nproc) libhts.a && \
+    mkdir -p /build/static-libs/lib/pkgconfig /build/static-libs/include/htslib && \
+    cp libhts.a /build/static-libs/lib/ && \
+    cp htslib/*.h /build/static-libs/include/htslib/ && \
+    printf 'prefix=/build/static-libs\nexec_prefix=${prefix}\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\nName: htslib\nVersion: 1.21\nDescription: HTS library\nCflags: -I${includedir}\nLibs: ${libdir}/libhts.a -lz -lbz2 -llzma -lpthread -lm\n' \
+      > /build/static-libs/lib/pkgconfig/htslib.pc
+
+# ── Merge all static-libs ─────────────────────────────────────────────────────
+FROM base AS static-libs
+COPY --from=build-zlib     /build/static-libs /build/static-libs
+COPY --from=build-zstd     /build/static-libs /build/static-libs
+COPY --from=build-lz4      /build/static-libs /build/static-libs
+COPY --from=build-bzip2    /build/static-libs /build/static-libs
+COPY --from=build-xz       /build/static-libs /build/static-libs
+COPY --from=build-deflate  /build/static-libs /build/static-libs
+COPY --from=build-brotli   /build/static-libs /build/static-libs
+COPY --from=build-snappy   /build/static-libs /build/static-libs
+COPY --from=build-utf8proc /build/static-libs /build/static-libs
+COPY --from=build-absl     /build/static-libs /build/static-libs
+COPY --from=build-re2      /build/static-libs /build/static-libs
+COPY --from=build-thrift   /build/static-libs /build/static-libs
+COPY --from=build-ncurses  /build/static-libs /build/static-libs
+COPY --from=build-htslib   /build/static-libs /build/static-libs
+
+# ── Arrow 23.0.1 ──────────────────────────────────────────────────────────────
+FROM static-libs AS build-arrow
+RUN tar xf /build/src/arrow.tar.gz && mv arrow-* arrow-src && \
+    cmake -S arrow-src/cpp -B arrow-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/arrow-install \
+        -DCMAKE_C_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DCMAKE_CXX_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DCMAKE_PREFIX_PATH=/build/static-libs \
+        -DARROW_BUILD_SHARED=OFF \
+        -DARROW_BUILD_STATIC=ON \
+        -DARROW_PARQUET=ON \
+        -DARROW_CSV=ON \
+        -DARROW_IPC=ON \
+        -DARROW_S3=OFF \
+        -DARROW_GCS=OFF \
+        -DARROW_FLIGHT=OFF \
+        -DARROW_GANDIVA=OFF \
+        -DARROW_ORC=OFF \
+        -DARROW_DATASET=OFF \
+        -DARROW_COMPUTE=ON \
+        -DARROW_WITH_SNAPPY=ON \
+        -DARROW_WITH_ZSTD=ON \
+        -DARROW_WITH_LZ4=ON \
+        -DARROW_WITH_BROTLI=ON \
+        -DARROW_WITH_BZ2=ON \
+        -DARROW_WITH_ZLIB=ON \
+        -DARROW_WITH_UTF8PROC=ON \
+        -DARROW_WITH_RE2=ON \
+        -DARROW_DEPENDENCY_SOURCE=SYSTEM \
+        -DARROW_ENABLE_TIMING_TESTS=OFF \
+        -Dutf8proc_LIB=/build/static-libs/lib/libutf8proc.a \
+        -Dutf8proc_INCLUDE_DIR=/build/static-libs/include \
+        -DRE2_ROOT=/build/static-libs \
+        -DThrift_ROOT=/build/static-libs \
+        -DSnappy_ROOT=/build/static-libs \
+        -DZSTD_ROOT=/build/static-libs \
+        -DLZ4_ROOT=/build/static-libs \
+        -DBrotli_ROOT=/build/static-libs \
+        -DZLIB_ROOT=/build/static-libs && \
+    cmake --build arrow-bld -j16 && cmake --install arrow-bld
+
+# ── parquet_viewer ────────────────────────────────────────────────────────────
+FROM build-arrow AS build-app
+
+# Provide mimalloc source for FetchContent (no internet in build containers)
+RUN tar xf /build/src/mimalloc.tar.gz && mv mimalloc-* /build/mimalloc-src
+
+# AlmaLinux 8 cmake installs to lib64/; symlink everything into lib/ so that
+# CMakeLists.txt's find_library(PATHS .../static-libs/lib NO_DEFAULT_PATH) works.
+RUN for f in /build/static-libs/lib64/*.a; do \
+        b=$(basename "$f"); \
+        [ ! -f "/build/static-libs/lib/$b" ] && ln -sf "../lib64/$b" "/build/static-libs/lib/$b"; \
+    done; true
+
+# Arrow's installed cmake records ARROW_UTF8PROC_USE_SHARED=ON (shared search),
+# but we only have the static .a — patch it to search for the static library.
+RUN sed -i \
+    's/set(ARROW_UTF8PROC_USE_SHARED "ON")/set(ARROW_UTF8PROC_USE_SHARED "OFF")/' \
+    /build/arrow-install/lib64/cmake/Arrow/ArrowOptions.cmake
+
+COPY . /build/ParquetViewer
+
+RUN cmake -S /build/ParquetViewer -B /build/app-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DSTATIC_RUNTIME=ON \
+        -DCMAKE_CXX_FLAGS="-O2 -march=x86-64 -ffunction-sections -fdata-sections" \
+        -DCMAKE_PREFIX_PATH="/build/arrow-install;/build/static-libs" \
+        -DArrow_DIR=/build/arrow-install/lib64/cmake/Arrow \
+        -DParquet_DIR=/build/arrow-install/lib64/cmake/Parquet \
+        -DCURSES_INCLUDE_PATH=/build/static-libs/include/ncursesw \
+        -DCURSES_LIBRARY=/build/static-libs/lib/libncursesw.a \
+        -DCMAKE_LIBRARY_PATH="/opt/rh/gcc-toolset-12/root/usr/lib/gcc/x86_64-redhat-linux/12;/build/static-libs/lib" \
+        -DFETCHCONTENT_SOURCE_DIR_MIMALLOC=/build/mimalloc-src && \
+    cmake --build /build/app-bld -j$(nproc)
+
+CMD ["sh", "-c", "cp /build/app-bld/parquet_viewer /out/parquet_viewer && echo 'Done: /out/parquet_viewer'"]
