@@ -866,6 +866,7 @@ class DelimitedSource : public TabularSource {
     DelimKind                             kind_;
     std::shared_ptr<arrow::Schema>        schema_;
     std::vector<std::string>              preamble_lines_;
+    int                                   bed_level_ = 3; // detected BED standard cols (3..9)
 
     // Growing cache of batches read so far (never evicted).
     mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
@@ -1012,42 +1013,88 @@ public:
             }
         }
 
-        // BED: assign standard column names based on count and inferred types.
+        // Eagerly read first batch so schema + first rows are immediately available.
+        auto st = self->advance();
+        if (!st.ok()) return "Error reading '" + path + "': " + st.ToString();
+
+        // BED: detect level (BED3..BED12) by checking column types sequentially,
+        // then assign standard names. Cols beyond the detected level get "+1", "+2", ...
+        // Allele disambiguation: if col 3 is string but values are very short (≤2 chars,
+        // typical of allele columns like "A", "CG") AND col 4 isn't numeric, treat col 3
+        // as an extra rather than BED4 Name.
         if (kind == DelimKind::BED) {
             int nf = self->schema_->num_fields();
             if (nf >= 3) {
+                auto tt = [&](int c) { return self->schema_->field(c)->type()->id(); };
+                auto is_str_t = [](arrow::Type::type t) {
+                    return t == arrow::Type::STRING || t == arrow::Type::LARGE_STRING;
+                };
+                auto is_num_t = [](arrow::Type::type t) {
+                    return t == arrow::Type::INT8   || t == arrow::Type::INT16  ||
+                           t == arrow::Type::INT32  || t == arrow::Type::INT64  ||
+                           t == arrow::Type::UINT8  || t == arrow::Type::UINT16 ||
+                           t == arrow::Type::UINT32 || t == arrow::Type::UINT64 ||
+                           t == arrow::Type::FLOAT  || t == arrow::Type::DOUBLE ||
+                           t == arrow::Type::HALF_FLOAT;
+                };
+                auto is_int_t = [](arrow::Type::type t) {
+                    return t == arrow::Type::INT8   || t == arrow::Type::INT16  ||
+                           t == arrow::Type::INT32  || t == arrow::Type::INT64  ||
+                           t == arrow::Type::UINT8  || t == arrow::Type::UINT16 ||
+                           t == arrow::Type::UINT32 || t == arrow::Type::UINT64;
+                };
+                int lvl = 3;
+                do {
+                    if (nf < 4  || !is_str_t(tt(3)))  break; lvl = 4;   // Name: string
+                    if (nf < 5  || !is_num_t(tt(4)))  break; lvl = 5;   // Score: numeric
+                    if (nf < 6  || !is_str_t(tt(5)))  break; lvl = 6;   // Strand: string
+                    if (nf < 7  || !is_int_t(tt(6)))  break; lvl = 7;   // ThickStart: int
+                    if (nf < 8  || !is_int_t(tt(7)))  break; lvl = 8;   // ThickEnd: int
+                    if (nf < 9  || !is_str_t(tt(8)))  break; lvl = 9;   // itemRgb: string
+                    if (nf < 10 || !is_int_t(tt(9)))  break; lvl = 10;  // blockCount: int
+                    if (nf < 11 || !is_str_t(tt(10))) break; lvl = 11;  // blockSizes: string
+                    if (nf < 12 || !is_str_t(tt(11))) break; lvl = 12;  // blockStarts: string
+                } while (false);
+
+                // Allele disambiguation: only trigger if detection stopped at BED4
+                // (col 3 string, col 4 not numeric) — in BED5+ layouts the presence
+                // of Score/Strand/etc. in the right slots is strong signal.
+                if (lvl == 4 && !self->batches_.empty()) {
+                    auto col3 = self->batches_[0]->column(3);
+                    int64_t n_rows = std::min<int64_t>(self->batches_[0]->num_rows(), 100);
+                    int n_nonnull = 0;
+                    bool all_short = true;
+                    auto check = [&](auto* arr) {
+                        for (int64_t i = 0; i < n_rows; ++i) {
+                            if (arr->IsNull(i)) continue;
+                            ++n_nonnull;
+                            if (arr->GetView(i).size() > 2) { all_short = false; return; }
+                        }
+                    };
+                    if (auto sa = std::dynamic_pointer_cast<arrow::StringArray>(col3))
+                        check(sa.get());
+                    else if (auto la = std::dynamic_pointer_cast<arrow::LargeStringArray>(col3))
+                        check(la.get());
+                    if (all_short && n_nonnull > 0) lvl = 3;
+                }
+                self->bed_level_ = lvl;
+
+                static const char* kBedNames[] = {
+                    "Chr", "[Beg", "End)", "Name", "Score", "Str",
+                    "ThBeg", "ThEnd", "RGB", "NBlk", "BlkSz", "BlkSt"
+                };
                 arrow::FieldVector fields;
                 fields.reserve(nf);
                 for (int i = 0; i < nf; ++i) {
-                    auto f   = self->schema_->field(i);
-                    auto tid = f->type()->id();
-                    bool is_int = (tid == arrow::Type::INT8  || tid == arrow::Type::INT16  ||
-                                   tid == arrow::Type::INT32 || tid == arrow::Type::INT64  ||
-                                   tid == arrow::Type::UINT8 || tid == arrow::Type::UINT16 ||
-                                   tid == arrow::Type::UINT32|| tid == arrow::Type::UINT64);
-                    bool is_str = (tid == arrow::Type::STRING || tid == arrow::Type::LARGE_STRING);
-                    std::string nm;
-                    switch (i) {
-                        case 0: nm = "Chr";  break;
-                        case 1: nm = "[Beg"; break;
-                        case 2: nm = "End)"; break;
-                        case 3: nm = is_str ? "Name"  : f->name(); break;
-                        case 4: nm = is_int ? "Score" : f->name(); break;
-                        case 5: nm = is_str ? "Str"   : f->name(); break;
-                        case 6: nm = is_int ? "ThBeg" : f->name(); break;
-                        case 7: nm = is_int ? "ThEnd" : f->name(); break;
-                        case 8: nm = is_str ? "RGB"   : f->name(); break;
-                        default: nm = f->name(); break;
-                    }
+                    auto f = self->schema_->field(i);
+                    std::string nm = (i < lvl)
+                        ? kBedNames[i]
+                        : ("+" + std::to_string(i - lvl + 1));
                     fields.push_back(arrow::field(nm, f->type(), f->nullable()));
                 }
                 self->schema_ = arrow::schema(fields);
             }
         }
-
-        // Eagerly read first batch so schema + first rows are immediately available.
-        auto st = self->advance();
-        if (!st.ok()) return "Error reading '" + path + "': " + st.ToString();
 
         *out = std::move(self);
         return "";
@@ -1081,7 +1128,15 @@ public:
             case DelimKind::VCF: return "Format: VCF";
             case DelimKind::GFF: return "Format: GFF3/GTF";
             case DelimKind::SAM: return "Format: SAM";
-            case DelimKind::BED: return "Format: BED";
+            case DelimKind::BED: {
+                int nf = schema_->num_fields();
+                std::string s = "Format: BED" + std::to_string(bed_level_);
+                if (nf > bed_level_) {
+                    int extra = nf - bed_level_;
+                    s += " + " + std::to_string(extra) + " extra col" + (extra == 1 ? "" : "s");
+                }
+                return s;
+            }
             default:
                 std::string d(1, delimiter_);
                 if (delimiter_ == '\t') d = "tab";
@@ -1125,7 +1180,9 @@ public:
     int min_col_width(int col_idx) const override {
         switch (kind_) {
             case DelimKind::BED:
+                if (col_idx >= bed_level_) return 4;
                 switch (col_idx) {
+                    case 0:         return 6;   // Chr: "chrXII"
                     case 1: case 2: return 11;  // [Beg / End): "999_999_999"
                     case 3:         return 6;   // Name
                     case 5:         return 3;   // Str (strand: +/-/.)
@@ -1134,12 +1191,14 @@ public:
                 }
             case DelimKind::VCF:
                 switch (col_idx) {
+                    case 0:  return 6;   // CHROM: "chrXII"
                     case 1:  return 9;   // POS
                     case 7:  return 12;  // INFO
                     default: return 4;
                 }
             case DelimKind::GFF:
                 switch (col_idx) {
+                    case 0:         return 6;   // seqname: "chrXII"
                     case 3: case 4: return 9;   // start / end
                     case 6:         return 3;   // strand (+/-/.)
                     case 8:         return 15;  // attributes
@@ -1148,6 +1207,7 @@ public:
             case DelimKind::SAM:
                 switch (col_idx) {
                     case 0:  return 10;  // QNAME
+                    case 2:  return 6;   // RNAME: "chrXII"
                     case 3:  return 9;   // POS
                     case 5:  return 8;   // CIGAR
                     case 7:  return 9;   // PNEXT
@@ -1400,6 +1460,7 @@ public:
     int min_col_width(int col_idx) const override {
         switch (col_idx) {
             case 0:  return 10;  // QNAME
+            case 2:  return 6;   // RNAME: "chrXII"
             case 3:  return 9;   // POS
             case 5:  return 8;   // CIGAR
             case 7:  return 9;   // PNEXT
@@ -1706,6 +1767,45 @@ struct CachedRG {
     std::vector<std::vector<std::string>> cells;  // [local_row][col]
 };
 
+// Parse a VCF-INFO / GFF-attributes style key=value list. Handles "k=v;k=v"
+// (VCF/GFF3) and 'k "v"; k "v";' (GTF). Bare tokens become flags with empty value.
+static std::vector<std::pair<std::string,std::string>>
+parse_kv_list(const std::string& s) {
+    std::vector<std::pair<std::string,std::string>> out;
+    auto is_sp = [](char c){ return c == ' ' || c == '\t'; };
+    size_t i = 0;
+    while (i < s.size()) {
+        while (i < s.size() && (is_sp(s[i]) || s[i] == ';')) ++i;
+        if (i >= s.size()) break;
+        size_t ks = i;
+        while (i < s.size() && s[i] != '=' && s[i] != ';' && !is_sp(s[i])) ++i;
+        std::string key = s.substr(ks, i - ks);
+        if (key.empty()) { ++i; continue; }
+        while (i < s.size() && (s[i] == '=' || is_sp(s[i]))) ++i;
+        std::string value;
+        if (i < s.size() && s[i] == '"') {
+            ++i;
+            size_t vs = i;
+            while (i < s.size() && s[i] != '"') ++i;
+            value = s.substr(vs, i - vs);
+            if (i < s.size()) ++i;
+        } else if (i < s.size() && s[i] != ';') {
+            size_t vs = i;
+            while (i < s.size() && s[i] != ';') ++i;
+            value = s.substr(vs, i - vs);
+            while (!value.empty() && is_sp(value.back())) value.pop_back();
+        }
+        out.emplace_back(std::move(key), std::move(value));
+    }
+    return out;
+}
+
+// Heuristic: does this cell look like a k=v;k=v list worth expanding?
+static bool looks_like_kv_list(const std::string& s) {
+    return s.find(';') != std::string::npos &&
+           (s.find('=') != std::string::npos || s.find('"') != std::string::npos);
+}
+
 class TableTUI {
     TabularSource& src_;
     int   num_cols_;
@@ -1750,6 +1850,10 @@ class TableTUI {
     int64_t     search_row_   = -1;   // row highlighted by last match (-1 = none)
     bool        search_wrap_  = false;  // last search wrapped around
     bool        search_fail_  = false;  // last search found nothing
+
+    // ── Detail pane state ────────────────────────────────────────────────────
+    int64_t     detail_row_   = -1;  // -1 = pane closed
+    int         detail_scroll_ = 0;  // vertical scroll offset within the pane
 
     static constexpr int HDR_H = 2;
     static constexpr int FTR_H = 1;
@@ -2047,13 +2151,135 @@ class TableTUI {
             s += "  [n/N]:next/prev  [Esc]:clear";
         } else {
             bool need_lr = left_col_ > 0 || (!vc.empty() && vc.back().col < num_cols_-1);
-            if (need_lr) s += "  [</>/h/l]:cols";
-            s += "  [^/v/j/k]:rows  PgUp/Dn  g/G:top/bot  /:search  q:quit";
+            if (need_lr) s += "  [h/l]:←→col  [</>]:narrow/widen";
+            s += "  [^/v/j/k]:rows  PgUp/Dn  g/G:top/bot  /:search  Enter:detail  q:quit";
         }
         if ((int)s.size() < scr_c_) s += std::string(scr_c_ - (int)s.size(), ' ');
         attron(A_REVERSE);
         mvaddnstr(scr_r_ - 1, 0, s.c_str(), scr_c_);
         attroff(A_REVERSE);
+    }
+
+    // ── Detail pane ──────────────────────────────────────────────────────────
+
+    // Fetch all columns of one row with FULL (untruncated) values.
+    std::vector<std::string> load_full_row(int64_t row) {
+        std::vector<std::string> out(num_cols_);
+        if (src_.num_chunks() == 0) return out;
+        int c = chunk_for_row(row);
+        src_.ensure(c);
+        std::vector<int> cols;
+        for (int i = 0; i < num_cols_; ++i) cols.push_back(i);
+        std::shared_ptr<arrow::Table> tbl;
+        if (!src_.read_chunk(c, cols, &tbl).ok()) return out;
+        int64_t local = row - src_.chunk_meta(c).first_row;
+        if (local < 0 || local >= tbl->num_rows()) return out;
+        for (int ci = 0; ci < num_cols_; ++ci) {
+            int64_t r = 0;
+            for (auto& chunk : tbl->column(ci)->chunks()) {
+                int64_t len = chunk->length();
+                if (local < r + len) {
+                    out[ci] = src_.format_cell(ci, cell_to_string(*chunk, local - r));
+                    break;
+                }
+                r += len;
+            }
+        }
+        return out;
+    }
+
+    // Build the list of (label, value) lines shown in the detail pane.
+    // Columns whose value looks like a k=v list are followed by indented sub-entries.
+    std::vector<std::pair<std::string,std::string>>
+    build_detail_lines(const std::vector<std::string>& vals) const {
+        std::vector<std::pair<std::string,std::string>> L;
+        for (int ci = 0; ci < num_cols_; ++ci) {
+            L.emplace_back(col_names_[ci], vals[ci]);
+            if (looks_like_kv_list(vals[ci])) {
+                for (auto& [k, v] : parse_kv_list(vals[ci]))
+                    L.emplace_back("  " + k, v);
+            }
+        }
+        return L;
+    }
+
+    void draw_detail_pane() {
+        if (detail_row_ < 0) return;
+        auto vals = load_full_row(detail_row_);
+        auto lines = build_detail_lines(vals);
+
+        // Compute widths
+        int label_w = 0, val_w = 0;
+        for (auto& [l, v] : lines) {
+            label_w = std::max(label_w, (int)display_width(l));
+            val_w   = std::max(val_w,   (int)display_width(v));
+        }
+        int max_inner_w = scr_c_ - 4;                  // leave 2-char margin each side
+        int inner_w     = std::min(max_inner_w, label_w + 2 + val_w);
+        if (inner_w < 20) inner_w = std::min(max_inner_w, 20);
+        int pane_w = inner_w + 4;                      // +4: " | " + content + " | "
+        int max_inner_h = scr_r_ - 4;
+        int inner_h     = std::min((int)lines.size() + 1, max_inner_h);  // +1 for footer hint
+        int pane_h      = inner_h + 2;                 // +2 for top/bottom border
+        int y0 = (scr_r_ - pane_h) / 2;
+        int x0 = (scr_c_ - pane_w) / 2;
+        if (y0 < 0) y0 = 0;
+        if (x0 < 0) x0 = 0;
+
+        // Clamp scroll
+        int visible_rows = inner_h - 1;  // -1 for footer hint line
+        int max_scroll   = std::max(0, (int)lines.size() - visible_rows);
+        if (detail_scroll_ > max_scroll) detail_scroll_ = max_scroll;
+        if (detail_scroll_ < 0) detail_scroll_ = 0;
+
+        // Borders
+        std::string title = " Row " + std::to_string(detail_row_) + " ";
+        int title_pad = std::max(0, inner_w + 2 - (int)title.size() - 2);
+        std::string top_border = "+" + std::string(2, '-') + title +
+                                 std::string(title_pad, '-') + "+";
+        if ((int)top_border.size() > pane_w) top_border.resize(pane_w);
+        nc_str(y0, x0, top_border, A_BOLD);
+
+        for (int r = 0; r < inner_h; ++r) {
+            int sy = y0 + 1 + r;
+            std::string line = "| ";
+            int idx = r + detail_scroll_;
+            if (r == inner_h - 1) {
+                // Footer hint line
+                std::string hint = " [j/k]:scroll  [Esc/Enter]:close ";
+                if ((int)hint.size() > inner_w) hint.resize(inner_w);
+                line += hint + std::string(inner_w - (int)hint.size(), ' ');
+            } else if (idx < (int)lines.size()) {
+                const auto& [l, v] = lines[idx];
+                // Fit label
+                std::string L = l;
+                if ((int)display_width(L) > label_w) L.resize(label_w);
+                else L += std::string(label_w - display_width(L), ' ');
+                std::string V = v;
+                int avail_v = inner_w - label_w - 2;  // "label: value"
+                if (avail_v < 1) avail_v = 1;
+                if ((int)display_width(V) > avail_v) {
+                    if (avail_v >= 3) {
+                        V.resize(avail_v - 3);
+                        V += ELLIPSIS;
+                    } else V.resize(avail_v);
+                }
+                else V += std::string(avail_v - display_width(V), ' ');
+                line += L + ": " + V;
+            } else {
+                line += std::string(inner_w, ' ');
+            }
+            line += " |";
+            if ((int)line.size() > pane_w) line.resize(pane_w);
+            // Highlight sub-entries (labels starting with two spaces) dimly
+            bool is_sub = idx < (int)lines.size() && !lines[idx].first.empty() &&
+                          lines[idx].first[0] == ' ';
+            nc_str(sy, x0, line, (r == inner_h - 1) ? A_DIM :
+                                 (is_sub ? A_NORMAL : A_BOLD));
+        }
+        std::string bot_border = "+" + std::string(pane_w - 2, '-') + "+";
+        if ((int)bot_border.size() > pane_w) bot_border.resize(pane_w);
+        nc_str(y0 + pane_h - 1, x0, bot_border, A_BOLD);
     }
 
     void draw() {
@@ -2075,6 +2301,7 @@ class TableTUI {
         for (int y = 0; y < dl; ++y)
             draw_data_row(HDR_H + y, top_row_ + y, vc);
         draw_status(vc);
+        draw_detail_pane();  // overlay if detail_row_ >= 0
         refresh();
     }
 
@@ -2121,9 +2348,13 @@ public:
         }
     }
 
-    void run() {
-        setlocale(LC_ALL, "");  // enable UTF-8 rendering in ncurses
-        initscr(); noecho(); cbreak(); keypad(stdscr, TRUE); curs_set(0);
+    // Returns false if the terminal type is not supported (missing terminfo).
+    bool run() {
+        setlocale(LC_ALL, "");
+        SCREEN* scr = newterm(nullptr, stdout, stdin);
+        if (!scr) return false;
+        set_term(scr);
+        noecho(); cbreak(); keypad(stdscr, TRUE); curs_set(0);
         set_escdelay(25); setup_colors();
 
         prefetch();
@@ -2159,12 +2390,36 @@ public:
                 continue;
             }
 
+            // ── Detail pane mode ─────────────────────────────────────────────
+            if (detail_row_ >= 0) {
+                switch (ch) {
+                    case 27:                                  // Esc: close
+                    case '\n': case '\r': case KEY_ENTER:
+                        detail_row_ = -1; detail_scroll_ = 0; break;
+                    case KEY_DOWN: case 'j': ++detail_scroll_; break;
+                    case KEY_UP:   case 'k':
+                        if (detail_scroll_ > 0) --detail_scroll_; break;
+                    case KEY_NPAGE: case ' ':
+                        detail_scroll_ += std::max(1, dl - 2); break;
+                    case KEY_PPAGE: case 'b':
+                        detail_scroll_ = std::max(0, detail_scroll_ - std::max(1, dl - 2)); break;
+                    case 'g': case KEY_HOME: detail_scroll_ = 0; break;
+                    case 'q': case 'Q': quit = true; detail_row_ = -1; break;
+                    default: break;
+                }
+                continue;
+            }
+
             // ── Navigation ───────────────────────────────────────────────────
             int64_t tr = total_rows();
             int64_t max_top = (tr >= 0) ? std::max<int64_t>(0, tr - dl) : top_row_ + dl;
 
             switch (ch) {
                 case 'q': case 'Q': quit = true; break;
+                case '\n': case '\r': case KEY_ENTER:  // Open detail pane for top-visible row
+                    detail_row_    = top_row_;
+                    detail_scroll_ = 0;
+                    break;
                 case 27:  // Esc: clear search if active, else quit
                     if (search_mode_ == SearchMode::Active) {
                         search_mode_  = SearchMode::None;
@@ -2200,6 +2455,12 @@ public:
                     if (left_col_ + 1 < num_cols_) ++left_col_; break;
                 case KEY_LEFT: case 'h':
                     if (left_col_ > 0) --left_col_; break;
+                case '>':
+                    col_widths_[left_col_] = std::min(256, col_widths_[left_col_] + 4);
+                    break;
+                case '<':
+                    col_widths_[left_col_] = std::max(1, col_widths_[left_col_] - 4);
+                    break;
                 case '/':
                     search_mode_  = SearchMode::Input;
                     search_input_.clear();
@@ -2216,6 +2477,8 @@ public:
             prefetch();
         }
         endwin();
+        delscreen(scr);
+        return true;
     }
 };
 
@@ -2374,8 +2637,10 @@ int main(int argc, char** argv) {
                         && isatty(STDOUT_FILENO) && isatty(STDIN_FILENO);
         if (cfg.interactive || auto_tui) {
             TableTUI tui(*src, cfg);
-            tui.run();
-            return 0;
+            if (tui.run()) return 0;
+            // Terminal type not supported — fall through to table output.
+            if (cfg.interactive)
+                std::fprintf(stderr, "error: cannot initialize terminal (missing terminfo?)\n");
         }
     }
 
