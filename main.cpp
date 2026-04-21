@@ -221,6 +221,23 @@ static constexpr const char ELLIPSIS[]    = "\xe2\x80\xa6";
 // Displayed in place of NULL values: compact and unambiguous.
 static constexpr const char NULL_SYMBOL[] = "\xe2\x88\x85";
 
+// Box-drawing glyphs (each 3 UTF-8 bytes, 1 terminal column).
+static constexpr const char BOX_HLINE[] = "\xe2\x94\x80";  // ─
+static constexpr const char BOX_VLINE[] = "\xe2\x94\x82";  // │
+static constexpr const char BOX_TL[]    = "\xe2\x95\xad";  // ╭
+static constexpr const char BOX_TR[]    = "\xe2\x95\xae";  // ╮
+static constexpr const char BOX_BR[]    = "\xe2\x95\xaf";  // ╯
+static constexpr const char BOX_BL[]    = "\xe2\x95\xb0";  // ╰
+
+static std::string repeat_utf8(const char* glyph, int n) {
+    std::string s;
+    if (n <= 0) return s;
+    size_t gl = std::strlen(glyph);
+    s.reserve(gl * (size_t)n);
+    for (int i = 0; i < n; ++i) s.append(glyph, gl);
+    return s;
+}
+
 static bool is_numeric_type(arrow::Type::type t) {
     switch (t) {
         case arrow::Type::INT8:    case arrow::Type::INT16:
@@ -1156,10 +1173,7 @@ public:
     }
     std::vector<std::string> preamble_below() const override {
         if (kind_ == DelimKind::BED) return {};
-        if (preamble_lines_.size() <= 20) return preamble_lines_;
-        std::vector<std::string> out(preamble_lines_.begin(), preamble_lines_.begin() + 20);
-        out.push_back("... (" + std::to_string(preamble_lines_.size() - 20) + " more header lines)");
-        return out;
+        return preamble_lines_;
     }
 
     // Per-format: display coordinate columns with '_' digit grouping.
@@ -1750,14 +1764,19 @@ static void write_delimited(TabularSource& src, const Config& cfg) {
 // ncurses color-pair IDs  (0 = terminal default)
 enum : int {
     NCP_HEADER = 1,   // column header row
-    NCP_INDEX,        // row-index column  (also A_DIM)
-    NCP_NULL,         // null value        (also A_DIM)
+    NCP_INDEX,        // row-index column
+    NCP_NULL,         // null value
     NCP_NUMBER,       // numeric / temporal value
     NCP_BOOL_T,       // true
     NCP_BOOL_F,       // false
-    NCP_SEP,          // separator line    (also A_DIM)
+    NCP_SEP,          // separator line
     NCP_SEARCH,       // search-match highlight row
+    NCP_PLAIN,        // default-fg text (used as zebra-twin base)
 };
+
+// Each of the above pairs has an optional zebra twin at pair + ZEBRA_OFFSET,
+// identical fg but with a dim grey background — applied to odd data rows.
+static constexpr int ZEBRA_OFFSET = 100;
 
 static void nc_str(int y, int x, const std::string& s,
                    attr_t attrs = A_NORMAL, int cp = 0) {
@@ -1811,6 +1830,48 @@ static bool looks_like_kv_list(const std::string& s) {
            (s.find('=') != std::string::npos || s.find('"') != std::string::npos);
 }
 
+// Parse VCF ##INFO=<ID=X,Number=...,Type=T,Description="..."> header lines.
+// Returns (ID, Arrow type) pairs in file order. Type maps VCF types to Arrow:
+//   Integer → INT64, Float → DOUBLE, Flag → BOOL, everything else → STRING.
+static std::vector<std::pair<std::string, arrow::Type::type>>
+parse_vcf_info_headers(const std::vector<std::string>& preamble) {
+    std::vector<std::pair<std::string, arrow::Type::type>> out;
+    const std::string prefix = "##INFO=<";
+    for (auto& line : preamble) {
+        if (line.rfind(prefix, 0) != 0 || line.empty() || line.back() != '>') continue;
+        std::string body = line.substr(prefix.size(), line.size() - prefix.size() - 1);
+        std::string id, type;
+        size_t i = 0, n = body.size();
+        while (i < n) {
+            size_t ke = body.find('=', i);
+            if (ke == std::string::npos) break;
+            std::string k = body.substr(i, ke - i);
+            size_t vs = ke + 1, ve;
+            std::string v;
+            if (vs < n && body[vs] == '"') {
+                ve = body.find('"', vs + 1);
+                if (ve == std::string::npos) break;
+                v = body.substr(vs + 1, ve - vs - 1);
+                i = (ve + 1 < n) ? ve + 2 : n;  // skip closing quote + comma
+            } else {
+                ve = body.find(',', vs);
+                if (ve == std::string::npos) ve = n;
+                v = body.substr(vs, ve - vs);
+                i = (ve < n) ? ve + 1 : n;
+            }
+            if (k == "ID")   id = v;
+            if (k == "Type") type = v;
+        }
+        if (id.empty()) continue;
+        arrow::Type::type t = arrow::Type::STRING;
+        if      (type == "Integer") t = arrow::Type::INT64;
+        else if (type == "Float")   t = arrow::Type::DOUBLE;
+        else if (type == "Flag")    t = arrow::Type::BOOL;
+        out.emplace_back(std::move(id), t);
+    }
+    return out;
+}
+
 class TableTUI {
     TabularSource& src_;
     int   num_cols_;
@@ -1824,9 +1885,17 @@ class TableTUI {
     std::vector<bool>        is_rgb_;
     int                      idx_w_ = 1;
 
-    // Dynamic color-pair allocation for RGB cells (pairs NCP_SEARCH+1 … COLOR_PAIRS-1).
+    // Virtual→source column mapping. For a plain source, these are 1:1.
+    // For VCF with expanded INFO, each declared INFO key becomes its own
+    // virtual column that reads from the underlying INFO source column.
+    int                      src_num_cols_ = 0;   // count of source columns
+    std::vector<int>         virt_src_col_;       // virt col → source col
+    std::vector<std::string> virt_info_key_;      // virt col → INFO key ("" if none)
+
+    // Dynamic color-pair allocation for RGB cells (pair range chosen in setup_colors).
     std::unordered_map<int,int> rgb_pair_;   // packed 0xRRGGBB → ncurses pair number
-    int                         next_rgb_pair_ = NCP_SEARCH + 1;
+    int                         next_rgb_pair_ = NCP_PLAIN + 1;
+    bool                        zebra_enabled_ = false;
 
     int get_rgb_pair(int r, int g, int b) {
         if (COLORS < 256 || next_rgb_pair_ >= COLOR_PAIRS) return 0;
@@ -1879,13 +1948,13 @@ class TableTUI {
         for (auto& c : q) c = (char)std::tolower((unsigned char)c);
 
         std::vector<int> all_cols;
-        for (int i = 0; i < num_cols_; ++i) all_cols.push_back(i);
+        for (int i = 0; i < src_num_cols_; ++i) all_cols.push_back(i);
 
         int nc = src_.num_chunks();
 
         // Check one row: returns true if any column contains q (case-insensitive).
         auto row_matches = [&](const std::shared_ptr<arrow::Table>& tbl, int64_t local) -> bool {
-            for (int col = 0; col < num_cols_ && col < tbl->num_columns(); ++col) {
+            for (int col = 0; col < src_num_cols_ && col < tbl->num_columns(); ++col) {
                 int64_t off = local;
                 for (auto& arr : tbl->column(col)->chunks()) {
                     if (off < arr->length()) {
@@ -1970,7 +2039,7 @@ class TableTUI {
             cache_.erase(lru_.back()); lru_.pop_back();
         }
         std::vector<int> cols;
-        for (int i = 0; i < num_cols_; ++i) cols.push_back(i);
+        for (int i = 0; i < src_num_cols_; ++i) cols.push_back(i);
 
         std::shared_ptr<arrow::Table> tbl;
         src_.ensure(c);
@@ -1984,12 +2053,44 @@ class TableTUI {
         cr.first_row  = src_.chunk_meta(c).first_row;
         cr.num_rows   = tbl->num_rows();
         cr.cells.assign((size_t)cr.num_rows, std::vector<std::string>(num_cols_));
-        for (int ci = 0; ci < num_cols_; ++ci) {
+
+        // Materialize all source cells as strings in row-major shape.
+        std::vector<std::vector<std::string>> src_cells(
+            src_num_cols_, std::vector<std::string>(cr.num_rows));
+        for (int sc = 0; sc < src_num_cols_; ++sc) {
             int64_t r = 0;
-            for (auto& chunk : tbl->column(ci)->chunks())
+            for (auto& chunk : tbl->column(sc)->chunks())
                 for (int64_t i = 0; i < chunk->length(); ++i, ++r)
-                    cr.cells[r][ci] = truncate(
-                        src_.format_cell(ci, cell_to_string(*chunk, i)), max_col_w_);
+                    src_cells[sc][r] = cell_to_string(*chunk, i);
+        }
+
+        // Fill virtual cells; parse INFO once per row when any INFO-key column exists.
+        for (int64_t i = 0; i < cr.num_rows; ++i) {
+            std::unordered_map<std::string, std::string> parsed;
+            bool parsed_ok = false;
+            for (int vc = 0; vc < num_cols_; ++vc) {
+                int sc = virt_src_col_[vc];
+                const std::string& key = virt_info_key_[vc];
+                std::string val;
+                if (!key.empty()) {
+                    if (!parsed_ok) {
+                        for (auto& kv : parse_kv_list(src_cells[sc][i]))
+                            parsed.emplace(std::move(kv.first), std::move(kv.second));
+                        parsed_ok = true;
+                    }
+                    auto it = parsed.find(key);
+                    if (it != parsed.end()) {
+                        val = it->second;
+                        if (val.empty()) val = "true";  // Flag field (Number=0)
+                    } else {
+                        val = NULL_SYMBOL;
+                    }
+                } else {
+                    val = src_cells[sc][i];
+                }
+                cr.cells[i][vc] = truncate(
+                    src_.format_cell(sc, std::move(val)), max_col_w_);
+            }
         }
         lru_.push_front(c);
     }
@@ -2056,13 +2157,14 @@ class TableTUI {
     void draw_header(const std::vector<ColVis>& vc) {
         if (!no_index_) {
             nc_str(0, 0, " " + std::string(idx_w_, ' ') + " ", A_BOLD, NCP_INDEX);
-            nc_str(1, 0, " " + std::string(idx_w_, '-') + " ", A_DIM,  NCP_SEP);
+            nc_str(1, 0, " " + repeat_utf8(BOX_HLINE, idx_w_) + " ", A_NORMAL, NCP_SEP);
         }
         for (auto& col : vc) {
             std::string nm = truncate(col_names_[col.col], col.w);
             nc_str(0, col.x, " " + fit(nm, col.w, right_align_[col.col]) + " ",
                    A_BOLD, NCP_HEADER);
-            nc_str(1, col.x, " " + std::string(col.w, '-') + " ", A_DIM, NCP_SEP);
+            nc_str(1, col.x, " " + repeat_utf8(BOX_HLINE, col.w) + " ",
+                   A_NORMAL, NCP_SEP);
         }
     }
 
@@ -2071,12 +2173,24 @@ class TableTUI {
         if (tr >= 0 && row >= tr) return;
 
         bool is_match = (row == search_row_);
-        attr_t row_attr = is_match ? (attr_t)COLOR_PAIR(NCP_SEARCH) : A_NORMAL;
+        int  zo = (zebra_enabled_ && !is_match && ((row - top_row_) % 2 == 1))
+                  ? ZEBRA_OFFSET : 0;
+        auto zpair = [&](int cp) {
+            return cp ? cp + zo : (zo ? NCP_PLAIN + zo : 0);
+        };
+
+        // Paint the row background first so gaps between cells pick up the zebra bg.
+        if (zo) {
+            int p = NCP_PLAIN + zo;
+            attron(COLOR_PAIR(p));
+            mvhline(sy, 0, ' ', scr_c_);
+            attroff(COLOR_PAIR(p));
+        }
 
         if (!no_index_) {
             std::string idx_s = " " + fit(std::to_string(row), idx_w_, true) + " ";
             if (is_match) nc_str(sy, 0, idx_s, A_BOLD, NCP_SEARCH);
-            else          nc_str(sy, 0, idx_s, A_DIM, NCP_INDEX);
+            else          nc_str(sy, 0, idx_s, A_NORMAL, NCP_INDEX + zo);
         }
 
         if (src_.num_chunks() == 0) return;
@@ -2107,7 +2221,7 @@ class TableTUI {
                 else
                     nc_str(sy, col.x, " " + fit(val, col.w, false) + " ",
                            val == NULL_SYMBOL ? A_DIM : A_NORMAL,
-                           val == NULL_SYMBOL ? NCP_NULL : 0);
+                           zpair(val == NULL_SYMBOL ? NCP_NULL : 0));
                 continue;
             }
 
@@ -2116,7 +2230,7 @@ class TableTUI {
             else if (is_bool_[col.col])     { cp = (val=="true")?NCP_BOOL_T:NCP_BOOL_F; }
             else if (right_align_[col.col]) { cp = NCP_NUMBER; }
             nc_str(sy, col.x, " " + fit(val, col.w, right_align_[col.col]) + " ",
-                   extra, cp);
+                   extra, zpair(cp));
         }
     }
 
@@ -2167,28 +2281,56 @@ class TableTUI {
 
     // ── Detail pane ──────────────────────────────────────────────────────────
 
-    // Fetch all columns of one row with FULL (untruncated) values.
+    // Fetch all (virtual) columns of one row with FULL (untruncated) values.
     std::vector<std::string> load_full_row(int64_t row) {
         std::vector<std::string> out(num_cols_);
         if (src_.num_chunks() == 0) return out;
         int c = chunk_for_row(row);
         src_.ensure(c);
         std::vector<int> cols;
-        for (int i = 0; i < num_cols_; ++i) cols.push_back(i);
+        for (int i = 0; i < src_num_cols_; ++i) cols.push_back(i);
         std::shared_ptr<arrow::Table> tbl;
         if (!src_.read_chunk(c, cols, &tbl).ok()) return out;
         int64_t local = row - src_.chunk_meta(c).first_row;
         if (local < 0 || local >= tbl->num_rows()) return out;
-        for (int ci = 0; ci < num_cols_; ++ci) {
+
+        // Materialize this row's source cells once.
+        std::vector<std::string> src_row(src_num_cols_);
+        for (int sc = 0; sc < src_num_cols_; ++sc) {
             int64_t r = 0;
-            for (auto& chunk : tbl->column(ci)->chunks()) {
+            for (auto& chunk : tbl->column(sc)->chunks()) {
                 int64_t len = chunk->length();
                 if (local < r + len) {
-                    out[ci] = src_.format_cell(ci, cell_to_string(*chunk, local - r));
+                    src_row[sc] = cell_to_string(*chunk, local - r);
                     break;
                 }
                 r += len;
             }
+        }
+
+        std::unordered_map<std::string, std::string> parsed;
+        bool parsed_ok = false;
+        for (int vc = 0; vc < num_cols_; ++vc) {
+            int sc = virt_src_col_[vc];
+            const std::string& key = virt_info_key_[vc];
+            std::string val;
+            if (!key.empty()) {
+                if (!parsed_ok) {
+                    for (auto& kv : parse_kv_list(src_row[sc]))
+                        parsed.emplace(std::move(kv.first), std::move(kv.second));
+                    parsed_ok = true;
+                }
+                auto it = parsed.find(key);
+                if (it != parsed.end()) {
+                    val = it->second;
+                    if (val.empty()) val = "true";
+                } else {
+                    val = NULL_SYMBOL;
+                }
+            } else {
+                val = src_row[sc];
+            }
+            out[vc] = src_.format_cell(sc, std::move(val));
         }
         return out;
     }
@@ -2237,17 +2379,21 @@ class TableTUI {
         if (detail_scroll_ > max_scroll) detail_scroll_ = max_scroll;
         if (detail_scroll_ < 0) detail_scroll_ = 0;
 
-        // Borders
+        // Borders (rounded, Unicode box-drawing)
         std::string title = " Row " + std::to_string(detail_row_) + " ";
-        int title_pad = std::max(0, inner_w + 2 - (int)title.size() - 2);
-        std::string top_border = "+" + std::string(2, '-') + title +
-                                 std::string(title_pad, '-') + "+";
-        if ((int)top_border.size() > pane_w) top_border.resize(pane_w);
+        int title_cols = (int)display_width(title);
+        int title_pad  = std::max(0, inner_w - title_cols);
+        // Layout: ╭ ── title ─*pad ╮   (total = 1 + 2 + title + pad + 1 = pane_w)
+        std::string top_border = std::string(BOX_TL)
+                                 + repeat_utf8(BOX_HLINE, 2)
+                                 + title
+                                 + repeat_utf8(BOX_HLINE, title_pad)
+                                 + BOX_TR;
         nc_str(y0, x0, top_border, A_BOLD);
 
         for (int r = 0; r < inner_h; ++r) {
             int sy = y0 + 1 + r;
-            std::string line = "| ";
+            std::string line = std::string(BOX_VLINE) + " ";
             int idx = r + detail_scroll_;
             if (r == inner_h - 1) {
                 // Footer hint line
@@ -2274,16 +2420,16 @@ class TableTUI {
             } else {
                 line += std::string(inner_w, ' ');
             }
-            line += " |";
-            if ((int)line.size() > pane_w) line.resize(pane_w);
+            line += std::string(" ") + BOX_VLINE;
             // Highlight sub-entries (labels starting with two spaces) dimly
             bool is_sub = idx < (int)lines.size() && !lines[idx].first.empty() &&
                           lines[idx].first[0] == ' ';
             nc_str(sy, x0, line, (r == inner_h - 1) ? A_DIM :
                                  (is_sub ? A_NORMAL : A_BOLD));
         }
-        std::string bot_border = "+" + std::string(pane_w - 2, '-') + "+";
-        if ((int)bot_border.size() > pane_w) bot_border.resize(pane_w);
+        std::string bot_border = std::string(BOX_BL)
+                                 + repeat_utf8(BOX_HLINE, pane_w - 2)
+                                 + BOX_BR;
         nc_str(y0 + pane_h - 1, x0, bot_border, A_BOLD);
     }
 
@@ -2313,14 +2459,46 @@ class TableTUI {
     void setup_colors() {
         if (!has_colors()) return;
         start_color(); use_default_colors();
-        init_pair(NCP_HEADER,  COLOR_WHITE,  -1);
-        init_pair(NCP_INDEX,   COLOR_WHITE,  -1);
-        init_pair(NCP_NULL,    COLOR_WHITE,  -1);
-        init_pair(NCP_NUMBER,  COLOR_CYAN,   -1);
-        init_pair(NCP_BOOL_T,  COLOR_GREEN,  -1);
-        init_pair(NCP_BOOL_F,  COLOR_YELLOW, -1);
-        init_pair(NCP_SEP,     COLOR_WHITE,  -1);
-        init_pair(NCP_SEARCH,  COLOR_BLACK,  COLOR_YELLOW);
+
+        const bool c256 = COLORS >= 256;
+
+        // Soft 256-color palette, with a basic-16 fallback on lesser terminals.
+        const int fg_header = c256 ? 111 : COLOR_WHITE;   // soft blue
+        const int fg_index  = c256 ? 244 : COLOR_WHITE;   // mid grey
+        const int fg_null   = c256 ? 243 : COLOR_WHITE;   // dim grey
+        const int fg_number = c256 ?  81 : COLOR_CYAN;    // cyan
+        const int fg_boolt  = c256 ? 114 : COLOR_GREEN;   // soft green
+        const int fg_boolf  = c256 ? 210 : COLOR_YELLOW;  // soft red
+        const int fg_sep    = c256 ? 238 : COLOR_WHITE;   // dim grey
+        const int fg_search = c256 ? 232 : COLOR_BLACK;
+        const int bg_search = c256 ? 220 : COLOR_YELLOW;  // gold
+
+        init_pair(NCP_HEADER,  fg_header, -1);
+        init_pair(NCP_INDEX,   fg_index,  -1);
+        init_pair(NCP_NULL,    fg_null,   -1);
+        init_pair(NCP_NUMBER,  fg_number, -1);
+        init_pair(NCP_BOOL_T,  fg_boolt,  -1);
+        init_pair(NCP_BOOL_F,  fg_boolf,  -1);
+        init_pair(NCP_SEP,     fg_sep,    -1);
+        init_pair(NCP_SEARCH,  fg_search, bg_search);
+        init_pair(NCP_PLAIN,   -1,        -1);
+
+        // Zebra twins: same fg, dim background (only with a 256-color term —
+        // an approximate bg on an 8-color palette looks worse than none).
+        if (c256) {
+            const int bg_zebra = 235;  // barely off default background
+            init_pair(NCP_HEADER + ZEBRA_OFFSET, fg_header, bg_zebra);
+            init_pair(NCP_INDEX  + ZEBRA_OFFSET, fg_index,  bg_zebra);
+            init_pair(NCP_NULL   + ZEBRA_OFFSET, fg_null,   bg_zebra);
+            init_pair(NCP_NUMBER + ZEBRA_OFFSET, fg_number, bg_zebra);
+            init_pair(NCP_BOOL_T + ZEBRA_OFFSET, fg_boolt,  bg_zebra);
+            init_pair(NCP_BOOL_F + ZEBRA_OFFSET, fg_boolf,  bg_zebra);
+            init_pair(NCP_SEP    + ZEBRA_OFFSET, fg_sep,    bg_zebra);
+            init_pair(NCP_PLAIN  + ZEBRA_OFFSET, -1,        bg_zebra);
+            zebra_enabled_ = true;
+            // Start dynamic RGB pairs past the zebra range.
+            next_rgb_pair_ = NCP_PLAIN + ZEBRA_OFFSET + 1;
+        }
     }
 
 public:
@@ -2337,19 +2515,67 @@ public:
         int64_t tr_for_width = (tr >= 0) ? tr : 999999;
         for (int64_t v = std::max<int64_t>(tr_for_width-1, 0); v >= 10; v /= 10) ++idx_w_;
 
-        col_names_.resize(num_cols_);
+        src_num_cols_ = num_cols_;
+
+        // Detect VCF INFO expansion: need both an INFO source column and
+        // ##INFO=<...> declarations in the preamble.
+        int info_col_idx = -1;
+        for (int ci = 0; ci < src_num_cols_; ++ci)
+            if (src.schema()->field(ci)->name() == "INFO") { info_col_idx = ci; break; }
+        std::vector<std::pair<std::string, arrow::Type::type>> info_fields;
+        if (info_col_idx >= 0)
+            info_fields = parse_vcf_info_headers(src.preamble_below());
+
+        // Build the virtual column layout.
+        std::vector<std::string>        v_names;
+        std::vector<int>                v_src;
+        std::vector<std::string>        v_info;
+        std::vector<arrow::Type::type>  v_types;
+        std::vector<bool>               v_is_bool;
+        for (int sc = 0; sc < src_num_cols_; ++sc) {
+            if (sc == info_col_idx && !info_fields.empty()) {
+                for (auto& [k, t] : info_fields) {
+                    v_names.push_back(k);
+                    v_src.push_back(sc);
+                    v_info.push_back(k);
+                    v_types.push_back(t);
+                    v_is_bool.push_back(t == arrow::Type::BOOL);
+                }
+            } else {
+                auto f = src.schema()->field(sc);
+                v_names.push_back(f->name());
+                v_src.push_back(sc);
+                v_info.push_back("");
+                v_types.push_back(f->type()->id());
+                v_is_bool.push_back(display_type(*f) == arrow::Type::BOOL);
+            }
+        }
+
+        num_cols_      = (int)v_names.size();
+        col_names_     = std::move(v_names);
+        virt_src_col_  = std::move(v_src);
+        virt_info_key_ = std::move(v_info);
+
         col_widths_.resize(num_cols_);
         right_align_.resize(num_cols_);
         is_bool_.resize(num_cols_);
         is_rgb_.resize(num_cols_);
-        for (int ci = 0; ci < num_cols_; ++ci) {
-            auto f = src.schema()->field(ci);
-            col_names_[ci]   = f->name();
-            col_widths_[ci]  = std::min(
-                std::max((int)display_width(f->name()), src.min_col_width(ci)), max_col_w_);
-            right_align_[ci] = is_numeric_type(f->type()->id());
-            is_bool_[ci]     = (display_type(*f) == arrow::Type::BOOL);
-            is_rgb_[ci]      = (f->name() == "RGB");
+        for (int vc = 0; vc < num_cols_; ++vc) {
+            auto t = v_types[vc];
+            int min_w;
+            if (virt_info_key_[vc].empty()) {
+                min_w = src.min_col_width(virt_src_col_[vc]);
+            } else {
+                // Heuristic width for INFO key columns based on declared type.
+                min_w = (t == arrow::Type::INT64 || t == arrow::Type::DOUBLE) ? 8
+                      : (t == arrow::Type::BOOL) ? 5
+                      : 16;
+            }
+            col_widths_[vc]  = std::min(
+                std::max((int)display_width(col_names_[vc]), min_w), max_col_w_);
+            right_align_[vc] = is_numeric_type(t);
+            is_bool_[vc]     = v_is_bool[vc];
+            is_rgb_[vc]      = (col_names_[vc] == "RGB");
         }
     }
 
@@ -2615,9 +2841,17 @@ static void print_table(TabularSource& src, const Config& cfg) {
     if (!src.created_by().empty())
         std::printf("%sCreated by:%s %s\n", g_color.meta_key, g_color.reset,
                     src.created_by().c_str());
-    // VCF/BAM/SAM/GFF meta header lines shown below the schema
-    for (auto& line : src.preamble_below())
-        std::printf("%s%s%s\n", g_color.meta_key, line.c_str(), g_color.reset);
+    // VCF/BAM/SAM/GFF meta header lines shown below the schema (display-truncated)
+    {
+        auto pb = src.preamble_below();
+        size_t limit = 20;
+        size_t n = std::min(pb.size(), limit);
+        for (size_t i = 0; i < n; ++i)
+            std::printf("%s%s%s\n", g_color.meta_key, pb[i].c_str(), g_color.reset);
+        if (pb.size() > limit)
+            std::printf("%s... (%zu more header lines)%s\n",
+                        g_color.meta_key, pb.size() - limit, g_color.reset);
+    }
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
