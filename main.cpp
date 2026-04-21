@@ -772,6 +772,31 @@ public:
     // Read chunk i, keeping only col_indices columns.
     virtual arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
                                       std::shared_ptr<arrow::Table>* out) = 0;
+    // Read only the first `rows` rows with col_indices columns. Default impl
+    // reads forward via read_chunk() and concatenates; Parquet overrides with
+    // a RecordBatchReader-based fast path so a 10-row preview doesn't decode
+    // a whole 1M-row row group.
+    virtual arrow::Status read_first(int64_t rows,
+                                     const std::vector<int>& col_indices,
+                                     std::shared_ptr<arrow::Table>* out) {
+        std::shared_ptr<arrow::Table> acc;
+        for (int c = 0; ; ++c) {
+            ensure(c);
+            if (c >= num_chunks()) break;
+            std::shared_ptr<arrow::Table> chunk;
+            ARROW_RETURN_NOT_OK(read_chunk(c, col_indices, &chunk));
+            if (!acc) acc = chunk;
+            else {
+                auto r = arrow::ConcatenateTables({acc, chunk});
+                ARROW_RETURN_NOT_OK(r.status());
+                acc = r.ValueOrDie();
+            }
+            if (acc->num_rows() >= rows) break;
+        }
+        if (acc && acc->num_rows() > rows) acc = acc->Slice(0, rows);
+        *out = acc;
+        return arrow::Status::OK();
+    }
     // Ensure chunk i is loaded (triggers forward reads for streaming sources).
     virtual void ensure(int i) {}
     virtual const std::string& path() const = 0;
@@ -851,6 +876,32 @@ public:
     arrow::Status read_chunk(int i, const std::vector<int>& cols,
                               std::shared_ptr<arrow::Table>* out) override {
         return reader_->ReadRowGroups({i}, cols, out);
+    }
+    arrow::Status read_first(int64_t rows, const std::vector<int>& cols,
+                              std::shared_ptr<arrow::Table>* out) override {
+        std::vector<int> rgs;
+        int64_t acc = 0;
+        for (int i = 0; i < meta_->num_row_groups() && acc < rows; ++i) {
+            rgs.push_back(i);
+            acc += meta_->RowGroup(i)->num_rows();
+        }
+        if (rgs.empty()) return arrow::Status::OK();
+        std::shared_ptr<arrow::RecordBatchReader> rb;
+        ARROW_RETURN_NOT_OK(reader_->GetRecordBatchReader(rgs, cols, &rb));
+        std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
+        int64_t have = 0;
+        while (have < rows) {
+            std::shared_ptr<arrow::RecordBatch> b;
+            ARROW_RETURN_NOT_OK(rb->ReadNext(&b));
+            if (!b) break;
+            if (have + b->num_rows() > rows) b = b->Slice(0, rows - have);
+            have += b->num_rows();
+            batches.push_back(std::move(b));
+        }
+        auto r = arrow::Table::FromRecordBatches(rb->schema(), batches);
+        ARROW_RETURN_NOT_OK(r.status());
+        *out = r.ValueOrDie();
+        return arrow::Status::OK();
     }
     const std::string& path() const override { return path_; }
 
@@ -2776,25 +2827,26 @@ static void print_table(TabularSource& src, const Config& cfg) {
     std::vector<int> col_indices;
     for (int i = 0; i < show_cols; ++i) col_indices.push_back(i);
 
-    // Collect rows up to rows_wanted
+    // Collect rows up to rows_wanted. For head_rows > 0 we can ask the source
+    // for a partial read (Parquet uses a RecordBatchReader to avoid decoding
+    // a whole row group just to display the first handful of rows).
     std::shared_ptr<arrow::Table> data;
-    for (int c = 0; ; ++c) {
-        src.ensure(c);
-        if (c >= src.num_chunks()) break;
-
-        std::shared_ptr<arrow::Table> chunk;
-        if (!src.read_chunk(c, col_indices, &chunk).ok()) continue;
-
-        if (!data) { data = chunk; }
-        else {
-            auto r = arrow::ConcatenateTables({data, chunk});
-            if (r.ok()) data = r.ValueOrDie();
+    if (cfg.head_rows > 0) {
+        (void)src.read_first(rows_wanted, col_indices, &data);
+    } else {
+        for (int c = 0; ; ++c) {
+            src.ensure(c);
+            if (c >= src.num_chunks()) break;
+            std::shared_ptr<arrow::Table> chunk;
+            if (!src.read_chunk(c, col_indices, &chunk).ok()) continue;
+            if (!data) { data = chunk; }
+            else {
+                auto r = arrow::ConcatenateTables({data, chunk});
+                if (r.ok()) data = r.ValueOrDie();
+            }
         }
-        if (cfg.head_rows > 0 && data->num_rows() >= rows_wanted) break;
     }
     if (!data) return;
-    if (cfg.head_rows > 0 && data->num_rows() > rows_wanted)
-        data = data->Slice(0, rows_wanted);
 
     int64_t n_display = data->num_rows();
     int     num_cols  = schema->num_fields();
