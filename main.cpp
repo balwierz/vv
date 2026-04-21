@@ -1788,9 +1788,14 @@ static void nc_str(int y, int x, const std::string& s,
     if (full != A_NORMAL) attroff(full);
 }
 
+// Per-chunk cache.  Columns are loaded lazily (null until fetched) so a
+// horizontal viewport only pays for the source columns currently on screen.
+// Strings are rendered on demand in the draw loop; we never materialize an
+// NxM grid of strings for a million-row row-group.
 struct CachedRG {
-    int64_t                               first_row = 0, num_rows = 0;
-    std::vector<std::vector<std::string>> cells;  // [local_row][col]
+    int64_t first_row = 0, num_rows = 0;
+    std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
+    bool ok = false;  // false if read_chunk failed
 };
 
 // Parse a VCF-INFO / GFF-attributes style key=value list. Handles "k=v;k=v"
@@ -2035,66 +2040,98 @@ class TableTUI {
 
     // ── Cache ────────────────────────────────────────────────────────────────
 
-    void load_chunk(int c) {
-        if (cache_.count(c)) { lru_.remove(c); lru_.push_front(c); return; }
-        if ((int)cache_.size() >= MAX_CACHE) {
-            cache_.erase(lru_.back()); lru_.pop_back();
-        }
-        std::vector<int> cols;
-        for (int i = 0; i < src_num_cols_; ++i) cols.push_back(i);
-
-        std::shared_ptr<arrow::Table> tbl;
-        src_.ensure(c);
-        if (!src_.read_chunk(c, cols, &tbl).ok()) {
-            auto m = src_.chunk_meta(c);
-            cache_[c] = CachedRG{m.first_row, m.num_rows, {}};
+    // Ensure cache entry for chunk `c` exists and has all requested source
+    // columns loaded.  A single read_chunk() call fetches whatever's missing.
+    void ensure_cols(int c, const std::vector<int>& src_cols) {
+        auto it = cache_.find(c);
+        if (it == cache_.end()) {
+            if ((int)cache_.size() >= MAX_CACHE) {
+                cache_.erase(lru_.back()); lru_.pop_back();
+            }
+            CachedRG cr;
+            cr.first_row = src_.chunk_meta(c).first_row;
+            cr.num_rows  = src_.chunk_meta(c).num_rows;
+            cr.cols.assign(src_num_cols_, nullptr);
+            it = cache_.emplace(c, std::move(cr)).first;
             lru_.push_front(c);
-            return;
+        } else {
+            lru_.remove(c); lru_.push_front(c);
         }
-        CachedRG& cr  = cache_[c];
-        cr.first_row  = src_.chunk_meta(c).first_row;
-        cr.num_rows   = tbl->num_rows();
-        cr.cells.assign((size_t)cr.num_rows, std::vector<std::string>(num_cols_));
+        CachedRG& cr = it->second;
 
-        // Materialize all source cells as strings in row-major shape.
-        std::vector<std::vector<std::string>> src_cells(
-            src_num_cols_, std::vector<std::string>(cr.num_rows));
-        for (int sc = 0; sc < src_num_cols_; ++sc) {
-            int64_t r = 0;
-            for (auto& chunk : tbl->column(sc)->chunks())
-                for (int64_t i = 0; i < chunk->length(); ++i, ++r)
-                    src_cells[sc][r] = cell_to_string(*chunk, i);
-        }
+        std::vector<int> missing;
+        for (int sc : src_cols)
+            if (sc >= 0 && sc < src_num_cols_ && !cr.cols[sc]) missing.push_back(sc);
+        if (missing.empty()) return;
 
-        // Fill virtual cells; parse INFO once per row when any INFO-key column exists.
-        for (int64_t i = 0; i < cr.num_rows; ++i) {
-            std::unordered_map<std::string, std::string> parsed;
-            bool parsed_ok = false;
-            for (int vc = 0; vc < num_cols_; ++vc) {
-                int sc = virt_src_col_[vc];
-                const std::string& key = virt_info_key_[vc];
+        src_.ensure(c);
+        std::shared_ptr<arrow::Table> tbl;
+        if (!src_.read_chunk(c, missing, &tbl).ok()) return;
+        cr.ok       = true;
+        cr.num_rows = tbl->num_rows();  // may be smaller than chunk_meta for streaming sources
+        for (size_t i = 0; i < missing.size() && (int)i < tbl->num_columns(); ++i)
+            cr.cols[missing[i]] = tbl->column((int)i);
+    }
+
+    // Extract a single cell as a formatted string (respects VCF INFO expansion,
+    // per-format format_cell(), and max_col_w_ truncation).  `parsed_cache`
+    // memoizes the parsed INFO map for the current row across virtual columns.
+    std::string cell_at(const CachedRG& cr, int64_t local,
+                        int vc,
+                        std::unordered_map<std::string, std::string>* parsed_cache,
+                        int* parsed_row_slot, int64_t this_row_slot) const {
+        int sc = virt_src_col_[vc];
+        auto arr = (sc >= 0 && sc < (int)cr.cols.size()) ? cr.cols[sc] : nullptr;
+        if (!arr) return "";
+        int64_t off = local;
+        for (auto& chunk : arr->chunks()) {
+            if (off < chunk->length()) {
+                std::string raw = cell_to_string(*chunk, off);
                 std::string val;
+                const std::string& key = virt_info_key_[vc];
                 if (!key.empty()) {
-                    if (!parsed_ok) {
-                        for (auto& kv : parse_kv_list(src_cells[sc][i]))
-                            parsed.emplace(std::move(kv.first), std::move(kv.second));
-                        parsed_ok = true;
-                    }
-                    auto it = parsed.find(key);
-                    if (it != parsed.end()) {
-                        val = it->second;
-                        if (val.empty()) val = "true";  // Flag field (Number=0)
+                    if (parsed_cache) {
+                        if (*parsed_row_slot != (int)this_row_slot) {
+                            parsed_cache->clear();
+                            for (auto& kv : parse_kv_list(raw))
+                                parsed_cache->emplace(std::move(kv.first),
+                                                      std::move(kv.second));
+                            *parsed_row_slot = (int)this_row_slot;
+                        }
+                        auto fit = parsed_cache->find(key);
+                        val = (fit != parsed_cache->end())
+                                ? (fit->second.empty() ? "true" : fit->second)
+                                : NULL_SYMBOL;
                     } else {
-                        val = NULL_SYMBOL;
+                        std::unordered_map<std::string, std::string> m;
+                        for (auto& kv : parse_kv_list(raw))
+                            m.emplace(std::move(kv.first), std::move(kv.second));
+                        auto fit = m.find(key);
+                        val = (fit != m.end())
+                                ? (fit->second.empty() ? "true" : fit->second)
+                                : NULL_SYMBOL;
                     }
                 } else {
-                    val = src_cells[sc][i];
+                    val = std::move(raw);
                 }
-                cr.cells[i][vc] = truncate(
-                    src_.format_cell(sc, std::move(val)), max_col_w_);
+                return truncate(src_.format_cell(sc, std::move(val)), max_col_w_);
+            }
+            off -= chunk->length();
+        }
+        return "";
+    }
+
+    // Collect the unique source columns referenced by a set of virtual cols.
+    std::vector<int> src_cols_for_virt(const std::vector<int>& virt_cols) const {
+        std::vector<bool> seen(src_num_cols_, false);
+        std::vector<int> out;
+        for (int vc : virt_cols) {
+            int sc = virt_src_col_[vc];
+            if (sc >= 0 && sc < src_num_cols_ && !seen[sc]) {
+                seen[sc] = true; out.push_back(sc);
             }
         }
-        lru_.push_front(c);
+        return out;
     }
 
     int chunk_for_row(int64_t r) const {
@@ -2107,20 +2144,23 @@ class TableTUI {
         return lo;
     }
 
-    void prefetch() {
+    // Prefetch the source columns the visible virtual columns need, for the
+    // chunks that currently intersect the viewport.  Cheap when already cached.
+    void prefetch_visible(const std::vector<int>& visible_virt_cols) {
         if (src_.num_chunks() == 0) { src_.ensure(0); return; }
-        int c = chunk_for_row(top_row_);
-        load_chunk(c);
+        std::vector<int> src_cols = src_cols_for_virt(visible_virt_cols);
+        int top_chunk = chunk_for_row(top_row_);
+        ensure_cols(top_chunk, src_cols);
         int64_t bot = top_row_ + (int64_t)data_lines() - 1;
         if (total_rows() > 0) bot = std::min(bot, total_rows() - 1);
-        // While streaming (total unknown), trigger loading of the next unread
-        // chunk so the view advances as the user scrolls down.  When total is
-        // known, seek by row as before.
         if (total_rows() < 0)
             src_.ensure(src_.num_chunks());
         else
             src_.ensure(chunk_for_row(std::max(bot, top_row_)));
-        if (bot > top_row_) load_chunk(chunk_for_row(bot));
+        if (bot > top_row_) {
+            int bot_chunk = chunk_for_row(bot);
+            if (bot_chunk != top_chunk) ensure_cols(bot_chunk, src_cols);
+        }
     }
 
     // ── Layout ───────────────────────────────────────────────────────────────
@@ -2198,14 +2238,18 @@ class TableTUI {
         if (src_.num_chunks() == 0) return;
         int  c  = chunk_for_row(row);
         auto it = cache_.find(c);
-        if (it == cache_.end() || it->second.cells.empty()) return;
+        if (it == cache_.end() || !it->second.ok) return;
 
         int64_t local = row - it->second.first_row;
         // Guard: row may be beyond the loaded portion of the last chunk
         // (happens while streaming and the user scrolled ahead of loaded data).
-        if (local < 0 || local >= (int64_t)it->second.cells.size()) return;
+        if (local < 0 || local >= it->second.num_rows) return;
+
+        std::unordered_map<std::string, std::string> parsed;
+        int parsed_row = -1;
         for (auto& col : vc) {
-            const std::string& val = it->second.cells[local][col.col];
+            std::string val = cell_at(it->second, local, col.col,
+                                      &parsed, &parsed_row, local);
 
             if (is_match) {
                 // Whole row rendered with NCP_SEARCH highlight
@@ -2284,55 +2328,55 @@ class TableTUI {
     // ── Detail pane ──────────────────────────────────────────────────────────
 
     // Fetch all (virtual) columns of one row with FULL (untruncated) values.
+    // Loads any columns not already in cache (only once: subsequent openings
+    // of the detail pane on other rows in the same chunk are free).
     std::vector<std::string> load_full_row(int64_t row) {
         std::vector<std::string> out(num_cols_);
         if (src_.num_chunks() == 0) return out;
         int c = chunk_for_row(row);
-        src_.ensure(c);
-        std::vector<int> cols;
-        for (int i = 0; i < src_num_cols_; ++i) cols.push_back(i);
-        std::shared_ptr<arrow::Table> tbl;
-        if (!src_.read_chunk(c, cols, &tbl).ok()) return out;
-        int64_t local = row - src_.chunk_meta(c).first_row;
-        if (local < 0 || local >= tbl->num_rows()) return out;
+        std::vector<int> all_src;
+        for (int i = 0; i < src_num_cols_; ++i) all_src.push_back(i);
+        ensure_cols(c, all_src);
+        auto it = cache_.find(c);
+        if (it == cache_.end() || !it->second.ok) return out;
+        const CachedRG& cr = it->second;
+        int64_t local = row - cr.first_row;
+        if (local < 0 || local >= cr.num_rows) return out;
 
-        // Materialize this row's source cells once.
-        std::vector<std::string> src_row(src_num_cols_);
-        for (int sc = 0; sc < src_num_cols_; ++sc) {
-            int64_t r = 0;
-            for (auto& chunk : tbl->column(sc)->chunks()) {
-                int64_t len = chunk->length();
-                if (local < r + len) {
-                    src_row[sc] = cell_to_string(*chunk, local - r);
-                    break;
-                }
-                r += len;
-            }
-        }
-
+        // We want untruncated values here; cell_at() applies max_col_w_.
+        // Temporarily bypass via a local unwrap.
         std::unordered_map<std::string, std::string> parsed;
-        bool parsed_ok = false;
+        int parsed_row = -1;
         for (int vc = 0; vc < num_cols_; ++vc) {
             int sc = virt_src_col_[vc];
-            const std::string& key = virt_info_key_[vc];
-            std::string val;
-            if (!key.empty()) {
-                if (!parsed_ok) {
-                    for (auto& kv : parse_kv_list(src_row[sc]))
-                        parsed.emplace(std::move(kv.first), std::move(kv.second));
-                    parsed_ok = true;
+            auto arr = (sc >= 0 && sc < (int)cr.cols.size()) ? cr.cols[sc] : nullptr;
+            if (!arr) continue;
+            int64_t off = local;
+            for (auto& chunk : arr->chunks()) {
+                if (off < chunk->length()) {
+                    std::string raw = cell_to_string(*chunk, off);
+                    std::string val;
+                    const std::string& key = virt_info_key_[vc];
+                    if (!key.empty()) {
+                        if (parsed_row != (int)local) {
+                            parsed.clear();
+                            for (auto& kv : parse_kv_list(raw))
+                                parsed.emplace(std::move(kv.first),
+                                               std::move(kv.second));
+                            parsed_row = (int)local;
+                        }
+                        auto fit = parsed.find(key);
+                        val = (fit != parsed.end())
+                                ? (fit->second.empty() ? "true" : fit->second)
+                                : NULL_SYMBOL;
+                    } else {
+                        val = std::move(raw);
+                    }
+                    out[vc] = src_.format_cell(sc, std::move(val));
+                    break;
                 }
-                auto it = parsed.find(key);
-                if (it != parsed.end()) {
-                    val = it->second;
-                    if (val.empty()) val = "true";
-                } else {
-                    val = NULL_SYMBOL;
-                }
-            } else {
-                val = src_row[sc];
+                off -= chunk->length();
             }
-            out[vc] = src_.format_cell(sc, std::move(val));
         }
         return out;
     }
@@ -2449,6 +2493,13 @@ class TableTUI {
             }
         }
         auto vc = visible_cols();
+        // Prefetch just the source columns that are on screen right now.
+        {
+            std::vector<int> virt;
+            virt.reserve(vc.size());
+            for (auto& c : vc) virt.push_back(c.col);
+            prefetch_visible(virt);
+        }
         draw_header(vc);
         int dl = data_lines();
         for (int y = 0; y < dl; ++y)
@@ -2590,8 +2641,6 @@ public:
         noecho(); cbreak(); keypad(stdscr, TRUE); curs_set(0);
         set_escdelay(25); setup_colors();
 
-        prefetch();
-
         bool quit = false;
         while (!quit) {
             draw();
@@ -2619,7 +2668,6 @@ public:
                 } else if (ch >= 32 && ch < 127) {
                     search_input_ += (char)ch;
                 }
-                prefetch();
                 continue;
             }
 
@@ -2707,7 +2755,6 @@ public:
                 case KEY_RESIZE: break;
                 default: break;
             }
-            prefetch();
         }
         endwin();
         delscreen(scr);
