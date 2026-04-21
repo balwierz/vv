@@ -128,7 +128,7 @@ struct Config {
     bool        no_interactive = false;  // --no-interactive
 };
 
-static constexpr const char* kVersion = "1.2.0";
+static constexpr const char* kVersion = "1.3.0";
 
 static void print_usage(const char* prog) {
     std::fprintf(stderr,
