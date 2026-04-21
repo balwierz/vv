@@ -27,6 +27,8 @@
 #include <unistd.h>
 #include <unordered_map>
 #include <vector>
+#include <cerrno>
+#include <sys/stat.h>
 
 #include <ncurses.h>
 #undef OK   // ncurses defines OK as 0; conflicts with arrow::Status::OK()
@@ -2856,6 +2858,48 @@ static void print_table(TabularSource& src, const Config& cfg) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
+// Friendly, short message for common filesystem problems; returns "" if the
+// path is a readable regular file (further errors will come from the reader).
+static std::string preflight_path(const std::string& path) {
+    if (path == "-") return "";
+    struct stat st;
+    if (::stat(path.c_str(), &st) != 0) {
+        switch (errno) {
+            case ENOENT: return "file not found";
+            case EACCES: return "permission denied";
+            case ENOTDIR: return "not a directory";
+            case ELOOP:  return "too many symlinks";
+            default:     return std::string("cannot stat: ") + std::strerror(errno);
+        }
+    }
+    if (S_ISDIR(st.st_mode)) return "path is a directory";
+    if (!S_ISREG(st.st_mode) && !S_ISFIFO(st.st_mode) && !S_ISLNK(st.st_mode))
+        return "not a regular file";
+    if (::access(path.c_str(), R_OK) != 0) return "permission denied";
+    return "";
+}
+
+// Strip "IOError: Failed to open local file '<path>'. Detail: [errno N] "
+// redundancy from Arrow's open-error strings — the path is already in our
+// own "cannot open '...': " prefix.
+static std::string shorten_reader_error(std::string msg) {
+    auto erase = [&](const std::string& needle) {
+        auto p = msg.find(needle);
+        if (p != std::string::npos) msg.erase(p, needle.size());
+    };
+    erase("IOError: ");
+    auto dp = msg.find(". Detail: ");
+    if (dp != std::string::npos) {
+        std::string detail = msg.substr(dp + 10);
+        auto bracket = detail.find("] ");
+        if (detail.rfind("[errno ", 0) == 0 && bracket != std::string::npos)
+            detail.erase(0, bracket + 2);
+        msg = msg.substr(0, dp);
+        if (!detail.empty()) msg = std::move(detail);
+    }
+    return msg;
+}
+
 int main(int argc, char** argv) {
     Config cfg = parse_args(argc, argv);
 
@@ -2863,10 +2907,36 @@ int main(int argc, char** argv) {
                      (cfg.color == ColorMode::Auto && isatty(STDOUT_FILENO));
     if (use_color) init_colors();
 
+    bool err_color = (cfg.color == ColorMode::Always) ||
+                     (cfg.color == ColorMode::Auto && isatty(STDERR_FILENO));
+    const char* C_BOLD = err_color ? "\033[1m"    : "";
+    const char* C_RED  = err_color ? "\033[1;31m" : "";
+    const char* C_DIM  = err_color ? "\033[2m"    : "";
+    const char* C_RST  = err_color ? "\033[0m"    : "";
+    auto report = [&](const std::string& path, const std::string& why) {
+        std::fprintf(stderr, "%sparquet_viewer:%s %s%s%s: %s%s%s\n",
+                     C_BOLD, C_RST, C_DIM, path.c_str(), C_RST,
+                     C_RED, why.c_str(), C_RST);
+    };
+
+    {
+        std::string why = preflight_path(cfg.path);
+        if (!why.empty()) { report(cfg.path, why); return 1; }
+    }
+
     std::unique_ptr<TabularSource> src;
     std::string err = open_source(cfg.path, cfg, &src);
     if (!err.empty()) {
-        std::fprintf(stderr, "Error: %s\n", err.c_str());
+        // open_source returns "Cannot open '<path>': <detail>"; split it back
+        // out so we can reformat with color and strip Arrow's noisy prefix.
+        std::string detail = err;
+        const std::string pfx = "Cannot open '" + cfg.path + "': ";
+        if (detail.rfind(pfx, 0) == 0) detail.erase(0, pfx.size());
+        else if (detail.rfind("Cannot open '", 0) == 0) {
+            auto q = detail.find("': ");
+            if (q != std::string::npos) detail.erase(0, q + 3);
+        }
+        report(cfg.path, shorten_reader_error(std::move(detail)));
         return 1;
     }
 
