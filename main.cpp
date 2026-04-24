@@ -695,6 +695,60 @@ static std::vector<std::string> strip_vcf_preamble(
     return preamble;
 }
 
+// CSV/TSV: strips any leading '#'-prefixed lines as preamble. If the last such
+// line has a single '#' (not '##') and its field count matches the first data
+// line, treat it as the header row (returned via *col_names_out, stripped of
+// the leading '#'); otherwise leave it in the preamble.
+static std::vector<std::string> strip_tsv_csv_preamble(
+    const std::shared_ptr<arrow::io::InputStream>& input,
+    char delim, bool seekable, std::string* put_back,
+    std::vector<std::string>* col_names_out)
+{
+    std::vector<std::string> preamble;
+    std::string first_data_line;
+    int64_t pre_line_pos = 0;
+    for (;;) {
+        if (seekable) {
+            auto rf = std::static_pointer_cast<arrow::io::RandomAccessFile>(input);
+            if (auto t = rf->Tell(); t.ok()) pre_line_pos = *t;
+        }
+        std::string line;
+        bool ok = read_stream_line(input, &line);
+        if (!ok && line.empty()) break;
+        if (!line.empty() && line[0] == '#') {
+            preamble.push_back(line);
+            if (!ok) break;
+        } else {
+            first_data_line = line;
+            if (seekable) {
+                auto rf = std::static_pointer_cast<arrow::io::RandomAccessFile>(input);
+                (void)rf->Seek(pre_line_pos);
+            } else if (put_back) {
+                *put_back = line + "\n";
+            }
+            break;
+        }
+    }
+    if (!preamble.empty() && !first_data_line.empty()) {
+        const std::string& last = preamble.back();
+        if (last.size() >= 2 && last[0] == '#' && last[1] != '#') {
+            auto count_fields = [&](const std::string& s) {
+                int n = 1;
+                for (char c : s) if (c == delim) ++n;
+                return n;
+            };
+            if (count_fields(last.substr(1)) == count_fields(first_data_line)) {
+                std::istringstream ss(last.substr(1));
+                std::string tok;
+                while (std::getline(ss, tok, delim))
+                    col_names_out->push_back(tok);
+                preamble.pop_back();
+            }
+        }
+    }
+    return preamble;
+}
+
 // Wraps an InputStream, truncating each line to at most max_fields tab-separated fields.
 // Used for SAM (variable optional alignment tags) and GFF3 (occasional extra columns).
 class TruncateFieldsStream : public arrow::io::InputStream {
@@ -1053,8 +1107,13 @@ public:
                 put_back.clear();
                 break;
             }
+            case DelimKind::CSV:
+            case DelimKind::TSV:
+                self->preamble_lines_ = strip_tsv_csv_preamble(
+                    input, self->delimiter_, !is_gz, &put_back, &col_names);
+                break;
             default:
-                break;  // CSV/TSV: no preamble
+                break;
         }
 
         // BED non-gz: put_back still handled here; GFF/SAM already cleared it above.
