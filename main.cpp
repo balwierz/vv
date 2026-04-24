@@ -128,7 +128,7 @@ struct Config {
     bool        no_interactive = false;  // --no-interactive
 };
 
-static constexpr const char* kVersion = "1.3.1";
+static constexpr const char* kVersion = "1.3.2";
 
 static void print_usage(const char* prog) {
     std::fprintf(stderr,
@@ -240,6 +240,17 @@ static std::string repeat_utf8(const char* glyph, int n) {
     return s;
 }
 
+static bool is_integer_type(arrow::Type::type t) {
+    switch (t) {
+        case arrow::Type::INT8:   case arrow::Type::INT16:
+        case arrow::Type::INT32:  case arrow::Type::INT64:
+        case arrow::Type::UINT8:  case arrow::Type::UINT16:
+        case arrow::Type::UINT32: case arrow::Type::UINT64:
+            return true;
+        default: return false;
+    }
+}
+
 static bool is_numeric_type(arrow::Type::type t) {
     switch (t) {
         case arrow::Type::INT8:    case arrow::Type::INT16:
@@ -272,15 +283,20 @@ static std::string truncate(const std::string& s, int max_w) {
     return s.substr(0, max_w - 1) + ELLIPSIS;
 }
 
-// Format a non-negative decimal integer string with '_' grouping every three digits.
-// e.g. "123456789" → "123_456_789".  Non-numeric strings pass through unchanged.
+// Format a decimal integer string with '_' grouping every three digits
+// (Python PEP 515 style).  A leading '-' or '+' is preserved.
+// e.g. "123456789" → "123_456_789", "-1000000" → "-1_000_000".
+// Non-numeric strings pass through unchanged.
 static std::string digits_with_sep(const std::string& s) {
     if (s.empty()) return s;
-    for (char c : s) if (!std::isdigit((unsigned char)c)) return s;
-    std::string r;
-    r.reserve(s.size() + (s.size() - 1) / 3);
-    for (size_t i = 0; i < s.size(); ++i) {
-        if (i > 0 && (s.size() - i) % 3 == 0) r += '_';
+    size_t off = (s[0] == '-' || s[0] == '+') ? 1 : 0;
+    if (off == s.size()) return s;
+    for (size_t i = off; i < s.size(); ++i)
+        if (!std::isdigit((unsigned char)s[i])) return s;
+    std::string r = s.substr(0, off);
+    r.reserve(s.size() + (s.size() - off - 1) / 3);
+    for (size_t i = off; i < s.size(); ++i) {
+        if (i > off && (s.size() - i) % 3 == 0) r += '_';
         r += s[i];
     }
     return r;
@@ -371,6 +387,21 @@ static std::string cell_to_string(const arrow::Array& arr, int64_t row) {
             return res.ok() ? res.ValueOrDie()->ToString() : "?";
         }
     }
+}
+
+// Like cell_to_string(), but formats integer values with '_' grouping for
+// human-readable display. Used for TUI + table view; CSV/TSV export and
+// any value comparisons go through cell_to_string() to keep raw digits.
+static std::string cell_to_display_string(const arrow::Array& arr, int64_t row) {
+    if (arr.IsNull(row)) return NULL_SYMBOL;
+    if (is_integer_type(arr.type_id()))
+        return digits_with_sep(cell_to_string(arr, row));
+    if (arr.type_id() == arrow::Type::DICTIONARY) {
+        auto& dict_arr = static_cast<const arrow::DictionaryArray&>(arr);
+        return cell_to_display_string(*dict_arr.dictionary(),
+            dict_arr.GetValueIndex(row));
+    }
+    return cell_to_string(arr, row);
 }
 
 // ── ASCII table drawing ───────────────────────────────────────────────────────
@@ -2000,6 +2031,7 @@ class TableTUI {
     std::vector<bool>        right_align_;
     std::vector<bool>        is_bool_;
     std::vector<bool>        is_rgb_;
+    std::vector<bool>        is_integer_;   // integer-typed source column (not INFO expansion)
     int                      idx_w_ = 1;
 
     // Virtual→source column mapping. For a plain source, these are 1:1.
@@ -2179,8 +2211,27 @@ class TableTUI {
         if (!src_.read_chunk(c, missing, &tbl).ok()) return;
         cr.ok       = true;
         cr.num_rows = tbl->num_rows();  // may be smaller than chunk_meta for streaming sources
-        for (size_t i = 0; i < missing.size() && (int)i < tbl->num_columns(); ++i)
-            cr.cols[missing[i]] = tbl->column((int)i);
+        for (size_t i = 0; i < missing.size() && (int)i < tbl->num_columns(); ++i) {
+            int sc = missing[i];
+            auto ca = tbl->column((int)i);
+            cr.cols[sc] = ca;
+            // For integer columns, find the widest formatted value and widen
+            // the virtual column so no digits get clipped.
+            if (ca->length() > 0 && is_integer_type(ca->type()->id())) {
+                int w = 0;
+                for (auto& chunk : ca->chunks()) {
+                    for (int64_t r = 0; r < chunk->length(); ++r) {
+                        if (chunk->IsNull(r)) continue;
+                        int ww = display_width(
+                            digits_with_sep(cell_to_string(*chunk, r)));
+                        if (ww > w) w = ww;
+                    }
+                }
+                for (int vc = 0; vc < num_cols_; ++vc)
+                    if (is_integer_[vc] && virt_src_col_[vc] == sc
+                        && w > col_widths_[vc]) col_widths_[vc] = w;
+            }
+        }
     }
 
     // Extract a single cell as a formatted string (respects VCF INFO expansion,
@@ -2196,10 +2247,10 @@ class TableTUI {
         int64_t off = local;
         for (auto& chunk : arr->chunks()) {
             if (off < chunk->length()) {
-                std::string raw = cell_to_string(*chunk, off);
                 std::string val;
                 const std::string& key = virt_info_key_[vc];
                 if (!key.empty()) {
+                    std::string raw = cell_to_string(*chunk, off);  // INFO: raw VCF text
                     if (parsed_cache) {
                         if (*parsed_row_slot != (int)this_row_slot) {
                             parsed_cache->clear();
@@ -2222,9 +2273,12 @@ class TableTUI {
                                 : NULL_SYMBOL;
                     }
                 } else {
-                    val = std::move(raw);
+                    val = cell_to_display_string(*chunk, off);
                 }
-                return truncate(src_.format_cell(sc, std::move(val)), max_col_w_);
+                std::string formatted = src_.format_cell(sc, std::move(val));
+                // Never truncate integer values — digits must stay readable.
+                if (is_integer_type(chunk->type_id())) return formatted;
+                return truncate(std::move(formatted), max_col_w_);
             }
             off -= chunk->length();
         }
@@ -2464,10 +2518,10 @@ class TableTUI {
             int64_t off = local;
             for (auto& chunk : arr->chunks()) {
                 if (off < chunk->length()) {
-                    std::string raw = cell_to_string(*chunk, off);
                     std::string val;
                     const std::string& key = virt_info_key_[vc];
                     if (!key.empty()) {
+                        std::string raw = cell_to_string(*chunk, off);
                         if (parsed_row != (int)local) {
                             parsed.clear();
                             for (auto& kv : parse_kv_list(raw))
@@ -2480,7 +2534,7 @@ class TableTUI {
                                 ? (fit->second.empty() ? "true" : fit->second)
                                 : NULL_SYMBOL;
                     } else {
-                        val = std::move(raw);
+                        val = cell_to_display_string(*chunk, off);
                     }
                     out[vc] = src_.format_cell(sc, std::move(val));
                     break;
@@ -2604,12 +2658,15 @@ class TableTUI {
         }
         auto vc = visible_cols();
         // Prefetch just the source columns that are on screen right now.
+        // Then recompute visible_cols: loading integer columns can widen them
+        // (digits_with_sep), which may push later columns off-screen.
         {
             std::vector<int> virt;
             virt.reserve(vc.size());
             for (auto& c : vc) virt.push_back(c.col);
             prefetch_visible(virt);
         }
+        vc = visible_cols();
         draw_header(vc);
         int dl = data_lines();
         for (int y = 0; y < dl; ++y)
@@ -2723,6 +2780,7 @@ public:
         right_align_.resize(num_cols_);
         is_bool_.resize(num_cols_);
         is_rgb_.resize(num_cols_);
+        is_integer_.resize(num_cols_);
         for (int vc = 0; vc < num_cols_; ++vc) {
             auto t = v_types[vc];
             int min_w;
@@ -2734,8 +2792,11 @@ public:
                       : (t == arrow::Type::BOOL) ? 5
                       : 16;
             }
-            col_widths_[vc]  = std::min(
-                std::max((int)display_width(col_names_[vc]), min_w), max_col_w_);
+            is_integer_[vc] = virt_info_key_[vc].empty() && is_integer_type(t);
+            // Integer columns skip the max_col_w_ cap — we widen them later
+            // from actual data so digits are never clipped.
+            int base = std::max((int)display_width(col_names_[vc]), min_w);
+            col_widths_[vc]  = is_integer_[vc] ? base : std::min(base, max_col_w_);
             right_align_[vc] = is_numeric_type(t);
             is_bool_[vc]     = v_is_bool[vc];
             is_rgb_[vc]      = (col_names_[vc] == "RGB");
@@ -2927,6 +2988,7 @@ static void print_table(TabularSource& src, const Config& cfg) {
     for (int ci = 0; ci < show_cols; ++ci) {
         auto field   = schema->field(ci);
         auto arr_col = data->column(ci);
+        bool is_int  = is_integer_type(field->type()->id());
         Column col;
         col.header      = field->name();
         col.right_align = is_numeric_type(field->type()->id());
@@ -2935,12 +2997,13 @@ static void print_table(TabularSource& src, const Config& cfg) {
         col.width       = std::max(display_width(col.header), src.min_col_width(ci));
         for (auto& chunk : arr_col->chunks())
             for (int64_t r = 0; r < chunk->length(); ++r) {
-                std::string val = truncate(
-                    src.format_cell(ci, cell_to_string(*chunk, r)), cfg.max_col_w);
+                std::string val = src.format_cell(ci, cell_to_display_string(*chunk, r));
+                // Integer columns must show every digit — skip max_col_w clipping.
+                if (!is_int) val = truncate(std::move(val), cfg.max_col_w);
                 if (display_width(val) > col.width) col.width = display_width(val);
                 col.cells.push_back(std::move(val));
             }
-        col.width  = std::min(col.width, cfg.max_col_w);
+        if (!is_int) col.width = std::min(col.width, cfg.max_col_w);
         col.header = truncate(col.header, cfg.max_col_w);
         col.width  = std::max(col.width, display_width(col.header));
         columns.push_back(std::move(col));
