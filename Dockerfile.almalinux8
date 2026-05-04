@@ -1,12 +1,12 @@
-# Builds parquet_viewer against glibc 2.28 (AlmaLinux 8) for portability.
+# Builds vv against glibc 2.28 (AlmaLinux 8) for portability.
 # All sources are bundled in docker-sources/ — no internet needed inside Docker.
 #
 # Build the image (first time ~60-90 min):
-#   docker build --network=host -f Dockerfile.almalinux8 -t parquet_viewer_build .
+#   docker build --network=host -f Dockerfile.almalinux8 -t vv_build .
 #
 # Extract the binary:
-#   mkdir -p dist && docker run --rm -v "$PWD/dist:/out" parquet_viewer_build
-#   # binary at ./dist/parquet_viewer (runs on Linux with glibc >= 2.28)
+#   mkdir -p dist && docker run --rm -v "$PWD/dist:/out" vv_build
+#   # binary at ./dist/vv (runs on Linux with glibc >= 2.28)
 
 FROM almalinux:8 AS base
 
@@ -257,7 +257,7 @@ RUN tar xf /build/src/arrow.tar.gz && mv arrow-* arrow-src && \
         -DZLIB_ROOT=/build/static-libs && \
     cmake --build arrow-bld -j16 && cmake --install arrow-bld
 
-# ── parquet_viewer ────────────────────────────────────────────────────────────
+# ── vv ────────────────────────────────────────────────────────────
 FROM build-arrow AS build-app
 
 # Provide mimalloc source for FetchContent (no internet in build containers)
@@ -291,4 +291,4 @@ RUN cmake -S /build/ParquetViewer -B /build/app-bld \
         -DFETCHCONTENT_SOURCE_DIR_MIMALLOC=/build/mimalloc-src && \
     cmake --build /build/app-bld -j$(nproc)
 
-CMD ["sh", "-c", "cp /build/app-bld/parquet_viewer /out/parquet_viewer && echo 'Done: /out/parquet_viewer'"]
+CMD ["sh", "-c", "cp /build/app-bld/vv /out/vv && echo 'Done: /out/vv'"]

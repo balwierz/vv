@@ -1,0 +1,23 @@
++------+-------+-------+-------+------------------+
+| Chr  | Start | End   | Score | Tags             |
++------+-------+-------+-------+------------------+
+| chr1 |   100 |   200 |     0 | [promoter]       |
+| chr1 | 1_100 | 1_200 |  0.05 | [enhancer, open] |
+| chr1 | 2_100 | 2_200 |   0.1 | []               |
+| chr1 | 3_100 | 3_200 |  0.15 | [TF]             |
+| chr1 | 4_100 | 4_200 |   0.2 | [promoter, TF]   |
++------+-------+-------+-------+------------------+
+
+[20 rows x 5 columns]
+
+Column  Type                   Nullable
+------  ---------------------  --------
+Chr     string                 yes
+Start   int64                  yes
+End     int64                  yes
+Score   float                  yes
+Tags    list<element: string>  yes
+
+File: /home/piotr/Sources/ParquetViewer/tests/data/tiny.parquet
+Row groups: 1  |  Compressed: 710 B
+Created by: parquet-cpp-arrow version 23.0.1

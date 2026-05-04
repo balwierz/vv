@@ -1,5 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
-project(parquet_viewer CXX)
+project(vv CXX
+    VERSION 1.4.0
+    DESCRIPTION "Universal genomic file viewer"
+    HOMEPAGE_URL "https://github.com/balwierz/vv"
+    LANGUAGES CXX)
+
+include(GNUInstallDirs)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -94,9 +100,9 @@ if(TARGET Arrow::arrow_static)
 endif()
 
 # ── Target ────────────────────────────────────────────────────────────────────
-add_executable(parquet_viewer main.cpp)
+add_executable(vv main.cpp)
 
-target_include_directories(parquet_viewer PRIVATE
+target_include_directories(vv PRIVATE
     ${ARROW_INCLUDE_DIRS}
     ${PARQUET_INCLUDE_DIRS}
     ${CURSES_INCLUDE_DIRS}
@@ -156,7 +162,7 @@ if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND NCURSES_STATIC_LIB)
   set(_snappy       $<IF:$<BOOL:${SNAPPY_STATIC}>,${SNAPPY_STATIC},-lsnappy>)
   set(_zlib         $<IF:$<BOOL:${ZLIB_STATIC}>,${ZLIB_STATIC},-lz>)
 
-  target_link_libraries(parquet_viewer PRIVATE
+  target_link_libraries(vv PRIVATE
       ${PARQUET_TARGET}
       ${ARROW_TARGET}
       mimalloc-static
@@ -172,7 +178,7 @@ if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND NCURSES_STATIC_LIB)
       -lm -pthread
   )
 else()
-  target_link_libraries(parquet_viewer PRIVATE
+  target_link_libraries(vv PRIVATE
       ${PARQUET_TARGET}
       ${ARROW_TARGET}
       mimalloc-static
@@ -181,7 +187,7 @@ else()
   )
 endif()
 
-target_link_options(parquet_viewer PRIVATE
+target_link_options(vv PRIVATE
     -Wl,--gc-sections
     # Put static-libs dir first so -lzstd/-llz4/-lbz2/-llzma resolve to .a
     -L${_static_libs_dir}
@@ -189,11 +195,32 @@ target_link_options(parquet_viewer PRIVATE
 
 # Strip in Release
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
-  add_custom_command(TARGET parquet_viewer POST_BUILD
-      COMMAND ${CMAKE_STRIP} --strip-all $<TARGET_FILE:parquet_viewer>
+  add_custom_command(TARGET vv POST_BUILD
+      COMMAND ${CMAKE_STRIP} --strip-all $<TARGET_FILE:vv>
       COMMENT "Stripping binary")
 endif()
 
 message(STATUS "Build type  : ${CMAKE_BUILD_TYPE}")
 message(STATUS "Arrow target: ${ARROW_TARGET}")
 message(STATUS "htslib      : ${HTSLIB_VERSION}")
+
+# ── Install rules ─────────────────────────────────────────────────────────────
+install(TARGETS vv RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/man/vv.1")
+    install(FILES man/vv.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/completions/vv.bash")
+    install(FILES completions/vv.bash
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/bash-completion/completions
+            RENAME vv)
+endif()
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/completions/vv.fish")
+    install(FILES completions/vv.fish
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/fish/vendor_completions.d)
+endif()
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/completions/_vv")
+    install(FILES completions/_vv
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/zsh/site-functions)
+endif()

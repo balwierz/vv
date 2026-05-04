@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+title: "vv: universal genomic file viewer"
+message: >-
+  If you use this software in a publication, please cite it as below.
+type: software
+authors:
+  - family-names: Balwierz
+    given-names: Piotr
+    orcid: ""
+repository-code: "https://github.com/balwierz/vv"
+url: "https://github.com/balwierz/vv"
+abstract: >-
+  vv is a fast command-line viewer for tabular and bioinformatics file
+  formats: Parquet, Arrow IPC, Feather, BAM/CRAM/SAM, VCF/BCF, BED, GFF,
+  GTF, FASTA, FASTQ, plus CSV and TSV. It supports tabix-indexed range
+  queries, multi-threaded I/O, and an interactive ncurses table viewer.
+keywords:
+  - bioinformatics
+  - genomics
+  - parquet
+  - vcf
+  - bam
+  - bed
+  - fasta
+  - fastq
+  - tabix
+  - cli
+  - viewer
+license: MIT
+version: "1.4.0"
+date-released: "2026-05-04"

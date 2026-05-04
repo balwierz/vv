@@ -1,0 +1,163 @@
+.TH VV 1 "May 2026" "vv 1.4.0" "User Commands"
+.SH NAME
+vv \- universal genomic file viewer
+.SH SYNOPSIS
+.B vv
+[\fIOPTIONS\fR] \fIFILE\fR
+.SH DESCRIPTION
+\fBvv\fR is a fast command-line viewer for tabular and bioinformatics file
+formats. It prints the first \fIN\fR rows as an ASCII table (similar to
+\fBpandas.DataFrame.head()\fR), followed by a schema summary and file
+metadata. When stdout and stdin are both terminals, an interactive
+ncurses row browser is opened automatically.
+.PP
+Supported formats:
+.IP \(bu 2
+\fB.parquet\fR \(en Apache Parquet
+.IP \(bu 2
+\fB.arrow\fR, \fB.feather\fR \(en Arrow IPC and Feather v2
+.IP \(bu 2
+\fB.bam\fR, \fB.cram\fR, \fB.sam\fR \(en sequence alignments (htslib)
+.IP \(bu 2
+\fB.vcf\fR, \fB.vcf.gz\fR \(en variant calls
+.IP \(bu 2
+\fB.gff\fR, \fB.gff3\fR, \fB.gtf\fR (and \fB.gz\fR variants) \(en genome
+annotations
+.IP \(bu 2
+\fB.bed\fR, \fB.bed.gz\fR \(en genomic intervals
+.IP \(bu 2
+\fB.fa\fR, \fB.fasta\fR, \fB.fna\fR, \fB.faa\fR (and \fB.gz\fR) \(en
+sequences (FASTA)
+.IP \(bu 2
+\fB.fq\fR, \fB.fastq\fR (and \fB.gz\fR) \(en sequencing reads (FASTQ)
+.IP \(bu 2
+\fB.tsv\fR, \fB.csv\fR (and \fB.gz\fR) \(en delimited text
+.PP
+Unknown extensions are sniffed by magic bytes and delimiter heuristics.
+.SH OPTIONS
+.SS Display
+.TP
+.B \-i, \-\-interactive
+Force the ncurses row browser even when stdout is not a terminal.
+.TP
+.B \-\-no\-interactive
+Force plain ASCII table output even on a terminal.
+.TP
+.BI \-n " ROWS"
+Number of rows to display (default: 10, 0 = all).
+.TP
+.BI \-w " WIDTH"
+Maximum cell width in the ASCII table (default: 32).
+.TP
+.BI \-c " COLS"
+Maximum number of columns to display (default: all).
+.TP
+.B \-\-no\-index
+Suppress the row-index column.
+.TP
+.BI \-\-color [= WHEN ]
+\fIWHEN\fR is \fBauto\fR (default), \fBalways\fR, or \fBnever\fR.
+.SS Delimited output
+.TP
+.B \-\-tsv
+Stream tab-separated values to stdout.
+.TP
+.B \-\-csv
+Stream comma-separated values to stdout.
+.TP
+.BI \-\-delimiter " SEP"
+Custom single-character field separator.
+.TP
+.B \-\-no\-header
+Omit the header row in delimited output.
+.SS Range queries (tabix-indexed VCF/BED/GFF/TSV with .tbi)
+.TP
+.BI \-r ", " \-\-region " REGION"
+Filter to records overlapping \fIREGION\fR (e.g. \fBchr1:1000-2000\fR).
+Multiple regions may be given comma-separated.
+.SS Performance
+.TP
+.BI \-@ ", " \-\-threads " N"
+Number of worker threads for I/O and decoding. \fB0\fR (default) auto-
+detects (cores/2, capped at 8). Drives Arrow's CPU thread pool, htslib
+BAM/CRAM decompression, and BGZF decompression for FASTA/FASTQ.
+.SS Other
+.TP
+.B \-h, \-\-help
+Show help and exit.
+.TP
+.B \-V, \-\-version
+Print version and exit.
+.SH KEYS (interactive TUI)
+.TP
+.B Arrow keys / hjkl
+Move by row / column.
+.TP
+.B PgUp, PgDn, g, G
+Page up / down, jump to top / bottom.
+.TP
+.B /
+Search; \fBn\fR / \fBN\fR for next / previous match; \fBEsc\fR clears.
+.TP
+.B Enter
+Open the detail pane for the highlighted row.
+.TP
+.B "," / "."
+Narrow / widen the current column.
+.TP
+.B q
+Quit.
+.SH EXAMPLES
+.PP
+First 10 rows of a Parquet file with a nice ASCII table:
+.RS
+.EX
+vv data.parquet
+.EE
+.RE
+.PP
+Stream a 100-row TSV preview from a multi-GB Parquet file (uses fast path):
+.RS
+.EX
+vv \-\-tsv \-n 100 huge.parquet
+.EE
+.RE
+.PP
+Region query on a tabix-indexed VCF:
+.RS
+.EX
+vv \-r chr1:1000000-1100000 variants.vcf.gz
+.EE
+.RE
+.PP
+Multi-region tabix query on a BED file:
+.RS
+.EX
+vv \-r 'chr1:100-200,chr2:500-1000' regions.bed.gz
+.EE
+.RE
+.PP
+Open an Arrow IPC file in the interactive browser:
+.RS
+.EX
+vv data.arrow
+.EE
+.RE
+.PP
+Multi-threaded scan of a 5 GB BAM:
+.RS
+.EX
+vv \-@ 4 \-n 1000 alignments.bam
+.EE
+.RE
+.SH SEE ALSO
+.BR samtools (1),
+.BR bcftools (1),
+.BR tabix (1),
+.BR bgzip (1)
+.SH AUTHOR
+Piotr Balwierz and contributors.
+.SH REPORTING BUGS
+File issues at <https://github.com/balwierz/vv/issues>.
+.SH LICENSE
+MIT License. See \fBLICENSE\fR in the source distribution.

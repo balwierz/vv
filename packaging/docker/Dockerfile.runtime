@@ -1,0 +1,17 @@
+# Tiny runtime image around the static `vv` binary.
+# Build the static binary first via Dockerfile.almalinux8, then:
+#   docker build -f packaging/docker/Dockerfile.runtime -t vv:1.4.0 .
+#
+# Note: the canonical Docker image for `vv` is published on quay.io by
+# BioContainers as a side effect of the Bioconda recipe — use that for
+# pipelines:
+#   docker pull quay.io/biocontainers/vv:1.4.0--<build>
+#
+# This Dockerfile is for users who want a minimal hand-rolled image.
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY dist/vv /usr/local/bin/vv
+
+ENTRYPOINT ["/usr/local/bin/vv"]
+CMD ["--help"]

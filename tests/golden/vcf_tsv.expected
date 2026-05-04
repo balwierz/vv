@@ -1,0 +1,4 @@
+chr1	100	rs1	A	G	30	PASS	AF=0.5
+chr1	500	.	C	T	40	PASS	AF=0.1
+chr1	1500	.	G	A	50	PASS	AF=0.3
+chr2	200	.	T	C	35	PASS	AF=0.2

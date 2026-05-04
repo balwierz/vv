@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-linux:
+    name: Build & test (Ubuntu ${{ matrix.os }})
+    runs-on: ubuntu-${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ["24.04", "22.04"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          # Apache Arrow apt repo (matches the version on each Ubuntu base).
+          sudo apt-get install -y -V ca-certificates lsb-release wget
+          wget https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+          sudo apt-get install -y -V ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+          sudo apt-get update
+          sudo apt-get install -y -V \
+            cmake g++ libarrow-dev libparquet-dev \
+            libhts-dev libncursesw5-dev pkg-config \
+            python3-pyarrow python3-pysam tabix bgzip-tools
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Generate test fixtures
+        run: python3 tests/data/generate.py
+        if: hashFiles('tests/data/generate.py') != ''
+
+      - name: Smoke tests
+        env:
+          VV: ${{ github.workspace }}/build/vv
+        run: tests/run_tests.sh
+        if: hashFiles('tests/run_tests.sh') != ''
+
+      - name: Sanity check
+        run: |
+          ./build/vv --version
+          ./build/vv --help
+
+  build-macos:
+    name: Build (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: brew install cmake apache-arrow htslib ncurses
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build -j$(sysctl -n hw.ncpu)
+      - name: Sanity check
+        run: |
+          ./build/vv --version
+          ./build/vv --help

@@ -1,14 +1,14 @@
-# Bash tab completion for parquet_viewer
-# Source this file or install to /etc/bash_completion.d/parquet_viewer
+# Bash tab completion for vv
+# Source this file or install to /etc/bash_completion.d/vv
 
-_parquet_viewer() {
+_vv() {
     local cur prev words cword
     _init_completion || return
 
-    local file_exts='parquet arrow feather bam cram sam vcf vcf.gz gff gff.gz gff3 gff3.gz gtf gtf.gz bed bed.gz tsv tsv.gz csv csv.gz'
+    local file_exts='parquet arrow feather bam cram sam vcf vcf.gz bcf gff gff.gz gff3 gff3.gz gtf gtf.gz bed bed.gz tsv tsv.gz csv csv.gz fa fa.gz fasta fasta.gz fna fna.gz faa faa.gz ffn ffn.gz frn frn.gz fq fq.gz fastq fastq.gz'
 
     case "$prev" in
-        -n|-w|-c)
+        -n|-w|-c|-@|--threads)
             # Numeric argument — no completion
             return
             ;;
@@ -20,6 +20,10 @@ _parquet_viewer() {
             COMPREPLY=( $(compgen -W 'auto always never' -- "$cur") )
             return
             ;;
+        -r|--region)
+            # Free-form region string — no completion
+            return
+            ;;
     esac
 
     case "$cur" in
@@ -29,9 +33,11 @@ _parquet_viewer() {
             ;;
         -*)
             local opts='
-                -h --help
+                -h --help -V --version
                 -i --interactive --no-interactive
                 -n -w -c
+                -r --region
+                -@ --threads
                 --no-index
                 --color --color=auto --color=always --color=never
                 --tsv --csv --delimiter
@@ -48,4 +54,4 @@ _parquet_viewer() {
     _filedir "$exts_pattern"
 }
 
-complete -F _parquet_viewer parquet_viewer
+complete -F _vv vv
