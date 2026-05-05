@@ -28,7 +28,7 @@ jobs:
           sudo apt-get install -y -V \
             cmake g++ libarrow-dev libparquet-dev \
             libhts-dev libncursesw5-dev pkg-config \
-            python3-pyarrow python3-pysam tabix bgzip-tools
+            python3-pyarrow python3-pysam tabix bgzip-tools bcftools
 
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release

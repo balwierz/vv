@@ -127,6 +127,38 @@ III
 with open(HERE / "tiny.fq", "rb") as src, gzip.open(HERE / "tiny.fq.gz", "wb") as dst:
     shutil.copyfileobj(src, dst)
 
+# ── PAF (minimap2 pairwise alignments) ──────────────────────────────────────
+paf = (
+    "read1\t1000\t100\t900\t+\tchr1\t250000000\t5000\t5800\t750\t800\t60\tNM:i:50\n"
+    "read2\t2000\t0\t2000\t-\tchr2\t300000000\t10000\t12000\t1900\t2000\t60\n"
+    "read3\t500\t0\t500\t+\tchr1\t250000000\t30000\t30500\t480\t500\t30\tNM:i:20\tms:i:480\n"
+)
+(HERE / "tiny.paf").write_text(paf)
+with open(HERE / "tiny.paf", "rb") as src, gzip.open(HERE / "tiny.paf.gz", "wb") as dst:
+    shutil.copyfileobj(src, dst)
+
+# ── BCF (binary VCF, requires bcftools) ──────────────────────────────────────
+if have("bcftools"):
+    # Make a self-contained VCF (with explicit ##contig lines) so bcftools is
+    # happy; tiny.vcf above lacks those.
+    bcf_input = HERE / "_bcf_input.vcf"
+    bcf_input.write_text(
+        "##fileformat=VCFv4.2\n"
+        "##contig=<ID=chr1>\n"
+        "##contig=<ID=chr2>\n"
+        '##INFO=<ID=AF,Number=A,Type=Float,Description="Allele frequency">\n'
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+        "chr1\t100\trs1\tA\tG\t30\tPASS\tAF=0.5\n"
+        "chr1\t500\t.\tC\tT\t40\tPASS\tAF=0.1\n"
+        "chr1\t1500\t.\tG\tA\t50\tPASS\tAF=0.3\n"
+        "chr2\t200\t.\tT\tC\t35\tPASS\tAF=0.2\n"
+    )
+    subprocess.run(["bcftools", "view", "-O", "b",
+                    str(bcf_input), "-o", str(HERE / "tiny.bcf")], check=True)
+    bcf_input.unlink()
+else:
+    print("warn: bcftools not found; skipping tiny.bcf", file=sys.stderr)
+
 # ── TSV / CSV ────────────────────────────────────────────────────────────────
 tsv = "name\tcount\tratio\nfoo\t100\t0.5\nbar\t250\t0.75\nbaz\t9999\t0.1\n"
 (HERE / "tiny.tsv").write_text(tsv)

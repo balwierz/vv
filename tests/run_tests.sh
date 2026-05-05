@@ -53,6 +53,11 @@ run_case fastq_gz_tsv --tsv --no-header "$DATA/tiny.fq.gz"
 run_case tsv_tsv      --tsv --no-header "$DATA/tiny.tsv"
 run_case csv_tsv      --tsv --no-header "$DATA/tiny.csv"
 run_case arrow_tsv    --tsv --no-header "$DATA/tiny.arrow"
+run_case paf_tsv      --tsv --no-header "$DATA/tiny.paf"
+run_case paf_gz_tsv   --tsv --no-header "$DATA/tiny.paf.gz"
+if [ -f "$DATA/tiny.bcf" ]; then
+    run_case bcf_tsv  --tsv --no-header "$DATA/tiny.bcf"
+fi
 
 echo
 echo "── Tabix range queries ───────────────────────────────────"
@@ -64,6 +69,36 @@ echo
 echo "── ASCII table mode ──────────────────────────────────────"
 run_case parquet_table --no-interactive --no-index --color=never -n 5 "$DATA/tiny.parquet"
 run_case bed_table     --no-interactive --no-index --color=never "$DATA/tiny.bed"
+
+echo
+echo "── Vertical-head mode ───────────────────────────────────"
+COLUMNS=150 "$VV" --vertical --color=never -n 3 "$DATA/tiny.parquet" \
+    > "$TMP/parquet_vertical.out" 2>&1
+if [ -f "$GOLDEN/parquet_vertical.expected" ]; then
+    assert_eq_file "parquet_vertical" "$TMP/parquet_vertical.out" "$GOLDEN/parquet_vertical.expected"
+else
+    cp "$TMP/parquet_vertical.out" "$GOLDEN/parquet_vertical.expected"
+    echo "  init  parquet_vertical (created golden)"
+fi
+
+echo
+echo "── Parquet output ──────────────────────────────────────"
+"$VV" --parquet "$TMP/out.parquet" "$DATA/tiny.tsv" > /dev/null
+"$VV" --tsv --no-header "$TMP/out.parquet" > "$TMP/out.parquet.tsv"
+assert_eq_file "parquet_write_roundtrip" "$TMP/out.parquet.tsv" "$GOLDEN/tsv_tsv.expected"
+"$VV" --parquet "$TMP/out_snappy.parquet" --compression snappy "$DATA/tiny.tsv" > /dev/null
+assert_exit_zero "parquet_write_snappy" test -s "$TMP/out_snappy.parquet"
+BAD=$("$VV" --parquet "$TMP/x.parquet" --compression rar "$DATA/tiny.tsv" 2>&1 || true)
+assert_contains "parquet_bad_codec" "$BAD" "Unknown --compression"
+
+echo
+echo "── Stdin (`-`) ──────────────────────────────────────────"
+"$VV" --tsv --no-header - < "$DATA/tiny.tsv" > "$TMP/stdin_tsv.out"
+assert_eq_file "stdin_tsv_matches_file" "$TMP/stdin_tsv.out" "$GOLDEN/tsv_tsv.expected"
+gzip -c "$DATA/tiny.tsv" | "$VV" --tsv --no-header - > "$TMP/stdin_gz.out"
+assert_eq_file "stdin_tsv_gz_matches_file" "$TMP/stdin_gz.out" "$GOLDEN/tsv_tsv.expected"
+PARQUET_REJECT=$("$VV" - < "$DATA/tiny.parquet" 2>&1 || true)
+assert_contains "stdin_rejects_parquet" "$PARQUET_REJECT" "seekable"
 
 echo
 echo "── Threading parity ──────────────────────────────────────"

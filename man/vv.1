@@ -32,6 +32,12 @@ sequences (FASTA)
 \fB.fq\fR, \fB.fastq\fR (and \fB.gz\fR) \(en sequencing reads (FASTQ)
 .IP \(bu 2
 \fB.tsv\fR, \fB.csv\fR (and \fB.gz\fR) \(en delimited text
+.IP \(bu 2
+\fB.bcf\fR \(en binary VCF (htslib)
+.IP \(bu 2
+\fB.paf\fR, \fB.paf.gz\fR \(en minimap2 pairwise alignments
+.IP \(bu 2
+\fB-\fR \(en read text format from stdin (auto-detects gzip)
 .PP
 Unknown extensions are sniffed by magic bytes and delimiter heuristics.
 .SH OPTIONS
@@ -57,6 +63,24 @@ Suppress the row-index column.
 .TP
 .BI \-\-color [= WHEN ]
 \fIWHEN\fR is \fBauto\fR (default), \fBalways\fR, or \fBnever\fR.
+.TP
+.B \-\-vertical
+\fIVertical head\fR. Transpose the preview so each input field becomes a row
+and each record becomes a column; show as many records as fit in the
+terminal width. Implies \fB\-\-no\-interactive\fR. Useful for wide tables
+that would otherwise need horizontal scrolling. Auto-enabled when the
+binary is invoked as \fBvh\fR (a symlink to \fBvv\fR).
+.SS Parquet output
+.TP
+.BI \-\-parquet " FILE"
+Stream the input into a Parquet file at \fIFILE\fR. Combines with
+\fB\-c\fR (column subset) and \fB\-n\fR (row cap) to convert any supported
+input \(en BED, TSV, CSV, VCF, BCF, FASTA, FASTQ, BAM \(en into a Parquet
+file. Stays streaming for forward-only sources (BAM/FASTQ).
+.TP
+.BI \-\-compression " CODEC"
+Codec for \fB\-\-parquet\fR output: \fBzstd\fR (default), \fBsnappy\fR,
+\fBgzip\fR, \fBlz4\fR, \fBnone\fR.
 .SS Delimited output
 .TP
 .B \-\-tsv
@@ -96,8 +120,13 @@ Move by row / column.
 .B PgUp, PgDn, g, G
 Page up / down, jump to top / bottom.
 .TP
-.B /
-Search; \fBn\fR / \fBN\fR for next / previous match; \fBEsc\fR clears.
+.B / and ?
+Search forward (\fB/\fR) or backward (\fB?\fR), \fBless(1)\fR-style.
+The query is a case-insensitive ECMAScript regular expression; if the
+pattern is invalid it is matched literally instead. \fBn\fR continues in
+the same direction, \fBN\fR reverses it. All matches in the visible area
+are highlighted; the n/N target is rendered with reverse video.
+\fBEsc\fR clears.
 .TP
 .B Enter
 Open the detail pane for the highlighted row.
@@ -107,6 +136,10 @@ Narrow / widen the current column.
 .TP
 .B q
 Quit.
+.SH ALIAS / vh
+\fBvh\fR is a symlink to \fBvv\fR that defaults to \fB\-\-vertical\fR mode.
+\fBvh wide.parquet\fR prints a transposed head where the user scrolls
+vertically through fields rather than horizontally through columns.
 .SH EXAMPLES
 .PP
 First 10 rows of a Parquet file with a nice ASCII table:
@@ -144,10 +177,31 @@ vv data.arrow
 .EE
 .RE
 .PP
+Convert a BED file to Parquet (zstd, all rows):
+.RS
+.EX
+vv \-\-parquet peaks.parquet peaks.bed
+.EE
+.RE
+.PP
+Convert a tabix-filtered VCF region to Parquet:
+.RS
+.EX
+vv \-r chr1:1000000\-2000000 \-\-parquet region.parquet variants.vcf.gz
+.EE
+.RE
+.PP
 Multi-threaded scan of a 5 GB BAM:
 .RS
 .EX
 vv \-@ 4 \-n 1000 alignments.bam
+.EE
+.RE
+.PP
+Vertical head on a wide Parquet file (50+ columns) that doesn't fit:
+.RS
+.EX
+vh wide.parquet
 .EE
 .RE
 .SH SEE ALSO

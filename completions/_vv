@@ -1,4 +1,4 @@
-#compdef vv
+#compdef vv vh
 # Zsh tab completion for vv
 # Install: place this file as `_vv` in any directory listed in $fpath
 # (e.g. /usr/share/zsh/site-functions/_vv).
@@ -16,6 +16,7 @@ _vv() {
         '*.fna' '*.fna.gz' '*.faa' '*.faa.gz'
         '*.ffn' '*.ffn.gz' '*.frn' '*.frn.gz'
         '*.fq' '*.fq.gz' '*.fastq' '*.fastq.gz'
+        '*.paf' '*.paf.gz'
     )
 
     _arguments -s -S \
@@ -23,6 +24,7 @@ _vv() {
         '(- *)'{-V,--version}'[Print version]' \
         '(-i --interactive)'{-i,--interactive}'[Open ncurses row browser]' \
         '--no-interactive[Force plain table output]' \
+        '--vertical[Transposed (vertical-head) preview]' \
         '-n+[Rows to display]:rows:' \
         '-w+[Max cell width]:width:' \
         '-c+[Max columns]:cols:' \
@@ -34,6 +36,8 @@ _vv() {
         '--csv[Write comma-separated values]' \
         '--delimiter+[Custom delimiter]:char:' \
         '--no-header[Omit the header row]' \
+        '--parquet+[Write a Parquet file]:path:_files' \
+        '--compression+[Parquet codec]:codec:(zstd snappy gzip lz4 none)' \
         "*:file:_files -g '${(j:|:)file_exts}'"
 }
 

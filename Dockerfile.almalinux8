@@ -291,4 +291,4 @@ RUN cmake -S /build/ParquetViewer -B /build/app-bld \
         -DFETCHCONTENT_SOURCE_DIR_MIMALLOC=/build/mimalloc-src && \
     cmake --build /build/app-bld -j$(nproc)
 
-CMD ["sh", "-c", "cp /build/app-bld/vv /out/vv && echo 'Done: /out/vv'"]
+CMD ["sh", "-c", "cp /build/app-bld/vv /out/vv && ln -sf vv /out/vh && echo 'Done: /out/vv (and vh symlink)'"]

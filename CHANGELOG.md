@@ -4,6 +4,25 @@ All notable changes to `vv` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-05-05
+
+### Added
+- **BCF (binary VCF)** support via htslib (`.bcf`). Schema mirrors VCF text
+  output; the existing TUI INFO-field expansion works unchanged.
+- **PAF (minimap2 pairwise alignments)** support (`.paf`, `.paf.gz`). 12
+  fixed columns; trailing `tag:type:value` tokens are dropped.
+- **Stdin support**: `vv -` reads text formats from stdin (auto-detects
+  gzip via magic bytes). Binary formats (Parquet, Arrow IPC, BAM, BCF)
+  are rejected with a clear "requires seekable file" error pointing at
+  process substitution as the workaround.
+- **Parquet output**: `--parquet OUT` converts any supported input
+  (BED/TSV/CSV/VCF/BCF/FASTA/FASTQ/BAM/…) into a Parquet file. Streams
+  chunk-by-chunk so multi-GB conversions don't need to fit in RAM.
+  Compression selectable via `--compression {zstd,snappy,gzip,lz4,none}`,
+  default zstd.
+- New `FdInputStream` helper for raw-fd InputStream wrapping (avoids
+  `arrow::io::StdinStream`'s `std::cin` buffering conflicts).
+
 ## [1.4.0] - 2026-05-04
 
 ### Added

@@ -15,15 +15,19 @@
 #include <arrow/util/compression.h>
 #include <parquet/arrow/reader.h>
 #include <parquet/arrow/schema.h>
+#include <parquet/arrow/writer.h>
 #include <parquet/file_reader.h>
 #include <parquet/properties.h>
 
 #include <htslib/sam.h>
+#include <htslib/vcf.h>
 #include <htslib/tbx.h>
 #include <htslib/kseq.h>
 #include <htslib/bgzf.h>
 
 #include <algorithm>
+#include <array>
+#include <charconv>
 #include <clocale>
 #include <cstdint>
 #include <cstdio>
@@ -31,12 +35,15 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <optional>
+#include <regex>
 #include <sstream>
 #include <thread>
 #include <string>
 #include <unistd.h>
 #include <unordered_map>
 #include <vector>
+#include <sys/ioctl.h>
 #include <cerrno>
 #include <sys/stat.h>
 
@@ -127,6 +134,8 @@ enum class ColorMode { Auto, Always, Never };
 struct Config {
     std::string path;
     std::string region;                  // -r: tabix region(s), e.g. "chr1:1000-2000"
+    std::string parquet_out;             // --parquet <file>: write Parquet to this path
+    std::string compression = "zstd";    // --compression: parquet codec
     int         head_rows      = 10;
     bool        head_rows_set  = false;  // true when -n was given explicitly
     int         max_col_w      = 32;
@@ -138,6 +147,7 @@ struct Config {
     bool        no_header      = false;
     bool        interactive    = false;  // -i / --interactive
     bool        no_interactive = false;  // --no-interactive
+    bool        vertical       = false;  // --vertical (or invoked as `vh`)
 };
 
 // Effective worker-thread count: explicit override or
@@ -152,7 +162,7 @@ static int effective_threads(const Config& cfg) {
     return (int)t;
 }
 
-static constexpr const char* kVersion = "1.4.0";
+static constexpr const char* kVersion = "1.5.0";
 
 static void print_usage(const char* prog) {
     std::fprintf(stderr,
@@ -167,6 +177,9 @@ static void print_usage(const char* prog) {
         "  .bed  .tsv  .csv            and .gz variants\n"
         "  .fa  .fasta  .fna  .faa     sequences (FASTA, plus .gz)\n"
         "  .fq  .fastq                 sequencing reads (FASTQ, plus .gz)\n"
+        "  .bcf                        binary VCF (htslib)\n"
+        "  .paf  .paf.gz               minimap2 pairwise alignments\n"
+        "  -                           read text format from stdin (auto-gunzip)\n"
         "  (unknown extensions: sniffed by magic bytes / delimiter)\n"
         "\nInteractive viewer (default when stdout is a terminal):\n"
         "  -i / --interactive  open the ncurses row browser\n"
@@ -178,12 +191,19 @@ static void print_usage(const char* prog) {
         "  -c <cols>           max columns to show (default: all)\n"
         "  --no-index          suppress the row-index column\n"
         "  --color[=WHEN]      colorize output: auto (default), always, never\n"
+        "  --vertical          \"vertical head\": transpose the preview so each\n"
+        "                      field is a row; show as many records per line as\n"
+        "                      fit. Implies --no-interactive. Default when the\n"
+        "                      binary is invoked as `vh`.\n"
         "\nDelimited output (replaces table view):\n"
         "  --tsv               write tab-separated values to stdout\n"
         "  --csv               write comma-separated values to stdout\n"
         "  --delimiter <sep>   write with a custom single-character delimiter\n"
         "  --no-header         omit the header row\n"
         "  (-n defaults to all rows in this mode; -c still applies)\n"
+        "\nParquet output (replaces table view):\n"
+        "  --parquet <file>    write a Parquet file at <file>\n"
+        "  --compression <c>   codec: zstd (default), snappy, gzip, lz4, none\n"
         "\nRange queries (tabix-indexed VCF/BED/GFF/TSV with .tbi):\n"
         "  -r / --region <REGION>   e.g. chr1:1000-2000  (multiple comma-separated)\n"
         "\nPerformance:\n"
@@ -195,6 +215,17 @@ static void print_usage(const char* prog) {
 
 static Config parse_args(int argc, char** argv) {
     Config cfg;
+    // If invoked as `vh` (a symlink/copy of vv), default to vertical-head mode:
+    // a "head"-style preview transposed so wide tables fit without horizontal
+    // scrolling. Implies --no-interactive.
+    if (argc > 0) {
+        const char* base = std::strrchr(argv[0], '/');
+        base = base ? base + 1 : argv[0];
+        if (std::strcmp(base, "vh") == 0) {
+            cfg.vertical       = true;
+            cfg.no_interactive = true;
+        }
+    }
     int positional = 0;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "-h") || !std::strcmp(argv[i], "--help")) {
@@ -209,6 +240,9 @@ static Config parse_args(int argc, char** argv) {
             cfg.interactive = true;
         } else if (!std::strcmp(argv[i], "--no-interactive")) {
             cfg.no_interactive = true;
+        } else if (!std::strcmp(argv[i], "--vertical")) {
+            cfg.vertical       = true;
+            cfg.no_interactive = true;
         } else if (!std::strcmp(argv[i], "-n") && i + 1 < argc) {
             cfg.head_rows     = std::atoi(argv[++i]);
             cfg.head_rows_set = true;
@@ -222,6 +256,10 @@ static Config parse_args(int argc, char** argv) {
         } else if ((!std::strcmp(argv[i], "-@") ||
                     !std::strcmp(argv[i], "--threads")) && i + 1 < argc) {
             cfg.threads = std::max(0, std::atoi(argv[++i]));
+        } else if (!std::strcmp(argv[i], "--parquet") && i + 1 < argc) {
+            cfg.parquet_out = argv[++i];
+        } else if (!std::strcmp(argv[i], "--compression") && i + 1 < argc) {
+            cfg.compression = argv[++i];
         } else if (!std::strcmp(argv[i], "--color") ||
                    !std::strcmp(argv[i], "--color=auto")) {
             cfg.color = ColorMode::Auto;
@@ -239,7 +277,8 @@ static Config parse_args(int argc, char** argv) {
             else if (!std::strcmp(sep, "comma")) cfg.delimiter = ',';
             else if (sep[0] && !sep[1])     cfg.delimiter = sep[0];
             else { std::fprintf(stderr, "delimiter must be a single character\n"); std::exit(1); }
-        } else if (argv[i][0] != '-') {
+        } else if (argv[i][0] != '-' || (argv[i][0] == '-' && argv[i][1] == 0)) {
+            // Bare "-" means stdin; treat as a positional argument.
             if (positional++ == 0) cfg.path = argv[i];
         } else {
             std::fprintf(stderr, "Unknown option: %s\n", argv[i]);
@@ -263,10 +302,15 @@ static constexpr const char NULL_SYMBOL[] = "\xe2\x88\x85";
 // Box-drawing glyphs (each 3 UTF-8 bytes, 1 terminal column).
 static constexpr const char BOX_HLINE[] = "\xe2\x94\x80";  // ─
 static constexpr const char BOX_VLINE[] = "\xe2\x94\x82";  // │
-static constexpr const char BOX_TL[]    = "\xe2\x95\xad";  // ╭
-static constexpr const char BOX_TR[]    = "\xe2\x95\xae";  // ╮
-static constexpr const char BOX_BR[]    = "\xe2\x95\xaf";  // ╯
-static constexpr const char BOX_BL[]    = "\xe2\x95\xb0";  // ╰
+static constexpr const char BOX_TL[]    = "\xe2\x95\xad";  // ╭ (rounded)
+static constexpr const char BOX_TR[]    = "\xe2\x95\xae";  // ╮ (rounded)
+static constexpr const char BOX_BR[]    = "\xe2\x95\xaf";  // ╯ (rounded)
+static constexpr const char BOX_BL[]    = "\xe2\x95\xb0";  // ╰ (rounded)
+static constexpr const char BOX_LT[]    = "\xe2\x94\x9c";  // ├
+static constexpr const char BOX_RT[]    = "\xe2\x94\xa4";  // ┤
+static constexpr const char BOX_TT[]    = "\xe2\x94\xac";  // ┬
+static constexpr const char BOX_BT[]    = "\xe2\x94\xb4";  // ┴
+static constexpr const char BOX_X[]     = "\xe2\x94\xbc";  // ┼
 
 static std::string repeat_utf8(const char* glyph, int n) {
     std::string s;
@@ -556,11 +600,23 @@ struct Column {
     int                      width;
 };
 
-static void draw_separator(const std::vector<Column>& cols) {
-    std::printf("%s+", g_color.border);
-    for (auto& c : cols) {
-        for (int i = 0; i < c.width + 2; ++i) std::putchar('-');
-        std::putchar('+');
+enum class SepKind { Top, Middle, Bottom };
+
+static void draw_separator(const std::vector<Column>& cols,
+                           SepKind kind = SepKind::Middle) {
+    const char* left;
+    const char* sep;
+    const char* right;
+    switch (kind) {
+        case SepKind::Top:    left = BOX_TL; sep = BOX_TT; right = BOX_TR; break;
+        case SepKind::Bottom: left = BOX_BL; sep = BOX_BT; right = BOX_BR; break;
+        case SepKind::Middle: default:
+                              left = BOX_LT; sep = BOX_X;  right = BOX_RT; break;
+    }
+    std::printf("%s%s", g_color.border, left);
+    for (size_t i = 0; i < cols.size(); ++i) {
+        for (int j = 0; j < cols[i].width + 2; ++j) std::printf("%s", BOX_HLINE);
+        std::printf("%s", (i + 1 == cols.size()) ? right : sep);
     }
     std::printf("%s\n", g_color.reset);
 }
@@ -619,7 +675,7 @@ static void draw_row(const std::vector<Column>& cols,
                      const std::vector<bool>& right_align,
                      bool is_header = false) {
     for (std::size_t i = 0; i < cols.size(); ++i) {
-        std::printf("%s|%s", g_color.border, g_color.reset);
+        std::printf("%s%s%s", g_color.border, BOX_VLINE, g_color.reset);
         int r, gv, b;
         if (!is_header && cols[i].is_rgb && *g_color.reset
                        && parse_rgb(vals[i], &r, &gv, &b)) {
@@ -630,7 +686,7 @@ static void draw_row(const std::vector<Column>& cols,
             std::printf(" ");
         }
     }
-    std::printf("%s|%s\n", g_color.border, g_color.reset);
+    std::printf("%s%s%s\n", g_color.border, BOX_VLINE, g_color.reset);
 }
 
 // ── Delimited output ─────────────────────────────────────────────────────────
@@ -688,6 +744,44 @@ public:
         if (n > 0) {
             ARROW_ASSIGN_OR_RAISE(int64_t from_rest, rest_->Read(n, p));
             total += from_rest;
+        }
+        return total;
+    }
+    arrow::Result<std::shared_ptr<arrow::Buffer>> Read(int64_t n) override {
+        ARROW_ASSIGN_OR_RAISE(auto buf, arrow::AllocateResizableBuffer(n));
+        ARROW_ASSIGN_OR_RAISE(int64_t actual, Read(n, buf->mutable_data()));
+        ARROW_RETURN_NOT_OK(buf->Resize(actual, false));
+        return std::shared_ptr<arrow::Buffer>(std::move(buf));
+    }
+};
+
+// Sequential-only InputStream that wraps a raw file descriptor via read(2).
+// We can't use Arrow's ReadableFile-by-fd here because that calls lseek()
+// at open time (fails on a pipe), and arrow::io::StdinStream goes through
+// std::cin which conflicts with our preceding raw read(2) sniff.
+class FdInputStream : public arrow::io::InputStream {
+    int  fd_     = -1;
+    bool closed_ = false;
+    int64_t pos_ = 0;
+public:
+    explicit FdInputStream(int fd) : fd_(fd) {}
+    ~FdInputStream() override { if (!closed_) (void)Close(); }
+
+    arrow::Status Close() override { closed_ = true; return arrow::Status::OK(); }
+    bool closed() const override { return closed_; }
+    arrow::Result<int64_t> Tell() const override { return pos_; }
+
+    arrow::Result<int64_t> Read(int64_t n, void* out) override {
+        uint8_t* p = (uint8_t*)out;
+        int64_t total = 0;
+        while (n > 0) {
+            ssize_t got = ::read(fd_, p, (size_t)n);
+            if (got == 0) break;
+            if (got < 0) {
+                if (errno == EINTR) continue;
+                return arrow::Status::IOError("fd read failed: ", std::strerror(errno));
+            }
+            p += got; n -= got; total += got; pos_ += got;
         }
         return total;
     }
@@ -1269,7 +1363,7 @@ public:
 
 // ── Delimited source (CSV / TSV / BED / VCF / GFF3+GTF / SAM, plain or gzip) ──
 
-enum class DelimKind { CSV, TSV, BED, VCF, GFF, SAM };
+enum class DelimKind { CSV, TSV, BED, VCF, GFF, SAM, PAF };
 
 // Wrap a single RecordBatch column slice as a single-chunk Table.
 static std::shared_ptr<arrow::Table> batch_slice_to_table(
@@ -1361,6 +1455,23 @@ public:
                              std::unique_ptr<DelimitedSource>* out) {
         return open(path, kind, /*region=*/"", out);
     }
+    // Open a delimited source from an already-built InputStream.
+    // `path_label` is used for error messages and as the displayed file name
+    // (typically "-" for stdin). `is_gz` controls whether the gzip-decompression
+    // wrapper has *already* been applied — set to true so the seekability
+    // checks behave like for `.gz` files.
+    static std::string open_from_stream(
+        std::shared_ptr<arrow::io::InputStream> input,
+        const std::string& path_label, DelimKind kind, bool is_gz,
+        const std::string& region,
+        std::unique_ptr<DelimitedSource>* out) {
+        auto self = std::make_unique<DelimitedSource>();
+        self->path_      = path_label;
+        self->kind_      = kind;
+        self->delimiter_ = (kind == DelimKind::CSV) ? ',' : '\t';
+        return continue_open(std::move(self), std::move(input),
+                             /*raw=*/nullptr, is_gz, kind, region, out);
+    }
     static std::string open(const std::string& path, DelimKind kind,
                              const std::string& region,
                              std::unique_ptr<DelimitedSource>* out) {
@@ -1377,6 +1488,23 @@ public:
             std::string err = open_stream(path, is_gz, &raw, &input);
             if (!err.empty()) return err;
         }
+        return continue_open(std::move(self), std::move(input),
+                             std::move(raw), is_gz, kind, region, out);
+    }
+private:
+    // Shared body of open() / open_from_stream(). Strips per-format preamble,
+    // optionally swaps the data stream for a tabix iterator, builds the
+    // streaming CSV reader, and finalises the schema.
+    static std::string continue_open(
+        std::unique_ptr<DelimitedSource> self,
+        std::shared_ptr<arrow::io::InputStream> input,
+        std::shared_ptr<arrow::io::ReadableFile> /*raw*/,
+        bool is_gz, DelimKind kind, const std::string& region,
+        std::unique_ptr<DelimitedSource>* out) {
+        const std::string& path = self->path_;
+        // Path-based opens with a regular file are seekable; gzipped or
+        // stream-based (stdin) inputs are not.
+        const bool seekable = !is_gz && path != "-";
 
         // Format-specific preamble stripping and column-name determination.
         // GFF and SAM wrap the stream in TruncateFieldsStream to handle variable columns.
@@ -1385,13 +1513,13 @@ public:
 
         switch (kind) {
             case DelimKind::BED:
-                self->preamble_lines_ = strip_bed_preamble(input, !is_gz, &put_back);
+                self->preamble_lines_ = strip_bed_preamble(input, seekable, &put_back);
                 break;
             case DelimKind::VCF:
                 self->preamble_lines_ = strip_vcf_preamble(input, &col_names);
                 break;
             case DelimKind::GFF: {
-                self->preamble_lines_ = strip_prefix_preamble(input, '#', !is_gz, &put_back);
+                self->preamble_lines_ = strip_prefix_preamble(input, '#', seekable, &put_back);
                 col_names = {"seqname","source","feature","start","end",
                              "score","strand","frame","attributes"};
                 // Rebuild input with put_back then truncate to 9 fields
@@ -1404,7 +1532,7 @@ public:
                 break;
             }
             case DelimKind::SAM: {
-                self->preamble_lines_ = strip_prefix_preamble(input, '@', !is_gz, &put_back);
+                self->preamble_lines_ = strip_prefix_preamble(input, '@', seekable, &put_back);
                 col_names = {"QNAME","FLAG","RNAME","POS","MAPQ",
                              "CIGAR","RNEXT","PNEXT","TLEN","SEQ","QUAL"};
                 std::shared_ptr<arrow::io::InputStream> base =
@@ -1415,10 +1543,20 @@ public:
                 put_back.clear();
                 break;
             }
+            case DelimKind::PAF: {
+                // PAF (minimap2): 12 mandatory tab-separated columns followed
+                // by zero or more optional `tag:type:value` tokens. No header.
+                col_names = {"qname","qlen","qstart","qend","strand",
+                             "tname","tlen","tstart","tend",
+                             "nmatch","alen","mapq"};
+                input = std::make_shared<TruncateFieldsStream>(input, 12);
+                put_back.clear();
+                break;
+            }
             case DelimKind::CSV:
             case DelimKind::TSV:
                 self->preamble_lines_ = strip_tsv_csv_preamble(
-                    input, self->delimiter_, !is_gz, &put_back, &col_names);
+                    input, self->delimiter_, seekable, &put_back, &col_names);
                 break;
             default:
                 break;
@@ -1583,6 +1721,7 @@ public:
             case DelimKind::VCF: return "Format: VCF";
             case DelimKind::GFF: return "Format: GFF3/GTF";
             case DelimKind::SAM: return "Format: SAM";
+            case DelimKind::PAF: return "Format: PAF";
             case DelimKind::BED: {
                 int nf = schema_->num_fields();
                 std::string s = "Format: BED" + std::to_string(bed_level_);
@@ -1937,6 +2076,236 @@ public:
     }
 };
 
+// ── BCF source (binary VCF via htslib) ────────────────────────────────────────
+
+// Reads a BCF file via htslib's bcf_read, reformats each record to the
+// canonical VCF text line via vcf_format(), then splits into the eight
+// canonical VCF columns plus a single trailing column for any FORMAT/sample
+// data. Output schema mirrors VCF text so the existing TUI INFO-expansion
+// path keeps working unchanged.
+class BcfSource : public TabularSource {
+    std::string                              path_;
+    std::shared_ptr<arrow::Schema>           schema_;
+    std::vector<std::string>                 preamble_lines_;
+    int                                      n_samples_ = 0;
+
+    mutable htsFile*    fp_  = nullptr;
+    mutable bcf_hdr_t*  hdr_ = nullptr;
+    mutable bcf1_t*     rec_ = nullptr;
+
+    mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
+    mutable std::vector<int64_t>             batch_first_row_;
+    mutable int64_t                          rows_so_far_ = 0;
+    mutable bool                             all_read_ = false;
+
+    static constexpr int BATCH_SIZE = 32768;
+
+    arrow::Status advance(int64_t row_cap = -1) const {
+        if (all_read_) return arrow::Status::OK();
+        arrow::StringBuilder chrom_b, id_b, ref_b, alt_b, filter_b, info_b, samples_b;
+        arrow::Int64Builder  pos_b;
+        arrow::FloatBuilder  qual_b;
+
+        int cap = (row_cap > 0 && row_cap < BATCH_SIZE) ? (int)row_cap : BATCH_SIZE;
+        int count = 0, ret = 0;
+        kstring_t s = {0, 0, nullptr};
+        while (count < cap && (ret = bcf_read(fp_, hdr_, rec_)) == 0) {
+            bcf_unpack(rec_, BCF_UN_ALL);
+
+            // vcf_format renders the canonical tab-separated line. We split
+            // it on tabs to fill the eight fixed columns; anything past the
+            // 9th tab (FORMAT + samples) is kept as a single string.
+            s.l = 0;
+            if (vcf_format(hdr_, rec_, &s) < 0)
+                return arrow::Status::IOError("vcf_format failed for ", path_);
+            std::string_view line(s.s, s.l);
+            // Strip a trailing newline if present.
+            while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
+                line.remove_suffix(1);
+
+            std::array<std::string_view, 9> f;     // first 8 + tail
+            int fi = 0;
+            size_t start = 0;
+            for (size_t i = 0; i < line.size() && fi < 8; ++i) {
+                if (line[i] == '\t') { f[fi++] = line.substr(start, i - start); start = i + 1; }
+            }
+            // Field 8 (INFO) ends at the next tab or end-of-line.
+            // After it, anything else (FORMAT + sample columns) goes into f[8].
+            size_t info_end = line.find('\t', start);
+            if (fi < 8) {
+                // Pathological short line — fill remaining with "."
+                f[fi++] = (info_end == std::string_view::npos)
+                          ? line.substr(start)
+                          : line.substr(start, info_end - start);
+                while (fi < 8) f[fi++] = ".";
+                f[8] = std::string_view{};
+            } else if (info_end == std::string_view::npos) {
+                f[8] = std::string_view{};
+            } else {
+                f[8] = line.substr(info_end + 1);
+            }
+
+            ARROW_RETURN_NOT_OK(chrom_b.Append(f[0].data(), (int32_t)f[0].size()));
+            int64_t pos = 0;
+            std::from_chars(f[1].data(), f[1].data() + f[1].size(), pos);
+            ARROW_RETURN_NOT_OK(pos_b.Append(pos));
+            ARROW_RETURN_NOT_OK(id_b.Append(f[2].data(), (int32_t)f[2].size()));
+            ARROW_RETURN_NOT_OK(ref_b.Append(f[3].data(), (int32_t)f[3].size()));
+            ARROW_RETURN_NOT_OK(alt_b.Append(f[4].data(), (int32_t)f[4].size()));
+            // QUAL: "." → null
+            if (f[5] == "." || f[5].empty()) {
+                ARROW_RETURN_NOT_OK(qual_b.AppendNull());
+            } else {
+                float q = 0.0f;
+                std::from_chars(f[5].data(), f[5].data() + f[5].size(), q);
+                ARROW_RETURN_NOT_OK(qual_b.Append(q));
+            }
+            ARROW_RETURN_NOT_OK(filter_b.Append(f[6].data(), (int32_t)f[6].size()));
+            ARROW_RETURN_NOT_OK(info_b.Append  (f[7].data(), (int32_t)f[7].size()));
+            if (n_samples_ > 0)
+                ARROW_RETURN_NOT_OK(samples_b.Append(f[8].data(), (int32_t)f[8].size()));
+
+            ++count;
+        }
+        if (s.s) free(s.s);
+
+        if (ret < -1)
+            return arrow::Status::IOError("error reading BCF record from ", path_);
+        if (count == 0) { all_read_ = true; return arrow::Status::OK(); }
+        if (ret < 0) all_read_ = true;
+
+        std::vector<std::shared_ptr<arrow::Array>> a;
+        std::shared_ptr<arrow::Array> tmp;
+        ARROW_RETURN_NOT_OK(chrom_b.Finish(&tmp));  a.push_back(tmp);
+        ARROW_RETURN_NOT_OK(pos_b.Finish(&tmp));    a.push_back(tmp);
+        ARROW_RETURN_NOT_OK(id_b.Finish(&tmp));     a.push_back(tmp);
+        ARROW_RETURN_NOT_OK(ref_b.Finish(&tmp));    a.push_back(tmp);
+        ARROW_RETURN_NOT_OK(alt_b.Finish(&tmp));    a.push_back(tmp);
+        ARROW_RETURN_NOT_OK(qual_b.Finish(&tmp));   a.push_back(tmp);
+        ARROW_RETURN_NOT_OK(filter_b.Finish(&tmp)); a.push_back(tmp);
+        ARROW_RETURN_NOT_OK(info_b.Finish(&tmp));   a.push_back(tmp);
+        if (n_samples_ > 0) {
+            ARROW_RETURN_NOT_OK(samples_b.Finish(&tmp));
+            a.push_back(tmp);
+        }
+
+        auto batch = arrow::RecordBatch::Make(schema_, count, a);
+        batch_first_row_.push_back(rows_so_far_);
+        rows_so_far_ += count;
+        batches_.push_back(std::move(batch));
+        return arrow::Status::OK();
+    }
+
+public:
+    ~BcfSource() {
+        if (rec_) { bcf_destroy(rec_);     rec_ = nullptr; }
+        if (hdr_) { bcf_hdr_destroy(hdr_); hdr_ = nullptr; }
+        if (fp_)  { hts_close(fp_);        fp_  = nullptr; }
+    }
+
+    static std::string open(const std::string& path, const Config& cfg,
+                             std::unique_ptr<BcfSource>* out) {
+        auto self = std::make_unique<BcfSource>();
+        self->path_ = path;
+
+        self->fp_ = hts_open(path.c_str(), "r");
+        if (!self->fp_) return "Cannot open '" + path + "'";
+
+        int n = effective_threads(cfg);
+        if (n > 1) hts_set_threads(self->fp_, n);
+
+        self->hdr_ = bcf_hdr_read(self->fp_);
+        if (!self->hdr_) return "Cannot read BCF header from '" + path + "'";
+        self->rec_ = bcf_init();
+        if (!self->rec_) return "Out of memory allocating BCF record";
+
+        self->n_samples_ = bcf_hdr_nsamples(self->hdr_);
+
+        // Header lines (## meta-information) → preamble.
+        {
+            int n_lines = 0;
+            char** hdr_text = nullptr;
+            kstring_t hs = {0, 0, nullptr};
+            if (bcf_hdr_format(self->hdr_, /*is_bcf=*/0, &hs) == 0 && hs.s) {
+                std::istringstream iss(std::string(hs.s, hs.l));
+                std::string line;
+                int total = 0;
+                while (std::getline(iss, line)) {
+                    if (line.empty()) continue;
+                    ++total;
+                    if (total <= 20) self->preamble_lines_.push_back(line);
+                }
+                if (total > 20)
+                    self->preamble_lines_.push_back(
+                        "... (" + std::to_string(total - 20) + " more header lines)");
+            }
+            free(hs.s);
+            (void)hdr_text; (void)n_lines;
+        }
+
+        arrow::FieldVector fields = {
+            arrow::field("CHROM",  arrow::utf8()),
+            arrow::field("POS",    arrow::int64()),
+            arrow::field("ID",     arrow::utf8()),
+            arrow::field("REF",    arrow::utf8()),
+            arrow::field("ALT",    arrow::utf8()),
+            arrow::field("QUAL",   arrow::float32()),
+            arrow::field("FILTER", arrow::utf8()),
+            arrow::field("INFO",   arrow::utf8()),
+        };
+        if (self->n_samples_ > 0)
+            fields.push_back(arrow::field("FORMAT_SAMPLES", arrow::utf8()));
+        self->schema_ = arrow::schema(fields);
+
+        auto st = self->advance();
+        if (!st.ok()) return "Error reading '" + path + "': " + st.ToString();
+        *out = std::move(self);
+        return "";
+    }
+
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    int64_t total_rows() const override { return all_read_ ? rows_so_far_ : -1; }
+    int     num_chunks() const override { return (int)batches_.size(); }
+    ChunkMeta chunk_meta(int i) const override {
+        return {batch_first_row_[i], batches_[i]->num_rows()};
+    }
+    void ensure(int i) override {
+        while (!all_read_ && (int)batches_.size() <= i)
+            (void)advance();
+    }
+    arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
+                              std::shared_ptr<arrow::Table>* out) override {
+        ensure(i);
+        if (i >= (int)batches_.size())
+            return arrow::Status::IndexError("chunk ", i, " out of range");
+        *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
+        return arrow::Status::OK();
+    }
+    arrow::Status read_first(int64_t rows, const std::vector<int>& col_indices,
+                              std::shared_ptr<arrow::Table>* out) override {
+        if (batches_.empty() && !all_read_ && rows > 0)
+            ARROW_RETURN_NOT_OK(advance(rows));
+        return TabularSource::read_first(rows, col_indices, out);
+    }
+    const std::string& path() const override { return path_; }
+    std::string footer() const override {
+        return "Format: BCF  |  Samples: " + std::to_string(n_samples_);
+    }
+    std::vector<std::string> preamble_below() const override { return preamble_lines_; }
+    std::string format_cell(int col_idx, std::string val) const override {
+        if (col_idx == 1) return digits_with_sep(val);  // POS
+        return val;
+    }
+    int min_col_width(int col_idx) const override {
+        switch (col_idx) {
+            case 0:  return 6;   // CHROM
+            case 1:  return 9;   // POS
+            case 6:  return 6;   // FILTER
+            default: return 4;
+        }
+    }
+};
+
 // ── FASTA / FASTQ source (kseq.h via htslib BGZF) ─────────────────────────────
 
 KSEQ_INIT(BGZF*, bgzf_read)
@@ -2163,6 +2532,7 @@ public:
         return "";
     }
 
+public:
     std::shared_ptr<arrow::Schema> schema()    const override { return schema_; }
     int64_t total_rows()                        const override {
         return all_read_ ? total_rows_ : -1;
@@ -2199,11 +2569,89 @@ public:
 // (fends is defined above, near the preamble helpers)
 
 // Open any supported file.  Returns empty string on success; error message otherwise.
+// Read up to `n` bytes from stdin into a buffer. Used to sniff format magic
+// bytes and the first line for delimiter detection.
+static std::string sniff_stdin(size_t n, std::string* out_buf) {
+    out_buf->clear();
+    out_buf->resize(n);
+    size_t total = 0;
+    while (total < n) {
+        ssize_t got = ::read(STDIN_FILENO, out_buf->data() + total, n - total);
+        if (got == 0) break;            // EOF
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            return std::string("stdin read error: ") + std::strerror(errno);
+        }
+        total += (size_t)got;
+    }
+    out_buf->resize(total);
+    return "";
+}
+
 static std::string open_source(const std::string& path, const Config& cfg,
                                 std::unique_ptr<TabularSource>* out) {
     // ── Determine file kind ──────────────────────────────────────────────────
     bool        is_parquet = false;
     DelimKind   dk         = DelimKind::TSV;
+
+    // ── Stdin (`-`): text formats only ───────────────────────────────────────
+    if (path == "-") {
+        if (isatty(STDIN_FILENO))
+            return "Refusing to read from a terminal on stdin. "
+                   "Did you mean to pipe data in (`cat foo.tsv | vv -`)?";
+
+        std::string sniff;
+        std::string err = sniff_stdin(8, &sniff);
+        if (!err.empty()) return err;
+
+        // Reject binary formats that need a seekable file.
+        auto starts_with = [&](const char* m, size_t l) {
+            return sniff.size() >= l && std::memcmp(sniff.data(), m, l) == 0;
+        };
+        if (starts_with("PAR1", 4))
+            return "Parquet requires a seekable file; pipe to a temp file or use "
+                   "process substitution: `vv <(zcat foo.parquet.gz)`";
+        if (starts_with("ARROW1\0\0", 8))
+            return "Arrow IPC requires a seekable file; pipe to a temp file or use "
+                   "process substitution: `vv <(zcat foo.arrow.gz)`";
+        if (starts_with("FEA1", 4))
+            return "Feather requires a seekable file; pipe to a temp file or use "
+                   "process substitution: `vv <(zcat foo.feather.gz)`";
+        // BAM and BCF both share the BGZF magic 1f 8b 08 04 — treat them as
+        // binary too (we have no way to tell BAM/BCF apart from a gzip stream
+        // without seeking).
+        if (starts_with("\x1f\x8b\x08\x04", 4))
+            return "BAM/BCF/CRAM require seekable input; pipe to a temp file or use "
+                   "process substitution: `vv <(samtools view -b foo.sam)`";
+
+        // Wrap stdin as a sequential-only InputStream that reads via read(2).
+        // Avoid arrow::io::StdinStream — it uses std::cin which conflicts
+        // with the preceding raw read(2) sniff.
+        std::shared_ptr<arrow::io::InputStream> input =
+            std::make_shared<FdInputStream>(STDIN_FILENO);
+
+        bool is_gz = starts_with("\x1f\x8b", 2);   // plain gzip → wrap
+        // Reattach the sniffed bytes BEFORE the gzip wrapper sees the stream.
+        input = std::make_shared<PrependInputStream>(std::move(sniff), input);
+        if (is_gz) {
+            auto codec = arrow::util::Codec::Create(arrow::Compression::GZIP);
+            if (!codec.ok()) return codec.status().ToString();
+            auto ci = arrow::io::CompressedInputStream::Make(codec->get(), input);
+            if (!ci.ok()) return ci.status().ToString();
+            input = ci.ValueOrDie();
+        }
+
+        // Choose CSV/TSV from the user-provided flag (none → assume TSV; the
+        // header-line auto-detect in DelimitedSource will catch obvious CSV).
+        DelimKind kind = DelimKind::TSV;
+        if (cfg.delimiter == ',') kind = DelimKind::CSV;
+        std::unique_ptr<DelimitedSource> src;
+        std::string e = DelimitedSource::open_from_stream(
+            std::move(input), "-", kind, /*is_gz=*/is_gz, cfg.region, &src);
+        if (!e.empty()) return e;
+        *out = std::move(src);
+        return "";
+    }
 
     if (fends(path, ".parquet")) {
         is_parquet = true;
@@ -2222,6 +2670,12 @@ static std::string open_source(const std::string& path, const Config& cfg,
     } else if (fends(path, ".bam") || fends(path, ".cram")) {
         std::unique_ptr<BamSource> src;
         std::string err = BamSource::open(path, cfg, &src);
+        if (!err.empty()) return err;
+        *out = std::move(src);
+        return "";
+    } else if (fends(path, ".bcf")) {
+        std::unique_ptr<BcfSource> src;
+        std::string err = BcfSource::open(path, cfg, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
@@ -2251,6 +2705,8 @@ static std::string open_source(const std::string& path, const Config& cfg,
         dk = DelimKind::GFF;
     } else if (fends(path, ".sam")) {
         dk = DelimKind::SAM;
+    } else if (fends(path, ".paf") || fends(path, ".paf.gz")) {
+        dk = DelimKind::PAF;
     } else if (fends(path, ".bed")   || fends(path, ".bed.gz")) {
         dk = DelimKind::BED;
     } else if (fends(path, ".tsv")   || fends(path, ".tsv.gz")) {
@@ -2398,6 +2854,93 @@ static void write_delimited(TabularSource& src, const Config& cfg) {
 
         print_rows(*table, rg_rows);
     }
+}
+
+// ── Parquet output ───────────────────────────────────────────────────────────
+
+// Map a user-facing codec name to Arrow's enum. Returns false on error.
+static bool resolve_compression(const std::string& name,
+                                arrow::Compression::type* out) {
+    if      (name == "zstd")    *out = arrow::Compression::ZSTD;
+    else if (name == "snappy")  *out = arrow::Compression::SNAPPY;
+    else if (name == "gzip")    *out = arrow::Compression::GZIP;
+    else if (name == "lz4")     *out = arrow::Compression::LZ4;
+    else if (name == "none" ||
+             name == "uncompressed") *out = arrow::Compression::UNCOMPRESSED;
+    else return false;
+    return true;
+}
+
+// Stream the source's chunks into a Parquet file at cfg.parquet_out.
+// Returns "" on success, an error message otherwise. Writes an
+// "[N rows -> path]" summary to stderr on success.
+static std::string write_parquet(TabularSource& src, const Config& cfg) {
+    arrow::Compression::type codec;
+    if (!resolve_compression(cfg.compression, &codec))
+        return "Unknown --compression '" + cfg.compression +
+               "' (try: zstd, snappy, gzip, lz4, none)";
+
+    int show_cols = (cfg.max_cols > 0)
+                    ? std::min(cfg.max_cols, src.schema()->num_fields())
+                    : src.schema()->num_fields();
+    std::vector<int> col_indices;
+    for (int i = 0; i < show_cols; ++i) col_indices.push_back(i);
+
+    // Build the projected schema (so -c works for output too).
+    arrow::FieldVector fields;
+    for (int i : col_indices) fields.push_back(src.schema()->field(i));
+    auto out_schema = arrow::schema(fields);
+
+    auto sink_or = arrow::io::FileOutputStream::Open(cfg.parquet_out);
+    if (!sink_or.ok())
+        return "Cannot open '" + cfg.parquet_out + "' for write: " +
+               sink_or.status().ToString();
+    auto sink = sink_or.ValueOrDie();
+
+    auto wprops = parquet::WriterProperties::Builder()
+                      .compression(codec)
+                      ->created_by("vv " + std::string(kVersion))
+                      ->build();
+    auto aprops = parquet::ArrowWriterProperties::Builder()
+                      .store_schema()        // round-trip Arrow types
+                      ->build();
+
+    auto writer_or = parquet::arrow::FileWriter::Open(
+        *out_schema, arrow::default_memory_pool(), sink, wprops, aprops);
+    if (!writer_or.ok())
+        return "Parquet writer init failed: " + writer_or.status().ToString();
+    auto writer = std::move(writer_or).ValueOrDie();
+
+    int64_t rows_left = (cfg.head_rows <= 0) ? INT64_MAX : (int64_t)cfg.head_rows;
+    int64_t total = 0;
+    for (int c = 0; rows_left > 0; ++c) {
+        src.ensure(c);
+        if (c >= src.num_chunks()) break;
+        std::shared_ptr<arrow::Table> table;
+        auto st = src.read_chunk(c, col_indices, &table);
+        if (!st.ok()) {
+            std::fprintf(stderr, "Warning: error reading chunk %d: %s\n",
+                         c, st.ToString().c_str());
+            continue;
+        }
+        int64_t take = std::min(table->num_rows(), rows_left);
+        if (take < table->num_rows()) table = table->Slice(0, take);
+        st = writer->WriteTable(*table, table->num_rows());
+        if (!st.ok()) return "WriteTable failed: " + st.ToString();
+        total += take;
+        rows_left -= take;
+    }
+
+    auto cs = writer->Close();
+    if (!cs.ok()) return "Parquet Close failed: " + cs.ToString();
+    auto fc = sink->Close();
+    if (!fc.ok()) return "File close failed: " + fc.ToString();
+
+    std::fprintf(stderr, "%s[%lld rows → %s, %s]%s\n",
+                 g_color.meta_key, (long long)total,
+                 cfg.parquet_out.c_str(), cfg.compression.c_str(),
+                 g_color.reset);
+    return "";
 }
 
 // ── Interactive TUI viewer (ncurses) ─────────────────────────────────────────
@@ -2568,9 +3111,38 @@ class TableTUI {
     SearchMode  search_mode_  = SearchMode::None;
     std::string search_input_;   // text being typed in the search bar
     std::string search_query_;   // committed query (empty = no active search)
-    int64_t     search_row_   = -1;   // row highlighted by last match (-1 = none)
+    int64_t     search_row_   = -1;   // row of the focused match (-1 = none)
     bool        search_wrap_  = false;  // last search wrapped around
     bool        search_fail_  = false;  // last search found nothing
+    bool        search_dir_forward_ = true;  // direction of the last `/` or `?`
+    std::optional<std::regex> search_regex_;       // ECMAScript icase, valid only if…
+    bool        search_regex_valid_ = false;       // …regex compiled successfully
+
+    // Compile the active search query as a case-insensitive ECMAScript regex.
+    // Falls back to literal substring matching if the pattern is invalid.
+    void compile_search() {
+        search_regex_.reset();
+        search_regex_valid_ = false;
+        if (search_query_.empty()) return;
+        try {
+            search_regex_.emplace(search_query_,
+                std::regex_constants::ECMAScript |
+                std::regex_constants::icase      |
+                std::regex_constants::optimize);
+            search_regex_valid_ = true;
+        } catch (const std::regex_error&) {
+            // Leave search_regex_ unset — find_next() falls back to literal.
+        }
+    }
+
+    // True if `val` matches the active search (regex or literal substring).
+    bool cell_matches(const std::string& val,
+                      const std::string& lowered_query) const {
+        if (search_regex_valid_) return std::regex_search(val, *search_regex_);
+        std::string lo = val;
+        for (auto& c : lo) c = (char)std::tolower((unsigned char)c);
+        return lo.find(lowered_query) != std::string::npos;
+    }
 
     // ── Detail pane state ────────────────────────────────────────────────────
     int64_t     detail_row_   = -1;  // -1 = pane closed
@@ -2599,15 +3171,13 @@ class TableTUI {
 
         int nc = src_.num_chunks();
 
-        // Check one row: returns true if any column contains q (case-insensitive).
+        // Check one row: returns true if any column matches the active search.
         auto row_matches = [&](const std::shared_ptr<arrow::Table>& tbl, int64_t local) -> bool {
             for (int col = 0; col < src_num_cols_ && col < tbl->num_columns(); ++col) {
                 int64_t off = local;
                 for (auto& arr : tbl->column(col)->chunks()) {
                     if (off < arr->length()) {
-                        std::string val = cell_to_string(*arr, off);
-                        for (auto& c : val) c = (char)std::tolower((unsigned char)c);
-                        if (val.find(q) != std::string::npos) return true;
+                        if (cell_matches(cell_to_string(*arr, off), q)) return true;
                         break;
                     }
                     off -= arr->length();
@@ -2676,6 +3246,35 @@ class TableTUI {
         } else {
             search_fail_ = true;
         }
+    }
+
+    // True if `row` matches the active search, *without* loading new chunks.
+    // Used by draw_data_row to highlight every visible match — only consults
+    // already-cached cells. Returns false if the row's chunk isn't loaded.
+    bool row_matches_search(int64_t row) const {
+        if (search_mode_ != SearchMode::Active || search_query_.empty()) return false;
+        if (src_.num_chunks() == 0) return false;
+        int c = chunk_for_row(row);
+        auto it = cache_.find(c);
+        if (it == cache_.end() || !it->second.ok) return false;
+        const CachedRG& cr = it->second;
+        int64_t local = row - cr.first_row;
+        if (local < 0 || local >= cr.num_rows) return false;
+        std::string q = search_query_;
+        for (auto& c2 : q) c2 = (char)std::tolower((unsigned char)c2);
+        for (int col = 0; col < (int)cr.cols.size(); ++col) {
+            auto arr = cr.cols[col];
+            if (!arr) continue;
+            int64_t off = local;
+            for (auto& chunk : arr->chunks()) {
+                if (off < chunk->length()) {
+                    if (cell_matches(cell_to_string(*chunk, off), q)) return true;
+                    break;
+                }
+                off -= chunk->length();
+            }
+        }
+        return false;
     }
 
     // ── Cache ────────────────────────────────────────────────────────────────
@@ -2898,7 +3497,8 @@ class TableTUI {
         int64_t tr = total_rows();
         if (tr >= 0 && row >= tr) return;
 
-        bool is_match = (row == search_row_);
+        bool is_focused = (row == search_row_);                        // n/N target
+        bool is_match   = is_focused || row_matches_search(row);       // any visible hit
         int  zo = (zebra_enabled_ && !is_match && ((row - top_row_) % 2 == 1))
                   ? ZEBRA_OFFSET : 0;
         auto zpair = [&](int cp) {
@@ -2915,7 +3515,9 @@ class TableTUI {
 
         if (!no_index_) {
             std::string idx_s = " " + fit(digits_with_sep(std::to_string(row)), idx_w_, true) + " ";
-            if (is_match) nc_str(sy, 0, idx_s, A_BOLD, NCP_SEARCH);
+            if (is_match) nc_str(sy, 0, idx_s,
+                                 is_focused ? (attr_t)(A_BOLD | A_REVERSE) : A_NORMAL,
+                                 NCP_SEARCH);
             else          nc_str(sy, 0, idx_s, A_NORMAL, NCP_INDEX + zo);
         }
 
@@ -2936,9 +3538,12 @@ class TableTUI {
                                       &parsed, &parsed_row, local);
 
             if (is_match) {
-                // Whole row rendered with NCP_SEARCH highlight
+                // Whole row rendered with NCP_SEARCH highlight; the n/N
+                // focused row gets reverse video so it stands out among the
+                // other visible matches.
                 nc_str(sy, col.x, " " + fit(val, col.w, right_align_[col.col]) + " ",
-                       A_BOLD, NCP_SEARCH);
+                       is_focused ? (attr_t)(A_BOLD | A_REVERSE) : A_BOLD,
+                       NCP_SEARCH);
                 continue;
             }
 
@@ -2967,7 +3572,8 @@ class TableTUI {
     void draw_status(const std::vector<ColVis>& vc) {
         // ── Search-input mode: show a vim-style search bar ───────────────────
         if (search_mode_ == SearchMode::Input) {
-            std::string bar = "/" + search_input_;
+            char prefix = search_dir_forward_ ? '/' : '?';
+            std::string bar = std::string(1, prefix) + search_input_;
             if ((int)bar.size() < scr_c_) bar += std::string(scr_c_ - (int)bar.size(), ' ');
             mvaddnstr(scr_r_ - 1, 0, bar.c_str(), scr_c_);
             // Position the cursor after the typed text
@@ -2995,14 +3601,17 @@ class TableTUI {
         }
         // Show search state
         if (search_mode_ == SearchMode::Active && !search_query_.empty()) {
-            s += "  /" + search_query_;
+            s += search_dir_forward_ ? "  /" : "  ?";
+            s += search_query_;
+            if (!search_regex_valid_ && !search_query_.empty())
+                s += " (literal)";
             if (search_fail_)         s += " (not found)";
             else if (search_wrap_)    s += " (wrapped)";
             s += "  [n/N]:next/prev  [Esc]:clear";
         } else {
             bool need_lr = left_col_ > 0 || (!vc.empty() && vc.back().col < num_cols_-1);
             if (need_lr) s += "  [h/l]:←→col  [,/.]:narrow/widen";
-            s += "  [^/v/j/k]:rows  PgUp/Dn  g/G:top/bot  /:search  Enter:detail  q:quit";
+            s += "  [^/v/j/k]:rows  PgUp/Dn  g/G:top/bot  / ?:search  Enter:detail  q:quit";
         }
         if ((int)s.size() < scr_c_) s += std::string(scr_c_ - (int)s.size(), ' ');
         attron(A_REVERSE);
@@ -3362,12 +3971,15 @@ public:
                 if (ch == '\n' || ch == KEY_ENTER) {
                     if (!search_input_.empty()) {
                         search_query_ = search_input_;
+                        compile_search();
                         search_mode_  = SearchMode::Active;
                         search_row_   = -1;
-                        do_search(true);
+                        do_search(search_dir_forward_);
                     } else {
                         search_mode_  = SearchMode::None;
                         search_query_.clear();
+                        search_regex_.reset();
+                        search_regex_valid_ = false;
                         search_row_   = -1;
                     }
                 } else if (ch == 27) {    // Esc — cancel
@@ -3415,6 +4027,8 @@ public:
                     if (search_mode_ == SearchMode::Active) {
                         search_mode_  = SearchMode::None;
                         search_query_.clear();
+                        search_regex_.reset();
+                        search_regex_valid_ = false;
                         search_row_   = -1;
                         search_fail_  = false;
                     } else {
@@ -3455,12 +4069,18 @@ public:
                 case '/':
                     search_mode_  = SearchMode::Input;
                     search_input_.clear();
+                    search_dir_forward_ = true;
+                    break;
+                case '?':
+                    search_mode_  = SearchMode::Input;
+                    search_input_.clear();
+                    search_dir_forward_ = false;
                     break;
                 case 'n':
-                    if (!search_query_.empty()) do_search(true);
+                    if (!search_query_.empty()) do_search(search_dir_forward_);
                     break;
                 case 'N':
-                    if (!search_query_.empty()) do_search(false);
+                    if (!search_query_.empty()) do_search(!search_dir_forward_);
                     break;
                 case KEY_RESIZE: break;
                 default: break;
@@ -3473,6 +4093,165 @@ public:
 };
 
 // ── Table display (non-interactive) ──────────────────────────────────────────
+
+// Detect terminal width. Falls back to $COLUMNS, then 80.
+static int detect_terminal_width() {
+    struct winsize ws;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
+        return ws.ws_col;
+    if (const char* c = std::getenv("COLUMNS")) {
+        int w = std::atoi(c);
+        if (w > 0) return w;
+    }
+    return 80;
+}
+
+// "Vertical head": transpose the preview so each field is a row and each
+// record is a column. Show as many record-columns as fit in the terminal so
+// wide tables can be scanned by scrolling vertically. Default when the
+// binary is invoked as `vh`; opt in elsewhere with `--vertical`.
+static void print_vertical_table(TabularSource& src, const Config& cfg) {
+    auto schema     = src.schema();
+    int  n_fields   = schema->num_fields();
+    int  show_fields = (cfg.max_cols > 0)
+                        ? std::min(cfg.max_cols, n_fields) : n_fields;
+    int64_t tr          = src.total_rows();
+    int64_t rows_wanted = (cfg.head_rows <= 0) ? (tr >= 0 ? tr : INT64_MAX)
+                                               : (int64_t)cfg.head_rows;
+
+    std::vector<int> col_indices;
+    for (int i = 0; i < show_fields; ++i) col_indices.push_back(i);
+
+    std::shared_ptr<arrow::Table> data;
+    if (cfg.head_rows > 0) {
+        (void)src.read_first(rows_wanted, col_indices, &data);
+    } else {
+        for (int c = 0; ; ++c) {
+            src.ensure(c);
+            if (c >= src.num_chunks()) break;
+            std::shared_ptr<arrow::Table> chunk;
+            if (!src.read_chunk(c, col_indices, &chunk).ok()) continue;
+            if (!data) { data = chunk; }
+            else {
+                auto r = arrow::ConcatenateTables({data, chunk});
+                if (r.ok()) data = r.ValueOrDie();
+            }
+        }
+    }
+    if (!data || data->num_rows() == 0) {
+        std::printf("[0 rows x %d columns]\n", n_fields);
+        return;
+    }
+
+    int64_t n_records = data->num_rows();
+
+    // Per-field flag: integer columns skip the max_col_w truncation.
+    std::vector<bool> field_is_int(show_fields);
+    for (int f = 0; f < show_fields; ++f)
+        field_is_int[f] = is_integer_type(schema->field(f)->type()->id());
+
+    // Pre-render every cell into rendered[record][field].
+    std::vector<std::vector<std::string>> rendered(n_records,
+        std::vector<std::string>(show_fields));
+    for (int f = 0; f < show_fields; ++f) {
+        auto arr_col = data->column(f);
+        int64_t row = 0;
+        for (auto& chunk : arr_col->chunks()) {
+            for (int64_t r = 0; r < chunk->length(); ++r, ++row) {
+                std::string val = src.format_cell(f,
+                    cell_to_display_string(*chunk, r));
+                if (!field_is_int[f]) val = truncate(std::move(val), cfg.max_col_w);
+                rendered[row][f] = std::move(val);
+            }
+        }
+    }
+
+    // Field-name column (left-most): cells are the field names.
+    Column field_col;
+    field_col.header      = "field";
+    field_col.right_align = false;
+    field_col.is_index    = true;            // dim-grey foreground
+    field_col.width       = (int)display_width(field_col.header);
+    for (int f = 0; f < show_fields; ++f) {
+        std::string name = schema->field(f)->name();
+        if ((int)display_width(name) > field_col.width)
+            field_col.width = (int)display_width(name);
+        field_col.cells.push_back(std::move(name));
+    }
+
+    // Record columns: one per visible record.
+    std::vector<Column> rec_cols(n_records);
+    for (int64_t r = 0; r < n_records; ++r) {
+        Column& c    = rec_cols[r];
+        c.header     = "#" + std::to_string(r);
+        c.right_align = false;               // mixed types per cell — see ra below
+        c.width      = (int)display_width(c.header);
+        c.cells.resize(show_fields);
+        for (int f = 0; f < show_fields; ++f) {
+            c.cells[f] = rendered[r][f];
+            int w = (int)display_width(c.cells[f]);
+            if (w > c.width) c.width = w;
+        }
+    }
+
+    // Fit as many record columns as the terminal width allows.
+    // Each rendered column contributes "| <pad>value<pad> " = 1 + 2 + width chars.
+    // Plus a final '|' at the end of the line.
+    int term_w = detect_terminal_width();
+    auto col_chars = [](int w) { return 1 + 2 + w; };
+    int used = 1 /* trailing | */ + col_chars(field_col.width);
+    int max_records = 0;
+    for (int64_t r = 0; r < n_records; ++r) {
+        int need = col_chars(rec_cols[r].width);
+        if (used + need > term_w && max_records > 0) break;
+        used += need;
+        ++max_records;
+    }
+    if (max_records == 0) max_records = 1;   // always show at least one record
+
+    std::vector<Column> columns;
+    columns.reserve(1 + max_records);
+    columns.push_back(std::move(field_col));
+    for (int r = 0; r < max_records; ++r)
+        columns.push_back(std::move(rec_cols[r]));
+
+    // Format-specific lines (BED track/browser etc.)
+    for (auto& line : src.preamble_above())
+        std::printf("%s%s%s\n", g_color.meta_key, line.c_str(), g_color.reset);
+
+    draw_separator(columns, SepKind::Top);
+    {
+        std::vector<std::string> hdr; std::vector<bool> ra;
+        for (auto& c : columns) { hdr.push_back(c.header); ra.push_back(false); }
+        draw_row(columns, hdr, ra, /*is_header=*/true);
+    }
+    draw_separator(columns, SepKind::Middle);
+    for (int f = 0; f < show_fields; ++f) {
+        std::vector<std::string> row;
+        std::vector<bool> ra;
+        // Field-name column: left-aligned. Record columns: right-aligned
+        // for every type, so values line up against the next field's column.
+        for (size_t i = 0; i < columns.size(); ++i) {
+            row.push_back(columns[i].cells[f]);
+            ra.push_back(i != 0);
+        }
+        draw_row(columns, row, ra);
+    }
+    draw_separator(columns, SepKind::Bottom);
+
+    if (max_records < (int64_t)n_records)
+        std::printf("  ... %lld more record(s) not shown (widen terminal, "
+                    "lower -w, or pipe to less -S)\n",
+                    (long long)(n_records - max_records));
+    if (show_fields < n_fields)
+        std::printf("  ... %d more field(s) not shown (-c 0 to see all)\n",
+                    n_fields - show_fields);
+
+    int64_t total = (tr >= 0) ? tr : n_records;
+    std::printf("\n%s[%lld rows x %d columns]%s  vertical: %lld record(s) shown\n",
+                g_color.meta_key, (long long)total, n_fields,
+                g_color.reset, (long long)max_records);
+}
 
 static void print_table(TabularSource& src, const Config& cfg) {
     auto schema = src.schema();
@@ -3552,17 +4331,17 @@ static void print_table(TabularSource& src, const Config& cfg) {
     for (auto& line : src.preamble_above())
         std::printf("%s%s%s\n", g_color.meta_key, line.c_str(), g_color.reset);
 
-    draw_separator(columns);
+    draw_separator(columns, SepKind::Top);
     { std::vector<std::string> hdr; std::vector<bool> ra;
       for (auto& c : columns) { hdr.push_back(c.header); ra.push_back(false); }
       draw_row(columns, hdr, ra, true); }
-    draw_separator(columns);
+    draw_separator(columns, SepKind::Middle);
     for (int64_t r = 0; r < n_display; ++r) {
         std::vector<std::string> row; std::vector<bool> ra;
         for (auto& c : columns) { row.push_back(c.cells[r]); ra.push_back(c.right_align); }
         draw_row(columns, row, ra);
     }
-    draw_separator(columns);
+    draw_separator(columns, SepKind::Bottom);
 
     if (show_cols < num_cols)
         std::printf("  ... %d more column(s) not shown (-c 0 to see all)\n",
@@ -3706,7 +4485,9 @@ int main(int argc, char** argv) {
 
     // Interactive viewer
     {
-        bool auto_tui = !cfg.no_interactive && !cfg.delimiter && !cfg.head_rows_set
+        bool auto_tui = !cfg.no_interactive && !cfg.delimiter && !cfg.vertical
+                        && cfg.parquet_out.empty()
+                        && !cfg.head_rows_set
                         && isatty(STDOUT_FILENO) && isatty(STDIN_FILENO);
         if (cfg.interactive || auto_tui) {
             TableTUI tui(*src, cfg);
@@ -3725,7 +4506,20 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // Parquet output
+    if (!cfg.parquet_out.empty()) {
+        Config pcfg = cfg;
+        if (!pcfg.head_rows_set) pcfg.head_rows = 0;  // default to "all rows"
+        std::string err = write_parquet(*src, pcfg);
+        if (!err.empty()) {
+            report(cfg.path, err);
+            return 1;
+        }
+        return 0;
+    }
+
     // Table display
-    print_table(*src, cfg);
+    if (cfg.vertical) print_vertical_table(*src, cfg);
+    else              print_table(*src, cfg);
     return 0;
 }

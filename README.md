@@ -43,13 +43,14 @@ See [INSTALL.md](INSTALL.md) for source builds, AUR, and the static AlmaLinux
 |-------------------|------------------------------------------------------------|
 | Apache Parquet    | `.parquet`                                                 |
 | Arrow IPC, Feather| `.arrow`, `.feather`                                       |
-| Sequence alignments | `.bam`, `.cram`, `.sam`                                  |
-| Variant calls     | `.vcf`, `.vcf.gz`                                          |
+| Sequence alignments | `.bam`, `.cram`, `.sam`, `.paf`/`.paf.gz` (minimap2)     |
+| Variant calls     | `.vcf`, `.vcf.gz`, `.bcf` (binary VCF via htslib)          |
 | Genome annotation | `.gff`, `.gff3`, `.gtf` (plus `.gz`)                       |
 | Genomic intervals | `.bed`, `.bed.gz`                                          |
 | Sequences (FASTA) | `.fa`, `.fasta`, `.fna`, `.faa`, `.ffn`, `.frn` (plus `.gz`) |
 | Sequencing reads  | `.fq`, `.fastq` (plus `.gz`)                               |
 | Delimited text    | `.tsv`, `.csv` (plus `.gz`)                                |
+| Stdin             | `vv -` reads any text format from stdin (auto-gunzip)      |
 
 Unknown extensions are auto-detected by magic bytes (Parquet, Arrow IPC,
 Feather) or delimiter heuristic (TSV vs. CSV).
@@ -62,7 +63,9 @@ Feather) or delimiter heuristic (TSV vs. CSV).
   and maps `{key: value, ...}` use Python-style brackets and preserve at
   least the first element when truncated.
 - **Interactive TUI** — ncurses row browser with hjkl/arrows navigation,
-  PgUp/PgDn, `g`/`G`, `/` search (case-insensitive, `n`/`N` next/prev),
+  PgUp/PgDn, `g`/`G`, `less`-style search with `/` (forward) and `?`
+  (backward), case-insensitive ECMAScript regex with literal fallback,
+  `n`/`N` next/prev (direction-aware), all visible matches highlighted,
   Enter for row detail, `,`/`.` to narrow / widen the current column.
   Lazy-loads only the chunks currently on screen.
 - **Tabix range queries** — `-r chr1:1000-2000` filters tabix-indexed
@@ -71,6 +74,11 @@ Feather) or delimiter heuristic (TSV vs. CSV).
 - **Multi-threaded I/O** — `-@ N` (samtools convention) drives Arrow's CPU
   pool, BAM/CRAM htslib threads, and BGZF threads for FASTA/FASTQ; auto-
   detects threads when unset.
+- **`vh` (vertical head)** — `vh file.parquet` (or `vv --vertical`) shows a
+  transposed preview where each field is a row and each record is a
+  column; as many records as fit in the terminal width are displayed.
+  Wide tables can be browsed by scrolling vertically instead of
+  horizontally. `vh` is a symlink to the same binary.
 - **Fast partial reads** — `-n 100` on a 5 GB Parquet decodes only the row
   groups it needs. Lazy Arrow IPC opens 10 GB files in milliseconds.
 - **Full Arrow type support** — integers, floats, booleans, strings,
@@ -78,6 +86,11 @@ Feather) or delimiter heuristic (TSV vs. CSV).
   encoded columns (decoded transparently).
 - **TSV / CSV export** — `--tsv` / `--csv` streams the file (or first *N*
   rows) with RFC 4180 quoting.
+- **Parquet output** — `--parquet OUT` converts any supported input
+  (BED, TSV, CSV, VCF, BCF, FASTA, FASTQ, BAM, …) into a Parquet file.
+  Compression via `--compression {zstd,snappy,gzip,lz4,none}` (default
+  zstd). Streams chunk-by-chunk so multi-GB inputs don't need to fit in
+  RAM.
 - **Schema + metadata footer** — column types, nullability, row count,
   row groups, compressed size, creator string.
 - **Color output** — auto-detected; rich colors on a terminal, plain text
@@ -127,6 +140,15 @@ vv -@ 4 -n 1000 alignments.bam
 
 # Export FASTQ as a TSV table
 vv --tsv reads.fq.gz > reads.tsv
+
+# Pipe TSV through vv from stdin (auto-detects gzip)
+zcat huge.tsv.gz | vv -
+
+# Convert a BED file to Parquet (zstd by default)
+vv --parquet peaks.parquet peaks.bed
+
+# Convert a tabix-filtered VCF region to Parquet, snappy-compressed
+vv -r chr1:1000000-2000000 --parquet region.parquet --compression snappy variants.vcf.gz
 
 # CSV with a custom column count
 vv -c 5 -n 20 metadata.csv
