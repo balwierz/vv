@@ -20,10 +20,11 @@ visible-value-per-line ratio.
   cousin of `-r`. Tiny grammar: `<col> <op> <literal>` chained with
   AND/OR; ops `== != < <= > >=`; literals: int / float / quoted
   string. Reuse the manual filter machinery built for LociSSD ranges.
-- `--sample N` — random N rows instead of just the first N. Useful for
-  a representative preview on huge sorted files.
-- `--unique COL[,COL,...]` — distinct value counts. Cheap on
-  dictionary-encoded Parquet columns.
+- ~~`--sample N`~~ — random N rows instead of just the first N.
+  *Done — reservoir sampling, honours `--filter`.*
+- ~~`--unique COL[,COL,...]`~~ — distinct value counts.
+  *Done — top-50 per column with overflow indicator, honours
+  `--filter`.*
 
 ## Range / region (genomics core)
 
@@ -44,9 +45,9 @@ visible-value-per-line ratio.
   `--ndjson` writes one JSON object per row. Common for piping to
   `jq` or feeding data pipelines.
 - Markdown output — `--md` for pasting into reports / issues.
-- `--stats-only` — Parquet metadata footer dump (row groups, sizes,
-  codecs, per-column stats) without reading any data. Lots of demand
-  for understanding inherited Parquet files.
+- ~~`--stats`~~ — Parquet metadata footer dump (row groups, sizes,
+  codecs, per-column compressed/uncompressed sizes, null counts)
+  without reading any data. *Done.*
 - `--validate` — LociSSD invariants check (sort order monotone,
   MaxEndSoFar consistent with End, manifest matches schema and
   per-chromosome row counts).

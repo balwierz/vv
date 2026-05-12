@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`--stats`** — Parquet metadata dump (row groups, codecs, per-column
+  compressed / uncompressed sizes, null counts) without reading any
+  data. Falls back to `--schema` for non-Parquet sources.
+- **`--unique COL[,COL,...]`** — distinct value counts per column.
+  Top-50 values per column with overflow indicator. Honours `--filter`.
+- **`--sample N`** — reservoir-sample N rows uniformly instead of
+  head-N. Honours `--filter` (filter first, then sample). Combines
+  with every view / export mode through a new in-memory
+  `MemoryTableSource` adapter that wraps the sampled Arrow Table and
+  routes it through the normal rendering pipeline.
 - **`--schema`** — print the schema + file metadata footer and exit.
   Cheap, useful for inherited files.
 - **`--describe`** — per-column statistics: count, nulls, min, max,

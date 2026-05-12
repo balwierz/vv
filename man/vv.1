@@ -90,6 +90,24 @@ distinct count (string, capped at 16). Respects \fB\-\-select\fR
 and \fB\-\-filter\fR. Currently scans the data; doesn't yet read
 Parquet's per-row-group statistics.
 .TP
+.B \-\-stats
+Print Parquet metadata (row groups, compressed / uncompressed sizes,
+codecs, per-column sizes and null counts) without decoding any data.
+For non-Parquet sources, falls back to \fB\-\-schema\fR. Useful for
+"what's in this 50 GB file from a colleague?".
+.TP
+.BI \-\-unique " cols"
+Distinct-value counts per column, comma-separated. Each block lists up
+to 50 most frequent values; further values are summarised. Respects
+\fB\-\-filter\fR.
+.TP
+.BI \-\-sample " N"
+Uniformly random N rows (reservoir sampling) instead of head-N. The
+sample is the row set; combine with \fB\-\-tsv\fR, \fB\-\-parquet\fR,
+or any view mode for output. Honours \fB\-\-filter\fR (filter first,
+then sample). Reads the whole file; document upstream if you only want
+sample-from-the-first-M-rows.
+.TP
 .B \-\-no\-index
 Suppress the row-index column.
 .TP

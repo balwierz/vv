@@ -44,6 +44,9 @@ _vv() {
         '--filter+[Row predicate]:expr:' \
         '--schema[Print schema and exit]' \
         '--describe[Per-column statistics]' \
+        '--stats[Parquet metadata dump]' \
+        '--unique+[Distinct value counts]:cols:' \
+        '--sample+[Reservoir-sample N rows]:n:' \
         "*:file:_files -g '${(j:|:)file_exts}'"
 }
 

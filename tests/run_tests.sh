@@ -150,6 +150,24 @@ assert_contains "select_unknown_column_errors" "$BAD_COL" "unknown"
 BAD_FILTER=$("$VV" --tsv --filter 'BogusCol > 0' "$DATA/tiny.lociss" 2>&1 || true)
 assert_contains "filter_unknown_column_errors" "$BAD_FILTER" "unknown"
 
+# --stats: per-column rollup on a Parquet file.
+STATS_OUT=$("$VV" --stats "$DATA/tiny.lociss")
+assert_contains "stats_has_row_groups" "$STATS_OUT" "Row groups:"
+assert_contains "stats_has_codec_column" "$STATS_OUT" "zstd"
+
+# --unique: distinct value counts.
+UNIQ_OUT=$("$VV" --unique Chromosome "$DATA/tiny.lociss")
+assert_contains "unique_lists_chr1" "$UNIQ_OUT" "chr1"
+assert_contains "unique_counts_2_distinct" "$UNIQ_OUT" "2 distinct"
+BAD_UNIQ=$("$VV" --unique BogusCol "$DATA/tiny.lociss" 2>&1 || true)
+assert_contains "unique_unknown_column_errors" "$BAD_UNIQ" "unknown"
+
+# --sample: pulls a subset and preserves the hidden-column convention.
+SAMPLE_OUT=$("$VV" --tsv --no-header --sample 2 "$DATA/tiny.lociss" | wc -l)
+assert_eq_file_inline "sample_returns_two_rows" "$SAMPLE_OUT" "2"
+SAMPLE_BIG=$("$VV" --tsv --no-header --sample 100 "$DATA/tiny.lociss" | wc -l)
+assert_eq_file_inline "sample_more_than_total_returns_all" "$SAMPLE_BIG" "5"
+
 echo
 echo "── Threading parity ──────────────────────────────────────"
 "$VV" --tsv --no-header -@ 1 "$DATA/tiny.parquet" > "$TMP/t1.out"

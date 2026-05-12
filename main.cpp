@@ -37,6 +37,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <random>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -152,6 +153,9 @@ struct Config {
     bool        vertical       = false;  // --vertical (or invoked as `vh`)
     bool        schema_only    = false;  // --schema: print schema + footer, exit
     bool        describe       = false;  // --describe: per-column statistics
+    bool        stats_only     = false;  // --stats: Parquet metadata dump (no data read)
+    std::string unique_cols;             // --unique COL[,COL,...] : distinct value counts
+    int         sample_n       = 0;      // --sample N (reservoir sample of N rows)
     std::string filter_expr;             // --filter "<col> <op> <literal> ..."
     std::string select_cols;             // --select Chr,Start,End (name-based projection)
     bool        json_array     = false;  // --json
@@ -203,6 +207,10 @@ static void print_usage(const char* prog) {
         "                      ops: == != < <= > >=  e.g. --filter 'Score > 0.5'\n"
         "  --schema            print schema + file metadata and exit\n"
         "  --describe          per-column statistics and exit\n"
+        "  --stats             print Parquet metadata footer (row groups, codecs,\n"
+        "                      per-column sizes) without reading data; exit\n"
+        "  --unique <cols>     comma-separated columns: print distinct-value counts\n"
+        "  --sample <N>        reservoir-sample N rows uniformly instead of head-N\n"
         "  --no-index          suppress the row-index column\n"
         "  --color[=WHEN]      colorize output: auto (default), always, never\n"
         "  --vertical          \"vertical head\": transpose the preview so each\n"
@@ -284,6 +292,12 @@ static Config parse_args(int argc, char** argv) {
             cfg.schema_only = true;
         } else if (!std::strcmp(argv[i], "--describe")) {
             cfg.describe = true;
+        } else if (!std::strcmp(argv[i], "--stats")) {
+            cfg.stats_only = true;
+        } else if (!std::strcmp(argv[i], "--unique") && i + 1 < argc) {
+            cfg.unique_cols = argv[++i];
+        } else if (!std::strcmp(argv[i], "--sample") && i + 1 < argc) {
+            cfg.sample_n = std::max(0, std::atoi(argv[++i]));
         } else if (!std::strcmp(argv[i], "--filter") && i + 1 < argc) {
             cfg.filter_expr = argv[++i];
         } else if ((!std::strcmp(argv[i], "--select") ||
@@ -2185,6 +2199,12 @@ public:
         return s;
     }
     std::string created_by() const override { return meta_->created_by(); }
+    // Accessors used by --stats to walk per-row-group and per-column metadata
+    // without re-opening the file.
+    std::shared_ptr<parquet::FileMetaData> parquet_meta() const { return meta_; }
+    std::vector<int> parquet_arrow_leaves_for(int field_idx) const {
+        return arrow_to_leaf_indices({field_idx});
+    }
     std::vector<std::string> hidden_for_display() const override {
         // LociSSD's MaxEndSoFar is a technical derived column; hide it
         // from human-facing views. Delimited / Parquet output keep it.
@@ -3717,6 +3737,48 @@ static void write_delimited(TabularSource& src, const Config& cfg) {
     }
 }
 
+// ── In-memory adapter: wrap an Arrow Table as a TabularSource ────────────────
+//
+// Used by `--sample` (and potentially future row-selecting flags) to feed
+// a pre-computed Table through the normal rendering / export pipeline as
+// if it had been read from a file.
+class MemoryTableSource : public TabularSource {
+    std::shared_ptr<arrow::Table>    table_;
+    std::string                       label_;
+    std::string                       footer_str_;
+    std::vector<std::string>          hidden_;
+public:
+    MemoryTableSource(std::shared_ptr<arrow::Table> t,
+                       std::string label, std::string footer,
+                       std::vector<std::string> hidden = {})
+        : table_(std::move(t)),
+          label_(std::move(label)),
+          footer_str_(std::move(footer)),
+          hidden_(std::move(hidden)) {}
+
+    std::shared_ptr<arrow::Schema> schema() const override { return table_->schema(); }
+    int64_t total_rows() const override { return table_->num_rows(); }
+    int     num_chunks() const override { return 1; }
+    ChunkMeta chunk_meta(int) const override {
+        return {0, table_->num_rows()};
+    }
+    arrow::Status read_chunk(int /*i*/, const std::vector<int>& col_indices,
+                              std::shared_ptr<arrow::Table>* out) override {
+        std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
+        arrow::FieldVector fields;
+        for (int c : col_indices) {
+            cols.push_back(table_->column(c));
+            fields.push_back(table_->schema()->field(c));
+        }
+        *out = arrow::Table::Make(arrow::schema(fields), cols,
+                                  table_->num_rows());
+        return arrow::Status::OK();
+    }
+    const std::string& path() const override { return label_; }
+    std::string footer() const override { return footer_str_; }
+    std::vector<std::string> hidden_for_display() const override { return hidden_; }
+};
+
 // ── Parquet output ───────────────────────────────────────────────────────────
 
 // Map a user-facing codec name to Arrow's enum. Returns false on error.
@@ -4097,6 +4159,364 @@ static std::string print_describe(TabularSource& src, const Config& cfg) {
                     wMean, r[6].c_str(),
                     wD,    distincts[k].c_str());
     }
+    return "";
+}
+
+// Forward decl (definition lives alongside print_table at the bottom of
+// this file).
+static void print_schema_block(TabularSource& src);
+
+// ── --stats: Parquet metadata footer dump ────────────────────────────────────
+//
+// Prints what was written into the Parquet file (row groups, codecs, per-
+// column sizes, statistics) without decoding any data. For non-Parquet
+// sources, prints the schema block and a note that detailed stats are
+// Parquet-only.
+static std::string print_stats_only(TabularSource& src, const Config& /*cfg*/) {
+    auto* pq = dynamic_cast<ParquetSource*>(&src);
+    if (!pq) {
+        print_schema_block(src);
+        std::printf("\n%sNote:%s detailed per-column statistics are "
+                    "Parquet-only; this file is a %s source.\n",
+                    g_color.meta_key, g_color.reset,
+                    src.footer().c_str());
+        return "";
+    }
+    auto meta = pq->parquet_meta();
+    if (!meta) return "Parquet metadata unavailable";
+
+    int64_t total_rows = meta->num_rows();
+    int     n_rg       = meta->num_row_groups();
+    int64_t comp_sz = 0, raw_sz = 0;
+    for (int g = 0; g < n_rg; ++g) {
+        comp_sz += meta->RowGroup(g)->total_compressed_size();
+        raw_sz  += meta->RowGroup(g)->total_byte_size();
+    }
+    auto fmt_size = [](int64_t sz) {
+        char buf[32];
+        if      (sz < 1024)             std::snprintf(buf,sizeof(buf),"%lld B",(long long)sz);
+        else if (sz < 1024*1024)        std::snprintf(buf,sizeof(buf),"%.1f KiB",sz/1024.0);
+        else if (sz < 1024LL*1024*1024) std::snprintf(buf,sizeof(buf),"%.2f MiB",sz/(1024.0*1024));
+        else                            std::snprintf(buf,sizeof(buf),"%.2f GiB",sz/(1024.0*1024*1024));
+        return std::string(buf);
+    };
+    auto codec_name = [](parquet::Compression::type c) -> const char* {
+        switch (c) {
+            case parquet::Compression::UNCOMPRESSED: return "none";
+            case parquet::Compression::SNAPPY:       return "snappy";
+            case parquet::Compression::GZIP:         return "gzip";
+            case parquet::Compression::LZO:          return "lzo";
+            case parquet::Compression::BROTLI:       return "brotli";
+            case parquet::Compression::LZ4:          return "lz4";
+            case parquet::Compression::ZSTD:         return "zstd";
+            case parquet::Compression::LZ4_FRAME:    return "lz4_frame";
+            case parquet::Compression::LZ4_HADOOP:   return "lz4_hadoop";
+            default:                                  return "?";
+        }
+    };
+
+    // File-level summary
+    std::printf("%sFile:%s          %s\n", g_color.meta_key, g_color.reset, src.path().c_str());
+    std::printf("%sFormat:%s        Parquet\n", g_color.meta_key, g_color.reset);
+    std::printf("%sRows:%s          %s\n", g_color.meta_key, g_color.reset,
+                digits_with_sep(std::to_string(total_rows)).c_str());
+    std::printf("%sRow groups:%s    %d\n", g_color.meta_key, g_color.reset, n_rg);
+    std::printf("%sCompressed:%s    %s\n", g_color.meta_key, g_color.reset, fmt_size(comp_sz).c_str());
+    std::printf("%sUncompressed:%s  %s", g_color.meta_key, g_color.reset, fmt_size(raw_sz).c_str());
+    if (comp_sz > 0)
+        std::printf("  (ratio: %.2fx)", (double)raw_sz / (double)comp_sz);
+    std::putchar('\n');
+    if (!pq->created_by().empty())
+        std::printf("%sCreated by:%s    %s\n", g_color.meta_key, g_color.reset,
+                    pq->created_by().c_str());
+
+    // Per-column rollup: sum (compressed, uncompressed) across all row groups.
+    auto schema = src.schema();
+    int n_cols = schema->num_fields();
+    struct ColAgg {
+        int64_t comp = 0;
+        int64_t raw  = 0;
+        int64_t nulls = 0;
+        std::set<parquet::Compression::type> codecs;
+        bool has_nulls = false;
+    };
+    // Map Arrow field index → first matching leaf column in Parquet
+    // (skip lookup for nested types: stats reflect the leaf, not the parent).
+    std::vector<int> leaf_for_field(n_cols, -1);
+    for (int i = 0; i < n_cols; ++i) {
+        // Use manifest from ParquetSource.
+        auto leaves = pq->parquet_arrow_leaves_for(i);
+        if (!leaves.empty()) leaf_for_field[i] = leaves[0];
+    }
+    std::vector<ColAgg> agg(n_cols);
+    for (int g = 0; g < n_rg; ++g) {
+        auto rg = meta->RowGroup(g);
+        for (int i = 0; i < n_cols; ++i) {
+            int leaf = leaf_for_field[i];
+            if (leaf < 0 || leaf >= rg->num_columns()) continue;
+            auto cc = rg->ColumnChunk(leaf);
+            agg[i].comp += cc->total_compressed_size();
+            agg[i].raw  += cc->total_uncompressed_size();
+            agg[i].codecs.insert(cc->compression());
+            if (cc->is_stats_set()) {
+                auto st = cc->statistics();
+                if (st && st->HasNullCount()) {
+                    agg[i].nulls += st->null_count();
+                    agg[i].has_nulls = true;
+                }
+            }
+        }
+    }
+
+    // Per-column table
+    std::vector<std::array<std::string, 6>> rows;     // name, type, codec, comp, raw, ratio
+    std::vector<std::string>                 nulls_col;
+    int wN = 6, wT = 4, wK = 5, wC = 10, wR = 12, wRatio = 5, wNulls = 5;
+    for (int i = 0; i < n_cols; ++i) {
+        auto f = schema->field(i);
+        std::string codec;
+        for (auto c : agg[i].codecs) {
+            if (!codec.empty()) codec += "+";
+            codec += codec_name(c);
+        }
+        if (codec.empty()) codec = "?";
+        std::string ratio = (agg[i].comp > 0)
+            ? (std::to_string((double)agg[i].raw / (double)agg[i].comp).substr(0, 5) + "x")
+            : "-";
+        std::string nulls = agg[i].has_nulls
+            ? digits_with_sep(std::to_string(agg[i].nulls))
+            : "?";
+        rows.push_back({
+            f->name(), f->type()->ToString(), codec,
+            fmt_size(agg[i].comp), fmt_size(agg[i].raw), ratio
+        });
+        nulls_col.push_back(nulls);
+        wN = std::max(wN, (int)display_width(f->name()));
+        wT = std::max(wT, (int)display_width(f->type()->ToString()));
+        wK = std::max(wK, (int)display_width(codec));
+        wC = std::max(wC, (int)display_width(rows.back()[3]));
+        wR = std::max(wR, (int)display_width(rows.back()[4]));
+        wRatio = std::max(wRatio, (int)display_width(ratio));
+        wNulls = std::max(wNulls, (int)display_width(nulls));
+    }
+    std::printf("\n%s%-*s  %-*s  %-*s  %*s  %*s  %*s  %*s%s\n",
+                g_color.header,
+                wN, "Column", wT, "Type", wK, "Codec",
+                wC, "Compressed", wR, "Uncompressed",
+                wRatio, "Ratio", wNulls, "Nulls",
+                g_color.reset);
+    std::printf("%s%s  %s  %s  %s  %s  %s  %s%s\n",
+                g_color.border,
+                std::string(wN,'-').c_str(), std::string(wT,'-').c_str(),
+                std::string(wK,'-').c_str(), std::string(wC,'-').c_str(),
+                std::string(wR,'-').c_str(), std::string(wRatio,'-').c_str(),
+                std::string(wNulls,'-').c_str(),
+                g_color.reset);
+    for (size_t k = 0; k < rows.size(); ++k) {
+        auto& r = rows[k];
+        std::printf("%-*s  %-*s  %-*s  %*s  %*s  %*s  %*s\n",
+                    wN, truncate(r[0], wN).c_str(),
+                    wT, truncate(r[1], wT).c_str(),
+                    wK, r[2].c_str(),
+                    wC, r[3].c_str(),
+                    wR, r[4].c_str(),
+                    wRatio, r[5].c_str(),
+                    wNulls, nulls_col[k].c_str());
+    }
+    return "";
+}
+
+// ── --unique: distinct value counts per column ───────────────────────────────
+static std::string print_unique(TabularSource& src, const Config& cfg) {
+    if (cfg.unique_cols.empty()) return "--unique needs a comma-separated column list";
+    auto schema = src.schema();
+    std::vector<int> cols;
+    std::vector<std::string> unknown;
+    size_t p = 0;
+    while (p <= cfg.unique_cols.size()) {
+        size_t comma = cfg.unique_cols.find(',', p);
+        std::string name = cfg.unique_cols.substr(p,
+            comma == std::string::npos ? std::string::npos : comma - p);
+        while (!name.empty() && std::isspace((unsigned char)name.front())) name.erase(0, 1);
+        while (!name.empty() && std::isspace((unsigned char)name.back()))  name.pop_back();
+        if (!name.empty()) {
+            int idx = schema->GetFieldIndex(name);
+            if (idx >= 0) cols.push_back(idx);
+            else          unknown.push_back(name);
+        }
+        if (comma == std::string::npos) break;
+        p = comma + 1;
+    }
+    if (!unknown.empty()) {
+        std::string u; for (auto& n : unknown) { if (!u.empty()) u += ","; u += n; }
+        return "unknown column(s) in --unique: " + u;
+    }
+    if (cols.empty()) return "--unique: no columns specified";
+
+    FilterExpr fx;
+    bool have_filter = false;
+    if (!cfg.filter_expr.empty()) {
+        std::string ferr;
+        if (!parse_filter_expr(cfg.filter_expr, *schema, &fx, &ferr))
+            return "--filter: " + ferr;
+        have_filter = true;
+    }
+    std::vector<int> read_set = have_filter ? union_with_filter(cols, fx) : cols;
+
+    // Counts per column.
+    std::vector<std::map<std::string, int64_t>> counts(cols.size());
+    int64_t total = 0;
+    for (int c = 0; ; ++c) {
+        src.ensure(c);
+        if (c >= src.num_chunks()) break;
+        std::shared_ptr<arrow::Table> tbl;
+        if (!src.read_chunk(c, read_set, &tbl).ok()) continue;
+        if (have_filter) tbl = apply_filter(tbl, fx, read_set);
+        if (!tbl || tbl->num_rows() == 0) continue;
+        total += tbl->num_rows();
+        for (size_t k = 0; k < cols.size(); ++k) {
+            int p_in_tbl = -1;
+            for (size_t j = 0; j < read_set.size(); ++j)
+                if (read_set[j] == cols[k]) { p_in_tbl = (int)j; break; }
+            auto col = tbl->column(p_in_tbl);
+            for (auto& ch : col->chunks()) {
+                int64_t n = ch->length();
+                for (int64_t r = 0; r < n; ++r) {
+                    std::string v = ch->IsNull(r) ? "(null)" : cell_to_string(*ch, r);
+                    counts[k][v]++;
+                }
+            }
+        }
+    }
+
+    // Output per column: top N entries sorted by count desc.
+    constexpr int kTop = 50;
+    bool first = true;
+    for (size_t k = 0; k < cols.size(); ++k) {
+        if (!first) std::printf("\n");
+        first = false;
+        auto& m = counts[k];
+        std::vector<std::pair<std::string,int64_t>> entries(m.begin(), m.end());
+        std::sort(entries.begin(), entries.end(),
+            [](const auto& a, const auto& b) { return a.second > b.second; });
+        std::printf("%s%s%s — %s%zu%s distinct value(s) (of %s%lld%s)\n",
+                    g_color.header, schema->field(cols[k])->name().c_str(),
+                    g_color.reset,
+                    g_color.number, entries.size(), g_color.reset,
+                    g_color.number, (long long)total, g_color.reset);
+        int wV = 5, wC2 = 5;
+        size_t n_show = std::min((size_t)kTop, entries.size());
+        for (size_t i = 0; i < n_show; ++i) {
+            wV  = std::max(wV,  (int)display_width(entries[i].first));
+            wC2 = std::max(wC2, (int)display_width(
+                digits_with_sep(std::to_string(entries[i].second))));
+        }
+        if (wV > 50) wV = 50;
+        for (size_t i = 0; i < n_show; ++i) {
+            std::printf("  %-*s  %*s\n",
+                        wV,  truncate(entries[i].first, wV).c_str(),
+                        wC2, digits_with_sep(std::to_string(entries[i].second)).c_str());
+        }
+        if (entries.size() > n_show)
+            std::printf("  %s... %zu more distinct value(s)%s\n",
+                        g_color.meta_key, entries.size() - n_show, g_color.reset);
+    }
+    return "";
+}
+
+// ── --sample N: reservoir sample N rows uniformly ────────────────────────────
+//
+// Reads (and optionally filters) the entire source into memory, then picks
+// N rows uniformly without replacement via reservoir sampling. The result
+// is wrapped as a MemoryTableSource so the normal output path renders it.
+static std::string build_sample(std::unique_ptr<TabularSource>& src,
+                                 const Config& cfg) {
+    int N = cfg.sample_n;
+    if (N <= 0) return "";
+
+    // Read all data (loading every column so the user can still --select after).
+    int n_fields = src->schema()->num_fields();
+    std::vector<int> all_cols;
+    for (int i = 0; i < n_fields; ++i) all_cols.push_back(i);
+
+    FilterExpr fx;
+    bool have_filter = false;
+    if (!cfg.filter_expr.empty()) {
+        std::string ferr;
+        if (!parse_filter_expr(cfg.filter_expr, *src->schema(), &fx, &ferr))
+            return "--filter: " + ferr;
+        have_filter = true;
+    }
+
+    std::vector<std::shared_ptr<arrow::Table>> chunks;
+    for (int c = 0; ; ++c) {
+        src->ensure(c);
+        if (c >= src->num_chunks()) break;
+        std::shared_ptr<arrow::Table> tbl;
+        if (!src->read_chunk(c, all_cols, &tbl).ok()) continue;
+        if (have_filter) tbl = apply_filter(tbl, fx, all_cols);
+        if (tbl && tbl->num_rows() > 0) chunks.push_back(std::move(tbl));
+    }
+    auto hidden_from_src = src->hidden_for_display();
+    if (chunks.empty()) {
+        // Empty result — still build an empty table.
+        std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
+        for (int i = 0; i < n_fields; ++i)
+            cols.push_back(std::make_shared<arrow::ChunkedArray>(
+                arrow::ArrayVector{}, src->schema()->field(i)->type()));
+        auto empty = arrow::Table::Make(src->schema(), cols, 0);
+        std::string old_path = src->path();
+        src = std::make_unique<MemoryTableSource>(empty,
+            "<sample of " + old_path + ">",
+            "Sampled rows: 0 (no data after filter)",
+            hidden_from_src);
+        return "";
+    }
+    auto cat = arrow::ConcatenateTables(chunks);
+    if (!cat.ok()) return "concat failed: " + cat.status().ToString();
+    auto master = cat.ValueOrDie();
+    int64_t M = master->num_rows();
+    if (M <= N) {
+        // Smaller than sample size; just keep everything.
+        std::string old_path = src->path();
+        src = std::make_unique<MemoryTableSource>(master,
+            "<sample of " + old_path + ">",
+            "Sampled rows: " + std::to_string(M) + " / " + std::to_string(M) +
+            " (smaller than --sample N)",
+            hidden_from_src);
+        return "";
+    }
+
+    // Reservoir sample: collect N indices into [0, M).
+    std::vector<int64_t> chosen(N);
+    for (int i = 0; i < N; ++i) chosen[i] = i;
+    std::mt19937_64 rng(std::random_device{}());
+    for (int64_t i = N; i < M; ++i) {
+        std::uniform_int_distribution<int64_t> dist(0, i);
+        int64_t j = dist(rng);
+        if (j < N) chosen[j] = i;
+    }
+    std::sort(chosen.begin(), chosen.end());
+
+    // Build the sampled Table by slicing contiguous runs.
+    std::vector<std::shared_ptr<arrow::Table>> runs;
+    int64_t run_start = chosen[0], run_len = 1;
+    for (size_t k = 1; k < chosen.size(); ++k) {
+        if (chosen[k] == run_start + run_len) { ++run_len; continue; }
+        runs.push_back(master->Slice(run_start, run_len));
+        run_start = chosen[k];
+        run_len   = 1;
+    }
+    runs.push_back(master->Slice(run_start, run_len));
+    auto sampled_or = arrow::ConcatenateTables(runs);
+    if (!sampled_or.ok()) return "concat failed: " + sampled_or.status().ToString();
+
+    std::string old_path = src->path();
+    src = std::make_unique<MemoryTableSource>(sampled_or.ValueOrDie(),
+        "<sample of " + old_path + ">",
+        "Sampled rows: " + std::to_string(N) + " / " +
+            std::to_string(M) + " (uniform random)",
+        hidden_from_src);
     return "";
 }
 
@@ -5853,11 +6273,35 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // --stats: Parquet metadata footer dump (no data read).
+    if (cfg.stats_only) {
+        std::string err = print_stats_only(*src, cfg);
+        if (!err.empty()) { report(cfg.path, err); return 1; }
+        return 0;
+    }
+
     // --describe: per-column statistics.
     if (cfg.describe) {
         std::string err = print_describe(*src, cfg);
         if (!err.empty()) { report(cfg.path, err); return 1; }
         return 0;
+    }
+
+    // --unique: distinct value counts per column.
+    if (!cfg.unique_cols.empty()) {
+        std::string err = print_unique(*src, cfg);
+        if (!err.empty()) { report(cfg.path, err); return 1; }
+        return 0;
+    }
+
+    // --sample N: reservoir-sample N rows, then fall through to normal output.
+    // build_sample applies --filter while reading, so clear it afterwards so
+    // the rendering layer doesn't redo the work.
+    if (cfg.sample_n > 0) {
+        std::string err = build_sample(src, cfg);
+        if (!err.empty()) { report(cfg.path, err); return 1; }
+        cfg.filter_expr.clear();
+        cfg.head_rows = 0; cfg.head_rows_set = false;  // sample IS the row set
     }
 
     // --json / --ndjson: stream JSON rows to stdout.

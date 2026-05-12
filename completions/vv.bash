@@ -52,7 +52,8 @@ _vv() {
                 --parquet --compression
                 --json --ndjson
                 --select --cols --filter
-                --schema --describe
+                --schema --describe --stats
+                --unique --sample
                 --vertical
                 --no-header
             '

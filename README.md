@@ -104,6 +104,14 @@ Feather) or delimiter heuristic (TSV vs. CSV).
 - **`--describe`** — pandas-style per-column statistics (count,
   nulls, min, max, mean for numerics, distinct count for strings).
   Respects `--select` and `--filter`.
+- **`--stats`** — print Parquet metadata (row groups, codecs,
+  per-column compressed / uncompressed sizes, null counts) without
+  reading any data. Falls back to `--schema` for non-Parquet sources.
+- **`--unique Chromosome,Strand`** — distinct value counts per column
+  (top-50 values per column with overflow indicator).
+- **`--sample N`** — uniformly random N rows (reservoir sampling)
+  instead of head-N. Combines with the view / export modes and
+  `--filter`.
 - **TSV / CSV export** — `--tsv` / `--csv` streams the file (or first *N*
   rows) with RFC 4180 quoting.
 - **JSON / NDJSON output** — `--json` writes a JSON array;
