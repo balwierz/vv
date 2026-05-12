@@ -20,8 +20,16 @@ _vv() {
             COMPREPLY=( $(compgen -W 'auto always never' -- "$cur") )
             return
             ;;
-        -r|--region)
+        -r|--region|--window)
             # Free-form region string — no completion
+            return
+            ;;
+        --regions-file)
+            _filedir bed
+            return
+            ;;
+        --slop|--sample)
+            # Numeric argument — no completion
             return
             ;;
         --parquet)
@@ -44,7 +52,7 @@ _vv() {
                 -h --help -V --version
                 -i --interactive --no-interactive
                 -n -w -c
-                -r --region
+                -r --region --window --regions-file --slop
                 -@ --threads
                 --no-index
                 --color --color=auto --color=always --color=never

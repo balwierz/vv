@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <list>
 #include <map>
 #include <memory>
@@ -137,6 +138,8 @@ enum class ColorMode { Auto, Always, Never };
 struct Config {
     std::string path;
     std::string region;                  // -r: tabix region(s), e.g. "chr1:1000-2000"
+    std::string regions_file;            // --regions-file BED: many windows from a BED
+    int64_t     slop = 0;                // --slop N: pad each region by N bp
     std::string parquet_out;             // --parquet <file>: write Parquet to this path
     std::string compression = "zstd";    // --compression: parquet codec
     int         head_rows      = 10;
@@ -231,8 +234,12 @@ static void print_usage(const char* prog) {
         "\nRange queries:\n"
         "  -r / --region <REGION>   e.g. chr1:1000-2000  (multiple comma-separated)\n"
         "  --window <REGION>        alias of -r for LociSSD readers' muscle memory\n"
-        "  Supported on tabix-indexed VCF/BED/GFF/TSV and on LociSSD Parquet\n"
-        "  (.lociss). Coordinates are 0-based half-open (BED convention).\n"
+        "  --regions-file <BED>     read additional windows from a BED file's\n"
+        "                           first three columns\n"
+        "  --slop <N>               pad each window by N bp on both sides\n"
+        "  Supported on tabix-indexed VCF/BED/GFF/TSV, indexed BCF\n"
+        "  (.csi/.tbi), and LociSSD Parquet (.lociss). Coordinates are\n"
+        "  0-based half-open (BED convention).\n"
         "\nPerformance:\n"
         "  -@ / --threads <N>  worker threads for I/O and decode (0 = auto)\n"
         "\n  -h / --help         show this help\n"
@@ -281,6 +288,10 @@ static Config parse_args(int argc, char** argv) {
                     !std::strcmp(argv[i], "--region") ||
                     !std::strcmp(argv[i], "--window")) && i + 1 < argc) {
             cfg.region = argv[++i];
+        } else if (!std::strcmp(argv[i], "--regions-file") && i + 1 < argc) {
+            cfg.regions_file = argv[++i];
+        } else if (!std::strcmp(argv[i], "--slop") && i + 1 < argc) {
+            cfg.slop = (int64_t)std::atoll(argv[++i]);
         } else if ((!std::strcmp(argv[i], "-@") ||
                     !std::strcmp(argv[i], "--threads")) && i + 1 < argc) {
             cfg.threads = std::max(0, std::atoi(argv[++i]));
@@ -1534,6 +1545,62 @@ static std::shared_ptr<arrow::Table> project_to_requested(
         }
     }
     return arrow::Table::Make(arrow::schema(fields), cols, tbl->num_rows());
+}
+
+// Apply --regions-file (read BED chrom/start/end, append to cfg.region) and
+// --slop N (pad every window by N bp on each side). Mutates `cfg` to reflect
+// the effective region list in cfg.region. Returns "" on success.
+static std::string apply_region_modifiers(Config& cfg) {
+    // 1) Read --regions-file and append its windows.
+    if (!cfg.regions_file.empty()) {
+        std::ifstream f(cfg.regions_file);
+        if (!f.is_open())
+            return "Cannot open --regions-file '" + cfg.regions_file + "'";
+        std::string line;
+        std::string acc = cfg.region;
+        while (std::getline(f, line)) {
+            // strip CR/LF and trailing whitespace
+            while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
+                line.pop_back();
+            // skip blank lines and BED preamble
+            if (line.empty()) continue;
+            if (line[0] == '#') continue;
+            if (line.rfind("track", 0) == 0 || line.rfind("browser", 0) == 0) continue;
+            // First three TSV fields: chrom, start, end.
+            size_t t1 = line.find('\t');
+            if (t1 == std::string::npos) continue;
+            size_t t2 = line.find('\t', t1 + 1);
+            if (t2 == std::string::npos) continue;
+            size_t t3 = line.find('\t', t2 + 1);
+            std::string chrom = line.substr(0, t1);
+            std::string s     = line.substr(t1 + 1, t2 - t1 - 1);
+            std::string e     = (t3 == std::string::npos)
+                                ? line.substr(t2 + 1)
+                                : line.substr(t2 + 1, t3 - t2 - 1);
+            if (chrom.empty() || s.empty() || e.empty()) continue;
+            if (!acc.empty()) acc += ",";
+            acc += chrom + ":" + s + "-" + e;
+        }
+        cfg.region = acc;
+    }
+
+    // 2) Apply --slop by re-serialising the parsed region list.
+    if (cfg.slop != 0 && !cfg.region.empty()) {
+        auto regs = parse_region_list(cfg.region);
+        std::string acc;
+        for (auto& r : regs) {
+            // Don't expand open bounds — INT64_MIN/MAX stay sentinels.
+            if (r.start != INT64_MIN) r.start = std::max<int64_t>(0, r.start - cfg.slop);
+            if (r.end   != INT64_MAX) r.end   = r.end + cfg.slop;
+            if (!acc.empty()) acc += ",";
+            acc += r.chrom + ":";
+            if (r.start != INT64_MIN) acc += std::to_string(r.start);
+            acc += "-";
+            if (r.end != INT64_MAX) acc += std::to_string(r.end);
+        }
+        cfg.region = acc;
+    }
+    return "";
 }
 
 // ── LociSSD manifest parser (minimal, hand-rolled) ───────────────────────────
@@ -2945,6 +3012,12 @@ class BcfSource : public TabularSource {
     mutable bcf_hdr_t*  hdr_ = nullptr;
     mutable bcf1_t*     rec_ = nullptr;
 
+    // Region-mode (--region): index + iterators over the requested windows.
+    mutable hts_idx_t*               idx_       = nullptr;
+    mutable std::vector<hts_itr_t*>  iters_;
+    mutable size_t                   cur_iter_  = 0;
+    bool                              region_mode_ = false;
+
     mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
     mutable std::vector<int64_t>             batch_first_row_;
     mutable int64_t                          rows_so_far_ = 0;
@@ -2961,7 +3034,21 @@ class BcfSource : public TabularSource {
         int cap = (row_cap > 0 && row_cap < BATCH_SIZE) ? (int)row_cap : BATCH_SIZE;
         int count = 0, ret = 0;
         kstring_t s = {0, 0, nullptr};
-        while (count < cap && (ret = bcf_read(fp_, hdr_, rec_)) == 0) {
+
+        // next_record(): pull one record either from the linear stream or
+        // from the current region iterator (advancing to the next iterator
+        // on exhaustion). Returns 0 on a record, -1 at EOF, <-1 on error.
+        auto next_record = [&]() -> int {
+            if (!region_mode_) return bcf_read(fp_, hdr_, rec_);
+            while (cur_iter_ < iters_.size()) {
+                int r = bcf_itr_next(fp_, iters_[cur_iter_], rec_);
+                if (r >= 0) return 0;
+                ++cur_iter_;
+            }
+            return -1;
+        };
+
+        while (count < cap && (ret = next_record()) == 0) {
             bcf_unpack(rec_, BCF_UN_ALL);
 
             // vcf_format renders the canonical tab-separated line. We split
@@ -3050,6 +3137,8 @@ class BcfSource : public TabularSource {
 
 public:
     ~BcfSource() {
+        for (auto* it : iters_) if (it) hts_itr_destroy(it);
+        if (idx_) { hts_idx_destroy(idx_); idx_ = nullptr; }
         if (rec_) { bcf_destroy(rec_);     rec_ = nullptr; }
         if (hdr_) { bcf_hdr_destroy(hdr_); hdr_ = nullptr; }
         if (fp_)  { hts_close(fp_);        fp_  = nullptr; }
@@ -3093,6 +3182,30 @@ public:
             }
             free(hs.s);
             (void)hdr_text; (void)n_lines;
+        }
+
+        // ── Range mode: load .csi/.tbi index and build per-window iterators ─
+        if (!cfg.region.empty()) {
+            self->idx_ = bcf_index_load(path.c_str());
+            if (!self->idx_)
+                return "No BCF index for '" + path + "' (try: "
+                       "`bcftools index '" + path + "'`)";
+            auto regs = parse_region_list(cfg.region);
+            for (auto& r : regs) {
+                hts_itr_t* it = bcf_itr_querys(self->idx_, self->hdr_, r.chrom.c_str());
+                // bcf_itr_querys takes a "chrom:start-end" string directly,
+                // but we already parsed; rebuild the canonical form here.
+                if (it) hts_itr_destroy(it);
+                std::string rstr = r.chrom + ":";
+                if (r.start != INT64_MIN) rstr += std::to_string(r.start);
+                rstr += "-";
+                if (r.end != INT64_MAX) rstr += std::to_string(r.end);
+                it = bcf_itr_querys(self->idx_, self->hdr_, rstr.c_str());
+                if (!it)
+                    return "Cannot query region '" + rstr + "' in '" + path + "'";
+                self->iters_.push_back(it);
+            }
+            self->region_mode_ = true;
         }
 
         arrow::FieldVector fields = {
@@ -6229,6 +6342,13 @@ int main(int argc, char** argv) {
     // Size Arrow's CPU thread pool so use_threads=true on the CSV / Parquet
     // readers actually has workers available.
     (void)arrow::SetCpuThreadPoolCapacity(effective_threads(cfg));
+
+    // Apply --regions-file and --slop once, before any source-specific
+    // region consumer parses cfg.region.
+    if (auto e = apply_region_modifiers(cfg); !e.empty()) {
+        std::fprintf(stderr, "vv: %s\n", e.c_str());
+        return 1;
+    }
 
     bool use_color = (cfg.color == ColorMode::Always) ||
                      (cfg.color == ColorMode::Auto && isatty(STDOUT_FILENO));

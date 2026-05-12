@@ -22,8 +22,11 @@ complete -c vv -c vh -s w -r               -d 'Max cell width (default: 32)'
 complete -c vv -c vh -s c -r               -d 'Max columns to show (default: all)'
 complete -c vv -c vh -l no-index           -d 'Suppress the row-index column'
 
-# Region (tabix)
+# Region (tabix / LociSSD / BCF)
 complete -c vv -c vh -s r -l region -r     -d 'Region for tabix-indexed file (e.g. chr1:1000-2000)'
+complete -c vv -c vh -l window -r          -d 'Alias of --region'
+complete -c vv -c vh -l regions-file -r -F -d 'BED file with additional windows'
+complete -c vv -c vh -l slop -r            -d 'Pad each window by N bp'
 
 # Performance
 complete -c vv -c vh -s @ -l threads -r    -d 'Worker threads for I/O and decode (0 = auto)'

@@ -188,6 +188,8 @@ if have("bcftools"):
     )
     subprocess.run(["bcftools", "view", "-O", "b",
                     str(bcf_input), "-o", str(HERE / "tiny.bcf")], check=True)
+    subprocess.run(["bcftools", "index", "-f",
+                    str(HERE / "tiny.bcf")], check=True)
     bcf_input.unlink()
 else:
     print("warn: bcftools not found; skipping tiny.bcf", file=sys.stderr)

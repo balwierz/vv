@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **BCF range queries** — `-r chr1:100-200 file.bcf` now works, using
+  `bcf_itr_querys` over an existing `.csi` / `.tbi` index. Missing
+  index produces a clear hint pointing at `bcftools index`.
+- **`--regions-file <BED>`** — read additional windows from a BED file's
+  first three columns. Combines with explicit `-r`; both are taken.
+- **`--slop N`** — pad every window by N bp on each side (start clamped
+  at 0). Equivalent to `bedtools slop` inline.
 - **`--stats`** — Parquet metadata dump (row groups, codecs, per-column
   compressed / uncompressed sizes, null counts) without reading any
   data. Falls back to `--schema` for non-Parquet sources.

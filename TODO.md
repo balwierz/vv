@@ -28,11 +28,14 @@ visible-value-per-line ratio.
 
 ## Range / region (genomics core)
 
-- `--regions-file foo.bed` — batch many windows at once. Equivalent to
-  passing a long comma-separated `-r`.
-- `--slop N` — pad each window by N bp. `bedtools slop` inline.
-- BCF range queries via `bcf_itr_querys` — currently BCF reads, but
-  `-r` only works on the text formats via tabix.
+- ~~`--regions-file foo.bed`~~ — batch many windows at once.
+  *Done — first three TSV columns of a BED, comments / track lines
+  skipped.*
+- ~~`--slop N`~~ — pad each window by N bp. *Done — applied after
+  --regions-file; start clamped at 0.*
+- ~~BCF range queries via `bcf_itr_querys`~~ — *Done — requires
+  `.csi`/`.tbi` index; friendly error pointing at `bcftools index`
+  if missing.*
 - Generic Parquet range queries — sniff a schema with sorted
   `Chromosome/Start/End` columns; `--region-cols Chromosome,Start,End`
   if auto-detection isn't clear.

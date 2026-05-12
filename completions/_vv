@@ -29,7 +29,9 @@ _vv() {
         '-w+[Max cell width]:width:' \
         '-c+[Max columns]:cols:' \
         '--no-index[Suppress the row-index column]' \
-        '(-r --region)'{-r,--region}'+[Tabix region]:region:' \
+        '(-r --region --window)'{-r,--region,--window}'+[Region (chr:start-end)]:region:' \
+        '--regions-file+[BED file with windows]:path:_files' \
+        '--slop+[Pad each window by N bp]:n:' \
         '(-@ --threads)'{-@,--threads}'+[Worker threads]:n:' \
         '--color=-[Color mode]:mode:(auto always never)' \
         '--tsv[Write tab-separated values]' \

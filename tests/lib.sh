@@ -41,6 +41,15 @@ assert_exit_zero() {
     fi
 }
 
+assert_eq_file_inline() {
+    # $1 = name, $2 = actual, $3 = expected (string equality)
+    if [ "$2" = "$3" ]; then
+        PASS=$((PASS + 1)); echo "  ok    $1"
+    else
+        FAIL=$((FAIL + 1)); echo "  FAIL  $1 (got '$2', want '$3')"
+    fi
+}
+
 summarize() {
     echo
     echo "passed: $PASS  failed: $FAIL"

@@ -71,6 +71,23 @@ else
 fi
 REJECT=$("$VV" -r chr1:0-100 "$DATA/tiny.parquet" 2>&1 || true)
 assert_contains "parquet_region_rejected" "$REJECT" "LociSSD"
+
+# --slop on tabix BED.
+SLOP_OUT=$("$VV" --tsv --no-header -r chr1:1500-1500 --slop 4000 "$DATA/tiny.bed.gz" | wc -l)
+if [ "$SLOP_OUT" -gt 0 ]; then
+    PASS=$((PASS+1)); echo "  ok    slop_tabix_bed"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  slop_tabix_bed (expected non-empty output)"
+fi
+# --regions-file (TSV-formatted BED).
+printf 'chr1\t100\t900\nchr2\t1400\t1900\n' > "$TMP/multi.bed"
+RF_OUT=$("$VV" --tsv --no-header --regions-file "$TMP/multi.bed" "$DATA/tiny.lociss" | wc -l)
+assert_eq_file_inline "regions_file_collected_three_rows" "$RF_OUT" "3"
+# BCF range queries (skip if bcftools wasn't available during fixture build).
+if [ -f "$DATA/tiny.bcf.csi" ]; then
+    BCF_REGION=$("$VV" --tsv --no-header -r chr1:200-1600 "$DATA/tiny.bcf" | wc -l)
+    assert_eq_file_inline "bcf_region_returns_two_rows" "$BCF_REGION" "2"
+fi
 # --tsv must keep MaxEndSoFar; table must not show it.
 TSV_OUT=$("$VV" --tsv --no-header "$DATA/tiny.lociss")
 assert_contains "lociss_tsv_keeps_maxendsofar"  "$TSV_OUT"  "1800"
@@ -116,7 +133,7 @@ BAD=$("$VV" --parquet "$TMP/x.parquet" --compression rar "$DATA/tiny.tsv" 2>&1 |
 assert_contains "parquet_bad_codec" "$BAD" "Unknown --compression"
 
 echo
-echo "── Stdin (`-`) ──────────────────────────────────────────"
+echo '── Stdin (-) ──────────────────────────────────────────'
 "$VV" --tsv --no-header - < "$DATA/tiny.tsv" > "$TMP/stdin_tsv.out"
 assert_eq_file "stdin_tsv_matches_file" "$TMP/stdin_tsv.out" "$GOLDEN/tsv_tsv.expected"
 gzip -c "$DATA/tiny.tsv" | "$VV" --tsv --no-header - > "$TMP/stdin_gz.out"
@@ -134,10 +151,6 @@ assert_contains "describe_has_columns_header" "$DESCRIBE_OUT" "Column"
 assert_contains "describe_has_distinct_for_string" "$DESCRIBE_OUT" "Chromosome"
 SELECT_OUT=$("$VV" --tsv --no-header --select Chromosome,Score "$DATA/tiny.lociss" \
              | head -1)
-assert_eq_file_inline() {
-    [ "$2" = "$3" ] && { PASS=$((PASS+1)); echo "  ok    $1"; } \
-                    || { FAIL=$((FAIL+1)); echo "  FAIL  $1 (got '$2', want '$3')"; }
-}
 assert_eq_file_inline "select_two_cols" "$SELECT_OUT" "chr1	0.5"
 FILTER_OUT=$("$VV" --tsv --no-header --filter 'Score > 0.4' "$DATA/tiny.lociss" \
              | wc -l)

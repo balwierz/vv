@@ -72,13 +72,15 @@ Feather) or delimiter heuristic (TSV vs. CSV).
   keybindings, mouse wheel to scroll. Lazy-loads only the chunks
   currently on screen.
 - **Range queries** — `-r chr1:1000-2000` (also `--window`) filters
-  tabix-indexed `.vcf.gz` / `.bed.gz` / `.gff.gz` / `.tsv.gz` and
-  **LociSSD Parquet** files (`.lociss`). LociSSD pruning uses the
-  manifest plus Parquet row-group statistics on `Start` and
-  `MaxEndSoFar`, then a per-row predicate inside surviving row groups —
-  so windowed previews on multi-GB LociSSD files stay fast without a
-  separate index. Multiple windows accepted comma-separated; open-ended
+  tabix-indexed `.vcf.gz` / `.bed.gz` / `.gff.gz` / `.tsv.gz`,
+  indexed **BCF** (`.csi`/`.tbi`), and **LociSSD Parquet** (`.lociss`).
+  LociSSD pruning uses the manifest plus Parquet row-group statistics
+  on `Start` and `MaxEndSoFar`; BCF uses `bcf_itr_querys`; tabix uses
+  its iterator. Multiple windows accepted comma-separated; open-ended
   forms (`chr1:`, `chr1:78-`, `chr1:-99`) supported.
+  `--regions-file foo.bed` reads many windows from a BED's first
+  three columns. `--slop N` pads each window by N bp on each side
+  (`bedtools slop` inline).
 - **Multi-threaded I/O** — `-@ N` (samtools convention) drives Arrow's CPU
   pool, BAM/CRAM htslib threads, and BGZF threads for FASTA/FASTQ; auto-
   detects threads when unset.

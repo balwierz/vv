@@ -176,6 +176,22 @@ with a hint pointing at tabix or LociSSD.
 .BI \-\-window " REGION"
 Alias of \fB\-r\fR / \fB\-\-region\fR \(en the name LociSSD readers often
 reach for first.
+.TP
+.BI \-\-regions\-file " FILE"
+Read additional windows from a BED-formatted file (first three
+TSV columns: \fBchrom\fR, \fBstart\fR, \fBend\fR; \fI0-based half-
+open\fR). Lines starting with \fB#\fR / \fBtrack\fR / \fBbrowser\fR
+are skipped. Combines with explicit \fB\-r\fR; both lists are taken.
+.TP
+.BI \-\-slop " N"
+Pad every window by \fIN\fR base pairs on each side (i.e. expand
+\fBstart\fR by \-N and \fBend\fR by +N; start is clamped at 0).
+Applied after \fB\-\-regions-file\fR. Equivalent to
+\fBbedtools slop(1)\fR.
+.IP
+For BCF, range queries require an index (\fB.csi\fR or \fB.tbi\fR
+next to the file). If absent, \fBvv\fR prints a hint pointing to
+\fBbcftools index(1)\fR.
 .SS Performance
 .TP
 .BI \-@ ", " \-\-threads " N"
