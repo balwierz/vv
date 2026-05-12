@@ -96,13 +96,20 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(HTSLIB REQUIRED htslib)
 
 # ── libBigWig (bigBed / bigWig support, vendored) ────────────────────────────
+# libBigWig includes <zlib.h> in its public header, so we need zlib's headers
+# on the include path. Locally that's /usr/include; the static Docker build
+# resolves it via CMAKE_PREFIX_PATH pointing at static-libs/.
+find_package(ZLIB REQUIRED)
 file(GLOB LIBBIGWIG_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/vendored/libBigWig/*.c")
 add_library(bigwig STATIC ${LIBBIGWIG_SRCS})
-# NOCURL: local files only — drops the optional libcurl dependency.
-target_compile_definitions(bigwig PRIVATE NOCURL)
+# NOCURL: local files only — drops the optional libcurl dependency. Must
+# be PUBLIC so the consumer of bigWig.h (main.cpp) sees it too — the
+# header conditionally pulls in <curl/curl.h>.
+target_compile_definitions(bigwig PUBLIC NOCURL)
 target_compile_options(bigwig PRIVATE -O2 -ffunction-sections -fdata-sections -w)
 target_include_directories(bigwig
-    PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/vendored/libBigWig")
+    PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/vendored/libBigWig"
+           ${ZLIB_INCLUDE_DIRS})
 
 # ── Static runtime (libstdc++, libgcc) ───────────────────────────────────────
 option(STATIC_RUNTIME "Link libstdc++ and libgcc statically" OFF)
