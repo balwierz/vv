@@ -125,6 +125,32 @@ PARQUET_REJECT=$("$VV" - < "$DATA/tiny.parquet" 2>&1 || true)
 assert_contains "stdin_rejects_parquet" "$PARQUET_REJECT" "seekable"
 
 echo
+echo "── --schema / --describe / --select / --filter / --json ─"
+SCHEMA_OUT=$("$VV" --schema "$DATA/tiny.lociss")
+assert_contains "schema_has_chromosome" "$SCHEMA_OUT" "Chromosome"
+assert_contains "schema_has_maxendsofar" "$SCHEMA_OUT" "MaxEndSoFar"
+DESCRIBE_OUT=$("$VV" --describe "$DATA/tiny.lociss")
+assert_contains "describe_has_columns_header" "$DESCRIBE_OUT" "Column"
+assert_contains "describe_has_distinct_for_string" "$DESCRIBE_OUT" "Chromosome"
+SELECT_OUT=$("$VV" --tsv --no-header --select Chromosome,Score "$DATA/tiny.lociss" \
+             | head -1)
+assert_eq_file_inline() {
+    [ "$2" = "$3" ] && { PASS=$((PASS+1)); echo "  ok    $1"; } \
+                    || { FAIL=$((FAIL+1)); echo "  FAIL  $1 (got '$2', want '$3')"; }
+}
+assert_eq_file_inline "select_two_cols" "$SELECT_OUT" "chr1	0.5"
+FILTER_OUT=$("$VV" --tsv --no-header --filter 'Score > 0.4' "$DATA/tiny.lociss" \
+             | wc -l)
+assert_eq_file_inline "filter_keeps_3_rows" "$FILTER_OUT" "3"
+JSON_OUT=$("$VV" --ndjson --select Chromosome,Start "$DATA/tiny.lociss" \
+           | head -1)
+assert_eq_file_inline "ndjson_one_object_per_line" "$JSON_OUT" '{"Chromosome": "chr1", "Start": 100}'
+BAD_COL=$("$VV" --select Bogus "$DATA/tiny.lociss" 2>&1 || true)
+assert_contains "select_unknown_column_errors" "$BAD_COL" "unknown"
+BAD_FILTER=$("$VV" --tsv --filter 'BogusCol > 0' "$DATA/tiny.lociss" 2>&1 || true)
+assert_contains "filter_unknown_column_errors" "$BAD_FILTER" "unknown"
+
+echo
 echo "── Threading parity ──────────────────────────────────────"
 "$VV" --tsv --no-header -@ 1 "$DATA/tiny.parquet" > "$TMP/t1.out"
 "$VV" --tsv --no-header -@ 4 "$DATA/tiny.parquet" > "$TMP/t4.out"

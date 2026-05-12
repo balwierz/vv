@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`--schema`** — print the schema + file metadata footer and exit.
+  Cheap, useful for inherited files.
+- **`--describe`** — per-column statistics: count, nulls, min, max,
+  mean (numeric), distinct count (string, capped at 16). Respects
+  `--select` and `--filter`.
+- **Column projection by name** — `--select Chromosome,Start,Score`.
+  Unknown names produce a clear error. Works across the ASCII table,
+  vertical-head, TSV, CSV, JSON, and Parquet output paths. Display
+  modes still hide format-derived columns (e.g. LociSSD's
+  `MaxEndSoFar`); export modes preserve the user's explicit list.
+- **`--filter <expr>`** — value-predicate filter: `<col> <op> <value>`
+  joined by `AND` / `OR`. Ops: `== != < <= > >=`. Values: integer,
+  float, single- or double-quoted string. Evaluated per row.
+- **JSON / NDJSON output** — `--json` writes a JSON array, `--ndjson`
+  writes one JSON object per row. Streams chunk-by-chunk.
 - **LociSSD range queries**: `-r chr1:78-99 file.lociss` (also
   `--window`). Pruning uses the embedded manifest to locate the
   chromosome's row range, Parquet column statistics on `Start` and

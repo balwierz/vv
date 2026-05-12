@@ -92,8 +92,23 @@ Feather) or delimiter heuristic (TSV vs. CSV).
 - **Full Arrow type support** — integers, floats, booleans, strings,
   timestamps, dates, decimals, binary, lists, structs, maps, dictionary-
   encoded columns (decoded transparently).
+- **Column projection by name** — `--select Chromosome,Start,Score`
+  picks specific columns; honours unknown-name errors. Works across
+  all view and export paths.
+- **Value filter** — `--filter "Score > 0.5"` (also AND / OR and
+  string comparisons: `--filter 'Chromosome == "chr1" AND Score > 0.5'`).
+  Evaluated per row in C++ on the loaded chunk.
+- **`--schema`** — print column names, Arrow types, nullability, and
+  the file metadata footer, then exit. Useful for inheriting a file
+  and just wanting to know what's in it.
+- **`--describe`** — pandas-style per-column statistics (count,
+  nulls, min, max, mean for numerics, distinct count for strings).
+  Respects `--select` and `--filter`.
 - **TSV / CSV export** — `--tsv` / `--csv` streams the file (or first *N*
   rows) with RFC 4180 quoting.
+- **JSON / NDJSON output** — `--json` writes a JSON array;
+  `--ndjson` writes one JSON object per line. Pipe-friendly for
+  `jq` and downstream tooling.
 - **Parquet output** — `--parquet OUT` converts any supported input
   (BED, TSV, CSV, VCF, BCF, FASTA, FASTQ, BAM, …) into a Parquet file.
   Compression via `--compression {zstd,snappy,gzip,lz4,none}` (default

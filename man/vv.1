@@ -63,6 +63,33 @@ Maximum cell width in the ASCII table (default: 32).
 .BI \-c " COLS"
 Maximum number of columns to display (default: all).
 .TP
+.BI \-\-select " cols"
+Project a subset of columns, comma-separated by name. Example:
+\fB\-\-select Chromosome,Start,Score\fR. Unknown names produce a
+clear error. In display modes the hidden-by-default columns (e.g.
+LociSSD's \fBMaxEndSoFar\fR) stay hidden; in export modes
+(\fB\-\-tsv\fR / \fB\-\-csv\fR / \fB\-\-json\fR / \fB\-\-parquet\fR)
+the explicit list is honoured exactly.
+.TP
+.BI \-\-filter " expr"
+Keep only rows matching \fIexpr\fR. Grammar:
+\fB<column> <op> <value>\fR joined by \fBAND\fR / \fBOR\fR. Ops:
+\fB==\fR, \fB!=\fR, \fB<\fR, \fB<=\fR, \fB>\fR, \fB>=\fR.
+Values: integer, float, single- or double-quoted string. Example:
+\fB\-\-filter 'Chromosome == "chr1" AND Score > 0.5'\fR. Evaluated
+per row after the source's own pruning (tabix region, LociSSD
+row-group stats) so combining with \fB\-r\fR is fine.
+.TP
+.B \-\-schema
+Print column names, Arrow types, nullability, and the file-info
+footer (row groups, compression, creator) and exit.
+.TP
+.B \-\-describe
+Per-column statistics: count, nulls, min, max, mean (numeric),
+distinct count (string, capped at 16). Respects \fB\-\-select\fR
+and \fB\-\-filter\fR. Currently scans the data; doesn't yet read
+Parquet's per-row-group statistics.
+.TP
 .B \-\-no\-index
 Suppress the row-index column.
 .TP
@@ -96,6 +123,13 @@ Stream comma-separated values to stdout.
 .TP
 .BI \-\-delimiter " SEP"
 Custom single-character field separator.
+.TP
+.B \-\-json
+Write a JSON array of row objects to stdout.
+.TP
+.B \-\-ndjson
+Write one JSON object per line (JSON Lines / NDJSON). Pipe-friendly
+for \fBjq(1)\fR.
 .TP
 .B \-\-no\-header
 Omit the header row in delimited output.

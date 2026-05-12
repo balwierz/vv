@@ -41,3 +41,12 @@ complete -c vv -c vh -l no-header          -d 'Omit the header row in delimited 
 # Parquet output
 complete -c vv -c vh -l parquet -r -F      -d 'Write a Parquet file at this path'
 complete -c vv -c vh -l compression -r -a 'zstd snappy gzip lz4 none' -d 'Parquet codec'
+
+# JSON output / projection / filter / describe / schema
+complete -c vv -c vh -l json               -d 'Write JSON array of row objects'
+complete -c vv -c vh -l ndjson             -d 'Write one JSON object per line'
+complete -c vv -c vh -l select -r          -d 'Project columns by name (comma-separated)'
+complete -c vv -c vh -l cols -r            -d 'Alias of --select'
+complete -c vv -c vh -l filter -r          -d 'Row predicate: <col> <op> <value> [AND/OR ...]'
+complete -c vv -c vh -l schema             -d 'Print schema + metadata and exit'
+complete -c vv -c vh -l describe           -d 'Per-column statistics and exit'

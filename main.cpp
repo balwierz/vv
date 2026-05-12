@@ -150,6 +150,12 @@ struct Config {
     bool        interactive    = false;  // -i / --interactive
     bool        no_interactive = false;  // --no-interactive
     bool        vertical       = false;  // --vertical (or invoked as `vh`)
+    bool        schema_only    = false;  // --schema: print schema + footer, exit
+    bool        describe       = false;  // --describe: per-column statistics
+    std::string filter_expr;             // --filter "<col> <op> <literal> ..."
+    std::string select_cols;             // --select Chr,Start,End (name-based projection)
+    bool        json_array     = false;  // --json
+    bool        json_lines     = false;  // --ndjson
 };
 
 // Effective worker-thread count: explicit override or
@@ -192,6 +198,11 @@ static void print_usage(const char* prog) {
         "  -n <rows>           rows to display  (default: 10, 0 = all)\n"
         "  -w <width>          max cell width   (default: 32)\n"
         "  -c <cols>           max columns to show (default: all)\n"
+        "  --select <cols>     project columns by name (e.g. --select Chr,Start,End)\n"
+        "  --filter <expr>     keep rows matching: <col> <op> <literal> joined by AND/OR\n"
+        "                      ops: == != < <= > >=  e.g. --filter 'Score > 0.5'\n"
+        "  --schema            print schema + file metadata and exit\n"
+        "  --describe          per-column statistics and exit\n"
         "  --no-index          suppress the row-index column\n"
         "  --color[=WHEN]      colorize output: auto (default), always, never\n"
         "  --vertical          \"vertical head\": transpose the preview so each\n"
@@ -201,6 +212,8 @@ static void print_usage(const char* prog) {
         "\nDelimited output (replaces table view):\n"
         "  --tsv               write tab-separated values to stdout\n"
         "  --csv               write comma-separated values to stdout\n"
+        "  --json              write a JSON array of row objects to stdout\n"
+        "  --ndjson            write one JSON object per line (JSON Lines)\n"
         "  --delimiter <sep>   write with a custom single-character delimiter\n"
         "  --no-header         omit the header row\n"
         "  (-n defaults to all rows in this mode; -c still applies)\n"
@@ -267,6 +280,19 @@ static Config parse_args(int argc, char** argv) {
             cfg.parquet_out = argv[++i];
         } else if (!std::strcmp(argv[i], "--compression") && i + 1 < argc) {
             cfg.compression = argv[++i];
+        } else if (!std::strcmp(argv[i], "--schema")) {
+            cfg.schema_only = true;
+        } else if (!std::strcmp(argv[i], "--describe")) {
+            cfg.describe = true;
+        } else if (!std::strcmp(argv[i], "--filter") && i + 1 < argc) {
+            cfg.filter_expr = argv[++i];
+        } else if ((!std::strcmp(argv[i], "--select") ||
+                    !std::strcmp(argv[i], "--cols")) && i + 1 < argc) {
+            cfg.select_cols = argv[++i];
+        } else if (!std::strcmp(argv[i], "--json")) {
+            cfg.json_array = true;
+        } else if (!std::strcmp(argv[i], "--ndjson")) {
+            cfg.json_lines = true;
         } else if (!std::strcmp(argv[i], "--color") ||
                    !std::strcmp(argv[i], "--color=auto")) {
             cfg.color = ColorMode::Auto;
@@ -1185,6 +1211,317 @@ static std::vector<Region> parse_region_list(const std::string& spec) {
     return out;
 }
 
+// ── Simple value-predicate filter (--filter) ─────────────────────────────────
+//
+// Grammar:
+//   filter   := and-clause ( OR  and-clause )*
+//   clause   := atom       ( AND atom       )*
+//   atom     := IDENT OP LITERAL
+//   OP       := == | != | < | <= | > | >=
+//   LITERAL  := int | float | "double-quoted" | 'single-quoted'
+//
+// Case-insensitive AND/OR. Whitespace-separated tokens. Strings may
+// contain anything but the surrounding quote (no escapes — keep simple).
+//
+// The expression is evaluated per row over a Table whose column order
+// matches the source's full schema, so atoms reference columns by their
+// schema field index (resolved at parse time from the column name).
+struct FilterAtom {
+    int      col_idx = -1;
+    enum Op { Eq, Ne, Lt, Le, Gt, Ge } op = Eq;
+    enum Kind { K_Int, K_Double, K_String } kind = K_String;
+    int64_t  i_lit = 0;
+    double   f_lit = 0.0;
+    std::string s_lit;
+};
+struct FilterExpr {
+    // OR of AND clauses; row matches iff some clause's atoms all match.
+    std::vector<std::vector<FilterAtom>> groups;
+};
+
+static std::vector<std::string> filter_tokenize(const std::string& s) {
+    std::vector<std::string> toks;
+    size_t i = 0;
+    while (i < s.size()) {
+        if (std::isspace((unsigned char)s[i])) { ++i; continue; }
+        if (s[i] == '"' || s[i] == '\'') {
+            char q = s[i++];
+            std::string lit = std::string(1, q);
+            while (i < s.size() && s[i] != q) lit += s[i++];
+            if (i < s.size()) lit += s[i++];  // closing quote
+            toks.push_back(lit);
+            continue;
+        }
+        // Operator characters as a chunk: == != < <= > >=
+        if (s[i]=='='||s[i]=='!'||s[i]=='<'||s[i]=='>') {
+            std::string op(1, s[i++]);
+            if (i < s.size() && s[i]=='=') op += s[i++];
+            toks.push_back(op);
+            continue;
+        }
+        // Bare word: identifier or numeric literal
+        std::string w;
+        while (i < s.size() && !std::isspace((unsigned char)s[i])
+               && s[i]!='"' && s[i]!='\''
+               && s[i]!='=' && s[i]!='!' && s[i]!='<' && s[i]!='>')
+            w += s[i++];
+        if (!w.empty()) toks.push_back(w);
+    }
+    return toks;
+}
+
+static bool filter_parse_op(const std::string& t, FilterAtom::Op* op) {
+    if (t == "==") { *op = FilterAtom::Eq; return true; }
+    if (t == "!=") { *op = FilterAtom::Ne; return true; }
+    if (t == "<")  { *op = FilterAtom::Lt; return true; }
+    if (t == "<=") { *op = FilterAtom::Le; return true; }
+    if (t == ">")  { *op = FilterAtom::Gt; return true; }
+    if (t == ">=") { *op = FilterAtom::Ge; return true; }
+    return false;
+}
+
+// Parse the user's `--filter` expression. Returns true on success and
+// populates `out`. On failure, writes a human-readable reason to `err`.
+static bool parse_filter_expr(const std::string& expr,
+                              const arrow::Schema& schema,
+                              FilterExpr* out, std::string* err) {
+    out->groups.clear();
+    auto toks = filter_tokenize(expr);
+    if (toks.empty()) { *err = "empty filter expression"; return false; }
+    auto eq_ci = [](const std::string& a, const char* b) {
+        if (a.size() != std::strlen(b)) return false;
+        for (size_t k = 0; k < a.size(); ++k)
+            if (std::tolower((unsigned char)a[k]) != std::tolower((unsigned char)b[k]))
+                return false;
+        return true;
+    };
+    out->groups.emplace_back();
+    size_t i = 0;
+    while (i < toks.size()) {
+        if (i + 3 > toks.size()) {
+            *err = "expected '<column> <op> <value>' near token '" + toks[i] + "'";
+            return false;
+        }
+        FilterAtom a;
+        a.col_idx = schema.GetFieldIndex(toks[i]);
+        if (a.col_idx < 0) {
+            *err = "unknown column '" + toks[i] + "' in filter";
+            return false;
+        }
+        if (!filter_parse_op(toks[i+1], &a.op)) {
+            *err = "expected an operator (== != < <= > >=), got '" + toks[i+1] + "'";
+            return false;
+        }
+        const std::string& lit = toks[i+2];
+        if (lit.size() >= 2 && (lit.front() == '"' || lit.front() == '\'')
+            && lit.front() == lit.back()) {
+            a.kind  = FilterAtom::K_String;
+            a.s_lit = lit.substr(1, lit.size() - 2);
+        } else if (lit.find_first_of(".eE") != std::string::npos) {
+            try { a.f_lit = std::stod(lit); }
+            catch (...) { *err = "bad number '" + lit + "'"; return false; }
+            a.kind = FilterAtom::K_Double;
+        } else {
+            try { a.i_lit = std::stoll(lit); }
+            catch (...) { *err = "bad integer '" + lit + "'"; return false; }
+            a.kind = FilterAtom::K_Int;
+        }
+        out->groups.back().push_back(std::move(a));
+        i += 3;
+        if (i == toks.size()) break;
+        if (eq_ci(toks[i], "and")) { ++i; continue; }
+        if (eq_ci(toks[i], "or"))  { ++i; out->groups.emplace_back(); continue; }
+        *err = "expected AND / OR, got '" + toks[i] + "'";
+        return false;
+    }
+    return true;
+}
+
+// Get the int64 / double / string value of cell (col_idx, row) in `tbl`.
+// Returns false for nulls or unsupported types.
+static bool cell_as_int(const arrow::Table& tbl, int col, int64_t row,
+                         int64_t* out) {
+    auto chunked = tbl.column(col);
+    int64_t r = row;
+    for (const auto& ch : chunked->chunks()) {
+        if (r < ch->length()) {
+            if (ch->IsNull(r)) return false;
+            if (auto a = std::dynamic_pointer_cast<arrow::Int64Array>(ch))  { *out = a->Value(r); return true; }
+            if (auto a = std::dynamic_pointer_cast<arrow::Int32Array>(ch))  { *out = a->Value(r); return true; }
+            if (auto a = std::dynamic_pointer_cast<arrow::Int16Array>(ch))  { *out = a->Value(r); return true; }
+            if (auto a = std::dynamic_pointer_cast<arrow::Int8Array>(ch))   { *out = a->Value(r); return true; }
+            if (auto a = std::dynamic_pointer_cast<arrow::UInt32Array>(ch)) { *out = (int64_t)a->Value(r); return true; }
+            if (auto a = std::dynamic_pointer_cast<arrow::FloatArray>(ch))  { *out = (int64_t)a->Value(r); return true; }
+            if (auto a = std::dynamic_pointer_cast<arrow::DoubleArray>(ch)) { *out = (int64_t)a->Value(r); return true; }
+            return false;
+        }
+        r -= ch->length();
+    }
+    return false;
+}
+static bool cell_as_double(const arrow::Table& tbl, int col, int64_t row,
+                            double* out) {
+    auto chunked = tbl.column(col);
+    int64_t r = row;
+    for (const auto& ch : chunked->chunks()) {
+        if (r < ch->length()) {
+            if (ch->IsNull(r)) return false;
+            if (auto a = std::dynamic_pointer_cast<arrow::DoubleArray>(ch)) { *out = a->Value(r); return true; }
+            if (auto a = std::dynamic_pointer_cast<arrow::FloatArray>(ch))  { *out = a->Value(r); return true; }
+            int64_t i;
+            if (cell_as_int(tbl, col, row, &i)) { *out = (double)i; return true; }
+            return false;
+        }
+        r -= ch->length();
+    }
+    return false;
+}
+static bool cell_as_string(const arrow::Table& tbl, int col, int64_t row,
+                            std::string* out) {
+    auto chunked = tbl.column(col);
+    int64_t r = row;
+    for (const auto& ch : chunked->chunks()) {
+        if (r < ch->length()) {
+            if (ch->IsNull(r)) return false;
+            if (auto a = std::dynamic_pointer_cast<arrow::StringArray>(ch))      { *out = a->GetString(r); return true; }
+            if (auto a = std::dynamic_pointer_cast<arrow::LargeStringArray>(ch)) { *out = a->GetString(r); return true; }
+            return false;
+        }
+        r -= ch->length();
+    }
+    return false;
+}
+
+// Translate `a.col_idx` (a schema-level source-column index) into the
+// position of that column inside the projected `tbl` passed to the
+// filter. Returns -1 if absent (treated as "no match").
+static int filter_col_in_table(const FilterAtom& a,
+                                const std::vector<int>& read_indices) {
+    for (size_t k = 0; k < read_indices.size(); ++k)
+        if (read_indices[k] == a.col_idx) return (int)k;
+    return -1;
+}
+
+static bool eval_atom(const arrow::Table& tbl, int64_t row, const FilterAtom& a,
+                       const std::vector<int>& read_indices) {
+    int tcol = filter_col_in_table(a, read_indices);
+    if (tcol < 0) return false;
+    if (a.kind == FilterAtom::K_String) {
+        std::string s;
+        if (!cell_as_string(tbl, tcol, row, &s)) return false;
+        int c = s.compare(a.s_lit);
+        switch (a.op) {
+            case FilterAtom::Eq: return c == 0;
+            case FilterAtom::Ne: return c != 0;
+            case FilterAtom::Lt: return c <  0;
+            case FilterAtom::Le: return c <= 0;
+            case FilterAtom::Gt: return c >  0;
+            case FilterAtom::Ge: return c >= 0;
+        }
+    } else if (a.kind == FilterAtom::K_Int) {
+        int64_t v;
+        if (cell_as_int(tbl, tcol, row, &v)) {
+            switch (a.op) {
+                case FilterAtom::Eq: return v == a.i_lit;
+                case FilterAtom::Ne: return v != a.i_lit;
+                case FilterAtom::Lt: return v <  a.i_lit;
+                case FilterAtom::Le: return v <= a.i_lit;
+                case FilterAtom::Gt: return v >  a.i_lit;
+                case FilterAtom::Ge: return v >= a.i_lit;
+            }
+        }
+        // Fall back to double if the column isn't integral.
+        double d;
+        if (!cell_as_double(tbl, tcol, row, &d)) return false;
+        double L = (double)a.i_lit;
+        switch (a.op) {
+            case FilterAtom::Eq: return d == L;
+            case FilterAtom::Ne: return d != L;
+            case FilterAtom::Lt: return d <  L;
+            case FilterAtom::Le: return d <= L;
+            case FilterAtom::Gt: return d >  L;
+            case FilterAtom::Ge: return d >= L;
+        }
+    } else {
+        double d;
+        if (!cell_as_double(tbl, tcol, row, &d)) return false;
+        switch (a.op) {
+            case FilterAtom::Eq: return d == a.f_lit;
+            case FilterAtom::Ne: return d != a.f_lit;
+            case FilterAtom::Lt: return d <  a.f_lit;
+            case FilterAtom::Le: return d <= a.f_lit;
+            case FilterAtom::Gt: return d >  a.f_lit;
+            case FilterAtom::Ge: return d >= a.f_lit;
+        }
+    }
+    return false;
+}
+
+// Apply `expr` to `tbl`, returning the subset of rows that match.
+// Builds contiguous matching runs and concatenates them — avoids Arrow's
+// compute kernels (which get GC'd from our static build).
+static std::shared_ptr<arrow::Table> apply_filter(
+        const std::shared_ptr<arrow::Table>& tbl, const FilterExpr& expr,
+        const std::vector<int>& read_indices) {
+    int64_t n = tbl->num_rows();
+    std::vector<std::shared_ptr<arrow::Table>> runs;
+    int64_t run_start = -1;
+    auto flush = [&](int64_t end) {
+        if (run_start >= 0) {
+            runs.push_back(tbl->Slice(run_start, end - run_start));
+            run_start = -1;
+        }
+    };
+    for (int64_t r = 0; r < n; ++r) {
+        bool any = false;
+        for (const auto& clause : expr.groups) {
+            bool all = true;
+            for (const auto& a : clause) {
+                if (!eval_atom(*tbl, r, a, read_indices)) { all = false; break; }
+            }
+            if (all) { any = true; break; }
+        }
+        if (any) { if (run_start < 0) run_start = r; }
+        else     { flush(r); }
+    }
+    flush(n);
+    if (runs.empty())
+        return tbl->Slice(0, 0);
+    if (runs.size() == 1) return runs[0];
+    auto cr = arrow::ConcatenateTables(runs);
+    return cr.ok() ? cr.ValueOrDie() : tbl;
+}
+
+// Field indices the filter expression references, union'd with `base`.
+// Used to widen the read-projection so the filter has the cells it needs.
+static std::vector<int> union_with_filter(
+        const std::vector<int>& base, const FilterExpr& expr) {
+    std::set<int> s(base.begin(), base.end());
+    for (auto& g : expr.groups) for (auto& a : g) s.insert(a.col_idx);
+    return std::vector<int>(s.begin(), s.end());
+}
+
+// Project `tbl` (which may contain extra columns loaded for the filter) down
+// to the user's requested columns, in `requested_indices`-source-order.
+static std::shared_ptr<arrow::Table> project_to_requested(
+        const std::shared_ptr<arrow::Table>& tbl,
+        const std::vector<int>& read_indices,
+        const std::vector<int>& requested) {
+    if (read_indices == requested) return tbl;
+    std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
+    arrow::FieldVector fields;
+    for (int r : requested) {
+        for (size_t k = 0; k < read_indices.size(); ++k) {
+            if (read_indices[k] == r) {
+                cols.push_back(tbl->column((int)k));
+                fields.push_back(tbl->schema()->field((int)k));
+                break;
+            }
+        }
+    }
+    return arrow::Table::Make(arrow::schema(fields), cols, tbl->num_rows());
+}
+
 // ── LociSSD manifest parser (minimal, hand-rolled) ───────────────────────────
 //
 // The manifest is a UTF-8 JSON blob in the Parquet file footer under the
@@ -1409,6 +1746,46 @@ static std::vector<int> visible_field_indices(const TabularSource& src,
     for (int i = 0; i < n && (int)out.size() < (size_t)limit; ++i) {
         if (hide.count(schema->field(i)->name())) continue;
         out.push_back(i);
+    }
+    return out;
+}
+
+// Resolve `cfg.select_cols` (comma-separated names) into source field
+// indices. If `cfg.select_cols` is empty, returns either the
+// visible-only set (for human-facing views, default) or all fields
+// (`include_hidden=true`, for export paths — `--tsv` / `--csv` /
+// `--json` / `--parquet`). Unknown names appended to `*unknown_out`
+// when given.
+static std::vector<int> select_field_indices(
+        const TabularSource& src, const Config& cfg,
+        std::vector<std::string>* unknown_out = nullptr,
+        bool include_hidden = false) {
+    if (cfg.select_cols.empty()) {
+        if (include_hidden) {
+            int n = src.schema()->num_fields();
+            int limit = (cfg.max_cols > 0) ? std::min(cfg.max_cols, n) : n;
+            std::vector<int> out;
+            for (int i = 0; i < limit; ++i) out.push_back(i);
+            return out;
+        }
+        return visible_field_indices(src, cfg.max_cols);
+    }
+    auto schema = src.schema();
+    std::vector<int> out;
+    size_t pos = 0;
+    while (pos <= cfg.select_cols.size()) {
+        size_t comma = cfg.select_cols.find(',', pos);
+        std::string name = cfg.select_cols.substr(pos,
+            comma == std::string::npos ? std::string::npos : comma - pos);
+        while (!name.empty() && std::isspace((unsigned char)name.front())) name.erase(0, 1);
+        while (!name.empty() && std::isspace((unsigned char)name.back()))  name.pop_back();
+        if (!name.empty()) {
+            int idx = schema->GetFieldIndex(name);
+            if (idx >= 0) out.push_back(idx);
+            else if (unknown_out) unknown_out->push_back(name);
+        }
+        if (comma == std::string::npos) break;
+        pos = comma + 1;
     }
     return out;
 }
@@ -3235,19 +3612,43 @@ static std::string open_source(const std::string& path, const Config& cfg,
 
 static void write_delimited(TabularSource& src, const Config& cfg) {
     char sep = cfg.delimiter;
-    int  show_cols = (cfg.max_cols > 0)
-                     ? std::min(cfg.max_cols, src.schema()->num_fields())
-                     : src.schema()->num_fields();
     // In delimiter mode default to all rows; honour -n if explicitly given.
     int64_t rows_left = (cfg.head_rows <= 0) ? INT64_MAX : (int64_t)cfg.head_rows;
 
-    std::vector<int> col_indices;
-    for (int i = 0; i < show_cols; ++i) col_indices.push_back(i);
+    std::vector<std::string> unknown;
+    std::vector<int> requested = select_field_indices(src, cfg, &unknown, true);
+    if (!unknown.empty()) {
+        std::string u;
+        for (auto& n : unknown) { if (!u.empty()) u += ","; u += n; }
+        std::fprintf(stderr, "unknown column(s) in --select: %s\n", u.c_str());
+        return;
+    }
+
+    FilterExpr fx;
+    bool have_filter = false;
+    if (!cfg.filter_expr.empty()) {
+        std::string ferr;
+        if (!parse_filter_expr(cfg.filter_expr, *src.schema(), &fx, &ferr)) {
+            std::fprintf(stderr, "--filter: %s\n", ferr.c_str());
+            return;
+        }
+        have_filter = true;
+    }
+    std::vector<int> col_indices = have_filter
+        ? union_with_filter(requested, fx) : requested;
+    int  show_cols = (int)requested.size();
+
+    // Position of each *requested* column within the read projection.
+    std::vector<int> req_in_read(requested.size());
+    for (size_t k = 0; k < requested.size(); ++k) {
+        for (size_t j = 0; j < col_indices.size(); ++j)
+            if (col_indices[j] == requested[k]) { req_in_read[k] = (int)j; break; }
+    }
 
     if (!cfg.no_header) {
         for (int ci = 0; ci < show_cols; ++ci) {
             if (ci) std::putchar(sep);
-            write_csv_field(src.schema()->field(ci)->name(), sep);
+            write_csv_field(src.schema()->field(requested[ci])->name(), sep);
         }
         std::putchar('\n');
     }
@@ -3264,10 +3665,12 @@ static void write_delimited(TabularSource& src, const Config& cfg) {
         }
     };
     auto print_rows = [&](const arrow::Table& table, int64_t n_rows) {
+        // Each cursor points at one column at the requested-output position
+        // (so we read from the read projection but emit in user order).
         std::vector<ChunkCursor> cursors;
         cursors.reserve(show_cols);
         for (int ci = 0; ci < show_cols; ++ci)
-            cursors.push_back({table.column(ci).get()});
+            cursors.push_back({table.column(req_in_read[ci]).get()});
         for (int64_t r = 0; r < n_rows; ++r) {
             for (int ci = 0; ci < show_cols; ++ci) {
                 if (ci) std::putchar(sep);
@@ -3282,8 +3685,9 @@ static void write_delimited(TabularSource& src, const Config& cfg) {
 
     // -n on Parquet: ask the source for just `head_rows` rows. ParquetSource's
     // override fetches only the row groups that contain them, skipping a scan
-    // of the rest of the file.
-    if (cfg.head_rows > 0) {
+    // of the rest of the file. Skip this fast path when --filter is active
+    // (we'd over-count rows once the filter prunes some).
+    if (cfg.head_rows > 0 && !have_filter) {
         std::shared_ptr<arrow::Table> table;
         if (src.read_first(rows_left, col_indices, &table).ok() && table) {
             print_rows(*table, std::min(table->num_rows(), rows_left));
@@ -3303,6 +3707,8 @@ static void write_delimited(TabularSource& src, const Config& cfg) {
                          c, st.ToString().c_str());
             continue;
         }
+        if (have_filter) table = apply_filter(table, fx, col_indices);
+        if (!table || table->num_rows() == 0) continue;
 
         int64_t rg_rows = std::min(table->num_rows(), rows_left);
         rows_left -= rg_rows;
@@ -3335,15 +3741,29 @@ static std::string write_parquet(TabularSource& src, const Config& cfg) {
         return "Unknown --compression '" + cfg.compression +
                "' (try: zstd, snappy, gzip, lz4, none)";
 
-    int show_cols = (cfg.max_cols > 0)
-                    ? std::min(cfg.max_cols, src.schema()->num_fields())
-                    : src.schema()->num_fields();
-    std::vector<int> col_indices;
-    for (int i = 0; i < show_cols; ++i) col_indices.push_back(i);
+    std::vector<std::string> unknown;
+    std::vector<int> requested = select_field_indices(src, cfg, &unknown, true);
+    if (!unknown.empty()) {
+        std::string u;
+        for (auto& n : unknown) { if (!u.empty()) u += ","; u += n; }
+        return "unknown column(s) in --select: " + u;
+    }
+    FilterExpr fx;
+    bool have_filter = false;
+    if (!cfg.filter_expr.empty()) {
+        std::string ferr;
+        if (!parse_filter_expr(cfg.filter_expr, *src.schema(), &fx, &ferr))
+            return "--filter: " + ferr;
+        have_filter = true;
+    }
+    std::vector<int> col_indices = have_filter
+        ? union_with_filter(requested, fx) : requested;
 
-    // Build the projected schema (so -c works for output too).
+    // Build the projected schema (so the output Parquet has only the
+    // user-visible columns, in user-requested order — filter cols loaded
+    // for evaluation but dropped before writing).
     arrow::FieldVector fields;
-    for (int i : col_indices) fields.push_back(src.schema()->field(i));
+    for (int i : requested) fields.push_back(src.schema()->field(i));
     auto out_schema = arrow::schema(fields);
 
     auto sink_or = arrow::io::FileOutputStream::Open(cfg.parquet_out);
@@ -3378,8 +3798,12 @@ static std::string write_parquet(TabularSource& src, const Config& cfg) {
                          c, st.ToString().c_str());
             continue;
         }
+        if (have_filter) table = apply_filter(table, fx, col_indices);
+        if (!table || table->num_rows() == 0) continue;
         int64_t take = std::min(table->num_rows(), rows_left);
         if (take < table->num_rows()) table = table->Slice(0, take);
+        // Project down to user-requested columns (drop filter-only loads).
+        table = project_to_requested(table, col_indices, requested);
         st = writer->WriteTable(*table, table->num_rows());
         if (!st.ok()) return "WriteTable failed: " + st.ToString();
         total += take;
@@ -3395,6 +3819,284 @@ static std::string write_parquet(TabularSource& src, const Config& cfg) {
                  g_color.meta_key, (long long)total,
                  cfg.parquet_out.c_str(), cfg.compression.c_str(),
                  g_color.reset);
+    return "";
+}
+
+// ── JSON / JSON-Lines output ─────────────────────────────────────────────────
+
+// Quote a string as a JSON string literal.
+static void json_emit_string(const std::string& v) {
+    std::putchar('"');
+    for (unsigned char c : v) {
+        switch (c) {
+            case '"':  std::printf("\\\""); break;
+            case '\\': std::printf("\\\\"); break;
+            case '\b': std::printf("\\b");  break;
+            case '\f': std::printf("\\f");  break;
+            case '\n': std::printf("\\n");  break;
+            case '\r': std::printf("\\r");  break;
+            case '\t': std::printf("\\t");  break;
+            default:
+                if (c < 0x20) std::printf("\\u%04x", c);
+                else          std::putchar((int)c);
+        }
+    }
+    std::putchar('"');
+}
+
+// Emit one Arrow cell as a JSON value. Numbers go bare, strings are
+// quoted, booleans as true/false, nulls as null. List/struct/map fall
+// back to their Python-style cell_to_string rendering wrapped in a
+// JSON string so the output stays parseable (good-enough v1; structured
+// nesting is a follow-up).
+static void json_emit_cell(const arrow::Array& arr, int64_t row) {
+    if (arr.IsNull(row)) { std::printf("null"); return; }
+    switch (arr.type_id()) {
+        case arrow::Type::BOOL:
+            std::printf(static_cast<const arrow::BooleanArray&>(arr).Value(row)
+                        ? "true" : "false");
+            return;
+        case arrow::Type::INT8: case arrow::Type::INT16: case arrow::Type::INT32:
+        case arrow::Type::INT64: case arrow::Type::UINT8: case arrow::Type::UINT16:
+        case arrow::Type::UINT32: case arrow::Type::UINT64:
+        case arrow::Type::FLOAT: case arrow::Type::DOUBLE:
+            // cell_to_string already produces a decimal representation
+            // suitable for JSON for these types.
+            std::printf("%s", cell_to_string(arr, row).c_str());
+            return;
+        case arrow::Type::STRING: case arrow::Type::LARGE_STRING:
+            json_emit_string(cell_to_string(arr, row));
+            return;
+        default:
+            // Nested or unsupported types — emit their canonical string form.
+            json_emit_string(cell_to_string(arr, row));
+            return;
+    }
+}
+
+static std::string write_json(TabularSource& src, const Config& cfg) {
+    std::vector<std::string> unknown;
+    std::vector<int> requested = select_field_indices(src, cfg, &unknown, true);
+    if (!unknown.empty()) {
+        std::string u; for (auto& n : unknown) { if (!u.empty()) u += ","; u += n; }
+        return "unknown column(s) in --select: " + u;
+    }
+    if (requested.empty()) return "";
+
+    FilterExpr fx;
+    bool have_filter = false;
+    if (!cfg.filter_expr.empty()) {
+        std::string ferr;
+        if (!parse_filter_expr(cfg.filter_expr, *src.schema(), &fx, &ferr))
+            return "--filter: " + ferr;
+        have_filter = true;
+    }
+    std::vector<int> read_set = have_filter
+        ? union_with_filter(requested, fx) : requested;
+
+    int64_t rows_left = (cfg.head_rows <= 0) ? INT64_MAX : (int64_t)cfg.head_rows;
+    bool first_row = true;
+    if (cfg.json_array) std::putchar('[');
+
+    auto emit_row = [&](const arrow::Table& tbl, int64_t r) {
+        if (!first_row) std::printf(cfg.json_array ? ",\n" : "\n");
+        first_row = false;
+        std::putchar('{');
+        for (size_t k = 0; k < requested.size(); ++k) {
+            if (k) std::printf(", ");
+            json_emit_string(src.schema()->field(requested[k])->name());
+            std::printf(": ");
+            // Find the column position in `tbl` (it was loaded as read_set).
+            int p = -1;
+            for (size_t j = 0; j < read_set.size(); ++j)
+                if (read_set[j] == requested[k]) { p = (int)j; break; }
+            auto col = tbl.column(p);
+            int64_t off = r;
+            for (auto& ch : col->chunks()) {
+                if (off < ch->length()) { json_emit_cell(*ch, off); break; }
+                off -= ch->length();
+            }
+        }
+        std::putchar('}');
+    };
+
+    for (int c = 0; rows_left > 0; ++c) {
+        src.ensure(c);
+        if (c >= src.num_chunks()) break;
+        std::shared_ptr<arrow::Table> chunk;
+        if (!src.read_chunk(c, read_set, &chunk).ok()) continue;
+        if (have_filter) chunk = apply_filter(chunk, fx, read_set);
+        if (!chunk || chunk->num_rows() == 0) continue;
+        int64_t take = std::min(chunk->num_rows(), rows_left);
+        for (int64_t r = 0; r < take; ++r) emit_row(*chunk, r);
+        rows_left -= take;
+    }
+    if (cfg.json_array) std::printf("]\n");
+    else if (!first_row) std::putchar('\n');
+    return "";
+}
+
+// ── --describe: per-column statistics ────────────────────────────────────────
+
+// Print "Column | Type | Count | Nulls | Min | Max | Mean | Distinct".
+// `Mean` only filled for numeric columns; `Distinct` only when small.
+static std::string print_describe(TabularSource& src, const Config& cfg) {
+    std::vector<std::string> unknown;
+    std::vector<int> requested = select_field_indices(src, cfg, &unknown);
+    if (!unknown.empty()) {
+        std::string u; for (auto& n : unknown) { if (!u.empty()) u += ","; u += n; }
+        return "unknown column(s) in --select: " + u;
+    }
+
+    FilterExpr fx;
+    bool have_filter = false;
+    if (!cfg.filter_expr.empty()) {
+        std::string ferr;
+        if (!parse_filter_expr(cfg.filter_expr, *src.schema(), &fx, &ferr))
+            return "--filter: " + ferr;
+        have_filter = true;
+    }
+    std::vector<int> read_set = have_filter
+        ? union_with_filter(requested, fx) : requested;
+
+    struct ColStat {
+        std::string  name;
+        std::string  type;
+        bool         is_num = false;
+        int64_t      count  = 0;
+        int64_t      nulls  = 0;
+        double       d_min  = std::numeric_limits<double>::infinity();
+        double       d_max  = -std::numeric_limits<double>::infinity();
+        long double  sum    = 0.0L;
+        std::string  s_min, s_max;
+        std::set<std::string> distinct;     // capped at 16
+        bool         distinct_overflow = false;
+    };
+    std::vector<ColStat> stats(requested.size());
+    for (size_t k = 0; k < requested.size(); ++k) {
+        auto f = src.schema()->field(requested[k]);
+        stats[k].name   = f->name();
+        stats[k].type   = f->type()->ToString();
+        stats[k].is_num = is_numeric_type(f->type()->id());
+    }
+
+    int64_t rows_left = (cfg.head_rows <= 0) ? INT64_MAX : (int64_t)cfg.head_rows;
+    for (int c = 0; rows_left > 0; ++c) {
+        src.ensure(c);
+        if (c >= src.num_chunks()) break;
+        std::shared_ptr<arrow::Table> tbl;
+        if (!src.read_chunk(c, read_set, &tbl).ok()) continue;
+        if (have_filter) tbl = apply_filter(tbl, fx, read_set);
+        if (!tbl || tbl->num_rows() == 0) continue;
+        int64_t take = std::min(tbl->num_rows(), rows_left);
+        if (take < tbl->num_rows()) tbl = tbl->Slice(0, take);
+
+        for (size_t k = 0; k < requested.size(); ++k) {
+            int p = -1;
+            for (size_t j = 0; j < read_set.size(); ++j)
+                if (read_set[j] == requested[k]) { p = (int)j; break; }
+            auto col = tbl->column(p);
+            ColStat& cs = stats[k];
+            for (auto& ch : col->chunks()) {
+                int64_t n = ch->length();
+                for (int64_t r = 0; r < n; ++r) {
+                    if (ch->IsNull(r)) { cs.nulls++; continue; }
+                    cs.count++;
+                    if (cs.is_num) {
+                        double d;
+                        if (auto a = std::dynamic_pointer_cast<arrow::DoubleArray>(ch)) d = a->Value(r);
+                        else if (auto a = std::dynamic_pointer_cast<arrow::FloatArray>(ch))  d = a->Value(r);
+                        else if (auto a = std::dynamic_pointer_cast<arrow::Int64Array>(ch))  d = (double)a->Value(r);
+                        else if (auto a = std::dynamic_pointer_cast<arrow::Int32Array>(ch))  d = (double)a->Value(r);
+                        else if (auto a = std::dynamic_pointer_cast<arrow::Int16Array>(ch))  d = (double)a->Value(r);
+                        else if (auto a = std::dynamic_pointer_cast<arrow::Int8Array>(ch))   d = (double)a->Value(r);
+                        else if (auto a = std::dynamic_pointer_cast<arrow::UInt32Array>(ch)) d = (double)a->Value(r);
+                        else continue;
+                        if (d < cs.d_min) cs.d_min = d;
+                        if (d > cs.d_max) cs.d_max = d;
+                        cs.sum += d;
+                    } else {
+                        std::string s = cell_to_string(*ch, r);
+                        if (cs.count == 1 || s < cs.s_min) cs.s_min = s;
+                        if (cs.count == 1 || s > cs.s_max) cs.s_max = s;
+                        if (!cs.distinct_overflow) {
+                            cs.distinct.insert(s);
+                            if (cs.distinct.size() > 16) {
+                                cs.distinct_overflow = true;
+                                cs.distinct.clear();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        rows_left -= take;
+    }
+
+    // Pretty-print
+    auto fmt_num = [](double v) -> std::string {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%.6g", v);
+        return std::string(buf);
+    };
+    auto width = [](const std::string& s) { return (int)display_width(s); };
+
+    int wN = 6, wT = 4, wC = 5, wL = 5, wMin = 3, wMax = 3, wMean = 4, wD = 8;
+    std::vector<std::array<std::string,7>> rows;  // name, type, count, nulls, min, max, mean
+    std::vector<std::string> distincts;
+    for (auto& cs : stats) {
+        std::string mn, mx, me;
+        if (cs.count == 0) {
+            mn = "-"; mx = "-"; me = "-";
+        } else if (cs.is_num) {
+            mn = fmt_num(cs.d_min);
+            mx = fmt_num(cs.d_max);
+            me = fmt_num((double)(cs.sum / (long double)cs.count));
+        } else {
+            mn = cs.s_min; mx = cs.s_max; me = "";
+        }
+        std::string dn = cs.is_num ? ""
+                       : (cs.distinct_overflow ? ">16"
+                         : std::to_string(cs.distinct.size()));
+        std::string sc = std::to_string(cs.count);
+        std::string sn = std::to_string(cs.nulls);
+        wN = std::max(wN, width(cs.name));
+        wT = std::max(wT, width(cs.type));
+        wC = std::max(wC, width(sc));
+        wL = std::max(wL, width(sn));
+        wMin = std::max(wMin, width(mn));
+        wMax = std::max(wMax, width(mx));
+        wMean = std::max(wMean, width(me));
+        wD = std::max(wD, width(dn));
+        rows.push_back({cs.name, cs.type, sc, sn, mn, mx, me});
+        distincts.push_back(dn);
+    }
+    auto trim_col = [](int& w) { if (w > 40) w = 40; };
+    trim_col(wN); trim_col(wT); trim_col(wMin); trim_col(wMax); trim_col(wMean);
+
+    std::printf("%s%-*s  %-*s  %*s  %*s  %-*s  %-*s  %-*s  %-*s%s\n",
+                g_color.header,
+                wN,    "Column", wT, "Type", wC, "Count", wL, "Nulls",
+                wMin,  "Min",    wMax, "Max", wMean, "Mean", wD, "Distinct",
+                g_color.reset);
+    std::printf("%s%s  %s  %s  %s  %s  %s  %s  %s%s\n",
+                g_color.border,
+                std::string(wN,'-').c_str(), std::string(wT,'-').c_str(),
+                std::string(wC,'-').c_str(), std::string(wL,'-').c_str(),
+                std::string(wMin,'-').c_str(), std::string(wMax,'-').c_str(),
+                std::string(wMean,'-').c_str(), std::string(wD,'-').c_str(),
+                g_color.reset);
+    for (size_t k = 0; k < rows.size(); ++k) {
+        auto& r = rows[k];
+        std::printf("%-*s  %-*s  %*s  %*s  %-*s  %-*s  %-*s  %-*s\n",
+                    wN, truncate(r[0], wN).c_str(),
+                    wT, truncate(r[1], wT).c_str(),
+                    wC, r[2].c_str(), wL, r[3].c_str(),
+                    wMin,  truncate(r[4], wMin).c_str(),
+                    wMax,  truncate(r[5], wMax).c_str(),
+                    wMean, r[6].c_str(),
+                    wD,    distincts[k].c_str());
+    }
     return "";
 }
 
@@ -4696,25 +5398,53 @@ static int detect_terminal_width() {
 // record is a column. Show as many record-columns as fit in the terminal so
 // wide tables can be scanned by scrolling vertically. Default when the
 // binary is invoked as `vh`; opt in elsewhere with `--vertical`.
+// Forward decl: shared by print_table and the stand-alone --schema mode.
+static void print_schema_block(TabularSource& src);
+
 static void print_vertical_table(TabularSource& src, const Config& cfg) {
     auto schema     = src.schema();
     int  n_fields   = schema->num_fields();
-    std::vector<int> col_indices = visible_field_indices(src, cfg.max_cols);
+    std::vector<std::string> unknown;
+    std::vector<int> col_indices = select_field_indices(src, cfg, &unknown);
+    if (!unknown.empty()) {
+        std::string u;
+        for (auto& n : unknown) { if (!u.empty()) u += ","; u += n; }
+        std::fprintf(stderr, "unknown column(s) in --select: %s\n", u.c_str());
+        return;
+    }
     int  show_fields = (int)col_indices.size();
+    FilterExpr fx;
+    bool have_filter = false;
+    if (!cfg.filter_expr.empty()) {
+        std::string ferr;
+        if (!parse_filter_expr(cfg.filter_expr, *schema, &fx, &ferr)) {
+            std::fprintf(stderr, "--filter: %s\n", ferr.c_str());
+            return;
+        }
+        have_filter = true;
+    }
+    std::vector<int> read_indices = have_filter
+        ? union_with_filter(col_indices, fx) : col_indices;
+
     int64_t tr          = src.total_rows();
     int64_t rows_wanted = (cfg.head_rows <= 0) ? (tr >= 0 ? tr : INT64_MAX)
                                                : (int64_t)cfg.head_rows;
 
     std::shared_ptr<arrow::Table> data;
-    if (cfg.head_rows > 0) {
-        (void)src.read_first(rows_wanted, col_indices, &data);
+    if (cfg.head_rows > 0 && !have_filter) {
+        (void)src.read_first(rows_wanted, read_indices, &data);
     } else {
-        for (int c = 0; ; ++c) {
+        int64_t need = rows_wanted;
+        for (int c = 0; need > 0; ++c) {
             src.ensure(c);
             if (c >= src.num_chunks()) break;
             std::shared_ptr<arrow::Table> chunk;
-            if (!src.read_chunk(c, col_indices, &chunk).ok()) continue;
-            if (!data) { data = chunk; }
+            if (!src.read_chunk(c, read_indices, &chunk).ok()) continue;
+            if (have_filter) chunk = apply_filter(chunk, fx, read_indices);
+            if (!chunk || chunk->num_rows() == 0) continue;
+            if (chunk->num_rows() > need) chunk = chunk->Slice(0, need);
+            need -= chunk->num_rows();
+            if (!data) data = chunk;
             else {
                 auto r = arrow::ConcatenateTables({data, chunk});
                 if (r.ok()) data = r.ValueOrDie();
@@ -4725,6 +5455,8 @@ static void print_vertical_table(TabularSource& src, const Config& cfg) {
         std::printf("[0 rows x %d columns]\n", n_fields);
         return;
     }
+    if (read_indices != col_indices)
+        data = project_to_requested(data, read_indices, col_indices);
 
     int64_t n_records = data->num_rows();
 
@@ -4846,25 +5578,51 @@ static void print_vertical_table(TabularSource& src, const Config& cfg) {
 
 static void print_table(TabularSource& src, const Config& cfg) {
     auto schema = src.schema();
-    std::vector<int> col_indices = visible_field_indices(src, cfg.max_cols);
+    std::vector<std::string> unknown;
+    std::vector<int> col_indices = select_field_indices(src, cfg, &unknown);
+    if (!unknown.empty()) {
+        std::string u;
+        for (auto& n : unknown) { if (!u.empty()) u += ","; u += n; }
+        std::fprintf(stderr, "unknown column(s) in --select: %s\n", u.c_str());
+        return;
+    }
     int show_cols = (int)col_indices.size();
+    FilterExpr fx;
+    bool have_filter = false;
+    if (!cfg.filter_expr.empty()) {
+        std::string ferr;
+        if (!parse_filter_expr(cfg.filter_expr, *schema, &fx, &ferr)) {
+            std::fprintf(stderr, "--filter: %s\n", ferr.c_str());
+            return;
+        }
+        have_filter = true;
+    }
+    std::vector<int> read_indices = have_filter
+        ? union_with_filter(col_indices, fx) : col_indices;
+
     int64_t tr          = src.total_rows();
     int64_t rows_wanted = (cfg.head_rows <= 0) ? (tr >= 0 ? tr : INT64_MAX)
                                                : (int64_t)cfg.head_rows;
 
     // Collect rows up to rows_wanted. For head_rows > 0 we can ask the source
     // for a partial read (Parquet uses a RecordBatchReader to avoid decoding
-    // a whole row group just to display the first handful of rows).
+    // a whole row group just to display the first handful of rows). Skip
+    // the fast path when --filter is active.
     std::shared_ptr<arrow::Table> data;
-    if (cfg.head_rows > 0) {
-        (void)src.read_first(rows_wanted, col_indices, &data);
+    if (cfg.head_rows > 0 && !have_filter) {
+        (void)src.read_first(rows_wanted, read_indices, &data);
     } else {
-        for (int c = 0; ; ++c) {
+        int64_t need = rows_wanted;
+        for (int c = 0; need > 0; ++c) {
             src.ensure(c);
             if (c >= src.num_chunks()) break;
             std::shared_ptr<arrow::Table> chunk;
-            if (!src.read_chunk(c, col_indices, &chunk).ok()) continue;
-            if (!data) { data = chunk; }
+            if (!src.read_chunk(c, read_indices, &chunk).ok()) continue;
+            if (have_filter) chunk = apply_filter(chunk, fx, read_indices);
+            if (!chunk || chunk->num_rows() == 0) continue;
+            if (chunk->num_rows() > need) chunk = chunk->Slice(0, need);
+            need -= chunk->num_rows();
+            if (!data) data = chunk;
             else {
                 auto r = arrow::ConcatenateTables({data, chunk});
                 if (r.ok()) data = r.ValueOrDie();
@@ -4872,6 +5630,10 @@ static void print_table(TabularSource& src, const Config& cfg) {
         }
     }
     if (!data) return;
+    // Drop filter-only columns from `data` so the display loop's column
+    // indices line up with col_indices (the user-requested set).
+    if (read_indices != col_indices)
+        data = project_to_requested(data, read_indices, col_indices);
 
     int64_t n_display = data->num_rows();
     int     num_cols  = schema->num_fields();
@@ -4947,7 +5709,14 @@ static void print_table(TabularSource& src, const Config& cfg) {
     std::printf("\n%s[%lld rows x %d columns]%s\n",
                 g_color.meta_key, (long long)total, num_cols, g_color.reset);
 
-    // Schema table
+    print_schema_block(src);
+}
+
+// Schema + file-info block. Shared by print_table's footer and the
+// stand-alone `--schema` mode.
+static void print_schema_block(TabularSource& src) {
+    auto schema = src.schema();
+    int num_cols = schema->num_fields();
     int name_w = 6, type_w = 4;
     for (int ci = 0; ci < num_cols; ++ci) {
         auto f = schema->field(ci);
@@ -5076,6 +5845,28 @@ int main(int argc, char** argv) {
         }
         report(cfg.path, shorten_reader_error(std::move(detail)));
         return 1;
+    }
+
+    // --schema: just print schema + footer, then exit.
+    if (cfg.schema_only) {
+        print_schema_block(*src);
+        return 0;
+    }
+
+    // --describe: per-column statistics.
+    if (cfg.describe) {
+        std::string err = print_describe(*src, cfg);
+        if (!err.empty()) { report(cfg.path, err); return 1; }
+        return 0;
+    }
+
+    // --json / --ndjson: stream JSON rows to stdout.
+    if (cfg.json_array || cfg.json_lines) {
+        Config jcfg = cfg;
+        if (!jcfg.head_rows_set) jcfg.head_rows = 0;
+        std::string err = write_json(*src, jcfg);
+        if (!err.empty()) { report(cfg.path, err); return 1; }
+        return 0;
     }
 
     // Interactive viewer

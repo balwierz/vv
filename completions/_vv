@@ -38,6 +38,12 @@ _vv() {
         '--no-header[Omit the header row]' \
         '--parquet+[Write a Parquet file]:path:_files' \
         '--compression+[Parquet codec]:codec:(zstd snappy gzip lz4 none)' \
+        '--json[Write a JSON array]' \
+        '--ndjson[Write one JSON object per line]' \
+        '(--select --cols)'{--select,--cols}'+[Project columns by name]:cols:' \
+        '--filter+[Row predicate]:expr:' \
+        '--schema[Print schema and exit]' \
+        '--describe[Per-column statistics]' \
         "*:file:_files -g '${(j:|:)file_exts}'"
 }
 

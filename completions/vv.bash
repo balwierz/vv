@@ -50,6 +50,9 @@ _vv() {
                 --color --color=auto --color=always --color=never
                 --tsv --csv --delimiter
                 --parquet --compression
+                --json --ndjson
+                --select --cols --filter
+                --schema --describe
                 --vertical
                 --no-header
             '
