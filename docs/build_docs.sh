@@ -43,6 +43,16 @@ try_tex() {
         -o USAGE.pdf 2>/dev/null
 }
 
+try_pandoc_engine() {
+    local engine="$1"
+    command -v "$engine" >/dev/null 2>&1 || return 1
+    pandoc "$SRC" \
+        --pdf-engine="$engine" \
+        --toc --toc-depth=2 \
+        --highlight-style=tango \
+        -o USAGE.pdf 2>/dev/null
+}
+
 try_browser() {
     local browser
     for browser in chromium google-chrome chrome; do
@@ -56,10 +66,21 @@ try_browser() {
     return 1
 }
 
+# Preference order:
+#   1. xelatex / lualatex — best typography when texlive-fontsrecommended
+#      (and DejaVu) is installed.
+#   2. weasyprint — clean HTML→PDF via Python; widely available on
+#      bioinformatics workstations alongside pandoc.
+#   3. wkhtmltopdf — webkit-based, mature but unmaintained.
+#   4. chromium / chrome --headless — last-resort HTML→PDF.
 if try_tex xelatex 2>/dev/null; then
     PDF_OK=1; ENGINE="xelatex"
 elif try_tex lualatex 2>/dev/null; then
     PDF_OK=1; ENGINE="lualatex"
+elif try_pandoc_engine weasyprint; then
+    PDF_OK=1; ENGINE="weasyprint"
+elif try_pandoc_engine wkhtmltopdf; then
+    PDF_OK=1; ENGINE="wkhtmltopdf"
 elif try_browser; then
     PDF_OK=1; ENGINE="chromium (via HTML)"
 fi
