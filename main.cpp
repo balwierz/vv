@@ -6,6 +6,7 @@
 
 #include <arrow/api.h>
 #include <arrow/io/api.h>
+#include <parquet/statistics.h>
 #include <arrow/type.h>
 #include <arrow/scalar.h>
 #include <arrow/csv/api.h>
@@ -206,8 +207,11 @@ static void print_usage(const char* prog) {
         "\nParquet output (replaces table view):\n"
         "  --parquet <file>    write a Parquet file at <file>\n"
         "  --compression <c>   codec: zstd (default), snappy, gzip, lz4, none\n"
-        "\nRange queries (tabix-indexed VCF/BED/GFF/TSV with .tbi):\n"
+        "\nRange queries:\n"
         "  -r / --region <REGION>   e.g. chr1:1000-2000  (multiple comma-separated)\n"
+        "  --window <REGION>        alias of -r for LociSSD readers' muscle memory\n"
+        "  Supported on tabix-indexed VCF/BED/GFF/TSV and on LociSSD Parquet\n"
+        "  (.lociss). Coordinates are 0-based half-open (BED convention).\n"
         "\nPerformance:\n"
         "  -@ / --threads <N>  worker threads for I/O and decode (0 = auto)\n"
         "\n  -h / --help         show this help\n"
@@ -253,7 +257,8 @@ static Config parse_args(int argc, char** argv) {
         } else if (!std::strcmp(argv[i], "-c") && i + 1 < argc) {
             cfg.max_cols = std::atoi(argv[++i]);
         } else if ((!std::strcmp(argv[i], "-r") ||
-                    !std::strcmp(argv[i], "--region")) && i + 1 < argc) {
+                    !std::strcmp(argv[i], "--region") ||
+                    !std::strcmp(argv[i], "--window")) && i + 1 < argc) {
             cfg.region = argv[++i];
         } else if ((!std::strcmp(argv[i], "-@") ||
                     !std::strcmp(argv[i], "--threads")) && i + 1 < argc) {
@@ -1116,6 +1121,156 @@ static std::vector<std::string> strip_tsv_csv_preamble(
     return preamble;
 }
 
+// ── Region parsing ───────────────────────────────────────────────────────────
+//
+// Parse one "chrom:start-end" element (BED-style 0-based half-open). Open
+// ends are accepted: "chr1:" → whole chrom, "chr1:78-" → 78 to end,
+// "chr1:-99" → start to 99. Returns false on a syntactically bad spec.
+struct Region {
+    std::string chrom;
+    int64_t     start;   // INT64_MIN means open lower bound
+    int64_t     end;     // INT64_MAX means open upper bound
+};
+
+static bool parse_region_one(const std::string& s, Region* out) {
+    auto colon = s.find(':');
+    if (colon == std::string::npos) {
+        out->chrom = s;
+        out->start = INT64_MIN;
+        out->end   = INT64_MAX;
+        return !out->chrom.empty();
+    }
+    out->chrom = s.substr(0, colon);
+    if (out->chrom.empty()) return false;
+    std::string rest = s.substr(colon + 1);
+    if (rest.empty()) {
+        out->start = INT64_MIN;
+        out->end   = INT64_MAX;
+        return true;
+    }
+    auto dash = rest.find('-');
+    std::string a, b;
+    if (dash == std::string::npos) { a = rest; }
+    else { a = rest.substr(0, dash); b = rest.substr(dash + 1); }
+    auto parse_int = [](const std::string& t, int64_t* v) {
+        if (t.empty()) return true;  // open end
+        try { *v = std::stoll(t); return true; }
+        catch (...) { return false; }
+    };
+    out->start = INT64_MIN;
+    out->end   = INT64_MAX;
+    if (!parse_int(a, &out->start)) return false;
+    if (dash != std::string::npos) {
+        if (!parse_int(b, &out->end)) return false;
+    } else {
+        out->end = out->start + 1;   // "chrom:N" → single position
+    }
+    return true;
+}
+
+static std::vector<Region> parse_region_list(const std::string& spec) {
+    std::vector<Region> out;
+    size_t start = 0;
+    while (start <= spec.size()) {
+        size_t comma = spec.find(',', start);
+        std::string tok = spec.substr(start,
+            comma == std::string::npos ? std::string::npos : comma - start);
+        if (!tok.empty()) {
+            Region r{};
+            if (parse_region_one(tok, &r)) out.push_back(std::move(r));
+        }
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+    }
+    return out;
+}
+
+// ── LociSSD manifest parser (minimal, hand-rolled) ───────────────────────────
+//
+// The manifest is a UTF-8 JSON blob in the Parquet file footer under the
+// `lociSSD_manifest` key. We only need three fields: each chromosome's
+// `name`, `row_offset`, and `rows`. A focused string-scanning extractor is
+// simpler than pulling in a JSON library and is robust to additive future
+// fields. Returns true on a successful parse of at least one chromosome.
+struct LocissChrom {
+    std::string name;
+    int64_t     row_offset = 0;
+    int64_t     rows       = 0;
+};
+
+static bool parse_lociss_chromosomes(const std::string& json,
+                                     std::vector<LocissChrom>* out) {
+    auto skip_ws = [&](size_t& p) {
+        while (p < json.size() && std::isspace((unsigned char)json[p])) ++p;
+    };
+    // Locate the chromosomes array start.
+    auto key = json.find("\"chromosomes\"");
+    if (key == std::string::npos) return false;
+    size_t p = json.find('[', key);
+    if (p == std::string::npos) return false;
+    ++p;  // step past '['
+    out->clear();
+    while (p < json.size()) {
+        skip_ws(p);
+        if (p < json.size() && json[p] == ']') return !out->empty();
+        if (json[p] != '{') return false;
+        // Parse one object; track nested braces in case of future nesting.
+        size_t obj_start = p, depth = 0;
+        for (; p < json.size(); ++p) {
+            if (json[p] == '{') ++depth;
+            else if (json[p] == '}') { if (--depth == 0) { ++p; break; } }
+            else if (json[p] == '"') {
+                // skip a string literal (handles backslash-escapes)
+                ++p;
+                while (p < json.size() && json[p] != '"') {
+                    if (json[p] == '\\' && p + 1 < json.size()) p += 2;
+                    else ++p;
+                }
+            }
+        }
+        std::string obj = json.substr(obj_start, p - obj_start);
+        // Extract scalar fields by literal key search inside this object.
+        LocissChrom c{};
+        auto find_str = [&](const char* k, std::string* dst) {
+            std::string needle = std::string("\"") + k + "\"";
+            auto q = obj.find(needle);
+            if (q == std::string::npos) return false;
+            q = obj.find(':', q);
+            if (q == std::string::npos) return false;
+            ++q;
+            while (q < obj.size() && std::isspace((unsigned char)obj[q])) ++q;
+            if (q >= obj.size() || obj[q] != '"') return false;
+            ++q;
+            size_t end = q;
+            while (end < obj.size() && obj[end] != '"') {
+                if (obj[end] == '\\' && end + 1 < obj.size()) end += 2;
+                else ++end;
+            }
+            *dst = obj.substr(q, end - q);
+            return true;
+        };
+        auto find_int = [&](const char* k, int64_t* dst) {
+            std::string needle = std::string("\"") + k + "\"";
+            auto q = obj.find(needle);
+            if (q == std::string::npos) return false;
+            q = obj.find(':', q);
+            if (q == std::string::npos) return false;
+            ++q;
+            while (q < obj.size() && std::isspace((unsigned char)obj[q])) ++q;
+            try { *dst = std::stoll(obj.substr(q)); return true; }
+            catch (...) { return false; }
+        };
+        if (!find_str("name",       &c.name))        return false;
+        if (!find_int("rows",       &c.rows))        return false;
+        if (!find_int("row_offset", &c.row_offset))  return false;
+        out->push_back(std::move(c));
+        // Skip commas / whitespace before the next entry.
+        skip_ws(p);
+        if (p < json.size() && json[p] == ',') ++p;
+    }
+    return !out->empty();
+}
+
 // Wraps an InputStream, truncating each line to at most max_fields tab-separated fields.
 // Used for SAM (variable optional alignment tags) and GFF3 (occasional extra columns).
 class TruncateFieldsStream : public arrow::io::InputStream {
@@ -1268,6 +1423,26 @@ class ParquetSource : public TabularSource {
     std::vector<int64_t>                         chunk_start_;
     bool                                         is_lociss_ = false;
 
+    // ── LociSSD region-query state ───────────────────────────────────────────
+    // Populated only when cfg.region is set on a LociSSD file. A "slice" is a
+    // span of rows inside one row group that is known (after row-group
+    // statistics pruning) to potentially contain matches; per-row predicate
+    // filtering happens inside read_chunk and produces the actual visible rows.
+    struct RegionSlice {
+        int      row_group;
+        int64_t  off_in_rg;    // first row of the slice inside the row group
+        int64_t  len;          // number of rows to consider before filtering
+        Region   window;       // the window the slice belongs to
+    };
+    bool                          region_mode_ = false;
+    std::vector<RegionSlice>      slices_;
+    std::vector<int64_t>          slice_first_row_;  // cumulative virtual row offsets
+    int64_t                       region_total_rows_ = 0;
+    // Column indices we need for filtering (looked up once at open()).
+    int                           j_chrom_=-1, j_start_=-1, j_end_=-1, j_mes_=-1;
+    // Per-row filter cache: the filtered Table for slice i (lazily computed).
+    mutable std::map<int, std::shared_ptr<arrow::Table>> filtered_cache_;
+
     static std::string fmt_size(int64_t sz) {
         char buf[32];
         if      (sz < 1024)             std::snprintf(buf,sizeof(buf),"%lld B",(long long)sz);
@@ -1312,8 +1487,13 @@ public:
 
         // LociSSD detection: file-level KV metadata key `lociSSD_manifest`.
         // The derived `MaxEndSoFar` column is then hidden from display.
+        std::string lociss_manifest_json;
         if (auto kv = self->meta_->key_value_metadata()) {
-            if (kv->Contains("lociSSD_manifest")) self->is_lociss_ = true;
+            if (kv->Contains("lociSSD_manifest")) {
+                self->is_lociss_ = true;
+                auto v = kv->Get("lociSSD_manifest");
+                if (v.ok()) lociss_manifest_json = *v;
+            }
         }
 
         int64_t acc = 0;
@@ -1321,14 +1501,127 @@ public:
             self->chunk_start_.push_back(acc);
             acc += self->meta_->RowGroup(i)->num_rows();
         }
+
+        // ── LociSSD region pruning ───────────────────────────────────────────
+        if (!cfg.region.empty()) {
+            if (!self->is_lociss_)
+                return "region queries on Parquet need LociSSD format (the "
+                       "lociSSD_manifest footer key is missing); for text "
+                       "formats use tabix-indexed .vcf.gz/.bed.gz/.gff.gz";
+            std::vector<LocissChrom> chromosomes;
+            if (!parse_lociss_chromosomes(lociss_manifest_json, &chromosomes))
+                return "Cannot parse LociSSD manifest";
+
+            // Look up the schema column indices we need for filtering.
+            for (int i = 0; i < self->schema_->num_fields(); ++i) {
+                const auto& n = self->schema_->field(i)->name();
+                if (n == "Chromosome")  self->j_chrom_ = i;
+                else if (n == "Start")  self->j_start_ = i;
+                else if (n == "End")    self->j_end_   = i;
+                else if (n == "MaxEndSoFar") self->j_mes_ = i;
+            }
+            if (self->j_chrom_ < 0 || self->j_start_ < 0 || self->j_end_ < 0)
+                return "LociSSD file missing required columns (Chromosome / Start / End)";
+
+            // Per-chrom lookup helper.
+            auto find_chrom = [&](const std::string& name)
+                    -> const LocissChrom* {
+                for (auto& c : chromosomes) if (c.name == name) return &c;
+                return nullptr;
+            };
+            // Map a row-range [row_a, row_b) to row-group indices it touches.
+            auto rg_range_for_rows = [&](int64_t row_a, int64_t row_b,
+                                         int* rg_first, int* rg_last) {
+                int n_rg = self->meta_->num_row_groups();
+                *rg_first = n_rg; *rg_last = -1;
+                for (int g = 0; g < n_rg; ++g) {
+                    int64_t a = self->chunk_start_[g];
+                    int64_t b = a + self->meta_->RowGroup(g)->num_rows();
+                    if (b <= row_a || a >= row_b) continue;
+                    if (g < *rg_first) *rg_first = g;
+                    if (g > *rg_last)  *rg_last  = g;
+                }
+            };
+            // Read a row group's Start / MaxEndSoFar statistics. We use Parquet
+            // *leaf* column indices: for the flat numeric columns we care about,
+            // the leaf and field indices coincide (verified at open time).
+            auto col_stats_minmax_int = [&](int rg, int field_idx,
+                                            int64_t* lo, int64_t* hi) -> bool {
+                auto md = self->meta_->RowGroup(rg);
+                if (field_idx < 0 || field_idx >= md->num_columns()) return false;
+                auto cc = md->ColumnChunk(field_idx);
+                if (!cc->is_stats_set()) return false;
+                auto stats = cc->statistics();
+                if (!stats || !stats->HasMinMax()) return false;
+                // Try Int64 first, then Int32.
+                if (auto s64 = std::dynamic_pointer_cast<parquet::Int64Statistics>(stats)) {
+                    *lo = s64->min(); *hi = s64->max(); return true;
+                }
+                if (auto s32 = std::dynamic_pointer_cast<parquet::Int32Statistics>(stats)) {
+                    *lo = s32->min(); *hi = s32->max(); return true;
+                }
+                return false;
+            };
+
+            auto windows = parse_region_list(cfg.region);
+            int64_t virt = 0;
+            for (const auto& w : windows) {
+                const LocissChrom* c = find_chrom(w.chrom);
+                if (!c) continue;
+                int64_t row_a = c->row_offset;
+                int64_t row_b = c->row_offset + c->rows;
+                int rg_first, rg_last;
+                rg_range_for_rows(row_a, row_b, &rg_first, &rg_last);
+                if (rg_last < rg_first) continue;
+                int64_t qs = w.start, qe = w.end;
+                for (int g = rg_first; g <= rg_last; ++g) {
+                    int64_t lo = INT64_MIN, hi = INT64_MAX;
+                    // Skip row groups whose Start.min is already past the window.
+                    if (qe != INT64_MAX &&
+                        col_stats_minmax_int(g, self->j_start_, &lo, &hi) &&
+                        lo >= qe) continue;
+                    // Skip row groups whose intervals all end at/before the window
+                    // start (this is what MaxEndSoFar is for).
+                    if (qs != INT64_MIN && self->j_mes_ >= 0 &&
+                        col_stats_minmax_int(g, self->j_mes_, &lo, &hi) &&
+                        hi <= qs) continue;
+                    // Slice within this row group is the intersection of the
+                    // chromosome's row range with the row group.
+                    int64_t rg_a = self->chunk_start_[g];
+                    int64_t rg_b = rg_a + self->meta_->RowGroup(g)->num_rows();
+                    int64_t slice_a = std::max(rg_a, row_a);
+                    int64_t slice_b = std::min(rg_b, row_b);
+                    if (slice_b <= slice_a) continue;
+                    RegionSlice s;
+                    s.row_group = g;
+                    s.off_in_rg = slice_a - rg_a;
+                    s.len       = slice_b - slice_a;
+                    s.window    = w;
+                    self->slice_first_row_.push_back(virt);
+                    virt += s.len;
+                    self->slices_.push_back(std::move(s));
+                }
+            }
+            self->region_total_rows_ = virt;
+            self->region_mode_       = true;
+        }
+
         *out = std::move(self);
         return "";
     }
 
     std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
-    int64_t total_rows() const override { return meta_->num_rows(); }
-    int     num_chunks() const override { return meta_->num_row_groups(); }
+    int64_t total_rows() const override {
+        // Region mode: the pre-filter slice total. The per-row predicate
+        // applied in read_chunk may reduce this slightly; close enough for
+        // the TUI status bar and the [N rows × M columns] footer.
+        return region_mode_ ? region_total_rows_ : meta_->num_rows();
+    }
+    int     num_chunks() const override {
+        return region_mode_ ? (int)slices_.size() : meta_->num_row_groups();
+    }
     ChunkMeta chunk_meta(int i) const override {
+        if (region_mode_) return {slice_first_row_[i], slices_[i].len};
         return {chunk_start_[i], meta_->RowGroup(i)->num_rows()};
     }
     // ReadRowGroups / GetRecordBatchReader take Parquet *leaf* column indices,
@@ -1352,10 +1645,131 @@ public:
     }
     arrow::Status read_chunk(int i, const std::vector<int>& cols,
                               std::shared_ptr<arrow::Table>* out) override {
-        return reader_->ReadRowGroups({i}, arrow_to_leaf_indices(cols), out);
+        if (!region_mode_)
+            return reader_->ReadRowGroups({i}, arrow_to_leaf_indices(cols), out);
+
+        // Region mode: read the full row group of the slice, slice it to the
+        // chromosome's row range, then filter by the canonical LociSSD
+        // overlap predicate (spec §7). The caller may have asked for only a
+        // projection of columns; we always read Chromosome/Start/End for the
+        // predicate, then return the projected columns at the end.
+        const RegionSlice& s = slices_[i];
+
+        // Build the union of (requested cols ∪ {Chromosome, Start, End}).
+        std::set<int> need_set(cols.begin(), cols.end());
+        need_set.insert(j_chrom_);
+        need_set.insert(j_start_);
+        need_set.insert(j_end_);
+        std::vector<int> need(need_set.begin(), need_set.end());
+
+        std::shared_ptr<arrow::Table> raw;
+        ARROW_RETURN_NOT_OK(reader_->ReadRowGroups(
+            {s.row_group}, arrow_to_leaf_indices(need), &raw));
+        // Slice to the chromosome's portion of the row group.
+        raw = raw->Slice(s.off_in_rg, s.len);
+
+        // Locate the columns *within the projected table*.
+        auto col_in_raw = [&](int field_idx) -> int {
+            for (size_t k = 0; k < need.size(); ++k)
+                if (need[k] == field_idx) return (int)k;
+            return -1;
+        };
+        int p_chrom = col_in_raw(j_chrom_);
+        int p_start = col_in_raw(j_start_);
+        int p_end   = col_in_raw(j_end_);
+        if (p_chrom < 0 || p_start < 0 || p_end < 0)
+            return arrow::Status::Invalid("LociSSD region: required columns missing");
+
+        // Apply the canonical LociSSD predicate
+        //   Chromosome == chrom AND Start < qend AND End > qstart
+        // by walking rows and collecting contiguous runs of matches. This
+        // avoids depending on Arrow compute kernels (which are pruned by
+        // `--gc-sections` in the static build). The result is built by
+        // slicing + concatenating the original table — supports every
+        // Arrow type the data may carry.
+        const int64_t n_rows = raw->num_rows();
+        auto chrom_arr = raw->column(p_chrom)->chunk(0);
+        auto start_arr = raw->column(p_start)->chunk(0);
+        auto end_arr   = raw->column(p_end)->chunk(0);
+        // chunk(0) is safe here: ReadRowGroups returns a single chunk per
+        // column, and Slice() shares the chunking. (`raw->Slice` may break
+        // multi-chunk inputs but ReadRowGroups produces single-chunk
+        // tables.) Defend against the unexpected:
+        auto cell_chrom = [&](int64_t r) -> std::string {
+            if (auto a = std::dynamic_pointer_cast<arrow::StringArray>(chrom_arr))
+                return a->GetString(r);
+            if (auto a = std::dynamic_pointer_cast<arrow::LargeStringArray>(chrom_arr))
+                return a->GetString(r);
+            return std::string();
+        };
+        auto cell_int = [](const std::shared_ptr<arrow::Array>& a, int64_t r) -> int64_t {
+            if (auto x = std::dynamic_pointer_cast<arrow::Int64Array>(a))  return x->Value(r);
+            if (auto x = std::dynamic_pointer_cast<arrow::Int32Array>(a))  return x->Value(r);
+            return 0;
+        };
+
+        std::vector<std::shared_ptr<arrow::Table>> runs;
+        int64_t run_start = -1;
+        auto flush = [&](int64_t r_end) {
+            if (run_start >= 0) {
+                runs.push_back(raw->Slice(run_start, r_end - run_start));
+                run_start = -1;
+            }
+        };
+        for (int64_t r = 0; r < n_rows; ++r) {
+            bool match = (cell_chrom(r) == s.window.chrom);
+            if (match) {
+                int64_t st = cell_int(start_arr, r);
+                int64_t en = cell_int(end_arr,   r);
+                if (s.window.end   != INT64_MAX && st >= s.window.end)   match = false;
+                if (s.window.start != INT64_MIN && en <= s.window.start) match = false;
+            }
+            if (match) { if (run_start < 0) run_start = r; }
+            else       { flush(r); }
+        }
+        flush(n_rows);
+
+        std::shared_ptr<arrow::Table> ft;
+        if (runs.empty()) {
+            // Build an empty table with the projected schema.
+            std::vector<std::shared_ptr<arrow::ChunkedArray>> empty_cols;
+            arrow::FieldVector empty_fields;
+            for (int c : cols) {
+                empty_cols.push_back(std::make_shared<arrow::ChunkedArray>(
+                    arrow::ArrayVector{}, schema_->field(c)->type()));
+                empty_fields.push_back(schema_->field(c));
+            }
+            *out = arrow::Table::Make(arrow::schema(empty_fields), empty_cols, 0);
+            return arrow::Status::OK();
+        }
+        if (runs.size() == 1) ft = runs[0];
+        else {
+            auto cr = arrow::ConcatenateTables(runs);
+            if (!cr.ok()) return cr.status();
+            ft = cr.ValueOrDie();
+        }
+
+        // Project down to just the originally-requested columns.
+        std::vector<std::shared_ptr<arrow::ChunkedArray>> out_cols;
+        arrow::FieldVector out_fields;
+        for (int c : cols) {
+            int p = col_in_raw(c);
+            out_cols.push_back(ft->column(p));
+            out_fields.push_back(schema_->field(c));
+        }
+        *out = arrow::Table::Make(arrow::schema(out_fields), out_cols,
+                                  ft->num_rows());
+        return arrow::Status::OK();
     }
     arrow::Status read_first(int64_t rows, const std::vector<int>& cols,
                               std::shared_ptr<arrow::Table>* out) override {
+        // In region mode, the fast RecordBatchReader path bypasses our
+        // predicate filter. Fall back to the default read_chunk-based
+        // implementation, which goes through our overridden read_chunk
+        // and applies the filter correctly.
+        if (region_mode_)
+            return TabularSource::read_first(rows, cols, out);
+
         std::vector<int> rgs;
         int64_t acc = 0;
         for (int i = 0; i < meta_->num_row_groups() && acc < rows; ++i) {

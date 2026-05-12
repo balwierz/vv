@@ -34,14 +34,17 @@ FetchContent_MakeAvailable(mimalloc)
 # ── Arrow / Parquet ───────────────────────────────────────────────────────────
 # Prefer a locally-built static Arrow (arrow-install/ next to this repo),
 # then fall back to the system install.
-set(_arrow_hint "${CMAKE_CURRENT_SOURCE_DIR}/../arrow-install/lib/cmake/Arrow")
+set(_arrow_hint   "${CMAKE_CURRENT_SOURCE_DIR}/../arrow-install/lib/cmake/Arrow")
 set(_parquet_hint "${CMAKE_CURRENT_SOURCE_DIR}/../arrow-install/lib/cmake/Parquet")
-find_package(Arrow   REQUIRED PATHS "${_arrow_hint}" NO_DEFAULT_PATH)
-find_package(Parquet REQUIRED PATHS "${_parquet_hint}" NO_DEFAULT_PATH)
+set(_compute_hint "${CMAKE_CURRENT_SOURCE_DIR}/../arrow-install/lib/cmake/ArrowCompute")
+find_package(Arrow        REQUIRED PATHS "${_arrow_hint}"   NO_DEFAULT_PATH)
+find_package(Parquet      REQUIRED PATHS "${_parquet_hint}" NO_DEFAULT_PATH)
+find_package(ArrowCompute QUIET    PATHS "${_compute_hint}" NO_DEFAULT_PATH)
 
 if(NOT TARGET Arrow::arrow_static AND NOT TARGET Arrow::arrow_shared)
-  find_package(Arrow   REQUIRED)
-  find_package(Parquet REQUIRED)
+  find_package(Arrow        REQUIRED)
+  find_package(Parquet      REQUIRED)
+  find_package(ArrowCompute QUIET)
 endif()
 
 if(TARGET Arrow::arrow_static)
@@ -54,6 +57,17 @@ if(TARGET Parquet::parquet_static)
   set(PARQUET_TARGET Parquet::parquet_static)
 else()
   set(PARQUET_TARGET Parquet::parquet_shared)
+endif()
+
+# Arrow Compute kernels — separate static archive when building from
+# arrow-install. Needed for LociSSD region filter (equal / less / greater /
+# filter); without it the runtime aborts with "No function registered".
+if(TARGET ArrowCompute::arrow_compute_static)
+  set(ARROW_COMPUTE_TARGET ArrowCompute::arrow_compute_static)
+elseif(TARGET ArrowCompute::arrow_compute_shared)
+  set(ARROW_COMPUTE_TARGET ArrowCompute::arrow_compute_shared)
+else()
+  set(ARROW_COMPUTE_TARGET "")
 endif()
 
 get_target_property(ARROW_INCLUDE_DIRS   ${ARROW_TARGET}   INTERFACE_INCLUDE_DIRECTORIES)
@@ -164,6 +178,12 @@ if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND NCURSES_STATIC_LIB)
 
   target_link_libraries(vv PRIVATE
       ${PARQUET_TARGET}
+      # arrow_compute kernels live in a separate archive; wrap in
+      # --whole-archive so the static-initialisers that register
+      # equal/less/greater/filter actually run.
+      $<$<BOOL:${ARROW_COMPUTE_TARGET}>:-Wl,--whole-archive>
+      ${ARROW_COMPUTE_TARGET}
+      $<$<BOOL:${ARROW_COMPUTE_TARGET}>:-Wl,--no-whole-archive>
       ${ARROW_TARGET}
       mimalloc-static
       ${NCURSES_STATIC_LIB}
@@ -180,6 +200,9 @@ if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND NCURSES_STATIC_LIB)
 else()
   target_link_libraries(vv PRIVATE
       ${PARQUET_TARGET}
+      $<$<BOOL:${ARROW_COMPUTE_TARGET}>:-Wl,--whole-archive>
+      ${ARROW_COMPUTE_TARGET}
+      $<$<BOOL:${ARROW_COMPUTE_TARGET}>:-Wl,--no-whole-archive>
       ${ARROW_TARGET}
       mimalloc-static
       ${CURSES_LIBRARIES}

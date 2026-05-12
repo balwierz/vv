@@ -99,11 +99,31 @@ Custom single-character field separator.
 .TP
 .B \-\-no\-header
 Omit the header row in delimited output.
-.SS Range queries (tabix-indexed VCF/BED/GFF/TSV with .tbi)
+.SS Range queries
 .TP
 .BI \-r ", " \-\-region " REGION"
 Filter to records overlapping \fIREGION\fR (e.g. \fBchr1:1000-2000\fR).
-Multiple regions may be given comma-separated.
+Multiple regions may be given comma-separated. Open-ended forms
+(\fBchr1:\fR \(en whole chromosome, \fBchr1:78-\fR, \fBchr1:-99\fR) are
+accepted. Coordinates are \fI0-based half-open\fR (BED convention).
+.IP
+Supported on:
+.RS
+.IP \(bu 2
+tabix-indexed \fB.vcf.gz\fR, \fB.bed.gz\fR, \fB.gff.gz\fR, and
+\fB.tsv.gz\fR (via htslib's tabix iterator);
+.IP \(bu 2
+\fB.lociss\fR (LociSSD Parquet \(en pruning uses the manifest plus
+Parquet row-group statistics on the \fBStart\fR and \fBMaxEndSoFar\fR
+columns, then a per-row predicate inside surviving row groups).
+.RE
+.IP
+Plain \fB.parquet\fR files without the LociSSD manifest are rejected
+with a hint pointing at tabix or LociSSD.
+.TP
+.BI \-\-window " REGION"
+Alias of \fB\-r\fR / \fB\-\-region\fR \(en the name LociSSD readers often
+reach for first.
 .SS Performance
 .TP
 .BI \-@ ", " \-\-threads " N"
@@ -168,6 +188,13 @@ Stream a 100-row TSV preview from a multi-GB Parquet file (uses fast path):
 .RS
 .EX
 vv \-\-tsv \-n 100 huge.parquet
+.EE
+.RE
+.PP
+Region preview of a LociSSD Parquet file (no tabix needed):
+.RS
+.EX
+vv \-r chr1:78\-99 peaks.lociss
 .EE
 .RE
 .PP

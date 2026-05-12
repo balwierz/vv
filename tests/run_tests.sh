@@ -58,8 +58,19 @@ run_case paf_gz_tsv   --tsv --no-header "$DATA/tiny.paf.gz"
 if [ -f "$DATA/tiny.bcf" ]; then
     run_case bcf_tsv  --tsv --no-header "$DATA/tiny.bcf"
 fi
-run_case lociss_tsv          --tsv --no-header "$DATA/tiny.lociss"
-run_case lociss_table_hides  --no-interactive --no-index --color=never "$DATA/tiny.lociss"
+run_case lociss_tsv             --tsv --no-header "$DATA/tiny.lociss"
+run_case lociss_table_hides     --no-interactive --no-index --color=never "$DATA/tiny.lociss"
+run_case lociss_region_basic    --tsv --no-header -r chr1:600-1100 "$DATA/tiny.lociss"
+run_case lociss_region_multi    --tsv --no-header -r 'chr1:600-1100,chr2:0-1000' "$DATA/tiny.lociss"
+run_case lociss_region_open     --tsv --no-header --window chr2: "$DATA/tiny.lociss"
+EMPTY=$("$VV" --tsv --no-header -r chr3:0-100 "$DATA/tiny.lociss" 2>&1)
+if [ -z "$EMPTY" ]; then
+    PASS=$((PASS + 1)); echo "  ok    lociss_region_empty"
+else
+    FAIL=$((FAIL + 1)); echo "  FAIL  lociss_region_empty (expected empty output, got: $EMPTY)"
+fi
+REJECT=$("$VV" -r chr1:0-100 "$DATA/tiny.parquet" 2>&1 || true)
+assert_contains "parquet_region_rejected" "$REJECT" "LociSSD"
 # --tsv must keep MaxEndSoFar; table must not show it.
 TSV_OUT=$("$VV" --tsv --no-header "$DATA/tiny.lociss")
 assert_contains "lociss_tsv_keeps_maxendsofar"  "$TSV_OUT"  "1800"

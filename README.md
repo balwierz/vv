@@ -71,9 +71,14 @@ Feather) or delimiter heuristic (TSV vs. CSV).
   `z` to freeze the first column, `H` / `F1` for an overlay listing all
   keybindings, mouse wheel to scroll. Lazy-loads only the chunks
   currently on screen.
-- **Tabix range queries** — `-r chr1:1000-2000` filters tabix-indexed
-  `.vcf.gz`, `.bed.gz`, `.gff.gz`, etc. Multiple regions accepted
-  comma-separated.
+- **Range queries** — `-r chr1:1000-2000` (also `--window`) filters
+  tabix-indexed `.vcf.gz` / `.bed.gz` / `.gff.gz` / `.tsv.gz` and
+  **LociSSD Parquet** files (`.lociss`). LociSSD pruning uses the
+  manifest plus Parquet row-group statistics on `Start` and
+  `MaxEndSoFar`, then a per-row predicate inside surviving row groups —
+  so windowed previews on multi-GB LociSSD files stay fast without a
+  separate index. Multiple windows accepted comma-separated; open-ended
+  forms (`chr1:`, `chr1:78-`, `chr1:-99`) supported.
 - **Multi-threaded I/O** — `-@ N` (samtools convention) drives Arrow's CPU
   pool, BAM/CRAM htslib threads, and BGZF threads for FASTA/FASTQ; auto-
   detects threads when unset.
@@ -134,6 +139,9 @@ vv --tsv -n 100 huge.parquet
 
 # Region query on a tabix-indexed VCF
 vv -r chr1:1000000-1100000 variants.vcf.gz
+
+# Region preview on a LociSSD Parquet file (no tabix needed)
+vv -r chr1:78-99 peaks.lociss
 
 # Multi-region tabix query on a BED file
 vv -r 'chr1:100-200,chr2:500-1000' regions.bed.gz

@@ -166,7 +166,9 @@ manifest = json.dumps({
     "coord_dtype": "int32",
 })
 loc = loc.replace_schema_metadata({"lociSSD_manifest": manifest})
-pq.write_table(loc, HERE / "tiny.lociss", compression="zstd")
+# Force 2 row groups (rows 0..1 and 2..4) so vv's row-group statistics
+# pruning is actually exercised by region-query tests.
+pq.write_table(loc, HERE / "tiny.lociss", compression="zstd", row_group_size=2)
 
 # ── BCF (binary VCF, requires bcftools) ──────────────────────────────────────
 if have("bcftools"):

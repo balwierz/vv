@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **LociSSD range queries**: `-r chr1:78-99 file.lociss` (also
+  `--window`). Pruning uses the embedded manifest to locate the
+  chromosome's row range, Parquet column statistics on `Start` and
+  `MaxEndSoFar` to skip row groups outside the window, and a per-row
+  predicate (`Start < end AND End > start`) inside surviving row
+  groups. Open-ended forms (`chr1:`, `chr1:78-`, `chr1:-99`) and
+  comma-separated multi-windows supported. Plain Parquet without a
+  LociSSD manifest is rejected with a hint.
 - TUI: **help overlay** (`H` or `F1`) — centred panel listing every
   keybinding. Any key dismisses it.
 - TUI: **frozen first column** (`z` toggle) — pin column 0 at the left
