@@ -14,6 +14,26 @@ set -euo pipefail
 cd "$(dirname "$0")"
 SRC="USAGE.md"
 
+# Inline CSS that tightens the chromium-rendered PDF: smaller font,
+# narrower page margins, and a body that fills the page width (pandoc's
+# default html5 template caps body width at 36em which leaves huge
+# side gutters when printed to A4).
+PRINT_CSS=$(mktemp --suffix=.css)
+trap 'rm -f "$PRINT_CSS"' EXIT
+cat > "$PRINT_CSS" <<'CSS'
+@page { size: A4; margin: 1.2cm 1.4cm; }
+@media print {
+    html { font-size: 10.5pt; }
+    body { max-width: none; margin: 0; padding: 0; }
+    pre, code { font-size: 0.9em; }
+    h1 { font-size: 1.55em; margin-top: 0.8em; }
+    h2 { font-size: 1.25em; margin-top: 0.8em; }
+    h3 { font-size: 1.08em; }
+    /* Avoid awkward column-1 indents on the TOC */
+    nav#TOC ul { padding-left: 1.2em; }
+}
+CSS
+
 # 1) HTML — self-contained, suitable for sharing or hosting.
 echo "→ HTML"
 pandoc "$SRC" \
@@ -22,6 +42,7 @@ pandoc "$SRC" \
     --toc --toc-depth=2 \
     --highlight-style=tango \
     --metadata=lang:en \
+    --css="$PRINT_CSS" \
     -o USAGE.html
 echo "    $(pwd)/USAGE.html ($(stat -c%s USAGE.html) bytes)"
 
