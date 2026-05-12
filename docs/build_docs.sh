@@ -32,6 +32,9 @@ PDF_OK=0
 try_tex() {
     local engine="$1"
     command -v "$engine" >/dev/null 2>&1 || return 1
+    # Don't swallow stderr — if texlive is incomplete the user needs to
+    # see why (missing fonts, missing packages) instead of silently
+    # falling through to an HTML-based engine.
     pandoc "$SRC" \
         --pdf-engine="$engine" \
         --toc --toc-depth=2 \
@@ -40,7 +43,7 @@ try_tex() {
         -V mainfont="DejaVu Sans" \
         -V monofont="DejaVu Sans Mono" \
         -V monofontoptions="Scale=0.85" \
-        -o USAGE.pdf 2>/dev/null
+        -o USAGE.pdf
 }
 
 try_pandoc_engine() {
@@ -55,11 +58,12 @@ try_pandoc_engine() {
 
 try_browser() {
     local browser
-    for browser in chromium google-chrome chrome; do
+    for browser in chromium google-chrome chrome chromium-browser; do
         if command -v "$browser" >/dev/null 2>&1; then
             "$browser" --headless --no-sandbox --disable-gpu \
                        --no-pdf-header-footer \
-                       --print-to-pdf=USAGE.pdf USAGE.html >/dev/null 2>&1 \
+                       --print-to-pdf=USAGE.pdf \
+                       "file://$PWD/USAGE.html" >/dev/null 2>&1 \
                 && return 0
         fi
     done
@@ -69,20 +73,24 @@ try_browser() {
 # Preference order:
 #   1. xelatex / lualatex — best typography when texlive-fontsrecommended
 #      (and DejaVu) is installed.
-#   2. weasyprint — clean HTML→PDF via Python; widely available on
-#      bioinformatics workstations alongside pandoc.
+#   2. chromium / chrome --headless — renders the already-built HTML;
+#      mature, fast, produces clean PDFs.
 #   3. wkhtmltopdf — webkit-based, mature but unmaintained.
-#   4. chromium / chrome --headless — last-resort HTML→PDF.
-if try_tex xelatex 2>/dev/null; then
+#   4. weasyprint — last resort: WeasyPrint 68.x has a horizontal-advance
+#      bug with the embedded DejaVu Sans subset that pandoc's HTML
+#      template ships, producing visibly spaced-out letters
+#      ("S u p p o r t e d  f o r m a t s"). Tracked upstream; until
+#      fixed, prefer chromium when both are installed.
+if try_tex xelatex; then
     PDF_OK=1; ENGINE="xelatex"
-elif try_tex lualatex 2>/dev/null; then
+elif try_tex lualatex; then
     PDF_OK=1; ENGINE="lualatex"
-elif try_pandoc_engine weasyprint; then
-    PDF_OK=1; ENGINE="weasyprint"
-elif try_pandoc_engine wkhtmltopdf; then
-    PDF_OK=1; ENGINE="wkhtmltopdf"
 elif try_browser; then
     PDF_OK=1; ENGINE="chromium (via HTML)"
+elif try_pandoc_engine wkhtmltopdf; then
+    PDF_OK=1; ENGINE="wkhtmltopdf"
+elif try_pandoc_engine weasyprint; then
+    PDF_OK=1; ENGINE="weasyprint"
 fi
 
 if [ "$PDF_OK" = "1" ]; then
