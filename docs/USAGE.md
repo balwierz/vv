@@ -1,0 +1,516 @@
+---
+title: "vv — User manual"
+subtitle: "Universal genomic file viewer"
+author: "Piotr Balwierz and contributors"
+date: "v1.5.0"
+papersize: a4
+fontsize: 10pt
+geometry: margin=2.4cm
+mainfont: "DejaVu Sans"
+monofont: "DejaVu Sans Mono"
+colorlinks: true
+linkcolor: blue
+urlcolor: blue
+toc: true
+toc-depth: 2
+header-includes:
+  - \usepackage{fvextra}
+  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+---
+
+# Introduction
+
+`vv` is a fast command-line viewer for tabular and bioinformatics file
+formats. The same binary covers Parquet / Arrow IPC / Feather / LociSSD,
+the htslib formats BAM / CRAM / SAM / VCF / BCF, the genomics text
+formats GFF3 / GTF / BED / PAF / FASTA / FASTQ, and plain delimited
+text (TSV / CSV) — gzip-decompressing on the fly where it makes sense.
+
+This manual covers every flag with a concrete example. The full flag
+reference also lives in `vv --help` and `man vv`.
+
+Sample fixtures live under `tests/data/` in the repository; commands
+below use them so they're reproducible from a fresh clone.
+
+# Quick start
+
+```sh
+# Compile
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+
+# Run on the smallest fixture
+build/vv tests/data/tiny.parquet
+```
+
+When stdout is a terminal `vv` opens an ncurses row browser; otherwise
+it prints an ASCII table to stdout. Use `--no-interactive` to force
+the table view in any context.
+
+A symlinked binary named **`vh`** ("vertical head") flips the default
+preview to a transposed, vertical layout — useful for wide tables that
+would need horizontal scrolling.
+
+# Supported formats
+
+| Family            | Extensions                                                  |
+|-------------------|-------------------------------------------------------------|
+| Apache Parquet    | `.parquet`                                                  |
+| Arrow IPC, Feather| `.arrow`, `.feather`                                        |
+| **LociSSD**       | `.lociss` (auto-detected via the `lociSSD_manifest` footer; `MaxEndSoFar` hidden from views) |
+| Sequence alignments | `.bam`, `.cram`, `.sam`, `.paf` / `.paf.gz`               |
+| Variant calls     | `.vcf`, `.vcf.gz`, `.bcf` (with `.csi` / `.tbi` for range queries) |
+| Genome annotation | `.gff`, `.gff3`, `.gtf` (plus `.gz`)                        |
+| Genomic intervals | `.bed`, `.bed.gz`                                           |
+| Sequences (FASTA) | `.fa`, `.fasta`, `.fna`, `.faa`, `.ffn`, `.frn` (plus `.gz`)|
+| Sequencing reads  | `.fq`, `.fastq` (plus `.gz`)                                |
+| Delimited text    | `.tsv`, `.csv` (plus `.gz`)                                 |
+| Stdin             | `vv -` reads any text format from stdin (auto-gunzip)       |
+
+Unknown extensions are auto-detected by magic bytes (Parquet, Arrow IPC,
+Feather, BAM/BCF/CRAM) or delimiter heuristic (TSV vs. CSV).
+
+# Output modes
+
+Pick one. Default is **interactive TUI** when stdout is a terminal and
+`-n` was not given; **ASCII table** otherwise; or a delimited / JSON /
+Parquet writer when its flag is set.
+
+## ASCII table (`--no-interactive`)
+
+```sh
+$ vv --no-interactive tests/data/tiny.parquet
+╭───┬──────┬───────┬───────┬───────┬──────────────────╮
+│   │ Chr  │ Start │ End   │ Score │ Tags             │
+├───┼──────┼───────┼───────┼───────┼──────────────────┤
+│ 0 │ chr1 │   100 │   200 │     0 │ [promoter]       │
+│ 1 │ chr1 │ 1_100 │ 1_200 │  0.05 │ [enhancer, open] │
+...
+```
+
+Integer columns get `_` digit grouping (PEP 515). Numbers right-align;
+lists / fixed-size lists / maps render Python-style as
+`[v1, v2, …]`, `(v1, v2, …)`, `{key: value, …}`. The first element of
+a collection is always preserved when truncation kicks in
+(`[0.0904, …]`, not `[0.0…`).
+
+## Vertical-head (`vh`, or `--vertical`)
+
+```sh
+$ vh tests/data/tiny.lociss
+╭─────────────┬─────────────────────────────────┬───
+│ field       │ #0                              │ #1
+├─────────────┼─────────────────────────────────┼───
+│ Chromosome  │                            chr1 │  c
+│ Start       │                             100 │  5
+│ End         │                             200 │  8
+│ Name        │                          peak_0 │  p
+│ Score       │                             0.5 │  0
+╰─────────────┴─────────────────────────────────┴───
+```
+
+Each input field is a row; each record becomes a column. Useful for
+files with many columns. Hidden-by-default columns (e.g. LociSSD's
+`MaxEndSoFar`) are still hidden in this view.
+
+## Interactive TUI
+
+```sh
+$ vv tests/data/tiny.lociss        # default when stdout is a terminal
+```
+
+| Key            | Action                                                  |
+|----------------|---------------------------------------------------------|
+| `h j k l` / ←↓↑→ | scroll one column / row                              |
+| `Space` / `PgDn` / `b` / `PgUp` | scroll one page                       |
+| `g` / `G`      | top / bottom of file                                    |
+| `Enter`        | open detail pane for the top-visible row                |
+| `/` / `?`      | search forward / backward (case-insensitive ECMAScript regex with literal fallback) |
+| `n` / `N`      | next / previous match (direction-aware)                 |
+| `,` / `.`      | narrow / widen the leftmost visible column              |
+| `z`            | toggle frozen first column                              |
+| `H` / `F1`     | help overlay with every keybinding                      |
+| mouse wheel    | scroll three rows                                       |
+| `q`            | quit (Esc clears search if active)                      |
+
+All visible matches are highlighted; the n/N target gets reverse video.
+
+## Delimited output (`--tsv`, `--csv`, `--delimiter`)
+
+```sh
+$ vv --tsv --no-header tests/data/tiny.bed.gz
+chr1	100	200	peak_0	0.0
+chr1	1100	1200	peak_1	0.05
+...
+```
+
+* `--tsv` and `--csv` use RFC 4180 quoting.
+* `--delimiter <char>` lets you pick any single character.
+* `--no-header` omits the header row.
+* In delimited mode `-n` defaults to all rows, `-c` still applies.
+* For Parquet input, `--tsv -n 100` uses a fast-path single-row-group
+  decode — multi-GB files preview in milliseconds.
+
+## JSON / NDJSON (`--json`, `--ndjson`)
+
+```sh
+$ vv --ndjson --select Chromosome,Start tests/data/tiny.lociss
+{"Chromosome": "chr1", "Start": 100}
+{"Chromosome": "chr1", "Start": 500}
+{"Chromosome": "chr1", "Start": 1000}
+{"Chromosome": "chr2", "Start": 200}
+{"Chromosome": "chr2", "Start": 1500}
+```
+
+* `--json` writes one big JSON array of row objects.
+* `--ndjson` writes one JSON object per line (JSON Lines), the
+  pipe-friendly form. Combine with `jq`:
+
+```sh
+vv --ndjson reads.fastq.gz | jq 'select(.seq | length > 50)'
+```
+
+* Scalar Arrow types emit as proper JSON; nested types (list / struct /
+  map) emit as their Python-style string inside a JSON string.
+
+## Parquet output (`--parquet`, `--compression`)
+
+```sh
+$ vv --parquet peaks.parquet --compression zstd tests/data/tiny.bed
+[20 rows → peaks.parquet, zstd]
+```
+
+* Converts any supported input into a Parquet file.
+* Streams chunk-by-chunk; multi-GB conversions don't need to fit in RAM.
+* `--compression {zstd, snappy, gzip, lz4, none}`, default `zstd`.
+* Honours `--select` (column subset) and `--filter` (row predicate).
+
+# Column projection (`--select`)
+
+Pick specific columns by name. Comma-separated:
+
+```sh
+$ vv --no-interactive --select Chromosome,Start,Score tests/data/tiny.lociss
+╭───┬────────────┬───────┬───────╮
+│   │ Chromosome │ Start │ Score │
+├───┼────────────┼───────┼───────┤
+│ 0 │ chr1       │   100 │   0.5 │
+...
+```
+
+* Unknown names produce a clear error.
+* In display modes (table, vh, TUI) the format's hidden columns
+  (e.g. LociSSD's `MaxEndSoFar`) stay hidden.
+* In export modes (`--tsv` / `--csv` / `--json` / `--parquet`) the
+  user's explicit list is honoured exactly — conversions round-trip
+  the user's choice.
+* Numeric count form `-c 5` (first 5 columns) still works.
+
+# Row filtering (`--filter`)
+
+Value-predicate filter. Grammar:
+
+```
+<column> <op> <literal>  joined by AND / OR
+```
+
+* Operators: `==`, `!=`, `<`, `<=`, `>`, `>=`.
+* Literals: integer, float, single- or double-quoted string.
+* `AND` / `OR` case-insensitive.
+
+```sh
+$ vv --tsv --no-header --filter 'Score > 0.4' tests/data/tiny.lociss
+chr1	100	200	peak_0	0.5	200
+chr1	500	800	peak_1	0.7	800
+chr2	200	400	peak_3	0.9	400
+
+$ vv --tsv --no-header \
+      --filter 'Chromosome == "chr1" AND Score > 0.4' \
+      tests/data/tiny.lociss
+chr1	100	200	peak_0	0.5	200
+chr1	500	800	peak_1	0.7	800
+```
+
+Filter is evaluated per row in C++ after the source's own pruning
+(tabix iterator / LociSSD row-group stats / BCF iterator), so
+combining with `-r` is fine and fast.
+
+# Range queries (`-r`, `--regions-file`, `--slop`)
+
+```sh
+$ vv -r chr1:78-99 file.lociss
+```
+
+Supported sources:
+
+* **tabix-indexed text**: `.vcf.gz`, `.bed.gz`, `.gff.gz`, `.tsv.gz`
+  (requires a `.tbi`);
+* **BCF**: requires `.csi` / `.tbi` from `bcftools index`;
+* **LociSSD Parquet** (`.lociss`): pruning uses the embedded manifest
+  to locate each chromosome's row range, then Parquet's column
+  statistics on `Start` and `MaxEndSoFar` to skip row groups outside
+  the window, then a per-row predicate inside surviving row groups.
+
+Plain `.parquet` without the LociSSD manifest produces a friendly error
+suggesting LociSSD or tabix.
+
+Coordinate convention: **0-based half-open** (BED).
+
+## Region syntax
+
+| Form              | Meaning                                             |
+|-------------------|-----------------------------------------------------|
+| `chr1:100-200`    | range                                                |
+| `chr1:`           | whole chromosome                                     |
+| `chr1:78-`        | from 78 to end                                       |
+| `chr1:-99`        | start to 99                                          |
+| `chr1:100`        | single point (position 100)                          |
+| `chr1:100-200,chr2:0-1000` | multiple windows                            |
+
+## Many windows (`--regions-file`)
+
+```sh
+$ cat windows.bed
+chr1	100	900
+chr2	1400	1900
+
+$ vv --tsv --no-header --regions-file windows.bed tests/data/tiny.lociss
+chr1	100	200	peak_0	0.5	200
+chr1	500	800	peak_1	0.7	800
+chr2	1500	1800	peak_4	0.1	1800
+```
+
+Reads the first three TSV columns of a BED. Comment / `track` /
+`browser` lines are skipped. Combines with `-r`; both lists are taken.
+
+## Pad each window (`--slop`)
+
+```sh
+$ vv --tsv --no-header -r chr1:1000-1100 --slop 500 tests/data/tiny.lociss
+chr1	500	800	peak_1	0.7	800
+chr1	1000	1200	peak_2	0.2	1200
+```
+
+`bedtools slop` inline: every window grows by N bp on each side.
+`start` is clamped at 0; open bounds stay open. Applied after
+`--regions-file`.
+
+# Data exploration
+
+## `--schema`
+
+```sh
+$ vv --schema tests/data/tiny.lociss
+
+Column       Type    Nullable
+-----------  ------  --------
+Chromosome   string  yes
+Start        int32   yes
+End          int32   yes
+Name         string  yes
+Score        double  yes
+MaxEndSoFar  int32   yes
+
+File: tests/data/tiny.lociss
+Format: LociSSD  |  Row groups: 3  |  Compressed: 1.7 KiB
+Created by: parquet-cpp-arrow version 24.0.0
+```
+
+Prints column names, Arrow types, nullability, and the file-info
+footer; reads no data.
+
+## `--describe`
+
+```sh
+$ vv --describe tests/data/tiny.lociss
+Column      Type    Count  Nulls  Min     Max     Mean  Distinct
+----------  ------  -----  -----  ------  ------  ----  --------
+Chromosome  string      5      0  chr1    chr2          2       
+Start       int32       5      0  100     1500    660           
+End         int32       5      0  200     1800    880           
+Name        string      5      0  peak_0  peak_4        5       
+Score       double      5      0  0.1     0.9     0.48          
+```
+
+Pandas-style per-column summary. Numeric columns get min / max / mean;
+string columns get distinct count (capped at 16). Respects
+`--select` and `--filter`.
+
+## `--stats` (Parquet-only)
+
+```sh
+$ vv --stats tests/data/tiny.lociss
+File:          tests/data/tiny.lociss
+Format:        Parquet
+Rows:          5
+Row groups:    3
+Compressed:    1.7 KiB
+Uncompressed:  1.4 KiB  (ratio: 0.82x)
+Created by:    parquet-cpp-arrow version 24.0.0
+
+Column       Type    Codec  Compressed  Uncompressed   Ratio  Nulls
+-----------  ------  -----  ----------  ------------  ------  -----
+Chromosome   string  zstd        260 B         206 B  0.792x      0
+Start        int32   zstd        284 B         230 B  0.809x      0
+End          int32   zstd        284 B         230 B  0.809x      0
+Name         string  zstd        290 B         236 B  0.813x      0
+Score        double  zstd        352 B         298 B  0.846x      0
+MaxEndSoFar  int32   zstd        284 B         230 B  0.809x      0
+```
+
+Reads no data — just the Parquet footer. Use it on inherited
+multi-GB files to find out how they were written.
+
+## `--unique`
+
+```sh
+$ vv --unique Chromosome tests/data/tiny.lociss
+Chromosome — 2 distinct value(s) (of 5)
+  chr1       3
+  chr2       2
+```
+
+Distinct value counts per column, sorted descending. Top-50 values
+per column; further values summarised. Multiple columns
+comma-separated. Honours `--filter`.
+
+## `--sample N`
+
+```sh
+$ vv --tsv --no-header --sample 2 tests/data/tiny.lociss
+chr2	200	400	peak_3	0.9	400
+chr1	1000	1200	peak_2	0.2	1200
+```
+
+Reservoir sampling of N rows uniformly without replacement. Reads the
+whole source (applying `--filter` if set), then samples from the
+filtered total. Combines with every view / export mode.
+
+# Stdin
+
+```sh
+$ cat tests/data/tiny.tsv | vv -                 # interactive on TTY
+$ zcat huge.tsv.gz | vv --tsv --no-header -      # plain text pipeline
+```
+
+* Bare `-` reads stdin.
+* Text formats only — Parquet / Arrow IPC / BAM / BCF need seekable
+  files, so `vv -` rejects them with a hint pointing at process
+  substitution (`vv <(zcat foo.bam)`).
+* Auto-detects gzip via magic bytes.
+
+# Performance (`-@` / `--threads`)
+
+```sh
+$ vv -@ 4 -n 1000 alignments.bam            # multi-threaded BAM decode
+```
+
+| Source         | Threading                                            |
+|----------------|------------------------------------------------------|
+| Parquet        | parallel column decode (`use_threads = true`); 4 MiB buffered stream |
+| CSV / TSV / VCF / GFF / SAM / BED | Arrow CSV `use_threads = true` + `block_size = 16 MiB` |
+| BAM / CRAM     | `hts_set_threads(N)`                                 |
+| FASTA / FASTQ  | `bgzf_mt(fp, N, 256)`                                |
+| Arrow IPC      | lazy: footer only at open; batches decoded on demand |
+
+`--threads 0` (default) auto-picks `min(8, max(2, cores/2))`.
+
+# LociSSD specifics
+
+LociSSD is a Parquet variant for sorted genomic intervals (see
+[`FORMAT_SPEC.md`](https://github.com/balwierz/LociSSD/blob/main/FORMAT_SPEC.md)).
+`vv` detects it via the `lociSSD_manifest` key in the Parquet footer:
+
+* Footer reads "Format: LociSSD".
+* The derived `MaxEndSoFar` column is hidden from human-facing views
+  (table, vh, TUI) but kept in `--tsv` / `--csv` / `--json` /
+  `--parquet` output so the data round-trips losslessly.
+* `-r chr1:78-99 file.lociss` uses the manifest + Parquet row-group
+  statistics for pruning (spec §7). No external index needed.
+
+# Examples by workflow
+
+## Look at an inherited file first
+
+```sh
+vv --schema     huge.parquet         # what's in here?
+vv --stats      huge.parquet         # row groups, codecs, sizes
+vv --describe   huge.parquet         # min / max / nulls / distinct
+vh             huge.parquet          # peek with the right shape for wide tables
+```
+
+## Quick region preview
+
+```sh
+vv -r chr1:1000000-1100000 variants.vcf.gz    # tabix VCF
+vv -r chr1:78-99 peaks.lociss                  # LociSSD Parquet
+vv -r chr1:78-99 calls.bcf                     # BCF with .csi
+vv -r 'chr1:200,chr2:500-1500' regions.bed.gz  # multiple
+vv -r chr1:1000-1100 --slop 500 peaks.lociss   # widen
+vv --regions-file targets.bed peaks.lociss      # batch
+```
+
+## Convert formats
+
+```sh
+vv --parquet peaks.parquet                 peaks.bed.gz
+vv --parquet vars.parquet --compression snappy   variants.vcf.gz
+vv --tsv reads.fq.gz > reads.tsv
+```
+
+## Pipe through `jq`
+
+```sh
+vv --ndjson reads.fastq.gz \
+    | jq 'select(.seq | length > 50) | .name'
+```
+
+## Filter + project + export
+
+```sh
+vv --parquet hot_peaks.parquet \
+   --select Chromosome,Start,End,Score \
+   --filter 'Score > 0.8' \
+   peaks.lociss
+```
+
+## Random preview of huge file
+
+```sh
+vv --sample 100 huge.lociss      # 100 random rows in the TUI
+vv --tsv --sample 1000 huge.parquet | head    # head of a random sample
+```
+
+# Building and installing
+
+See `INSTALL.md` for the complete matrix (Bioconda, Homebrew, AUR,
+static binary, source build). Quick start:
+
+```sh
+# Build from source
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+sudo cmake --install build
+
+# Or install the portable static binary
+curl -L https://github.com/balwierz/vv/releases/latest/download/vv-linux-x86_64.tar.gz | tar -xz
+sudo install vv-*-linux-x86_64/vv /usr/local/bin/
+```
+
+# Where to look next
+
+* [Project README](../README.md) — quick install + feature highlights.
+* [`man vv`](../man/vv.1) — flag reference.
+* [`CHANGELOG.md`](../CHANGELOG.md) — release notes.
+* [`TODO.md`](../TODO.md) — the planned-feature backlog.
+* [LociSSD spec](https://github.com/balwierz/LociSSD/blob/main/FORMAT_SPEC.md).
+
+# Reporting bugs
+
+Open an issue at <https://github.com/balwierz/vv/issues>. Include
+`vv --version`, the OS / distribution, the command line, and (if
+possible) a minimal input that reproduces the problem.
+
+# License
+
+MIT. See [`LICENSE`](../LICENSE).

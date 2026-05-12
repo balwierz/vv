@@ -138,6 +138,10 @@ Feather) or delimiter heuristic (TSV vs. CSV).
 ## Usage
 
 Run `vv --help` for the full flag reference (or `man vv` once installed).
+A worked example-driven manual lives in [docs/USAGE.md](docs/USAGE.md);
+build self-contained HTML and PDF with `docs/build_docs.sh` (requires
+`pandoc` plus either a TeX install with `texlive-fontsrecommended` or
+a headless browser such as `chromium`).
 
 ### Common flags
 

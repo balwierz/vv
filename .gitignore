@@ -15,3 +15,5 @@ docker-sources/
 *.so
 compile_commands.json
 release-notes.md
+docs/USAGE.html
+docs/USAGE.pdf

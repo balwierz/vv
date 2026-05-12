@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **User manual** at `docs/USAGE.md`, with worked examples for every
+  flag, every output mode, the LociSSD / tabix / BCF range-query
+  flows, and a "by-workflow" cookbook section. `docs/build_docs.sh`
+  renders it to self-contained HTML and PDF via pandoc (with a
+  texlive → chromium-via-HTML fallback).
 - **BCF range queries** — `-r chr1:100-200 file.bcf` now works, using
   `bcf_itr_querys` over an existing `.csi` / `.tbi` index. Missing
   index produces a clear hint pointing at `bcftools index`.
