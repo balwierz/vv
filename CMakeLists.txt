@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
-project(vv CXX
+project(vv
     VERSION 1.4.0
     DESCRIPTION "Universal genomic file viewer"
     HOMEPAGE_URL "https://github.com/balwierz/vv"
-    LANGUAGES CXX)
+    LANGUAGES C CXX)
 
 include(GNUInstallDirs)
 
@@ -94,6 +94,15 @@ find_package(Curses REQUIRED)
 # ── htslib (BAM support) ─────────────────────────────────────────────────────
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(HTSLIB REQUIRED htslib)
+
+# ── libBigWig (bigBed / bigWig support, vendored) ────────────────────────────
+file(GLOB LIBBIGWIG_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/vendored/libBigWig/*.c")
+add_library(bigwig STATIC ${LIBBIGWIG_SRCS})
+# NOCURL: local files only — drops the optional libcurl dependency.
+target_compile_definitions(bigwig PRIVATE NOCURL)
+target_compile_options(bigwig PRIVATE -O2 -ffunction-sections -fdata-sections -w)
+target_include_directories(bigwig
+    PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/vendored/libBigWig")
 
 # ── Static runtime (libstdc++, libgcc) ───────────────────────────────────────
 option(STATIC_RUNTIME "Link libstdc++ and libgcc statically" OFF)
@@ -189,6 +198,7 @@ if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND NCURSES_STATIC_LIB)
       ${NCURSES_STATIC_LIB}
       ${_tinfo_lib}
       ${HTSLIB_STATIC_LIB}
+      bigwig
       ${_deflate} ${_zlib} ${_bz2} ${_lzma} ${_lz4} ${_zstd}
       ${_brotlienc} ${_brotlidec} ${_brotlicommon}
       ${_snappy} ${_utf8proc} ${_re2} ${_thrift}
@@ -207,6 +217,7 @@ else()
       mimalloc-static
       ${CURSES_LIBRARIES}
       ${HTSLIB_LINK_LIBRARIES}
+      bigwig
   )
 endif()
 

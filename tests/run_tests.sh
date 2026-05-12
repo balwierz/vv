@@ -88,6 +88,25 @@ if [ -f "$DATA/tiny.bcf.csi" ]; then
     BCF_REGION=$("$VV" --tsv --no-header -r chr1:200-1600 "$DATA/tiny.bcf" | wc -l)
     assert_eq_file_inline "bcf_region_returns_two_rows" "$BCF_REGION" "2"
 fi
+
+# bigBed / bigWig — autoSql expansion + range queries.
+if [ -f "$DATA/tiny.bb" ]; then
+    BB_TSV=$("$VV" --tsv --no-header "$DATA/tiny.bb" | wc -l)
+    assert_eq_file_inline "bigbed_tsv_returns_five_rows" "$BB_TSV" "5"
+    BB_SCHEMA=$("$VV" --schema "$DATA/tiny.bb")
+    assert_contains "bigbed_autosql_expanded_signalValue" "$BB_SCHEMA" "signalValue"
+    assert_contains "bigbed_autosql_expanded_pValue"      "$BB_SCHEMA" "pValue"
+    BB_REGION=$("$VV" --tsv --no-header -r chr1:300-1100 "$DATA/tiny.bb" | wc -l)
+    assert_eq_file_inline "bigbed_region_returns_two_rows" "$BB_REGION" "2"
+    BB_FILTER=$("$VV" --tsv --no-header --filter 'signalValue > 10' "$DATA/tiny.bb" | wc -l)
+    assert_eq_file_inline "bigbed_filter_by_signalValue" "$BB_FILTER" "2"
+fi
+if [ -f "$DATA/tiny.bw" ]; then
+    BW_TSV=$("$VV" --tsv --no-header "$DATA/tiny.bw" | wc -l)
+    assert_eq_file_inline "bigwig_tsv_returns_five_rows" "$BW_TSV" "5"
+    BW_REGION=$("$VV" --tsv --no-header -r chr1:300-1100 "$DATA/tiny.bw" | wc -l)
+    assert_eq_file_inline "bigwig_region_returns_two_rows" "$BW_REGION" "2"
+fi
 # --tsv must keep MaxEndSoFar; table must not show it.
 TSV_OUT=$("$VV" --tsv --no-header "$DATA/tiny.lociss")
 assert_contains "lociss_tsv_keeps_maxendsofar"  "$TSV_OUT"  "1800"

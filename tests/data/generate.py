@@ -194,6 +194,64 @@ if have("bcftools"):
 else:
     print("warn: bcftools not found; skipping tiny.bcf", file=sys.stderr)
 
+# ── bigBed / bigWig ──────────────────────────────────────────────────────────
+# Need UCSC's bedToBigBed / bedGraphToBigWig. They're in the
+# `ucsc-bedtobigbed` and `ucsc-bedgraphtobigwig` Bioconda packages, on
+# Arch under `kentutils`, in /opt/ucsc-kent-genome-tools on this dev box.
+def find_kent_tool(name):
+    if shutil.which(name): return name
+    cand = "/opt/ucsc-kent-genome-tools/" + name
+    if (HERE.parent.parent.parent / cand[1:]).exists() or shutil.which(cand): return cand
+    import os
+    if os.path.exists(cand): return cand
+    return None
+
+bb_tool = find_kent_tool("bedToBigBed")
+bw_tool = find_kent_tool("bedGraphToBigWig")
+if bb_tool and bw_tool:
+    sizes = HERE / "_sizes.txt"
+    sizes.write_text("chr1\t50000\nchr2\t50000\n")
+    # bigBed with BED6+3 autoSql so the autoSql parser is actually exercised.
+    bb_bed = HERE / "_peaks.bed"
+    bb_bed.write_text(
+        "chr1\t100\t200\tpeak_0\t500\t+\t12.5\t30.2\t25.1\n"
+        "chr1\t500\t800\tpeak_1\t800\t-\t8.0\t15.0\t12.0\n"
+        "chr1\t1000\t1200\tpeak_2\t300\t+\t5.5\t8.1\t7.0\n"
+        "chr2\t200\t400\tpeak_3\t950\t.\t20.1\t40.5\t35.2\n"
+        "chr2\t1500\t1800\tpeak_4\t150\t+\t2.0\t3.0\t2.5\n"
+    )
+    bb_as = HERE / "_peaks.as"
+    bb_as.write_text(
+        'table bigBed6Plus3\n'
+        '"BED6 + 3 narrow-peak columns"\n'
+        '(\n'
+        '    string chrom;        "Reference sequence"\n'
+        '    uint   chromStart;   "Start"\n'
+        '    uint   chromEnd;     "End"\n'
+        '    string name;         "Item name"\n'
+        '    uint   score;        "0..1000"\n'
+        '    char[1] strand;      "+/-/."\n'
+        '    float  signalValue;  "Enrichment"\n'
+        '    float  pValue;       "-log10 p"\n'
+        '    float  qValue;       "-log10 q"\n'
+        ')\n')
+    subprocess.run([bb_tool, "-type=bed6+3", "-as=" + str(bb_as),
+                    str(bb_bed), str(sizes), str(HERE / "tiny.bb")], check=True)
+    # bigWig from a bedGraph.
+    bg = HERE / "_signal.bedGraph"
+    bg.write_text(
+        "chr1\t100\t200\t0.5\n"
+        "chr1\t500\t800\t0.7\n"
+        "chr1\t1000\t1200\t0.2\n"
+        "chr2\t200\t400\t0.9\n"
+        "chr2\t1500\t1800\t0.1\n"
+    )
+    subprocess.run([bw_tool, str(bg), str(sizes), str(HERE / "tiny.bw")], check=True)
+    sizes.unlink(); bb_bed.unlink(); bb_as.unlink(); bg.unlink()
+else:
+    print("warn: bedToBigBed / bedGraphToBigWig not found; "
+          "skipping tiny.bb and tiny.bw", file=sys.stderr)
+
 # ── TSV / CSV ────────────────────────────────────────────────────────────────
 tsv = "name\tcount\tratio\nfoo\t100\t0.5\nbar\t250\t0.75\nbaz\t9999\t0.1\n"
 (HERE / "tiny.tsv").write_text(tsv)

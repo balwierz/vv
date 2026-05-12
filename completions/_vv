@@ -17,6 +17,7 @@ _vv() {
         '*.ffn' '*.ffn.gz' '*.frn' '*.frn.gz'
         '*.fq' '*.fq.gz' '*.fastq' '*.fastq.gz'
         '*.paf' '*.paf.gz'
+        '*.bb' '*.bigBed' '*.bw' '*.bigWig'
     )
 
     _arguments -s -S \

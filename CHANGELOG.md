@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **bigBed / bigWig support** via a vendored copy of
+  [libBigWig](https://github.com/dpryan79/libBigWig) (0.4.8, MIT-licensed,
+  compiled with `-DNOCURL` so only zlib is required). Source lives
+  under `vendored/libBigWig/`; CMake compiles it as a private static
+  library (`libbigwig.a`) and links it into `vv`. The static AlmaLinux 8
+  Docker build picks it up automatically — no new external dependency
+  for any distribution channel.
+- bigBed: the embedded **autoSql** definition is parsed into typed
+  Arrow columns (`signalValue`, `pValue`, `qValue`, …). A small
+  ~150-LOC hand-rolled parser handles primitives, `char[N]` fixed-
+  width strings, `enum{…}` / `set{…}` (as strings), and arrays
+  (`int[N]` / `int[fieldName]` → Arrow `list<int>`).
+- bigWig: rendered as four columns (`chrom`, `start`, `end`, `value`).
+- Range queries (`-r chr1:78-99`) use libBigWig's overlap APIs
+  (`bbGetOverlappingEntries` / `bwGetOverlappingIntervals`); no
+  external index needed.
 - **User manual** at `docs/USAGE.md`, with worked examples for every
   flag, every output mode, the LociSSD / tabix / BCF range-query
   flows, and a "by-workflow" cookbook section. `docs/build_docs.sh`

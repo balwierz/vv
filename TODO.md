@@ -73,8 +73,14 @@ visible-value-per-line ratio.
 
 ## Format gaps
 
-- bigBed / bigWig — UCSC indexed binaries. Needs libBigWig as a new
-  dependency (Bioconda, Arch, conda-forge ship it; Ubuntu doesn't).
+- ~~bigBed / bigWig~~ — *Done — vendored libBigWig under
+  `vendored/libBigWig/`, built as a private static lib with
+  `-DNOCURL` (no libcurl dep). bigBed's embedded autoSql definition
+  is parsed into typed Arrow columns (signalValue, pValue, qValue,
+  …); rare types fall through to `string`. Range queries reuse the
+  existing `-r` plumbing via libBigWig's overlap APIs.
+  Remaining edge cases: complex nested autoSql structs and
+  non-trivial `enum{...}` value validation.*
 - mpileup — samtools workflow staple; ragged columns make it a
   custom parser.
 - 2bit — UCSC sequence storage. Small format, custom parser.

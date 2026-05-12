@@ -31,6 +31,14 @@ annotations
 .IP \(bu 2
 \fB.bed\fR, \fB.bed.gz\fR \(en genomic intervals
 .IP \(bu 2
+\fB.bb\fR, \fB.bigBed\fR \(en UCSC bigBed (via vendored libBigWig); the
+embedded autoSql is parsed so the trailing fields (\fBname\fR,
+\fBscore\fR, \fBsignalValue\fR, \fBpValue\fR, …) become typed Arrow
+columns
+.IP \(bu 2
+\fB.bw\fR, \fB.bigWig\fR \(en UCSC bigWig; rendered as four columns
+(\fBchrom\fR, \fBstart\fR, \fBend\fR, \fBvalue\fR)
+.IP \(bu 2
 \fB.fa\fR, \fB.fasta\fR, \fB.fna\fR, \fB.faa\fR (and \fB.gz\fR) \(en
 sequences (FASTA)
 .IP \(bu 2

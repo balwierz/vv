@@ -26,6 +26,13 @@
 #include <htslib/kseq.h>
 #include <htslib/bgzf.h>
 
+// libBigWig (vendored under vendored/libBigWig/, compiled with -DNOCURL).
+// Wrapped in an extern "C" because it's a C library; ARROW headers above
+// already bring in C++ machinery.
+extern "C" {
+#include <bigWig.h>
+}
+
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -191,6 +198,8 @@ static void print_usage(const char* prog) {
         "  .vcf  .vcf.gz               variant calls\n"
         "  .gff  .gff3  .gtf           and .gz variants  genome annotations\n"
         "  .bed  .tsv  .csv            and .gz variants\n"
+        "  .bb  .bigBed                UCSC bigBed (libBigWig; autoSql columns)\n"
+        "  .bw  .bigWig                UCSC bigWig (libBigWig)\n"
         "  .fa  .fasta  .fna  .faa     sequences (FASTA, plus .gz)\n"
         "  .fq  .fastq                 sequencing reads (FASTQ, plus .gz)\n"
         "  .bcf                        binary VCF (htslib)\n"
@@ -1601,6 +1610,130 @@ static std::string apply_region_modifiers(Config& cfg) {
         cfg.region = acc;
     }
     return "";
+}
+
+// ── autoSql parser (minimal, hand-rolled) ────────────────────────────────────
+//
+// Parses the bigBed-embedded autoSql definition into an ordered list of
+// (name, Arrow-type) pairs. The full UCSC autoSql grammar is sizeable
+// (it can describe nested structs); for bigBed we only need the field
+// list inside the top-level `table ... ( ... )` block. Unsupported types
+// (object, simple, table references, lstring lists) fall back to `string`.
+struct AutosqlField {
+    std::string                     name;
+    std::shared_ptr<arrow::DataType> arrow_type;
+    bool                            is_list = false;
+    std::shared_ptr<arrow::DataType> elem_type;  // only valid if is_list
+};
+
+static std::shared_ptr<arrow::DataType> autosql_base_type(const std::string& t) {
+    if (t == "byte")    return arrow::int8();
+    if (t == "ubyte")   return arrow::uint8();
+    if (t == "short")   return arrow::int16();
+    if (t == "ushort")  return arrow::uint16();
+    if (t == "int")     return arrow::int32();
+    if (t == "uint")    return arrow::uint32();
+    if (t == "bigint")  return arrow::int64();
+    if (t == "float")   return arrow::float32();
+    if (t == "double")  return arrow::float64();
+    // strings, char arrays, enum, set, lstring → utf8
+    if (t == "string" || t == "lstring") return arrow::utf8();
+    if (t.rfind("char[", 0) == 0)        return arrow::utf8();
+    if (t.rfind("enum",  0) == 0)        return arrow::utf8();
+    if (t.rfind("set",   0) == 0)        return arrow::utf8();
+    return arrow::utf8();  // unknown — fall through
+}
+
+static std::vector<AutosqlField> parse_autosql(const std::string& sql) {
+    std::vector<AutosqlField> out;
+    // Find the opening '(' of the field block.
+    size_t lp = sql.find('(');
+    if (lp == std::string::npos) return out;
+    size_t rp = sql.rfind(')');
+    if (rp == std::string::npos || rp <= lp) return out;
+    std::string body = sql.substr(lp + 1, rp - lp - 1);
+
+    auto trim = [](std::string& s) {
+        while (!s.empty() && std::isspace((unsigned char)s.front())) s.erase(0, 1);
+        while (!s.empty() && std::isspace((unsigned char)s.back()))  s.pop_back();
+    };
+
+    // Walk char-by-char. Skip whitespace and "quoted comments"; collect
+    // "<type> <name>" up to the next top-level ';'. Inside `{...}` (enum
+    // / set values) commas and even ';' are part of the type.
+    size_t p = 0;
+    while (p < body.size()) {
+        // Skip whitespace / inter-statement comments.
+        while (p < body.size()) {
+            char c = body[p];
+            if (std::isspace((unsigned char)c)) { ++p; continue; }
+            if (c == '"') {
+                ++p;
+                while (p < body.size() && body[p] != '"') ++p;
+                if (p < body.size()) ++p;
+                continue;
+            }
+            break;
+        }
+        if (p >= body.size()) break;
+
+        // Collect everything up to the next top-level ';', tracking braces
+        // and quoted strings so ';' inside `{a;b}` or `"text"` is ignored.
+        std::string stmt;
+        int braces = 0;
+        while (p < body.size()) {
+            char c = body[p];
+            if (c == '"') {
+                ++p;
+                while (p < body.size() && body[p] != '"') ++p;
+                if (p < body.size()) ++p;
+                continue;
+            }
+            if (c == '{') { stmt += c; ++braces; ++p; continue; }
+            if (c == '}') { stmt += c; --braces; ++p; continue; }
+            if (c == ';' && braces == 0) { ++p; break; }
+            stmt += c;
+            ++p;
+        }
+        trim(stmt);
+        if (stmt.empty()) continue;
+
+        // Split into "<type> <name>". The type may contain `[...]`,
+        // `{...}` (enum/set body), or be a single word. Boundary is the
+        // last whitespace run.
+        size_t name_start = stmt.find_last_of(" \t\n\r");
+        if (name_start == std::string::npos) continue;
+        std::string type_part = stmt.substr(0, name_start);
+        std::string name_part = stmt.substr(name_start + 1);
+        trim(type_part);
+        trim(name_part);
+        if (type_part.empty() || name_part.empty()) continue;
+
+        AutosqlField f;
+        f.name = name_part;
+        // Array suffix `[N]` or `[fieldName]` — separate from `char[N]`
+        // which is a fixed-size string, not a list. Look at the trailing
+        // ']' and find the matching '['.
+        if (!type_part.empty() && type_part.back() == ']') {
+            size_t br = type_part.rfind('[');
+            if (br != std::string::npos) {
+                std::string base = type_part.substr(0, br);
+                trim(base);
+                if (base == "char") {
+                    f.arrow_type = arrow::utf8();   // fixed-width string
+                } else {
+                    f.is_list   = true;
+                    f.elem_type = autosql_base_type(base);
+                    f.arrow_type = arrow::list(f.elem_type);
+                }
+                out.push_back(std::move(f));
+                continue;
+            }
+        }
+        f.arrow_type = autosql_base_type(type_part);
+        out.push_back(std::move(f));
+    }
+    return out;
 }
 
 // ── LociSSD manifest parser (minimal, hand-rolled) ───────────────────────────
@@ -3271,6 +3404,297 @@ public:
     }
 };
 
+// ── bigBed / bigWig source (libBigWig, vendored) ──────────────────────────────
+//
+// One TabularSource handles both formats. For bigWig, the schema is
+// fixed (chrom, start, end, value). For bigBed, the first three columns
+// are the loci fields and the rest come from parsing the embedded
+// autoSql with parse_autosql() above.
+//
+// Reads are batched per-chromosome (libBigWig's overlap API works one
+// chromosome at a time anyway). With --region, only the requested
+// windows are queried.
+class BigSource : public TabularSource {
+    std::string                              path_;
+    std::shared_ptr<arrow::Schema>           schema_;
+    bool                                     is_bb_ = false;
+    std::vector<AutosqlField>                autosql_;
+
+    mutable bigWigFile_t* fp_ = nullptr;
+
+    // For region-mode, the precomputed plan of (chrom, start, end).
+    bool                                     region_mode_ = false;
+    std::vector<Region>                      windows_;
+    mutable size_t                           cur_window_ = 0;
+    mutable size_t                           cur_chrom_  = 0;
+    mutable bool                             all_read_   = false;
+
+    mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
+    mutable std::vector<int64_t>             batch_first_row_;
+    mutable int64_t                          rows_so_far_ = 0;
+
+    static constexpr int BATCH_SIZE = 32768;
+
+    // For each pending (chrom, start, end) window, pull all overlapping
+    // intervals/entries and convert into Arrow rows. Builds one batch
+    // and returns; subsequent advance() calls drain the rest.
+    arrow::Status advance() const {
+        if (all_read_) return arrow::Status::OK();
+
+        // Choose source of windows to iterate.
+        auto chrom_at = [&](size_t i) -> std::string {
+            if (region_mode_) return windows_[i].chrom;
+            return fp_->cl->chrom[i];
+        };
+        auto chrom_span = [&](size_t i, uint32_t* s, uint32_t* e) {
+            if (region_mode_) {
+                int64_t a = windows_[i].start;
+                int64_t b = windows_[i].end;
+                *s = (a == INT64_MIN) ? 0u : (uint32_t)std::max<int64_t>(0, a);
+                *e = (b == INT64_MAX) ? UINT32_MAX : (uint32_t)b;
+            } else {
+                *s = 0u;
+                *e = fp_->cl->len[i];
+            }
+        };
+        size_t n_iter = region_mode_ ? windows_.size() : (size_t)fp_->cl->nKeys;
+        size_t& idx = region_mode_ ? cur_window_ : cur_chrom_;
+
+        // Build a list of (chrom, start, end, value, [extras...]) cells.
+        arrow::StringBuilder chrom_b;
+        arrow::UInt32Builder start_b, end_b;
+        arrow::FloatBuilder  value_b;     // bigWig only
+        std::vector<std::unique_ptr<arrow::ArrayBuilder>> extra_b;  // bigBed extras
+        if (is_bb_) {
+            for (auto& f : autosql_) {
+                if (f.is_list) {
+                    // list<elem>: builders are awkward; fall back to a
+                    // string column for v1 (TODO: real list builders).
+                    extra_b.emplace_back(new arrow::StringBuilder());
+                } else if (f.arrow_type->id() == arrow::Type::INT8)   extra_b.emplace_back(new arrow::Int8Builder());
+                else if (f.arrow_type->id() == arrow::Type::UINT8)    extra_b.emplace_back(new arrow::UInt8Builder());
+                else if (f.arrow_type->id() == arrow::Type::INT16)    extra_b.emplace_back(new arrow::Int16Builder());
+                else if (f.arrow_type->id() == arrow::Type::UINT16)   extra_b.emplace_back(new arrow::UInt16Builder());
+                else if (f.arrow_type->id() == arrow::Type::INT32)    extra_b.emplace_back(new arrow::Int32Builder());
+                else if (f.arrow_type->id() == arrow::Type::UINT32)   extra_b.emplace_back(new arrow::UInt32Builder());
+                else if (f.arrow_type->id() == arrow::Type::INT64)    extra_b.emplace_back(new arrow::Int64Builder());
+                else if (f.arrow_type->id() == arrow::Type::FLOAT)    extra_b.emplace_back(new arrow::FloatBuilder());
+                else if (f.arrow_type->id() == arrow::Type::DOUBLE)   extra_b.emplace_back(new arrow::DoubleBuilder());
+                else                                                   extra_b.emplace_back(new arrow::StringBuilder());
+            }
+        }
+
+        int count = 0;
+        // Helper: append one int-like value from a string token.
+        auto append_typed = [&](arrow::ArrayBuilder* b,
+                                arrow::Type::type t,
+                                const std::string& tok) -> arrow::Status {
+            auto bad = [&]() -> arrow::Status { return static_cast<arrow::StringBuilder*>(b)->AppendNull(); };
+            try {
+                switch (t) {
+                    case arrow::Type::INT8:   return static_cast<arrow::Int8Builder*>(b)->Append((int8_t)std::stoi(tok));
+                    case arrow::Type::UINT8:  return static_cast<arrow::UInt8Builder*>(b)->Append((uint8_t)std::stoul(tok));
+                    case arrow::Type::INT16:  return static_cast<arrow::Int16Builder*>(b)->Append((int16_t)std::stoi(tok));
+                    case arrow::Type::UINT16: return static_cast<arrow::UInt16Builder*>(b)->Append((uint16_t)std::stoul(tok));
+                    case arrow::Type::INT32:  return static_cast<arrow::Int32Builder*>(b)->Append((int32_t)std::stol(tok));
+                    case arrow::Type::UINT32: return static_cast<arrow::UInt32Builder*>(b)->Append((uint32_t)std::stoul(tok));
+                    case arrow::Type::INT64:  return static_cast<arrow::Int64Builder*>(b)->Append((int64_t)std::stoll(tok));
+                    case arrow::Type::FLOAT:  return static_cast<arrow::FloatBuilder*>(b)->Append(std::stof(tok));
+                    case arrow::Type::DOUBLE: return static_cast<arrow::DoubleBuilder*>(b)->Append(std::stod(tok));
+                    case arrow::Type::STRING:
+                    default:                  return static_cast<arrow::StringBuilder*>(b)->Append(tok);
+                }
+            } catch (...) { return bad(); }
+        };
+
+        while (count < BATCH_SIZE && idx < n_iter) {
+            std::string chrom = chrom_at(idx);
+            uint32_t qs, qe;
+            chrom_span(idx, &qs, &qe);
+            ++idx;
+            // Unknown chrom — libBigWig will return NULL.
+            if (is_bb_) {
+                bbOverlappingEntries_t* o = bbGetOverlappingEntries(
+                    fp_, chrom.c_str(), qs, qe, /*withString=*/1);
+                if (!o) continue;
+                for (uint32_t i = 0; i < o->l && count < BATCH_SIZE; ++i) {
+                    ARROW_RETURN_NOT_OK(chrom_b.Append(chrom));
+                    ARROW_RETURN_NOT_OK(start_b.Append(o->start[i]));
+                    ARROW_RETURN_NOT_OK(end_b.Append(o->end[i]));
+                    const char* s = o->str[i];
+                    // Split s on tabs into N fields.
+                    std::vector<std::string> toks;
+                    if (s) {
+                        const char* p = s;
+                        const char* tb = p;
+                        for (; *p; ++p) {
+                            if (*p == '\t') { toks.emplace_back(tb, p - tb); tb = p + 1; }
+                        }
+                        toks.emplace_back(tb, p - tb);
+                    }
+                    for (size_t k = 0; k < autosql_.size(); ++k) {
+                        std::string tok = (k < toks.size()) ? toks[k] : std::string();
+                        auto& f = autosql_[k];
+                        if (f.is_list) {
+                            // Store raw "a,b,c" string for v1.
+                            ARROW_RETURN_NOT_OK(static_cast<arrow::StringBuilder*>(
+                                extra_b[k].get())->Append(tok));
+                        } else {
+                            ARROW_RETURN_NOT_OK(append_typed(extra_b[k].get(),
+                                f.arrow_type->id(), tok));
+                        }
+                    }
+                    ++count;
+                }
+                bbDestroyOverlappingEntries(o);
+            } else {
+                bwOverlappingIntervals_t* iv = bwGetOverlappingIntervals(
+                    fp_, chrom.c_str(), qs, qe);
+                if (!iv) continue;
+                for (uint32_t i = 0; i < iv->l && count < BATCH_SIZE; ++i) {
+                    ARROW_RETURN_NOT_OK(chrom_b.Append(chrom));
+                    ARROW_RETURN_NOT_OK(start_b.Append(iv->start[i]));
+                    ARROW_RETURN_NOT_OK(end_b.Append(iv->end[i]));
+                    ARROW_RETURN_NOT_OK(value_b.Append(iv->value[i]));
+                    ++count;
+                }
+                bwDestroyOverlappingIntervals(iv);
+            }
+        }
+        if (idx >= n_iter) all_read_ = true;
+        if (count == 0) return arrow::Status::OK();
+
+        std::vector<std::shared_ptr<arrow::Array>> a;
+        std::shared_ptr<arrow::Array> tmp;
+        ARROW_RETURN_NOT_OK(chrom_b.Finish(&tmp)); a.push_back(tmp);
+        ARROW_RETURN_NOT_OK(start_b.Finish(&tmp)); a.push_back(tmp);
+        ARROW_RETURN_NOT_OK(end_b.Finish(&tmp));   a.push_back(tmp);
+        if (is_bb_) {
+            for (auto& b : extra_b) {
+                ARROW_RETURN_NOT_OK(b->Finish(&tmp));
+                a.push_back(tmp);
+            }
+        } else {
+            ARROW_RETURN_NOT_OK(value_b.Finish(&tmp));
+            a.push_back(tmp);
+        }
+        auto batch = arrow::RecordBatch::Make(schema_, count, a);
+        batch_first_row_.push_back(rows_so_far_);
+        rows_so_far_ += count;
+        batches_.push_back(std::move(batch));
+        return arrow::Status::OK();
+    }
+
+public:
+    ~BigSource() {
+        if (fp_) { bwClose(fp_); fp_ = nullptr; }
+        bwCleanup();
+    }
+
+    static std::string open(const std::string& path, const Config& cfg,
+                             std::unique_ptr<BigSource>* out) {
+        auto self = std::make_unique<BigSource>();
+        self->path_ = path;
+        if (bwInit(1 << 17) != 0)
+            return "libBigWig init failed";
+        // libBigWig auto-detects format from the magic; pick the right open.
+        bool maybe_bw = bwIsBigWig(path.c_str(), nullptr) != 0;
+        if (maybe_bw) {
+            self->fp_ = bwOpen(path.c_str(), nullptr, "r");
+            self->is_bb_ = false;
+        } else {
+            self->fp_ = bbOpen(path.c_str(), nullptr);
+            self->is_bb_ = true;
+        }
+        if (!self->fp_)
+            return "Cannot open '" + path + "' as bigWig/bigBed";
+
+        // Schema.
+        arrow::FieldVector fields = {
+            arrow::field("chrom", arrow::utf8()),
+            arrow::field("start", arrow::uint32()),
+            arrow::field("end",   arrow::uint32()),
+        };
+        if (self->is_bb_) {
+            // Read the embedded autoSql blob from the file (libBigWig
+            // does not expose it; seek + read manually). The first 3
+            // autoSql fields are always chrom/start/end — we skip them.
+            std::string sql;
+            if (self->fp_->hdr && self->fp_->hdr->sqlOffset) {
+                urlSeek(self->fp_->URL, self->fp_->hdr->sqlOffset);
+                char buf[4096];
+                while (true) {
+                    size_t n = urlRead(self->fp_->URL, buf, sizeof(buf));
+                    if (n == 0) break;
+                    bool done = false;
+                    for (size_t i = 0; i < n; ++i) {
+                        if (buf[i] == 0) {
+                            sql.append(buf, i);
+                            done = true;
+                            break;
+                        }
+                    }
+                    if (done) break;
+                    sql.append(buf, n);
+                    if (n < sizeof(buf)) break;
+                }
+            }
+            auto all_fields = parse_autosql(sql);
+            // Drop the first 3 autoSql fields (chrom/chromStart/chromEnd)
+            // — we already added them above.
+            int skip = std::min<int>((int)all_fields.size(), 3);
+            for (int i = skip; i < (int)all_fields.size(); ++i) {
+                fields.push_back(arrow::field(
+                    all_fields[i].name, all_fields[i].arrow_type));
+                self->autosql_.push_back(all_fields[i]);
+            }
+        } else {
+            fields.push_back(arrow::field("value", arrow::float32()));
+        }
+        self->schema_ = arrow::schema(fields);
+
+        // Region plan.
+        if (!cfg.region.empty()) {
+            self->windows_ = parse_region_list(cfg.region);
+            self->region_mode_ = true;
+        }
+
+        auto st = self->advance();
+        if (!st.ok()) return "Error reading '" + path + "': " + st.ToString();
+        *out = std::move(self);
+        return "";
+    }
+
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    int64_t total_rows() const override { return all_read_ ? rows_so_far_ : -1; }
+    int     num_chunks() const override { return (int)batches_.size(); }
+    ChunkMeta chunk_meta(int i) const override {
+        return {batch_first_row_[i], batches_[i]->num_rows()};
+    }
+    void ensure(int i) override {
+        while (!all_read_ && (int)batches_.size() <= i)
+            (void)advance();
+    }
+    arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
+                              std::shared_ptr<arrow::Table>* out) override {
+        ensure(i);
+        if (i >= (int)batches_.size())
+            return arrow::Status::IndexError("chunk ", i, " out of range");
+        *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
+        return arrow::Status::OK();
+    }
+    const std::string& path() const override { return path_; }
+    std::string footer() const override {
+        return std::string("Format: ") + (is_bb_ ? "bigBed" : "bigWig") +
+               "  |  Chromosomes: " + std::to_string(fp_ ? fp_->cl->nKeys : 0);
+    }
+    int min_col_width(int col_idx) const override {
+        if (col_idx == 0) return 6;   // chrom
+        if (col_idx == 1 || col_idx == 2) return 9;  // start / end
+        return 4;
+    }
+};
+
 // ── FASTA / FASTQ source (kseq.h via htslib BGZF) ─────────────────────────────
 
 KSEQ_INIT(BGZF*, bgzf_read)
@@ -3641,6 +4065,13 @@ static std::string open_source(const std::string& path, const Config& cfg,
     } else if (fends(path, ".bcf")) {
         std::unique_ptr<BcfSource> src;
         std::string err = BcfSource::open(path, cfg, &src);
+        if (!err.empty()) return err;
+        *out = std::move(src);
+        return "";
+    } else if (fends(path, ".bb") || fends(path, ".bigBed") ||
+               fends(path, ".bw") || fends(path, ".bigWig")) {
+        std::unique_ptr<BigSource> src;
+        std::string err = BigSource::open(path, cfg, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";

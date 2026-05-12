@@ -62,6 +62,7 @@ would need horizontal scrolling.
 | Variant calls     | `.vcf`, `.vcf.gz`, `.bcf` (with `.csi` / `.tbi` for range queries) |
 | Genome annotation | `.gff`, `.gff3`, `.gtf` (plus `.gz`)                        |
 | Genomic intervals | `.bed`, `.bed.gz`                                           |
+| UCSC big files    | `.bb` / `.bigBed`, `.bw` / `.bigWig` (vendored libBigWig — bigBed's autoSql definition is parsed into typed columns) |
 | Sequences (FASTA) | `.fa`, `.fasta`, `.fna`, `.faa`, `.ffn`, `.frn` (plus `.gz`)|
 | Sequencing reads  | `.fq`, `.fastq` (plus `.gz`)                                |
 | Delimited text    | `.tsv`, `.csv` (plus `.gz`)                                 |
@@ -250,6 +251,9 @@ Supported sources:
   to locate each chromosome's row range, then Parquet's column
   statistics on `Start` and `MaxEndSoFar` to skip row groups outside
   the window, then a per-row predicate inside surviving row groups.
+* **bigBed / bigWig** (`.bb`, `.bigBed`, `.bw`, `.bigWig`): native
+  block-level overlap queries via the vendored libBigWig — no
+  external index needed.
 
 Plain `.parquet` without the LociSSD manifest produces a friendly error
 suggesting LociSSD or tabix.
@@ -428,6 +432,55 @@ LociSSD is a Parquet variant for sorted genomic intervals (see
 * `-r chr1:78-99 file.lociss` uses the manifest + Parquet row-group
   statistics for pruning (spec §7). No external index needed.
 
+# bigBed / bigWig specifics
+
+bigBed (`.bb`, `.bigBed`) and bigWig (`.bw`, `.bigWig`) are read via a
+vendored copy of [libBigWig](https://github.com/dpryan79/libBigWig)
+compiled into the binary — no external library dependency.
+
+```sh
+$ vv --schema tests/data/tiny.bb
++-----+-------------+--------+----------+
+|  #  | name        | type   | nullable |
++-----+-------------+--------+----------+
+|  0  | chrom       | string | no       |
+|  1  | start       | uint32 | no       |
+|  2  | end         | uint32 | no       |
+|  3  | name        | string | yes      |
+|  4  | score       | uint32 | yes      |
+|  5  | strand      | string | yes      |
+|  6  | signalValue | float  | yes      |
+|  7  | pValue      | float  | yes      |
+|  8  | qValue      | float  | yes      |
++-----+-------------+--------+----------+
+```
+
+For bigBed, the embedded **autoSql** definition is parsed into typed
+Arrow columns. Common types map as follows:
+
+| autoSql                          | Arrow                  |
+|----------------------------------|------------------------|
+| `byte` / `ubyte`                 | int8 / uint8           |
+| `short` / `ushort`               | int16 / uint16         |
+| `int` / `uint`                   | int32 / uint32         |
+| `bigint`                         | int64                  |
+| `float`                          | float                  |
+| `double`                         | double                 |
+| `char[N]` / `string` / `lstring` | string                 |
+| `enum{...}` / `set{...}`         | string                 |
+| `<type>[N]` / `<type>[field]`    | string (comma-list)    |
+
+Range queries reuse `-r` and call `bbGetOverlappingEntries` /
+`bwGetOverlappingIntervals` directly — no `.tbi`/`.csi` needed:
+
+```sh
+$ vv -r chr1:300-1100 tests/data/tiny.bb
+$ vv --filter 'signalValue > 10' tests/data/tiny.bb
+$ vv -r chr1:0-1000 tests/data/tiny.bw
+```
+
+bigWig schema is fixed: `chrom`, `start`, `end`, `value`.
+
 # Examples by workflow
 
 ## Look at an inherited file first
@@ -445,6 +498,8 @@ vh             huge.parquet          # peek with the right shape for wide tables
 vv -r chr1:1000000-1100000 variants.vcf.gz    # tabix VCF
 vv -r chr1:78-99 peaks.lociss                  # LociSSD Parquet
 vv -r chr1:78-99 calls.bcf                     # BCF with .csi
+vv -r chr1:1000000-1100000 peaks.bb            # bigBed (no index needed)
+vv -r chr1:0-1000 coverage.bw                  # bigWig
 vv -r 'chr1:200,chr2:500-1500' regions.bed.gz  # multiple
 vv -r chr1:1000-1100 --slop 500 peaks.lociss   # widen
 vv --regions-file targets.bed peaks.lociss      # batch
