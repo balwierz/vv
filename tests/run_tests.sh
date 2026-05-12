@@ -58,6 +58,19 @@ run_case paf_gz_tsv   --tsv --no-header "$DATA/tiny.paf.gz"
 if [ -f "$DATA/tiny.bcf" ]; then
     run_case bcf_tsv  --tsv --no-header "$DATA/tiny.bcf"
 fi
+run_case lociss_tsv          --tsv --no-header "$DATA/tiny.lociss"
+run_case lociss_table_hides  --no-interactive --no-index --color=never "$DATA/tiny.lociss"
+# --tsv must keep MaxEndSoFar; table must not show it.
+TSV_OUT=$("$VV" --tsv --no-header "$DATA/tiny.lociss")
+assert_contains "lociss_tsv_keeps_maxendsofar"  "$TSV_OUT"  "1800"
+TABLE_OUT=$("$VV" --no-interactive --no-index --color=never "$DATA/tiny.lociss" 2>&1)
+if printf '%s' "$TABLE_OUT" | grep -q "^| MaxEndSoFar "; then
+    FAIL=$((FAIL + 1))
+    echo "  FAIL  lociss_table_omits_maxendsofar (column header leaked into view)"
+else
+    PASS=$((PASS + 1))
+    echo "  ok    lociss_table_omits_maxendsofar"
+fi
 
 echo
 echo "── Tabix range queries ───────────────────────────────────"

@@ -17,6 +17,11 @@ Supported formats:
 .IP \(bu 2
 \fB.arrow\fR, \fB.feather\fR \(en Arrow IPC and Feather v2
 .IP \(bu 2
+\fB.lociss\fR \(en LociSSD sorted-interval Parquet (auto-detected via
+the \fBlociSSD_manifest\fR key in the Parquet footer; the derived
+\fBMaxEndSoFar\fR column is hidden from human-facing views but kept in
+\fB\-\-tsv\fR / \fB\-\-csv\fR / \fB\-\-parquet\fR output)
+.IP \(bu 2
 \fB.bam\fR, \fB.cram\fR, \fB.sam\fR \(en sequence alignments (htslib)
 .IP \(bu 2
 \fB.vcf\fR, \fB.vcf.gz\fR \(en variant calls
@@ -132,7 +137,17 @@ are highlighted; the n/N target is rendered with reverse video.
 Open the detail pane for the highlighted row.
 .TP
 .B "," / "."
-Narrow / widen the current column.
+Narrow / widen the leftmost visible column.
+.TP
+.B z
+Toggle frozen first column (pin column 0 at the left edge while
+scrolling sideways).
+.TP
+.B mouse wheel
+Scroll three rows up / down.
+.TP
+.B H, F1
+Open / close the help overlay listing every keybinding.
 .TP
 .B q
 Quit.

@@ -137,6 +137,37 @@ paf = (
 with open(HERE / "tiny.paf", "rb") as src, gzip.open(HERE / "tiny.paf.gz", "wb") as dst:
     shutil.copyfileobj(src, dst)
 
+# ── LociSSD (Parquet + lociSSD_manifest in file-level KV metadata) ──────────
+# Reference: /home/piotr/Sources/LociSSD/FORMAT_SPEC.md
+# Only the manifest's presence matters for vv detection; we hand-craft a
+# minimal valid manifest here instead of pulling in the full lociSSD package.
+import json
+loc = pa.table({
+    "Chromosome":  pa.array(["chr1","chr1","chr1","chr2","chr2"], pa.string()),
+    "Start":       pa.array([100, 500, 1000, 200, 1500], pa.int32()),
+    "End":         pa.array([200, 800, 1200, 400, 1800], pa.int32()),
+    "Name":        pa.array(["peak_0","peak_1","peak_2","peak_3","peak_4"], pa.string()),
+    "Score":       pa.array([0.5, 0.7, 0.2, 0.9, 0.1], pa.float64()),
+    "MaxEndSoFar": pa.array([200, 800, 1200, 400, 1800], pa.int32()),
+})
+manifest = json.dumps({
+    "format_version": 2,
+    "writer_version": "vv tests/data/generate.py",
+    "created_utc":    "2026-05-07T00:00:00+00:00",
+    "row_count":      5,
+    "chromosomes": [
+        {"name": "chr1", "rows": 3, "row_offset": 0,
+         "min_start": 100,  "max_start": 1000, "max_end": 1200},
+        {"name": "chr2", "rows": 2, "row_offset": 3,
+         "min_start": 200,  "max_start": 1500, "max_end": 1800},
+    ],
+    "sort_keys": ["Chromosome", "Start", "End"],
+    "default_compression": ["zstd", 3],
+    "coord_dtype": "int32",
+})
+loc = loc.replace_schema_metadata({"lociSSD_manifest": manifest})
+pq.write_table(loc, HERE / "tiny.lociss", compression="zstd")
+
 # ── BCF (binary VCF, requires bcftools) ──────────────────────────────────────
 if have("bcftools"):
     # Make a self-contained VCF (with explicit ##contig lines) so bcftools is

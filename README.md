@@ -43,6 +43,7 @@ See [INSTALL.md](INSTALL.md) for source builds, AUR, and the static AlmaLinux
 |-------------------|------------------------------------------------------------|
 | Apache Parquet    | `.parquet`                                                 |
 | Arrow IPC, Feather| `.arrow`, `.feather`                                       |
+| LociSSD           | `.lociss` (sorted-interval Parquet; `MaxEndSoFar` auto-hidden) |
 | Sequence alignments | `.bam`, `.cram`, `.sam`, `.paf`/`.paf.gz` (minimap2)     |
 | Variant calls     | `.vcf`, `.vcf.gz`, `.bcf` (binary VCF via htslib)          |
 | Genome annotation | `.gff`, `.gff3`, `.gtf` (plus `.gz`)                       |
@@ -66,8 +67,10 @@ Feather) or delimiter heuristic (TSV vs. CSV).
   PgUp/PgDn, `g`/`G`, `less`-style search with `/` (forward) and `?`
   (backward), case-insensitive ECMAScript regex with literal fallback,
   `n`/`N` next/prev (direction-aware), all visible matches highlighted,
-  Enter for row detail, `,`/`.` to narrow / widen the current column.
-  Lazy-loads only the chunks currently on screen.
+  Enter for row detail, `,`/`.` to narrow / widen the current column,
+  `z` to freeze the first column, `H` / `F1` for an overlay listing all
+  keybindings, mouse wheel to scroll. Lazy-loads only the chunks
+  currently on screen.
 - **Tabix range queries** — `-r chr1:1000-2000` filters tabix-indexed
   `.vcf.gz`, `.bed.gz`, `.gff.gz`, etc. Multiple regions accepted
   comma-separated.

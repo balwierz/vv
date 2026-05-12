@@ -1,0 +1,25 @@
+╭────────────┬───────┬───────┬────────┬───────╮
+│ Chromosome │ Start │ End   │ Name   │ Score │
+├────────────┼───────┼───────┼────────┼───────┤
+│ chr1       │   100 │   200 │ peak_0 │   0.5 │
+│ chr1       │   500 │   800 │ peak_1 │   0.7 │
+│ chr1       │ 1_000 │ 1_200 │ peak_2 │   0.2 │
+│ chr2       │   200 │   400 │ peak_3 │   0.9 │
+│ chr2       │ 1_500 │ 1_800 │ peak_4 │   0.1 │
+╰────────────┴───────┴───────┴────────┴───────╯
+  ... 1 derived column(s) hidden by file format (--tsv / --parquet preserve them)
+
+[5 rows x 6 columns]
+
+Column       Type    Nullable
+-----------  ------  --------
+Chromosome   string  yes
+Start        int32   yes
+End          int32   yes
+Name         string  yes
+Score        double  yes
+MaxEndSoFar  int32   yes
+
+File: /home/piotr/Sources/ParquetViewer/tests/data/tiny.lociss
+Format: LociSSD  |  Row groups: 1  |  Compressed: 677 B
+Created by: parquet-cpp-arrow version 24.0.0

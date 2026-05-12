@@ -6,7 +6,7 @@
 _vv() {
     local -a opts file_exts
     file_exts=(
-        '*.parquet' '*.arrow' '*.feather'
+        '*.parquet' '*.arrow' '*.feather' '*.lociss'
         '*.bam' '*.cram' '*.sam'
         '*.vcf' '*.vcf.gz' '*.bcf'
         '*.gff' '*.gff.gz' '*.gff3' '*.gff3.gz' '*.gtf' '*.gtf.gz'

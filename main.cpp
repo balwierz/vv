@@ -37,6 +37,7 @@
 #include <memory>
 #include <optional>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <thread>
 #include <string>
@@ -170,6 +171,7 @@ static void print_usage(const char* prog) {
         "\nUsage: %s [options] <file>\n"
         "\nSupported formats:\n"
         "  .parquet\n"
+        "  .lociss                     LociSSD sorted-interval Parquet (manifest in KV)\n"
         "  .bam  .cram                  binary/compressed sequence alignments (htslib)\n"
         "  .sam                        text sequence alignments\n"
         "  .vcf  .vcf.gz               variant calls\n"
@@ -1231,7 +1233,30 @@ public:
     virtual std::string format_cell(int /*col_idx*/, std::string val) const { return val; }
     // Minimum display-column width for a given column index (TUI pre-sizes columns from this).
     virtual int min_col_width(int /*col_idx*/) const { return 4; }
+    // Column names that should be hidden from human-facing views (table,
+    // vertical-head, TUI). Delimited and Parquet output keep all columns.
+    // Used e.g. to hide the derived `MaxEndSoFar` column in LociSSD files.
+    virtual std::vector<std::string> hidden_for_display() const { return {}; }
 };
+
+// Field indices to display in human-facing views, with `hidden_for_display`
+// names filtered out and `max_cols` honoured. Used by print_table, the
+// vertical-head view, and the TUI. Delimited / Parquet output paths keep
+// all columns and bypass this helper.
+static std::vector<int> visible_field_indices(const TabularSource& src,
+                                              int max_cols) {
+    auto schema = src.schema();
+    auto hidden = src.hidden_for_display();
+    std::set<std::string> hide(hidden.begin(), hidden.end());
+    std::vector<int> out;
+    int n = schema->num_fields();
+    int limit = (max_cols > 0) ? max_cols : n;
+    for (int i = 0; i < n && (int)out.size() < (size_t)limit; ++i) {
+        if (hide.count(schema->field(i)->name())) continue;
+        out.push_back(i);
+    }
+    return out;
+}
 
 // ── Parquet source ────────────────────────────────────────────────────────────
 
@@ -1241,6 +1266,7 @@ class ParquetSource : public TabularSource {
     std::shared_ptr<arrow::Schema>              schema_;
     std::string                                  path_;
     std::vector<int64_t>                         chunk_start_;
+    bool                                         is_lociss_ = false;
 
     static std::string fmt_size(int64_t sz) {
         char buf[32];
@@ -1283,6 +1309,12 @@ public:
         self->meta_ = self->reader_->parquet_reader()->metadata();
         st = self->reader_->GetSchema(&self->schema_);
         if (!st.ok()) return "Error reading schema: " + st.ToString();
+
+        // LociSSD detection: file-level KV metadata key `lociSSD_manifest`.
+        // The derived `MaxEndSoFar` column is then hidden from display.
+        if (auto kv = self->meta_->key_value_metadata()) {
+            if (kv->Contains("lociSSD_manifest")) self->is_lociss_ = true;
+        }
 
         int64_t acc = 0;
         for (int i = 0; i < self->meta_->num_row_groups(); ++i) {
@@ -1355,10 +1387,19 @@ public:
         int64_t sz = 0;
         for (int i = 0; i < meta_->num_row_groups(); ++i)
             sz += meta_->RowGroup(i)->total_compressed_size();
-        return "Row groups: " + std::to_string(meta_->num_row_groups()) +
-               "  |  Compressed: " + fmt_size(sz);
+        std::string s;
+        if (is_lociss_) s += "Format: LociSSD  |  ";
+        s += "Row groups: " + std::to_string(meta_->num_row_groups()) +
+             "  |  Compressed: " + fmt_size(sz);
+        return s;
     }
     std::string created_by() const override { return meta_->created_by(); }
+    std::vector<std::string> hidden_for_display() const override {
+        // LociSSD's MaxEndSoFar is a technical derived column; hide it
+        // from human-facing views. Delimited / Parquet output keep it.
+        if (is_lociss_) return {"MaxEndSoFar"};
+        return {};
+    }
 };
 
 // ── Delimited source (CSV / TSV / BED / VCF / GFF3+GTF / SAM, plain or gzip) ──
@@ -3105,6 +3146,8 @@ class TableTUI {
     int64_t top_row_  = 0;
     int     left_col_ = 0;
     int     scr_r_ = 24, scr_c_ = 80;
+    bool    freeze_first_col_ = false;   // toggle with `z` — keep col 0 pinned left
+    bool    help_open_        = false;   // overlay shown via `?` / F1 / H
 
     // ── Search state ─────────────────────────────────────────────────────────
     enum class SearchMode { None, Input, Active };
@@ -3453,7 +3496,22 @@ class TableTUI {
     std::vector<ColVis> visible_cols() const {
         std::vector<ColVis> v;
         int x = no_index_ ? 0 : (idx_w_ + 2);
-        for (int c = left_col_; c < num_cols_; ++c) {
+        // Frozen first column: pin col 0 at the left edge whenever the user
+        // has scrolled past it. Skipped when col 0 is already in the natural
+        // window (left_col_ == 0) — that path renders column 0 normally.
+        int start = left_col_;
+        if (freeze_first_col_ && num_cols_ > 0 && left_col_ > 0) {
+            int w0 = col_widths_[0];
+            if (x + w0 + 2 <= scr_c_) {
+                v.push_back({0, x, w0});
+                x += w0 + 2;
+            }
+            // Avoid showing the frozen column twice if scrolling places it
+            // back into view (defensive — left_col_ > 0 means it's not).
+            if (start == 0) start = 1;
+        }
+        for (int c = start; c < num_cols_; ++c) {
+            if (freeze_first_col_ && c == 0) continue;   // already shown
             int w = col_widths_[c];
             if (x + w + 2 > scr_c_) break;
             v.push_back({c, x, w});
@@ -3611,7 +3669,7 @@ class TableTUI {
         } else {
             bool need_lr = left_col_ > 0 || (!vc.empty() && vc.back().col < num_cols_-1);
             if (need_lr) s += "  [h/l]:←→col  [,/.]:narrow/widen";
-            s += "  [^/v/j/k]:rows  PgUp/Dn  g/G:top/bot  / ?:search  Enter:detail  q:quit";
+            s += "  [j/k]:rows  /:search  Enter:detail  z:freeze  H:help  q:quit";
         }
         if ((int)s.size() < scr_c_) s += std::string(scr_c_ - (int)s.size(), ' ');
         attron(A_REVERSE);
@@ -3688,6 +3746,83 @@ class TableTUI {
             }
         }
         return L;
+    }
+
+    // Centred help overlay listing every TUI keybinding. Toggle with `?` /
+    // F1 / `H`. Exits on any keystroke (including the toggle keys).
+    void draw_help_overlay() {
+        struct Row { const char* keys; const char* desc; };
+        static const Row rows[] = {
+            {"q  Esc",       "quit  (Esc clears search if active)"},
+            {"↑↓  j k",      "scroll one row"},
+            {"PgUp PgDn  ␣ b","scroll one page"},
+            {"g  G  Home End","top / bottom of file"},
+            {"←→  h l",      "scroll one column"},
+            {",  .",          "narrow / widen the leftmost visible column"},
+            {"z",            "toggle frozen first column"},
+            {"/  ?",          "search forward / backward (regex, icase)"},
+            {"n  N",          "next / previous match (direction-aware)"},
+            {"Enter",         "open detail pane for the top-visible row"},
+            {"mouse wheel",   "scroll rows"},
+            {"?  F1  H",      "toggle this help"},
+        };
+        const int n = (int)(sizeof(rows) / sizeof(rows[0]));
+        // Compute panel size.
+        int w_keys = 0, w_desc = 0;
+        for (auto& r : rows) {
+            w_keys = std::max(w_keys, (int)display_width(r.keys));
+            w_desc = std::max(w_desc, (int)display_width(r.desc));
+        }
+        const std::string title = " vv — keys ";
+        int inner = std::max(w_keys + 2 + w_desc, (int)display_width(title));
+        int panel_w = inner + 4;        // 2-space pad on each side
+        int panel_h = n + 4;            // top border + title + sep + rows + bottom
+        if (panel_w > scr_c_)  panel_w = scr_c_;
+        if (panel_h > scr_r_)  panel_h = scr_r_;
+        int y0 = std::max(0, (scr_r_ - panel_h) / 2);
+        int x0 = std::max(0, (scr_c_ - panel_w) / 2);
+
+        auto hbar = [&](const char* l, const char* m, const char* r,
+                        int n_inner) {
+            std::string s = l;
+            for (int i = 0; i < n_inner; ++i) s += BOX_HLINE;
+            s += r;
+            return s;
+        };
+
+        // Top border with embedded title.
+        {
+            int title_w = (int)display_width(title);
+            int rest = std::max(0, panel_w - 2 - title_w);
+            int pad_l = rest / 2;
+            int pad_r = rest - pad_l;
+            std::string top = BOX_TL;
+            for (int i = 0; i < pad_l; ++i) top += BOX_HLINE;
+            top += title;
+            for (int i = 0; i < pad_r; ++i) top += BOX_HLINE;
+            top += BOX_TR;
+            attron(A_BOLD);
+            mvaddstr(y0, x0, top.c_str());
+            attroff(A_BOLD);
+        }
+        // Body lines: paint inner area with spaces, then add side borders.
+        for (int i = 1; i < panel_h - 1; ++i) {
+            mvaddstr(y0 + i, x0, BOX_VLINE);
+            mvhline(y0 + i, x0 + 1, ' ', panel_w - 2);
+            mvaddstr(y0 + i, x0 + panel_w - 1, BOX_VLINE);
+        }
+        // Rows.
+        for (int i = 0; i < n && i + 1 < panel_h - 1; ++i) {
+            int yy = y0 + 1 + i;
+            int xx = x0 + 2;
+            attron(A_BOLD);
+            mvaddstr(yy, xx, rows[i].keys);
+            attroff(A_BOLD);
+            mvaddstr(yy, xx + w_keys + 2, rows[i].desc);
+        }
+        // Footer hint inside the bottom border.
+        std::string bottom = hbar(BOX_BL, "", BOX_BR, panel_w - 2);
+        mvaddstr(y0 + panel_h - 1, x0, bottom.c_str());
     }
 
     void draw_detail_pane() {
@@ -3805,6 +3940,7 @@ class TableTUI {
             draw_data_row(HDR_H + y, top_row_ + y, vc);
         draw_status(vc);
         draw_detail_pane();  // overlay if detail_row_ >= 0
+        if (help_open_) draw_help_overlay();
         refresh();
     }
 
@@ -3880,13 +4016,19 @@ public:
         if (info_col_idx >= 0)
             info_fields = parse_vcf_info_headers(src.preamble_below());
 
-        // Build the virtual column layout.
+        // Build the virtual column layout. `hidden_for_display` entries
+        // (e.g. LociSSD's `MaxEndSoFar`) are skipped here so they don't
+        // appear in the TUI; they remain accessible to the underlying
+        // cache loader.
+        auto hidden_v = src.hidden_for_display();
+        std::set<std::string> hidden(hidden_v.begin(), hidden_v.end());
         std::vector<std::string>        v_names;
         std::vector<int>                v_src;
         std::vector<std::string>        v_info;
         std::vector<arrow::Type::type>  v_types;
         std::vector<bool>               v_is_bool;
         for (int sc = 0; sc < src_num_cols_; ++sc) {
+            if (hidden.count(src.schema()->field(sc)->name())) continue;
             if (sc == info_col_idx && !info_fields.empty()) {
                 for (auto& [k, t] : info_fields) {
                     v_names.push_back(k);
@@ -3959,12 +4101,38 @@ public:
         set_term(scr);
         noecho(); cbreak(); keypad(stdscr, TRUE); curs_set(0);
         set_escdelay(25); setup_colors();
+        // Mouse: scroll wheel only (BUTTON4 = up, BUTTON5 = down).
+        mousemask(BUTTON4_PRESSED | BUTTON5_PRESSED, nullptr);
 
         bool quit = false;
         while (!quit) {
             draw();
             int ch = getch();
             int dl = data_lines();
+
+            // ── Help overlay: any key dismisses it (and is consumed) ─────────
+            if (help_open_) {
+                help_open_ = false;
+                continue;
+            }
+
+            // ── Mouse wheel ─────────────────────────────────────────────────
+            if (ch == KEY_MOUSE) {
+                MEVENT me;
+                if (getmouse(&me) != ERR) {
+                    constexpr int kWheelStep = 3;
+                    if (me.bstate & BUTTON4_PRESSED) {
+                        top_row_ = std::max<int64_t>(0, top_row_ - kWheelStep);
+                    } else if (me.bstate & BUTTON5_PRESSED) {
+                        int64_t tr = total_rows();
+                        int64_t mt = (tr >= 0)
+                                     ? std::max<int64_t>(0, tr - dl)
+                                     : top_row_ + kWheelStep;
+                        top_row_ = std::min<int64_t>(top_row_ + kWheelStep, mt);
+                    }
+                }
+                continue;
+            }
 
             // ── Search input mode ────────────────────────────────────────────
             if (search_mode_ == SearchMode::Input) {
@@ -4060,6 +4228,10 @@ public:
                     if (left_col_ + 1 < num_cols_) ++left_col_; break;
                 case KEY_LEFT: case 'h':
                     if (left_col_ > 0) --left_col_; break;
+                case 'z':
+                    freeze_first_col_ = !freeze_first_col_; break;
+                case 'H': case KEY_F(1):
+                    help_open_ = true; break;
                 case '.':
                     col_widths_[left_col_] = std::min(256, col_widths_[left_col_] + 4);
                     break;
@@ -4113,14 +4285,11 @@ static int detect_terminal_width() {
 static void print_vertical_table(TabularSource& src, const Config& cfg) {
     auto schema     = src.schema();
     int  n_fields   = schema->num_fields();
-    int  show_fields = (cfg.max_cols > 0)
-                        ? std::min(cfg.max_cols, n_fields) : n_fields;
+    std::vector<int> col_indices = visible_field_indices(src, cfg.max_cols);
+    int  show_fields = (int)col_indices.size();
     int64_t tr          = src.total_rows();
     int64_t rows_wanted = (cfg.head_rows <= 0) ? (tr >= 0 ? tr : INT64_MAX)
                                                : (int64_t)cfg.head_rows;
-
-    std::vector<int> col_indices;
-    for (int i = 0; i < show_fields; ++i) col_indices.push_back(i);
 
     std::shared_ptr<arrow::Table> data;
     if (cfg.head_rows > 0) {
@@ -4148,17 +4317,18 @@ static void print_vertical_table(TabularSource& src, const Config& cfg) {
     // Per-field flag: integer columns skip the max_col_w truncation.
     std::vector<bool> field_is_int(show_fields);
     for (int f = 0; f < show_fields; ++f)
-        field_is_int[f] = is_integer_type(schema->field(f)->type()->id());
+        field_is_int[f] = is_integer_type(schema->field(col_indices[f])->type()->id());
 
     // Pre-render every cell into rendered[record][field].
     std::vector<std::vector<std::string>> rendered(n_records,
         std::vector<std::string>(show_fields));
     for (int f = 0; f < show_fields; ++f) {
+        int f_src    = col_indices[f];
         auto arr_col = data->column(f);
-        int64_t row = 0;
+        int64_t row  = 0;
         for (auto& chunk : arr_col->chunks()) {
             for (int64_t r = 0; r < chunk->length(); ++r, ++row) {
-                std::string val = src.format_cell(f,
+                std::string val = src.format_cell(f_src,
                     cell_to_display_string(*chunk, r));
                 if (!field_is_int[f]) val = truncate(std::move(val), cfg.max_col_w);
                 rendered[row][f] = std::move(val);
@@ -4173,7 +4343,7 @@ static void print_vertical_table(TabularSource& src, const Config& cfg) {
     field_col.is_index    = true;            // dim-grey foreground
     field_col.width       = (int)display_width(field_col.header);
     for (int f = 0; f < show_fields; ++f) {
-        std::string name = schema->field(f)->name();
+        std::string name = schema->field(col_indices[f])->name();
         if ((int)display_width(name) > field_col.width)
             field_col.width = (int)display_width(name);
         field_col.cells.push_back(std::move(name));
@@ -4243,9 +4413,16 @@ static void print_vertical_table(TabularSource& src, const Config& cfg) {
         std::printf("  ... %lld more record(s) not shown (widen terminal, "
                     "lower -w, or pipe to less -S)\n",
                     (long long)(n_records - max_records));
-    if (show_fields < n_fields)
-        std::printf("  ... %d more field(s) not shown (-c 0 to see all)\n",
-                    n_fields - show_fields);
+    if (show_fields < n_fields) {
+        int n_hidden = (int)src.hidden_for_display().size();
+        int n_truncated = n_fields - show_fields - n_hidden;
+        if (n_truncated > 0)
+            std::printf("  ... %d more field(s) not shown (-c 0 to see all)\n",
+                        n_truncated);
+        if (n_hidden > 0)
+            std::printf("  ... %d derived field(s) hidden by file format\n",
+                        n_hidden);
+    }
 
     int64_t total = (tr >= 0) ? tr : n_records;
     std::printf("\n%s[%lld rows x %d columns]%s  vertical: %lld record(s) shown\n",
@@ -4255,15 +4432,11 @@ static void print_vertical_table(TabularSource& src, const Config& cfg) {
 
 static void print_table(TabularSource& src, const Config& cfg) {
     auto schema = src.schema();
-    int show_cols = (cfg.max_cols > 0)
-                    ? std::min(cfg.max_cols, schema->num_fields())
-                    : schema->num_fields();
+    std::vector<int> col_indices = visible_field_indices(src, cfg.max_cols);
+    int show_cols = (int)col_indices.size();
     int64_t tr          = src.total_rows();
     int64_t rows_wanted = (cfg.head_rows <= 0) ? (tr >= 0 ? tr : INT64_MAX)
                                                : (int64_t)cfg.head_rows;
-
-    std::vector<int> col_indices;
-    for (int i = 0; i < show_cols; ++i) col_indices.push_back(i);
 
     // Collect rows up to rows_wanted. For head_rows > 0 we can ask the source
     // for a partial read (Parquet uses a RecordBatchReader to avoid decoding
@@ -4304,7 +4477,8 @@ static void print_table(TabularSource& src, const Config& cfg) {
     }
 
     for (int ci = 0; ci < show_cols; ++ci) {
-        auto field   = schema->field(ci);
+        int ci_src   = col_indices[ci];          // original source field index
+        auto field   = schema->field(ci_src);
         auto arr_col = data->column(ci);
         bool is_int  = is_integer_type(field->type()->id());
         Column col;
@@ -4312,10 +4486,10 @@ static void print_table(TabularSource& src, const Config& cfg) {
         col.right_align = is_numeric_type(field->type()->id());
         col.is_bool     = (display_type(*field) == arrow::Type::BOOL);
         col.is_rgb      = (field->name() == "RGB");
-        col.width       = std::max(display_width(col.header), src.min_col_width(ci));
+        col.width       = std::max(display_width(col.header), src.min_col_width(ci_src));
         for (auto& chunk : arr_col->chunks())
             for (int64_t r = 0; r < chunk->length(); ++r) {
-                std::string val = src.format_cell(ci, cell_to_display_string(*chunk, r));
+                std::string val = src.format_cell(ci_src, cell_to_display_string(*chunk, r));
                 // Integer columns must show every digit — skip max_col_w clipping.
                 if (!is_int) val = truncate(std::move(val), cfg.max_col_w);
                 if (display_width(val) > col.width) col.width = display_width(val);
@@ -4343,9 +4517,16 @@ static void print_table(TabularSource& src, const Config& cfg) {
     }
     draw_separator(columns, SepKind::Bottom);
 
-    if (show_cols < num_cols)
-        std::printf("  ... %d more column(s) not shown (-c 0 to see all)\n",
-                    num_cols - show_cols);
+    if (show_cols < num_cols) {
+        int n_hidden = (int)src.hidden_for_display().size();
+        int n_truncated = num_cols - show_cols - n_hidden;
+        if (n_truncated > 0)
+            std::printf("  ... %d more column(s) not shown (-c 0 to see all)\n",
+                        n_truncated);
+        if (n_hidden > 0)
+            std::printf("  ... %d derived column(s) hidden by file format "
+                        "(--tsv / --parquet preserve them)\n", n_hidden);
+    }
 
     // Summary
     int64_t total = (tr >= 0) ? tr : n_display;

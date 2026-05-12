@@ -4,6 +4,25 @@ All notable changes to `vv` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- TUI: **help overlay** (`H` or `F1`) — centred panel listing every
+  keybinding. Any key dismisses it.
+- TUI: **frozen first column** (`z` toggle) — pin column 0 at the left
+  edge while scrolling sideways. Useful for wide tables where the key
+  column (`CHROM`, `Name`, ...) should stay visible.
+- TUI: **mouse-wheel scrolling** — scroll three rows per wheel notch.
+- **LociSSD support** — Parquet files carrying a `lociSSD_manifest` key
+  in their footer (see [FORMAT_SPEC.md][lociss-spec]) are detected
+  automatically. The derived `MaxEndSoFar` technical column is hidden
+  from the ASCII table, the vertical-head view, and the interactive TUI;
+  it remains intact in `--tsv`, `--csv`, and `--parquet` output so the
+  data round-trips losslessly. New virtual `hidden_for_display()` hook
+  on `TabularSource` provides the mechanism.
+
+[lociss-spec]: https://github.com/balwierz/LociSSD/blob/main/FORMAT_SPEC.md
+
 ## [1.5.0] - 2026-05-05
 
 ### Added
