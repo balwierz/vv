@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **TUI copy cell (`y` key)** — copies the top-left visible cell to
+  the system clipboard via OSC52. Works through SSH and tmux 3.3+
+  with no `xclip` / `pbcopy` helper required (modern terminal
+  emulators intercept the escape directly). Status bar flashes
+  `copied: <preview>` until the next key; auto-clears.
+- **UCSC 2bit (`.2bit`)** — sequence container used for genome
+  references (hg38.2bit, mm10.2bit). vv exposes the sequence index
+  rather than decoded bases (chromosome-scale strings are too large
+  to materialise): `name`, `length`, `n_blocks` (unknown-base runs),
+  `mask_blocks` (soft-masked-region runs). Endianness is detected
+  from the signature; long-offset 64-bit 2bit is rejected with a
+  clear message (use `twoBitToFa` for that variant).
 - **`--theme <name>`** — color palette selector. Built-in themes:
   `default`, `dark`, `light`, `solarized-dark`, `solarized-light`
   (`solarized` accepted as a synonym for `solarized-dark`). Affects

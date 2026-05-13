@@ -358,6 +358,7 @@ static void print_usage(const char* prog) {
         "  .bed  .tsv  .csv            and .gz variants\n"
         "  .bb  .bigBed                UCSC bigBed (libBigWig; autoSql columns)\n"
         "  .bw  .bigWig                UCSC bigWig (libBigWig)\n"
+        "  .2bit                       UCSC 2bit (sequence index: name/length/blocks)\n"
         "  .fa  .fasta  .fna  .faa     sequences (FASTA, plus .gz)\n"
         "  .fq  .fastq                 sequencing reads (FASTQ, plus .gz)\n"
         "  .bcf                        binary VCF (htslib)\n"
@@ -369,7 +370,8 @@ static void print_usage(const char* prog) {
         "  --no-interactive    force plain table output even on a terminal\n"
         "  Keys: arrows/hjkl navigate, PgUp/PgDn, g/G top/bot, /:search,\n"
         "        S:column-stats, s:sort by current column (u clears),\n"
-        "        &:live filter, c:show/hide columns, H/F1: in-app help, q quit\n"
+        "        &:live filter, c:show/hide columns, y:copy cell (OSC52),\n"
+        "        H/F1: in-app help, q quit\n"
         "\nTable options:\n"
         "  -n <rows>           rows to display  (default: 10, 0 = all)\n"
         "  --tail <N>          show the last N rows instead of the first N\n"
@@ -599,6 +601,44 @@ static std::string repeat_utf8(const char* glyph, int n) {
     s.reserve(gl * (size_t)n);
     for (int i = 0; i < n; ++i) s.append(glyph, gl);
     return s;
+}
+
+// Base64 (RFC 4648). Used by the OSC52 clipboard escape — small enough
+// to avoid pulling in a dependency.
+static std::string base64_encode(const std::string& in) {
+    static const char* B =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve((in.size() + 2) / 3 * 4);
+    size_t i = 0;
+    for (; i + 3 <= in.size(); i += 3) {
+        uint32_t v = ((uint8_t)in[i] << 16) | ((uint8_t)in[i+1] << 8)
+                     | (uint8_t)in[i+2];
+        out += B[(v >> 18) & 63];
+        out += B[(v >> 12) & 63];
+        out += B[(v >>  6) & 63];
+        out += B[(v >>  0) & 63];
+    }
+    if (i < in.size()) {
+        uint32_t v = (uint8_t)in[i] << 16;
+        if (i + 1 < in.size()) v |= (uint8_t)in[i+1] << 8;
+        out += B[(v >> 18) & 63];
+        out += B[(v >> 12) & 63];
+        out += (i + 1 < in.size()) ? B[(v >> 6) & 63] : '=';
+        out += '=';
+    }
+    return out;
+}
+
+// Copy a string to the terminal's clipboard via OSC52. Supported by
+// iTerm2, kitty, alacritty, foot, wezterm, tmux 3.3+, and most modern
+// emulators — including over SSH (no xclip / pbcopy needed). The
+// escape paints nothing on screen; the terminal intercepts it and
+// updates the system clipboard.
+static void osc52_copy(const std::string& s) {
+    std::string esc = "\033]52;c;" + base64_encode(s) + "\a";
+    std::fwrite(esc.data(), 1, esc.size(), stdout);
+    std::fflush(stdout);
 }
 
 static bool is_integer_type(arrow::Type::type t) {
@@ -4226,6 +4266,181 @@ public:
     }
 };
 
+// ── 2bit (UCSC) source ────────────────────────────────────────────────────────
+//
+// 2bit is the UCSC binary container for genome-scale DNA sequences
+// (typically a hg38.2bit or mm10.2bit reference). Each base is packed
+// into 2 bits, with side tables for N-runs and soft-masked regions.
+// Spec: https://genome.ucsc.edu/FAQ/FAQformat.html#format7
+//
+// vv exposes the file's sequence *index*, not the bases themselves —
+// chromosomes are massive (the human reference decodes to ~3 GB of
+// strings) and the typical use of `vv hg38.2bit` is "what's in this
+// file?" The columns are name / length_bp / n_blocks / mask_blocks
+// (the last two are counts of unknown-base and lowercase-soft-mask
+// runs, useful for spotting unmasked or contig-poor assemblies).
+class TwoBitSource : public TabularSource {
+    std::string                            path_;
+    std::shared_ptr<arrow::Schema>         schema_;
+    std::shared_ptr<arrow::RecordBatch>    batch_;
+    int64_t                                seq_count_ = 0;
+
+public:
+    static std::string open(const std::string& path, const Config& /*cfg*/,
+                             std::unique_ptr<TwoBitSource>* out) {
+        auto self = std::make_unique<TwoBitSource>();
+        self->path_ = path;
+
+        FILE* fp = std::fopen(path.c_str(), "rb");
+        if (!fp)
+            return "Cannot open '" + path + "': " + std::strerror(errno);
+
+        // Header: signature, version, seqCount, reserved (4 × 4 bytes).
+        uint8_t hdr[16];
+        if (std::fread(hdr, 1, 16, fp) != 16) {
+            std::fclose(fp);
+            return "Cannot read 2bit header from '" + path + "'";
+        }
+        auto le32 = [](const uint8_t* p) -> uint32_t {
+            return (uint32_t)p[0] | ((uint32_t)p[1] << 8)
+                 | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+        };
+        auto be32 = [](const uint8_t* p) -> uint32_t {
+            return (uint32_t)p[3] | ((uint32_t)p[2] << 8)
+                 | ((uint32_t)p[1] << 16) | ((uint32_t)p[0] << 24);
+        };
+        uint32_t sig_le = le32(hdr);
+        bool be = false;
+        if (sig_le != 0x1A412743u) {
+            uint32_t sig_be = be32(hdr);
+            if (sig_be != 0x1A412743u) {
+                std::fclose(fp);
+                return "Not a 2bit file (bad signature) at '" + path + "'";
+            }
+            be = true;
+        }
+        auto r32 = [&](const uint8_t* p) { return be ? be32(p) : le32(p); };
+        uint32_t version    = r32(hdr + 4);
+        uint32_t seq_count  = r32(hdr + 8);
+        if (version != 0) {
+            std::fclose(fp);
+            return "2bit version " + std::to_string(version) +
+                   " (long-offset variant) is not supported by vv";
+        }
+
+        // Pass 1: read the sequence index (name + 32-bit offset per seq).
+        struct Idx { std::string name; uint32_t offset; };
+        std::vector<Idx> idx;
+        idx.reserve(seq_count);
+        for (uint32_t i = 0; i < seq_count; ++i) {
+            uint8_t name_size;
+            if (std::fread(&name_size, 1, 1, fp) != 1) {
+                std::fclose(fp);
+                return "Truncated 2bit sequence index at '" + path + "'";
+            }
+            std::string name(name_size, '\0');
+            if (std::fread(name.data(), 1, name_size, fp) != name_size) {
+                std::fclose(fp);
+                return "Truncated 2bit sequence name at '" + path + "'";
+            }
+            uint8_t off_buf[4];
+            if (std::fread(off_buf, 1, 4, fp) != 4) {
+                std::fclose(fp);
+                return "Truncated 2bit offset at '" + path + "'";
+            }
+            idx.push_back({std::move(name), r32(off_buf)});
+        }
+
+        // Pass 2: jump to each seqRecord header and read dna_size,
+        // n_block_count, mask_block_count. The packed DNA payload after
+        // the mask block tables is skipped entirely.
+        arrow::StringBuilder name_b;
+        arrow::UInt32Builder length_b, nb_b, mb_b;
+        ARROW_UNUSED(name_b);  // suppress unused-warning until we Finish()
+        for (auto& s : idx) {
+            if (std::fseek(fp, (long)s.offset, SEEK_SET) != 0) {
+                std::fclose(fp);
+                return "Cannot seek to 2bit seqRecord at offset " +
+                       std::to_string(s.offset);
+            }
+            uint8_t buf[4];
+            auto read32 = [&](uint32_t* v) -> bool {
+                if (std::fread(buf, 1, 4, fp) != 4) return false;
+                *v = r32(buf); return true;
+            };
+            uint32_t dna_size, n_block_count, mask_block_count;
+            if (!read32(&dna_size) || !read32(&n_block_count)) {
+                std::fclose(fp);
+                return "Truncated 2bit seqRecord (header)";
+            }
+            // Skip the N-block start/size arrays.
+            if (std::fseek(fp, (long)(n_block_count * 8), SEEK_CUR) != 0) {
+                std::fclose(fp);
+                return "Cannot skip 2bit N-block table";
+            }
+            if (!read32(&mask_block_count)) {
+                std::fclose(fp);
+                return "Truncated 2bit seqRecord (mask count)";
+            }
+            // We have everything we want; no need to scan the rest.
+
+            auto st = name_b.Append(s.name);
+            if (!st.ok()) { std::fclose(fp); return st.ToString(); }
+            st = length_b.Append(dna_size);
+            if (!st.ok()) { std::fclose(fp); return st.ToString(); }
+            st = nb_b.Append(n_block_count);
+            if (!st.ok()) { std::fclose(fp); return st.ToString(); }
+            st = mb_b.Append(mask_block_count);
+            if (!st.ok()) { std::fclose(fp); return st.ToString(); }
+        }
+        std::fclose(fp);
+
+        std::shared_ptr<arrow::Array> a_name, a_len, a_nb, a_mb;
+        auto st = name_b.Finish(&a_name);
+        if (!st.ok()) return st.ToString();
+        st = length_b.Finish(&a_len);
+        if (!st.ok()) return st.ToString();
+        st = nb_b.Finish(&a_nb);
+        if (!st.ok()) return st.ToString();
+        st = mb_b.Finish(&a_mb);
+        if (!st.ok()) return st.ToString();
+
+        self->schema_ = arrow::schema({
+            arrow::field("name",        arrow::utf8()),
+            arrow::field("length",      arrow::uint32()),
+            arrow::field("n_blocks",    arrow::uint32()),
+            arrow::field("mask_blocks", arrow::uint32()),
+        });
+        self->batch_ = arrow::RecordBatch::Make(self->schema_, idx.size(),
+            {a_name, a_len, a_nb, a_mb});
+        self->seq_count_ = (int64_t)idx.size();
+        *out = std::move(self);
+        return "";
+    }
+
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    int64_t total_rows() const override { return seq_count_; }
+    int     num_chunks() const override { return 1; }
+    ChunkMeta chunk_meta(int /*i*/) const override { return {0, seq_count_}; }
+    void ensure(int /*i*/) override {}
+    arrow::Status read_chunk(int /*i*/, const std::vector<int>& col_indices,
+                              std::shared_ptr<arrow::Table>* out) override {
+        *out = batch_slice_to_table(*batch_, col_indices, schema_);
+        return arrow::Status::OK();
+    }
+    const std::string& path() const override { return path_; }
+    std::string footer() const override {
+        return "Format: 2bit  |  Sequences: " + std::to_string(seq_count_);
+    }
+    int min_col_width(int col_idx) const override {
+        switch (col_idx) {
+            case 0: return 8;   // name
+            case 1: return 12;  // length
+            default: return 6;
+        }
+    }
+};
+
 // ── Arrow IPC / Feather source ────────────────────────────────────────────────
 
 class IpcSource : public TabularSource {
@@ -4470,6 +4685,12 @@ static std::string open_source(const std::string& path, const Config& cfg,
                fends(path, ".bw") || fends(path, ".bigWig")) {
         std::unique_ptr<BigSource> src;
         std::string err = BigSource::open(path, cfg, &src);
+        if (!err.empty()) return err;
+        *out = std::move(src);
+        return "";
+    } else if (fends(path, ".2bit")) {
+        std::unique_ptr<TwoBitSource> src;
+        std::string err = TwoBitSource::open(path, cfg, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
@@ -6168,6 +6389,10 @@ class TableTUI {
     std::string                filter_err_;          // last compile error, if any
     int64_t                    filter_total_   = 0;  // rows after filter (for status)
 
+    // Copy-cell (`y`): transient status shown on the bottom bar after a copy.
+    // Cleared automatically on the next non-`y` keypress.
+    std::string                copy_status_;
+
     // Translate a display-row index to the underlying source-row when a
     // sort or filter is active. All cache lookups, search row scans, and
     // load_full_row calls go through this helper so the rest of the TUI
@@ -6786,10 +7011,12 @@ class TableTUI {
             if (search_fail_)         s += " (not found)";
             else if (search_wrap_)    s += " (wrapped)";
             s += "  [n/N]:next/prev  [Esc]:clear";
+        } else if (!copy_status_.empty()) {
+            s += "  " + copy_status_;
         } else {
             bool need_lr = left_col_ > 0 || (!vc.empty() && vc.back().col < num_cols_-1);
             if (need_lr) s += "  [h/l]:←→col  [,/.]:narrow/widen";
-            s += "  [j/k]:rows  /:search  &:filter  Enter:detail  S:stats  s:sort  c:cols  H:help  q:quit";
+            s += "  [j/k]:rows  /:search  &:filter  Enter:detail  S:stats  s:sort  c:cols  y:copy  H:help  q:quit";
         }
         if ((int)s.size() < scr_c_) s += std::string(scr_c_ - (int)s.size(), ' ');
         attron(A_REVERSE);
@@ -7272,6 +7499,7 @@ class TableTUI {
             {"s",             "sort by the leftmost visible column (toggle asc/desc; u to clear)"},
             {"&",             "live filter: hide non-matching rows; empty input clears"},
             {"c",             "show / hide columns (overlay)"},
+            {"y",             "copy the top-left visible cell to the clipboard (OSC52)"},
             {"Enter",         "open detail pane for the top-visible row"},
             {"mouse wheel",   "scroll rows"},
             {"?  F1  H",      "toggle this help"},
@@ -7780,6 +8008,10 @@ public:
             int64_t tr = total_rows();
             int64_t max_top = (tr >= 0) ? std::max<int64_t>(0, tr - dl) : top_row_ + dl;
 
+            // The "copied: …" indicator stays on the status bar until the
+            // next non-`y` key.
+            if (ch != 'y' && ch != KEY_RESIZE) copy_status_.clear();
+
             switch (ch) {
                 case 'q': case 'Q': quit = true; break;
                 case '\n': case '\r': case KEY_ENTER:  // Open detail pane for top-visible row
@@ -7878,6 +8110,25 @@ public:
                     filter_input_  = filter_expr_str_;  // pre-fill with current
                     filter_err_.clear();
                     break;
+                case 'y': {
+                    // Copy the "active cell" — the cell at the top-left of
+                    // the visible window — to the system clipboard via
+                    // OSC52. The user picks the cell by scrolling: h/l/,/.
+                    // for the column, j/k/PgUp/PgDn for the row, then `y`.
+                    if (left_col_ < 0 || left_col_ >= num_cols_) break;
+                    auto vals = load_full_row(top_row_);
+                    if (left_col_ >= (int)vals.size()) break;
+                    const std::string& v = vals[left_col_];
+                    if (v.empty()) break;
+                    osc52_copy(v);
+                    std::string preview = v;
+                    if (display_width(preview) > 50) {
+                        preview.resize(47);
+                        preview += "...";
+                    }
+                    copy_status_ = "copied: " + preview;
+                    break;
+                }
                 case '.':
                     col_widths_[left_col_] = std::min(256, col_widths_[left_col_] + 4);
                     break;

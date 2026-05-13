@@ -46,7 +46,6 @@ user-facing summary).
 ### Open
 - Multi-file tabs — open many files, switch with `Tab` / `Shift-Tab`.
 - Marks & recall — vim-style `m{a-z}` / `'{a-z}`.
-- Copy cell — `y` copies the cell under the cursor (OSC52 / xclip).
 
 ### Done
 - Stats popup (`S`) — count/nulls/min/max/mean/distinct for the
@@ -56,13 +55,15 @@ user-facing summary).
 - Live filter (`&`) — same grammar as `--filter`; hides
   non-matching rows; status bar shows kept/total; composes with
   sort via the same `source_row(display)` indirection.
+- Copy cell (`y`, OSC52) — copies the top-left visible cell to
+  the system clipboard via an OSC52 escape; works over SSH /
+  tmux 3.3+ without external clipboard helpers.
 
 ## Format gaps
 
 ### Open
 - mpileup — samtools workflow staple; ragged columns make it a
   custom parser.
-- 2bit — UCSC sequence storage. Small format, custom parser.
 - HDF5 / AnnData / Loom — single-cell omics. Heavy dep (libhdf5).
 - Galaxy `.dat` / Galaxy archive — niche but visible.
 
@@ -70,6 +71,11 @@ user-facing summary).
 - bigBed / bigWig — vendored libBigWig (`-DNOCURL`, no libcurl
   dep); autoSql parsed into typed Arrow columns; range queries
   via libBigWig overlap APIs.
+- 2bit — UCSC sequence container; hand-rolled parser reads only
+  the per-sequence index (name / length / n_blocks /
+  mask_blocks). DNA bases are not decoded — chromosome-scale
+  references would blow up RAM; `twoBitToFa` is the right tool
+  for that.
 
 ## Performance / build
 

@@ -53,6 +53,7 @@ See [INSTALL.md](INSTALL.md) for source builds, AUR, and the static AlmaLinux
 | Genome annotation | `.gff`, `.gff3`, `.gtf` (plus `.gz`)                       |
 | Genomic intervals | `.bed`, `.bed.gz`                                          |
 | UCSC big files    | `.bb` / `.bigBed`, `.bw` / `.bigWig` (vendored libBigWig; bigBed's embedded autoSql is parsed into typed columns) |
+| UCSC 2bit         | `.2bit` (sequence index: name / length / N-blocks / mask-blocks) |
 | Sequences (FASTA) | `.fa`, `.fasta`, `.fna`, `.faa`, `.ffn`, `.frn` (plus `.gz`) |
 | Sequencing reads  | `.fq`, `.fastq` (plus `.gz`)                               |
 | Delimited text    | `.tsv`, `.csv` (plus `.gz`)                                |

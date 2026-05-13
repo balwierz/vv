@@ -18,6 +18,7 @@ _vv() {
         '*.fq' '*.fq.gz' '*.fastq' '*.fastq.gz'
         '*.paf' '*.paf.gz'
         '*.bb' '*.bigBed' '*.bw' '*.bigWig'
+        '*.2bit'
     )
 
     _arguments -s -S \

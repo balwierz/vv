@@ -113,6 +113,18 @@ if [ -f "$DATA/tiny.bw" ]; then
     BW_REGION=$("$VV" --tsv --no-header -r chr1:300-1100 "$DATA/tiny.bw" | wc -l)
     assert_eq_file_inline "bigwig_region_returns_two_rows" "$BW_REGION" "2"
 fi
+
+# 2bit — UCSC sequence-index reader.
+if [ -f "$DATA/tiny.2bit" ]; then
+    TBT_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.2bit" | wc -l)
+    assert_eq_file_inline "twobit_returns_three_sequences" "$TBT_ROWS" "3"
+    TBT_LEN=$("$VV" --tsv --no-header --select length "$DATA/tiny.2bit" | paste -sd, -)
+    assert_eq_file_inline "twobit_lengths_match"             "$TBT_LEN" "20,27,12"
+    TBT_NB=$("$VV" --tsv --no-header --select n_blocks "$DATA/tiny.2bit" | paste -sd, -)
+    assert_eq_file_inline "twobit_n_block_counts"            "$TBT_NB"  "0,1,0"
+    TBT_FOOTER=$("$VV" --schema "$DATA/tiny.2bit" 2>&1)
+    assert_contains      "twobit_footer_shows_format"        "$TBT_FOOTER" "Format: 2bit"
+fi
 # --tsv must keep MaxEndSoFar; table must not show it.
 TSV_OUT=$("$VV" --tsv --no-header "$DATA/tiny.lociss")
 assert_contains "lociss_tsv_keeps_maxendsofar"  "$TSV_OUT"  "1800"

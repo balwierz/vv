@@ -111,6 +111,78 @@ TTTAAAACCCCGGGGAAAA
 with open(HERE / "tiny.fa", "rb") as src, gzip.open(HERE / "tiny.fa.gz", "wb") as dst:
     shutil.copyfileobj(src, dst)
 
+# ── 2bit (UCSC sequence container, hand-rolled) ─────────────────────────────
+# Minimal 32-bit little-endian 2bit file with three short sequences.
+# Format reference: https://genome.ucsc.edu/FAQ/FAQformat.html#format7
+#
+# Bases pack into 2 bits: T=0, C=1, A=2, G=3 (MSB-first within each byte).
+import struct
+def _encode_2bit(seq: str) -> tuple[bytes, list[tuple[int,int]]]:
+    # Returns (packed_dna, n_blocks). N-blocks are contiguous runs of Ns;
+    # the packed bytes for those bases use any value (we use T=0 fill).
+    code = {"T": 0, "C": 1, "A": 2, "G": 3, "t": 0, "c": 1, "a": 2, "g": 3}
+    n_blocks = []
+    nrun_start = None
+    cleaned = []
+    for i, b in enumerate(seq):
+        if b in ("N", "n"):
+            cleaned.append("T")
+            if nrun_start is None: nrun_start = i
+        else:
+            cleaned.append(b)
+            if nrun_start is not None:
+                n_blocks.append((nrun_start, i - nrun_start))
+                nrun_start = None
+    if nrun_start is not None:
+        n_blocks.append((nrun_start, len(seq) - nrun_start))
+    cleaned_s = "".join(cleaned)
+    out = bytearray()
+    for i in range(0, len(cleaned_s), 4):
+        v = 0
+        for j in range(4):
+            v <<= 2
+            if i + j < len(cleaned_s):
+                v |= code[cleaned_s[i + j]]
+        out.append(v)
+    return bytes(out), n_blocks
+
+_seqs = [
+    ("chr1", "ACGTACGTACGTACGTACGT"),                # 20 bp, no Ns
+    ("chr2", "ACGTNNNACGTACGTACGTACGTACGT"),         # 27 bp, one N-run
+    ("chrM", "GGGCCCAAATTT"),                        # 12 bp
+]
+# Compute layout: header (16) + index entries (1+name+4 each) +
+# per-seq seqRecords. We need the offsets before writing — compute
+# in two passes.
+index_bytes = sum(1 + len(n) + 4 for n, _ in _seqs)
+header_size = 16
+cursor = header_size + index_bytes
+seq_records = []
+offsets = []
+for _name, _seq in _seqs:
+    offsets.append(cursor)
+    dna, nb = _encode_2bit(_seq)
+    rec = struct.pack("<I", len(_seq))                    # dnaSize
+    rec += struct.pack("<I", len(nb))                     # nBlockCount
+    rec += b"".join(struct.pack("<I", s) for s, _ in nb)  # nBlockStarts
+    rec += b"".join(struct.pack("<I", l) for _, l in nb)  # nBlockSizes
+    rec += struct.pack("<I", 0)                           # maskBlockCount
+    rec += struct.pack("<I", 0)                           # reserved
+    rec += dna
+    seq_records.append(rec)
+    cursor += len(rec)
+
+out = bytearray()
+out += struct.pack("<IIII", 0x1A412743, 0, len(_seqs), 0)
+for (name, _), off in zip(_seqs, offsets):
+    nb = name.encode()
+    out.append(len(nb))
+    out += nb
+    out += struct.pack("<I", off)
+for rec in seq_records:
+    out += rec
+(HERE / "tiny.2bit").write_bytes(bytes(out))
+
 # ── FASTQ ────────────────────────────────────────────────────────────────────
 fq = """@read1 lane=1
 ACGTACGTACGTACGT
