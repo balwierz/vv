@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-05-14
+
+A broad feature release on top of 1.5.0. Highlights: bigBed / bigWig
+and 2bit support via a vendored libBigWig and a hand-rolled 2bit
+reader; full TUI exploration suite (column stats, sort, show/hide,
+live filter, copy cell); generic Parquet range queries with column
+auto-detection; markdown output and LociSSD validation; coordinate-
+convention selector with UCSC and NCBI labels; color themes; LTO +
+ccache static builds; and ARM64 release artifacts.
+
 ### Changed
 - **Smarter inline truncation for `list` / `map` cells.** The
   truncator now walks every top-level comma and picks the largest
