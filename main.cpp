@@ -215,7 +215,9 @@ static void print_usage(const char* prog) {
         "\nInteractive viewer (default when stdout is a terminal):\n"
         "  -i / --interactive  open the ncurses row browser\n"
         "  --no-interactive    force plain table output even on a terminal\n"
-        "  Keys: arrows/hjkl navigate, PgUp/PgDn, g/G top/bot, q quit\n"
+        "  Keys: arrows/hjkl navigate, PgUp/PgDn, g/G top/bot, /:search,\n"
+        "        S:column-stats, s:sort by current column (u clears),\n"
+        "        c:show/hide columns, H/F1: in-app help, q quit\n"
         "\nTable options:\n"
         "  -n <rows>           rows to display  (default: 10, 0 = all)\n"
         "  --tail <N>          show the last N rows instead of the first N\n"
@@ -5961,6 +5963,45 @@ class TableTUI {
     bool    freeze_first_col_ = false;   // toggle with `z` — keep col 0 pinned left
     bool    help_open_        = false;   // overlay shown via `?` / F1 / H
 
+    // ── Stats popup (`S` over the leftmost visible column) ───────────────────
+    struct TuiColStat {
+        std::string name;
+        std::string type;
+        bool        is_num = false;
+        int64_t     count  = 0;
+        int64_t     nulls  = 0;
+        double      d_min  = std::numeric_limits<double>::infinity();
+        double      d_max  = -std::numeric_limits<double>::infinity();
+        long double sum    = 0.0L;
+        std::string s_min, s_max;
+        std::set<std::string> distinct;
+        bool        distinct_overflow = false;
+    };
+    bool                       stats_open_   = false;
+    int                        stats_col_    = -1;   // virtual column index
+    std::optional<TuiColStat>  stats_data_;
+
+    // ── Column show/hide picker (`c`) ────────────────────────────────────────
+    bool                       col_picker_open_     = false;
+    int                        col_picker_cursor_   = 0;
+    std::vector<bool>          col_visible_;        // [virt_col] — true = shown
+
+    // ── Sort by column (`s`) ─────────────────────────────────────────────────
+    // sort_order_[display_row] = source_row. Empty = no sort active.
+    std::vector<int64_t>       sort_order_;
+    int                        sort_col_    = -1;   // virtual column, -1 = no sort
+    bool                       sort_desc_   = false;
+
+    // Translate a display-row index to the underlying source-row when a sort
+    // is active. All cache lookups, search row scans, and load_full_row
+    // calls go through this helper so the rest of the TUI can stay
+    // row-indexing-agnostic.
+    int64_t source_row(int64_t display) const {
+        if (sort_order_.empty()) return display;
+        if (display < 0 || display >= (int64_t)sort_order_.size()) return display;
+        return sort_order_[display];
+    }
+
     // ── Search state ─────────────────────────────────────────────────────────
     enum class SearchMode { None, Input, Active };
     SearchMode  search_mode_  = SearchMode::None;
@@ -6041,6 +6082,38 @@ class TableTUI {
             return false;
         };
 
+        // Sort active: scan display rows one at a time, translating each to
+        // its source row via sort_order_. Slower (per-row chunk lookups
+        // instead of streaming chunk-by-chunk) but correct — and acceptable
+        // because the LRU cache absorbs locality within a sort run.
+        if (!sort_order_.empty()) {
+            int64_t N = (int64_t)sort_order_.size();
+            int64_t r = from_row;
+            int64_t end = forward ? N : -1;
+            int64_t step = forward ? +1 : -1;
+            int last_chunk = -1;
+            std::shared_ptr<arrow::Table> tbl;
+            int64_t tbl_first = 0;
+            for (; r != end; r += step) {
+                if (r < 0 || r >= N) break;
+                int64_t srow = sort_order_[r];
+                int c = chunk_for_row(srow);
+                if (c != last_chunk) {
+                    auto meta = src_.chunk_meta(c);
+                    mvprintw(scr_r_-1, 0, " Searching (sorted)… row %lld ",
+                             (long long)r);
+                    clrtoeol(); refresh();
+                    if (!src_.read_chunk(c, all_cols, &tbl).ok()) continue;
+                    tbl_first = meta.first_row;
+                    last_chunk = c;
+                }
+                int64_t local = srow - tbl_first;
+                if (local < 0 || local >= tbl->num_rows()) continue;
+                if (row_matches(tbl, local)) return r;
+            }
+            return -1;
+        }
+
         if (forward) {
             for (int c = 0; c < nc; ++c) {
                 auto meta = src_.chunk_meta(c);
@@ -6109,11 +6182,12 @@ class TableTUI {
     bool row_matches_search(int64_t row) const {
         if (search_mode_ != SearchMode::Active || search_query_.empty()) return false;
         if (src_.num_chunks() == 0) return false;
-        int c = chunk_for_row(row);
+        int64_t srow = source_row(row);
+        int c = chunk_for_row(srow);
         auto it = cache_.find(c);
         if (it == cache_.end() || !it->second.ok) return false;
         const CachedRG& cr = it->second;
-        int64_t local = row - cr.first_row;
+        int64_t local = srow - cr.first_row;
         if (local < 0 || local >= cr.num_rows) return false;
         std::string q = search_query_;
         for (auto& c2 : q) c2 = (char)std::tolower((unsigned char)c2);
@@ -6305,6 +6379,10 @@ class TableTUI {
 
     struct ColVis { int col, x, w; };
 
+    bool col_is_visible(int c) const {
+        return c >= 0 && c < (int)col_visible_.size() ? col_visible_[c] : true;
+    }
+
     std::vector<ColVis> visible_cols() const {
         std::vector<ColVis> v;
         int x = no_index_ ? 0 : (idx_w_ + 2);
@@ -6312,7 +6390,7 @@ class TableTUI {
         // has scrolled past it. Skipped when col 0 is already in the natural
         // window (left_col_ == 0) — that path renders column 0 normally.
         int start = left_col_;
-        if (freeze_first_col_ && num_cols_ > 0 && left_col_ > 0) {
+        if (freeze_first_col_ && num_cols_ > 0 && left_col_ > 0 && col_is_visible(0)) {
             int w0 = col_widths_[0];
             if (x + w0 + 2 <= scr_c_) {
                 v.push_back({0, x, w0});
@@ -6324,6 +6402,7 @@ class TableTUI {
         }
         for (int c = start; c < num_cols_; ++c) {
             if (freeze_first_col_ && c == 0) continue;   // already shown
+            if (!col_is_visible(c)) continue;            // hidden by user (`c` picker)
             int w = col_widths_[c];
             if (x + w + 2 > scr_c_) break;
             v.push_back({c, x, w});
@@ -6366,6 +6445,9 @@ class TableTUI {
     void draw_data_row(int sy, int64_t row, const std::vector<ColVis>& vc) {
         int64_t tr = total_rows();
         if (tr >= 0 && row >= tr) return;
+        // When a sort is active, `row` is a display index — translate to the
+        // underlying source row for all cache / search lookups below.
+        int64_t srow = source_row(row);
 
         bool is_focused = (row == search_row_);                        // n/N target
         bool is_match   = is_focused || row_matches_search(row);       // any visible hit
@@ -6384,7 +6466,9 @@ class TableTUI {
         }
 
         if (!no_index_) {
-            std::string idx_s = " " + fit(digits_with_sep(std::to_string(row)), idx_w_, true) + " ";
+            // Show the source-row number, not the display position — it's the
+            // identifier the user knows from --tsv / --parquet round-trips.
+            std::string idx_s = " " + fit(digits_with_sep(std::to_string(srow)), idx_w_, true) + " ";
             if (is_match) nc_str(sy, 0, idx_s,
                                  is_focused ? (attr_t)(A_BOLD | A_REVERSE) : A_NORMAL,
                                  NCP_SEARCH);
@@ -6392,11 +6476,11 @@ class TableTUI {
         }
 
         if (src_.num_chunks() == 0) return;
-        int  c  = chunk_for_row(row);
+        int  c  = chunk_for_row(srow);
         auto it = cache_.find(c);
         if (it == cache_.end() || !it->second.ok) return;
 
-        int64_t local = row - it->second.first_row;
+        int64_t local = srow - it->second.first_row;
         // Guard: row may be beyond the loaded portion of the last chunk
         // (happens while streaming and the user scrolled ahead of loaded data).
         if (local < 0 || local >= it->second.num_rows) return;
@@ -6469,6 +6553,21 @@ class TableTUI {
             s += std::to_string(vc.back().col+1)  + "/";
             s += std::to_string(num_cols_);
         }
+        // Sort indicator
+        if (!sort_order_.empty() && sort_col_ >= 0 && sort_col_ < (int)col_names_.size()) {
+            s += "  sort:";
+            s += col_names_[sort_col_];
+            s += sort_desc_ ? " ↓" : " ↑";
+        }
+        // Hidden-column indicator
+        if (!col_visible_.empty()) {
+            int hidden = 0;
+            for (auto v : col_visible_) if (!v) ++hidden;
+            if (hidden > 0) {
+                s += "  hidden:";
+                s += std::to_string(hidden);
+            }
+        }
         // Show search state
         if (search_mode_ == SearchMode::Active && !search_query_.empty()) {
             s += search_dir_forward_ ? "  /" : "  ?";
@@ -6481,7 +6580,7 @@ class TableTUI {
         } else {
             bool need_lr = left_col_ > 0 || (!vc.empty() && vc.back().col < num_cols_-1);
             if (need_lr) s += "  [h/l]:←→col  [,/.]:narrow/widen";
-            s += "  [j/k]:rows  /:search  Enter:detail  z:freeze  H:help  q:quit";
+            s += "  [j/k]:rows  /:search  Enter:detail  S:stats  s:sort  c:cols  H:help  q:quit";
         }
         if ((int)s.size() < scr_c_) s += std::string(scr_c_ - (int)s.size(), ' ');
         attron(A_REVERSE);
@@ -6497,14 +6596,15 @@ class TableTUI {
     std::vector<std::string> load_full_row(int64_t row) {
         std::vector<std::string> out(num_cols_);
         if (src_.num_chunks() == 0) return out;
-        int c = chunk_for_row(row);
+        int64_t srow = source_row(row);
+        int c = chunk_for_row(srow);
         std::vector<int> all_src;
         for (int i = 0; i < src_num_cols_; ++i) all_src.push_back(i);
         ensure_cols(c, all_src);
         auto it = cache_.find(c);
         if (it == cache_.end() || !it->second.ok) return out;
         const CachedRG& cr = it->second;
-        int64_t local = row - cr.first_row;
+        int64_t local = srow - cr.first_row;
         if (local < 0 || local >= cr.num_rows) return out;
 
         // We want untruncated values here; cell_at() applies max_col_w_.
@@ -6562,10 +6662,325 @@ class TableTUI {
 
     // Centred help overlay listing every TUI keybinding. Toggle with `?` /
     // F1 / `H`. Exits on any keystroke (including the toggle keys).
+    // ── Stats popup helpers ──────────────────────────────────────────────────
+    //
+    // Computes per-column count / nulls / min / max / mean / distinct on
+    // demand. Same shape as print_describe, just for a single virtual column.
+    void compute_stats_for(int virt_col) {
+        TuiColStat cs;
+        int sc = (virt_col >= 0 && virt_col < (int)virt_src_col_.size())
+                  ? virt_src_col_[virt_col] : -1;
+        if (sc < 0) { stats_data_ = std::move(cs); return; }
+        auto field = src_.schema()->field(sc);
+        cs.name = col_names_[virt_col];
+        cs.type = field->type()->ToString();
+        cs.is_num = is_numeric_type(field->type()->id());
+        const std::string& info_key = virt_info_key_[virt_col];
+        std::vector<int> need = {sc};
+        int nc = src_.num_chunks();
+        for (int c = 0; c < nc; ++c) {
+            mvprintw(scr_r_-1, 0, " Computing stats… chunk %d/%d ", c+1, nc);
+            clrtoeol(); refresh();
+            std::shared_ptr<arrow::Table> tbl;
+            if (!src_.read_chunk(c, need, &tbl).ok()) continue;
+            auto col = tbl->column(0);
+            for (auto& ch : col->chunks()) {
+                int64_t n = ch->length();
+                for (int64_t r = 0; r < n; ++r) {
+                    std::string raw;
+                    if (ch->IsNull(r)) { cs.nulls++; continue; }
+                    if (!info_key.empty()) {
+                        // VCF INFO expansion: parse the key=value list, look
+                        // up our key; absence counts as null.
+                        std::string blob = cell_to_string(*ch, r);
+                        auto kvs = parse_kv_list(blob);
+                        bool found = false;
+                        for (auto& kv : kvs) {
+                            if (kv.first == info_key) {
+                                raw = kv.second.empty() ? "true" : kv.second;
+                                found = true; break;
+                            }
+                        }
+                        if (!found) { cs.nulls++; continue; }
+                    } else {
+                        raw = cell_to_string(*ch, r);
+                    }
+                    cs.count++;
+                    if (cs.is_num) {
+                        double d;
+                        if (auto a = std::dynamic_pointer_cast<arrow::DoubleArray>(ch)) d = a->Value(r);
+                        else if (auto a = std::dynamic_pointer_cast<arrow::FloatArray>(ch))  d = a->Value(r);
+                        else if (auto a = std::dynamic_pointer_cast<arrow::Int64Array>(ch))  d = (double)a->Value(r);
+                        else if (auto a = std::dynamic_pointer_cast<arrow::Int32Array>(ch))  d = (double)a->Value(r);
+                        else if (auto a = std::dynamic_pointer_cast<arrow::Int16Array>(ch))  d = (double)a->Value(r);
+                        else if (auto a = std::dynamic_pointer_cast<arrow::Int8Array>(ch))   d = (double)a->Value(r);
+                        else if (auto a = std::dynamic_pointer_cast<arrow::UInt64Array>(ch)) d = (double)a->Value(r);
+                        else if (auto a = std::dynamic_pointer_cast<arrow::UInt32Array>(ch)) d = (double)a->Value(r);
+                        else { try { d = std::stod(raw); } catch (...) { continue; } }
+                        if (d < cs.d_min) cs.d_min = d;
+                        if (d > cs.d_max) cs.d_max = d;
+                        cs.sum += d;
+                    } else {
+                        if (cs.count == 1 || raw < cs.s_min) cs.s_min = raw;
+                        if (cs.count == 1 || raw > cs.s_max) cs.s_max = raw;
+                        if (!cs.distinct_overflow) {
+                            cs.distinct.insert(raw);
+                            if (cs.distinct.size() > 16) {
+                                cs.distinct_overflow = true;
+                                cs.distinct.clear();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        stats_data_ = std::move(cs);
+    }
+
+    void draw_stats_overlay() {
+        if (!stats_data_) return;
+        const auto& cs = *stats_data_;
+        auto fmt_num = [](double v) -> std::string {
+            char buf[32]; std::snprintf(buf, sizeof(buf), "%.6g", v); return buf;
+        };
+        auto with_sep = [](int64_t v) {
+            return digits_with_sep(std::to_string(v));
+        };
+        std::vector<std::pair<std::string,std::string>> rows;
+        rows.emplace_back("Column", cs.name);
+        rows.emplace_back("Type",   cs.type);
+        rows.emplace_back("Count",  with_sep(cs.count));
+        rows.emplace_back("Nulls",  with_sep(cs.nulls));
+        if (cs.count == 0) {
+            rows.emplace_back("Min", "-");
+            rows.emplace_back("Max", "-");
+        } else if (cs.is_num) {
+            rows.emplace_back("Min",  fmt_num(cs.d_min));
+            rows.emplace_back("Max",  fmt_num(cs.d_max));
+            rows.emplace_back("Mean", fmt_num((double)(cs.sum / (long double)cs.count)));
+        } else {
+            rows.emplace_back("Min", cs.s_min);
+            rows.emplace_back("Max", cs.s_max);
+            rows.emplace_back("Distinct", cs.distinct_overflow
+                ? std::string(">16")
+                : std::to_string(cs.distinct.size()));
+        }
+
+        int w_l = 8, w_r = 0;
+        for (auto& [l, v] : rows) {
+            w_l = std::max(w_l, (int)display_width(l));
+            w_r = std::max(w_r, (int)display_width(v));
+        }
+        const std::string title = " column stats ";
+        int inner = std::max(w_l + 2 + w_r, (int)display_width(title));
+        int panel_w = inner + 4;
+        int panel_h = (int)rows.size() + 3;
+        if (panel_w > scr_c_) panel_w = scr_c_;
+        if (panel_h > scr_r_) panel_h = scr_r_;
+        int y0 = std::max(0, (scr_r_ - panel_h) / 2);
+        int x0 = std::max(0, (scr_c_ - panel_w) / 2);
+
+        // Top border with title.
+        {
+            int title_w = (int)display_width(title);
+            int rest = std::max(0, panel_w - 2 - title_w);
+            int pad_l = rest / 2;
+            int pad_r = rest - pad_l;
+            std::string top = BOX_TL;
+            for (int i = 0; i < pad_l; ++i) top += BOX_HLINE;
+            top += title;
+            for (int i = 0; i < pad_r; ++i) top += BOX_HLINE;
+            top += BOX_TR;
+            nc_str(y0, x0, top, A_BOLD);
+        }
+        for (int i = 1; i < panel_h - 1; ++i) {
+            mvaddstr(y0 + i, x0, BOX_VLINE);
+            mvhline(y0 + i, x0 + 1, ' ', panel_w - 2);
+            mvaddstr(y0 + i, x0 + panel_w - 1, BOX_VLINE);
+        }
+        for (int i = 0; i < (int)rows.size() && i + 1 < panel_h - 1; ++i) {
+            int yy = y0 + 1 + i;
+            int xx = x0 + 2;
+            attron(A_BOLD); mvaddstr(yy, xx, rows[i].first.c_str()); attroff(A_BOLD);
+            int avail = panel_w - 2 - (xx - x0) - (w_l + 2) - 1;
+            std::string v = rows[i].second;
+            if ((int)display_width(v) > avail && avail > 3) {
+                v.resize(avail - 3); v += ELLIPSIS;
+            }
+            mvaddstr(yy, xx + w_l + 2, v.c_str());
+        }
+        std::string bot = std::string(BOX_BL);
+        for (int i = 0; i < panel_w - 2; ++i) bot += BOX_HLINE;
+        bot += BOX_BR;
+        nc_str(y0 + panel_h - 1, x0, bot, A_BOLD);
+    }
+
+    // ── Column show/hide picker ─────────────────────────────────────────────
+    void draw_col_picker() {
+        if (col_visible_.empty()) return;
+        int n = (int)col_visible_.size();
+        int w_name = 0;
+        for (int i = 0; i < n; ++i)
+            w_name = std::max(w_name, (int)display_width(col_names_[i]));
+        const std::string title = " show / hide columns ";
+        int inner = std::max(4 + w_name, (int)display_width(title));
+        int panel_w = inner + 4;
+        int visible_lines = std::min(n + 1, scr_r_ - 4);   // +1 for footer hint
+        int panel_h = visible_lines + 2;
+        if (panel_w > scr_c_) panel_w = scr_c_;
+        if (panel_h > scr_r_) panel_h = scr_r_;
+        int y0 = std::max(0, (scr_r_ - panel_h) / 2);
+        int x0 = std::max(0, (scr_c_ - panel_w) / 2);
+
+        // Borders
+        {
+            int title_w = (int)display_width(title);
+            int rest = std::max(0, panel_w - 2 - title_w);
+            int pad_l = rest / 2;
+            int pad_r = rest - pad_l;
+            std::string top = BOX_TL;
+            for (int i = 0; i < pad_l; ++i) top += BOX_HLINE;
+            top += title;
+            for (int i = 0; i < pad_r; ++i) top += BOX_HLINE;
+            top += BOX_TR;
+            nc_str(y0, x0, top, A_BOLD);
+        }
+        for (int i = 1; i < panel_h - 1; ++i) {
+            mvaddstr(y0 + i, x0, BOX_VLINE);
+            mvhline(y0 + i, x0 + 1, ' ', panel_w - 2);
+            mvaddstr(y0 + i, x0 + panel_w - 1, BOX_VLINE);
+        }
+
+        // Scroll the list so the cursor stays visible.
+        int rows_visible = panel_h - 3;  // 1 top + 1 bottom border + 1 footer line
+        int scroll = 0;
+        if (col_picker_cursor_ >= rows_visible)
+            scroll = col_picker_cursor_ - rows_visible + 1;
+        if (col_picker_cursor_ < scroll) scroll = col_picker_cursor_;
+
+        for (int i = 0; i < rows_visible; ++i) {
+            int idx = i + scroll;
+            if (idx >= n) break;
+            int yy = y0 + 1 + i;
+            int xx = x0 + 2;
+            std::string line = (col_visible_[idx] ? "[x] " : "[ ] ") + col_names_[idx];
+            if ((int)display_width(line) > panel_w - 4)
+                line.resize(panel_w - 4);
+            attr_t a = (idx == col_picker_cursor_) ? (attr_t)(A_BOLD | A_REVERSE) : A_NORMAL;
+            mvaddstr(yy, xx, "");
+            attron(a);
+            mvaddstr(yy, xx, line.c_str());
+            attroff(a);
+        }
+        // Footer hint
+        int yy = y0 + panel_h - 2;
+        std::string hint = " j/k:move  space:toggle  c/Esc:close ";
+        if ((int)display_width(hint) > panel_w - 4)
+            hint.resize(panel_w - 4);
+        nc_str(yy, x0 + 2, hint, A_DIM);
+
+        std::string bot = std::string(BOX_BL);
+        for (int i = 0; i < panel_w - 2; ++i) bot += BOX_HLINE;
+        bot += BOX_BR;
+        nc_str(y0 + panel_h - 1, x0, bot, A_BOLD);
+    }
+
+    // ── Sort by column ──────────────────────────────────────────────────────
+    //
+    // Builds sort_order_ for the source column underlying virtual column
+    // `virt_col`. Numeric types sort by raw value; other types fall back to
+    // string comparison via cell_to_string. Nulls always sort last.
+    void do_sort_by(int virt_col) {
+        int sc = (virt_col >= 0 && virt_col < (int)virt_src_col_.size())
+                  ? virt_src_col_[virt_col] : -1;
+        if (sc < 0) return;
+        bool num = is_numeric_type(src_.schema()->field(sc)->type()->id())
+                   && virt_info_key_[virt_col].empty();
+        const std::string& info_key = virt_info_key_[virt_col];
+        // Collect (key, source_row).
+        struct NumK { double v; bool is_null; int64_t row; };
+        struct StrK { std::string v; bool is_null; int64_t row; };
+        std::vector<NumK> nk;
+        std::vector<StrK> sk;
+        std::vector<int> need = {sc};
+        int nc = src_.num_chunks();
+        for (int c = 0; c < nc; ++c) {
+            mvprintw(scr_r_-1, 0, " Sorting… chunk %d/%d ", c+1, nc);
+            clrtoeol(); refresh();
+            std::shared_ptr<arrow::Table> tbl;
+            if (!src_.read_chunk(c, need, &tbl).ok()) continue;
+            auto meta = src_.chunk_meta(c);
+            auto col = tbl->column(0);
+            int64_t row_in_tbl = 0;
+            for (auto& ch : col->chunks()) {
+                int64_t n = ch->length();
+                for (int64_t r = 0; r < n; ++r, ++row_in_tbl) {
+                    int64_t srow = meta.first_row + row_in_tbl;
+                    bool is_null = ch->IsNull(r);
+                    if (!info_key.empty()) {
+                        std::string raw = is_null ? std::string() : cell_to_string(*ch, r);
+                        std::string val;
+                        if (!is_null) {
+                            auto kvs = parse_kv_list(raw);
+                            bool found = false;
+                            for (auto& kv : kvs)
+                                if (kv.first == info_key) { val = kv.second.empty() ? "true" : kv.second; found = true; break; }
+                            if (!found) is_null = true; else raw = val;
+                        }
+                        if (num) {
+                            double d = 0; bool nn = is_null;
+                            if (!nn) { try { d = std::stod(raw); } catch (...) { nn = true; } }
+                            nk.push_back({d, nn, srow});
+                        } else {
+                            sk.push_back({raw, is_null, srow});
+                        }
+                        continue;
+                    }
+                    if (num) {
+                        double d = 0;
+                        if (!is_null) {
+                            if (auto a = std::dynamic_pointer_cast<arrow::DoubleArray>(ch)) d = a->Value(r);
+                            else if (auto a = std::dynamic_pointer_cast<arrow::FloatArray>(ch))  d = a->Value(r);
+                            else if (auto a = std::dynamic_pointer_cast<arrow::Int64Array>(ch))  d = (double)a->Value(r);
+                            else if (auto a = std::dynamic_pointer_cast<arrow::Int32Array>(ch))  d = (double)a->Value(r);
+                            else if (auto a = std::dynamic_pointer_cast<arrow::Int16Array>(ch))  d = (double)a->Value(r);
+                            else if (auto a = std::dynamic_pointer_cast<arrow::Int8Array>(ch))   d = (double)a->Value(r);
+                            else if (auto a = std::dynamic_pointer_cast<arrow::UInt64Array>(ch)) d = (double)a->Value(r);
+                            else if (auto a = std::dynamic_pointer_cast<arrow::UInt32Array>(ch)) d = (double)a->Value(r);
+                            else { try { d = std::stod(cell_to_string(*ch, r)); } catch (...) { is_null = true; } }
+                        }
+                        nk.push_back({d, is_null, srow});
+                    } else {
+                        std::string s = is_null ? std::string() : cell_to_string(*ch, r);
+                        sk.push_back({s, is_null, srow});
+                    }
+                }
+            }
+        }
+        sort_order_.clear();
+        if (num) {
+            std::sort(nk.begin(), nk.end(), [this](const NumK& a, const NumK& b) {
+                if (a.is_null != b.is_null) return !a.is_null;  // nulls last
+                if (a.is_null) return false;
+                return sort_desc_ ? a.v > b.v : a.v < b.v;
+            });
+            sort_order_.reserve(nk.size());
+            for (auto& e : nk) sort_order_.push_back(e.row);
+        } else {
+            std::sort(sk.begin(), sk.end(), [this](const StrK& a, const StrK& b) {
+                if (a.is_null != b.is_null) return !a.is_null;
+                if (a.is_null) return false;
+                return sort_desc_ ? a.v > b.v : a.v < b.v;
+            });
+            sort_order_.reserve(sk.size());
+            for (auto& e : sk) sort_order_.push_back(e.row);
+        }
+    }
+
     void draw_help_overlay() {
         struct Row { const char* keys; const char* desc; };
         static const Row rows[] = {
-            {"q  Esc",       "quit  (Esc clears search if active)"},
+            {"q  Esc",       "quit  (Esc clears search / closes overlays)"},
             {"↑↓  j k",      "scroll one row"},
             {"PgUp PgDn  ␣ b","scroll one page"},
             {"g  G  Home End","top / bottom of file"},
@@ -6574,6 +6989,9 @@ class TableTUI {
             {"z",            "toggle frozen first column"},
             {"/  ?",          "search forward / backward (regex, icase)"},
             {"n  N",          "next / previous match (direction-aware)"},
+            {"S",             "per-column stats (count/min/max/mean/distinct)"},
+            {"s",             "sort by the leftmost visible column (toggle asc/desc; u to clear)"},
+            {"c",             "show / hide columns (overlay)"},
             {"Enter",         "open detail pane for the top-visible row"},
             {"mouse wheel",   "scroll rows"},
             {"?  F1  H",      "toggle this help"},
@@ -6752,7 +7170,9 @@ class TableTUI {
             draw_data_row(HDR_H + y, top_row_ + y, vc);
         draw_status(vc);
         draw_detail_pane();  // overlay if detail_row_ >= 0
-        if (help_open_) draw_help_overlay();
+        if (stats_open_)      draw_stats_overlay();
+        if (col_picker_open_) draw_col_picker();
+        if (help_open_)       draw_help_overlay();
         refresh();
     }
 
@@ -6869,6 +7289,7 @@ public:
         is_bool_.resize(num_cols_);
         is_rgb_.resize(num_cols_);
         is_integer_.resize(num_cols_);
+        col_visible_.assign(num_cols_, true);
         for (int vc = 0; vc < num_cols_; ++vc) {
             auto t = v_types[vc];
             int min_w;
@@ -6925,6 +7346,43 @@ public:
             // ── Help overlay: any key dismisses it (and is consumed) ─────────
             if (help_open_) {
                 help_open_ = false;
+                continue;
+            }
+
+            // ── Stats overlay: any key dismisses it ──────────────────────────
+            if (stats_open_) {
+                stats_open_ = false;
+                stats_data_.reset();
+                continue;
+            }
+
+            // ── Column picker overlay: dedicated input handling ──────────────
+            if (col_picker_open_) {
+                int n = (int)col_visible_.size();
+                switch (ch) {
+                    case 'q': case 'Q': case 'c': case 27:  // Esc
+                        col_picker_open_ = false;
+                        break;
+                    case KEY_DOWN: case 'j':
+                        if (col_picker_cursor_ + 1 < n) ++col_picker_cursor_;
+                        break;
+                    case KEY_UP: case 'k':
+                        if (col_picker_cursor_ > 0) --col_picker_cursor_;
+                        break;
+                    case 'g': case KEY_HOME: col_picker_cursor_ = 0; break;
+                    case 'G': case KEY_END:  col_picker_cursor_ = std::max(0, n - 1); break;
+                    case ' ': case '\n': case '\r': case KEY_ENTER:
+                        if (col_picker_cursor_ >= 0 && col_picker_cursor_ < n) {
+                            col_visible_[col_picker_cursor_] = !col_visible_[col_picker_cursor_];
+                            // Ensure at least one column stays visible to avoid an
+                            // empty header line.
+                            bool any = false;
+                            for (auto v : col_visible_) if (v) { any = true; break; }
+                            if (!any) col_visible_[col_picker_cursor_] = true;
+                        }
+                        break;
+                    default: break;
+                }
                 continue;
             }
 
@@ -7044,6 +7502,43 @@ public:
                     freeze_first_col_ = !freeze_first_col_; break;
                 case 'H': case KEY_F(1):
                     help_open_ = true; break;
+                case 'S':
+                    // Compute stats for the leftmost visible (= "active") column,
+                    // then open the overlay.
+                    stats_col_ = left_col_;
+                    compute_stats_for(stats_col_);
+                    stats_open_ = true;
+                    break;
+                case 's': {
+                    // Sort by the active column. Re-pressing on the same column
+                    // toggles ascending → descending. Switching columns starts
+                    // ascending again.
+                    int sc = (left_col_ >= 0 && left_col_ < (int)virt_src_col_.size())
+                              ? virt_src_col_[left_col_] : -1;
+                    if (sc < 0) break;
+                    if (sort_col_ == left_col_ && !sort_order_.empty()) {
+                        sort_desc_ = !sort_desc_;
+                    } else {
+                        sort_col_ = left_col_;
+                        sort_desc_ = false;
+                    }
+                    do_sort_by(sort_col_);
+                    top_row_ = 0;
+                    search_row_ = -1;   // search anchor is now stale
+                    break;
+                }
+                case 'u':
+                    // Undo / clear active sort.
+                    sort_order_.clear();
+                    sort_col_  = -1;
+                    sort_desc_ = false;
+                    top_row_   = 0;
+                    search_row_ = -1;
+                    break;
+                case 'c':
+                    col_picker_open_   = true;
+                    col_picker_cursor_ = left_col_;
+                    break;
                 case '.':
                     col_widths_[left_col_] = std::min(256, col_widths_[left_col_] + 4);
                     break;

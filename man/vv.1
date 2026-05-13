@@ -288,6 +288,25 @@ Narrow / widen the leftmost visible column.
 Toggle frozen first column (pin column 0 at the left edge while
 scrolling sideways).
 .TP
+.B S
+Per-column stats popup for the active (leftmost visible) column: count,
+null count, min, max, mean (numeric), distinct-value count (strings,
+capped at 16). Triggers a full-file scan with progress shown in the
+status bar. Any key dismisses the popup.
+.TP
+.B s
+Sort by the active column. Numeric types sort by raw value, others
+lexicographically; nulls go last regardless of direction. Repeated
+\fBs\fR on the same column toggles ascending / descending; \fBs\fR
+on a different column re-sorts ascending. \fBu\fR clears the sort.
+Builds an in-memory row permutation; cost is one full-file scan.
+.TP
+.B c
+Open the show/hide columns picker. \fBj\fR / \fBk\fR move the
+cursor, \fBSpace\fR / \fBEnter\fR toggle the column under the
+cursor, \fBEsc\fR / \fBq\fR / \fBc\fR closes the overlay. At least
+one column stays visible.
+.TP
 .B mouse wheel
 Scroll three rows up / down.
 .TP

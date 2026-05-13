@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **TUI interactive-exploration batch** — three new keybindings turn
+  the ncurses viewer into a real exploration tool:
+  - **`S`** opens a per-column stats popup (count, nulls, min, max,
+    mean, distinct count) for the leftmost visible column. Full-file
+    scan with progress in the status line.
+  - **`s`** sorts by the leftmost visible column. Repeated `s` on the
+    same column toggles ascending / descending; `s` on a different
+    column re-sorts ascending; `u` clears the sort. Numeric types
+    sort by raw value, others lexicographically; nulls last. Search
+    and the detail pane follow the sorted display order via a single
+    `source_row(display)` indirection that routes all cache lookups
+    through the sort permutation when active.
+  - **`c`** opens a column show/hide picker overlay; `Space` toggles
+    the column under the cursor, hidden columns drop from the
+    layout, and the status bar shows a `hidden:N` indicator.
 - **`--tail N`** — show the last N rows instead of the first N.
   Mirrors `-n` but operates on the tail. Reuses the
   `MemoryTableSource` adapter: every chunk is read (through any

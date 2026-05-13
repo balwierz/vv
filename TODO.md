@@ -77,11 +77,21 @@ visible-value-per-line ratio.
 
 - Live filter (`&` in `less` style) — toggle to hide non-matching
   rows interactively. Skipped earlier; users keep asking.
-- Stats popup — `S` over the column under cursor shows the same
-  data as `--describe`.
-- Sort by column — `s` over a column. Requires a full file scan;
-  document the cost.
-- Column show/hide picker — `c` opens a checkbox list of columns.
+- ~~Stats popup~~ — *Done — `S` opens a centred overlay with count,
+  nulls, min, max, mean (numeric), distinct count (capped at 16)
+  for the leftmost visible column. Full-file scan with progress in
+  the status line.*
+- ~~Sort by column~~ — *Done — `s` sorts the visible rows by the
+  leftmost visible column (asc → desc on repeat); `u` clears.
+  Builds an in-memory row permutation; numeric columns sort by raw
+  value, others by string compare; nulls last. Search and detail
+  pane both follow the sorted display order via a single
+  `source_row(display)` indirection.*
+- ~~Column show/hide picker~~ — *Done — `c` opens a checkbox list;
+  `Space` toggles, `j`/`k` move, `Esc`/`q`/`c` closes. Hidden
+  columns are dropped from the layout; a `hidden:N` status
+  indicator shows in the bottom bar. At least one column stays
+  visible.*
 - Multi-file tabs — open many files, switch with `Tab` / `Shift-Tab`.
 - Marks & recall — vim-style `m{a-z}` / `'{a-z}`.
 - Copy cell — `y` copies the cell under the cursor (OSC52 / xclip).

@@ -130,11 +130,34 @@ $ vv tests/data/tiny.lociss        # default when stdout is a terminal
 | `n` / `N`      | next / previous match (direction-aware)                 |
 | `,` / `.`      | narrow / widen the leftmost visible column              |
 | `z`            | toggle frozen first column                              |
+| `S`            | per-column stats popup (count, nulls, min, max, mean, distinct) |
+| `s`            | sort by the leftmost visible column (toggle asc / desc) |
+| `u`            | undo / clear the active sort                            |
+| `c`            | open the show/hide columns picker                       |
 | `H` / `F1`     | help overlay with every keybinding                      |
 | mouse wheel    | scroll three rows                                       |
-| `q`            | quit (Esc clears search if active)                      |
+| `q`            | quit (Esc clears search / closes overlays)              |
 
 All visible matches are highlighted; the n/N target gets reverse video.
+
+**`S` (stats popup).** Computes count, null count, min, max, mean (numeric
+columns), and distinct-value count (strings, capped at 16) for the active
+column. Triggers a full-file scan with a progress line in the status bar.
+Any key dismisses the overlay. The active column is the leftmost visible
+column — the same column that `,` and `.` resize.
+
+**`s` (sort).** Builds an in-memory permutation of the source rows ordered
+by the active column. Numeric types sort by raw value, others by string
+comparison; nulls go last regardless of direction. Pressing `s` again on
+the same column toggles ascending / descending; pressing `s` on a
+different column re-sorts ascending. `u` clears the sort. Search (`/`)
+continues to work — it follows the sorted display order.
+
+**`c` (column picker).** Opens an overlay listing every column with a
+checkbox; `j` / `k` move the cursor, `Space` / `Enter` toggle the column,
+`Esc` / `q` / `c` closes the overlay. Hidden columns are dropped from the
+table layout; the status bar shows a `hidden:N` indicator. At least one
+column always stays visible.
 
 ## Delimited output (`--tsv`, `--csv`, `--delimiter`)
 
