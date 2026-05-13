@@ -84,23 +84,156 @@ struct Colors {
 
 static Colors g_color;  // populated by init_colors()
 
+// ── Themes ───────────────────────────────────────────────────────────────────
+//
+// Two parallel palettes: ANSI escape strings for the non-interactive
+// ASCII table and ncurses 256-color indices for the TUI. The Theme
+// struct bundles both. Built-in themes live in `kThemes`; selected via
+// --theme NAME. Anything else (TOML / per-user themes) can be plumbed
+// in later by extending the table.
+//
+// On terminals with fewer than 256 colors, the TUI falls back to a small
+// set of named COLOR_* indices regardless of theme — every theme provides
+// `nc16_*` fallbacks for that case.
+struct Theme {
+    const char* name;
+
+    // ANSI escape strings for the non-interactive table output.
+    const char* reset;
+    const char* border;
+    const char* header;
+    const char* row_idx;
+    const char* null_val;
+    const char* number;
+    const char* bool_true;
+    const char* bool_false;
+    const char* trunc;
+    const char* type_int;
+    const char* type_float;
+    const char* type_str;
+    const char* type_time;
+    const char* type_bool;
+    const char* type_other;
+    const char* meta_key;
+
+    // ncurses palette (foreground colors; -1 == terminal default).
+    // 256-color indices on c256-capable terminals.
+    int nc_fg_header, nc_fg_index, nc_fg_null, nc_fg_number;
+    int nc_fg_boolt,  nc_fg_boolf, nc_fg_sep;
+    int nc_fg_search, nc_bg_search;
+    int nc_bg_zebra;   // -1 disables zebra striping for this theme
+
+    // 16-color fallback for old terminals.
+    int nc16_fg_header, nc16_fg_index, nc16_fg_null, nc16_fg_number;
+    int nc16_fg_boolt,  nc16_fg_boolf, nc16_fg_sep;
+    int nc16_fg_search, nc16_bg_search;
+};
+
+// ── Built-in themes ──────────────────────────────────────────────────────────
+// "default" matches the colors vv has used since 1.0 — bright accents
+// on whatever the terminal's default background is.
+static const Theme kThemeDefault = {
+    "default",
+    "\033[0m", "\033[90m", "\033[1;97m", "\033[90m",
+    "\033[2;3m", "\033[96m", "\033[92m", "\033[33m",
+    "\033[90m",
+    "\033[96m", "\033[93m", "\033[92m", "\033[95m", "\033[94m",
+    "\033[37m", "\033[1m",
+    /*nc*/ 111, 244, 243, 81, 114, 210, 238, 232, 220, 235,
+    /*nc16*/ COLOR_WHITE, COLOR_WHITE, COLOR_WHITE, COLOR_CYAN,
+             COLOR_GREEN, COLOR_YELLOW, COLOR_WHITE, COLOR_BLACK, COLOR_YELLOW,
+};
+
+// "dark" — slightly punchier than the default. Darker text gets pushed
+// to brighter shades; assumes a true dark (near-black) background.
+static const Theme kThemeDark = {
+    "dark",
+    "\033[0m", "\033[38;5;240m", "\033[1;38;5;75m", "\033[38;5;244m",
+    "\033[2;3;38;5;243m", "\033[38;5;81m", "\033[38;5;114m", "\033[38;5;210m",
+    "\033[38;5;240m",
+    "\033[38;5;81m", "\033[38;5;221m", "\033[38;5;150m", "\033[38;5;213m",
+    "\033[38;5;111m", "\033[38;5;250m", "\033[1m",
+    /*nc*/  75, 244, 243, 81, 114, 210, 240, 232, 221, 234,
+    /*nc16*/ COLOR_CYAN, COLOR_WHITE, COLOR_WHITE, COLOR_CYAN,
+             COLOR_GREEN, COLOR_RED, COLOR_WHITE, COLOR_BLACK, COLOR_YELLOW,
+};
+
+// "light" — for terminals with a light background. Bright accents would
+// vanish, so every color is shifted to a darker mid-saturation tone.
+// Null / dim text stays distinguishable from the background.
+static const Theme kThemeLight = {
+    "light",
+    "\033[0m", "\033[38;5;245m", "\033[1;38;5;25m", "\033[38;5;240m",
+    "\033[2;3;38;5;244m", "\033[38;5;31m", "\033[38;5;28m", "\033[38;5;124m",
+    "\033[38;5;245m",
+    "\033[38;5;31m", "\033[38;5;130m", "\033[38;5;28m", "\033[38;5;90m",
+    "\033[38;5;25m",  "\033[38;5;240m", "\033[1m",
+    /*nc*/  25, 240, 244, 31, 28, 124, 245, 231, 130, 254,
+    /*nc16*/ COLOR_BLUE, COLOR_BLACK, COLOR_WHITE, COLOR_BLUE,
+             COLOR_GREEN, COLOR_RED, COLOR_BLACK, COLOR_WHITE, COLOR_YELLOW,
+};
+
+// "solarized-dark" — Ethan Schoonover's Solarized palette
+// (base03/02/01/00 dark anchors, base0..3 light anchors, plus the
+// accent ring yellow/orange/red/magenta/violet/blue/cyan/green).
+// 256-color values come from the canonical Solarized table.
+static const Theme kThemeSolarizedDark = {
+    "solarized-dark",
+    "\033[0m", "\033[38;5;240m", "\033[1;38;5;33m", "\033[38;5;240m",
+    "\033[2;3;38;5;241m", "\033[38;5;37m", "\033[38;5;64m", "\033[38;5;160m",
+    "\033[38;5;240m",
+    "\033[38;5;37m", "\033[38;5;136m", "\033[38;5;64m", "\033[38;5;125m",
+    "\033[38;5;33m", "\033[38;5;244m", "\033[1m",
+    /*nc*/  33, 240, 241, 37, 64, 160, 240, 234, 136, 235,
+    /*nc16*/ COLOR_BLUE, COLOR_WHITE, COLOR_WHITE, COLOR_CYAN,
+             COLOR_GREEN, COLOR_RED, COLOR_WHITE, COLOR_BLACK, COLOR_YELLOW,
+};
+
+// "solarized-light" — same accent ring, flipped backgrounds. base3
+// (#fdf6e3) substitutes for the terminal default background here too.
+static const Theme kThemeSolarizedLight = {
+    "solarized-light",
+    "\033[0m", "\033[38;5;245m", "\033[1;38;5;33m", "\033[38;5;245m",
+    "\033[2;3;38;5;244m", "\033[38;5;37m", "\033[38;5;64m", "\033[38;5;160m",
+    "\033[38;5;245m",
+    "\033[38;5;37m", "\033[38;5;136m", "\033[38;5;64m", "\033[38;5;125m",
+    "\033[38;5;33m", "\033[38;5;240m", "\033[1m",
+    /*nc*/  33, 245, 244, 37, 64, 160, 245, 230, 136, 254,
+    /*nc16*/ COLOR_BLUE, COLOR_BLACK, COLOR_WHITE, COLOR_CYAN,
+             COLOR_GREEN, COLOR_RED, COLOR_BLACK, COLOR_WHITE, COLOR_YELLOW,
+};
+
+static const Theme* g_theme = &kThemeDefault;
+
+static const Theme* find_theme(const std::string& name) {
+    static const Theme* all[] = {
+        &kThemeDefault, &kThemeDark, &kThemeLight,
+        &kThemeSolarizedDark, &kThemeSolarizedLight,
+    };
+    for (auto* t : all) if (name == t->name) return t;
+    // Accept a few synonyms for muscle memory.
+    if (name == "solarized") return &kThemeSolarizedDark;
+    return nullptr;
+}
+
 static void init_colors() {
-    g_color.reset      = "\033[0m";
-    g_color.border     = "\033[90m";       // dark gray
-    g_color.header     = "\033[1;97m";     // bold bright-white
-    g_color.row_idx    = "\033[90m";       // dark gray
-    g_color.null_val   = "\033[2;3m";      // dim + italic
-    g_color.number     = "\033[96m";       // bright cyan
-    g_color.bool_true  = "\033[92m";       // bright green
-    g_color.bool_false = "\033[33m";       // yellow
-    g_color.trunc      = "\033[90m";       // dark gray for "..."
-    g_color.type_int   = "\033[96m";       // bright cyan
-    g_color.type_float = "\033[93m";       // bright yellow
-    g_color.type_str   = "\033[92m";       // bright green
-    g_color.type_time  = "\033[95m";       // bright magenta
-    g_color.type_bool  = "\033[94m";       // bright blue
-    g_color.type_other = "\033[37m";       // white
-    g_color.meta_key   = "\033[1m";        // bold
+    const Theme& t = *g_theme;
+    g_color.reset      = t.reset;
+    g_color.border     = t.border;
+    g_color.header     = t.header;
+    g_color.row_idx    = t.row_idx;
+    g_color.null_val   = t.null_val;
+    g_color.number     = t.number;
+    g_color.bool_true  = t.bool_true;
+    g_color.bool_false = t.bool_false;
+    g_color.trunc      = t.trunc;
+    g_color.type_int   = t.type_int;
+    g_color.type_float = t.type_float;
+    g_color.type_str   = t.type_str;
+    g_color.type_time  = t.type_time;
+    g_color.type_bool  = t.type_bool;
+    g_color.type_other = t.type_other;
+    g_color.meta_key   = t.meta_key;
 }
 
 // Pick the right color for an Arrow type in the schema summary
@@ -177,6 +310,7 @@ struct Config {
     bool        md             = false;  // --md (GitHub-flavored markdown table)
     bool        validate       = false;  // --validate (LociSSD invariants check)
     bool        coords_one_based = false; // --coords NCBI (1-based inclusive)
+    std::string theme          = "default"; // --theme NAME (default/dark/light/solarized-dark/solarized-light)
     int         tail_rows      = 0;      // --tail N
     bool        tail_rows_set  = false;
 };
@@ -254,6 +388,8 @@ static void print_usage(const char* prog) {
         "                      manifest vs. data); exit non-zero on failure\n"
         "  --no-index          suppress the row-index column\n"
         "  --color[=WHEN]      colorize output: auto (default), always, never\n"
+        "  --theme <name>      color palette: default, dark, light,\n"
+        "                      solarized-dark, solarized-light (default = default)\n"
         "  --vertical          \"vertical head\": transpose the preview so each\n"
         "                      field is a row; show as many records per line as\n"
         "                      fit. Implies --no-interactive. Default when the\n"
@@ -402,6 +538,8 @@ static Config parse_args(int argc, char** argv) {
             cfg.md = true;
         } else if (!std::strcmp(argv[i], "--validate")) {
             cfg.validate = true;
+        } else if (!std::strcmp(argv[i], "--theme") && i + 1 < argc) {
+            cfg.theme = argv[++i];
         } else if (!std::strcmp(argv[i], "--color") ||
                    !std::strcmp(argv[i], "--color=auto")) {
             cfg.color = ColorMode::Auto;
@@ -7323,17 +7461,19 @@ class TableTUI {
         start_color(); use_default_colors();
 
         const bool c256 = COLORS >= 256;
+        const Theme& t  = *g_theme;
 
-        // Soft 256-color palette, with a basic-16 fallback on lesser terminals.
-        const int fg_header = c256 ? 111 : COLOR_WHITE;   // soft blue
-        const int fg_index  = c256 ? 244 : COLOR_WHITE;   // mid grey
-        const int fg_null   = c256 ? 243 : COLOR_WHITE;   // dim grey
-        const int fg_number = c256 ?  81 : COLOR_CYAN;    // cyan
-        const int fg_boolt  = c256 ? 114 : COLOR_GREEN;   // soft green
-        const int fg_boolf  = c256 ? 210 : COLOR_YELLOW;  // soft red
-        const int fg_sep    = c256 ? 238 : COLOR_WHITE;   // dim grey
-        const int fg_search = c256 ? 232 : COLOR_BLACK;
-        const int bg_search = c256 ? 220 : COLOR_YELLOW;  // gold
+        // Pick from the theme's 256-color palette when available; otherwise
+        // fall back to its 16-color twins (every theme provides both).
+        const int fg_header = c256 ? t.nc_fg_header : t.nc16_fg_header;
+        const int fg_index  = c256 ? t.nc_fg_index  : t.nc16_fg_index;
+        const int fg_null   = c256 ? t.nc_fg_null   : t.nc16_fg_null;
+        const int fg_number = c256 ? t.nc_fg_number : t.nc16_fg_number;
+        const int fg_boolt  = c256 ? t.nc_fg_boolt  : t.nc16_fg_boolt;
+        const int fg_boolf  = c256 ? t.nc_fg_boolf  : t.nc16_fg_boolf;
+        const int fg_sep    = c256 ? t.nc_fg_sep    : t.nc16_fg_sep;
+        const int fg_search = c256 ? t.nc_fg_search : t.nc16_fg_search;
+        const int bg_search = c256 ? t.nc_bg_search : t.nc16_bg_search;
 
         init_pair(NCP_HEADER,  fg_header, -1);
         init_pair(NCP_INDEX,   fg_index,  -1);
@@ -7345,10 +7485,11 @@ class TableTUI {
         init_pair(NCP_SEARCH,  fg_search, bg_search);
         init_pair(NCP_PLAIN,   -1,        -1);
 
-        // Zebra twins: same fg, dim background (only with a 256-color term —
-        // an approximate bg on an 8-color palette looks worse than none).
-        if (c256) {
-            const int bg_zebra = 235;  // barely off default background
+        // Zebra twins (256-color only). Each theme picks its own bg shade;
+        // -1 disables zebra altogether (e.g. for the light theme on bright
+        // backgrounds where any tint over the default looks muddy).
+        if (c256 && t.nc_bg_zebra >= 0) {
+            const int bg_zebra = t.nc_bg_zebra;
             init_pair(NCP_HEADER + ZEBRA_OFFSET, fg_header, bg_zebra);
             init_pair(NCP_INDEX  + ZEBRA_OFFSET, fg_index,  bg_zebra);
             init_pair(NCP_NULL   + ZEBRA_OFFSET, fg_null,   bg_zebra);
@@ -7358,7 +7499,6 @@ class TableTUI {
             init_pair(NCP_SEP    + ZEBRA_OFFSET, fg_sep,    bg_zebra);
             init_pair(NCP_PLAIN  + ZEBRA_OFFSET, -1,        bg_zebra);
             zebra_enabled_ = true;
-            // Start dynamic RGB pairs past the zebra range.
             next_rgb_pair_ = NCP_PLAIN + ZEBRA_OFFSET + 1;
         }
     }
@@ -8205,6 +8345,15 @@ int main(int argc, char** argv) {
     if (auto e = apply_region_modifiers(cfg); !e.empty()) {
         std::fprintf(stderr, "vv: %s\n", e.c_str());
         return 1;
+    }
+
+    if (auto* t = find_theme(cfg.theme)) {
+        g_theme = t;
+    } else {
+        std::fprintf(stderr,
+            "vv: unknown --theme '%s'. Available: default, dark, light, "
+            "solarized-dark, solarized-light.\n", cfg.theme.c_str());
+        return 2;
     }
 
     bool use_color = (cfg.color == ColorMode::Always) ||

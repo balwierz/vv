@@ -20,6 +20,10 @@ _vv() {
             COMPREPLY=( $(compgen -W 'auto always never' -- "$cur") )
             return
             ;;
+        --theme)
+            COMPREPLY=( $(compgen -W 'default dark light solarized-dark solarized-light' -- "$cur") )
+            return
+            ;;
         -r|--region|--window)
             # Free-form region string — no completion
             return
@@ -65,6 +69,7 @@ _vv() {
                 -@ --threads --decode-threads
                 --no-index
                 --color --color=auto --color=always --color=never
+                --theme
                 --tsv --csv --delimiter
                 --parquet --compression
                 --json --ndjson --md --markdown

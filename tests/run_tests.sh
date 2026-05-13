@@ -269,6 +269,22 @@ COORDS_BAD=$("$VV" -r chr1:1-2 --coords nonsense "$DATA/tiny.parquet" 2>&1 || tr
 assert_contains "coords_unknown_value_errors" "$COORDS_BAD" "UCSC"
 
 echo
+# --theme: every built-in name parses cleanly; unknown names get a
+# clear error and exit 2. Color output is exercised via --color=always
+# so the ANSI escape strings show up in the captured output.
+for theme in default dark light solarized-dark solarized-light solarized; do
+    OUT=$("$VV" --theme "$theme" --color=always -n 1 --no-interactive "$DATA/tiny.parquet" 2>&1)
+    RC=$?
+    if [ $RC -eq 0 ] && printf '%s' "$OUT" | grep -q $'\033\['; then
+        PASS=$((PASS+1)); echo "  ok    theme_${theme}_renders_ansi"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  theme_${theme}_renders_ansi"
+    fi
+done
+BAD_THEME=$("$VV" --theme bogus "$DATA/tiny.parquet" 2>&1 || true)
+assert_contains "theme_unknown_lists_choices" "$BAD_THEME" "default, dark, light"
+
+echo
 echo "── Threading parity ──────────────────────────────────────"
 "$VV" --tsv --no-header -@ 1 "$DATA/tiny.parquet" > "$TMP/t1.out"
 "$VV" --tsv --no-header -@ 4 "$DATA/tiny.parquet" > "$TMP/t4.out"

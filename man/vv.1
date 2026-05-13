@@ -137,6 +137,29 @@ Suppress the row-index column.
 .BI \-\-color [= WHEN ]
 \fIWHEN\fR is \fBauto\fR (default), \fBalways\fR, or \fBnever\fR.
 .TP
+.BI \-\-theme " NAME"
+Pick a color palette. Built-in themes:
+.RS
+.IP \(bu 2
+\fBdefault\fR \(en the original vv palette: bright accents on the
+terminal's default background.
+.IP \(bu 2
+\fBdark\fR \(en slightly punchier accents, assumes a near-black
+background.
+.IP \(bu 2
+\fBlight\fR \(en darker mid-saturation accents for terminals with a
+light background; disables the zebra-stripe background tint so the
+table reads cleanly on white.
+.IP \(bu 2
+\fBsolarized-dark\fR / \fBsolarized-light\fR \(en Ethan Schoonover's
+Solarized palette. \fBsolarized\fR is accepted as a synonym for
+\fBsolarized-dark\fR.
+.RE
+.IP
+Affects both the non-interactive ASCII table (via ANSI escapes) and
+the ncurses TUI. On terminals with fewer than 256 colors, each theme
+falls back to a 16-color twin.
+.TP
 .B \-\-vertical
 \fIVertical head\fR. Transpose the preview so each input field becomes a row
 and each record becomes a column; show as many records as fit in the

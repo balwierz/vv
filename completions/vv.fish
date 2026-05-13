@@ -38,6 +38,7 @@ complete -c vv -c vh -l decode-threads -r  -d 'Arrow CPU pool size for Parquet/C
 # --color
 complete -c vv -c vh -l color              -d 'Colorize output (auto/always/never)'
 complete -c vv -c vh -l color -r -a 'auto always never' -d 'Color mode'
+complete -c vv -c vh -l theme -r -a 'default dark light solarized-dark solarized-light' -d 'Color palette'
 
 # Delimited output
 complete -c vv -c vh -l tsv                -d 'Write tab-separated values'

@@ -562,6 +562,27 @@ $ zcat huge.tsv.gz | vv --tsv --no-header -      # plain text pipeline
   substitution (`vv <(zcat foo.bam)`).
 * Auto-detects gzip via magic bytes.
 
+# Color themes (`--theme`)
+
+```sh
+$ vv --theme solarized-dark   peaks.lociss     # interactive
+$ vv --theme light --color=always huge.parquet | less -R
+```
+
+| Theme              | Use case                                         |
+|--------------------|--------------------------------------------------|
+| `default`          | the original vv palette; works on most terminals |
+| `dark`             | punchier accents; assumes a near-black bg        |
+| `light`            | mid-saturation accents for light terminals; disables zebra stripes so the table reads cleanly on white |
+| `solarized-dark`   | Solarized palette on a dark background           |
+| `solarized-light`  | Solarized palette on a light background          |
+
+`--theme solarized` is accepted as a synonym for `solarized-dark`.
+The flag affects both the non-interactive ASCII table (via ANSI
+escapes) and the ncurses TUI. On terminals with fewer than 256
+colors, each theme falls back to a 16-color twin. An unknown theme
+name produces a clear error listing the available choices.
+
 # Performance (`-@` / `--threads`)
 
 ```sh

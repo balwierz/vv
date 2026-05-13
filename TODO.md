@@ -94,10 +94,18 @@ user-facing summary).
 ## Convenience
 
 ### Open
-- Color themes — `--theme dark|light|solarized` and / or
-  `~/.config/vv/theme.toml`.
 - Better nested rendering — multi-line wrap for long `list`/`map`
   cells instead of `[first, …]`.
+- `~/.config/vv/theme.toml` — user-defined themes on top of the
+  built-in `--theme` selector. Deferred until someone asks; the
+  five built-ins (default / dark / light / solarized-dark /
+  solarized-light) cover the common cases.
+
+### Done
+- Color themes — `--theme NAME` selects from `default`, `dark`,
+  `light`, `solarized-dark`, `solarized-light` (built-in palettes
+  covering both the ASCII table and the TUI; 256-color with 16-color
+  fallback).
 
 ### Done
 - `--tail N` — last-N rows; reuses the `MemoryTableSource` adapter.

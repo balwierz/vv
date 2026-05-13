@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`--theme <name>`** — color palette selector. Built-in themes:
+  `default`, `dark`, `light`, `solarized-dark`, `solarized-light`
+  (`solarized` accepted as a synonym for `solarized-dark`). Affects
+  both the non-interactive ASCII table (ANSI escapes) and the
+  ncurses TUI. Each theme provides a 256-color palette and a
+  16-color fallback for older terminals; the `light` theme also
+  suppresses zebra stripes so the table reads cleanly on a bright
+  background. Unknown theme names produce a clear error listing the
+  available choices.
 - **TUI live filter (`&` key)** — long-requested. Opens a
   `&<expression>` input bar; expression grammar matches the
   `--filter` CLI flag. Rows not matching the predicate are hidden
