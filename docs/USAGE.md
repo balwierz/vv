@@ -206,6 +206,13 @@ $ vv --parquet peaks.parquet --compression zstd tests/data/tiny.bed
 * Streams chunk-by-chunk; multi-GB conversions don't need to fit in RAM.
 * `--compression {zstd, snappy, gzip, lz4, none}`, default `zstd`.
 * Honours `--select` (column subset) and `--filter` (row predicate).
+* `--parquet -` writes to stdout. Parquet's footer-at-end requires
+  seekable writes, so the data is spooled to a temp file under
+  `/tmp` first and then streamed out — the result is
+  bit-identical to writing to a file path:
+  ```sh
+  vv --parquet - --filter 'Score > 0.5' big.lociss | duckdb -c "..."
+  ```
 
 # Column projection (`--select`)
 
@@ -350,6 +357,22 @@ chr1	1000	1200	peak_2	0.2	1200
 `start` is clamped at 0; open bounds stay open. Applied after
 `--regions-file`.
 
+## Coordinate convention (`--coords`)
+
+`vv -r` defaults to **0-based half-open** (BED). Switch to tabix /
+VCF / samtools-style **1-based inclusive** with `--coords 1-based`:
+
+```sh
+$ vv -r chr1:100-200            file.parquet   # 0-based default
+$ vv -r chr1:101-200 --coords 1-based file.parquet  # same window
+$ vv -r chr1:101-200 --coords tabix   file.parquet  # alias
+```
+
+The two commands above match the same rows: 1-based `[101, 200]`
+inclusive == 0-based `[100, 200)`. `--coords 0-based` / `--coords bed`
+explicitly request the default. `--regions-file` entries are always
+parsed as BED 0-based regardless of `--coords`.
+
 # Data exploration
 
 ## `--schema`
@@ -440,6 +463,20 @@ chr1	1000	1200	peak_2	0.2	1200
 Reservoir sampling of N rows uniformly without replacement. Reads the
 whole source (applying `--filter` if set), then samples from the
 filtered total. Combines with every view / export mode.
+
+## `--tail N`
+
+```sh
+$ vv --tail 3 --tsv --no-header tests/data/tiny.parquet
+chr2	5100	5200	0.85	[]
+chr2	6100	6200	0.9	[TF]
+chr2	7100	7200	0.95	[promoter, TF]
+```
+
+The last N rows instead of the first N. Reads the source through any
+active `--filter`, then slices the tail. Combines with every view /
+export mode. For streaming sources (BAM, BCF, FASTX, …) this implies
+a full scan.
 
 # Stdin
 

@@ -28,6 +28,8 @@ complete -c vv -c vh -l window -r          -d 'Alias of --region'
 complete -c vv -c vh -l regions-file -r -F -d 'BED file with additional windows'
 complete -c vv -c vh -l region-cols -r     -d 'chrom,start,end column names for plain Parquet'
 complete -c vv -c vh -l slop -r            -d 'Pad each window by N bp'
+complete -c vv -c vh -l coords -r -a '0-based 1-based tabix bed' -d 'Coordinate convention for -r'
+complete -c vv -c vh -l tail -r            -d 'Show the last N rows'
 
 # Performance
 complete -c vv -c vh -s @ -l threads -r    -d 'Worker threads for I/O and decode (0 = auto)'

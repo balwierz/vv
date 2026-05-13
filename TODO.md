@@ -67,9 +67,11 @@ visible-value-per-line ratio.
   each row's Chromosome label agrees with the manifest's window.
   Prints PASS / FAIL per check, caps repeat violations at 5 to
   keep output bounded, exits non-zero if any check failed.*
-- Parquet to stdout — `--parquet -` currently requires a file path
-  because of footer-at-end; could support stdout with a buffered
-  spool to disk. Useful in pipelines.
+- ~~Parquet to stdout~~ — `--parquet -`. *Done — spools to a
+  `mkstemps`-managed temp file under `/tmp`, then streams the
+  finished file to stdout and unlinks. Bit-identical to the
+  on-disk variant; suitable for `vv ... --parquet - | ...`
+  pipelines.*
 
 ## TUI
 
@@ -112,9 +114,13 @@ visible-value-per-line ratio.
 
 ## Convenience
 
-- `--tail N` — symmetric to `-n`. Streaming sources require a full
-  scan; document.
-- `--coords 1-based` — accept tabix-style 1-based coordinates.
+- ~~`--tail N`~~ — *Done — last-N rows; reuses the `MemoryTableSource`
+  adapter (full scan, slice from the end), honours `--filter`.*
+- ~~`--coords 1-based`~~ — *Done — accept tabix / VCF / samtools-style
+  1-based inclusive coordinates in `-r`. Conversion happens once
+  in `apply_region_modifiers`; downstream sources see normalized
+  0-based half-open. `--regions-file` entries are still 0-based per
+  the BED spec.*
 - Color themes — `--theme dark|light|solarized` and / or
   `~/.config/vv/theme.toml`.
 - Better nested rendering — multi-line wrap for long `list`/`map`

@@ -173,6 +173,9 @@ struct Config {
     bool        json_lines     = false;  // --ndjson
     bool        md             = false;  // --md (GitHub-flavored markdown table)
     bool        validate       = false;  // --validate (LociSSD invariants check)
+    bool        coords_one_based = false; // --coords 1-based (tabix-style)
+    int         tail_rows      = 0;      // --tail N
+    bool        tail_rows_set  = false;
 };
 
 // Effective worker-thread count: explicit override or
@@ -215,6 +218,7 @@ static void print_usage(const char* prog) {
         "  Keys: arrows/hjkl navigate, PgUp/PgDn, g/G top/bot, q quit\n"
         "\nTable options:\n"
         "  -n <rows>           rows to display  (default: 10, 0 = all)\n"
+        "  --tail <N>          show the last N rows instead of the first N\n"
         "  -w <width>          max cell width   (default: 32)\n"
         "  -c <cols>           max columns to show (default: all)\n"
         "  --select <cols>     project columns by name (e.g. --select Chr,Start,End)\n"
@@ -244,7 +248,7 @@ static void print_usage(const char* prog) {
         "  --no-header         omit the header row\n"
         "  (-n defaults to all rows in this mode; -c still applies)\n"
         "\nParquet output (replaces table view):\n"
-        "  --parquet <file>    write a Parquet file at <file>\n"
+        "  --parquet <file>    write a Parquet file at <file> (or `-` for stdout)\n"
         "  --compression <c>   codec: zstd (default), snappy, gzip, lz4, none\n"
         "\nRange queries:\n"
         "  -r / --region <REGION>   e.g. chr1:1000-2000  (multiple comma-separated)\n"
@@ -256,6 +260,8 @@ static void print_usage(const char* prog) {
         "                           auto-detect Chromosome/Chrom/Chr + Start/POS\n"
         "                           + End/Stop)\n"
         "  --slop <N>               pad each window by N bp on both sides\n"
+        "  --coords <kind>          coordinate convention for -r: 0-based\n"
+        "                           (default, BED) or 1-based (tabix / VCF)\n"
         "  Supported on tabix-indexed VCF/BED/GFF/TSV, indexed BCF\n"
         "  (.csi/.tbi), LociSSD Parquet (.lociss), plain sorted Parquet\n"
         "  with chrom/start/end columns, and bigBed/bigWig. Coordinates\n"
@@ -314,6 +320,21 @@ static Config parse_args(int argc, char** argv) {
             cfg.region_cols = argv[++i];
         } else if (!std::strcmp(argv[i], "--slop") && i + 1 < argc) {
             cfg.slop = (int64_t)std::atoll(argv[++i]);
+        } else if (!std::strcmp(argv[i], "--coords") && i + 1 < argc) {
+            const char* v = argv[++i];
+            if (!std::strcmp(v, "1-based") || !std::strcmp(v, "1based") ||
+                !std::strcmp(v, "tabix"))
+                cfg.coords_one_based = true;
+            else if (!std::strcmp(v, "0-based") || !std::strcmp(v, "0based") ||
+                     !std::strcmp(v, "bed"))
+                cfg.coords_one_based = false;
+            else {
+                std::fprintf(stderr, "--coords: expected '0-based' or '1-based', got %s\n", v);
+                std::exit(2);
+            }
+        } else if (!std::strcmp(argv[i], "--tail") && i + 1 < argc) {
+            cfg.tail_rows     = std::max(0, std::atoi(argv[++i]));
+            cfg.tail_rows_set = true;
         } else if ((!std::strcmp(argv[i], "-@") ||
                     !std::strcmp(argv[i], "--threads")) && i + 1 < argc) {
             cfg.threads = std::max(0, std::atoi(argv[++i]));
@@ -1210,7 +1231,12 @@ struct Region {
     int64_t     end;     // INT64_MAX means open upper bound
 };
 
-static bool parse_region_one(const std::string& s, Region* out) {
+// Parse "chrom[:start[-end]]" into a Region. Output is always normalized
+// to 0-based half-open. When one_based is true, the input is interpreted
+// per the tabix / VCF / samtools convention (1-based inclusive at both
+// ends) and converted internally.
+static bool parse_region_one(const std::string& s, Region* out,
+                              bool one_based = false) {
     auto colon = s.find(':');
     if (colon == std::string::npos) {
         out->chrom = s;
@@ -1235,18 +1261,40 @@ static bool parse_region_one(const std::string& s, Region* out) {
         try { *v = std::stoll(t); return true; }
         catch (...) { return false; }
     };
-    out->start = INT64_MIN;
-    out->end   = INT64_MAX;
-    if (!parse_int(a, &out->start)) return false;
-    if (dash != std::string::npos) {
-        if (!parse_int(b, &out->end)) return false;
+    int64_t pa = INT64_MIN, pb = INT64_MAX;
+    bool have_a = !a.empty();
+    bool have_b = (dash != std::string::npos) && !b.empty();
+    if (have_a && !parse_int(a, &pa)) return false;
+    if (have_b && !parse_int(b, &pb)) return false;
+
+    if (one_based) {
+        // tabix-style coordinates → 0-based half-open
+        //   "a-b"   1-based [a, b] inclusive  →  [a - 1, b)
+        //   "a"     1-based single position a →  [a - 1, a)
+        //   "a-"    open upper                →  [a - 1, INT64_MAX)
+        //   "-b"    open lower                →  [0, b)
+        if (have_a) out->start = std::max<int64_t>(0, pa - 1);
+        else        out->start = INT64_MIN;
+        if (dash == std::string::npos) {
+            out->end = have_a ? pa : INT64_MAX;   // single position
+        } else {
+            out->end = have_b ? pb : INT64_MAX;
+        }
     } else {
-        out->end = out->start + 1;   // "chrom:N" → single position
+        // BED-style coordinates: already 0-based half-open
+        out->start = have_a ? pa : INT64_MIN;
+        if (dash == std::string::npos) {
+            // "chrom:N" → single 0-based position [N, N+1)
+            out->end = have_a ? out->start + 1 : INT64_MAX;
+        } else {
+            out->end = have_b ? pb : INT64_MAX;
+        }
     }
     return true;
 }
 
-static std::vector<Region> parse_region_list(const std::string& spec) {
+static std::vector<Region> parse_region_list(const std::string& spec,
+                                              bool one_based = false) {
     std::vector<Region> out;
     size_t start = 0;
     while (start <= spec.size()) {
@@ -1255,7 +1303,7 @@ static std::vector<Region> parse_region_list(const std::string& spec) {
             comma == std::string::npos ? std::string::npos : comma - start);
         if (!tok.empty()) {
             Region r{};
-            if (parse_region_one(tok, &r)) out.push_back(std::move(r));
+            if (parse_region_one(tok, &r, one_based)) out.push_back(std::move(r));
         }
         if (comma == std::string::npos) break;
         start = comma + 1;
@@ -1578,6 +1626,24 @@ static std::shared_ptr<arrow::Table> project_to_requested(
 // --slop N (pad every window by N bp on each side). Mutates `cfg` to reflect
 // the effective region list in cfg.region. Returns "" on success.
 static std::string apply_region_modifiers(Config& cfg) {
+    // 0) Canonicalise to 0-based half-open. --coords 1-based applies only to
+    // -r / --region inputs; --regions-file entries are always BED (0-based)
+    // per the spec. After this, cfg.region is guaranteed 0-based half-open
+    // and downstream call sites can ignore cfg.coords_one_based.
+    if (cfg.coords_one_based && !cfg.region.empty()) {
+        auto regs = parse_region_list(cfg.region, /*one_based=*/true);
+        std::string acc;
+        for (auto& r : regs) {
+            if (!acc.empty()) acc += ",";
+            acc += r.chrom + ":";
+            if (r.start != INT64_MIN) acc += std::to_string(r.start);
+            acc += "-";
+            if (r.end != INT64_MAX) acc += std::to_string(r.end);
+        }
+        cfg.region = acc;
+    }
+    cfg.coords_one_based = false;
+
     // 1) Read --regions-file and append its windows.
     if (!cfg.regions_file.empty()) {
         std::ifstream f(cfg.regions_file);
@@ -1613,7 +1679,7 @@ static std::string apply_region_modifiers(Config& cfg) {
 
     // 2) Apply --slop by re-serialising the parsed region list.
     if (cfg.slop != 0 && !cfg.region.empty()) {
-        auto regs = parse_region_list(cfg.region);
+        auto regs = parse_region_list(cfg.region, cfg.coords_one_based);
         std::string acc;
         for (auto& r : regs) {
             // Don't expand open bounds — INT64_MIN/MAX stay sentinels.
@@ -2213,7 +2279,7 @@ public:
                 }
                 return false;
             };
-            auto windows = parse_region_list(cfg.region);
+            auto windows = parse_region_list(cfg.region, cfg.coords_one_based);
 
             // Detect chrom/start/end columns. The user may override via
             // --region-cols (used to disambiguate non-standard names).
@@ -3480,7 +3546,7 @@ public:
             if (!self->idx_)
                 return "No BCF index for '" + path + "' (try: "
                        "`bcftools index '" + path + "'`)";
-            auto regs = parse_region_list(cfg.region);
+            auto regs = parse_region_list(cfg.region, cfg.coords_one_based);
             for (auto& r : regs) {
                 hts_itr_t* it = bcf_itr_querys(self->idx_, self->hdr_, r.chrom.c_str());
                 // bcf_itr_querys takes a "chrom:start-end" string directly,
@@ -3812,7 +3878,7 @@ public:
 
         // Region plan.
         if (!cfg.region.empty()) {
-            self->windows_ = parse_region_list(cfg.region);
+            self->windows_ = parse_region_list(cfg.region, cfg.coords_one_based);
             self->region_mode_ = true;
         }
 
@@ -4644,10 +4710,31 @@ static std::string write_parquet(TabularSource& src, const Config& cfg) {
     for (int i : requested) fields.push_back(src.schema()->field(i));
     auto out_schema = arrow::schema(fields);
 
-    auto sink_or = arrow::io::FileOutputStream::Open(cfg.parquet_out);
-    if (!sink_or.ok())
-        return "Cannot open '" + cfg.parquet_out + "' for write: " +
+    // `--parquet -`: Parquet's footer-at-end requires seekable writes, so we
+    // can't stream directly to stdout. Spool to a temp file, then copy it to
+    // stdout after the writer closes. unlink() up front so the file
+    // disappears on crash and isn't left behind.
+    bool to_stdout = (cfg.parquet_out == "-");
+    std::string out_path = cfg.parquet_out;
+    int tmp_fd = -1;
+    if (to_stdout) {
+        char tmpl[] = "/tmp/vv-parquet-XXXXXX.parquet";
+        tmp_fd = mkstemps(tmpl, 8);  // suffix length = ".parquet" = 8
+        if (tmp_fd < 0)
+            return std::string("Cannot create temp file for --parquet -: ") +
+                   std::strerror(errno);
+        out_path = tmpl;
+        // Keep fd open (Arrow opens the path by name); we'll clean up below.
+        ::close(tmp_fd);
+        tmp_fd = -1;
+    }
+
+    auto sink_or = arrow::io::FileOutputStream::Open(out_path);
+    if (!sink_or.ok()) {
+        if (to_stdout) ::unlink(out_path.c_str());
+        return "Cannot open '" + out_path + "' for write: " +
                sink_or.status().ToString();
+    }
     auto sink = sink_or.ValueOrDie();
 
     auto wprops = parquet::WriterProperties::Builder()
@@ -4689,14 +4776,48 @@ static std::string write_parquet(TabularSource& src, const Config& cfg) {
     }
 
     auto cs = writer->Close();
-    if (!cs.ok()) return "Parquet Close failed: " + cs.ToString();
+    if (!cs.ok()) {
+        if (to_stdout) ::unlink(out_path.c_str());
+        return "Parquet Close failed: " + cs.ToString();
+    }
     auto fc = sink->Close();
-    if (!fc.ok()) return "File close failed: " + fc.ToString();
+    if (!fc.ok()) {
+        if (to_stdout) ::unlink(out_path.c_str());
+        return "File close failed: " + fc.ToString();
+    }
 
-    std::fprintf(stderr, "%s[%lld rows → %s, %s]%s\n",
-                 g_color.meta_key, (long long)total,
-                 cfg.parquet_out.c_str(), cfg.compression.c_str(),
-                 g_color.reset);
+    if (to_stdout) {
+        // Stream the temp file to stdout.
+        FILE* in = std::fopen(out_path.c_str(), "rb");
+        if (!in) {
+            std::string err = std::string("cannot read back temp file: ") +
+                              std::strerror(errno);
+            ::unlink(out_path.c_str());
+            return err;
+        }
+        constexpr size_t BUF = 64 * 1024;
+        std::vector<char> buf(BUF);
+        std::fflush(stdout);
+        while (true) {
+            size_t n = std::fread(buf.data(), 1, BUF, in);
+            if (n == 0) break;
+            if (std::fwrite(buf.data(), 1, n, stdout) != n) {
+                std::fclose(in);
+                ::unlink(out_path.c_str());
+                return std::string("write to stdout failed: ") + std::strerror(errno);
+            }
+        }
+        std::fclose(in);
+        ::unlink(out_path.c_str());
+        std::fprintf(stderr, "%s[%lld rows → stdout, %s]%s\n",
+                     g_color.meta_key, (long long)total,
+                     cfg.compression.c_str(), g_color.reset);
+    } else {
+        std::fprintf(stderr, "%s[%lld rows → %s, %s]%s\n",
+                     g_color.meta_key, (long long)total,
+                     cfg.parquet_out.c_str(), cfg.compression.c_str(),
+                     g_color.reset);
+    }
     return "";
 }
 
@@ -5596,6 +5717,69 @@ static std::string build_sample(std::unique_ptr<TabularSource>& src,
         "<sample of " + old_path + ">",
         "Sampled rows: " + std::to_string(N) + " / " +
             std::to_string(M) + " (uniform random)",
+        hidden_from_src);
+    return "";
+}
+
+// ── --tail N: keep the last N rows of the source ─────────────────────────────
+//
+// Mirrors build_sample's structure: read every chunk through any active
+// --filter, slice off all but the last N rows, then wrap the result as a
+// MemoryTableSource. Streaming sources (BAM, BCF, FASTX, …) are forced
+// through a full scan; bounded sources (Parquet, Arrow IPC) do the same,
+// but Arrow's chunk-cache means we don't re-decode.
+static std::string build_tail(std::unique_ptr<TabularSource>& src,
+                               const Config& cfg) {
+    int N = cfg.tail_rows;
+    if (N <= 0) return "";
+
+    int n_fields = src->schema()->num_fields();
+    std::vector<int> all_cols;
+    for (int i = 0; i < n_fields; ++i) all_cols.push_back(i);
+
+    FilterExpr fx;
+    bool have_filter = false;
+    if (!cfg.filter_expr.empty()) {
+        std::string ferr;
+        if (!parse_filter_expr(cfg.filter_expr, *src->schema(), &fx, &ferr))
+            return "--filter: " + ferr;
+        have_filter = true;
+    }
+
+    std::vector<std::shared_ptr<arrow::Table>> chunks;
+    for (int c = 0; ; ++c) {
+        src->ensure(c);
+        if (c >= src->num_chunks()) break;
+        std::shared_ptr<arrow::Table> tbl;
+        if (!src->read_chunk(c, all_cols, &tbl).ok()) continue;
+        if (have_filter) tbl = apply_filter(tbl, fx, all_cols);
+        if (tbl && tbl->num_rows() > 0) chunks.push_back(std::move(tbl));
+    }
+    auto hidden_from_src = src->hidden_for_display();
+    if (chunks.empty()) {
+        std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
+        for (int i = 0; i < n_fields; ++i)
+            cols.push_back(std::make_shared<arrow::ChunkedArray>(
+                arrow::ArrayVector{}, src->schema()->field(i)->type()));
+        auto empty = arrow::Table::Make(src->schema(), cols, 0);
+        std::string old_path = src->path();
+        src = std::make_unique<MemoryTableSource>(empty,
+            "<tail of " + old_path + ">",
+            "Tail rows: 0 (no data)",
+            hidden_from_src);
+        return "";
+    }
+    auto cat = arrow::ConcatenateTables(chunks);
+    if (!cat.ok()) return "concat failed: " + cat.status().ToString();
+    auto master = cat.ValueOrDie();
+    int64_t M = master->num_rows();
+    int64_t take = std::min<int64_t>(N, M);
+    auto tail = master->Slice(M - take, take);
+
+    std::string old_path = src->path();
+    src = std::make_unique<MemoryTableSource>(tail,
+        "<tail of " + old_path + ">",
+        "Tail rows: " + std::to_string(take) + " / " + std::to_string(M),
         hidden_from_src);
     return "";
 }
@@ -7398,6 +7582,16 @@ int main(int argc, char** argv) {
         if (!err.empty()) { report(cfg.path, err); return 1; }
         cfg.filter_expr.clear();
         cfg.head_rows = 0; cfg.head_rows_set = false;  // sample IS the row set
+    }
+
+    // --tail N: keep only the last N rows. Like --sample, this fully
+    // materialises the result as a MemoryTableSource so every downstream
+    // view / export mode renders it identically.
+    if (cfg.tail_rows > 0) {
+        std::string err = build_tail(src, cfg);
+        if (!err.empty()) { report(cfg.path, err); return 1; }
+        cfg.filter_expr.clear();
+        cfg.head_rows = 0; cfg.head_rows_set = false;
     }
 
     // --json / --ndjson: stream JSON rows to stdout.

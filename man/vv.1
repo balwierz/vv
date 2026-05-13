@@ -65,6 +65,12 @@ Force plain ASCII table output even on a terminal.
 .BI \-n " ROWS"
 Number of rows to display (default: 10, 0 = all).
 .TP
+.BI \-\-tail " N"
+Show the last \fIN\fR rows instead of the first \fIN\fR. Reads the
+whole source (filtered by \fB\-\-filter\fR if any) and slices the
+tail. Combines with every view / export mode. For streaming
+sources (BAM, BCF, FASTX, …) this implies a full scan.
+.TP
 .BI \-w " WIDTH"
 Maximum cell width in the ASCII table (default: 32).
 .TP
@@ -144,6 +150,8 @@ Stream the input into a Parquet file at \fIFILE\fR. Combines with
 \fB\-c\fR (column subset) and \fB\-n\fR (row cap) to convert any supported
 input \(en BED, TSV, CSV, VCF, BCF, FASTA, FASTQ, BAM \(en into a Parquet
 file. Stays streaming for forward-only sources (BAM/FASTQ).
+\fIFILE\fR may be \fB-\fR to write to stdout; the data is spooled to a
+temp file first because Parquet's footer-at-end needs seekable writes.
 .TP
 .BI \-\-compression " CODEC"
 Codec for \fB\-\-parquet\fR output: \fBzstd\fR (default), \fBsnappy\fR,
@@ -180,6 +188,12 @@ Three comma-separated column names (chrom,start,end) for region
 queries on plain Parquet when auto-detection picks the wrong fields.
 Common names \fIChromosome\fR / \fIChrom\fR / \fIChr\fR /
 \fIPOS\fR / \fIchromStart\fR / \fIchromEnd\fR are tried automatically.
+.TP
+.BI \-\-coords " KIND"
+Coordinate convention for the \fB\-r\fR argument: \fB0-based\fR
+(default, BED half-open), or \fB1-based\fR (tabix / VCF / samtools
+inclusive). Aliases: \fBbed\fR, \fBtabix\fR. \fB\-\-regions\-file\fR
+entries are always parsed as BED 0-based per the spec.
 .TP
 .BI \-r ", " \-\-region " REGION"
 Filter to records overlapping \fIREGION\fR (e.g. \fBchr1:1000-2000\fR).

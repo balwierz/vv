@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`--tail N`** — show the last N rows instead of the first N.
+  Mirrors `-n` but operates on the tail. Reuses the
+  `MemoryTableSource` adapter: every chunk is read (through any
+  active `--filter`) and the last N rows are sliced off, so the
+  result renders identically through every view / export mode
+  (table, TUI, TSV, CSV, JSON, Markdown, Parquet).
+- **`--coords 1-based`** — accept tabix / VCF / samtools-style
+  1-based inclusive coordinates in `-r`. `vv -r chr1:101-200
+  --coords 1-based file` matches the same rows as
+  `vv -r chr1:100-200 file` (BED default). Conversion happens once
+  in `apply_region_modifiers`; downstream sources see normalized
+  0-based half-open. `--regions-file` is still parsed as 0-based
+  per the BED spec.
+- **`--parquet -`** — write Parquet to stdout. Parquet's
+  footer-at-end requires seekable writes, so the data is spooled
+  to an `mkstemps` temp file under `/tmp`, then streamed to stdout
+  and unlinked. Bit-identical to writing to a file path. Enables
+  `vv ... --parquet - | tool` pipelines.
 - **Generic Parquet range queries** — `-r chr1:1000-2000 file.parquet`
   now works on any Parquet file with chrom/start/end columns, not just
   LociSSD. Chromosome / Start / End column names are auto-detected

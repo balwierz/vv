@@ -172,6 +172,18 @@ assert_exit_zero "parquet_write_snappy" test -s "$TMP/out_snappy.parquet"
 BAD=$("$VV" --parquet "$TMP/x.parquet" --compression rar "$DATA/tiny.tsv" 2>&1 || true)
 assert_contains "parquet_bad_codec" "$BAD" "Unknown --compression"
 
+# --parquet - : write Parquet to stdout via a temp spool.
+"$VV" --parquet - "$DATA/tiny.tsv" > "$TMP/parquet_stdout.parquet" 2>/dev/null
+"$VV" --tsv --no-header "$TMP/parquet_stdout.parquet" > "$TMP/parquet_stdout.tsv"
+assert_eq_file "parquet_stdout_roundtrip" "$TMP/parquet_stdout.tsv" "$GOLDEN/tsv_tsv.expected"
+"$VV" --parquet "$TMP/parquet_disk.parquet" "$DATA/tiny.tsv" > /dev/null
+cmp -s "$TMP/parquet_stdout.parquet" "$TMP/parquet_disk.parquet"
+if [ $? -eq 0 ]; then
+    PASS=$((PASS+1)); echo "  ok    parquet_stdout_bit_identical_to_disk"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  parquet_stdout_bit_identical_to_disk"
+fi
+
 echo
 echo '── Stdin (-) ──────────────────────────────────────────'
 "$VV" --tsv --no-header - < "$DATA/tiny.tsv" > "$TMP/stdin_tsv.out"
@@ -227,6 +239,26 @@ MD_OUT=$("$VV" --md -n 2 "$DATA/tiny.lociss")
 assert_contains "md_has_header_pipes"     "$MD_OUT" "| Chromosome |"
 assert_contains "md_has_separator_row"    "$MD_OUT" "| --- |"
 assert_contains "md_has_data_row_chr1"    "$MD_OUT" "| chr1 |"
+
+# --tail: last-N rows. tiny.parquet has 20 rows.
+TAIL_OUT=$("$VV" --tail 3 --tsv --no-header "$DATA/tiny.parquet" | wc -l)
+assert_eq_file_inline "tail_returns_three_rows" "$TAIL_OUT" "3"
+TAIL_LAST=$("$VV" --tail 1 --tsv --no-header "$DATA/tiny.parquet")
+assert_contains "tail_picks_last_row" "$TAIL_LAST" "7100"  # last row Start
+TAIL_BIG=$("$VV" --tail 100 --tsv --no-header "$DATA/tiny.parquet" | wc -l)
+assert_eq_file_inline "tail_larger_than_total_returns_all" "$TAIL_BIG" "20"
+
+# --coords 1-based: tabix-style 1-based inclusive converts to 0-based
+# half-open. "chr1:101-200" 1-based == "chr1:100-200" 0-based.
+COORDS_BED=$("$VV" -r 'chr1:100-200' --tsv --no-header "$DATA/tiny.parquet")
+COORDS_TBX=$("$VV" -r 'chr1:101-200' --coords 1-based --tsv --no-header "$DATA/tiny.parquet")
+if [ "$COORDS_BED" = "$COORDS_TBX" ] && [ -n "$COORDS_BED" ]; then
+    PASS=$((PASS+1)); echo "  ok    coords_1based_matches_bed_window"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  coords_1based_matches_bed_window"
+fi
+COORDS_BAD=$("$VV" -r chr1:1-2 --coords nonsense "$DATA/tiny.parquet" 2>&1 || true)
+assert_contains "coords_unknown_value_errors" "$COORDS_BAD" "expected"
 
 echo
 echo "── Threading parity ──────────────────────────────────────"

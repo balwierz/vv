@@ -32,8 +32,12 @@ _vv() {
             # Comma-separated column names — no completion
             return
             ;;
-        --slop|--sample)
+        --slop|--sample|--tail)
             # Numeric argument — no completion
+            return
+            ;;
+        --coords)
+            COMPREPLY=( $(compgen -W '0-based 1-based tabix bed' -- "$cur") )
             return
             ;;
         --parquet)
@@ -56,7 +60,8 @@ _vv() {
                 -h --help -V --version
                 -i --interactive --no-interactive
                 -n -w -c
-                -r --region --window --regions-file --region-cols --slop
+                -r --region --window --regions-file --region-cols --slop --coords
+                --tail
                 -@ --threads
                 --no-index
                 --color --color=auto --color=always --color=never

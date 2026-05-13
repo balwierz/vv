@@ -34,6 +34,8 @@ _vv() {
         '--regions-file+[BED file with windows]:path:_files' \
         '--region-cols+[chrom,start,end column names (plain Parquet)]:names:' \
         '--slop+[Pad each window by N bp]:n:' \
+        '--coords+[Coordinate convention for -r]:kind:(0-based 1-based tabix bed)' \
+        '--tail+[Show the last N rows]:n:' \
         '(-@ --threads)'{-@,--threads}'+[Worker threads]:n:' \
         '--color=-[Color mode]:mode:(auto always never)' \
         '--tsv[Write tab-separated values]' \
