@@ -6,8 +6,18 @@ on:
 
 jobs:
   static-linux:
-    name: Build static Linux binary
-    runs-on: ubuntu-latest
+    name: Build static Linux binary (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            # GitHub-hosted ARM64 runner for public repos. Builds natively on
+            # ARM hardware — no QEMU emulation, no buildx --platform fiddling.
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
     steps:
@@ -32,12 +42,47 @@ jobs:
       - name: Package
         run: |
           version="${GITHUB_REF_NAME#v}"
-          mkdir -p "vv-${version}-linux-x86_64"
-          cp dist/vv "vv-${version}-linux-x86_64/"
-          cp LICENSE README.md CHANGELOG.md "vv-${version}-linux-x86_64/"
-          cp man/vv.1 "vv-${version}-linux-x86_64/" 2>/dev/null || true
-          tar -czf "vv-${version}-linux-x86_64.tar.gz" "vv-${version}-linux-x86_64"
-          sha256sum "vv-${version}-linux-x86_64.tar.gz" > SHA256SUMS
+          stem="vv-${version}-linux-${{ matrix.arch }}"
+          mkdir -p "$stem"
+          cp dist/vv "$stem/"
+          cp LICENSE README.md CHANGELOG.md "$stem/"
+          cp man/vv.1 "$stem/" 2>/dev/null || true
+          tar -czf "$stem.tar.gz" "$stem"
+          sha256sum "$stem.tar.gz" > "SHA256SUMS-${{ matrix.arch }}"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: |
+            vv-*-linux-${{ matrix.arch }}.tar.gz
+            SHA256SUMS-${{ matrix.arch }}
+
+  release:
+    name: Publish GitHub Release
+    needs: static-linux
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-all
+
+      - name: Collect release files
+        run: |
+          mkdir -p release
+          find dist-all -name 'vv-*-linux-*.tar.gz' -exec cp {} release/ \;
+          # Merge per-arch SHA256SUMS into one file so the user can verify
+          # any tarball with `sha256sum -c SHA256SUMS`.
+          (cd release && find ../dist-all -name 'SHA256SUMS-*' \
+              -exec cat {} \;) | sort -u > release/SHA256SUMS
+          ls -lh release/
 
       - name: Extract changelog section
         id: changelog
@@ -59,5 +104,5 @@ jobs:
         with:
           body_path: release-notes.md
           files: |
-            vv-*-linux-x86_64.tar.gz
-            SHA256SUMS
+            release/vv-*-linux-*.tar.gz
+            release/SHA256SUMS

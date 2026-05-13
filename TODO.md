@@ -72,11 +72,11 @@ user-facing summary).
 
 ## Performance / build
 
-### Open
-- ARM64 static binary in the release workflow (CI matrix + release
-  artifact).
-
 ### Done
+- ARM64 static binary in the release workflow — the release CI
+  matrices over `ubuntu-latest` (x86_64) and `ubuntu-22.04-arm`
+  (aarch64); both arches are published with every tag as
+  `vv-<ver>-linux-<arch>.tar.gz`.
 - LTO build — every static dep + vv built with `-flto=auto` via
   CMake `CMAKE_C_FLAGS`/`CMAKE_CXX_FLAGS`; gcc-ar / gcc-ranlib
   preserve LTO IR in archives. Significant text-segment shrink

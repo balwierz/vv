@@ -23,13 +23,20 @@ brew install balwierz/tap/vv
 ### Static binary (any modern Linux)
 
 ```sh
-curl -L https://github.com/balwierz/vv/releases/latest/download/vv-linux-x86_64.tar.gz \
+# x86_64 (Intel / AMD)
+arch=x86_64    # use aarch64 on ARM (e.g. AWS Graviton, Apple Silicon
+               # under Linux, Raspberry Pi 5)
+ver=$(curl -fsSL https://api.github.com/repos/balwierz/vv/releases/latest \
+        | grep -oP '"tag_name":\s*"\K[^"]+')
+curl -L "https://github.com/balwierz/vv/releases/${ver}/download/vv-${ver#v}-linux-${arch}.tar.gz" \
   | tar -xz
-sudo install vv-*-linux-x86_64/vv /usr/local/bin/
+sudo install vv-*-linux-${arch}/vv /usr/local/bin/
 ```
 
 The static binary requires glibc ≥ 2.28 (RHEL/CentOS/Rocky/AlmaLinux 8+,
 Debian 10+, Ubuntu 18.04+). All other dependencies are linked statically.
+Both **x86_64** and **aarch64 (ARM64)** builds are published with every
+release; verify the tarball against `SHA256SUMS` in the release assets.
 
 ### Arch Linux (AUR)
 

@@ -14,6 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `2 × hardware_concurrency()`.
 
 ### Changed
+- **Release pipeline**: now builds both **x86_64** and **aarch64**
+  (ARM64) static Linux binaries on every tag. The release workflow
+  matrices over `ubuntu-latest` and the new GitHub-hosted
+  `ubuntu-22.04-arm` runner — native builds on each architecture,
+  no QEMU emulation. Tarballs are named
+  `vv-<ver>-linux-<arch>.tar.gz`; a merged `SHA256SUMS` covers both.
+- **AlmaLinux 8 Docker build**: dropped the `-march=x86-64`
+  baseline flag from the build-app CMake invocation so the same
+  Dockerfile builds on aarch64. (`-march=x86-64` is the default
+  target on x86_64 gcc anyway, so the change is a no-op there.)
 - **AlmaLinux 8 Docker build**: rebuild every static dep + vv itself
   with `-flto=auto`. gcc-ar / gcc-ranlib preserve LTO IR in archives
   so the final link can drop unused code across library boundaries

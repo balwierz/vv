@@ -337,7 +337,7 @@ RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
         -DCMAKE_AR=$(command -v gcc-ar) \
         -DCMAKE_RANLIB=$(command -v gcc-ranlib) \
         -DCMAKE_NM=$(command -v gcc-nm) \
-        -DCMAKE_CXX_FLAGS="-O2 -flto=auto -march=x86-64 -ffunction-sections -fdata-sections" \
+        -DCMAKE_CXX_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
         -DCMAKE_EXE_LINKER_FLAGS="-flto=auto" \
         -DCMAKE_PREFIX_PATH="/build/arrow-install;/build/static-libs" \
         -DArrow_DIR=/build/arrow-install/lib64/cmake/Arrow \

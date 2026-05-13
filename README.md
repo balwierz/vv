@@ -30,7 +30,11 @@ conda install -c bioconda vv
 brew install balwierz/tap/vv
 
 # Static Linux binary (glibc ≥ 2.28)
-curl -L https://github.com/balwierz/vv/releases/latest/download/vv-linux-x86_64.tar.gz | tar -xz
+# Linux x86_64 (Intel / AMD). For ARM64 (AWS Graviton, RPi 5, …)
+# swap x86_64 → aarch64 in the URL. See INSTALL.md for both.
+ver=$(curl -fsSL https://api.github.com/repos/balwierz/vv/releases/latest \
+        | grep -oP '"tag_name":\s*"\K[^"]+')
+curl -L "https://github.com/balwierz/vv/releases/${ver}/download/vv-${ver#v}-linux-x86_64.tar.gz" | tar -xz
 sudo install vv-*-linux-x86_64/vv /usr/local/bin/
 ```
 
