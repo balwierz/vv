@@ -20,6 +20,13 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
+          # Ubuntu's `libhts-dev` hard-Depends on `libcurl4-gnutls-dev`,
+          # but GitHub-hosted runners preinstall the openssl variant.
+          # Apt declares gnutls-dev "not installable" until the conflict
+          # is broken. Remove openssl-dev first, then install gnutls-dev.
+          sudo apt-get remove -y libcurl4-openssl-dev || true
+          sudo apt-get install -y -V libcurl4-gnutls-dev
+
           # Apache Arrow apt repo (matches the version on each Ubuntu base).
           sudo apt-get install -y -V ca-certificates lsb-release wget
           wget https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
