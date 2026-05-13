@@ -170,6 +170,8 @@ struct Config {
     std::string select_cols;             // --select Chr,Start,End (name-based projection)
     bool        json_array     = false;  // --json
     bool        json_lines     = false;  // --ndjson
+    bool        md             = false;  // --md (GitHub-flavored markdown table)
+    bool        validate       = false;  // --validate (LociSSD invariants check)
 };
 
 // Effective worker-thread count: explicit override or
@@ -223,6 +225,8 @@ static void print_usage(const char* prog) {
         "                      per-column sizes) without reading data; exit\n"
         "  --unique <cols>     comma-separated columns: print distinct-value counts\n"
         "  --sample <N>        reservoir-sample N rows uniformly instead of head-N\n"
+        "  --validate          check LociSSD invariants (sort order, MaxEndSoFar,\n"
+        "                      manifest vs. data); exit non-zero on failure\n"
         "  --no-index          suppress the row-index column\n"
         "  --color[=WHEN]      colorize output: auto (default), always, never\n"
         "  --vertical          \"vertical head\": transpose the preview so each\n"
@@ -234,6 +238,7 @@ static void print_usage(const char* prog) {
         "  --csv               write comma-separated values to stdout\n"
         "  --json              write a JSON array of row objects to stdout\n"
         "  --ndjson            write one JSON object per line (JSON Lines)\n"
+        "  --md / --markdown   write a GitHub-flavored markdown table\n"
         "  --delimiter <sep>   write with a custom single-character delimiter\n"
         "  --no-header         omit the header row\n"
         "  (-n defaults to all rows in this mode; -c still applies)\n"
@@ -327,6 +332,11 @@ static Config parse_args(int argc, char** argv) {
             cfg.json_array = true;
         } else if (!std::strcmp(argv[i], "--ndjson")) {
             cfg.json_lines = true;
+        } else if (!std::strcmp(argv[i], "--md") ||
+                   !std::strcmp(argv[i], "--markdown")) {
+            cfg.md = true;
+        } else if (!std::strcmp(argv[i], "--validate")) {
+            cfg.validate = true;
         } else if (!std::strcmp(argv[i], "--color") ||
                    !std::strcmp(argv[i], "--color=auto")) {
             cfg.color = ColorMode::Auto;
@@ -4281,6 +4291,121 @@ static void write_delimited(TabularSource& src, const Config& cfg) {
     }
 }
 
+// ── GitHub-flavored Markdown table output ────────────────────────────────────
+//
+// Stream the source as a pipe-delimited markdown table. Designed for pasting
+// into GitHub / GitLab issues, READMEs, and other markdown-rendering surfaces.
+// Cells are HTML-escaped only minimally — pipes are backslash-escaped (the
+// one character that breaks the table structure) and embedded newlines
+// become <br>. Honours --select, --filter, -n, --no-header.
+static std::string md_escape_cell(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 4);
+    for (char c : s) {
+        switch (c) {
+            case '|':  out += "\\|"; break;
+            case '\n': out += "<br>"; break;
+            case '\r': /* drop */ break;
+            default:   out += c;
+        }
+    }
+    return out;
+}
+
+static void write_markdown(TabularSource& src, const Config& cfg) {
+    int64_t rows_left = (cfg.head_rows <= 0) ? INT64_MAX : (int64_t)cfg.head_rows;
+
+    std::vector<std::string> unknown;
+    std::vector<int> requested = select_field_indices(src, cfg, &unknown, true);
+    if (!unknown.empty()) {
+        std::string u;
+        for (auto& n : unknown) { if (!u.empty()) u += ","; u += n; }
+        std::fprintf(stderr, "unknown column(s) in --select: %s\n", u.c_str());
+        return;
+    }
+
+    FilterExpr fx;
+    bool have_filter = false;
+    if (!cfg.filter_expr.empty()) {
+        std::string ferr;
+        if (!parse_filter_expr(cfg.filter_expr, *src.schema(), &fx, &ferr)) {
+            std::fprintf(stderr, "--filter: %s\n", ferr.c_str());
+            return;
+        }
+        have_filter = true;
+    }
+    std::vector<int> col_indices = have_filter
+        ? union_with_filter(requested, fx) : requested;
+    int show_cols = (int)requested.size();
+
+    std::vector<int> req_in_read(requested.size());
+    for (size_t k = 0; k < requested.size(); ++k) {
+        for (size_t j = 0; j < col_indices.size(); ++j)
+            if (col_indices[j] == requested[k]) { req_in_read[k] = (int)j; break; }
+    }
+
+    if (!cfg.no_header) {
+        for (int ci = 0; ci < show_cols; ++ci)
+            std::printf("| %s ", md_escape_cell(src.schema()->field(requested[ci])->name()).c_str());
+        std::printf("|\n");
+        for (int ci = 0; ci < show_cols; ++ci) std::printf("| --- ");
+        std::printf("|\n");
+    }
+
+    struct ChunkCursor {
+        const arrow::ChunkedArray* col;
+        int     chunk_idx    = 0;
+        int64_t row_in_chunk = 0;
+        const arrow::Array& current() const { return *col->chunk(chunk_idx); }
+        void advance() {
+            if (++row_in_chunk >= col->chunk(chunk_idx)->length()) {
+                ++chunk_idx; row_in_chunk = 0;
+            }
+        }
+    };
+    auto print_rows = [&](const arrow::Table& table, int64_t n_rows) {
+        std::vector<ChunkCursor> cursors;
+        cursors.reserve(show_cols);
+        for (int ci = 0; ci < show_cols; ++ci)
+            cursors.push_back({table.column(req_in_read[ci]).get()});
+        for (int64_t r = 0; r < n_rows; ++r) {
+            for (int ci = 0; ci < show_cols; ++ci) {
+                auto& cur = cursors[ci];
+                std::string val = cell_to_display_string(cur.current(), cur.row_in_chunk);
+                if (val == NULL_SYMBOL) val.clear();
+                std::printf("| %s ", md_escape_cell(val).c_str());
+                cur.advance();
+            }
+            std::printf("|\n");
+        }
+    };
+
+    if (cfg.head_rows > 0 && !have_filter) {
+        std::shared_ptr<arrow::Table> table;
+        if (src.read_first(rows_left, col_indices, &table).ok() && table) {
+            print_rows(*table, std::min(table->num_rows(), rows_left));
+            return;
+        }
+    }
+
+    for (int c = 0; rows_left > 0; ++c) {
+        src.ensure(c);
+        if (c >= src.num_chunks()) break;
+        std::shared_ptr<arrow::Table> table;
+        auto st = src.read_chunk(c, col_indices, &table);
+        if (!st.ok()) {
+            std::fprintf(stderr, "Warning: error reading chunk %d: %s\n",
+                         c, st.ToString().c_str());
+            continue;
+        }
+        if (have_filter) table = apply_filter(table, fx, col_indices);
+        if (!table || table->num_rows() == 0) continue;
+        int64_t take = std::min(table->num_rows(), rows_left);
+        rows_left -= take;
+        print_rows(*table, take);
+    }
+}
+
 // ── In-memory adapter: wrap an Arrow Table as a TabularSource ────────────────
 //
 // Used by `--sample` (and potentially future row-selecting flags) to feed
@@ -4539,6 +4664,270 @@ static std::string write_json(TabularSource& src, const Config& cfg) {
     }
     if (cfg.json_array) std::printf("]\n");
     else if (!first_row) std::putchar('\n');
+    return "";
+}
+
+// ── --validate: LociSSD invariants check ─────────────────────────────────────
+//
+// Checks performed (per FORMAT_SPEC §3, §5, §7):
+//   1. Footer contains `lociSSD_manifest` and parses cleanly.
+//   2. Schema has Chromosome (string or dict<string>), Start, End,
+//      MaxEndSoFar (all integer).
+//   3. Manifest covers every row exactly once: per-chromosome row_offset
+//      values are contiguous from 0 and sum to total_rows.
+//   4. Within each chromosome, rows are sorted lexicographically by
+//      (Start, End).
+//   5. For every row, MaxEndSoFar[i] == max(End[chrom_first..i])
+//      (resetting at each chromosome boundary).
+//   6. The chromosome label at each row matches the manifest's window
+//      for that row index.
+//
+// Prints PASS / FAIL lines and a one-line summary. Returns "" on success
+// (all checks passed) or an error string on FAILURE / I/O error.
+static std::string validate_lociss(const std::string& path) {
+    auto maybe_file = arrow::io::ReadableFile::Open(path);
+    if (!maybe_file.ok())
+        return "Cannot open '" + path + "': " + maybe_file.status().ToString();
+
+    parquet::ReaderProperties rdr_props(arrow::default_memory_pool());
+    rdr_props.enable_buffered_stream();
+    rdr_props.set_buffer_size(4 << 20);
+
+    parquet::arrow::FileReaderBuilder builder;
+    auto st = builder.Open(maybe_file.ValueOrDie(), rdr_props);
+    if (!st.ok()) return "Not a valid Parquet file: " + st.ToString();
+    builder.memory_pool(arrow::default_memory_pool());
+    parquet::ArrowReaderProperties ap = parquet::default_arrow_reader_properties();
+    ap.set_pre_buffer(true);
+    ap.set_use_threads(true);
+    builder.properties(ap);
+
+    std::unique_ptr<parquet::arrow::FileReader> reader;
+    st = builder.Build(&reader);
+    if (!st.ok()) return "Error opening Parquet: " + st.ToString();
+
+    auto meta = reader->parquet_reader()->metadata();
+    std::shared_ptr<arrow::Schema> schema;
+    st = reader->GetSchema(&schema);
+    if (!st.ok()) return "Error reading schema: " + st.ToString();
+
+    int n_pass = 0, n_fail = 0;
+    auto pass = [&](const std::string& msg) {
+        std::printf("  PASS  %s\n", msg.c_str()); ++n_pass;
+    };
+    auto fail = [&](const std::string& msg) {
+        std::printf("  FAIL  %s\n", msg.c_str()); ++n_fail;
+    };
+
+    std::printf("Validating LociSSD invariants for %s\n", path.c_str());
+
+    // 1. Manifest present + parses.
+    std::string manifest_json;
+    if (auto kv = meta->key_value_metadata()) {
+        if (kv->Contains("lociSSD_manifest")) {
+            auto v = kv->Get("lociSSD_manifest");
+            if (v.ok()) manifest_json = *v;
+        }
+    }
+    if (manifest_json.empty()) {
+        fail("lociSSD_manifest footer key is missing (not a LociSSD file)");
+        std::fflush(stdout);
+        return "validation failed: not a LociSSD file";
+    }
+    std::vector<LocissChrom> chroms;
+    if (!parse_lociss_chromosomes(manifest_json, &chroms)) {
+        fail("lociSSD_manifest is present but malformed");
+        std::fflush(stdout);
+        return "validation failed: malformed manifest";
+    }
+    pass("manifest present and parses (" + std::to_string(chroms.size()) +
+         " chromosomes)");
+
+    // 2. Schema has required columns with usable types.
+    int j_chr = -1, j_st = -1, j_en = -1, j_mes = -1;
+    for (int i = 0; i < schema->num_fields(); ++i) {
+        const auto& n = schema->field(i)->name();
+        if      (n == "Chromosome")  j_chr = i;
+        else if (n == "Start")       j_st  = i;
+        else if (n == "End")         j_en  = i;
+        else if (n == "MaxEndSoFar") j_mes = i;
+    }
+    if (j_chr < 0 || j_st < 0 || j_en < 0 || j_mes < 0) {
+        fail("schema missing one of Chromosome / Start / End / MaxEndSoFar");
+        std::fflush(stdout);
+        return "validation failed: schema incomplete";
+    }
+    auto is_int_like = [](const arrow::DataType& t) {
+        return t.id() == arrow::Type::INT8  || t.id() == arrow::Type::INT16
+            || t.id() == arrow::Type::INT32 || t.id() == arrow::Type::INT64
+            || t.id() == arrow::Type::UINT8 || t.id() == arrow::Type::UINT16
+            || t.id() == arrow::Type::UINT32|| t.id() == arrow::Type::UINT64;
+    };
+    auto is_string_like = [](const arrow::DataType& t) {
+        if (t.id() == arrow::Type::STRING || t.id() == arrow::Type::LARGE_STRING) return true;
+        if (t.id() == arrow::Type::DICTIONARY) {
+            const auto& d = static_cast<const arrow::DictionaryType&>(t);
+            return d.value_type()->id() == arrow::Type::STRING ||
+                   d.value_type()->id() == arrow::Type::LARGE_STRING;
+        }
+        return false;
+    };
+    if (!is_string_like(*schema->field(j_chr)->type()))
+        fail("Chromosome must be string or dict<string>");
+    else                                                pass("Chromosome column is string-like");
+    if (!is_int_like(*schema->field(j_st)->type()))    fail("Start must be integer");
+    else                                                pass("Start column is integer");
+    if (!is_int_like(*schema->field(j_en)->type()))    fail("End must be integer");
+    else                                                pass("End column is integer");
+    if (!is_int_like(*schema->field(j_mes)->type()))   fail("MaxEndSoFar must be integer");
+    else                                                pass("MaxEndSoFar column is integer");
+
+    // 3. Manifest coverage: row_offsets contiguous from 0, total = file rows.
+    int64_t expected = 0;
+    bool coverage_ok = true;
+    for (size_t i = 0; i < chroms.size(); ++i) {
+        if (chroms[i].row_offset != expected) {
+            fail("chromosome '" + chroms[i].name + "' row_offset=" +
+                 std::to_string(chroms[i].row_offset) + " expected " +
+                 std::to_string(expected));
+            coverage_ok = false;
+        }
+        expected += chroms[i].rows;
+    }
+    int64_t total_rows = meta->num_rows();
+    if (expected != total_rows) {
+        fail("manifest sum-of-rows " + std::to_string(expected) +
+             " != Parquet num_rows " + std::to_string(total_rows));
+        coverage_ok = false;
+    }
+    if (coverage_ok) pass("manifest covers all " + std::to_string(total_rows) +
+                          " rows contiguously");
+
+    // 4-6. Stream every row, checking sort order, MaxEndSoFar, chrom label.
+    // GetRecordBatchReader takes Parquet *leaf* column indices — expand each
+    // Arrow field to its leaves via the schema manifest (Chromosome/Start/End/
+    // MaxEndSoFar are flat for any well-formed LociSSD file, so each maps to
+    // exactly one leaf, but we go through the manifest for safety).
+    std::vector<int> arrow_cols = {j_chr, j_st, j_en, j_mes};
+    std::vector<int> leaf_cols;
+    {
+        const auto& m = reader->manifest();
+        std::function<void(const parquet::arrow::SchemaField&)> walk =
+            [&](const parquet::arrow::SchemaField& sf) {
+                if (sf.is_leaf()) { leaf_cols.push_back(sf.column_index); return; }
+                for (const auto& ch : sf.children) walk(ch);
+            };
+        for (int idx : arrow_cols) {
+            if (idx >= 0 && idx < (int)m.schema_fields.size())
+                walk(m.schema_fields[idx]);
+        }
+    }
+    std::vector<int> all_rgs;
+    for (int g = 0; g < meta->num_row_groups(); ++g) all_rgs.push_back(g);
+    std::shared_ptr<arrow::RecordBatchReader> rb;
+    st = reader->GetRecordBatchReader(all_rgs, leaf_cols, &rb);
+    if (!st.ok()) {
+        fail("cannot read columns: " + st.ToString());
+        return "validation failed: read error";
+    }
+
+    int64_t row = 0;
+    int64_t chrom_first_row = 0;
+    size_t  manifest_idx = 0;
+    int64_t prev_start = INT64_MIN, prev_end = INT64_MIN;
+    int64_t running_max_end = INT64_MIN;
+    std::string prev_chrom;
+    int   sort_failures = 0, mes_failures = 0, chrom_failures = 0;
+    int64_t SHOW_MAX = 5;  // cap how many violations we print per check
+
+    while (true) {
+        std::shared_ptr<arrow::RecordBatch> batch;
+        st = rb->ReadNext(&batch);
+        if (!st.ok()) { fail("read error: " + st.ToString()); return "validation failed"; }
+        if (!batch) break;
+        auto chr_col = batch->column(0);
+        auto st_col  = batch->column(1);
+        auto en_col  = batch->column(2);
+        auto mes_col = batch->column(3);
+        for (int64_t r = 0; r < batch->num_rows(); ++r, ++row) {
+            std::string this_chrom = cell_to_string(*chr_col, r);
+            int64_t this_start = std::stoll(cell_to_string(*st_col,  r));
+            int64_t this_end   = std::stoll(cell_to_string(*en_col,  r));
+            int64_t this_mes   = std::stoll(cell_to_string(*mes_col, r));
+
+            // Find this row's manifest entry.
+            while (manifest_idx < chroms.size() &&
+                   row >= chroms[manifest_idx].row_offset + chroms[manifest_idx].rows)
+                ++manifest_idx;
+            if (manifest_idx >= chroms.size()) {
+                if (chrom_failures++ < SHOW_MAX)
+                    fail("row " + std::to_string(row) + " past manifest end");
+                continue;
+            }
+            const auto& cur_chrom = chroms[manifest_idx];
+
+            // chrom label vs manifest
+            if (this_chrom != cur_chrom.name) {
+                if (chrom_failures++ < SHOW_MAX)
+                    fail("row " + std::to_string(row) + " chromosome '" +
+                         this_chrom + "' but manifest says '" + cur_chrom.name + "'");
+            }
+
+            // Chromosome boundary detection (by manifest, not by label).
+            if (row == cur_chrom.row_offset) {
+                chrom_first_row = row;
+                prev_start = INT64_MIN; prev_end = INT64_MIN;
+                running_max_end = INT64_MIN;
+            }
+
+            // sort order within chromosome
+            if (row > chrom_first_row) {
+                if (this_start < prev_start ||
+                    (this_start == prev_start && this_end < prev_end)) {
+                    if (sort_failures++ < SHOW_MAX)
+                        fail("sort-order violation at row " + std::to_string(row) +
+                             " on " + cur_chrom.name + ": (" +
+                             std::to_string(this_start) + "," + std::to_string(this_end) +
+                             ") < (" + std::to_string(prev_start) + "," +
+                             std::to_string(prev_end) + ")");
+                }
+            }
+            prev_start = this_start; prev_end = this_end;
+
+            // MaxEndSoFar
+            if (this_end > running_max_end) running_max_end = this_end;
+            if (this_mes != running_max_end) {
+                if (mes_failures++ < SHOW_MAX)
+                    fail("MaxEndSoFar wrong at row " + std::to_string(row) +
+                         " on " + cur_chrom.name + ": stored=" +
+                         std::to_string(this_mes) + " expected=" +
+                         std::to_string(running_max_end));
+            }
+        }
+    }
+    if (row != total_rows)
+        fail("scanned " + std::to_string(row) + " rows, expected " +
+             std::to_string(total_rows));
+
+    if (sort_failures == 0)
+        pass("rows are sorted by (Start, End) within each chromosome");
+    else if (sort_failures > SHOW_MAX)
+        std::printf("        (%d more sort-order violations not shown)\n",
+                    (int)(sort_failures - SHOW_MAX));
+    if (mes_failures == 0)
+        pass("MaxEndSoFar matches running max(End) within each chromosome");
+    else if (mes_failures > SHOW_MAX)
+        std::printf("        (%d more MaxEndSoFar violations not shown)\n",
+                    (int)(mes_failures - SHOW_MAX));
+    if (chrom_failures == 0)
+        pass("Chromosome labels match the manifest at every row");
+    else if (chrom_failures > SHOW_MAX)
+        std::printf("        (%d more label/manifest mismatches not shown)\n",
+                    (int)(chrom_failures - SHOW_MAX));
+
+    std::printf("\n%d check(s) passed, %d failed\n", n_pass, n_fail);
+    std::fflush(stdout);
+    if (n_fail > 0) return "validation failed (" + std::to_string(n_fail) + " checks)";
     return "";
 }
 
@@ -6802,6 +7191,15 @@ int main(int argc, char** argv) {
         if (!why.empty()) { report(cfg.path, why); return 1; }
     }
 
+    // --validate: LociSSD invariants check. Doesn't go through open_source —
+    // we re-open the Parquet file with our own reader so other flags (region,
+    // select, filter) don't influence what we scan.
+    if (cfg.validate) {
+        std::string err = validate_lociss(cfg.path);
+        if (!err.empty()) { std::fprintf(stderr, "%s\n", err.c_str()); return 1; }
+        return 0;
+    }
+
     std::unique_ptr<TabularSource> src;
     std::string err = open_source(cfg.path, cfg, &src);
     if (!err.empty()) {
@@ -6861,6 +7259,14 @@ int main(int argc, char** argv) {
         if (!jcfg.head_rows_set) jcfg.head_rows = 0;
         std::string err = write_json(*src, jcfg);
         if (!err.empty()) { report(cfg.path, err); return 1; }
+        return 0;
+    }
+
+    // --md: GitHub-flavored markdown table to stdout.
+    if (cfg.md) {
+        Config mcfg = cfg;
+        if (!mcfg.head_rows_set) mcfg.head_rows = 0;
+        write_markdown(*src, mcfg);
         return 0;
     }
 

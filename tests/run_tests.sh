@@ -110,6 +110,21 @@ fi
 # --tsv must keep MaxEndSoFar; table must not show it.
 TSV_OUT=$("$VV" --tsv --no-header "$DATA/tiny.lociss")
 assert_contains "lociss_tsv_keeps_maxendsofar"  "$TSV_OUT"  "1800"
+
+# --validate on a well-formed LociSSD passes.
+"$VV" --validate "$DATA/tiny.lociss" > "$TMP/validate.ok" 2>&1
+if [ $? -eq 0 ] && grep -q "0 failed" "$TMP/validate.ok"; then
+    PASS=$((PASS + 1)); echo "  ok    validate_passes_on_tiny_lociss"
+else
+    FAIL=$((FAIL + 1)); echo "  FAIL  validate_passes_on_tiny_lociss"
+fi
+# --validate on a non-LociSSD Parquet fails with a clear message.
+"$VV" --validate "$DATA/tiny.parquet" > "$TMP/validate.bad" 2>&1
+if [ $? -ne 0 ] && grep -q "not a LociSSD file" "$TMP/validate.bad"; then
+    PASS=$((PASS + 1)); echo "  ok    validate_rejects_non_lociss_parquet"
+else
+    FAIL=$((FAIL + 1)); echo "  FAIL  validate_rejects_non_lociss_parquet"
+fi
 TABLE_OUT=$("$VV" --no-interactive --no-index --color=never "$DATA/tiny.lociss" 2>&1)
 if printf '%s' "$TABLE_OUT" | grep -q "^| MaxEndSoFar "; then
     FAIL=$((FAIL + 1))
@@ -199,6 +214,13 @@ SAMPLE_OUT=$("$VV" --tsv --no-header --sample 2 "$DATA/tiny.lociss" | wc -l)
 assert_eq_file_inline "sample_returns_two_rows" "$SAMPLE_OUT" "2"
 SAMPLE_BIG=$("$VV" --tsv --no-header --sample 100 "$DATA/tiny.lociss" | wc -l)
 assert_eq_file_inline "sample_more_than_total_returns_all" "$SAMPLE_BIG" "5"
+
+
+# --md: GitHub-flavored markdown table.
+MD_OUT=$("$VV" --md -n 2 "$DATA/tiny.lociss")
+assert_contains "md_has_header_pipes"     "$MD_OUT" "| Chromosome |"
+assert_contains "md_has_separator_row"    "$MD_OUT" "| --- |"
+assert_contains "md_has_data_row_chr1"    "$MD_OUT" "| chr1 |"
 
 echo
 echo "── Threading parity ──────────────────────────────────────"

@@ -174,6 +174,27 @@ vv --ndjson reads.fastq.gz | jq 'select(.seq | length > 50)'
 * Scalar Arrow types emit as proper JSON; nested types (list / struct /
   map) emit as their Python-style string inside a JSON string.
 
+## Markdown output (`--md`, `--markdown`)
+
+```sh
+$ vv --md -n 3 tests/data/tiny.lociss
+| Chromosome | Start | End | Name | Score | MaxEndSoFar |
+| --- | --- | --- | --- | --- | --- |
+| chr1 | 100 | 200 | peak_0 | 0.5 | 200 |
+| chr1 | 500 | 800 | peak_1 | 0.7 | 800 |
+| chr1 | 1_000 | 1_200 | peak_2 | 0.2 | 1_200 |
+```
+
+* GitHub-flavored table for pasting into issues, READMEs, and
+  reports. Renders natively on GitHub / GitLab / most static-site
+  generators.
+* Pipes inside cells are backslash-escaped (`\|`); newlines become
+  `<br>`.
+* Honours `--select`, `--filter`, `-n`, `--no-header`, `-r`,
+  `--sample`. Numbers keep their `_` thousands separators for
+  human readability — switch to `--tsv` for machine-consumable
+  output without grouping.
+
 ## Parquet output (`--parquet`, `--compression`)
 
 ```sh
@@ -431,6 +452,45 @@ LociSSD is a Parquet variant for sorted genomic intervals (see
   `--parquet` output so the data round-trips losslessly.
 * `-r chr1:78-99 file.lociss` uses the manifest + Parquet row-group
   statistics for pruning (spec §7). No external index needed.
+
+## `--validate`
+
+Verify a LociSSD file is internally consistent — useful when integrating
+a new writer or debugging a broken pipeline:
+
+```sh
+$ vv --validate peaks.lociss
+Validating LociSSD invariants for peaks.lociss
+  PASS  manifest present and parses (24 chromosomes)
+  PASS  Chromosome column is string-like
+  PASS  Start column is integer
+  PASS  End column is integer
+  PASS  MaxEndSoFar column is integer
+  PASS  manifest covers all 1_245_318 rows contiguously
+  PASS  rows are sorted by (Start, End) within each chromosome
+  PASS  MaxEndSoFar matches running max(End) within each chromosome
+  PASS  Chromosome labels match the manifest at every row
+
+9 check(s) passed, 0 failed
+```
+
+Checks performed:
+
+1. The Parquet file's `lociSSD_manifest` KV footer key exists and parses.
+2. Required columns (`Chromosome`, `Start`, `End`, `MaxEndSoFar`) exist
+   with usable types (string / dict-of-string, integer).
+3. Manifest per-chromosome `row_offset` values are contiguous from 0 and
+   `sum(rows)` equals the Parquet `num_rows`.
+4. Within each chromosome, rows are sorted lexicographically by
+   `(Start, End)`.
+5. `MaxEndSoFar[i] == max(End[chrom_first..i])` (the spec's running
+   max-end invariant; resets at each chromosome boundary).
+6. The `Chromosome` label at each row matches the manifest's window
+   for that row index.
+
+Up to 5 violations per category are printed; any more are summarised
+on the next line. Exit code is non-zero if any check failed, so
+`--validate` is suitable as a CI gate after a writer change.
 
 # bigBed / bigWig specifics
 

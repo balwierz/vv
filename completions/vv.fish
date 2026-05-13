@@ -48,6 +48,9 @@ complete -c vv -c vh -l compression -r -a 'zstd snappy gzip lz4 none' -d 'Parque
 # JSON output / projection / filter / describe / schema
 complete -c vv -c vh -l json               -d 'Write JSON array of row objects'
 complete -c vv -c vh -l ndjson             -d 'Write one JSON object per line'
+complete -c vv -c vh -l md                 -d 'Write GitHub-flavored markdown table'
+complete -c vv -c vh -l markdown           -d 'Alias of --md'
+complete -c vv -c vh -l validate           -d 'Check LociSSD invariants and exit'
 complete -c vv -c vh -l select -r          -d 'Project columns by name (comma-separated)'
 complete -c vv -c vh -l cols -r            -d 'Alias of --select'
 complete -c vv -c vh -l filter -r          -d 'Row predicate: <col> <op> <value> [AND/OR ...]'

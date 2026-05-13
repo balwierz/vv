@@ -58,9 +58,9 @@ _vv() {
                 --color --color=auto --color=always --color=never
                 --tsv --csv --delimiter
                 --parquet --compression
-                --json --ndjson
+                --json --ndjson --md --markdown
                 --select --cols --filter
-                --schema --describe --stats
+                --schema --describe --stats --validate
                 --unique --sample
                 --vertical
                 --no-header

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`--validate`** — LociSSD invariants checker. Verifies the
+  `lociSSD_manifest` footer parses, the required columns
+  (Chromosome / Start / End / MaxEndSoFar) have the right types,
+  the manifest's per-chromosome row ranges cover every row
+  contiguously, rows are sorted by `(Start, End)` within each
+  chromosome, `MaxEndSoFar[i]` matches `max(End[chrom_first..i])`,
+  and every row's `Chromosome` label agrees with the manifest's
+  window. Prints `PASS` / `FAIL` per check, caps repeat violations
+  at 5 lines per category, exits non-zero on any failure.
+- **`--md` / `--markdown`** — write a GitHub-flavored markdown table
+  to stdout. Useful for pasting query results into issues, READMEs,
+  and reports. Cells escape `|` as `\|` and turn embedded newlines
+  into `<br>`. Honours `--select`, `--filter`, `-n`, `--no-header`,
+  `-r`, `--sample`. Numbers keep their `_` thousands separators
+  so the rendered table stays readable.
 - **bigBed / bigWig support** via a vendored copy of
   [libBigWig](https://github.com/dpryan79/libBigWig) (0.4.8, MIT-licensed,
   compiled with `-DNOCURL` so only zlib is required). Source lives

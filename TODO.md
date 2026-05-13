@@ -47,13 +47,20 @@ visible-value-per-line ratio.
 - **★ wow** JSON / JSON-Lines output — `--json` writes a JSON array;
   `--ndjson` writes one JSON object per row. Common for piping to
   `jq` or feeding data pipelines.
-- Markdown output — `--md` for pasting into reports / issues.
+- ~~Markdown output~~ — `--md` / `--markdown`. *Done — emits a
+  GitHub-flavored table; honours --select / --filter / -n /
+  --no-header; pipes inside cells get escaped, newlines become
+  `<br>`. Numbers keep `_` grouping for readability.*
 - ~~`--stats`~~ — Parquet metadata footer dump (row groups, sizes,
   codecs, per-column compressed/uncompressed sizes, null counts)
   without reading any data. *Done.*
-- `--validate` — LociSSD invariants check (sort order monotone,
-  MaxEndSoFar consistent with End, manifest matches schema and
-  per-chromosome row counts).
+- ~~`--validate`~~ — LociSSD invariants check. *Done — verifies the
+  manifest covers all rows contiguously, the required columns
+  exist with correct types, rows are sorted by (Start, End) within
+  each chromosome, MaxEndSoFar matches the running max(End), and
+  each row's Chromosome label agrees with the manifest's window.
+  Prints PASS / FAIL per check, caps repeat violations at 5 to
+  keep output bounded, exits non-zero if any check failed.*
 - Parquet to stdout — `--parquet -` currently requires a file path
   because of footer-at-end; could support stdout with a buffered
   spool to disk. Useful in pipelines.

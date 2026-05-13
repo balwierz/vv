@@ -116,6 +116,15 @@ or any view mode for output. Honours \fB\-\-filter\fR (filter first,
 then sample). Reads the whole file; document upstream if you only want
 sample-from-the-first-M-rows.
 .TP
+.B \-\-validate
+Check LociSSD invariants: required columns present with correct
+types; the manifest covers every row exactly once; rows are sorted
+by \fB(Start, End)\fR within each chromosome; \fBMaxEndSoFar[i]\fR
+equals the running \fBmax(End)\fR within each chromosome; and the
+\fBChromosome\fR label at each row matches the manifest. Prints
+\fBPASS\fR / \fBFAIL\fR per check and exits non-zero on any failure
+\(en suitable as a CI gate after a writer change.
+.TP
 .B \-\-no\-index
 Suppress the row-index column.
 .TP
@@ -156,6 +165,11 @@ Write a JSON array of row objects to stdout.
 .B \-\-ndjson
 Write one JSON object per line (JSON Lines / NDJSON). Pipe-friendly
 for \fBjq(1)\fR.
+.TP
+.B \-\-md ", " \-\-markdown
+Write a GitHub-flavored markdown table to stdout. Pipes inside cells
+are escaped as \fB\\|\fR and newlines become \fB<br>\fR. Honours
+\fB\-\-select\fR, \fB\-\-filter\fR, \fB\-n\fR, \fB\-\-no\-header\fR.
 .TP
 .B \-\-no\-header
 Omit the header row in delimited output.
