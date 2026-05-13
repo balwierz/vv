@@ -331,8 +331,9 @@ static Config parse_args(int argc, char** argv) {
                 !std::strcmp(v, "1-based") || !std::strcmp(v, "1based") ||
                 !std::strcmp(v, "tabix"))
                 cfg.coords_one_based = true;
-            // UCSC / BED / Kent tools: 0-based half-open
+            // UCSC / Kent / BED tools: 0-based half-open
             else if (!std::strcmp(v, "ucsc") || !std::strcmp(v, "UCSC") ||
+                     !std::strcmp(v, "kent") || !std::strcmp(v, "Kent") ||
                      !std::strcmp(v, "0-based") || !std::strcmp(v, "0based") ||
                      !std::strcmp(v, "bed"))
                 cfg.coords_one_based = false;

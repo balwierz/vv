@@ -391,8 +391,12 @@ inclusive == UCSC `[100, 200)`. Aliases accepted:
 
 | Convention | Aliases                              |
 |------------|--------------------------------------|
-| UCSC       | `UCSC`, `0-based`, `bed`             |
+| UCSC       | `UCSC`, `Kent`, `0-based`, `bed`     |
 | NCBI       | `NCBI`, `GenBank`, `1-based`, `tabix`|
+
+`Kent` is accepted as an alias for `UCSC` in honour of Jim Kent, who
+introduced the 0-based half-open convention with the UCSC Genome
+Browser source tree in 2000.
 
 `--regions-file` entries are always parsed as BED (UCSC) regardless
 of `--coords`, per the BED spec.
