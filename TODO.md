@@ -116,11 +116,11 @@ visible-value-per-line ratio.
 
 - ~~`--tail N`~~ — *Done — last-N rows; reuses the `MemoryTableSource`
   adapter (full scan, slice from the end), honours `--filter`.*
-- ~~`--coords 1-based`~~ — *Done — accept tabix / VCF / samtools-style
-  1-based inclusive coordinates in `-r`. Conversion happens once
-  in `apply_region_modifiers`; downstream sources see normalized
-  0-based half-open. `--regions-file` entries are still 0-based per
-  the BED spec.*
+- ~~`--coords UCSC|NCBI`~~ — *Done — UCSC (0-based half-open, BED-
+  style, default) vs NCBI (1-based inclusive, GenBank/VCF/tabix
+  style). Conversion happens once in `apply_region_modifiers`;
+  downstream sources see normalized UCSC. `--regions-file` entries
+  are always BED (UCSC) per the spec.*
 - Color themes — `--theme dark|light|solarized` and / or
   `~/.config/vv/theme.toml`.
 - Better nested rendering — multi-line wrap for long `list`/`map`

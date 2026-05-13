@@ -173,7 +173,7 @@ struct Config {
     bool        json_lines     = false;  // --ndjson
     bool        md             = false;  // --md (GitHub-flavored markdown table)
     bool        validate       = false;  // --validate (LociSSD invariants check)
-    bool        coords_one_based = false; // --coords 1-based (tabix-style)
+    bool        coords_one_based = false; // --coords NCBI (1-based inclusive)
     int         tail_rows      = 0;      // --tail N
     bool        tail_rows_set  = false;
 };
@@ -260,12 +260,15 @@ static void print_usage(const char* prog) {
         "                           auto-detect Chromosome/Chrom/Chr + Start/POS\n"
         "                           + End/Stop)\n"
         "  --slop <N>               pad each window by N bp on both sides\n"
-        "  --coords <kind>          coordinate convention for -r: 0-based\n"
-        "                           (default, BED) or 1-based (tabix / VCF)\n"
+        "  --coords <kind>          coordinate convention for -r: UCSC\n"
+        "                           (default; 0-based half-open, as in BED)\n"
+        "                           or NCBI (1-based inclusive, as in GenBank,\n"
+        "                           VCF, GFF, and the samtools/tabix CLI)\n"
         "  Supported on tabix-indexed VCF/BED/GFF/TSV, indexed BCF\n"
         "  (.csi/.tbi), LociSSD Parquet (.lociss), plain sorted Parquet\n"
         "  with chrom/start/end columns, and bigBed/bigWig. Coordinates\n"
-        "  are 0-based half-open (BED convention).\n"
+        "  follow the UCSC convention (0-based half-open) by default;\n"
+        "  pass --coords NCBI for 1-based inclusive (samtools/tabix style).\n"
         "\nPerformance:\n"
         "  -@ / --threads <N>  worker threads for I/O and decode (0 = auto)\n"
         "\n  -h / --help         show this help\n"
@@ -322,14 +325,21 @@ static Config parse_args(int argc, char** argv) {
             cfg.slop = (int64_t)std::atoll(argv[++i]);
         } else if (!std::strcmp(argv[i], "--coords") && i + 1 < argc) {
             const char* v = argv[++i];
-            if (!std::strcmp(v, "1-based") || !std::strcmp(v, "1based") ||
+            // NCBI / GenBank / tabix / VCF / samtools: 1-based inclusive
+            if (!std::strcmp(v, "ncbi") || !std::strcmp(v, "NCBI") ||
+                !std::strcmp(v, "genbank") || !std::strcmp(v, "GenBank") ||
+                !std::strcmp(v, "1-based") || !std::strcmp(v, "1based") ||
                 !std::strcmp(v, "tabix"))
                 cfg.coords_one_based = true;
-            else if (!std::strcmp(v, "0-based") || !std::strcmp(v, "0based") ||
+            // UCSC / BED / Kent tools: 0-based half-open
+            else if (!std::strcmp(v, "ucsc") || !std::strcmp(v, "UCSC") ||
+                     !std::strcmp(v, "0-based") || !std::strcmp(v, "0based") ||
                      !std::strcmp(v, "bed"))
                 cfg.coords_one_based = false;
             else {
-                std::fprintf(stderr, "--coords: expected '0-based' or '1-based', got %s\n", v);
+                std::fprintf(stderr,
+                    "--coords: expected 'UCSC' (0-based half-open, default) "
+                    "or 'NCBI' (1-based inclusive), got %s\n", v);
                 std::exit(2);
             }
         } else if (!std::strcmp(argv[i], "--tail") && i + 1 < argc) {
@@ -1232,9 +1242,10 @@ struct Region {
 };
 
 // Parse "chrom[:start[-end]]" into a Region. Output is always normalized
-// to 0-based half-open. When one_based is true, the input is interpreted
-// per the tabix / VCF / samtools convention (1-based inclusive at both
-// ends) and converted internally.
+// to the UCSC convention (0-based half-open). When one_based is true,
+// the input is interpreted per the NCBI / GenBank / VCF / GFF / tabix /
+// samtools convention (1-based inclusive at both ends) and converted
+// internally before storage.
 static bool parse_region_one(const std::string& s, Region* out,
                               bool one_based = false) {
     auto colon = s.find(':');
@@ -1268,11 +1279,11 @@ static bool parse_region_one(const std::string& s, Region* out,
     if (have_b && !parse_int(b, &pb)) return false;
 
     if (one_based) {
-        // tabix-style coordinates → 0-based half-open
-        //   "a-b"   1-based [a, b] inclusive  →  [a - 1, b)
-        //   "a"     1-based single position a →  [a - 1, a)
-        //   "a-"    open upper                →  [a - 1, INT64_MAX)
-        //   "-b"    open lower                →  [0, b)
+        // NCBI-style 1-based inclusive → UCSC 0-based half-open
+        //   "a-b"   NCBI [a, b] inclusive  →  UCSC [a - 1, b)
+        //   "a"     NCBI single position a →  UCSC [a - 1, a)
+        //   "a-"    open upper             →  UCSC [a - 1, INT64_MAX)
+        //   "-b"    open lower             →  UCSC [0, b)
         if (have_a) out->start = std::max<int64_t>(0, pa - 1);
         else        out->start = INT64_MIN;
         if (dash == std::string::npos) {
@@ -1626,9 +1637,9 @@ static std::shared_ptr<arrow::Table> project_to_requested(
 // --slop N (pad every window by N bp on each side). Mutates `cfg` to reflect
 // the effective region list in cfg.region. Returns "" on success.
 static std::string apply_region_modifiers(Config& cfg) {
-    // 0) Canonicalise to 0-based half-open. --coords 1-based applies only to
-    // -r / --region inputs; --regions-file entries are always BED (0-based)
-    // per the spec. After this, cfg.region is guaranteed 0-based half-open
+    // 0) Canonicalise to UCSC (0-based half-open). --coords NCBI applies only
+    // to -r / --region inputs; --regions-file entries are always BED (UCSC)
+    // per the spec. After this, cfg.region is guaranteed UCSC convention
     // and downstream call sites can ignore cfg.coords_one_based.
     if (cfg.coords_one_based && !cfg.region.empty()) {
         auto regs = parse_region_list(cfg.region, /*one_based=*/true);

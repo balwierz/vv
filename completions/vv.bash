@@ -37,7 +37,7 @@ _vv() {
             return
             ;;
         --coords)
-            COMPREPLY=( $(compgen -W '0-based 1-based tabix bed' -- "$cur") )
+            COMPREPLY=( $(compgen -W 'UCSC NCBI GenBank 0-based 1-based bed tabix' -- "$cur") )
             return
             ;;
         --parquet)

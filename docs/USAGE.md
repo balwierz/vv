@@ -292,7 +292,11 @@ Plain `.parquet` with chrom/start/end columns works without a LociSSD
 manifest; see `--region-cols` below if the auto-detection misses
 your column names.
 
-Coordinate convention: **0-based half-open** (BED).
+Coordinate convention: **UCSC** by default — 0-based, half-open intervals
+(the convention introduced by Jim Kent's UCSC Genome Browser source tree
+in 2000 and used by BED, bigBed, bigWig, BAM, and LociSSD). For
+samtools / tabix / VCF / GFF style 1-based inclusive coordinates, pass
+`--coords NCBI`. See [Coordinate convention](#coordinate-convention-coords).
 
 ## Column names (`--region-cols`)
 
@@ -359,19 +363,39 @@ chr1	1000	1200	peak_2	0.2	1200
 
 ## Coordinate convention (`--coords`)
 
-`vv -r` defaults to **0-based half-open** (BED). Switch to tabix /
-VCF / samtools-style **1-based inclusive** with `--coords 1-based`:
+Two conventions coexist in bioinformatics file formats:
+
+* **UCSC** — *0-based, half-open* intervals `[start, end)`. Introduced
+  by Jim Kent's UCSC Genome Browser source tree in 2000 (Kent et al.,
+  *Genome Research* 12:996, 2002). Used by BED, bigBed, bigWig,
+  BAM, and LociSSD Parquet. Arithmetic-friendly: `length = end - start`,
+  with no off-by-one.
+* **NCBI** — *1-based, fully-closed* intervals `[start, end]`. The
+  older convention, inherited from how positions were written by hand
+  in pre-database biology and crystallised in the GenBank Feature
+  Table (1982) and EMBL-Bank (1980). Used by VCF, GFF/GTF, tabix
+  region strings, and the samtools / bcftools command line.
+
+`vv -r` defaults to **UCSC** (matching BED). Switch to NCBI with
+`--coords NCBI`:
 
 ```sh
-$ vv -r chr1:100-200            file.parquet   # 0-based default
-$ vv -r chr1:101-200 --coords 1-based file.parquet  # same window
-$ vv -r chr1:101-200 --coords tabix   file.parquet  # alias
+$ vv -r chr1:100-200          file.parquet              # UCSC default
+$ vv -r chr1:101-200 --coords NCBI file.parquet         # same window
+$ vv -r chr1:101-200 --coords GenBank file.parquet      # alias
+$ vv -r chr1:101-200 --coords tabix   file.parquet      # alias
 ```
 
-The two commands above match the same rows: 1-based `[101, 200]`
-inclusive == 0-based `[100, 200)`. `--coords 0-based` / `--coords bed`
-explicitly request the default. `--regions-file` entries are always
-parsed as BED 0-based regardless of `--coords`.
+All four commands above match the same rows: NCBI `[101, 200]`
+inclusive == UCSC `[100, 200)`. Aliases accepted:
+
+| Convention | Aliases                              |
+|------------|--------------------------------------|
+| UCSC       | `UCSC`, `0-based`, `bed`             |
+| NCBI       | `NCBI`, `GenBank`, `1-based`, `tabix`|
+
+`--regions-file` entries are always parsed as BED (UCSC) regardless
+of `--coords`, per the BED spec.
 
 # Data exploration
 

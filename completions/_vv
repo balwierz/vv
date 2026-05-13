@@ -34,7 +34,7 @@ _vv() {
         '--regions-file+[BED file with windows]:path:_files' \
         '--region-cols+[chrom,start,end column names (plain Parquet)]:names:' \
         '--slop+[Pad each window by N bp]:n:' \
-        '--coords+[Coordinate convention for -r]:kind:(0-based 1-based tabix bed)' \
+        '--coords+[Coordinate convention for -r (UCSC default, NCBI = 1-based inclusive)]:kind:(UCSC NCBI GenBank 0-based 1-based bed tabix)' \
         '--tail+[Show the last N rows]:n:' \
         '(-@ --threads)'{-@,--threads}'+[Worker threads]:n:' \
         '--color=-[Color mode]:mode:(auto always never)' \

@@ -190,16 +190,30 @@ Common names \fIChromosome\fR / \fIChrom\fR / \fIChr\fR /
 \fIPOS\fR / \fIchromStart\fR / \fIchromEnd\fR are tried automatically.
 .TP
 .BI \-\-coords " KIND"
-Coordinate convention for the \fB\-r\fR argument: \fB0-based\fR
-(default, BED half-open), or \fB1-based\fR (tabix / VCF / samtools
-inclusive). Aliases: \fBbed\fR, \fBtabix\fR. \fB\-\-regions\-file\fR
-entries are always parsed as BED 0-based per the spec.
+Coordinate convention for the \fB\-r\fR argument. Two values:
+.RS
+.IP \(bu 2
+\fBUCSC\fR (default) \(en 0-based, half-open intervals. This is the
+convention introduced by Jim Kent's UCSC Genome Browser source tree in
+2000 and used today by BED, bigBed, bigWig, BAM, and the LociSSD
+Parquet format. Aliases: \fB0-based\fR, \fBbed\fR.
+.IP \(bu 2
+\fBNCBI\fR \(en 1-based, fully-closed intervals. This is the convention
+inherited from GenBank (1982) and EMBL-Bank (1980); it is what VCF, GFF,
+tabix region strings, and the samtools/bcftools command line all use.
+Aliases: \fB1-based\fR, \fBGenBank\fR, \fBtabix\fR.
+.RE
+.IP
+\fB\-\-regions\-file\fR entries are always parsed as BED (UCSC
+0-based) per the BED spec, regardless of \fB\-\-coords\fR.
 .TP
 .BI \-r ", " \-\-region " REGION"
 Filter to records overlapping \fIREGION\fR (e.g. \fBchr1:1000-2000\fR).
 Multiple regions may be given comma-separated. Open-ended forms
 (\fBchr1:\fR \(en whole chromosome, \fBchr1:78-\fR, \fBchr1:-99\fR) are
-accepted. Coordinates are \fI0-based half-open\fR (BED convention).
+accepted. Coordinates follow the UCSC convention (0-based, half-open)
+by default; pass \fB\-\-coords NCBI\fR for 1-based inclusive
+(samtools / tabix / VCF style).
 .IP
 Supported on:
 .RS
@@ -212,8 +226,8 @@ Parquet row-group statistics on the \fBStart\fR and \fBMaxEndSoFar\fR
 columns, then a per-row predicate inside surviving row groups).
 .RE
 .IP
-Plain \fB.parquet\fR files without the LociSSD manifest are rejected
-with a hint pointing at tabix or LociSSD.
+Plain \fB.parquet\fR with chrom/start/end columns works without a
+LociSSD manifest (see \fB\-\-region\-cols\fR for column-name overrides).
 .TP
 .BI \-\-window " REGION"
 Alias of \fB\-r\fR / \fB\-\-region\fR \(en the name LociSSD readers often
@@ -221,9 +235,10 @@ reach for first.
 .TP
 .BI \-\-regions\-file " FILE"
 Read additional windows from a BED-formatted file (first three
-TSV columns: \fBchrom\fR, \fBstart\fR, \fBend\fR; \fI0-based half-
-open\fR). Lines starting with \fB#\fR / \fBtrack\fR / \fBbrowser\fR
-are skipped. Combines with explicit \fB\-r\fR; both lists are taken.
+TSV columns: \fBchrom\fR, \fBstart\fR, \fBend\fR; UCSC convention,
+0-based half-open). Lines starting with \fB#\fR / \fBtrack\fR /
+\fBbrowser\fR are skipped. Combines with explicit \fB\-r\fR; both
+lists are taken.
 .TP
 .BI \-\-slop " N"
 Pad every window by \fIN\fR base pairs on each side (i.e. expand

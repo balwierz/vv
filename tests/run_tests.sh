@@ -248,17 +248,25 @@ assert_contains "tail_picks_last_row" "$TAIL_LAST" "7100"  # last row Start
 TAIL_BIG=$("$VV" --tail 100 --tsv --no-header "$DATA/tiny.parquet" | wc -l)
 assert_eq_file_inline "tail_larger_than_total_returns_all" "$TAIL_BIG" "20"
 
-# --coords 1-based: tabix-style 1-based inclusive converts to 0-based
-# half-open. "chr1:101-200" 1-based == "chr1:100-200" 0-based.
-COORDS_BED=$("$VV" -r 'chr1:100-200' --tsv --no-header "$DATA/tiny.parquet")
-COORDS_TBX=$("$VV" -r 'chr1:101-200' --coords 1-based --tsv --no-header "$DATA/tiny.parquet")
-if [ "$COORDS_BED" = "$COORDS_TBX" ] && [ -n "$COORDS_BED" ]; then
-    PASS=$((PASS+1)); echo "  ok    coords_1based_matches_bed_window"
+# --coords: NCBI (1-based inclusive) input converts to UCSC (0-based
+# half-open). "chr1:101-200" NCBI == "chr1:100-200" UCSC (default).
+COORDS_UCSC=$("$VV" -r 'chr1:100-200' --tsv --no-header "$DATA/tiny.parquet")
+COORDS_NCBI=$("$VV" -r 'chr1:101-200' --coords NCBI --tsv --no-header "$DATA/tiny.parquet")
+if [ "$COORDS_UCSC" = "$COORDS_NCBI" ] && [ -n "$COORDS_UCSC" ]; then
+    PASS=$((PASS+1)); echo "  ok    coords_ncbi_matches_ucsc_window"
 else
-    FAIL=$((FAIL+1)); echo "  FAIL  coords_1based_matches_bed_window"
+    FAIL=$((FAIL+1)); echo "  FAIL  coords_ncbi_matches_ucsc_window"
+fi
+# Legacy aliases still work.
+COORDS_TBX=$("$VV" -r 'chr1:101-200' --coords tabix --tsv --no-header "$DATA/tiny.parquet")
+COORDS_GENBANK=$("$VV" -r 'chr1:101-200' --coords GenBank --tsv --no-header "$DATA/tiny.parquet")
+if [ "$COORDS_TBX" = "$COORDS_UCSC" ] && [ "$COORDS_GENBANK" = "$COORDS_UCSC" ]; then
+    PASS=$((PASS+1)); echo "  ok    coords_aliases_tabix_and_genbank"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  coords_aliases_tabix_and_genbank"
 fi
 COORDS_BAD=$("$VV" -r chr1:1-2 --coords nonsense "$DATA/tiny.parquet" 2>&1 || true)
-assert_contains "coords_unknown_value_errors" "$COORDS_BAD" "expected"
+assert_contains "coords_unknown_value_errors" "$COORDS_BAD" "UCSC"
 
 echo
 echo "── Threading parity ──────────────────────────────────────"

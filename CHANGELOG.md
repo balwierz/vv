@@ -13,13 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   active `--filter`) and the last N rows are sliced off, so the
   result renders identically through every view / export mode
   (table, TUI, TSV, CSV, JSON, Markdown, Parquet).
-- **`--coords 1-based`** — accept tabix / VCF / samtools-style
-  1-based inclusive coordinates in `-r`. `vv -r chr1:101-200
-  --coords 1-based file` matches the same rows as
-  `vv -r chr1:100-200 file` (BED default). Conversion happens once
-  in `apply_region_modifiers`; downstream sources see normalized
-  0-based half-open. `--regions-file` is still parsed as 0-based
-  per the BED spec.
+- **`--coords UCSC|NCBI`** — pick the coordinate convention for
+  `-r`. **UCSC** (default; aliases `0-based`, `bed`) means 0-based
+  half-open as in BED, bigBed, bigWig, BAM and LociSSD — the
+  convention introduced by Jim Kent's UCSC Genome Browser source
+  tree in 2000. **NCBI** (aliases `GenBank`, `1-based`, `tabix`)
+  means 1-based inclusive as in GenBank (1982), VCF, GFF, and the
+  samtools / bcftools / tabix command lines. `vv -r chr1:101-200
+  --coords NCBI file` matches the same rows as the UCSC default
+  `vv -r chr1:100-200 file`. Conversion happens once in
+  `apply_region_modifiers`; downstream sources see normalized
+  UCSC. `--regions-file` is always BED (UCSC) per the spec.
 - **`--parquet -`** — write Parquet to stdout. Parquet's
   footer-at-end requires seekable writes, so the data is spooled
   to an `mkstemps` temp file under `/tmp`, then streamed to stdout
