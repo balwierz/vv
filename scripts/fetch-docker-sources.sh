@@ -89,9 +89,11 @@ repack_header_only rapidjson-headers.tar.gz \
     https://github.com/Tencent/rapidjson/archive/refs/tags/v1.1.0.tar.gz \
     include/rapidjson  rapidjson
 
-# xsimd 14.1.0 ships its CMake config under cmake/, headers under include/xsimd/.
-# The Dockerfile expects xsimd/ to contain headers AND the *Config.cmake files
-# at the top, so we copy both into the same staged dir before tarring.
+# xsimd is header-only but the Dockerfile expects the *installed* layout —
+# the upstream archive ships `xsimdConfig.cmake.in` (a CMake template) but
+# not the final `xsimdConfig.cmake` / `xsimdConfigVersion.cmake` /
+# `xsimdTargets.cmake` files that `cmake --install` generates. So we
+# actually run a CMake install into a temp prefix and harvest the result.
 repack_xsimd() {
     local out="xsimd.tar.gz"
     if [ -s "$DST/$out" ]; then
@@ -99,20 +101,29 @@ repack_xsimd() {
         return
     fi
     local url="https://github.com/xtensor-stack/xsimd/archive/refs/tags/14.1.0.tar.gz"
-    echo "  fetch $out ← $url (repacking)"
+    echo "  fetch $out ← $url (cmake-install to harvest headers + Config)"
     curl -fsSL --retry 3 -o "$TMP/xsimd.tar.gz" "$url"
     mkdir -p "$TMP/x-extract"
     tar -xzf "$TMP/xsimd.tar.gz" -C "$TMP/x-extract"
     local upstream_top
     upstream_top=$(ls "$TMP/x-extract" | head -1)
+    rm -rf "$TMP/x-build" "$TMP/x-install"
+    cmake -S "$TMP/x-extract/$upstream_top" -B "$TMP/x-build" \
+        -DCMAKE_INSTALL_PREFIX="$TMP/x-install" \
+        -DBUILD_TESTS=OFF -DBUILD_BENCHMARKS=OFF \
+        -DENABLE_XTL_COMPLEX=OFF > /dev/null
+    cmake --install "$TMP/x-build" > /dev/null
+    # `cmake --install` produces:
+    #   $TMP/x-install/include/xsimd/         (headers)
+    #   $TMP/x-install/share/cmake/xsimd/     (xsimdConfig.cmake, …)
+    # The Dockerfile wants both flattened into a single `xsimd/` tar.
     rm -rf "$TMP/x-staging/xsimd"
     mkdir -p "$TMP/x-staging/xsimd"
-    cp -r "$TMP/x-extract/$upstream_top/include/xsimd/." "$TMP/x-staging/xsimd/"
-    # CMake config files (xsimd-config.cmake, xsimd-config-version.cmake)
-    cp "$TMP/x-extract/$upstream_top"/cmake/*.cmake "$TMP/x-staging/xsimd/" || true
+    cp -r "$TMP/x-install/include/xsimd/." "$TMP/x-staging/xsimd/"
+    cp "$TMP/x-install"/share/cmake/xsimd/*.cmake "$TMP/x-staging/xsimd/"
     tar -czf "$DST/$out.part" -C "$TMP/x-staging" xsimd
     mv "$DST/$out.part" "$DST/$out"
-    rm -rf "$TMP/x-extract" "$TMP/x-staging" "$TMP/xsimd.tar.gz"
+    rm -rf "$TMP/x-extract" "$TMP/x-staging" "$TMP/x-build" "$TMP/x-install" "$TMP/xsimd.tar.gz"
 }
 repack_xsimd
 
