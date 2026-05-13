@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **Smarter inline truncation for `list` / `map` cells.** The
+  truncator now walks every top-level comma and picks the largest
+  leading-element prefix that fits the column. Previous behavior
+  always dropped to `[first, …]` after the first comma, even when
+  `[first, second]` would have fit. Most visible on VCF INFO
+  expansions, BAM tags, and other multi-element list cells common
+  in real data. Falls back to char-truncation only when even one
+  element + ellipsis doesn't fit.
+
 ### Added
 - **TUI copy cell (`y` key)** — copies the top-left visible cell to
   the system clipboard via OSC52. Works through SSH and tmux 3.3+

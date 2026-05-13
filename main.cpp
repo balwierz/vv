@@ -698,30 +698,36 @@ static std::string truncate(const std::string& s, int max_w) {
     if (max_w < 2) max_w = 2;
     if (display_width(s) <= max_w) return s;
 
-    // Lists [..], tuples (..), maps {..}: prefer keeping the first element
-    // visible — render "<open>first, …<close>" rather than slicing mid-value.
+    // Lists [..], tuples (..), maps {..}: prefer keeping as many leading
+    // elements visible as possible — render
+    //   "<open>e1, e2, … en, …<close>"
+    // with the largest n that fits in max_w. Falls back to "[e1, …]"
+    // when even one element + ellipsis doesn't fit.
     if (s.size() >= 2) {
         char open  = s.front();
         char close = (open == '[') ? ']' : (open == '(') ? ')' : (open == '{') ? '}' : 0;
         if (close && s.back() == close) {
+            // Collect top-level comma boundaries.
+            std::vector<size_t> commas;
             int depth = 0;
-            size_t comma = std::string::npos;
             for (size_t i = 0; i < s.size(); ++i) {
                 char c = s[i];
                 if (c == '[' || c == '(' || c == '{') ++depth;
                 else if (c == ']' || c == ')' || c == '}') --depth;
-                else if (depth == 1 && c == ',' && i + 1 < s.size() && s[i+1] == ' ') {
-                    comma = i; break;
-                }
+                else if (depth == 1 && c == ',' && i + 1 < s.size() && s[i+1] == ' ')
+                    commas.push_back(i);
             }
-            if (comma != std::string::npos) {
-                std::string cand;
-                cand += open;
-                cand.append(s, 1, comma - 1);
-                cand += ", ";
-                cand += ELLIPSIS;
-                cand += close;
-                if (display_width(cand) <= max_w) return cand;
+            if (!commas.empty()) {
+                // Try the largest prefix that fits, down to 1 element.
+                for (size_t n = commas.size(); n >= 1; --n) {
+                    std::string cand;
+                    cand += open;
+                    cand.append(s, 1, commas[n - 1] - 1);  // up to "eN"
+                    cand += ", ";
+                    cand += ELLIPSIS;
+                    cand += close;
+                    if (display_width(cand) <= max_w) return cand;
+                }
             }
         }
     }

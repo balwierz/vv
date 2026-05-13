@@ -100,8 +100,11 @@ user-facing summary).
 ## Convenience
 
 ### Open
-- Better nested rendering — multi-line wrap for long `list`/`map`
-  cells instead of `[first, …]`.
+- Multi-line nested rendering — wrap long `list`/`map` cells across
+  multiple screen rows. Punted as "medium-sized": the current TUI
+  bakes row-height=1 into chunk caching, search highlighting, sort
+  indirection, and scroll math. Inline expansion (this iteration)
+  takes the easy win.
 - `~/.config/vv/theme.toml` — user-defined themes on top of the
   built-in `--theme` selector. Deferred until someone asks; the
   five built-ins (default / dark / light / solarized-dark /
@@ -112,6 +115,10 @@ user-facing summary).
   `light`, `solarized-dark`, `solarized-light` (built-in palettes
   covering both the ASCII table and the TUI; 256-color with 16-color
   fallback).
+- Smarter inline list/map truncation — `truncate()` walks every
+  top-level comma and picks the largest leading-element prefix
+  that fits the column, instead of always dropping to
+  `[first, …]` after the first comma.
 
 ### Done
 - `--tail N` — last-N rows; reuses the `MemoryTableSource` adapter.

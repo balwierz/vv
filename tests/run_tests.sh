@@ -114,6 +114,13 @@ if [ -f "$DATA/tiny.bw" ]; then
     assert_eq_file_inline "bigwig_region_returns_two_rows" "$BW_REGION" "2"
 fi
 
+# Smart list/map truncation: when a column is too narrow for the full
+# value, the old code dropped to "[first, …]" after the first comma.
+# The new code walks every top-level comma and picks the largest prefix
+# that fits. tiny.parquet's Tags column has a row with two 2-letter and
+# one 8-letter element; at width 14 the whole "[promoter, TF]" fits.
+NARROW=$("$VV" -w 14 --no-interactive --no-index --color=never -n 6 "$DATA/tiny.parquet")
+assert_contains "trunc_lists_fit_multiple_elements" "$NARROW" "[promoter, TF]"
 # 2bit — UCSC sequence-index reader.
 if [ -f "$DATA/tiny.2bit" ]; then
     TBT_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.2bit" | wc -l)
