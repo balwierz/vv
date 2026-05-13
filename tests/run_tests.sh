@@ -273,6 +273,12 @@ echo "── Threading parity ────────────────�
 "$VV" --tsv --no-header -@ 1 "$DATA/tiny.parquet" > "$TMP/t1.out"
 "$VV" --tsv --no-header -@ 4 "$DATA/tiny.parquet" > "$TMP/t4.out"
 assert_eq_file "threads_1_vs_4_parquet" "$TMP/t1.out" "$TMP/t4.out"
+# Decode-threads override produces identical output (parallelism is an
+# implementation detail, results must match the serial run byte-for-byte).
+"$VV" --tsv --no-header --decode-threads 8 "$DATA/tiny.parquet" > "$TMP/d8.out"
+assert_eq_file "decode_threads_8_matches_t1" "$TMP/d8.out" "$TMP/t1.out"
+"$VV" --tsv --no-header -@ 2 --decode-threads 16 "$DATA/tiny.parquet" > "$TMP/d16.out"
+assert_eq_file "decode_threads_16_matches_t1" "$TMP/d16.out" "$TMP/t1.out"
 
 echo
 echo "── Help / version ────────────────────────────────────────"

@@ -73,17 +73,22 @@ user-facing summary).
 ## Performance / build
 
 ### Open
-- LTO build — rebuild all static deps with
-  `-flto -ffunction-sections -fdata-sections` and link with
-  `--gc-sections`. Expected 40–60 % text-segment savings vs the
-  current 15 MB static binary.
-- Parquet decompressor thread-pool tunable — `--threads N` already
-  drives Arrow's CPU pool; a dedicated knob (e.g. `--decode-threads N`)
-  could give another 1.5–2× on cold reads on machines where
-  decompress contends with I/O.
 - ARM64 static binary in the release workflow (CI matrix + release
-  artifact). Also satisfies the same item under "Quality / signal".
-- `ccache` in the AlmaLinux 8 Dockerfile to make rebuilds faster.
+  artifact).
+
+### Done
+- LTO build — every static dep + vv built with `-flto=auto` via
+  CMake `CMAKE_C_FLAGS`/`CMAKE_CXX_FLAGS`; gcc-ar / gcc-ranlib
+  preserve LTO IR in archives. Significant text-segment shrink
+  vs the previous non-LTO 15 MB static binary.
+- Parquet decompressor thread-pool tunable — `--decode-threads N`
+  separately sizes Arrow's CPU thread pool (Parquet column decode
+  / CSV parallel parsing) without touching htslib's thread count.
+  Defaults to `--threads`; bounded at `2 × hardware_concurrency()`.
+- `ccache` in the AlmaLinux 8 Dockerfile — installed via EPEL,
+  symlinks added to PATH so every `gcc` / `g++` invocation gets
+  wrapped; BuildKit cache mount (`id=vv-ccache`) persists the
+  cache across docker builds.
 
 ## Convenience
 

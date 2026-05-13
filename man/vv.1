@@ -255,6 +255,13 @@ next to the file). If absent, \fBvv\fR prints a hint pointing to
 Number of worker threads for I/O and decoding. \fB0\fR (default) auto-
 detects (cores/2, capped at 8). Drives Arrow's CPU thread pool, htslib
 BAM/CRAM decompression, and BGZF decompression for FASTA/FASTQ.
+.TP
+.BI \-\-decode\-threads " N"
+Override the Arrow CPU thread-pool size used for Parquet column decode
+and CSV/TSV parallel parsing. Defaults to \fB\-\-threads\fR; raising it
+above can give 1.5–2× on cold reads where decompression is the
+bottleneck and the rest of the system has idle cores. Bounded at twice
+\fBhardware_concurrency()\fR.
 .SS Other
 .TP
 .B \-h, \-\-help

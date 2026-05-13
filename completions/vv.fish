@@ -33,6 +33,7 @@ complete -c vv -c vh -l tail -r            -d 'Show the last N rows'
 
 # Performance
 complete -c vv -c vh -s @ -l threads -r    -d 'Worker threads for I/O and decode (0 = auto)'
+complete -c vv -c vh -l decode-threads -r  -d 'Arrow CPU pool size for Parquet/CSV decode (0 = follow --threads)'
 
 # --color
 complete -c vv -c vh -l color              -d 'Colorize output (auto/always/never)'

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`--decode-threads N`** — separately size Arrow's CPU thread pool
+  (Parquet column decode and CSV / TSV parallel parsing) without
+  touching htslib's thread count. Defaults to `--threads`; useful
+  when cold reads bottleneck on column decompression. Bounded at
+  `2 × hardware_concurrency()`.
+
+### Changed
+- **AlmaLinux 8 Docker build**: rebuild every static dep + vv itself
+  with `-flto=auto`. gcc-ar / gcc-ranlib preserve LTO IR in archives
+  so the final link can drop unused code across library boundaries
+  (not just within each `.a`). Significant text-segment shrink vs
+  the previous non-LTO 15 MB static binary.
+- **AlmaLinux 8 Docker build**: install `ccache` (via EPEL) and put
+  its compiler-symlink dir ahead of gcc-toolset-12 on `PATH`. A
+  BuildKit cache mount (`id=vv-ccache`) persists the compile cache
+  across docker builds. Requires Docker BuildKit + buildx.
+
+### Added
 - **TUI interactive-exploration batch** — three new keybindings turn
   the ncurses viewer into a real exploration tool:
   - **`S`** opens a per-column stats popup (count, nulls, min, max,

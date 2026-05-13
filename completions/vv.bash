@@ -8,7 +8,7 @@ _vv() {
     local file_exts='parquet arrow feather lociss bam cram sam vcf vcf.gz bcf gff gff.gz gff3 gff3.gz gtf gtf.gz bed bed.gz tsv tsv.gz csv csv.gz fa fa.gz fasta fasta.gz fna fna.gz faa faa.gz ffn ffn.gz frn frn.gz fq fq.gz fastq fastq.gz paf paf.gz bb bigBed bw bigWig'
 
     case "$prev" in
-        -n|-w|-c|-@|--threads)
+        -n|-w|-c|-@|--threads|--decode-threads)
             # Numeric argument — no completion
             return
             ;;
@@ -62,7 +62,7 @@ _vv() {
                 -n -w -c
                 -r --region --window --regions-file --region-cols --slop --coords
                 --tail
-                -@ --threads
+                -@ --threads --decode-threads
                 --no-index
                 --color --color=auto --color=always --color=never
                 --tsv --csv --delimiter

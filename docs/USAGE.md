@@ -558,6 +558,21 @@ $ vv -@ 4 -n 1000 alignments.bam            # multi-threaded BAM decode
 
 `--threads 0` (default) auto-picks `min(8, max(2, cores/2))`.
 
+## `--decode-threads N`
+
+Separate knob for Arrow's CPU thread pool, which handles Parquet column
+decode and CSV / TSV parallel parsing. Defaults to `--threads`; raise it
+when cold Parquet reads bottleneck on decompression and the rest of the
+system has idle cores:
+
+```sh
+$ vv -@ 4 --decode-threads 16 -n 100 huge.parquet   # 4 I/O, 16 decode
+```
+
+Bounded at twice `hardware_concurrency()` so a typo doesn't wreck the
+machine. Doesn't affect htslib's thread count (BAM/CRAM/BCF/FASTQ stay
+on `--threads`).
+
 # LociSSD specifics
 
 LociSSD is a Parquet variant for sorted genomic intervals (see

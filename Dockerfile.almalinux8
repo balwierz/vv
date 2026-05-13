@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.4
 # Builds vv against glibc 2.28 (AlmaLinux 8) for portability.
 # All sources are bundled in docker-sources/ — no internet needed inside Docker.
 #
@@ -7,21 +8,56 @@
 # Extract the binary:
 #   mkdir -p dist && docker run --rm -v "$PWD/dist:/out" vv_build
 #   # binary at ./dist/vv (runs on Linux with glibc >= 2.28)
+#
+# Speed-up notes:
+# - Repeated builds reuse a BuildKit ccache mount (id=vv-ccache). Wipe
+#   it with: docker builder prune --filter type=exec.cachemount
+# - The `# syntax=…` line at the top enables BuildKit cache mounts;
+#   any Docker ≥ 23 already enables BuildKit by default.
 
 FROM almalinux:8 AS base
 
 RUN dnf install -y dnf-plugins-core && \
     dnf config-manager --set-enabled powertools && \
+    dnf install -y epel-release && \
     dnf install -y \
         gcc-toolset-12 gcc-toolset-12-gcc-c++ \
         cmake make ninja-build pkg-config \
         autoconf automake libtool python3 \
         patch bzip2 \
+        ccache \
     && dnf clean all
 
-ENV PATH="/opt/rh/gcc-toolset-12/root/usr/bin:${PATH}"
+# Prepend ccache's compiler-symlink directory ahead of gcc-toolset-12 so
+# every `gcc` / `g++` invocation gets wrapped. ccache resolves the real
+# compiler via its own PATH walk (skipping its own dir), so we still end
+# up with gcc-toolset-12's gcc under the hood.
+ENV PATH="/usr/lib64/ccache:/opt/rh/gcc-toolset-12/root/usr/bin:${PATH}"
 ENV CC=gcc CXX=g++
+ENV CCACHE_DIR=/root/.ccache
+# Tell ccache to look at the real compiler path, not just its name —
+# otherwise it can't tell the system gcc apart from the toolset one.
+ENV CCACHE_COMPILERCHECK=content
 ENV PKG_CONFIG_PATH=/build/static-libs/lib/pkgconfig
+
+# LTO (link-time optimisation) across every static dep AND vv itself.
+# Lets the final link delete unused code across library boundaries
+# instead of only within each .a. Expected ~30-50% text-segment
+# reduction on the static binary. gcc-ar / gcc-ranlib are LTO-aware
+# wrappers that preserve LTO IR in archives; without them, the IR is
+# stripped at archive time and LTO does nothing.
+ENV AR=gcc-ar
+ENV RANLIB=gcc-ranlib
+ENV NM=gcc-nm
+# CFLAGS / CXXFLAGS picked up automatically by autotools / make stages
+# (xz, ncurses, htslib, bzip2). CMake stages set CMAKE_C_FLAGS /
+# CMAKE_CXX_FLAGS explicitly — those are patched below to also include
+# -flto=auto. CMAKE_INTERPROCEDURAL_OPTIMIZATION env var nudges any
+# nested FetchContent / find_package dep to opt in too.
+ENV CFLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections"
+ENV CXXFLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections"
+ENV LDFLAGS="-flto=auto"
+ENV CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
 
 WORKDIR /build
 COPY docker-sources/ /build/src/
@@ -35,50 +71,55 @@ RUN tar xf /build/src/boost-headers.tar.gz -C /usr/include/ && \
 
 # ── zlib ──────────────────────────────────────────────────────────────────────
 FROM base AS build-zlib
-RUN tar xf /build/src/zlib.tar.gz && mv zlib-* zlib-src && \
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/zlib.tar.gz && mv zlib-* zlib-src && \
     cmake -S zlib-src -B zlib-bld \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/build/static-libs \
-        -DCMAKE_C_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DCMAKE_C_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
         -DZLIB_BUILD_EXAMPLES=OFF && \
     cmake --build zlib-bld -j$(nproc) && cmake --install zlib-bld && \
     rm -f /build/static-libs/lib/libz.so*
 
 # ── zstd ──────────────────────────────────────────────────────────────────────
 FROM base AS build-zstd
-RUN tar xf /build/src/zstd.tar.gz && mv zstd-* zstd-src && \
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/zstd.tar.gz && mv zstd-* zstd-src && \
     cmake -S zstd-src/build/cmake -B zstd-bld \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/build/static-libs \
-        -DCMAKE_C_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DCMAKE_C_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
         -DZSTD_BUILD_SHARED=OFF -DZSTD_BUILD_STATIC=ON \
         -DZSTD_BUILD_PROGRAMS=OFF -DZSTD_BUILD_TESTS=OFF && \
     cmake --build zstd-bld -j$(nproc) && cmake --install zstd-bld
 
 # ── lz4 ───────────────────────────────────────────────────────────────────────
 FROM base AS build-lz4
-RUN tar xf /build/src/lz4.tar.gz && mv lz4-* lz4-src && \
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/lz4.tar.gz && mv lz4-* lz4-src && \
     cmake -S lz4-src/build/cmake -B lz4-bld \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/build/static-libs \
-        -DCMAKE_C_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DCMAKE_C_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
         -DBUILD_SHARED_LIBS=OFF && \
     cmake --build lz4-bld -j$(nproc) && cmake --install lz4-bld
 
 # ── bzip2 ─────────────────────────────────────────────────────────────────────
 FROM base AS build-bzip2
-RUN tar xf /build/src/bzip2.tar.gz && mv bzip2-* bzip2-src && \
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/bzip2.tar.gz && mv bzip2-* bzip2-src && \
     mkdir -p /build/static-libs/lib /build/static-libs/include && \
     make -C bzip2-src -j$(nproc) \
-        CFLAGS="-O2 -ffunction-sections -fdata-sections" libbz2.a && \
+        CFLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" libbz2.a && \
     cp bzip2-src/libbz2.a /build/static-libs/lib/ && \
     cp bzip2-src/bzlib.h  /build/static-libs/include/
 
 # ── xz / lzma ─────────────────────────────────────────────────────────────────
 FROM base AS build-xz
-RUN tar xf /build/src/xz.tar.gz && mv xz-* xz-src && \
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/xz.tar.gz && mv xz-* xz-src && \
     mkdir xz-bld && cd xz-bld && \
-    CFLAGS="-O2 -ffunction-sections -fdata-sections" \
+    CFLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
     ../xz-src/configure --prefix=/build/static-libs \
         --disable-shared --enable-static \
         --disable-xz --disable-xzdec --disable-lzmadec \
@@ -87,52 +128,57 @@ RUN tar xf /build/src/xz.tar.gz && mv xz-* xz-src && \
 
 # ── libdeflate ────────────────────────────────────────────────────────────────
 FROM base AS build-deflate
-RUN tar xf /build/src/deflate.tar.gz && mv libdeflate-* deflate-src && \
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/deflate.tar.gz && mv libdeflate-* deflate-src && \
     cmake -S deflate-src -B deflate-bld \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/build/static-libs \
-        -DCMAKE_C_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DCMAKE_C_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
         -DLIBDEFLATE_BUILD_SHARED_LIB=OFF && \
     cmake --build deflate-bld -j$(nproc) && cmake --install deflate-bld
 
 # ── brotli ────────────────────────────────────────────────────────────────────
 FROM base AS build-brotli
-RUN tar xf /build/src/brotli.tar.gz && mv brotli-* brotli-src && \
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/brotli.tar.gz && mv brotli-* brotli-src && \
     cmake -S brotli-src -B brotli-bld \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/build/static-libs \
-        -DCMAKE_C_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DCMAKE_C_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
         -DBUILD_SHARED_LIBS=OFF && \
     cmake --build brotli-bld -j$(nproc) && cmake --install brotli-bld
 
 # ── snappy ────────────────────────────────────────────────────────────────────
 FROM base AS build-snappy
-RUN tar xf /build/src/snappy.tar.gz && mv snappy-* snappy-src && \
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/snappy.tar.gz && mv snappy-* snappy-src && \
     cmake -S snappy-src -B snappy-bld \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/build/static-libs \
-        -DCMAKE_CXX_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DCMAKE_CXX_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
         -DBUILD_SHARED_LIBS=OFF \
         -DSNAPPY_BUILD_TESTS=OFF -DSNAPPY_BUILD_BENCHMARKS=OFF && \
     cmake --build snappy-bld -j$(nproc) && cmake --install snappy-bld
 
 # ── utf8proc ──────────────────────────────────────────────────────────────────
 FROM base AS build-utf8proc
-RUN tar xf /build/src/utf8proc.tar.gz && mv utf8proc-* utf8proc-src && \
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/utf8proc.tar.gz && mv utf8proc-* utf8proc-src && \
     cmake -S utf8proc-src -B utf8proc-bld \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/build/static-libs \
-        -DCMAKE_C_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DCMAKE_C_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
         -DBUILD_SHARED_LIBS=OFF && \
     cmake --build utf8proc-bld -j$(nproc) && cmake --install utf8proc-bld
 
 # ── abseil-cpp ────────────────────────────────────────────────────────────────
 FROM base AS build-absl
-RUN tar xf /build/src/absl.tar.gz && mv abseil-cpp-* absl-src && \
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/absl.tar.gz && mv abseil-cpp-* absl-src && \
     cmake -S absl-src -B absl-bld \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/build/static-libs \
-        -DCMAKE_CXX_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DCMAKE_CXX_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
         -DCMAKE_CXX_STANDARD=17 \
         -DABSL_BUILD_TESTING=OFF && \
     cmake --build absl-bld -j$(nproc) && cmake --install absl-bld
@@ -140,22 +186,24 @@ RUN tar xf /build/src/absl.tar.gz && mv abseil-cpp-* absl-src && \
 # ── re2 (needs abseil) ────────────────────────────────────────────────────────
 FROM base AS build-re2
 COPY --from=build-absl /build/static-libs /build/static-libs
-RUN tar xf /build/src/re2.tar.gz && mv re2-* re2-src && \
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/re2.tar.gz && mv re2-* re2-src && \
     cmake -S re2-src -B re2-bld \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/build/static-libs \
         -DCMAKE_PREFIX_PATH=/build/static-libs \
-        -DCMAKE_CXX_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DCMAKE_CXX_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
         -DBUILD_SHARED_LIBS=OFF -DRE2_BUILD_TESTING=OFF && \
     cmake --build re2-bld -j$(nproc) && cmake --install re2-bld
 
 # ── thrift ────────────────────────────────────────────────────────────────────
 FROM base AS build-thrift
-RUN tar xf /build/src/thrift.tar.gz && mv thrift-* thrift-src && \
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/thrift.tar.gz && mv thrift-* thrift-src && \
     cmake -S thrift-src -B thrift-bld \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/build/static-libs \
-        -DCMAKE_CXX_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DCMAKE_CXX_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
         -DBUILD_SHARED_LIBS=OFF \
         -DBUILD_COMPILER=OFF -DBUILD_TESTING=OFF \
         -DBUILD_TUTORIALS=OFF -DBUILD_EXAMPLES=OFF \
@@ -168,9 +216,10 @@ RUN tar xf /build/src/thrift.tar.gz && mv thrift-* thrift-src && \
 
 # ── ncurses ───────────────────────────────────────────────────────────────────
 FROM base AS build-ncurses
-RUN tar xf /build/src/ncurses.tar.gz && mv ncurses-* ncurses-src && \
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/ncurses.tar.gz && mv ncurses-* ncurses-src && \
     mkdir ncurses-bld && cd ncurses-bld && \
-    CFLAGS="-O2 -ffunction-sections -fdata-sections" \
+    CFLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
     ../ncurses-src/configure --prefix=/build/static-libs \
         --disable-shared --enable-static --with-termlib \
         --enable-widec --without-ada --without-cxx-binding \
@@ -183,11 +232,12 @@ FROM base AS build-htslib
 COPY --from=build-zlib  /build/static-libs /build/static-libs
 COPY --from=build-bzip2 /build/static-libs /build/static-libs
 COPY --from=build-xz    /build/static-libs /build/static-libs
-RUN tar xf /build/src/htslib.tar.bz2 && mv htslib-* htslib-src && \
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/htslib.tar.bz2 && mv htslib-* htslib-src && \
     cd htslib-src && \
-    CFLAGS="-O2 -ffunction-sections -fdata-sections" \
+    CFLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
     CPPFLAGS="-I/build/static-libs/include" \
-    LDFLAGS="-L/build/static-libs/lib" \
+    LDFLAGS="-L/build/static-libs/lib -flto=auto" \
     ./configure --prefix=/build/static-libs \
         --disable-libcurl --disable-gcs --disable-s3 \
         --disable-plugins && \
@@ -217,12 +267,13 @@ COPY --from=build-htslib   /build/static-libs /build/static-libs
 
 # ── Arrow 23.0.1 ──────────────────────────────────────────────────────────────
 FROM static-libs AS build-arrow
-RUN tar xf /build/src/arrow.tar.gz && mv arrow-* arrow-src && \
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/arrow.tar.gz && mv arrow-* arrow-src && \
     cmake -S arrow-src/cpp -B arrow-bld \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/build/arrow-install \
-        -DCMAKE_C_FLAGS="-O2 -ffunction-sections -fdata-sections" \
-        -DCMAKE_CXX_FLAGS="-O2 -ffunction-sections -fdata-sections" \
+        -DCMAKE_C_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
+        -DCMAKE_CXX_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
         -DCMAKE_PREFIX_PATH=/build/static-libs \
         -DARROW_BUILD_SHARED=OFF \
         -DARROW_BUILD_STATIC=ON \
@@ -261,7 +312,8 @@ RUN tar xf /build/src/arrow.tar.gz && mv arrow-* arrow-src && \
 FROM build-arrow AS build-app
 
 # Provide mimalloc source for FetchContent (no internet in build containers)
-RUN tar xf /build/src/mimalloc.tar.gz && mv mimalloc-* /build/mimalloc-src
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/mimalloc.tar.gz && mv mimalloc-* /build/mimalloc-src
 
 # AlmaLinux 8 cmake installs to lib64/; symlink everything into lib/ so that
 # CMakeLists.txt's find_library(PATHS .../static-libs/lib NO_DEFAULT_PATH) works.
@@ -278,10 +330,15 @@ RUN sed -i \
 
 COPY . /build/ParquetViewer
 
-RUN cmake -S /build/ParquetViewer -B /build/app-bld \
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    cmake -S /build/ParquetViewer -B /build/app-bld \
         -DCMAKE_BUILD_TYPE=Release \
         -DSTATIC_RUNTIME=ON \
-        -DCMAKE_CXX_FLAGS="-O2 -march=x86-64 -ffunction-sections -fdata-sections" \
+        -DCMAKE_AR=$(command -v gcc-ar) \
+        -DCMAKE_RANLIB=$(command -v gcc-ranlib) \
+        -DCMAKE_NM=$(command -v gcc-nm) \
+        -DCMAKE_CXX_FLAGS="-O2 -flto=auto -march=x86-64 -ffunction-sections -fdata-sections" \
+        -DCMAKE_EXE_LINKER_FLAGS="-flto=auto" \
         -DCMAKE_PREFIX_PATH="/build/arrow-install;/build/static-libs" \
         -DArrow_DIR=/build/arrow-install/lib64/cmake/Arrow \
         -DParquet_DIR=/build/arrow-install/lib64/cmake/Parquet \
@@ -289,6 +346,7 @@ RUN cmake -S /build/ParquetViewer -B /build/app-bld \
         -DCURSES_LIBRARY=/build/static-libs/lib/libncursesw.a \
         -DCMAKE_LIBRARY_PATH="/opt/rh/gcc-toolset-12/root/usr/lib/gcc/x86_64-redhat-linux/12;/build/static-libs/lib" \
         -DFETCHCONTENT_SOURCE_DIR_MIMALLOC=/build/mimalloc-src && \
-    cmake --build /build/app-bld -j$(nproc)
+    cmake --build /build/app-bld -j$(nproc) && \
+    ccache -s | head -30
 
 CMD ["sh", "-c", "cp /build/app-bld/vv /out/vv && ln -sf vv /out/vh && echo 'Done: /out/vv (and vh symlink)'"]

@@ -155,6 +155,9 @@ struct Config {
     int         max_col_w      = 32;
     int         max_cols       = 0;
     int         threads        = 0;      // -@ / --threads (0 = auto-detect)
+    int         decode_threads = 0;      // --decode-threads (0 = follow --threads;
+                                         // dedicated knob for Arrow's CPU pool
+                                         // which handles Parquet column decode)
     bool        no_index       = false;
     ColorMode   color          = ColorMode::Auto;
     char        delimiter      = 0;      // 0 = table/interactive; '\t'/','= delimited
@@ -188,6 +191,21 @@ static int effective_threads(const Config& cfg) {
     if (t < 2) t = 2;
     if (t > 8) t = 8;
     return (int)t;
+}
+
+// Dedicated knob for Arrow's CPU thread pool (used for Parquet column
+// decode and CSV / TSV parallel parsing). Falls back to --threads when
+// not set explicitly. The point of a separate flag is cold Parquet
+// reads where decode contends with I/O — bumping decode parallelism
+// above --threads can give 1.5-2× on machines with idle cores. Bound
+// to twice the hardware concurrency to avoid pathological choices.
+static int effective_decode_threads(const Config& cfg) {
+    if (cfg.decode_threads > 0) {
+        unsigned hc = std::thread::hardware_concurrency();
+        int cap = hc > 0 ? (int)(hc * 2) : 32;
+        return std::min(cfg.decode_threads, cap);
+    }
+    return effective_threads(cfg);
 }
 
 static constexpr const char* kVersion = "1.5.0";
@@ -273,6 +291,9 @@ static void print_usage(const char* prog) {
         "  pass --coords NCBI for 1-based inclusive (samtools/tabix style).\n"
         "\nPerformance:\n"
         "  -@ / --threads <N>  worker threads for I/O and decode (0 = auto)\n"
+        "  --decode-threads <N>  Arrow CPU thread pool size for Parquet /\n"
+        "                       CSV decode (0 = follow --threads; useful when\n"
+        "                       cold reads bottleneck on column decompression)\n"
         "\n  -h / --help         show this help\n"
         "  -V / --version      print version and exit\n",
         prog);
@@ -351,6 +372,8 @@ static Config parse_args(int argc, char** argv) {
         } else if ((!std::strcmp(argv[i], "-@") ||
                     !std::strcmp(argv[i], "--threads")) && i + 1 < argc) {
             cfg.threads = std::max(0, std::atoi(argv[++i]));
+        } else if (!std::strcmp(argv[i], "--decode-threads") && i + 1 < argc) {
+            cfg.decode_threads = std::max(0, std::atoi(argv[++i]));
         } else if (!std::strcmp(argv[i], "--parquet") && i + 1 < argc) {
             cfg.parquet_out = argv[++i];
         } else if (!std::strcmp(argv[i], "--compression") && i + 1 < argc) {
@@ -7999,7 +8022,7 @@ int main(int argc, char** argv) {
 
     // Size Arrow's CPU thread pool so use_threads=true on the CSV / Parquet
     // readers actually has workers available.
-    (void)arrow::SetCpuThreadPoolCapacity(effective_threads(cfg));
+    (void)arrow::SetCpuThreadPoolCapacity(effective_decode_threads(cfg));
 
     // Apply --regions-file and --slop once, before any source-specific
     // region consumer parses cfg.region.

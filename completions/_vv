@@ -37,6 +37,7 @@ _vv() {
         '--coords+[Coordinate convention for -r (UCSC default, NCBI = 1-based inclusive)]:kind:(UCSC Kent NCBI GenBank 0-based 1-based bed tabix)' \
         '--tail+[Show the last N rows]:n:' \
         '(-@ --threads)'{-@,--threads}'+[Worker threads]:n:' \
+        '--decode-threads+[Arrow CPU pool size for Parquet/CSV decode]:n:' \
         '--color=-[Color mode]:mode:(auto always never)' \
         '--tsv[Write tab-separated values]' \
         '--csv[Write comma-separated values]' \
