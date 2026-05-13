@@ -25,10 +25,23 @@ jobs:
           wget https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
           sudo apt-get install -y -V ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
           sudo apt-get update
+          # Note on packages:
+          #   - `tabix` already provides bgzip; there's no separate
+          #     `bgzip-tools` package on any Ubuntu.
+          #   - `python3-pyarrow` was removed from Ubuntu 24.04's repos
+          #     (and PEP 668 forbids `pip install pyarrow` directly).
+          #     Use a per-job venv instead — pip works freely there.
           sudo apt-get install -y -V \
             cmake g++ libarrow-dev libparquet-dev \
             libhts-dev libncursesw5-dev pkg-config \
-            python3-pyarrow python3-pysam tabix bgzip-tools bcftools
+            python3 python3-venv python3-pip \
+            python3-pysam tabix bcftools
+
+      - name: Install pyarrow (venv)
+        run: |
+          python3 -m venv /tmp/vvpy
+          /tmp/vvpy/bin/pip install --upgrade pip
+          /tmp/vvpy/bin/pip install pyarrow
 
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -37,7 +50,7 @@ jobs:
         run: cmake --build build -j$(nproc)
 
       - name: Generate test fixtures
-        run: python3 tests/data/generate.py
+        run: /tmp/vvpy/bin/python tests/data/generate.py
         if: hashFiles('tests/data/generate.py') != ''
 
       - name: Smoke tests
@@ -59,7 +72,17 @@ jobs:
       - name: Install dependencies
         run: brew install cmake apache-arrow htslib ncurses
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        # Homebrew's `apache-arrow` formula installs to its own prefix
+        # (`$(brew --prefix apache-arrow)` — typically /opt/homebrew/opt/…
+        # on Apple Silicon, /usr/local/opt/… on Intel). CMake's
+        # `find_package(Arrow)` doesn't pick this up automatically;
+        # CMAKE_PREFIX_PATH points it at the right place.
+        run: |
+          ARROW_PREFIX="$(brew --prefix apache-arrow)"
+          HTSLIB_PREFIX="$(brew --prefix htslib)"
+          NCURSES_PREFIX="$(brew --prefix ncurses)"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$ARROW_PREFIX;$HTSLIB_PREFIX;$NCURSES_PREFIX"
       - name: Build
         run: cmake --build build -j$(sysctl -n hw.ncpu)
       - name: Sanity check
