@@ -14,7 +14,11 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-add_compile_options(-O2 -march=x86-64 -ffunction-sections -fdata-sections)
+# `-march=x86-64` would force the baseline-x86_64 ABI — fine on x86 (it's the
+# default for 64-bit gcc anyway) but fatal on aarch64 / arm64 where gcc
+# rejects the value. Let gcc pick the host-appropriate default; the static
+# release CI matrix runs natively on each architecture.
+add_compile_options(-O2 -ffunction-sections -fdata-sections)
 
 # ── Build mimalloc as a static lib from source ───────────────────────────────
 include(FetchContent)
