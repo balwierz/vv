@@ -28,6 +28,22 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Cache bundled source tarballs
+        uses: actions/cache@v4
+        with:
+          path: docker-sources
+          # The fetch script encodes every pinned version; hash it so a
+          # dep bump invalidates the cache automatically.
+          key: docker-sources-${{ hashFiles('scripts/fetch-docker-sources.sh') }}
+
+      - name: Fetch bundled source tarballs
+        # `docker-sources/` is gitignored to keep the repo lean; the
+        # AlmaLinux 8 build needs ~58 MB of upstream tarballs. The fetch
+        # script downloads each from its canonical upstream URL (pinned
+        # versions). Skipped per-file when the cache hit above already
+        # populated docker-sources/.
+        run: bash scripts/fetch-docker-sources.sh
+
       - name: Build static binary in AlmaLinux 8
         run: |
           docker build --network=host -f Dockerfile.almalinux8 -t vv_build .
