@@ -44,8 +44,6 @@ user-facing summary).
 ## TUI
 
 ### Open
-- Live filter (`&` in `less` style) — toggle to hide non-matching
-  rows interactively. Users keep asking.
 - Multi-file tabs — open many files, switch with `Tab` / `Shift-Tab`.
 - Marks & recall — vim-style `m{a-z}` / `'{a-z}`.
 - Copy cell — `y` copies the cell under the cursor (OSC52 / xclip).
@@ -55,6 +53,9 @@ user-facing summary).
   active column.
 - Sort by column (`s` toggles asc/desc; `u` clears).
 - Column show/hide picker (`c`).
+- Live filter (`&`) — same grammar as `--filter`; hides
+  non-matching rows; status bar shows kept/total; composes with
+  sort via the same `source_row(display)` indirection.
 
 ## Format gaps
 

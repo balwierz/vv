@@ -314,6 +314,16 @@ cursor, \fBSpace\fR / \fBEnter\fR toggle the column under the
 cursor, \fBEsc\fR / \fBq\fR / \fBc\fR closes the overlay. At least
 one column stays visible.
 .TP
+.B &
+Live filter: open a \fB&<expression>\fR input bar at the bottom of
+the screen. The grammar matches \fB\-\-filter\fR \(en
+\fB<col> <op> <literal>\fR joined with \fBAND\fR / \fBOR\fR, ops
+\fB==\fR \fB!=\fR \fB<\fR \fB<=\fR \fB>\fR \fB>=\fR. Enter commits;
+non-matching rows are hidden from the display. An empty commit
+clears the filter, and \fBEsc\fR in normal mode also clears an
+active filter before quitting. Composes with \fBs\fR (sort) and
+\fB/\fR (search).
+.TP
 .B mouse wheel
 Scroll three rows up / down.
 .TP

@@ -235,7 +235,7 @@ static void print_usage(const char* prog) {
         "  --no-interactive    force plain table output even on a terminal\n"
         "  Keys: arrows/hjkl navigate, PgUp/PgDn, g/G top/bot, /:search,\n"
         "        S:column-stats, s:sort by current column (u clears),\n"
-        "        c:show/hide columns, H/F1: in-app help, q quit\n"
+        "        &:live filter, c:show/hide columns, H/F1: in-app help, q quit\n"
         "\nTable options:\n"
         "  -n <rows>           rows to display  (default: 10, 0 = all)\n"
         "  --tail <N>          show the last N rows instead of the first N\n"
@@ -6009,16 +6009,31 @@ class TableTUI {
     int                        col_picker_cursor_   = 0;
     std::vector<bool>          col_visible_;        // [virt_col] — true = shown
 
-    // ── Sort by column (`s`) ─────────────────────────────────────────────────
-    // sort_order_[display_row] = source_row. Empty = no sort active.
+    // ── Sort by column (`s`) + Live filter (`&`) ─────────────────────────────
+    //
+    // Both features funnel through the same display→source indirection.
+    // `sort_order_[display_row] = source_row` when non-empty; empty means
+    // identity (no sort, no filter). The presence of sort_order_ also flips
+    // total_rows() over to the filtered/sorted count so the status bar,
+    // scroll clamping, and search loops all see the user's view-of-the-data.
     std::vector<int64_t>       sort_order_;
     int                        sort_col_    = -1;   // virtual column, -1 = no sort
     bool                       sort_desc_   = false;
 
-    // Translate a display-row index to the underlying source-row when a sort
-    // is active. All cache lookups, search row scans, and load_full_row
-    // calls go through this helper so the rest of the TUI can stay
-    // row-indexing-agnostic.
+    // Live filter state (`&`).
+    enum class FilterMode { None, Input };
+    FilterMode                 filter_mode_   = FilterMode::None;  // input bar state
+    std::string                filter_input_;        // text being typed
+    std::string                filter_expr_str_;     // committed expression
+    FilterExpr                 filter_fx_;           // compiled, valid when active
+    bool                       filter_active_ = false;
+    std::string                filter_err_;          // last compile error, if any
+    int64_t                    filter_total_   = 0;  // rows after filter (for status)
+
+    // Translate a display-row index to the underlying source-row when a
+    // sort or filter is active. All cache lookups, search row scans, and
+    // load_full_row calls go through this helper so the rest of the TUI
+    // can stay row-indexing-agnostic.
     int64_t source_row(int64_t display) const {
         if (sort_order_.empty()) return display;
         if (display < 0 || display >= (int64_t)sort_order_.size()) return display;
@@ -6071,7 +6086,13 @@ class TableTUI {
     static constexpr int FTR_H = 1;
     int data_lines() const { return std::max(0, scr_r_ - HDR_H - FTR_H); }
 
-    int64_t total_rows() const { return src_.total_rows(); }
+    // When a sort or filter is active the visible row count is the size of
+    // sort_order_, not the underlying source size. Search wrap-around, the
+    // status bar's row range, and scroll clamping all depend on this.
+    int64_t total_rows() const {
+        if (!sort_order_.empty()) return (int64_t)sort_order_.size();
+        return src_.total_rows();
+    }
     int     num_chunks()  const { return src_.num_chunks(); }
 
     // ── Search ───────────────────────────────────────────────────────────────
@@ -6558,6 +6579,16 @@ class TableTUI {
             move(scr_r_ - 1, (int)search_input_.size() + 1);
             return;
         }
+        // ── Filter-input mode: `&<expression>`; show parse error if any ─────
+        if (filter_mode_ == FilterMode::Input) {
+            std::string bar = std::string("&") + filter_input_;
+            if (!filter_err_.empty()) bar += "    !! " + filter_err_;
+            if ((int)bar.size() < scr_c_) bar += std::string(scr_c_ - (int)bar.size(), ' ');
+            mvaddnstr(scr_r_ - 1, 0, bar.c_str(), scr_c_);
+            curs_set(1);
+            move(scr_r_ - 1, (int)filter_input_.size() + 1);
+            return;
+        }
         curs_set(0);
 
         // ── Normal status bar ────────────────────────────────────────────────
@@ -6575,6 +6606,23 @@ class TableTUI {
             s += std::to_string(vc.front().col+1) + "-";
             s += std::to_string(vc.back().col+1)  + "/";
             s += std::to_string(num_cols_);
+        }
+        // Filter indicator (truncate the expression so the bar stays one line).
+        if (filter_active_) {
+            std::string expr = filter_expr_str_;
+            if ((int)display_width(expr) > 28) {
+                expr.resize(25);
+                expr += "...";
+            }
+            s += "  filter:";
+            s += expr;
+            int64_t src_n = src_.total_rows();
+            if (src_n >= 0) {
+                s += "  ";
+                s += digits_with_sep(std::to_string(filter_total_));
+                s += "/";
+                s += digits_with_sep(std::to_string(src_n));
+            }
         }
         // Sort indicator
         if (!sort_order_.empty() && sort_col_ >= 0 && sort_col_ < (int)col_names_.size()) {
@@ -6603,7 +6651,7 @@ class TableTUI {
         } else {
             bool need_lr = left_col_ > 0 || (!vc.empty() && vc.back().col < num_cols_-1);
             if (need_lr) s += "  [h/l]:←→col  [,/.]:narrow/widen";
-            s += "  [j/k]:rows  /:search  Enter:detail  S:stats  s:sort  c:cols  H:help  q:quit";
+            s += "  [j/k]:rows  /:search  &:filter  Enter:detail  S:stats  s:sort  c:cols  H:help  q:quit";
         }
         if ((int)s.size() < scr_c_) s += std::string(scr_c_ - (int)s.size(), ' ');
         attron(A_REVERSE);
@@ -6908,82 +6956,151 @@ class TableTUI {
         nc_str(y0 + panel_h - 1, x0, bot, A_BOLD);
     }
 
-    // ── Sort by column ──────────────────────────────────────────────────────
+    // ── Rebuild display→source mapping (sort + filter) ──────────────────────
     //
-    // Builds sort_order_ for the source column underlying virtual column
-    // `virt_col`. Numeric types sort by raw value; other types fall back to
-    // string comparison via cell_to_string. Nulls always sort last.
-    void do_sort_by(int virt_col) {
-        int sc = (virt_col >= 0 && virt_col < (int)virt_src_col_.size())
-                  ? virt_src_col_[virt_col] : -1;
-        if (sc < 0) return;
-        bool num = is_numeric_type(src_.schema()->field(sc)->type()->id())
-                   && virt_info_key_[virt_col].empty();
-        const std::string& info_key = virt_info_key_[virt_col];
-        // Collect (key, source_row).
+    // Combines the two view-of-the-data features into one full-file pass:
+    //   • If filter is active, each row is run through filter_fx_; only
+    //     matching rows are kept.
+    //   • If sort is active, kept rows are sorted by the chosen column's
+    //     raw Arrow value (numeric) or string repr (otherwise). Nulls last.
+    //
+    // The result is stored in sort_order_, whose presence flips
+    // total_rows(), search wrap-around, and the source_row() indirection
+    // used by every read path. Empty sort_order_ means "identity"
+    // (display row N = source row N).
+    void rebuild_display_order() {
+        sort_order_.clear();
+        filter_total_ = 0;
+        if (sort_col_ < 0 && !filter_active_) return;
+
+        // Resolve sort column (if any).
+        bool num = false;
+        int  sc = -1;
+        std::string info_key;
+        std::vector<int> need;
+        if (sort_col_ >= 0 && sort_col_ < (int)virt_src_col_.size()) {
+            sc = virt_src_col_[sort_col_];
+            if (sc >= 0) {
+                num = is_numeric_type(src_.schema()->field(sc)->type()->id())
+                      && virt_info_key_[sort_col_].empty();
+                info_key = virt_info_key_[sort_col_];
+                need.push_back(sc);
+            } else {
+                sort_col_ = -1;
+            }
+        }
+        // Add the filter's referenced columns to the read projection.
+        std::vector<int> filt_cols;
+        if (filter_active_) {
+            filt_cols = union_with_filter({}, filter_fx_);
+            for (int fc : filt_cols)
+                if (std::find(need.begin(), need.end(), fc) == need.end())
+                    need.push_back(fc);
+        }
+
+        // Predicate: row matches the active filter, or always true when off.
+        auto eval_row = [&](const arrow::Table& tbl, int64_t r) -> bool {
+            if (!filter_active_) return true;
+            for (const auto& clause : filter_fx_.groups) {
+                bool all = true;
+                for (const auto& a : clause)
+                    if (!eval_atom(tbl, r, a, need)) { all = false; break; }
+                if (all) return true;
+            }
+            return false;
+        };
+
         struct NumK { double v; bool is_null; int64_t row; };
         struct StrK { std::string v; bool is_null; int64_t row; };
-        std::vector<NumK> nk;
-        std::vector<StrK> sk;
-        std::vector<int> need = {sc};
+        std::vector<NumK>     nk;
+        std::vector<StrK>     sk;
+        std::vector<int64_t>  rows_only;  // filter-only path: source order
+
         int nc = src_.num_chunks();
+        const char* what = (sort_col_ >= 0 && filter_active_) ? "Filter+sort"
+                         : (sort_col_ >= 0)                   ? "Sorting"
+                                                              : "Filtering";
         for (int c = 0; c < nc; ++c) {
-            mvprintw(scr_r_-1, 0, " Sorting… chunk %d/%d ", c+1, nc);
+            mvprintw(scr_r_-1, 0, " %s… chunk %d/%d ", what, c+1, nc);
             clrtoeol(); refresh();
             std::shared_ptr<arrow::Table> tbl;
             if (!src_.read_chunk(c, need, &tbl).ok()) continue;
             auto meta = src_.chunk_meta(c);
-            auto col = tbl->column(0);
-            int64_t row_in_tbl = 0;
-            for (auto& ch : col->chunks()) {
-                int64_t n = ch->length();
-                for (int64_t r = 0; r < n; ++r, ++row_in_tbl) {
-                    int64_t srow = meta.first_row + row_in_tbl;
-                    bool is_null = ch->IsNull(r);
-                    if (!info_key.empty()) {
-                        std::string raw = is_null ? std::string() : cell_to_string(*ch, r);
-                        std::string val;
-                        if (!is_null) {
-                            auto kvs = parse_kv_list(raw);
-                            bool found = false;
-                            for (auto& kv : kvs)
-                                if (kv.first == info_key) { val = kv.second.empty() ? "true" : kv.second; found = true; break; }
-                            if (!found) is_null = true; else raw = val;
-                        }
-                        if (num) {
-                            double d = 0; bool nn = is_null;
-                            if (!nn) { try { d = std::stod(raw); } catch (...) { nn = true; } }
-                            nk.push_back({d, nn, srow});
-                        } else {
-                            sk.push_back({raw, is_null, srow});
-                        }
-                        continue;
+            // Locate the sort column within the projected table.
+            int p_sort = -1;
+            if (sc >= 0) {
+                for (size_t k = 0; k < need.size(); ++k)
+                    if (need[k] == sc) { p_sort = (int)k; break; }
+            }
+            int64_t n = tbl->num_rows();
+            for (int64_t r = 0; r < n; ++r) {
+                int64_t srow = meta.first_row + r;
+                if (!eval_row(*tbl, r)) continue;
+                if (sort_col_ < 0) { rows_only.push_back(srow); continue; }
+                // Sort key extraction. ReadRowGroups returns a single-chunk
+                // table for each column, so walking the chunked array is
+                // strictly speaking unnecessary — but stay defensive.
+                auto col = tbl->column(p_sort);
+                int64_t off = r;
+                std::shared_ptr<arrow::Array> ch_arr;
+                int64_t ch_off = 0;
+                for (auto& chunk : col->chunks()) {
+                    if (off < chunk->length()) {
+                        ch_arr = chunk; ch_off = off; break;
+                    }
+                    off -= chunk->length();
+                }
+                if (!ch_arr) continue;
+                bool is_null = ch_arr->IsNull(ch_off);
+                if (!info_key.empty()) {
+                    std::string raw = is_null ? std::string()
+                                              : cell_to_string(*ch_arr, ch_off);
+                    if (!is_null) {
+                        auto kvs = parse_kv_list(raw);
+                        bool found = false;
+                        for (auto& kv : kvs)
+                            if (kv.first == info_key) {
+                                raw = kv.second.empty() ? "true" : kv.second;
+                                found = true; break;
+                            }
+                        if (!found) is_null = true;
                     }
                     if (num) {
-                        double d = 0;
-                        if (!is_null) {
-                            if (auto a = std::dynamic_pointer_cast<arrow::DoubleArray>(ch)) d = a->Value(r);
-                            else if (auto a = std::dynamic_pointer_cast<arrow::FloatArray>(ch))  d = a->Value(r);
-                            else if (auto a = std::dynamic_pointer_cast<arrow::Int64Array>(ch))  d = (double)a->Value(r);
-                            else if (auto a = std::dynamic_pointer_cast<arrow::Int32Array>(ch))  d = (double)a->Value(r);
-                            else if (auto a = std::dynamic_pointer_cast<arrow::Int16Array>(ch))  d = (double)a->Value(r);
-                            else if (auto a = std::dynamic_pointer_cast<arrow::Int8Array>(ch))   d = (double)a->Value(r);
-                            else if (auto a = std::dynamic_pointer_cast<arrow::UInt64Array>(ch)) d = (double)a->Value(r);
-                            else if (auto a = std::dynamic_pointer_cast<arrow::UInt32Array>(ch)) d = (double)a->Value(r);
-                            else { try { d = std::stod(cell_to_string(*ch, r)); } catch (...) { is_null = true; } }
-                        }
-                        nk.push_back({d, is_null, srow});
+                        double d = 0; bool nn = is_null;
+                        if (!nn) { try { d = std::stod(raw); } catch (...) { nn = true; } }
+                        nk.push_back({d, nn, srow});
                     } else {
-                        std::string s = is_null ? std::string() : cell_to_string(*ch, r);
-                        sk.push_back({s, is_null, srow});
+                        sk.push_back({raw, is_null, srow});
                     }
+                    continue;
+                }
+                if (num) {
+                    double d = 0;
+                    if (!is_null) {
+                        if      (auto a = std::dynamic_pointer_cast<arrow::DoubleArray>(ch_arr)) d = a->Value(ch_off);
+                        else if (auto a = std::dynamic_pointer_cast<arrow::FloatArray>(ch_arr))  d = a->Value(ch_off);
+                        else if (auto a = std::dynamic_pointer_cast<arrow::Int64Array>(ch_arr))  d = (double)a->Value(ch_off);
+                        else if (auto a = std::dynamic_pointer_cast<arrow::Int32Array>(ch_arr))  d = (double)a->Value(ch_off);
+                        else if (auto a = std::dynamic_pointer_cast<arrow::Int16Array>(ch_arr))  d = (double)a->Value(ch_off);
+                        else if (auto a = std::dynamic_pointer_cast<arrow::Int8Array>(ch_arr))   d = (double)a->Value(ch_off);
+                        else if (auto a = std::dynamic_pointer_cast<arrow::UInt64Array>(ch_arr)) d = (double)a->Value(ch_off);
+                        else if (auto a = std::dynamic_pointer_cast<arrow::UInt32Array>(ch_arr)) d = (double)a->Value(ch_off);
+                        else { try { d = std::stod(cell_to_string(*ch_arr, ch_off)); } catch (...) { is_null = true; } }
+                    }
+                    nk.push_back({d, is_null, srow});
+                } else {
+                    std::string s = is_null ? std::string()
+                                            : cell_to_string(*ch_arr, ch_off);
+                    sk.push_back({s, is_null, srow});
                 }
             }
         }
-        sort_order_.clear();
-        if (num) {
+
+        if (sort_col_ < 0) {
+            sort_order_ = std::move(rows_only);
+        } else if (num) {
             std::sort(nk.begin(), nk.end(), [this](const NumK& a, const NumK& b) {
-                if (a.is_null != b.is_null) return !a.is_null;  // nulls last
+                if (a.is_null != b.is_null) return !a.is_null;
                 if (a.is_null) return false;
                 return sort_desc_ ? a.v > b.v : a.v < b.v;
             });
@@ -6998,6 +7115,7 @@ class TableTUI {
             sort_order_.reserve(sk.size());
             for (auto& e : sk) sort_order_.push_back(e.row);
         }
+        filter_total_ = (int64_t)sort_order_.size();
     }
 
     void draw_help_overlay() {
@@ -7014,6 +7132,7 @@ class TableTUI {
             {"n  N",          "next / previous match (direction-aware)"},
             {"S",             "per-column stats (count/min/max/mean/distinct)"},
             {"s",             "sort by the leftmost visible column (toggle asc/desc; u to clear)"},
+            {"&",             "live filter: hide non-matching rows; empty input clears"},
             {"c",             "show / hide columns (overlay)"},
             {"Enter",         "open detail pane for the top-visible row"},
             {"mouse wheel",   "scroll rows"},
@@ -7454,6 +7573,49 @@ public:
                 continue;
             }
 
+            // ── Live-filter input mode ──────────────────────────────────────
+            if (filter_mode_ == FilterMode::Input) {
+                if (ch == '\n' || ch == KEY_ENTER) {
+                    if (filter_input_.empty()) {
+                        // Empty commit = clear the filter.
+                        filter_mode_   = FilterMode::None;
+                        filter_active_ = false;
+                        filter_expr_str_.clear();
+                        filter_err_.clear();
+                        rebuild_display_order();
+                        top_row_ = 0;
+                        search_row_ = -1;
+                    } else {
+                        FilterExpr fx;
+                        std::string err;
+                        if (!parse_filter_expr(filter_input_, *src_.schema(), &fx, &err)) {
+                            filter_err_ = err;
+                            // Stay in input mode so the user can edit.
+                        } else {
+                            filter_fx_       = std::move(fx);
+                            filter_expr_str_ = filter_input_;
+                            filter_active_   = true;
+                            filter_err_.clear();
+                            filter_mode_     = FilterMode::None;
+                            rebuild_display_order();
+                            top_row_ = 0;
+                            search_row_ = -1;
+                        }
+                    }
+                } else if (ch == 27) {    // Esc — cancel edit
+                    filter_mode_ = FilterMode::None;
+                    filter_input_.clear();
+                    filter_err_.clear();
+                } else if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
+                    if (!filter_input_.empty()) filter_input_.pop_back();
+                    filter_err_.clear();
+                } else if (ch >= 32 && ch < 127) {
+                    filter_input_ += (char)ch;
+                    filter_err_.clear();
+                }
+                continue;
+            }
+
             // ── Detail pane mode ─────────────────────────────────────────────
             if (detail_row_ >= 0) {
                 switch (ch) {
@@ -7484,7 +7646,7 @@ public:
                     detail_row_    = top_row_;
                     detail_scroll_ = 0;
                     break;
-                case 27:  // Esc: clear search if active, else quit
+                case 27:  // Esc: clear search/filter if active, else quit
                     if (search_mode_ == SearchMode::Active) {
                         search_mode_  = SearchMode::None;
                         search_query_.clear();
@@ -7492,6 +7654,12 @@ public:
                         search_regex_valid_ = false;
                         search_row_   = -1;
                         search_fail_  = false;
+                    } else if (filter_active_) {
+                        filter_active_ = false;
+                        filter_expr_str_.clear();
+                        rebuild_display_order();
+                        top_row_   = 0;
+                        search_row_ = -1;
                     } else {
                         quit = true;
                     }
@@ -7545,22 +7713,30 @@ public:
                         sort_col_ = left_col_;
                         sort_desc_ = false;
                     }
-                    do_sort_by(sort_col_);
+                    rebuild_display_order();
                     top_row_ = 0;
                     search_row_ = -1;   // search anchor is now stale
                     break;
                 }
                 case 'u':
-                    // Undo / clear active sort.
-                    sort_order_.clear();
+                    // Undo / clear active sort. Filter (if any) stays applied.
                     sort_col_  = -1;
                     sort_desc_ = false;
+                    rebuild_display_order();
                     top_row_   = 0;
                     search_row_ = -1;
                     break;
                 case 'c':
                     col_picker_open_   = true;
                     col_picker_cursor_ = left_col_;
+                    break;
+                case '&':
+                    // Open the live-filter input bar. Same shape as the
+                    // search input bar: collect into filter_input_, commit
+                    // on Enter, abort with Esc.
+                    filter_mode_   = FilterMode::Input;
+                    filter_input_  = filter_expr_str_;  // pre-fill with current
+                    filter_err_.clear();
                     break;
                 case '.':
                     col_widths_[left_col_] = std::min(256, col_widths_[left_col_] + 4);

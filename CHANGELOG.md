@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **TUI live filter (`&` key)** — long-requested. Opens a
+  `&<expression>` input bar; expression grammar matches the
+  `--filter` CLI flag. Rows not matching the predicate are hidden
+  from the display; status bar shows `filter:<expr>  N/M` (rows
+  kept / total). Composes with sort (`s`): one full-file pass
+  rebuilds the combined view via the existing `source_row(display)`
+  indirection. Empty input or `Esc` (in normal mode) clears.
+
+  Internals: a new `rebuild_display_order()` orchestrates both
+  sort and filter into the single `sort_order_` permutation. When
+  both are active, rows that pass the filter are collected with
+  their sort keys in one pass and sorted at the end.
 - **`--decode-threads N`** — separately size Arrow's CPU thread pool
   (Parquet column decode and CSV / TSV parallel parsing) without
   touching htslib's thread count. Defaults to `--threads`; useful

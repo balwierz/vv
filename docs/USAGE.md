@@ -133,10 +133,11 @@ $ vv tests/data/tiny.lociss        # default when stdout is a terminal
 | `S`            | per-column stats popup (count, nulls, min, max, mean, distinct) |
 | `s`            | sort by the leftmost visible column (toggle asc / desc) |
 | `u`            | undo / clear the active sort                            |
+| `&`            | live filter: hide non-matching rows (empty input clears)|
 | `c`            | open the show/hide columns picker                       |
 | `H` / `F1`     | help overlay with every keybinding                      |
 | mouse wheel    | scroll three rows                                       |
-| `q`            | quit (Esc clears search / closes overlays)              |
+| `q`            | quit (Esc clears search / filter / closes overlays)     |
 
 All visible matches are highlighted; the n/N target gets reverse video.
 
@@ -158,6 +159,25 @@ checkbox; `j` / `k` move the cursor, `Space` / `Enter` toggle the column,
 `Esc` / `q` / `c` closes the overlay. Hidden columns are dropped from the
 table layout; the status bar shows a `hidden:N` indicator. At least one
 column always stays visible.
+
+**`&` (live filter).** Opens a `&<expression>` input bar at the bottom
+of the screen. The grammar is the same as the `--filter` CLI flag —
+`<col> <op> <literal>` joined with `AND` / `OR`, ops
+`== != < <= > >=`, string literals quoted with `'` or `"`. Examples:
+
+```
+& Score > 0.5
+& Chromosome == "chr1" AND Start > 1000000
+```
+
+Hit `Enter` to commit. Rows not matching the predicate are hidden
+from the display — the status bar shows `filter:<expr>  N/M` (rows
+kept / total). Committing an empty input clears the filter; `Esc` in
+normal mode also clears an active filter (before quitting).
+
+Live filter composes with sort: build a filter, then press `s` on a
+column to sort the visible rows. The combined view is rebuilt in
+one pass through the file. Search (`/`) follows the filtered view.
 
 ## Delimited output (`--tsv`, `--csv`, `--delimiter`)
 
