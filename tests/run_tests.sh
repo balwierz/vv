@@ -69,8 +69,14 @@ if [ -z "$EMPTY" ]; then
 else
     FAIL=$((FAIL + 1)); echo "  FAIL  lociss_region_empty (expected empty output, got: $EMPTY)"
 fi
-REJECT=$("$VV" -r chr1:0-100 "$DATA/tiny.parquet" 2>&1 || true)
-assert_contains "parquet_region_rejected" "$REJECT" "LociSSD"
+# Generic Parquet range queries: auto-detected chrom/start/end columns,
+# plus the --region-cols override path.
+PQ_REG=$("$VV" --tsv --no-header -r chr1:1000-2500 "$DATA/tiny.parquet" | wc -l)
+assert_eq_file_inline "parquet_region_autodetect_two_rows" "$PQ_REG" "2"
+PQ_REG_OV=$("$VV" --tsv --no-header -r chr1:1000-2500 --region-cols Chr,Start,End "$DATA/tiny.parquet" | wc -l)
+assert_eq_file_inline "parquet_region_cols_override_two_rows" "$PQ_REG_OV" "2"
+PQ_REG_BAD=$("$VV" -r chr1:0-100 --region-cols NoSuch,Start,End "$DATA/tiny.parquet" 2>&1 || true)
+assert_contains "parquet_region_cols_unknown_errors" "$PQ_REG_BAD" "not found"
 
 # --slop on tabix BED.
 SLOP_OUT=$("$VV" --tsv --no-header -r chr1:1500-1500 --slop 4000 "$DATA/tiny.bed.gz" | wc -l)

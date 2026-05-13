@@ -26,6 +26,7 @@ complete -c vv -c vh -l no-index           -d 'Suppress the row-index column'
 complete -c vv -c vh -s r -l region -r     -d 'Region for tabix-indexed file (e.g. chr1:1000-2000)'
 complete -c vv -c vh -l window -r          -d 'Alias of --region'
 complete -c vv -c vh -l regions-file -r -F -d 'BED file with additional windows'
+complete -c vv -c vh -l region-cols -r     -d 'chrom,start,end column names for plain Parquet'
 complete -c vv -c vh -l slop -r            -d 'Pad each window by N bp'
 
 # Performance

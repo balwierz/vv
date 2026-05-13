@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Generic Parquet range queries** — `-r chr1:1000-2000 file.parquet`
+  now works on any Parquet file with chrom/start/end columns, not just
+  LociSSD. Chromosome / Start / End column names are auto-detected
+  (common variants: `Chromosome`/`Chrom`/`Chr`, `Start`/`POS`/
+  `chromStart`, `End`/`Stop`/`chromEnd`). When auto-detection isn't
+  clear (or your columns have unusual names) use
+  `--region-cols Chr,Start,End`. Row-group pruning uses Parquet
+  ByteArray statistics on chrom plus Int statistics on Start/End;
+  per-row filtering inside surviving row groups is correct for
+  unsorted files too, just less efficient. Dictionary-encoded chrom
+  columns are handled transparently.
 - **`--validate`** — LociSSD invariants checker. Verifies the
   `lociSSD_manifest` footer parses, the required columns
   (Chromosome / Start / End / MaxEndSoFar) have the right types,

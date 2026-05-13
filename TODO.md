@@ -36,9 +36,15 @@ visible-value-per-line ratio.
 - ~~BCF range queries via `bcf_itr_querys`~~ — *Done — requires
   `.csi`/`.tbi` index; friendly error pointing at `bcftools index`
   if missing.*
-- Generic Parquet range queries — sniff a schema with sorted
-  `Chromosome/Start/End` columns; `--region-cols Chromosome,Start,End`
-  if auto-detection isn't clear.
+- ~~Generic Parquet range queries~~ — *Done — auto-detects
+  Chromosome / Start / End by name (common variants:
+  `Chromosome`/`chrom`/`Chr`, `Start`/`POS`/`chromStart`,
+  `End`/`Stop`/`chromEnd`); override via
+  `--region-cols Chr,Start,End`. Pruning uses Parquet
+  ByteArray statistics on chrom plus Int statistics on
+  Start/End; per-row filtering inside surviving row groups
+  is correct for unsorted files too (just less efficient).
+  Handles dict-encoded chrom columns transparently.*
 - LociSSD `lociSSD_interval_index` consumption (spec §6.5) — helps
   when the window is much smaller than a row group.
 

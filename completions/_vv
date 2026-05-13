@@ -32,6 +32,7 @@ _vv() {
         '--no-index[Suppress the row-index column]' \
         '(-r --region --window)'{-r,--region,--window}'+[Region (chr:start-end)]:region:' \
         '--regions-file+[BED file with windows]:path:_files' \
+        '--region-cols+[chrom,start,end column names (plain Parquet)]:names:' \
         '--slop+[Pad each window by N bp]:n:' \
         '(-@ --threads)'{-@,--threads}'+[Worker threads]:n:' \
         '--color=-[Color mode]:mode:(auto always never)' \

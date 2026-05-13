@@ -45,7 +45,9 @@ table = pa.table({
     "Score": [round(0.05 * i, 4) for i in range(20)],
     "Tags":  [_tag_cycle[i % len(_tag_cycle)] for i in range(20)],
 }, schema=schema)
-pq.write_table(table, HERE / "tiny.parquet", compression="snappy")
+# Split into 4 row groups so generic-Parquet region-query tests actually
+# exercise row-group pruning (otherwise everything fits in row group 0).
+pq.write_table(table, HERE / "tiny.parquet", compression="snappy", row_group_size=5)
 
 # ── Arrow IPC ────────────────────────────────────────────────────────────────
 with pa.OSFile(str(HERE / "tiny.arrow"), "wb") as f:

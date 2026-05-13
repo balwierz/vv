@@ -272,14 +272,44 @@ Supported sources:
   to locate each chromosome's row range, then Parquet's column
   statistics on `Start` and `MaxEndSoFar` to skip row groups outside
   the window, then a per-row predicate inside surviving row groups.
+* **Plain Parquet** with chrom/start/end columns: auto-detected by
+  name (see `--region-cols` below). Pruning uses Parquet's
+  ByteArray statistics on chrom and Int statistics on Start/End;
+  per-row filtering inside surviving row groups handles unsorted
+  files correctly too. No `MaxEndSoFar` is needed.
 * **bigBed / bigWig** (`.bb`, `.bigBed`, `.bw`, `.bigWig`): native
   block-level overlap queries via the vendored libBigWig — no
   external index needed.
 
-Plain `.parquet` without the LociSSD manifest produces a friendly error
-suggesting LociSSD or tabix.
+Plain `.parquet` with chrom/start/end columns works without a LociSSD
+manifest; see `--region-cols` below if the auto-detection misses
+your column names.
 
 Coordinate convention: **0-based half-open** (BED).
+
+## Column names (`--region-cols`)
+
+For plain Parquet, `vv` auto-detects the chrom / start / end columns
+from the following priority list:
+
+| Role  | Names tried (first match wins)                              |
+|-------|-------------------------------------------------------------|
+| chrom | `Chromosome`, `chromosome`, `Chrom`, `chrom`, `Chr`, `chr`, `CHROM`, `#CHROM`, `seqname`, `seqid`, `contig` |
+| start | `Start`, `start`, `chromStart`, `POS`, `pos`, `Position`, `position`, `txStart`, `begin`, `Begin` |
+| end   | `End`, `end`, `chromEnd`, `Stop`, `stop`, `chromStop`, `txEnd` |
+
+When auto-detection picks the wrong column (or the schema uses
+unusual names), override with:
+
+```sh
+$ vv -r chr1:1000-2000 --region-cols MyChr,MyStart,MyEnd file.parquet
+```
+
+Three comma-separated names, in that order. An unknown name produces
+a clear error.
+
+LociSSD files use their canonical names (`Chromosome`/`Start`/`End`)
+regardless of override.
 
 ## Region syntax
 

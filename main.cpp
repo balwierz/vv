@@ -146,6 +146,7 @@ struct Config {
     std::string path;
     std::string region;                  // -r: tabix region(s), e.g. "chr1:1000-2000"
     std::string regions_file;            // --regions-file BED: many windows from a BED
+    std::string region_cols;             // --region-cols Chr,Start,End for generic Parquet
     int64_t     slop = 0;                // --slop N: pad each region by N bp
     std::string parquet_out;             // --parquet <file>: write Parquet to this path
     std::string compression = "zstd";    // --compression: parquet codec
@@ -250,10 +251,15 @@ static void print_usage(const char* prog) {
         "  --window <REGION>        alias of -r for LociSSD readers' muscle memory\n"
         "  --regions-file <BED>     read additional windows from a BED file's\n"
         "                           first three columns\n"
+        "  --region-cols <names>    chrom/start/end column names for plain\n"
+        "                           Parquet (3 comma-separated names; default:\n"
+        "                           auto-detect Chromosome/Chrom/Chr + Start/POS\n"
+        "                           + End/Stop)\n"
         "  --slop <N>               pad each window by N bp on both sides\n"
         "  Supported on tabix-indexed VCF/BED/GFF/TSV, indexed BCF\n"
-        "  (.csi/.tbi), and LociSSD Parquet (.lociss). Coordinates are\n"
-        "  0-based half-open (BED convention).\n"
+        "  (.csi/.tbi), LociSSD Parquet (.lociss), plain sorted Parquet\n"
+        "  with chrom/start/end columns, and bigBed/bigWig. Coordinates\n"
+        "  are 0-based half-open (BED convention).\n"
         "\nPerformance:\n"
         "  -@ / --threads <N>  worker threads for I/O and decode (0 = auto)\n"
         "\n  -h / --help         show this help\n"
@@ -304,6 +310,8 @@ static Config parse_args(int argc, char** argv) {
             cfg.region = argv[++i];
         } else if (!std::strcmp(argv[i], "--regions-file") && i + 1 < argc) {
             cfg.regions_file = argv[++i];
+        } else if (!std::strcmp(argv[i], "--region-cols") && i + 1 < argc) {
+            cfg.region_cols = argv[++i];
         } else if (!std::strcmp(argv[i], "--slop") && i + 1 < argc) {
             cfg.slop = (int64_t)std::atoll(argv[++i]);
         } else if ((!std::strcmp(argv[i], "-@") ||
@@ -1832,6 +1840,67 @@ static bool parse_lociss_chromosomes(const std::string& json,
     return !out->empty();
 }
 
+// ── Generic Parquet coordinate-column detection ──────────────────────────────
+//
+// For region queries on plain Parquet (no LociSSD manifest), discover which
+// columns hold chromosome / start / end. Either picked by the user via
+// --region-cols Chr,Start,End, or auto-detected from a small priority list
+// of common names (Chromosome / Chrom / Chr / POS / chromStart / …). Returns
+// indices = -1 when a column can't be resolved.
+struct GenomicCoordCols {
+    int chrom = -1, start = -1, end = -1;
+    std::string chrom_name, start_name, end_name;
+};
+
+static GenomicCoordCols detect_coord_columns(const arrow::Schema& schema,
+                                             const std::string& override_cols) {
+    GenomicCoordCols r;
+    auto find_idx = [&](const std::string& name) -> int {
+        for (int i = 0; i < schema.num_fields(); ++i)
+            if (schema.field(i)->name() == name) return i;
+        return -1;
+    };
+
+    if (!override_cols.empty()) {
+        std::vector<std::string> parts;
+        std::string buf;
+        for (char c : override_cols) {
+            if (c == ',') { parts.push_back(std::move(buf)); buf.clear(); }
+            else buf += c;
+        }
+        if (!buf.empty()) parts.push_back(std::move(buf));
+        if (parts.size() != 3) return r;
+        r.chrom_name = parts[0]; r.start_name = parts[1]; r.end_name = parts[2];
+        r.chrom = find_idx(r.chrom_name);
+        r.start = find_idx(r.start_name);
+        r.end   = find_idx(r.end_name);
+        return r;
+    }
+
+    static const char* CHROM_NAMES[] = {
+        "Chromosome", "chromosome", "Chrom", "chrom", "Chr", "chr",
+        "CHROM", "#CHROM", "seqname", "seqid", "contig"
+    };
+    static const char* START_NAMES[] = {
+        "Start", "start", "chromStart", "POS", "pos", "Position",
+        "position", "txStart", "begin", "Begin"
+    };
+    static const char* END_NAMES[] = {
+        "End", "end", "chromEnd", "Stop", "stop", "chromStop", "txEnd"
+    };
+    auto find_by_priority = [&](const char* const* names, size_t n) -> int {
+        for (size_t k = 0; k < n; ++k) { int i = find_idx(names[k]); if (i >= 0) return i; }
+        return -1;
+    };
+    r.chrom = find_by_priority(CHROM_NAMES, sizeof(CHROM_NAMES)/sizeof(*CHROM_NAMES));
+    r.start = find_by_priority(START_NAMES, sizeof(START_NAMES)/sizeof(*START_NAMES));
+    r.end   = find_by_priority(END_NAMES,   sizeof(END_NAMES)/sizeof(*END_NAMES));
+    if (r.chrom >= 0) r.chrom_name = schema.field(r.chrom)->name();
+    if (r.start >= 0) r.start_name = schema.field(r.start)->name();
+    if (r.end   >= 0) r.end_name   = schema.field(r.end)->name();
+    return r;
+}
+
 // Wraps an InputStream, truncating each line to at most max_fields tab-separated fields.
 // Used for SAM (variable optional alignment tags) and GFF3 (occasional extra columns).
 class TruncateFieldsStream : public arrow::io::InputStream {
@@ -2103,49 +2172,11 @@ public:
             acc += self->meta_->RowGroup(i)->num_rows();
         }
 
-        // ── LociSSD region pruning ───────────────────────────────────────────
+        // ── Region pruning (LociSSD-aware, otherwise generic) ────────────────
         if (!cfg.region.empty()) {
-            if (!self->is_lociss_)
-                return "region queries on Parquet need LociSSD format (the "
-                       "lociSSD_manifest footer key is missing); for text "
-                       "formats use tabix-indexed .vcf.gz/.bed.gz/.gff.gz";
-            std::vector<LocissChrom> chromosomes;
-            if (!parse_lociss_chromosomes(lociss_manifest_json, &chromosomes))
-                return "Cannot parse LociSSD manifest";
-
-            // Look up the schema column indices we need for filtering.
-            for (int i = 0; i < self->schema_->num_fields(); ++i) {
-                const auto& n = self->schema_->field(i)->name();
-                if (n == "Chromosome")  self->j_chrom_ = i;
-                else if (n == "Start")  self->j_start_ = i;
-                else if (n == "End")    self->j_end_   = i;
-                else if (n == "MaxEndSoFar") self->j_mes_ = i;
-            }
-            if (self->j_chrom_ < 0 || self->j_start_ < 0 || self->j_end_ < 0)
-                return "LociSSD file missing required columns (Chromosome / Start / End)";
-
-            // Per-chrom lookup helper.
-            auto find_chrom = [&](const std::string& name)
-                    -> const LocissChrom* {
-                for (auto& c : chromosomes) if (c.name == name) return &c;
-                return nullptr;
-            };
-            // Map a row-range [row_a, row_b) to row-group indices it touches.
-            auto rg_range_for_rows = [&](int64_t row_a, int64_t row_b,
-                                         int* rg_first, int* rg_last) {
-                int n_rg = self->meta_->num_row_groups();
-                *rg_first = n_rg; *rg_last = -1;
-                for (int g = 0; g < n_rg; ++g) {
-                    int64_t a = self->chunk_start_[g];
-                    int64_t b = a + self->meta_->RowGroup(g)->num_rows();
-                    if (b <= row_a || a >= row_b) continue;
-                    if (g < *rg_first) *rg_first = g;
-                    if (g > *rg_last)  *rg_last  = g;
-                }
-            };
-            // Read a row group's Start / MaxEndSoFar statistics. We use Parquet
-            // *leaf* column indices: for the flat numeric columns we care about,
-            // the leaf and field indices coincide (verified at open time).
+            // Read a row group's int-column min/max from Parquet statistics.
+            // For flat numeric leaf columns (our use case) the Arrow field
+            // index and the Parquet leaf column index coincide.
             auto col_stats_minmax_int = [&](int rg, int field_idx,
                                             int64_t* lo, int64_t* hi) -> bool {
                 auto md = self->meta_->RowGroup(rg);
@@ -2154,7 +2185,6 @@ public:
                 if (!cc->is_stats_set()) return false;
                 auto stats = cc->statistics();
                 if (!stats || !stats->HasMinMax()) return false;
-                // Try Int64 first, then Int32.
                 if (auto s64 = std::dynamic_pointer_cast<parquet::Int64Statistics>(stats)) {
                     *lo = s64->min(); *hi = s64->max(); return true;
                 }
@@ -2163,44 +2193,137 @@ public:
                 }
                 return false;
             };
-
+            // Read a row group's string-column min/max from Parquet statistics.
+            // Used to skip row groups whose chrom range doesn't contain a
+            // queried chromosome. Dictionary-encoded strings are still stored
+            // physically as ByteArray statistics.
+            auto col_stats_minmax_str = [&](int rg, int field_idx,
+                                            std::string* lo, std::string* hi) -> bool {
+                auto md = self->meta_->RowGroup(rg);
+                if (field_idx < 0 || field_idx >= md->num_columns()) return false;
+                auto cc = md->ColumnChunk(field_idx);
+                if (!cc->is_stats_set()) return false;
+                auto stats = cc->statistics();
+                if (!stats || !stats->HasMinMax()) return false;
+                if (auto sb = std::dynamic_pointer_cast<parquet::ByteArrayStatistics>(stats)) {
+                    auto mn = sb->min(); auto mx = sb->max();
+                    lo->assign(reinterpret_cast<const char*>(mn.ptr), mn.len);
+                    hi->assign(reinterpret_cast<const char*>(mx.ptr), mx.len);
+                    return true;
+                }
+                return false;
+            };
             auto windows = parse_region_list(cfg.region);
+
+            // Detect chrom/start/end columns. The user may override via
+            // --region-cols (used to disambiguate non-standard names).
+            GenomicCoordCols cc = detect_coord_columns(*self->schema_, cfg.region_cols);
+            if (cc.chrom < 0 || cc.start < 0 || cc.end < 0) {
+                if (!cfg.region_cols.empty())
+                    return "region: --region-cols column(s) not found in schema";
+                if (self->is_lociss_)
+                    return "LociSSD file missing required columns (Chromosome / Start / End)";
+                return "region: could not auto-detect chrom/start/end columns; "
+                       "use --region-cols Chr,Start,End to specify them";
+            }
+            self->j_chrom_ = cc.chrom;
+            self->j_start_ = cc.start;
+            self->j_end_   = cc.end;
+            // Optional: MaxEndSoFar (LociSSD only) for max-end row-group pruning.
+            for (int i = 0; i < self->schema_->num_fields(); ++i)
+                if (self->schema_->field(i)->name() == "MaxEndSoFar") {
+                    self->j_mes_ = i; break;
+                }
+
             int64_t virt = 0;
-            for (const auto& w : windows) {
-                const LocissChrom* c = find_chrom(w.chrom);
-                if (!c) continue;
-                int64_t row_a = c->row_offset;
-                int64_t row_b = c->row_offset + c->rows;
-                int rg_first, rg_last;
-                rg_range_for_rows(row_a, row_b, &rg_first, &rg_last);
-                if (rg_last < rg_first) continue;
-                int64_t qs = w.start, qe = w.end;
-                for (int g = rg_first; g <= rg_last; ++g) {
-                    int64_t lo = INT64_MIN, hi = INT64_MAX;
-                    // Skip row groups whose Start.min is already past the window.
-                    if (qe != INT64_MAX &&
-                        col_stats_minmax_int(g, self->j_start_, &lo, &hi) &&
-                        lo >= qe) continue;
-                    // Skip row groups whose intervals all end at/before the window
-                    // start (this is what MaxEndSoFar is for).
-                    if (qs != INT64_MIN && self->j_mes_ >= 0 &&
-                        col_stats_minmax_int(g, self->j_mes_, &lo, &hi) &&
-                        hi <= qs) continue;
-                    // Slice within this row group is the intersection of the
-                    // chromosome's row range with the row group.
-                    int64_t rg_a = self->chunk_start_[g];
-                    int64_t rg_b = rg_a + self->meta_->RowGroup(g)->num_rows();
-                    int64_t slice_a = std::max(rg_a, row_a);
-                    int64_t slice_b = std::min(rg_b, row_b);
-                    if (slice_b <= slice_a) continue;
-                    RegionSlice s;
-                    s.row_group = g;
-                    s.off_in_rg = slice_a - rg_a;
-                    s.len       = slice_b - slice_a;
-                    s.window    = w;
-                    self->slice_first_row_.push_back(virt);
-                    virt += s.len;
-                    self->slices_.push_back(std::move(s));
+            if (self->is_lociss_) {
+                // LociSSD path: use the manifest to locate each chromosome's
+                // row range, then prune row groups by Start.min / MaxEndSoFar.max.
+                std::vector<LocissChrom> chromosomes;
+                if (!parse_lociss_chromosomes(lociss_manifest_json, &chromosomes))
+                    return "Cannot parse LociSSD manifest";
+                auto find_chrom = [&](const std::string& name) -> const LocissChrom* {
+                    for (auto& c : chromosomes) if (c.name == name) return &c;
+                    return nullptr;
+                };
+                auto rg_range_for_rows = [&](int64_t row_a, int64_t row_b,
+                                             int* rg_first, int* rg_last) {
+                    int n_rg = self->meta_->num_row_groups();
+                    *rg_first = n_rg; *rg_last = -1;
+                    for (int g = 0; g < n_rg; ++g) {
+                        int64_t a = self->chunk_start_[g];
+                        int64_t b = a + self->meta_->RowGroup(g)->num_rows();
+                        if (b <= row_a || a >= row_b) continue;
+                        if (g < *rg_first) *rg_first = g;
+                        if (g > *rg_last)  *rg_last  = g;
+                    }
+                };
+                for (const auto& w : windows) {
+                    const LocissChrom* c = find_chrom(w.chrom);
+                    if (!c) continue;
+                    int64_t row_a = c->row_offset;
+                    int64_t row_b = c->row_offset + c->rows;
+                    int rg_first, rg_last;
+                    rg_range_for_rows(row_a, row_b, &rg_first, &rg_last);
+                    if (rg_last < rg_first) continue;
+                    int64_t qs = w.start, qe = w.end;
+                    for (int g = rg_first; g <= rg_last; ++g) {
+                        int64_t lo = INT64_MIN, hi = INT64_MAX;
+                        if (qe != INT64_MAX &&
+                            col_stats_minmax_int(g, self->j_start_, &lo, &hi) &&
+                            lo >= qe) continue;
+                        if (qs != INT64_MIN && self->j_mes_ >= 0 &&
+                            col_stats_minmax_int(g, self->j_mes_, &lo, &hi) &&
+                            hi <= qs) continue;
+                        int64_t rg_a = self->chunk_start_[g];
+                        int64_t rg_b = rg_a + self->meta_->RowGroup(g)->num_rows();
+                        int64_t slice_a = std::max(rg_a, row_a);
+                        int64_t slice_b = std::min(rg_b, row_b);
+                        if (slice_b <= slice_a) continue;
+                        RegionSlice s;
+                        s.row_group = g;
+                        s.off_in_rg = slice_a - rg_a;
+                        s.len       = slice_b - slice_a;
+                        s.window    = w;
+                        self->slice_first_row_.push_back(virt);
+                        virt += s.len;
+                        self->slices_.push_back(std::move(s));
+                    }
+                }
+            } else {
+                // Generic Parquet: no manifest. Enumerate every row group and
+                // prune by per-group statistics. Reading the whole row group
+                // and applying the per-row predicate inside read_chunk is
+                // always correct — pruning is best-effort.
+                int n_rg = self->meta_->num_row_groups();
+                for (const auto& w : windows) {
+                    for (int g = 0; g < n_rg; ++g) {
+                        // chrom range overlap test
+                        std::string clo, chi;
+                        if (col_stats_minmax_str(g, self->j_chrom_, &clo, &chi)) {
+                            if (clo > w.chrom || chi < w.chrom) continue;
+                        }
+                        // Start.min vs window end
+                        int64_t lo = INT64_MIN, hi = INT64_MAX;
+                        if (w.end != INT64_MAX &&
+                            col_stats_minmax_int(g, self->j_start_, &lo, &hi) &&
+                            lo >= w.end) continue;
+                        // End.max vs window start (best-effort: only useful if
+                        // intervals are short relative to the row group; a
+                        // sorted-by-Start file is most likely to benefit).
+                        if (w.start != INT64_MIN &&
+                            col_stats_minmax_int(g, self->j_end_, &lo, &hi) &&
+                            hi <= w.start) continue;
+
+                        RegionSlice s;
+                        s.row_group = g;
+                        s.off_in_rg = 0;
+                        s.len       = self->meta_->RowGroup(g)->num_rows();
+                        s.window    = w;
+                        self->slice_first_row_.push_back(virt);
+                        virt += s.len;
+                        self->slices_.push_back(std::move(s));
+                    }
                 }
             }
             self->region_total_rows_ = virt;
@@ -2250,10 +2373,14 @@ public:
             return reader_->ReadRowGroups({i}, arrow_to_leaf_indices(cols), out);
 
         // Region mode: read the full row group of the slice, slice it to the
-        // chromosome's row range, then filter by the canonical LociSSD
-        // overlap predicate (spec §7). The caller may have asked for only a
-        // projection of columns; we always read Chromosome/Start/End for the
-        // predicate, then return the projected columns at the end.
+        // pruned row range, then apply the BED-style overlap predicate
+        //   chrom == w.chrom AND start < w.end AND end > w.start
+        // per row. Works for both LociSSD (row range bounded by the
+        // manifest) and plain Parquet (the slice spans the whole row group
+        // and chrom-mismatched rows are rejected by the predicate).
+        // The caller may have asked for only a projection of columns; we
+        // always read chrom/start/end for the predicate, then return only
+        // the projected columns.
         const RegionSlice& s = slices_[i];
 
         // Build the union of (requested cols ∪ {Chromosome, Start, End}).
@@ -2279,15 +2406,14 @@ public:
         int p_start = col_in_raw(j_start_);
         int p_end   = col_in_raw(j_end_);
         if (p_chrom < 0 || p_start < 0 || p_end < 0)
-            return arrow::Status::Invalid("LociSSD region: required columns missing");
+            return arrow::Status::Invalid("region: required columns missing");
 
-        // Apply the canonical LociSSD predicate
-        //   Chromosome == chrom AND Start < qend AND End > qstart
-        // by walking rows and collecting contiguous runs of matches. This
-        // avoids depending on Arrow compute kernels (which are pruned by
-        // `--gc-sections` in the static build). The result is built by
-        // slicing + concatenating the original table — supports every
-        // Arrow type the data may carry.
+        // BED-style half-open overlap predicate
+        //   chrom == w.chrom AND start < w.end AND end > w.start
+        // applied by walking rows and collecting contiguous runs of matches.
+        // Avoids depending on Arrow compute kernels (pruned by --gc-sections
+        // in the static build). Built by slicing + concatenating the
+        // original table — works for every Arrow type the data may carry.
         const int64_t n_rows = raw->num_rows();
         auto chrom_arr = raw->column(p_chrom)->chunk(0);
         auto start_arr = raw->column(p_start)->chunk(0);
@@ -2301,6 +2427,27 @@ public:
                 return a->GetString(r);
             if (auto a = std::dynamic_pointer_cast<arrow::LargeStringArray>(chrom_arr))
                 return a->GetString(r);
+            // Dictionary-encoded strings: common when a Parquet writer
+            // emits the chrom column with dict-encoding turned on.
+            if (auto d = std::dynamic_pointer_cast<arrow::DictionaryArray>(chrom_arr)) {
+                if (d->IsNull(r)) return std::string();
+                int64_t idx = -1;
+                auto ind = d->indices();
+                if (auto a = std::dynamic_pointer_cast<arrow::Int8Array>(ind))  idx = a->Value(r);
+                else if (auto a = std::dynamic_pointer_cast<arrow::Int16Array>(ind)) idx = a->Value(r);
+                else if (auto a = std::dynamic_pointer_cast<arrow::Int32Array>(ind)) idx = a->Value(r);
+                else if (auto a = std::dynamic_pointer_cast<arrow::Int64Array>(ind)) idx = a->Value(r);
+                else if (auto a = std::dynamic_pointer_cast<arrow::UInt8Array>(ind))  idx = a->Value(r);
+                else if (auto a = std::dynamic_pointer_cast<arrow::UInt16Array>(ind)) idx = a->Value(r);
+                else if (auto a = std::dynamic_pointer_cast<arrow::UInt32Array>(ind)) idx = a->Value(r);
+                else if (auto a = std::dynamic_pointer_cast<arrow::UInt64Array>(ind)) idx = (int64_t)a->Value(r);
+                if (idx < 0) return std::string();
+                auto dict = d->dictionary();
+                if (auto a = std::dynamic_pointer_cast<arrow::StringArray>(dict))
+                    return a->GetString(idx);
+                if (auto a = std::dynamic_pointer_cast<arrow::LargeStringArray>(dict))
+                    return a->GetString(idx);
+            }
             return std::string();
         };
         auto cell_int = [](const std::shared_ptr<arrow::Array>& a, int64_t r) -> int64_t {

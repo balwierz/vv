@@ -28,6 +28,10 @@ _vv() {
             _filedir bed
             return
             ;;
+        --region-cols)
+            # Comma-separated column names — no completion
+            return
+            ;;
         --slop|--sample)
             # Numeric argument — no completion
             return
@@ -52,7 +56,7 @@ _vv() {
                 -h --help -V --version
                 -i --interactive --no-interactive
                 -n -w -c
-                -r --region --window --regions-file --slop
+                -r --region --window --regions-file --region-cols --slop
                 -@ --threads
                 --no-index
                 --color --color=auto --color=always --color=never
