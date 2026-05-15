@@ -138,6 +138,9 @@ $ vv tests/data/tiny.lociss        # default when stdout is a terminal
 | `c`            | open the show/hide columns picker                       |
 | `H` / `F1`     | help overlay with every keybinding                      |
 | mouse wheel    | scroll three rows                                       |
+| mouse click    | column header → sort by column; data row → scroll to top|
+| mouse 2-click  | data row → open detail pane (same as `Enter`)           |
+| Shift + drag   | select text for the OS clipboard (terminal-side)        |
 | `q`            | quit (Esc clears search / filter / closes overlays)     |
 
 All visible matches are highlighted; the n/N target gets reverse video.

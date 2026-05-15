@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **TUI mouse clicks** — three additive bindings on top of the
+  existing wheel-scroll: click a column header to sort by that
+  column (toggle asc/desc on repeat; updates the active column
+  for `S` / `y`); click a data row to scroll it to the top;
+  double-click a data row to open the detail pane (same as
+  `Enter`). Shift+drag continues to work as the universal escape
+  hatch for native terminal text selection.
+
 ## [1.6.0] - 2026-05-14
 
 A broad feature release on top of 1.5.0. Highlights: bigBed / bigWig

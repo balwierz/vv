@@ -355,6 +355,24 @@ active filter before quitting. Composes with \fBs\fR (sort) and
 .B mouse wheel
 Scroll three rows up / down.
 .TP
+.B mouse click
+On a column header: toggle sort by that column (same as moving
+\fBleft_col\fR to it and pressing \fBs\fR). On a data row:
+scroll the clicked row to the top of the viewport and make its
+column the focus for follow-up \fBS\fR / \fBy\fR / \fBs\fR.
+.TP
+.B mouse double-click
+On a data row: open the detail pane for that row (same as
+pressing \fBEnter\fR).
+.TP
+.B Shift+drag
+While vv has mouse capture, the terminal stops handling its own
+click-and-drag selection. Hold \fBShift\fR to bypass the capture
+and let the terminal emulator do its native text selection (works
+in xterm, alacritty, kitty, foot, wezterm, iTerm2, gnome-terminal,
+konsole). Alternatively, use \fBy\fR to copy the cell at the top
+of the viewport to the system clipboard via OSC52.
+.TP
 .B H, F1
 Open / close the help overlay listing every keybinding.
 .TP

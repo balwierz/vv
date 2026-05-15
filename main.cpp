@@ -7508,6 +7508,9 @@ class TableTUI {
             {"y",             "copy the top-left visible cell to the clipboard (OSC52)"},
             {"Enter",         "open detail pane for the top-visible row"},
             {"mouse wheel",   "scroll rows"},
+            {"mouse click",   "header → sort by column; row → scroll to top"},
+            {"mouse 2-click", "row → open detail pane"},
+            {"Shift+drag",    "select text for OS clipboard (terminal-side)"},
             {"?  F1  H",      "toggle this help"},
         };
         const int n = (int)(sizeof(rows) / sizeof(rows[0]));
@@ -7850,8 +7853,15 @@ public:
         set_term(scr);
         noecho(); cbreak(); keypad(stdscr, TRUE); curs_set(0);
         set_escdelay(25); setup_colors();
-        // Mouse: scroll wheel only (BUTTON4 = up, BUTTON5 = down).
-        mousemask(BUTTON4_PRESSED | BUTTON5_PRESSED, nullptr);
+        // Mouse: scroll wheel (BUTTON4 / BUTTON5) + click and double-click.
+        // Adding click events means the terminal switches into application
+        // mouse mode and stops handling its own drag-to-select; Shift+drag
+        // still works as the escape hatch in every modern emulator.
+        mousemask(BUTTON1_CLICKED | BUTTON1_DOUBLE_CLICKED
+                | BUTTON4_PRESSED | BUTTON5_PRESSED, nullptr);
+        // 200 ms is long enough for an unhurried double-click but short
+        // enough that a deliberate pair-of-clicks isn't mistaken for one.
+        mouseinterval(200);
 
         bool quit = false;
         while (!quit) {
@@ -7902,7 +7912,10 @@ public:
                 continue;
             }
 
-            // ── Mouse wheel ─────────────────────────────────────────────────
+            // ── Mouse ───────────────────────────────────────────────────────
+            // Wheel scrolls; click on a column header sorts by that column;
+            // click on a data row scrolls it to the top of the viewport;
+            // double-click on a data row opens the detail pane.
             if (ch == KEY_MOUSE) {
                 MEVENT me;
                 if (getmouse(&me) != ERR) {
@@ -7915,6 +7928,56 @@ public:
                                      ? std::max<int64_t>(0, tr - dl)
                                      : top_row_ + kWheelStep;
                         top_row_ = std::min<int64_t>(top_row_ + kWheelStep, mt);
+                    } else if (me.bstate & (BUTTON1_CLICKED |
+                                            BUTTON1_DOUBLE_CLICKED)) {
+                        auto vc = visible_cols();
+                        // Hit-test (y, x) against the current layout. y=0
+                        // is the column-name row; y=1 is the rule under it;
+                        // y >= HDR_H is data; y = scr_r_-1 is the status bar.
+                        int  hit_col = -1;            // virt col, -1 if none
+                        for (const auto& v : vc) {
+                            if (me.x >= v.x && me.x < v.x + v.w + 2) {
+                                hit_col = v.col; break;
+                            }
+                        }
+                        const bool in_header = (me.y >= 0 && me.y < HDR_H);
+                        const bool in_data   = (me.y >= HDR_H &&
+                                                me.y < scr_r_ - 1);
+
+                        if (me.bstate & BUTTON1_DOUBLE_CLICKED) {
+                            // Drill in: open detail pane on the clicked row.
+                            if (in_data) {
+                                int64_t r = top_row_ + (me.y - HDR_H);
+                                int64_t tr = total_rows();
+                                if (tr < 0 || r < tr) {
+                                    detail_row_    = r;
+                                    detail_scroll_ = 0;
+                                }
+                            }
+                        } else if (in_header && hit_col >= 0) {
+                            // Sort by the clicked column. Repeat-clicking
+                            // the same header toggles ascending → descending.
+                            if (sort_col_ == hit_col && !sort_order_.empty())
+                                sort_desc_ = !sort_desc_;
+                            else { sort_col_ = hit_col; sort_desc_ = false; }
+                            left_col_ = hit_col;  // also focus for S / y
+                            rebuild_display_order();
+                            top_row_    = 0;
+                            search_row_ = -1;
+                        } else if (in_data) {
+                            // Single click on a data row: scroll it to the
+                            // top and make its column the active one for
+                            // follow-up S / y / s actions.
+                            int64_t r = top_row_ + (me.y - HDR_H);
+                            int64_t tr = total_rows();
+                            if (tr < 0 || r < tr) {
+                                int64_t mt = (tr >= 0)
+                                    ? std::max<int64_t>(0, tr - dl) : r;
+                                top_row_ = std::min(r, mt);
+                                if (hit_col >= 0) left_col_ = hit_col;
+                                copy_status_.clear();
+                            }
+                        }
                     }
                 }
                 continue;

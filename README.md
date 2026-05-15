@@ -163,6 +163,10 @@ picker. Key bindings (also visible in-app via `H` / `F1`):
 | `&`            | live filter — same grammar as `--filter`                |
 | c              | show / hide columns overlay                             |
 | y              | copy current cell to the clipboard via OSC52            |
+| mouse wheel    | scroll rows                                             |
+| mouse click    | column header → sort; data row → scroll to top          |
+| mouse 2-click  | data row → open detail pane (= Enter)                   |
+| Shift + drag   | select text for the OS clipboard (terminal-side)        |
 | `--theme`      | `default` / `dark` / `light` / `solarized-dark` / `solarized-light` |
 | q / Esc        | quit (Esc clears search / filter first)                 |
 
