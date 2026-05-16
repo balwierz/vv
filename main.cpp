@@ -364,7 +364,8 @@ static arrow::Type::type display_type(const arrow::Field& f) {
 enum class ColorMode { Auto, Always, Never };
 
 struct Config {
-    std::string path;
+    std::string path;                    // first positional (back-compat)
+    std::vector<std::string> paths;      // every positional (multi-file TUI)
     std::string region;                  // -r: tabix region(s), e.g. "chr1:1000-2000"
     std::string regions_file;            // --regions-file BED: many windows from a BED
     std::string region_cols;             // --region-cols Chr,Start,End for generic Parquet
@@ -484,6 +485,7 @@ static void print_usage(const char* prog) {
         "        &:live filter, c:show/hide columns, y:copy cell (OSC52),\n"
         "        T:pick a theme (saved to ~/.config/vv/config),\n"
         "        ::command line (:<N> jump, :q quit, :theme NAME),\n"
+        "        Tab / Shift-Tab: switch files (with multiple positionals),\n"
         "        H/F1: in-app help, q quit\n"
         "\nTable options:\n"
         "  -n <rows>           rows to display  (default: 10, 0 = all)\n"
@@ -673,8 +675,11 @@ static Config parse_args(int argc, char** argv) {
             else if (sep[0] && !sep[1])     cfg.delimiter = sep[0];
             else { std::fprintf(stderr, "delimiter must be a single character\n"); std::exit(1); }
         } else if (argv[i][0] != '-' || (argv[i][0] == '-' && argv[i][1] == 0)) {
-            // Bare "-" means stdin; treat as a positional argument.
+            // Bare "-" means stdin; treat as a positional argument. Every
+            // positional becomes a TUI tab; the first one keeps cfg.path
+            // as the "primary" file for non-interactive output modes.
             if (positional++ == 0) cfg.path = argv[i];
+            cfg.paths.push_back(argv[i]);
         } else {
             std::fprintf(stderr, "Unknown option: %s\n", argv[i]);
             print_usage(argv[0]); std::exit(1);
@@ -6418,10 +6423,22 @@ parse_vcf_info_headers(const std::vector<std::string>& preamble) {
 }
 
 class TableTUI {
-    TabularSource& src_;
-    int   num_cols_;
+    // Multiple files become tabs. `src_` always points at the currently
+    // active tab's source; `sources_` owns them. The snapshot vector
+    // (`tabs_`, declared further down) saves per-tab view state — sort,
+    // filter, scroll position, column visibility, etc. — across switches.
+    std::vector<std::unique_ptr<TabularSource>> sources_;
+    TabularSource* src_;
+    int   active_tab_ = 0;
+    int   num_cols_   = 0;
     int   max_col_w_;
     bool  no_index_;
+    int   max_cols_cfg_;          // remembered from cfg.max_cols
+
+    // SearchMode lives at the top of the class so per-tab snapshots (and
+    // FilterMode below) can reference it. The state fields themselves are
+    // declared further down.
+    enum class SearchMode { None, Input, Active };
 
     std::vector<std::string> col_names_;
     std::vector<int>         col_widths_;
@@ -6491,6 +6508,50 @@ class TableTUI {
     bool                       theme_picker_open_   = false;
     int                        theme_picker_cursor_ = 0;
 
+    // ── Multi-file tabs (`Tab` / `Shift+Tab`) ────────────────────────────────
+    //
+    // Each tab owns one TabularSource (via sources_) plus a snapshot of the
+    // per-file view state (sort, filter, scroll position, column metadata).
+    // The TableTUI's "live" member fields are always the active tab's
+    // values; switching tabs swaps the live fields with another snapshot.
+    struct TabState {
+        std::string                     path;          // shown in tab indicator
+        bool                            initialised = false;
+        // Column metadata (built once per source by setup_for_active_source).
+        int                             num_cols = 0;
+        int                             src_num_cols = 0;
+        int                             idx_w = 1;
+        std::vector<std::string>        col_names;
+        std::vector<int>                col_widths;
+        std::vector<bool>               right_align, is_bool, is_rgb, is_integer;
+        std::vector<int>                virt_src_col;
+        std::vector<std::string>        virt_info_key;
+        std::vector<bool>               col_visible;
+        // View state
+        int64_t                         top_row = 0;
+        int                             left_col = 0;
+        bool                            freeze_first_col = false;
+        // Chunk LRU cache
+        std::map<int, CachedRG>         cache;
+        std::list<int>                  lru;
+        // Search state (per-tab so each file has its own match position).
+        SearchMode                      search_mode = SearchMode::None;
+        std::string                     search_query;
+        int64_t                         search_row = -1;
+        bool                            search_wrap = false;
+        bool                            search_fail = false;
+        bool                            search_dir_forward = true;
+        // Sort + filter (per-tab — share the display→source indirection).
+        int                             sort_col = -1;
+        bool                            sort_desc = false;
+        std::vector<int64_t>            sort_order;
+        bool                            filter_active = false;
+        std::string                     filter_expr_str;
+        FilterExpr                      filter_fx;
+        int64_t                         filter_total = 0;
+    };
+    std::vector<TabState>      tabs_;
+
     // ── Sort by column (`s`) + Live filter (`&`) ─────────────────────────────
     //
     // Both features funnel through the same display→source indirection.
@@ -6537,7 +6598,6 @@ class TableTUI {
     }
 
     // ── Search state ─────────────────────────────────────────────────────────
-    enum class SearchMode { None, Input, Active };
     SearchMode  search_mode_  = SearchMode::None;
     std::string search_input_;   // text being typed in the search bar
     std::string search_query_;   // committed query (empty = no active search)
@@ -6587,9 +6647,9 @@ class TableTUI {
     // status bar's row range, and scroll clamping all depend on this.
     int64_t total_rows() const {
         if (!sort_order_.empty()) return (int64_t)sort_order_.size();
-        return src_.total_rows();
+        return src_->total_rows();
     }
-    int     num_chunks()  const { return src_.num_chunks(); }
+    int     num_chunks()  const { return src_->num_chunks(); }
 
     // ── Search ───────────────────────────────────────────────────────────────
 
@@ -6605,7 +6665,7 @@ class TableTUI {
         std::vector<int> all_cols;
         for (int i = 0; i < src_num_cols_; ++i) all_cols.push_back(i);
 
-        int nc = src_.num_chunks();
+        int nc = src_->num_chunks();
 
         // Check one row: returns true if any column matches the active search.
         auto row_matches = [&](const std::shared_ptr<arrow::Table>& tbl, int64_t local) -> bool {
@@ -6639,11 +6699,11 @@ class TableTUI {
                 int64_t srow = sort_order_[r];
                 int c = chunk_for_row(srow);
                 if (c != last_chunk) {
-                    auto meta = src_.chunk_meta(c);
+                    auto meta = src_->chunk_meta(c);
                     mvprintw(scr_r_-1, 0, " Searching (sorted)… row %lld ",
                              (long long)r);
                     clrtoeol(); refresh();
-                    if (!src_.read_chunk(c, all_cols, &tbl).ok()) continue;
+                    if (!src_->read_chunk(c, all_cols, &tbl).ok()) continue;
                     tbl_first = meta.first_row;
                     last_chunk = c;
                 }
@@ -6656,25 +6716,25 @@ class TableTUI {
 
         if (forward) {
             for (int c = 0; c < nc; ++c) {
-                auto meta = src_.chunk_meta(c);
+                auto meta = src_->chunk_meta(c);
                 if (meta.first_row + meta.num_rows <= from_row) continue;
                 // Show progress for slow sources
                 mvprintw(scr_r_-1, 0, " Searching… chunk %d/%d ", c+1, nc);
                 clrtoeol(); refresh();
                 std::shared_ptr<arrow::Table> tbl;
-                if (!src_.read_chunk(c, all_cols, &tbl).ok()) continue;
+                if (!src_->read_chunk(c, all_cols, &tbl).ok()) continue;
                 int64_t start = std::max<int64_t>(0, from_row - meta.first_row);
                 for (int64_t r = start; r < tbl->num_rows(); ++r)
                     if (row_matches(tbl, r)) return meta.first_row + r;
             }
         } else {
             for (int c = nc - 1; c >= 0; --c) {
-                auto meta = src_.chunk_meta(c);
+                auto meta = src_->chunk_meta(c);
                 if (meta.first_row > from_row) continue;
                 mvprintw(scr_r_-1, 0, " Searching… chunk %d/%d ", c+1, nc);
                 clrtoeol(); refresh();
                 std::shared_ptr<arrow::Table> tbl;
-                if (!src_.read_chunk(c, all_cols, &tbl).ok()) continue;
+                if (!src_->read_chunk(c, all_cols, &tbl).ok()) continue;
                 int64_t end = std::min(tbl->num_rows() - 1, from_row - meta.first_row);
                 for (int64_t r = end; r >= 0; --r)
                     if (row_matches(tbl, r)) return meta.first_row + r;
@@ -6695,7 +6755,7 @@ class TableTUI {
         int64_t found = find_next(start, forward);
         // Wrap around if not found
         if (found < 0) {
-            int64_t wrap_start = forward ? 0 : (total_rows() >= 0 ? total_rows()-1 : src_.chunk_meta(num_chunks()-1).first_row + src_.chunk_meta(num_chunks()-1).num_rows - 1);
+            int64_t wrap_start = forward ? 0 : (total_rows() >= 0 ? total_rows()-1 : src_->chunk_meta(num_chunks()-1).first_row + src_->chunk_meta(num_chunks()-1).num_rows - 1);
             found = find_next(wrap_start, forward);
             search_wrap_ = (found >= 0);
         } else {
@@ -6721,7 +6781,7 @@ class TableTUI {
     // already-cached cells. Returns false if the row's chunk isn't loaded.
     bool row_matches_search(int64_t row) const {
         if (search_mode_ != SearchMode::Active || search_query_.empty()) return false;
-        if (src_.num_chunks() == 0) return false;
+        if (src_->num_chunks() == 0) return false;
         int64_t srow = source_row(row);
         int c = chunk_for_row(srow);
         auto it = cache_.find(c);
@@ -6757,8 +6817,8 @@ class TableTUI {
                 cache_.erase(lru_.back()); lru_.pop_back();
             }
             CachedRG cr;
-            cr.first_row = src_.chunk_meta(c).first_row;
-            cr.num_rows  = src_.chunk_meta(c).num_rows;
+            cr.first_row = src_->chunk_meta(c).first_row;
+            cr.num_rows  = src_->chunk_meta(c).num_rows;
             cr.cols.assign(src_num_cols_, nullptr);
             it = cache_.emplace(c, std::move(cr)).first;
             lru_.push_front(c);
@@ -6772,9 +6832,9 @@ class TableTUI {
             if (sc >= 0 && sc < src_num_cols_ && !cr.cols[sc]) missing.push_back(sc);
         if (missing.empty()) return;
 
-        src_.ensure(c);
+        src_->ensure(c);
         std::shared_ptr<arrow::Table> tbl;
-        if (!src_.read_chunk(c, missing, &tbl).ok()) return;
+        if (!src_->read_chunk(c, missing, &tbl).ok()) return;
         cr.ok       = true;
         cr.num_rows = tbl->num_rows();  // may be smaller than chunk_meta for streaming sources
         for (size_t i = 0; i < missing.size() && (int)i < tbl->num_columns(); ++i) {
@@ -6825,7 +6885,7 @@ class TableTUI {
                 } else {
                     val = cell_to_display_string(*chunk, off);
                 }
-                std::string formatted = src_.format_cell(sc, std::move(val));
+                std::string formatted = src_->format_cell(sc, std::move(val));
                 // Never truncate integer values — digits must stay readable.
                 if (is_integer_type(chunk->type_id())) return formatted;
                 return truncate(std::move(formatted), max_col_w_);
@@ -6850,10 +6910,10 @@ class TableTUI {
 
     int chunk_for_row(int64_t r) const {
         // Binary search in known chunks
-        int lo = 0, hi = src_.num_chunks() - 1;
+        int lo = 0, hi = src_->num_chunks() - 1;
         while (lo < hi) {
             int mid = (lo + hi + 1) / 2;
-            if (src_.chunk_meta(mid).first_row <= r) lo = mid; else hi = mid - 1;
+            if (src_->chunk_meta(mid).first_row <= r) lo = mid; else hi = mid - 1;
         }
         return lo;
     }
@@ -6864,7 +6924,7 @@ class TableTUI {
     // Called after prefetch so cached chunks are available; columns whose data
     // is not yet loaded keep their previous width.
     void fit_integer_widths_to_visible(const std::vector<int>& visible_virt_cols) {
-        if (src_.num_chunks() == 0) return;
+        if (src_->num_chunks() == 0) return;
         int64_t bot = top_row_ + (int64_t)data_lines() - 1;
         if (total_rows() > 0) bot = std::min(bot, total_rows() - 1);
         if (bot < top_row_) return;
@@ -6899,16 +6959,16 @@ class TableTUI {
     }
 
     void prefetch_visible(const std::vector<int>& visible_virt_cols) {
-        if (src_.num_chunks() == 0) { src_.ensure(0); return; }
+        if (src_->num_chunks() == 0) { src_->ensure(0); return; }
         std::vector<int> src_cols = src_cols_for_virt(visible_virt_cols);
         int top_chunk = chunk_for_row(top_row_);
         ensure_cols(top_chunk, src_cols);
         int64_t bot = top_row_ + (int64_t)data_lines() - 1;
         if (total_rows() > 0) bot = std::min(bot, total_rows() - 1);
         if (total_rows() < 0)
-            src_.ensure(src_.num_chunks());
+            src_->ensure(src_->num_chunks());
         else
-            src_.ensure(chunk_for_row(std::max(bot, top_row_)));
+            src_->ensure(chunk_for_row(std::max(bot, top_row_)));
         if (bot > top_row_) {
             int bot_chunk = chunk_for_row(bot);
             if (bot_chunk != top_chunk) ensure_cols(bot_chunk, src_cols);
@@ -7015,7 +7075,7 @@ class TableTUI {
             else          nc_str(sy, 0, idx_s, A_NORMAL, NCP_INDEX + zo);
         }
 
-        if (src_.num_chunks() == 0) return;
+        if (src_->num_chunks() == 0) return;
         int  c  = chunk_for_row(srow);
         auto it = cache_.find(c);
         if (it == cache_.end() || !it->second.ok) return;
@@ -7113,6 +7173,19 @@ class TableTUI {
             s += std::to_string(vc.back().col+1)  + "/";
             s += std::to_string(num_cols_);
         }
+        // Tab indicator (only shown when more than one file is open).
+        if (sources_.size() > 1) {
+            s += "  tab ";
+            s += std::to_string(active_tab_ + 1);
+            s += "/";
+            s += std::to_string(sources_.size());
+            // Show basename of active file so the user knows where they are.
+            const std::string& p = tabs_[active_tab_].path;
+            auto slash = p.rfind('/');
+            std::string base = (slash == std::string::npos) ? p : p.substr(slash + 1);
+            if ((int)display_width(base) > 24) { base.resize(21); base += "..."; }
+            s += ": " + base;
+        }
         // Filter indicator (truncate the expression so the bar stays one line).
         if (filter_active_) {
             std::string expr = filter_expr_str_;
@@ -7122,7 +7195,7 @@ class TableTUI {
             }
             s += "  filter:";
             s += expr;
-            int64_t src_n = src_.total_rows();
+            int64_t src_n = src_->total_rows();
             if (src_n >= 0) {
                 s += "  ";
                 s += digits_with_sep(std::to_string(filter_total_));
@@ -7174,7 +7247,7 @@ class TableTUI {
     // of the detail pane on other rows in the same chunk are free).
     std::vector<std::string> load_full_row(int64_t row) {
         std::vector<std::string> out(num_cols_);
-        if (src_.num_chunks() == 0) return out;
+        if (src_->num_chunks() == 0) return out;
         int64_t srow = source_row(row);
         int c = chunk_for_row(srow);
         std::vector<int> all_src;
@@ -7215,7 +7288,7 @@ class TableTUI {
                     } else {
                         val = cell_to_display_string(*chunk, off);
                     }
-                    out[vc] = src_.format_cell(sc, std::move(val));
+                    out[vc] = src_->format_cell(sc, std::move(val));
                     break;
                 }
                 off -= chunk->length();
@@ -7250,18 +7323,18 @@ class TableTUI {
         int sc = (virt_col >= 0 && virt_col < (int)virt_src_col_.size())
                   ? virt_src_col_[virt_col] : -1;
         if (sc < 0) { stats_data_ = std::move(cs); return; }
-        auto field = src_.schema()->field(sc);
+        auto field = src_->schema()->field(sc);
         cs.name = col_names_[virt_col];
         cs.type = field->type()->ToString();
         cs.is_num = is_numeric_type(field->type()->id());
         const std::string& info_key = virt_info_key_[virt_col];
         std::vector<int> need = {sc};
-        int nc = src_.num_chunks();
+        int nc = src_->num_chunks();
         for (int c = 0; c < nc; ++c) {
             mvprintw(scr_r_-1, 0, " Computing stats… chunk %d/%d ", c+1, nc);
             clrtoeol(); refresh();
             std::shared_ptr<arrow::Table> tbl;
-            if (!src_.read_chunk(c, need, &tbl).ok()) continue;
+            if (!src_->read_chunk(c, need, &tbl).ok()) continue;
             auto col = tbl->column(0);
             for (auto& ch : col->chunks()) {
                 int64_t n = ch->length();
@@ -7545,6 +7618,113 @@ class TableTUI {
         clearok(stdscr, TRUE);
     }
 
+    // ── Tab snapshot / restore ──────────────────────────────────────────────
+    void save_active_to_snapshot() {
+        auto& t = tabs_[active_tab_];
+        t.num_cols       = num_cols_;
+        t.src_num_cols   = src_num_cols_;
+        t.idx_w          = idx_w_;
+        t.col_names      = col_names_;
+        t.col_widths     = col_widths_;
+        t.right_align    = right_align_;
+        t.is_bool        = is_bool_;
+        t.is_rgb         = is_rgb_;
+        t.is_integer     = is_integer_;
+        t.virt_src_col   = virt_src_col_;
+        t.virt_info_key  = virt_info_key_;
+        t.col_visible    = col_visible_;
+        t.top_row        = top_row_;
+        t.left_col       = left_col_;
+        t.freeze_first_col = freeze_first_col_;
+        t.cache          = std::move(cache_);
+        t.lru            = std::move(lru_);
+        t.search_mode    = search_mode_;
+        t.search_query   = search_query_;
+        t.search_row     = search_row_;
+        t.search_wrap    = search_wrap_;
+        t.search_fail    = search_fail_;
+        t.search_dir_forward = search_dir_forward_;
+        t.sort_col       = sort_col_;
+        t.sort_desc      = sort_desc_;
+        t.sort_order     = std::move(sort_order_);
+        t.filter_active  = filter_active_;
+        t.filter_expr_str = filter_expr_str_;
+        t.filter_fx      = filter_fx_;
+        t.filter_total   = filter_total_;
+    }
+
+    void load_snapshot_into_active() {
+        auto& t = tabs_[active_tab_];
+        num_cols_        = t.num_cols;
+        src_num_cols_    = t.src_num_cols;
+        idx_w_           = t.idx_w;
+        col_names_       = t.col_names;
+        col_widths_      = t.col_widths;
+        right_align_     = t.right_align;
+        is_bool_         = t.is_bool;
+        is_rgb_          = t.is_rgb;
+        is_integer_      = t.is_integer;
+        virt_src_col_    = t.virt_src_col;
+        virt_info_key_   = t.virt_info_key;
+        col_visible_     = t.col_visible;
+        top_row_         = t.top_row;
+        left_col_        = t.left_col;
+        freeze_first_col_ = t.freeze_first_col;
+        cache_           = std::move(t.cache);
+        lru_             = std::move(t.lru);
+        search_mode_     = t.search_mode;
+        search_query_    = t.search_query;
+        search_row_      = t.search_row;
+        search_wrap_     = t.search_wrap;
+        search_fail_     = t.search_fail;
+        search_dir_forward_ = t.search_dir_forward;
+        compile_search();
+        sort_col_        = t.sort_col;
+        sort_desc_       = t.sort_desc;
+        sort_order_      = std::move(t.sort_order);
+        filter_active_   = t.filter_active;
+        filter_expr_str_ = t.filter_expr_str;
+        filter_fx_       = t.filter_fx;
+        filter_total_    = t.filter_total;
+    }
+
+public:
+    // Return ownership of tab 0's source to the caller. Used by main() to
+    // reclaim it if the TUI failed to start so the non-interactive
+    // fall-through paths can still render the table.
+    std::unique_ptr<TabularSource> take_first_source() {
+        if (sources_.empty()) return {};
+        return std::move(sources_[0]);
+    }
+private:
+
+    // Cycle to the next (delta=+1) or previous (delta=-1) tab. Closes any
+    // open overlay first so the new tab starts in a clean view.
+    void switch_tab(int delta) {
+        if (sources_.size() <= 1) return;
+        save_active_to_snapshot();
+        // Close transient overlays — they were positioned for the old tab.
+        help_open_ = stats_open_ = col_picker_open_ = theme_picker_open_ = false;
+        detail_row_ = -1;
+        copy_status_.clear();
+        cmd_mode_ = CmdMode::None; cmd_input_.clear(); cmd_err_.clear();
+        filter_mode_ = FilterMode::None; filter_input_.clear(); filter_err_.clear();
+
+        active_tab_ = (active_tab_ + delta + (int)tabs_.size()) % (int)tabs_.size();
+        src_ = sources_[active_tab_].get();
+        if (!tabs_[active_tab_].initialised) {
+            setup_for_active_source();   // lazy init the column metadata
+            // Default view state: top, no filter, no sort.
+            top_row_ = 0; left_col_ = 0; freeze_first_col_ = false;
+            cache_.clear(); lru_.clear();
+            sort_col_ = -1; sort_desc_ = false; sort_order_.clear();
+            filter_active_ = false; filter_expr_str_.clear(); filter_total_ = 0;
+            search_mode_ = SearchMode::None; search_query_.clear(); search_row_ = -1;
+        } else {
+            load_snapshot_into_active();
+        }
+    }
+
     // Execute a `:`-prefixed command (without the leading colon). Returns
     // true on quit, false otherwise. Sets cmd_err_ on a parse failure so
     // the input bar can keep the bad text visible for the user to edit.
@@ -7619,7 +7799,7 @@ class TableTUI {
         if (sort_col_ >= 0 && sort_col_ < (int)virt_src_col_.size()) {
             sc = virt_src_col_[sort_col_];
             if (sc >= 0) {
-                num = is_numeric_type(src_.schema()->field(sc)->type()->id())
+                num = is_numeric_type(src_->schema()->field(sc)->type()->id())
                       && virt_info_key_[sort_col_].empty();
                 info_key = virt_info_key_[sort_col_];
                 need.push_back(sc);
@@ -7654,7 +7834,7 @@ class TableTUI {
         std::vector<StrK>     sk;
         std::vector<int64_t>  rows_only;  // filter-only path: source order
 
-        int nc = src_.num_chunks();
+        int nc = src_->num_chunks();
         const char* what = (sort_col_ >= 0 && filter_active_) ? "Filter+sort"
                          : (sort_col_ >= 0)                   ? "Sorting"
                                                               : "Filtering";
@@ -7662,8 +7842,8 @@ class TableTUI {
             mvprintw(scr_r_-1, 0, " %s… chunk %d/%d ", what, c+1, nc);
             clrtoeol(); refresh();
             std::shared_ptr<arrow::Table> tbl;
-            if (!src_.read_chunk(c, need, &tbl).ok()) continue;
-            auto meta = src_.chunk_meta(c);
+            if (!src_->read_chunk(c, need, &tbl).ok()) continue;
+            auto meta = src_->chunk_meta(c);
             // Locate the sort column within the projected table.
             int p_sort = -1;
             if (sc >= 0) {
@@ -7775,6 +7955,7 @@ class TableTUI {
             {"y",             "copy the top-left visible cell to the clipboard (OSC52)"},
             {"T",             "pick a color theme (saved to ~/.config/vv/config)"},
             {":",             "command line: :N (jump), :q, :theme NAME"},
+            {"Tab  Shift-Tab","next / previous tab (with multiple files)"},
             {"Enter",         "open detail pane for the top-visible row"},
             {"mouse wheel",   "scroll rows"},
             {"mouse click",   "header → sort by column; row → scroll to top"},
@@ -8011,14 +8192,31 @@ class TableTUI {
     }
 
 public:
-    TableTUI(TabularSource& src, const Config& cfg)
-        : src_(src),
-          num_cols_((cfg.max_cols > 0)
-                    ? std::min(cfg.max_cols, src.schema()->num_fields())
-                    : src.schema()->num_fields()),
+    TableTUI(std::vector<std::unique_ptr<TabularSource>> sources, const Config& cfg)
+        : sources_(std::move(sources)),
+          src_(sources_.empty() ? nullptr : sources_[0].get()),
           max_col_w_(cfg.max_col_w),
-          no_index_(cfg.no_index)
+          no_index_(cfg.no_index),
+          max_cols_cfg_(cfg.max_cols)
     {
+        // Build per-tab snapshot slots up front. We materialise the active
+        // tab's column metadata now; other tabs init lazily on first switch.
+        tabs_.resize(sources_.size());
+        for (size_t i = 0; i < sources_.size(); ++i) {
+            tabs_[i].path = sources_[i]->path();
+        }
+        if (!sources_.empty()) setup_for_active_source();
+    }
+
+    // (Re)compute every per-tab field from the currently-active source.
+    // Used by the constructor and by the lazy-init path when switching to
+    // a tab that hasn't been visited yet.
+    void setup_for_active_source() {
+        auto& src = *src_;
+        num_cols_ = (max_cols_cfg_ > 0)
+                    ? std::min(max_cols_cfg_, src.schema()->num_fields())
+                    : src.schema()->num_fields();
+
         // Compute index column width from total rows (or a guess if unknown).
         // Account for digit-grouping underscores in the rendered row number.
         int64_t tr = src.total_rows();
@@ -8073,11 +8271,11 @@ public:
         virt_src_col_  = std::move(v_src);
         virt_info_key_ = std::move(v_info);
 
-        col_widths_.resize(num_cols_);
-        right_align_.resize(num_cols_);
-        is_bool_.resize(num_cols_);
-        is_rgb_.resize(num_cols_);
-        is_integer_.resize(num_cols_);
+        col_widths_.assign(num_cols_, 0);
+        right_align_.assign(num_cols_, false);
+        is_bool_.assign(num_cols_, false);
+        is_rgb_.assign(num_cols_, false);
+        is_integer_.assign(num_cols_, false);
         col_visible_.assign(num_cols_, true);
         for (int vc = 0; vc < num_cols_; ++vc) {
             auto t = v_types[vc];
@@ -8091,21 +8289,12 @@ public:
                       : 16;
             }
             is_integer_[vc] = virt_info_key_[vc].empty() && is_integer_type(t);
-            // Integer columns skip the max_col_w_ cap; their width is fitted
-            // to the rows currently visible in fit_integer_widths_to_visible().
             int base = std::max((int)display_width(col_names_[vc]), min_w);
-            // Floats/doubles render via "%.6g" — leave room for the typical
-            // 8-char output ("0.172974") so values aren't immediately clipped.
             if (t == arrow::Type::FLOAT || t == arrow::Type::DOUBLE)
                 base = std::max(base, 8);
-            // Lists, fixed-size lists, and maps get truncated to "[first, …]"
-            // form; size the column so that form has room for a typical first
-            // element + brackets + ", …".
             if (t == arrow::Type::LIST || t == arrow::Type::LARGE_LIST
              || t == arrow::Type::FIXED_SIZE_LIST || t == arrow::Type::MAP)
                 base = std::max(base, 14);
-            // String columns: enough for 11 first characters + ellipsis when a
-            // value overflows. Header may push it wider but never narrower.
             if (t == arrow::Type::STRING || t == arrow::Type::LARGE_STRING)
                 base = std::max(base, 12);
             col_widths_[vc]  = is_integer_[vc] ? base : std::min(base, max_col_w_);
@@ -8113,6 +8302,9 @@ public:
             is_bool_[vc]     = v_is_bool[vc];
             is_rgb_[vc]      = (col_names_[vc] == "RGB");
         }
+        // Mark the active tab as initialised so subsequent switches load
+        // from the snapshot rather than re-running setup.
+        tabs_[active_tab_].initialised = true;
     }
 
     // Returns false if the terminal type is not supported (missing terminfo).
@@ -8319,7 +8511,7 @@ public:
                     } else {
                         FilterExpr fx;
                         std::string err;
-                        if (!parse_filter_expr(filter_input_, *src_.schema(), &fx, &err)) {
+                        if (!parse_filter_expr(filter_input_, *src_->schema(), &fx, &err)) {
                             filter_err_ = err;
                             // Stay in input mode so the user can edit.
                         } else {
@@ -8437,8 +8629,8 @@ public:
                     if (tr < 0) {
                         mvaddstr(scr_r_ - 1, 0, " Loading to end of file… ");
                         refresh();
-                        while (src_.total_rows() < 0)
-                            src_.ensure(src_.num_chunks());
+                        while (src_->total_rows() < 0)
+                            src_->ensure(src_->num_chunks());
                         tr = total_rows();
                     }
                     top_row_ = std::max<int64_t>(0, tr - dl);
@@ -8498,6 +8690,12 @@ public:
                         if (kAllThemes[i] == g_theme) {
                             theme_picker_cursor_ = i; break;
                         }
+                    break;
+                case '\t':         // Tab → next file tab
+                    switch_tab(+1);
+                    break;
+                case KEY_BTAB:     // Shift+Tab → previous file tab
+                    switch_tab(-1);
                     break;
                 case '&':
                     // Open the live-filter input bar. Same shape as the
@@ -9133,9 +9331,32 @@ int main(int argc, char** argv) {
                         && !cfg.head_rows_set
                         && isatty(STDOUT_FILENO) && isatty(STDIN_FILENO);
         if (cfg.interactive || auto_tui) {
-            TableTUI tui(*src, cfg);
+            // Build tabs: file #0 is the source we already opened; any
+            // additional positionals get opened here. Open errors abort
+            // start-up so the user sees them before the TUI takes over.
+            std::vector<std::unique_ptr<TabularSource>> tab_srcs;
+            tab_srcs.push_back(std::move(src));
+            for (size_t i = 1; i < cfg.paths.size(); ++i) {
+                std::string why = preflight_path(cfg.paths[i]);
+                if (!why.empty()) { report(cfg.paths[i], why); return 1; }
+                std::unique_ptr<TabularSource> s;
+                std::string err = open_source(cfg.paths[i], cfg, &s);
+                if (!err.empty()) {
+                    std::string detail = err;
+                    const std::string pfx = "Cannot open '" + cfg.paths[i] + "': ";
+                    if (detail.rfind(pfx, 0) == 0) detail.erase(0, pfx.size());
+                    report(cfg.paths[i], shorten_reader_error(std::move(detail)));
+                    return 1;
+                }
+                tab_srcs.push_back(std::move(s));
+            }
+            // The TUI takes ownership of the sources while it runs. If
+            // tui.run() fails (e.g. unsupported terminal), reclaim the
+            // first source so the non-interactive fall-through paths
+            // below can still use *src.
+            TableTUI tui(std::move(tab_srcs), cfg);
             if (tui.run()) return 0;
-            // Terminal type not supported — fall through to table output.
+            src = tui.take_first_source();
             if (cfg.interactive)
                 std::fprintf(stderr, "error: cannot initialize terminal (missing terminfo?)\n");
         }

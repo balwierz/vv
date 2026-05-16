@@ -328,6 +328,14 @@ fi
 rm -rf "$TMP_XDG"
 
 echo
+# Multi-file CLI: extra positionals become TUI tabs. In non-interactive
+# mode only the first file is processed; verify nothing crashes.
+MULTI=$("$VV" --no-interactive --no-index --color=never -n 1 "$DATA/tiny.parquet" "$DATA/tiny.bed" 2>&1)
+assert_contains "multifile_cli_accepts_extra_paths" "$MULTI" "Chr"
+# An unopenable second positional must still error out cleanly.
+MULTI_BAD=$("$VV" -i "$DATA/tiny.parquet" /no/such/file 2>&1 || true)
+assert_contains "multifile_bad_second_path_errors" "$MULTI_BAD" "not found"
+
 echo "── Threading parity ──────────────────────────────────────"
 "$VV" --tsv --no-header -@ 1 "$DATA/tiny.parquet" > "$TMP/t1.out"
 "$VV" --tsv --no-header -@ 4 "$DATA/tiny.parquet" > "$TMP/t4.out"

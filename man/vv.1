@@ -377,6 +377,13 @@ in xterm, alacritty, kitty, foot, wezterm, iTerm2, gnome-terminal,
 konsole). Alternatively, use \fBy\fR to copy the cell at the top
 of the viewport to the system clipboard via OSC52.
 .TP
+.B Tab, Shift+Tab
+Next / previous file tab. With multiple positional arguments on the
+command line each file becomes a tab; switching is instant because
+the chunk cache, sort, filter, column-hide, and search anchor are
+preserved per tab. The status bar shows the active tab number and
+basename. Single-file invocations don't show a tab indicator.
+.TP
 .B :
 Vim-style typed-command prompt at the bottom of the screen.
 Recognised verbs:

@@ -44,7 +44,6 @@ user-facing summary).
 ## TUI
 
 ### Open
-- Multi-file tabs — open many files, switch with `Tab` / `Shift-Tab`.
 - Marks & recall — vim-style `m{a-z}` / `'{a-z}`.
 
 ### Done
@@ -58,6 +57,10 @@ user-facing summary).
 - Copy cell (`y`, OSC52) — copies the top-left visible cell to
   the system clipboard via an OSC52 escape; works over SSH /
   tmux 3.3+ without external clipboard helpers.
+- Multi-file tabs — `vv a.vcf b.bed …`, `Tab`/`Shift+Tab` cycle;
+  each tab keeps its own sort/filter/scroll/cache.
+- Command line (`:` key) — `:N` jumps to row, `:q` quits,
+  `:theme NAME` switches theme. Extensible verb list.
 
 ## Format gaps
 

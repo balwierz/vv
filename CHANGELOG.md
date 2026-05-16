@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **TUI multi-file tabs** — `vv a.vcf b.bed c.parquet` opens each
+  file as a tab. `Tab` / `Shift+Tab` cycle. Each tab keeps its own
+  scroll position, sort, filter, column-visibility set, search
+  anchor, and chunk cache; switching back is instant. Status bar
+  shows `tab N/M: basename` when more than one file is open.
+  Non-interactive output modes (`--tsv`, `--parquet`, …) still
+  process only the first positional — multi-file is TUI-only.
 - **TUI command line (`:` key)** — vim/less-style typed-command
   prompt at the bottom of the screen. First verbs:
   - `:<N>` — jump to row N (matches the row-index column;

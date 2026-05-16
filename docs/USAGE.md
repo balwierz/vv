@@ -142,6 +142,7 @@ $ vv tests/data/tiny.lociss        # default when stdout is a terminal
 | mouse 2-click  | data row → open detail pane (same as `Enter`)           |
 | Shift + drag   | select text for the OS clipboard (terminal-side)        |
 | `:`            | command line — `:N` (jump to row), `:q` (quit), `:theme NAME` |
+| Tab / Shift+Tab| next / previous file tab (when multiple files are opened) |
 | `q`            | quit (Esc clears search / filter / closes overlays)     |
 
 All visible matches are highlighted; the n/N target gets reverse video.
@@ -596,6 +597,26 @@ currently-active theme; `Enter` applies the choice. The new colors
 take effect on the next redraw and the choice is persisted to
 `~/.config/vv/config` so future runs start with the same theme.
 `Esc` / `q` / `T` close the overlay without changing anything.
+
+## Multi-file tabs
+
+`vv` accepts multiple positional arguments; each one becomes a tab in
+the interactive viewer. Switch tabs with `Tab` (next) / `Shift+Tab`
+(previous). Each tab keeps its own scroll position, sort, filter,
+column-hide selection, search anchor, and chunk cache — switching
+back is instant.
+
+```sh
+$ vv variants.vcf samples.tsv peaks.bed
+```
+
+The status bar shows `tab 1/3: variants.vcf` so you always know
+which file is active.
+
+Non-interactive output modes (`--tsv`, `--csv`, `--md`, `--json`,
+`--parquet`, `--schema`, `--describe`, …) process only the **first**
+positional argument. Multi-file is a TUI-only feature; for batch
+conversion use a shell loop.
 
 ## User config file (`~/.config/vv/config`)
 

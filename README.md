@@ -169,6 +169,7 @@ picker. Key bindings (also visible in-app via `H` / `F1`):
 | Shift + drag   | select text for the OS clipboard (terminal-side)        |
 | T              | pick a color theme (overlay; saved to `~/.config/vv/config`) |
 | `:`            | command line — `:N` jump to row, `:q` quit, `:theme NAME` |
+| Tab / Shift+Tab| next / previous file tab (multi-file mode)              |
 | `--theme`      | `default` / `dark` / `light` / `solarized-dark` / `solarized-light` |
 | q / Esc        | quit (Esc clears search / filter first)                 |
 
