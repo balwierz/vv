@@ -303,6 +303,30 @@ done
 BAD_THEME=$("$VV" --theme bogus "$DATA/tiny.parquet" 2>&1 || true)
 assert_contains "theme_unknown_lists_choices" "$BAD_THEME" "default, dark, light"
 
+# Config-file persistence: a theme set in ~/.config/vv/config (XDG) is
+# picked up when --theme isn't passed; explicit --theme overrides.
+TMP_XDG=$(mktemp -d)
+mkdir -p "$TMP_XDG/vv"
+printf 'theme = solarized-dark\n' > "$TMP_XDG/vv/config"
+# solarized-dark uses 256-color "38;5;240" for borders, the default
+# theme uses "90". Greping for the solarized escape proves the
+# config was honoured (no --theme flag).
+CFG_OUT=$(XDG_CONFIG_HOME="$TMP_XDG" "$VV" --schema --color=always "$DATA/tiny.parquet")
+if printf '%s' "$CFG_OUT" | grep -q $'\033\[38;5;240m'; then
+    PASS=$((PASS+1)); echo "  ok    theme_config_file_honoured"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  theme_config_file_honoured"
+fi
+# Explicit --theme wins over the config-file value.
+OVR_OUT=$(XDG_CONFIG_HOME="$TMP_XDG" "$VV" --theme default --schema --color=always "$DATA/tiny.parquet")
+if printf '%s' "$OVR_OUT" | grep -q $'\033\[90m' && \
+   ! printf '%s' "$OVR_OUT" | grep -q $'\033\[38;5;240m'; then
+    PASS=$((PASS+1)); echo "  ok    theme_cli_overrides_config"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  theme_cli_overrides_config"
+fi
+rm -rf "$TMP_XDG"
+
 echo
 echo "── Threading parity ──────────────────────────────────────"
 "$VV" --tsv --no-header -@ 1 "$DATA/tiny.parquet" > "$TMP/t1.out"

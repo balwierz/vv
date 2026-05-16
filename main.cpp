@@ -205,12 +205,15 @@ static const Theme kThemeSolarizedLight = {
 
 static const Theme* g_theme = &kThemeDefault;
 
+// Full list, in the order the TUI picker presents them.
+static const Theme* const kAllThemes[] = {
+    &kThemeDefault, &kThemeDark, &kThemeLight,
+    &kThemeSolarizedDark, &kThemeSolarizedLight,
+};
+static constexpr int kNumThemes = (int)(sizeof(kAllThemes) / sizeof(kAllThemes[0]));
+
 static const Theme* find_theme(const std::string& name) {
-    static const Theme* all[] = {
-        &kThemeDefault, &kThemeDark, &kThemeLight,
-        &kThemeSolarizedDark, &kThemeSolarizedLight,
-    };
-    for (auto* t : all) if (name == t->name) return t;
+    for (auto* t : kAllThemes) if (name == t->name) return t;
     // Accept a few synonyms for muscle memory.
     if (name == "solarized") return &kThemeSolarizedDark;
     return nullptr;
@@ -234,6 +237,91 @@ static void init_colors() {
     g_color.type_bool  = t.type_bool;
     g_color.type_other = t.type_other;
     g_color.meta_key   = t.meta_key;
+}
+
+struct Config;  // forward decl — full definition further down
+
+// ── User-settings persistence (XDG Base Directory Spec) ──────────────────────
+//
+// The "modern Linux app" idiom: configuration lives at
+// $XDG_CONFIG_HOME/vv/config (default $HOME/.config/vv/config), in a
+// simple INI-style `key = value` format. Lines starting with `#` are
+// comments. Today we read/write a single key (`theme`); the format is
+// extensible — future keys (default --threads, --decode-threads, etc.)
+// slot in without breaking forward / backward compatibility.
+
+// Return $XDG_CONFIG_HOME/vv or $HOME/.config/vv, "" if neither is set.
+static std::string xdg_config_dir() {
+    const char* xdg = std::getenv("XDG_CONFIG_HOME");
+    if (xdg && *xdg) return std::string(xdg) + "/vv";
+    const char* home = std::getenv("HOME");
+    if (home && *home) return std::string(home) + "/.config/vv";
+    return "";
+}
+
+static void strip_ws_inplace(std::string& s) {
+    auto a = s.find_first_not_of(" \t\r\n");
+    auto b = s.find_last_not_of(" \t\r\n");
+    if (a == std::string::npos) { s.clear(); return; }
+    s = s.substr(a, b - a + 1);
+}
+
+// Read $XDG/vv/config and populate Config fields whose CLI flag wasn't given.
+// Today: only `theme` (empty cfg.theme means "no explicit --theme").
+// Missing file / unreadable file is not an error — config is optional.
+// Defined out-of-line after the Config struct is fully visible.
+static void load_user_config(Config& cfg);
+
+// Write key=value into the config file, preserving any existing lines
+// (comments, other keys). Atomic via .tmp + rename. Returns true on
+// success — best-effort: silent on permission errors / quota exhaustion
+// so a failed write doesn't crash the TUI.
+static bool save_user_setting(const std::string& key, const std::string& value) {
+    std::string dir = xdg_config_dir();
+    if (dir.empty()) return false;
+    // mkdir -p $XDG/vv (the parent $XDG_CONFIG_HOME usually exists but
+    // create it too just in case — first run on a fresh home).
+    auto slash = dir.rfind('/');
+    if (slash != std::string::npos) {
+        ::mkdir(dir.substr(0, slash).c_str(), 0755);  // ok if exists
+    }
+    if (::mkdir(dir.c_str(), 0755) != 0 && errno != EEXIST) return false;
+    std::string path = dir + "/config";
+
+    std::vector<std::string> lines;
+    {
+        std::ifstream f(path);
+        std::string line;
+        while (std::getline(f, line)) lines.push_back(std::move(line));
+    }
+
+    bool replaced = false;
+    for (auto& line : lines) {
+        std::string probe = line;
+        auto h = probe.find('#');
+        if (h != std::string::npos) probe.erase(h);
+        auto eq = probe.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = probe.substr(0, eq);
+        strip_ws_inplace(k);
+        if (k == key) { line = key + " = " + value; replaced = true; break; }
+    }
+    if (!replaced) lines.push_back(key + " = " + value);
+
+    std::string tmp = path + ".tmp";
+    {
+        std::ofstream f(tmp);
+        if (!f.is_open()) return false;
+        // Friendly header for a freshly-created file.
+        if (lines.empty() || lines.front().empty() || lines.front()[0] != '#')
+            f << "# vv configuration. See `man vv` for the supported keys.\n";
+        for (auto& l : lines) f << l << "\n";
+    }
+    if (::rename(tmp.c_str(), path.c_str()) != 0) {
+        ::unlink(tmp.c_str());
+        return false;
+    }
+    return true;
 }
 
 // Pick the right color for an Arrow type in the schema summary
@@ -310,10 +398,33 @@ struct Config {
     bool        md             = false;  // --md (GitHub-flavored markdown table)
     bool        validate       = false;  // --validate (LociSSD invariants check)
     bool        coords_one_based = false; // --coords NCBI (1-based inclusive)
-    std::string theme          = "default"; // --theme NAME (default/dark/light/solarized-dark/solarized-light)
+    std::string theme;                    // --theme NAME (empty = "use config-file value or default")
     int         tail_rows      = 0;      // --tail N
     bool        tail_rows_set  = false;
 };
+
+// Out-of-line definition of load_user_config — declared further up
+// (near the other XDG-config helpers) but needs the full Config struct.
+static void load_user_config(Config& cfg) {
+    std::string dir = xdg_config_dir();
+    if (dir.empty()) return;
+    std::ifstream f(dir + "/config");
+    if (!f.is_open()) return;
+    std::string line;
+    while (std::getline(f, line)) {
+        auto h = line.find('#');
+        if (h != std::string::npos) line.erase(h);
+        strip_ws_inplace(line);
+        if (line.empty()) continue;
+        auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = line.substr(0, eq);
+        std::string val = line.substr(eq + 1);
+        strip_ws_inplace(key);
+        strip_ws_inplace(val);
+        if (key == "theme" && cfg.theme.empty()) cfg.theme = val;
+    }
+}
 
 // Effective worker-thread count: explicit override or
 // min(8, max(2, hardware_concurrency()/2)) so we don't oversubscribe big boxes.
@@ -371,6 +482,7 @@ static void print_usage(const char* prog) {
         "  Keys: arrows/hjkl navigate, PgUp/PgDn, g/G top/bot, /:search,\n"
         "        S:column-stats, s:sort by current column (u clears),\n"
         "        &:live filter, c:show/hide columns, y:copy cell (OSC52),\n"
+        "        T:pick a theme (saved to ~/.config/vv/config),\n"
         "        H/F1: in-app help, q quit\n"
         "\nTable options:\n"
         "  -n <rows>           rows to display  (default: 10, 0 = all)\n"
@@ -6374,6 +6486,10 @@ class TableTUI {
     int                        col_picker_cursor_   = 0;
     std::vector<bool>          col_visible_;        // [virt_col] — true = shown
 
+    // ── Theme picker (`T`) ───────────────────────────────────────────────────
+    bool                       theme_picker_open_   = false;
+    int                        theme_picker_cursor_ = 0;
+
     // ── Sort by column (`s`) + Live filter (`&`) ─────────────────────────────
     //
     // Both features funnel through the same display→source indirection.
@@ -7022,7 +7138,7 @@ class TableTUI {
         } else {
             bool need_lr = left_col_ > 0 || (!vc.empty() && vc.back().col < num_cols_-1);
             if (need_lr) s += "  [h/l]:←→col  [,/.]:narrow/widen";
-            s += "  [j/k]:rows  /:search  &:filter  Enter:detail  S:stats  s:sort  c:cols  y:copy  H:help  q:quit";
+            s += "  [j/k]:rows  /:search  &:filter  Enter:detail  S:stats  s:sort  c:cols  y:copy  T:theme  H:help  q:quit";
         }
         if ((int)s.size() < scr_c_) s += std::string(scr_c_ - (int)s.size(), ' ');
         attron(A_REVERSE);
@@ -7327,6 +7443,87 @@ class TableTUI {
         nc_str(y0 + panel_h - 1, x0, bot, A_BOLD);
     }
 
+    // ── Theme picker (`T`) ──────────────────────────────────────────────────
+    //
+    // Centered overlay listing every built-in theme. `[*]` marks the
+    // currently-active theme, the cursor row is highlighted with
+    // reverse video. Enter applies and saves (XDG config); Esc closes
+    // without changing.
+    void draw_theme_picker() {
+        int w_name = 0;
+        for (int i = 0; i < kNumThemes; ++i)
+            w_name = std::max(w_name, (int)display_width(kAllThemes[i]->name));
+        const std::string title = " choose a theme ";
+        int inner = std::max(4 + w_name, (int)display_width(title));
+        int panel_w = inner + 4;
+        int panel_h = kNumThemes + 4;       // top + rows + footer + bottom + 1 pad
+        if (panel_w > scr_c_) panel_w = scr_c_;
+        if (panel_h > scr_r_) panel_h = scr_r_;
+        int y0 = std::max(0, (scr_r_ - panel_h) / 2);
+        int x0 = std::max(0, (scr_c_ - panel_w) / 2);
+
+        // Top border with centered title.
+        {
+            int title_w = (int)display_width(title);
+            int rest = std::max(0, panel_w - 2 - title_w);
+            int pad_l = rest / 2;
+            int pad_r = rest - pad_l;
+            std::string top = BOX_TL;
+            for (int i = 0; i < pad_l; ++i) top += BOX_HLINE;
+            top += title;
+            for (int i = 0; i < pad_r; ++i) top += BOX_HLINE;
+            top += BOX_TR;
+            nc_str(y0, x0, top, A_BOLD);
+        }
+        for (int i = 1; i < panel_h - 1; ++i) {
+            mvaddstr(y0 + i, x0, BOX_VLINE);
+            mvhline(y0 + i, x0 + 1, ' ', panel_w - 2);
+            mvaddstr(y0 + i, x0 + panel_w - 1, BOX_VLINE);
+        }
+
+        for (int i = 0; i < kNumThemes; ++i) {
+            int yy = y0 + 1 + i;
+            int xx = x0 + 2;
+            const bool active = (kAllThemes[i] == g_theme);
+            std::string line = (active ? "[*] " : "[ ] ") + std::string(kAllThemes[i]->name);
+            if ((int)display_width(line) > panel_w - 4)
+                line.resize(panel_w - 4);
+            attr_t a = (i == theme_picker_cursor_) ? (attr_t)(A_BOLD | A_REVERSE) : A_NORMAL;
+            attron(a);
+            mvaddstr(yy, xx, line.c_str());
+            attroff(a);
+        }
+        int yy = y0 + panel_h - 2;
+        std::string hint = " j/k:move  Enter:select+save  T/Esc:close ";
+        if ((int)display_width(hint) > panel_w - 4)
+            hint.resize(panel_w - 4);
+        nc_str(yy, x0 + 2, hint, A_DIM);
+
+        std::string bot = std::string(BOX_BL);
+        for (int i = 0; i < panel_w - 2; ++i) bot += BOX_HLINE;
+        bot += BOX_BR;
+        nc_str(y0 + panel_h - 1, x0, bot, A_BOLD);
+    }
+
+    // Apply the theme at kAllThemes[idx], re-init ncurses color pairs,
+    // and persist the choice to ~/.config/vv/config. The next draw()
+    // re-paints automatically.
+    void apply_theme(int idx) {
+        if (idx < 0 || idx >= kNumThemes) return;
+        g_theme = kAllThemes[idx];
+        // Wipe any RGB pairs allocated dynamically for BED itemRgb — those
+        // were sized to fit between the static pairs and the zebra range,
+        // which both shift on theme change.
+        rgb_pair_.clear();
+        zebra_enabled_ = false;
+        setup_colors();
+        bool saved = save_user_setting("theme", g_theme->name);
+        copy_status_ = std::string("theme: ") + g_theme->name +
+                       (saved ? "" : "  (couldn't save)");
+        // Force a full repaint so already-drawn cells pick up the new palette.
+        clearok(stdscr, TRUE);
+    }
+
     // ── Rebuild display→source mapping (sort + filter) ──────────────────────
     //
     // Combines the two view-of-the-data features into one full-file pass:
@@ -7506,6 +7703,7 @@ class TableTUI {
             {"&",             "live filter: hide non-matching rows; empty input clears"},
             {"c",             "show / hide columns (overlay)"},
             {"y",             "copy the top-left visible cell to the clipboard (OSC52)"},
+            {"T",             "pick a color theme (saved to ~/.config/vv/config)"},
             {"Enter",         "open detail pane for the top-visible row"},
             {"mouse wheel",   "scroll rows"},
             {"mouse click",   "header → sort by column; row → scroll to top"},
@@ -7688,7 +7886,8 @@ class TableTUI {
         draw_status(vc);
         draw_detail_pane();  // overlay if detail_row_ >= 0
         if (stats_open_)      draw_stats_overlay();
-        if (col_picker_open_) draw_col_picker();
+        if (col_picker_open_)   draw_col_picker();
+        if (theme_picker_open_) draw_theme_picker();
         if (help_open_)       draw_help_overlay();
         refresh();
     }
@@ -7879,6 +8078,30 @@ public:
             if (stats_open_) {
                 stats_open_ = false;
                 stats_data_.reset();
+                continue;
+            }
+
+            // ── Theme picker overlay: dedicated input handling ───────────────
+            if (theme_picker_open_) {
+                switch (ch) {
+                    case 'q': case 'Q': case 'T': case 27:  // Esc
+                        theme_picker_open_ = false;
+                        break;
+                    case KEY_DOWN: case 'j':
+                        if (theme_picker_cursor_ + 1 < kNumThemes)
+                            ++theme_picker_cursor_;
+                        break;
+                    case KEY_UP: case 'k':
+                        if (theme_picker_cursor_ > 0) --theme_picker_cursor_;
+                        break;
+                    case 'g': case KEY_HOME: theme_picker_cursor_ = 0; break;
+                    case 'G': case KEY_END:  theme_picker_cursor_ = kNumThemes - 1; break;
+                    case ' ': case '\n': case '\r': case KEY_ENTER:
+                        apply_theme(theme_picker_cursor_);
+                        theme_picker_open_ = false;
+                        break;
+                    default: break;
+                }
                 continue;
             }
 
@@ -8170,6 +8393,17 @@ public:
                 case 'c':
                     col_picker_open_   = true;
                     col_picker_cursor_ = left_col_;
+                    break;
+                case 'T':
+                    // Open the theme picker. Position the cursor on the
+                    // currently-active theme so Enter is a no-op confirmation
+                    // and j/k navigate from "where we are".
+                    theme_picker_open_   = true;
+                    theme_picker_cursor_ = 0;
+                    for (int i = 0; i < kNumThemes; ++i)
+                        if (kAllThemes[i] == g_theme) {
+                            theme_picker_cursor_ = i; break;
+                        }
                     break;
                 case '&':
                     // Open the live-filter input bar. Same shape as the
@@ -8667,6 +8901,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // Resolve theme: CLI flag wins; otherwise check the user's config file;
+    // otherwise fall back to the built-in default.
+    if (cfg.theme.empty()) load_user_config(cfg);
+    if (cfg.theme.empty()) cfg.theme = "default";
     if (auto* t = find_theme(cfg.theme)) {
         g_theme = t;
     } else {

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **TUI theme picker (`T` key)** — overlay listing every built-in
+  theme; `[*]` marks the currently-active one, `j`/`k` move the
+  cursor, `Enter` applies the choice. The new theme takes effect
+  immediately (ncurses color pairs re-initialised in place) and
+  the choice is persisted to `~/.config/vv/config`
+  (`$XDG_CONFIG_HOME/vv/config` if set) so future runs start with
+  the same theme. `Esc` closes the overlay without changing.
+- **XDG-spec user config** — `vv` now reads
+  `$XDG_CONFIG_HOME/vv/config` (default `~/.config/vv/config`)
+  at startup. Format is plain INI-style `key = value`; lines
+  starting with `#` are comments. Today only `theme` is read;
+  the format is extensible — future preferences (default
+  `--threads`, `--decode-threads`, etc.) slot in without breaking
+  existing files. Writes are atomic (`.tmp` + rename) and preserve
+  any comments / other keys in place. CLI flags always win over
+  the config file.
 - **TUI mouse clicks** — three additive bindings on top of the
   existing wheel-scroll: click a column header to sort by that
   column (toggle asc/desc on repeat; updates the active column

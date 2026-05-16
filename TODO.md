@@ -105,10 +105,11 @@ user-facing summary).
   bakes row-height=1 into chunk caching, search highlighting, sort
   indirection, and scroll math. Inline expansion (this iteration)
   takes the easy win.
-- `~/.config/vv/theme.toml` — user-defined themes on top of the
-  built-in `--theme` selector. Deferred until someone asks; the
-  five built-ins (default / dark / light / solarized-dark /
-  solarized-light) cover the common cases.
+- User-defined themes in `~/.config/vv/config` — would let the user
+  override individual palette entries (e.g. `border = 38;5;238`)
+  rather than picking from the five built-ins. The XDG config
+  plumbing is already in; this is just a palette-override loader.
+  Deferred until someone asks.
 
 ### Done
 - Color themes — `--theme NAME` selects from `default`, `dark`,
@@ -119,6 +120,9 @@ user-facing summary).
   top-level comma and picks the largest leading-element prefix
   that fits the column, instead of always dropping to
   `[first, …]` after the first comma.
+- TUI theme picker (`T`) — overlay; saves to
+  `$XDG_CONFIG_HOME/vv/config` (default `~/.config/vv/config`).
+  Future runs pick up the saved theme automatically.
 
 ### Done
 - `--tail N` — last-N rows; reuses the `MemoryTableSource` adapter.

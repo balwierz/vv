@@ -587,6 +587,38 @@ escapes) and the ncurses TUI. On terminals with fewer than 256
 colors, each theme falls back to a 16-color twin. An unknown theme
 name produces a clear error listing the available choices.
 
+## Picking a theme interactively (`T` in the TUI)
+
+Inside the interactive viewer, press `T` to open a theme-picker
+overlay. `j` / `k` (or arrows) move the cursor; `[*]` marks the
+currently-active theme; `Enter` applies the choice. The new colors
+take effect on the next redraw and the choice is persisted to
+`~/.config/vv/config` so future runs start with the same theme.
+`Esc` / `q` / `T` close the overlay without changing anything.
+
+## User config file (`~/.config/vv/config`)
+
+`vv` reads its config from `$XDG_CONFIG_HOME/vv/config` (default
+`~/.config/vv/config`) at startup. Format is plain INI-style
+`key = value`; lines starting with `#` are comments. Today the
+only recognised key is `theme`; the format is extensible, so future
+preferences slot in without breaking existing files.
+
+```ini
+# ~/.config/vv/config
+theme = solarized-dark
+```
+
+Resolution order, highest priority first:
+
+1. `--theme NAME` on the command line.
+2. `theme = NAME` in the config file.
+3. Built-in `default`.
+
+The TUI theme picker (`T`) writes to this file. Edits are atomic
+(`.tmp` + rename) and preserve any existing comments or unrelated
+keys you've added by hand.
+
 # Performance (`-@` / `--threads`)
 
 ```sh

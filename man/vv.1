@@ -164,6 +164,10 @@ Solarized palette. \fBsolarized\fR is accepted as a synonym for
 Affects both the non-interactive ASCII table (via ANSI escapes) and
 the ncurses TUI. On terminals with fewer than 256 colors, each theme
 falls back to a 16-color twin.
+.IP
+Inside the TUI, press \fBT\fR to open the theme-picker overlay; the
+choice is saved to the user config file and re-applied on the next
+launch. See \fBFILES\fR below.
 .TP
 .B \-\-vertical
 \fIVertical head\fR. Transpose the preview so each input field becomes a row
@@ -452,6 +456,25 @@ Vertical head on a wide Parquet file (50+ columns) that doesn't fit:
 .EX
 vh wide.parquet
 .EE
+.RE
+.SH FILES
+.TP
+.I $XDG_CONFIG_HOME/vv/config
+.RS
+User configuration file (default
+\fI$HOME/.config/vv/config\fR). Plain INI-style \fBkey = value\fR
+syntax; lines starting with \fB#\fR are comments. CLI flags always
+win over the config file.
+.IP
+Recognised keys:
+.IP \(bu 2
+\fBtheme\fR \(en one of \fBdefault\fR / \fBdark\fR / \fBlight\fR /
+\fBsolarized-dark\fR / \fBsolarized-light\fR. Written by the
+in-TUI theme picker (\fBT\fR key).
+.IP
+The format is extensible; future keys slot in without breaking
+existing files. Writes are atomic (\fI.tmp\fR + rename) and
+preserve any other lines you've added by hand.
 .RE
 .SH SEE ALSO
 .BR samtools (1),
