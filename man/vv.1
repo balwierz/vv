@@ -29,7 +29,15 @@ the \fBlociSSD_manifest\fR key in the Parquet footer; the derived
 \fB.gff\fR, \fB.gff3\fR, \fB.gtf\fR (and \fB.gz\fR variants) \(en genome
 annotations
 .IP \(bu 2
-\fB.bed\fR, \fB.bed.gz\fR \(en genomic intervals
+\fB.bed\fR, \fB.bed.gz\fR \(en genomic intervals (auto-named
+\fIBED3..BED12\fR by column type signature)
+.IP \(bu 2
+\fB.narrowPeak\fR / \fB.broadPeak\fR / \fB.gappedPeak\fR /
+\fB.bedGraph\fR (\fB.bg\fR) / \fB.tagAlign\fR (plus \fB.gz\fR) \(en
+ENCODE peak and signal formats. Read as BED variants with
+known-typed extra columns: \fIsignalValue\fR, \fIpValue\fR,
+\fIqValue\fR, \fIpeak\fR, \fIvalue\fR, \fIsequence\fR. Both
+non-gzip and gzip-compressed variants supported
 .IP \(bu 2
 \fB.bb\fR, \fB.bigBed\fR \(en UCSC bigBed (via vendored libBigWig); the
 embedded autoSql is parsed so the trailing fields (\fBname\fR,

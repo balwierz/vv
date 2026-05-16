@@ -62,6 +62,7 @@ would need horizontal scrolling.
 | Variant calls     | `.vcf`, `.vcf.gz`, `.bcf` (with `.csi` / `.tbi` for range queries) |
 | Genome annotation | `.gff`, `.gff3`, `.gtf` (plus `.gz`)                        |
 | Genomic intervals | `.bed`, `.bed.gz`                                           |
+| ENCODE peaks / signal | `.narrowPeak`, `.broadPeak`, `.gappedPeak`, `.bedGraph` / `.bg`, `.tagAlign` (plus `.gz`); BED-family with `signalValue` / `pValue` / `qValue` / `peak` / `value` named columns |
 | UCSC big files    | `.bb` / `.bigBed`, `.bw` / `.bigWig` (vendored libBigWig — bigBed's autoSql definition is parsed into typed columns) |
 | UCSC 2bit         | `.2bit` (sequence index: `name`, `length`, `n_blocks`, `mask_blocks`) |
 | Sequences (FASTA) | `.fa`, `.fasta`, `.fna`, `.faa`, `.ffn`, `.frn` (plus `.gz`)|

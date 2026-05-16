@@ -6,6 +6,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **ENCODE peak / signal formats** (`.narrowPeak`, `.broadPeak`,
+  `.gappedPeak`, `.bedGraph` / `.bg`, `.tagAlign`, plus `.gz`
+  variants). These are read as BED-family files with variant-aware
+  column naming:
+  - **narrowPeak** (BED6+4): `signalValue`, `pValue`, `qValue`, `peak`.
+  - **broadPeak** (BED6+3): `signalValue`, `pValue`, `qValue`.
+  - **gappedPeak** (BED12+3): BED12 + `signalValue`, `pValue`, `qValue`.
+  - **bedGraph** (BED4): `value` (float).
+  - **tagAlign** (BED6 with col-3 named `sequence`).
+
+  Arrow types are inferred from the data, so `--filter` /
+  `--describe` work directly on `signalValue > 5`, `pValue < 0.01`,
+  etc. The footer reports the specific format
+  (`Format: narrowPeak (BED6+4)`) and the file's preamble lines
+  (`track`, `browser`) are preserved above the table just like
+  vanilla BED. `vv -r` regional queries work on tabix-indexed
+  `.narrowPeak.gz` etc.
+
+  bigBed-flavored peak files (`.bb` with `narrowPeak` autoSql)
+  already worked via the libBigWig path shipped in v1.5; this
+  closes the gap for the plaintext variants.
+
 ## [1.7.0] - 2026-05-16
 
 Interactive-viewer focus on top of 1.6.0. Major additions to the

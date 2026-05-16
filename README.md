@@ -57,6 +57,7 @@ See [INSTALL.md](INSTALL.md) for source builds, AUR, and the static AlmaLinux
 | Variant calls     | `.vcf`, `.vcf.gz`, `.bcf` (binary VCF via htslib)          |
 | Genome annotation | `.gff`, `.gff3`, `.gtf` (plus `.gz`)                       |
 | Genomic intervals | `.bed`, `.bed.gz`                                          |
+| ENCODE peaks / signal | `.narrowPeak`, `.broadPeak`, `.gappedPeak`, `.bedGraph` (`.bg`), `.tagAlign` (plus `.gz`); BED-family with typed extra columns named `signalValue` / `pValue` / `qValue` / `peak` / `value` |
 | UCSC big files    | `.bb` / `.bigBed`, `.bw` / `.bigWig` (vendored libBigWig; bigBed's embedded autoSql is parsed into typed columns) |
 | UCSC 2bit         | `.2bit` (sequence index: name / length / N-blocks / mask-blocks) |
 | Sequences (FASTA) | `.fa`, `.fasta`, `.fna`, `.faa`, `.ffn`, `.frn` (plus `.gz`) |

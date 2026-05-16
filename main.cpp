@@ -468,6 +468,8 @@ static void print_usage(const char* prog) {
         "  .vcf  .vcf.gz               variant calls\n"
         "  .gff  .gff3  .gtf           and .gz variants  genome annotations\n"
         "  .bed  .tsv  .csv            and .gz variants\n"
+        "  .narrowPeak  .broadPeak  .gappedPeak  .bedGraph  .tagAlign\n"
+        "                              ENCODE peak / signal formats (BED+typed cols)\n"
         "  .bb  .bigBed                UCSC bigBed (libBigWig; autoSql columns)\n"
         "  .bw  .bigWig                UCSC bigWig (libBigWig)\n"
         "  .2bit                       UCSC 2bit (sequence index: name/length/blocks)\n"
@@ -2979,6 +2981,18 @@ public:
 
 enum class DelimKind { CSV, TSV, BED, VCF, GFF, SAM, PAF };
 
+// ENCODE peak / signal flavours of BED. Carried alongside DelimKind::BED so
+// the BED reader can apply variant-specific column names (signalValue,
+// pValue, qValue, peak, value, sequence) instead of the generic +1/+2.
+enum class BedVariant {
+    None,         // vanilla BED3..BED12
+    NarrowPeak,   // BED6+4: chr,start,end,name,score,strand + signal,p,q,peak
+    BroadPeak,    // BED6+3: chr,start,end,name,score,strand + signal,p,q
+    GappedPeak,   // BED12+3
+    BedGraph,     // BED4: chr,start,end,value(float)
+    TagAlign,     // BED6 with col3 = sequence (not Name)
+};
+
 // Wrap a single RecordBatch column slice as a single-chunk Table.
 static std::shared_ptr<arrow::Table> batch_slice_to_table(
     const arrow::RecordBatch& batch,
@@ -3002,6 +3016,7 @@ class DelimitedSource : public TabularSource {
     std::shared_ptr<arrow::Schema>        schema_;
     std::vector<std::string>              preamble_lines_;
     int                                   bed_level_ = 3; // detected BED standard cols (3..9)
+    BedVariant                            bed_variant_ = BedVariant::None;
 
     // Growing cache of batches read so far (never evicted).
     mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
@@ -3104,6 +3119,51 @@ public:
         }
         return continue_open(std::move(self), std::move(input),
                              std::move(raw), is_gz, kind, region, out);
+    }
+
+    // Apply ENCODE peak-family naming on top of the vanilla BED schema.
+    // Called by open_source's BED dispatch when the file extension picks
+    // a specific variant (narrowPeak / broadPeak / gappedPeak / bedGraph
+    // / tagAlign). Rewrites schema_ in place; safe to call after open().
+    void apply_bed_variant(BedVariant v) {
+        bed_variant_ = v;
+        if (v == BedVariant::None) return;
+        const int nf = schema_->num_fields();
+        std::vector<std::string> names;
+        switch (v) {
+            case BedVariant::NarrowPeak:
+                names = {"Chr","[Beg","End)","Name","Score","Str",
+                         "signalValue","pValue","qValue","peak"};
+                break;
+            case BedVariant::BroadPeak:
+                names = {"Chr","[Beg","End)","Name","Score","Str",
+                         "signalValue","pValue","qValue"};
+                break;
+            case BedVariant::GappedPeak:
+                names = {"Chr","[Beg","End)","Name","Score","Str",
+                         "ThBeg","ThEnd","RGB","NBlk","BlkSz","BlkSt",
+                         "signalValue","pValue","qValue"};
+                break;
+            case BedVariant::BedGraph:
+                names = {"Chr","[Beg","End)","value"};
+                break;
+            case BedVariant::TagAlign:
+                names = {"Chr","[Beg","End)","sequence","Score","Str"};
+                break;
+            case BedVariant::None: return;
+        }
+        arrow::FieldVector fields;
+        fields.reserve(nf);
+        for (int i = 0; i < nf; ++i) {
+            auto f = schema_->field(i);
+            std::string nm = (i < (int)names.size())
+                ? names[i]
+                : ("+" + std::to_string(i - (int)names.size() + 1));
+            fields.push_back(arrow::field(nm, f->type(), f->nullable()));
+        }
+        schema_ = arrow::schema(fields);
+        // bed_level_ drives footer formatting; track the "standard cols" count.
+        bed_level_ = (int)names.size();
     }
 private:
     // Shared body of open() / open_from_stream(). Strips per-format preamble,
@@ -3338,6 +3398,16 @@ private:
             case DelimKind::PAF: return "Format: PAF";
             case DelimKind::BED: {
                 int nf = schema_->num_fields();
+                if (bed_variant_ != BedVariant::None) {
+                    switch (bed_variant_) {
+                        case BedVariant::NarrowPeak: return "Format: narrowPeak (BED6+4)";
+                        case BedVariant::BroadPeak:  return "Format: broadPeak (BED6+3)";
+                        case BedVariant::GappedPeak: return "Format: gappedPeak (BED12+3)";
+                        case BedVariant::BedGraph:   return "Format: bedGraph";
+                        case BedVariant::TagAlign:   return "Format: tagAlign (BED6)";
+                        case BedVariant::None: break;
+                    }
+                }
                 std::string s = "Format: BED" + std::to_string(bed_level_);
                 if (nf > bed_level_) {
                     int extra = nf - bed_level_;
@@ -4846,7 +4916,13 @@ static std::string open_source(const std::string& path, const Config& cfg,
         dk = DelimKind::SAM;
     } else if (fends(path, ".paf") || fends(path, ".paf.gz")) {
         dk = DelimKind::PAF;
-    } else if (fends(path, ".bed")   || fends(path, ".bed.gz")) {
+    } else if (fends(path, ".bed")        || fends(path, ".bed.gz")
+            || fends(path, ".narrowPeak") || fends(path, ".narrowPeak.gz")
+            || fends(path, ".broadPeak")  || fends(path, ".broadPeak.gz")
+            || fends(path, ".gappedPeak") || fends(path, ".gappedPeak.gz")
+            || fends(path, ".bedGraph")   || fends(path, ".bedGraph.gz")
+            || fends(path, ".bg")         || fends(path, ".bg.gz")
+            || fends(path, ".tagAlign")   || fends(path, ".tagAlign.gz")) {
         dk = DelimKind::BED;
     } else if (fends(path, ".tsv")   || fends(path, ".tsv.gz")) {
         dk = DelimKind::TSV;
@@ -4910,6 +4986,19 @@ static std::string open_source(const std::string& path, const Config& cfg,
     std::unique_ptr<DelimitedSource> src;
     std::string err = DelimitedSource::open(path, dk, cfg.region, &src);
     if (!err.empty()) return err;
+    // ENCODE peak-family variants ride on top of DelimKind::BED — the
+    // dispatch detected them by extension; apply variant-specific naming
+    // now that the schema is materialised.
+    if (dk == DelimKind::BED) {
+        BedVariant bv = BedVariant::None;
+        if      (fends(path, ".narrowPeak") || fends(path, ".narrowPeak.gz")) bv = BedVariant::NarrowPeak;
+        else if (fends(path, ".broadPeak")  || fends(path, ".broadPeak.gz"))  bv = BedVariant::BroadPeak;
+        else if (fends(path, ".gappedPeak") || fends(path, ".gappedPeak.gz")) bv = BedVariant::GappedPeak;
+        else if (fends(path, ".bedGraph")   || fends(path, ".bedGraph.gz")
+              || fends(path, ".bg")         || fends(path, ".bg.gz"))         bv = BedVariant::BedGraph;
+        else if (fends(path, ".tagAlign")   || fends(path, ".tagAlign.gz"))   bv = BedVariant::TagAlign;
+        if (bv != BedVariant::None) src->apply_bed_variant(bv);
+    }
     *out = std::move(src);
     return "";
 }

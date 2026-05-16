@@ -79,6 +79,10 @@ user-facing summary).
   mask_blocks). DNA bases are not decoded — chromosome-scale
   references would blow up RAM; `twoBitToFa` is the right tool
   for that.
+- ENCODE peak / signal text formats — `.narrowPeak`, `.broadPeak`,
+  `.gappedPeak`, `.bedGraph` / `.bg`, `.tagAlign` (plus `.gz`)
+  routed through DelimKind::BED with variant-aware column naming
+  (signalValue / pValue / qValue / peak / value / sequence).
 
 ## Performance / build
 

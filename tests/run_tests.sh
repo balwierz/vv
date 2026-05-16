@@ -336,6 +336,33 @@ assert_contains "multifile_cli_accepts_extra_paths" "$MULTI" "Chr"
 MULTI_BAD=$("$VV" -i "$DATA/tiny.parquet" /no/such/file 2>&1 || true)
 assert_contains "multifile_bad_second_path_errors" "$MULTI_BAD" "not found"
 
+# ENCODE peak / signal family — extension dispatch + typed-column naming.
+if [ -f "$DATA/tiny.narrowPeak" ]; then
+    NP_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.narrowPeak" | wc -l)
+    assert_eq_file_inline "narrowPeak_returns_three_rows" "$NP_ROWS" "3"
+    NP_SCH=$("$VV" --schema "$DATA/tiny.narrowPeak" 2>&1)
+    assert_contains "narrowPeak_has_signalValue"    "$NP_SCH" "signalValue"
+    assert_contains "narrowPeak_has_pValue"         "$NP_SCH" "pValue"
+    assert_contains "narrowPeak_has_qValue"         "$NP_SCH" "qValue"
+    assert_contains "narrowPeak_has_peak"           "$NP_SCH" "peak"
+    assert_contains "narrowPeak_footer"             "$NP_SCH" "narrowPeak (BED6+4)"
+fi
+if [ -f "$DATA/tiny.broadPeak" ]; then
+    BP_SCH=$("$VV" --schema "$DATA/tiny.broadPeak" 2>&1)
+    assert_contains "broadPeak_has_signalValue"     "$BP_SCH" "signalValue"
+    assert_contains "broadPeak_footer"              "$BP_SCH" "broadPeak (BED6+3)"
+    if printf '%s' "$BP_SCH" | grep -q "^peak"; then
+        FAIL=$((FAIL+1)); echo "  FAIL  broadPeak_no_peak_column"
+    else
+        PASS=$((PASS+1)); echo "  ok    broadPeak_no_peak_column"
+    fi
+fi
+if [ -f "$DATA/tiny.bedGraph" ]; then
+    BG_SCH=$("$VV" --schema "$DATA/tiny.bedGraph" 2>&1)
+    assert_contains "bedGraph_has_value_column"     "$BG_SCH" "value"
+    assert_contains "bedGraph_footer"               "$BG_SCH" "Format: bedGraph"
+fi
+
 echo "── Threading parity ──────────────────────────────────────"
 "$VV" --tsv --no-header -@ 1 "$DATA/tiny.parquet" > "$TMP/t1.out"
 "$VV" --tsv --no-header -@ 4 "$DATA/tiny.parquet" > "$TMP/t4.out"
