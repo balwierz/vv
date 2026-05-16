@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-05-16
+
+Interactive-viewer focus on top of 1.6.0. Major additions to the
+ncurses TUI: mouse clicks, an in-place theme picker with XDG-spec
+persistence, a vim-style `:` command line, and multi-file tabs.
+
 ### Added
 - **TUI multi-file tabs** — `vv a.vcf b.bed c.parquet` opens each
   file as a tab. `Tab` / `Shift+Tab` cycle. Each tab keeps its own
