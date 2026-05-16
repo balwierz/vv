@@ -168,6 +168,7 @@ picker. Key bindings (also visible in-app via `H` / `F1`):
 | mouse 2-click  | data row → open detail pane (= Enter)                   |
 | Shift + drag   | select text for the OS clipboard (terminal-side)        |
 | T              | pick a color theme (overlay; saved to `~/.config/vv/config`) |
+| `:`            | command line — `:N` jump to row, `:q` quit, `:theme NAME` |
 | `--theme`      | `default` / `dark` / `light` / `solarized-dark` / `solarized-light` |
 | q / Esc        | quit (Esc clears search / filter first)                 |
 

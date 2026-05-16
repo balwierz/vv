@@ -483,6 +483,7 @@ static void print_usage(const char* prog) {
         "        S:column-stats, s:sort by current column (u clears),\n"
         "        &:live filter, c:show/hide columns, y:copy cell (OSC52),\n"
         "        T:pick a theme (saved to ~/.config/vv/config),\n"
+        "        ::command line (:<N> jump, :q quit, :theme NAME),\n"
         "        H/F1: in-app help, q quit\n"
         "\nTable options:\n"
         "  -n <rows>           rows to display  (default: 10, 0 = all)\n"
@@ -6515,6 +6516,16 @@ class TableTUI {
     // Cleared automatically on the next non-`y` keypress.
     std::string                copy_status_;
 
+    // Command-line (`:`): vim-style typed-command prompt at the bottom.
+    //   :<N>              jump to row N (0-based, matches the index column)
+    //   :q  / :quit       quit
+    //   :theme NAME       switch theme (same names as --theme / T overlay)
+    // Parse errors stay in the bar so the user can edit + retry.
+    enum class CmdMode { None, Input };
+    CmdMode                    cmd_mode_   = CmdMode::None;
+    std::string                cmd_input_;          // text being typed
+    std::string                cmd_err_;            // last parse error
+
     // Translate a display-row index to the underlying source-row when a
     // sort or filter is active. All cache lookups, search row scans, and
     // load_full_row calls go through this helper so the rest of the TUI
@@ -7074,6 +7085,16 @@ class TableTUI {
             move(scr_r_ - 1, (int)filter_input_.size() + 1);
             return;
         }
+        // ── Command-line input: `:command`; show parse error if any ─────────
+        if (cmd_mode_ == CmdMode::Input) {
+            std::string bar = std::string(":") + cmd_input_;
+            if (!cmd_err_.empty()) bar += "    !! " + cmd_err_;
+            if ((int)bar.size() < scr_c_) bar += std::string(scr_c_ - (int)bar.size(), ' ');
+            mvaddnstr(scr_r_ - 1, 0, bar.c_str(), scr_c_);
+            curs_set(1);
+            move(scr_r_ - 1, (int)cmd_input_.size() + 1);
+            return;
+        }
         curs_set(0);
 
         // ── Normal status bar ────────────────────────────────────────────────
@@ -7138,7 +7159,7 @@ class TableTUI {
         } else {
             bool need_lr = left_col_ > 0 || (!vc.empty() && vc.back().col < num_cols_-1);
             if (need_lr) s += "  [h/l]:←→col  [,/.]:narrow/widen";
-            s += "  [j/k]:rows  /:search  &:filter  Enter:detail  S:stats  s:sort  c:cols  y:copy  T:theme  H:help  q:quit";
+            s += "  [j/k]:rows  /:search  &:filter  ::cmd  Enter:detail  S:stats  s:sort  c:cols  y:copy  T:theme  H:help  q:quit";
         }
         if ((int)s.size() < scr_c_) s += std::string(scr_c_ - (int)s.size(), ' ');
         attron(A_REVERSE);
@@ -7524,6 +7545,55 @@ class TableTUI {
         clearok(stdscr, TRUE);
     }
 
+    // Execute a `:`-prefixed command (without the leading colon). Returns
+    // true on quit, false otherwise. Sets cmd_err_ on a parse failure so
+    // the input bar can keep the bad text visible for the user to edit.
+    bool execute_cmd(const std::string& raw) {
+        std::string c = raw;
+        strip_ws_inplace(c);
+        if (c.empty()) return false;
+
+        if (c == "q" || c == "quit") return true;
+
+        // theme NAME — text equivalent of the `T` overlay.
+        if (c.rfind("theme ", 0) == 0 || c.rfind("theme\t", 0) == 0) {
+            std::string name = c.substr(6);
+            strip_ws_inplace(name);
+            for (int i = 0; i < kNumThemes; ++i) {
+                if (name == kAllThemes[i]->name) { apply_theme(i); return false; }
+            }
+            if (name == "solarized") {
+                for (int i = 0; i < kNumThemes; ++i)
+                    if (kAllThemes[i] == &kThemeSolarizedDark) {
+                        apply_theme(i); return false;
+                    }
+            }
+            cmd_err_ = "unknown theme: " + name;
+            return false;
+        }
+
+        // Pure number → jump to that row (matches the row-index column).
+        if (c.find_first_not_of("0123456789") == std::string::npos) {
+            try {
+                int64_t r = std::stoll(c);
+                int64_t tr = total_rows();
+                if (tr >= 0 && r >= tr) r = tr - 1;
+                if (r < 0) r = 0;
+                int dl = data_lines();
+                int64_t mt = (tr >= 0) ? std::max<int64_t>(0, tr - dl) : r;
+                top_row_     = std::min(r, mt);
+                search_row_  = -1;
+                copy_status_.clear();
+            } catch (...) {
+                cmd_err_ = "bad row number: " + c;
+            }
+            return false;
+        }
+
+        cmd_err_ = "unknown command: :" + c;
+        return false;
+    }
+
     // ── Rebuild display→source mapping (sort + filter) ──────────────────────
     //
     // Combines the two view-of-the-data features into one full-file pass:
@@ -7704,6 +7774,7 @@ class TableTUI {
             {"c",             "show / hide columns (overlay)"},
             {"y",             "copy the top-left visible cell to the clipboard (OSC52)"},
             {"T",             "pick a color theme (saved to ~/.config/vv/config)"},
+            {":",             "command line: :N (jump), :q, :theme NAME"},
             {"Enter",         "open detail pane for the top-visible row"},
             {"mouse wheel",   "scroll rows"},
             {"mouse click",   "header → sort by column; row → scroll to top"},
@@ -8276,6 +8347,29 @@ public:
                 continue;
             }
 
+            // ── Command-line input mode (`:`) ───────────────────────────────
+            if (cmd_mode_ == CmdMode::Input) {
+                if (ch == '\n' || ch == KEY_ENTER) {
+                    if (execute_cmd(cmd_input_)) quit = true;
+                    if (cmd_err_.empty()) {
+                        cmd_mode_ = CmdMode::None;
+                        cmd_input_.clear();
+                    }
+                    // Else stay in input mode so the user can edit + retry.
+                } else if (ch == 27) {           // Esc — cancel
+                    cmd_mode_ = CmdMode::None;
+                    cmd_input_.clear();
+                    cmd_err_.clear();
+                } else if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
+                    if (!cmd_input_.empty()) cmd_input_.pop_back();
+                    cmd_err_.clear();
+                } else if (ch >= 32 && ch < 127) {
+                    cmd_input_ += (char)ch;
+                    cmd_err_.clear();
+                }
+                continue;
+            }
+
             // ── Detail pane mode ─────────────────────────────────────────────
             if (detail_row_ >= 0) {
                 switch (ch) {
@@ -8412,6 +8506,14 @@ public:
                     filter_mode_   = FilterMode::Input;
                     filter_input_  = filter_expr_str_;  // pre-fill with current
                     filter_err_.clear();
+                    break;
+                case ':':
+                    // Vim-style typed-command prompt at the bottom. Supports
+                    // :<N> (jump to row), :q / :quit, :theme NAME. Errors
+                    // stay in the bar so the user can edit and retry.
+                    cmd_mode_  = CmdMode::Input;
+                    cmd_input_.clear();
+                    cmd_err_.clear();
                     break;
                 case 'y': {
                     // Copy the "active cell" — the cell at the top-left of

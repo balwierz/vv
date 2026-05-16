@@ -377,6 +377,24 @@ in xterm, alacritty, kitty, foot, wezterm, iTerm2, gnome-terminal,
 konsole). Alternatively, use \fBy\fR to copy the cell at the top
 of the viewport to the system clipboard via OSC52.
 .TP
+.B :
+Vim-style typed-command prompt at the bottom of the screen.
+Recognised verbs:
+.RS
+.IP \(bu 2
+\fB:<N>\fR \(en jump to row \fIN\fR (matches the row-index column;
+out-of-range values clamp to the last page).
+.IP \(bu 2
+\fB:q\fR / \fB:quit\fR \(en quit.
+.IP \(bu 2
+\fB:theme NAME\fR \(en switch to a named theme (same names as
+\fB\-\-theme\fR / the \fBT\fR overlay); the choice is persisted to
+\fI~/.config/vv/config\fR.
+.RE
+.IP
+Errors stay in the input bar so the line can be edited and
+re-submitted. \fBEsc\fR cancels.
+.TP
 .B H, F1
 Open / close the help overlay listing every keybinding.
 .TP

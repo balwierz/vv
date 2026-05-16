@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **TUI command line (`:` key)** — vim/less-style typed-command
+  prompt at the bottom of the screen. First verbs:
+  - `:<N>` — jump to row N (matches the row-index column;
+    out-of-range clamps to the last page). Closes the "scroll
+    through millions of rows by hand" pain point.
+  - `:q` / `:quit` — quit (vim muscle memory).
+  - `:theme NAME` — text-driven theme switch (alt to the `T`
+    overlay), with the same name set as `--theme`. Persisted to
+    `~/.config/vv/config` via the standard XDG path.
+  Errors stay in the input bar so the line can be edited; `Esc`
+  cancels. Extensible — future verbs (`:reload`, `:w FILE`, …)
+  slot in without new key bindings.
 - **TUI theme picker (`T` key)** — overlay listing every built-in
   theme; `[*]` marks the currently-active one, `j`/`k` move the
   cursor, `Enter` applies the choice. The new theme takes effect
