@@ -171,6 +171,32 @@ picker. Key bindings (also visible in-app via `H` / `F1`):
 | `--theme`      | `default` / `dark` / `light` / `solarized-dark` / `solarized-light` |
 | q / Esc        | quit (Esc clears search / filter first)                 |
 
+### Color themes & user config
+
+Five built-in themes ship: `default`, `dark`, `light`, `solarized-dark`,
+`solarized-light` (`solarized` is a synonym for `solarized-dark`).
+Pass via `--theme NAME` on the command line, or press `T` inside the
+TUI to open a picker overlay — `j` / `k` move the cursor, `Enter`
+applies the choice. Each theme works on both the non-interactive
+ASCII table (ANSI escapes) and the ncurses TUI; on terminals with
+fewer than 256 colors, each theme falls back to a 16-color twin.
+
+Settings are persisted to `$XDG_CONFIG_HOME/vv/config` (default
+`~/.config/vv/config`) in plain INI-style `key = value` format —
+the same idiom every other modern Linux app uses (KDE,
+gnome-terminal, vlc, …). Today only the `theme` key is read, but
+the format is forward-compatible: future preferences slot in
+without breaking existing files. Edits are atomic (`.tmp` + rename)
+and preserve hand-added comments.
+
+```ini
+# ~/.config/vv/config
+theme = solarized-dark
+```
+
+Resolution order, highest priority first: `--theme NAME` on the CLI →
+`theme = NAME` in the config file → built-in `default`.
+
 ### Schema only — `--schema`
 
 Cheap "what's in this file?" view, no data read.
