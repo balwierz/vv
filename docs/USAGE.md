@@ -66,6 +66,7 @@ would need horizontal scrolling.
 | UCSC big files    | `.bb` / `.bigBed`, `.bw` / `.bigWig` (vendored libBigWig — bigBed's autoSql definition is parsed into typed columns) |
 | UCSC 2bit         | `.2bit` (sequence index: `name`, `length`, `n_blocks`, `mask_blocks`) |
 | SQLite            | `.sqlite`, `.sqlite3`, `.db`; each table becomes a TUI tab; types follow SQLite affinity (TEXT → string, INTEGER → int64, REAL → double, BLOB → binary) |
+| Excel             | `.xlsx`, `.xlsm`; each sheet becomes a TUI tab. Column types are inferred from cell text via Arrow's CSV reader (int / float / bool / ISO 8601 date / string). Requires `libxlsxio` (`xlsxio` AUR, `libxlsxio-dev` on Debian/Ubuntu, `brew install xlsxio` on macOS). `.xls` (legacy binary) is not supported. |
 | Sequences (FASTA) | `.fa`, `.fasta`, `.fna`, `.faa`, `.ffn`, `.frn` (plus `.gz`)|
 | Sequencing reads  | `.fq`, `.fastq` (plus `.gz`)                                |
 | Delimited text    | `.tsv`, `.csv` (plus `.gz`)                                 |

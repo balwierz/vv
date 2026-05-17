@@ -52,6 +52,13 @@ user table becomes a TUI tab (\fBTab\fR / \fBShift+Tab\fR cycle).
 Column types follow SQLite type affinity: TEXT \(-> string, INTEGER
 \(-> int64, REAL \(-> double, BLOB \(-> binary. Read-only access.
 .IP \(bu 2
+\fB.xlsx\fR, \fB.xlsm\fR \(en Excel workbooks (Office Open XML). Each
+sheet becomes a TUI tab. Cell text is streamed through Arrow's CSV
+reader for column-type inference (int / float / bool / ISO 8601 date /
+string). The legacy binary \fB.xls\fR format is not supported. Requires
+\fBlibxlsxio\fR (\fBxlsxio\fR AUR on Arch, \fBlibxlsxio-dev\fR on
+Debian/Ubuntu, \fBbrew install xlsxio\fR on macOS).
+.IP \(bu 2
 \fB.2bit\fR \(en UCSC 2bit sequence container; rendered as a per-
 sequence index (\fBname\fR, \fBlength\fR, \fBn_blocks\fR,
 \fBmask_blocks\fR). DNA bases themselves are not decoded — too large

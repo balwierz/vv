@@ -52,6 +52,9 @@ fetch xz.tar.gz         https://github.com/tukaani-project/xz/releases/download/
 fetch zlib.tar.gz       https://github.com/madler/zlib/archive/refs/tags/v1.3.1.tar.gz
 fetch zstd.tar.gz       https://github.com/facebook/zstd/archive/refs/tags/v1.5.6.tar.gz
 fetch sqlite.tar.gz     https://sqlite.org/2025/sqlite-autoconf-3490100.tar.gz
+fetch expat.tar.gz      https://github.com/libexpat/libexpat/releases/download/R_2_6_4/expat-2.6.4.tar.gz
+fetch minizip-ng.tar.gz https://github.com/zlib-ng/minizip-ng/archive/refs/tags/4.0.7.tar.gz
+fetch xlsxio.tar.gz     https://github.com/brechtsanders/xlsxio/archive/refs/tags/0.2.36.tar.gz
 
 # ── header-only deps repacked from upstream releases ───────────────────────
 # The Dockerfile expects these tarballs to extract directly under

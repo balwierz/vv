@@ -35,6 +35,9 @@ extern "C" {
 extern "C" {
 #include <sqlite3.h>
 }
+extern "C" {
+#include <xlsxio_read.h>
+}
 
 #include <algorithm>
 #include <array>
@@ -477,6 +480,7 @@ static void print_usage(const char* prog) {
         "  .bw  .bigWig                UCSC bigWig (libBigWig)\n"
         "  .2bit                       UCSC 2bit (sequence index: name/length/blocks)\n"
         "  .sqlite  .sqlite3  .db      SQLite database (each table → one TUI tab)\n"
+        "  .xlsx  .xlsm                Excel spreadsheet (each sheet → one TUI tab)\n"
         "  .fa  .fasta  .fna  .faa     sequences (FASTA, plus .gz)\n"
         "  .fq  .fastq                 sequencing reads (FASTQ, plus .gz)\n"
         "  .bcf                        binary VCF (htslib)\n"
@@ -5063,6 +5067,239 @@ static std::string sniff_stdin(size_t n, std::string* out_buf) {
     return "";
 }
 
+// ── In-memory adapter: wrap an Arrow Table as a TabularSource ────────────────
+//
+// Used by `--sample` (and potentially future row-selecting flags) to feed
+// a pre-computed Table through the normal rendering / export pipeline as
+// if it had been read from a file.
+class MemoryTableSource : public TabularSource {
+    std::shared_ptr<arrow::Table>    table_;
+    std::string                       label_;
+    std::string                       footer_str_;
+    std::vector<std::string>          hidden_;
+public:
+    MemoryTableSource(std::shared_ptr<arrow::Table> t,
+                       std::string label, std::string footer,
+                       std::vector<std::string> hidden = {})
+        : table_(std::move(t)),
+          label_(std::move(label)),
+          footer_str_(std::move(footer)),
+          hidden_(std::move(hidden)) {}
+
+    std::shared_ptr<arrow::Schema> schema() const override { return table_->schema(); }
+    int64_t total_rows() const override { return table_->num_rows(); }
+    int     num_chunks() const override { return 1; }
+    ChunkMeta chunk_meta(int) const override {
+        return {0, table_->num_rows()};
+    }
+    arrow::Status read_chunk(int /*i*/, const std::vector<int>& col_indices,
+                              std::shared_ptr<arrow::Table>* out) override {
+        std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
+        arrow::FieldVector fields;
+        for (int c : col_indices) {
+            cols.push_back(table_->column(c));
+            fields.push_back(table_->schema()->field(c));
+        }
+        *out = arrow::Table::Make(arrow::schema(fields), cols,
+                                  table_->num_rows());
+        return arrow::Status::OK();
+    }
+    const std::string& path() const override { return label_; }
+    std::string footer() const override { return footer_str_; }
+    std::vector<std::string> hidden_for_display() const override { return hidden_; }
+};
+
+// ── Workbook source (xlsx, future ods) ───────────────────────────────────────
+//
+// Multi-sheet spreadsheet files (.xlsx today, .ods later) share the same
+// "one source per sheet, plus a list of sibling sheet names" shape that
+// SQLite uses for tables. WorkbookSource captures that shape on top of
+// MemoryTableSource: each sheet is buffered into memory and parsed
+// through Arrow's CSV reader for type inference (numbers, booleans, dates
+// in ISO 8601). A library-specific subclass (XlsxSource here, an
+// OdsSource later) only has to:
+//   1. List sheet names and pick the first.
+//   2. Stream one sheet's rows into a CSV byte buffer.
+//   3. Build a sibling-sheet source for every other sheet, sharing the
+//      underlying library handle.
+// open_sibling_sheets() returns those siblings as plain TabularSource
+// pointers so main()'s tab-expansion loop stays uniform.
+
+class WorkbookSource : public MemoryTableSource {
+public:
+    using MemoryTableSource::MemoryTableSource;
+    virtual std::vector<std::unique_ptr<TabularSource>>
+    open_sibling_sheets() const = 0;
+};
+
+// Quote one CSV cell for inclusion in an in-memory buffer that we then
+// feed to Arrow's CSV reader. RFC 4180 rules: wrap in "..." iff the cell
+// contains a comma, double-quote, CR, or LF, and double any internal ".
+static void csv_append_quoted(std::string& out, const char* s) {
+    if (!s) return;
+    bool needs_quote = false;
+    for (const char* p = s; *p; ++p) {
+        if (*p == ',' || *p == '"' || *p == '\n' || *p == '\r') {
+            needs_quote = true; break;
+        }
+    }
+    if (!needs_quote) { out += s; return; }
+    out += '"';
+    for (const char* p = s; *p; ++p) {
+        if (*p == '"') out += '"';
+        out += *p;
+    }
+    out += '"';
+}
+
+// Convert one xlsx sheet to an arrow::Table by buffering rows as CSV and
+// running them through Arrow's TableReader. Type inference (int / float /
+// bool / ISO-8601 date / string) is whatever Arrow's CSV converter does.
+// `sheet_name` may be empty to open the first sheet by position.
+static arrow::Result<std::shared_ptr<arrow::Table>>
+xlsx_sheet_to_table(xlsxioreader rdr, const std::string& sheet_name) {
+    xlsxioreadersheet sh = xlsxioread_sheet_open(
+        rdr, sheet_name.empty() ? nullptr : sheet_name.c_str(),
+        XLSXIOREAD_SKIP_EMPTY_ROWS);
+    if (!sh)
+        return arrow::Status::IOError("xlsxio: cannot open sheet '",
+                                       sheet_name, "'");
+
+    std::string buf;
+    buf.reserve(64 * 1024);
+    size_t header_cols = 0;
+    bool   first_row   = true;
+
+    while (xlsxioread_sheet_next_row(sh)) {
+        bool first_cell = true;
+        size_t col = 0;
+        char* cell;
+        while ((cell = xlsxioread_sheet_next_cell(sh)) != nullptr) {
+            if (!first_cell) buf += ',';
+            csv_append_quoted(buf, cell);
+            xlsxioread_free(cell);
+            first_cell = false;
+            ++col;
+        }
+        // Pad short rows out to the header's column count so Arrow's CSV
+        // reader doesn't complain about ragged rows. Empty trailing cells
+        // become empty strings (→ nulls under default ConvertOptions).
+        if (first_row) {
+            header_cols = col;
+            first_row = false;
+        } else {
+            while (col < header_cols) {
+                buf += ',';
+                ++col;
+            }
+        }
+        buf += '\n';
+    }
+    xlsxioread_sheet_close(sh);
+
+    if (header_cols == 0)
+        return arrow::Status::IOError("xlsxio: sheet '", sheet_name,
+                                       "' has no header row");
+
+    auto in_buf = std::make_shared<arrow::Buffer>(
+        reinterpret_cast<const uint8_t*>(buf.data()), (int64_t)buf.size());
+    auto in_stream = std::make_shared<arrow::io::BufferReader>(in_buf);
+
+    auto ropts = arrow::csv::ReadOptions::Defaults();
+    ropts.use_threads = true;
+    auto popts = arrow::csv::ParseOptions::Defaults();
+    popts.delimiter = ',';
+    auto copts = arrow::csv::ConvertOptions::Defaults();
+    copts.strings_can_be_null = true;          // empty cell → null
+
+    ARROW_ASSIGN_OR_RAISE(auto reader, arrow::csv::TableReader::Make(
+        arrow::io::default_io_context(), in_stream, ropts, popts, copts));
+    ARROW_ASSIGN_OR_RAISE(auto table, reader->Read());
+    return table;
+}
+
+class XlsxSource : public WorkbookSource {
+    std::shared_ptr<void>     workbook_;        // xlsxioreader (handle)
+    std::string               sheet_;
+    std::vector<std::string>  sibling_sheets_;
+
+    XlsxSource(std::shared_ptr<arrow::Table>   table,
+                std::string                     path,
+                std::string                     footer,
+                std::shared_ptr<void>           wb,
+                std::string                     sheet,
+                std::vector<std::string>        siblings)
+        : WorkbookSource(std::move(table), std::move(path),
+                          std::move(footer)),
+          workbook_(std::move(wb)),
+          sheet_(std::move(sheet)),
+          sibling_sheets_(std::move(siblings)) {}
+
+    static std::string build_one(const std::string& path,
+                                  std::shared_ptr<void> wb,
+                                  const std::string& sheet,
+                                  std::vector<std::string> siblings,
+                                  std::unique_ptr<XlsxSource>* out) {
+        auto rdr = static_cast<xlsxioreader>(wb.get());
+        auto tbl_or = xlsx_sheet_to_table(rdr, sheet);
+        if (!tbl_or.ok())
+            return tbl_or.status().ToString();
+        std::string footer = "Format: Excel  |  Sheet: " + sheet;
+        if (!siblings.empty())
+            footer += "  |  +" + std::to_string(siblings.size()) +
+                      " more sheet(s)";
+        out->reset(new XlsxSource(*tbl_or, path, std::move(footer),
+                                   std::move(wb), sheet,
+                                   std::move(siblings)));
+        return "";
+    }
+
+public:
+    // Open an .xlsx / .xlsm workbook, build an XlsxSource for its first
+    // sheet, and remember the other sheet names for sibling expansion.
+    static std::string open_first(const std::string& path,
+                                   std::unique_ptr<XlsxSource>* out) {
+        xlsxioreader raw = xlsxioread_open(path.c_str());
+        if (!raw)
+            return "Cannot open '" + path + "' as Excel (.xlsx/.xlsm)";
+        std::shared_ptr<void> wb(raw, [](void* p){
+            xlsxioread_close(static_cast<xlsxioreader>(p));
+        });
+
+        // List sheets.
+        std::vector<std::string> sheets;
+        xlsxioreadersheetlist sl = xlsxioread_sheetlist_open(raw);
+        if (sl) {
+            const char* n;
+            while ((n = xlsxioread_sheetlist_next(sl)) != nullptr)
+                sheets.emplace_back(n);
+            xlsxioread_sheetlist_close(sl);
+        }
+        if (sheets.empty())
+            return "'" + path + "': Excel file has no sheets";
+
+        std::vector<std::string> siblings(sheets.begin() + 1, sheets.end());
+        return build_one(path, std::move(wb), sheets.front(),
+                          std::move(siblings), out);
+    }
+
+    std::vector<std::unique_ptr<TabularSource>>
+    open_sibling_sheets() const override {
+        std::vector<std::unique_ptr<TabularSource>> out;
+        for (const auto& s : sibling_sheets_) {
+            std::unique_ptr<XlsxSource> src;
+            std::string err = build_one(path(), workbook_, s, {}, &src);
+            if (!err.empty()) {
+                std::fprintf(stderr, "vv: Excel sheet '%s': %s\n",
+                             s.c_str(), err.c_str());
+                continue;
+            }
+            out.push_back(std::move(src));
+        }
+        return out;
+    }
+};
+
 static std::string open_source(const std::string& path, const Config& cfg,
                                 std::unique_ptr<TabularSource>* out) {
     // ── Determine file kind ──────────────────────────────────────────────────
@@ -5171,6 +5408,12 @@ static std::string open_source(const std::string& path, const Config& cfg,
                fends(path, ".db")) {
         std::unique_ptr<SqliteSource> src;
         std::string err = SqliteSource::open_first(path, &src);
+        if (!err.empty()) return err;
+        *out = std::move(src);
+        return "";
+    } else if (fends(path, ".xlsx") || fends(path, ".xlsm")) {
+        std::unique_ptr<XlsxSource> src;
+        std::string err = XlsxSource::open_first(path, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
@@ -5513,48 +5756,6 @@ static void write_markdown(TabularSource& src, const Config& cfg) {
         print_rows(*table, take);
     }
 }
-
-// ── In-memory adapter: wrap an Arrow Table as a TabularSource ────────────────
-//
-// Used by `--sample` (and potentially future row-selecting flags) to feed
-// a pre-computed Table through the normal rendering / export pipeline as
-// if it had been read from a file.
-class MemoryTableSource : public TabularSource {
-    std::shared_ptr<arrow::Table>    table_;
-    std::string                       label_;
-    std::string                       footer_str_;
-    std::vector<std::string>          hidden_;
-public:
-    MemoryTableSource(std::shared_ptr<arrow::Table> t,
-                       std::string label, std::string footer,
-                       std::vector<std::string> hidden = {})
-        : table_(std::move(t)),
-          label_(std::move(label)),
-          footer_str_(std::move(footer)),
-          hidden_(std::move(hidden)) {}
-
-    std::shared_ptr<arrow::Schema> schema() const override { return table_->schema(); }
-    int64_t total_rows() const override { return table_->num_rows(); }
-    int     num_chunks() const override { return 1; }
-    ChunkMeta chunk_meta(int) const override {
-        return {0, table_->num_rows()};
-    }
-    arrow::Status read_chunk(int /*i*/, const std::vector<int>& col_indices,
-                              std::shared_ptr<arrow::Table>* out) override {
-        std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
-        arrow::FieldVector fields;
-        for (int c : col_indices) {
-            cols.push_back(table_->column(c));
-            fields.push_back(table_->schema()->field(c));
-        }
-        *out = arrow::Table::Make(arrow::schema(fields), cols,
-                                  table_->num_rows());
-        return arrow::Status::OK();
-    }
-    const std::string& path() const override { return label_; }
-    std::string footer() const override { return footer_str_; }
-    std::vector<std::string> hidden_for_display() const override { return hidden_; }
-};
 
 // ── Parquet output ───────────────────────────────────────────────────────────
 
@@ -9718,6 +9919,12 @@ int main(int argc, char** argv) {
                 for (auto& s : sq->open_sibling_tables())
                     tab_srcs.push_back(std::move(s));
             }
+            // Spreadsheet (.xlsx today, future .ods): one tab per sheet,
+            // sharing the underlying workbook handle.
+            if (auto* wb = dynamic_cast<WorkbookSource*>(tab_srcs.back().get())) {
+                for (auto& s : wb->open_sibling_sheets())
+                    tab_srcs.push_back(std::move(s));
+            }
             for (size_t i = 1; i < cfg.paths.size(); ++i) {
                 std::string why = preflight_path(cfg.paths[i]);
                 if (!why.empty()) { report(cfg.paths[i], why); return 1; }
@@ -9733,6 +9940,10 @@ int main(int argc, char** argv) {
                 tab_srcs.push_back(std::move(s));
                 if (auto* sq = dynamic_cast<SqliteSource*>(tab_srcs.back().get())) {
                     for (auto& es : sq->open_sibling_tables())
+                        tab_srcs.push_back(std::move(es));
+                }
+                if (auto* wb = dynamic_cast<WorkbookSource*>(tab_srcs.back().get())) {
+                    for (auto& es : wb->open_sibling_sheets())
                         tab_srcs.push_back(std::move(es));
                 }
             }

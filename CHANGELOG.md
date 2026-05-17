@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Excel (`.xlsx`, `.xlsm`)** — Office Open XML workbooks open natively
+  via `libxlsxio`; each sheet becomes a TUI tab (`Tab` / `Shift+Tab`
+  cycle). Cell text streams through Arrow's CSV reader for column-type
+  inference (int / float / bool / ISO 8601 date / string), so an `int64`
+  column declared in Excel survives the round-trip and `--filter
+  'score > 5.0'` works as expected. Non-interactive output modes
+  (`--tsv`, `--parquet`, …) process the first sheet only; the footer
+  notes how many more exist (`Format: Excel | Sheet: peaks | +1 more
+  sheet(s)`). The legacy binary `.xls` format is **not** supported.
+  Builds against the system `libxlsxio` (Arch `xlsxio` AUR, Debian
+  `libxlsxio-dev`, Homebrew `xlsxio`); the AlmaLinux 8 static binary
+  builds xlsxio + its expat / minizip-ng deps from source via the
+  fetch-docker-sources script.
+- A new internal `WorkbookSource` base class (extending
+  `MemoryTableSource`) captures the "one source per sheet, plus a list
+  of sibling sheet names" pattern shared between Excel and the
+  upcoming OpenDocument Spreadsheet (`.ods`) support. The
+  format-specific subclass only needs to list sheet names, stream one
+  sheet's rows into a CSV byte buffer, and build sibling sources that
+  share the underlying library handle.
 - **SQLite (`.sqlite`, `.sqlite3`, `.db`)** — single-file databases now
   open natively; each user table becomes a TUI tab (`Tab` / `Shift+Tab`
   cycle). Column types follow SQLite's type affinity: TEXT → string,

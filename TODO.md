@@ -65,12 +65,23 @@ user-facing summary).
 ## Format gaps
 
 ### Open
+- OpenDocument Spreadsheet (`.ods`) — share the WorkbookSource base
+  introduced for Excel; ODS is also ZIP + XML and only needs its own
+  sheet-listing / row-streaming code (libzip + expat path, parallel
+  to what xlsxio does for `.xlsx`).
+- `.xls` (legacy binary, OLE2 compound document) — needs libxls or a
+  hand-rolled OLE2 parser; biology data is overwhelmingly `.xlsx`
+  today, so deferred until somebody asks.
 - mpileup — samtools workflow staple; ragged columns make it a
   custom parser.
 - HDF5 / AnnData / Loom — single-cell omics. Heavy dep (libhdf5).
 - Galaxy `.dat` / Galaxy archive — niche but visible.
 
 ### Done
+- Excel (`.xlsx`, `.xlsm`) — opens via libxlsxio; each sheet becomes
+  a TUI tab through the new WorkbookSource abstraction (extends
+  MemoryTableSource). Cell text streams through Arrow's CSV reader
+  for type inference. `.xls` deferred.
 - bigBed / bigWig — vendored libBigWig (`-DNOCURL`, no libcurl
   dep); autoSql parsed into typed Arrow columns; range queries
   via libBigWig overlap APIs.

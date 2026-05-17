@@ -273,6 +273,34 @@ cur.executemany("INSERT INTO samples VALUES(?,?,?)", [
 con.commit()
 con.close()
 
+# ── Excel (.xlsx, two sheets, requires openpyxl) ─────────────────────────────
+# Soft-skip if openpyxl isn't installed (CI installs it in the venv alongside
+# pyarrow; local dev can `pip install openpyxl` to regenerate).
+try:
+    import openpyxl                                        # type: ignore
+except ImportError:
+    print("warn: openpyxl not found; skipping tiny.xlsx", file=sys.stderr)
+else:
+    xlsx_path = HERE / "tiny.xlsx"
+    if xlsx_path.exists():
+        xlsx_path.unlink()
+    wb = openpyxl.Workbook()
+    # First sheet — replace the default name to assert sheet-naming works.
+    s1 = wb.active
+    assert s1 is not None
+    s1.title = "peaks"
+    s1.append(["chrom", "start", "end", "score", "name"])
+    s1.append(["chr1", 100, 200, 5.2, "p1"])
+    s1.append(["chr1", 500, 800, 8.1, "p2"])
+    s1.append(["chr2", 1000, 1300, 3.4, "p3"])
+    # Second sheet — exercises sibling-tab expansion in main().
+    s2 = wb.create_sheet("samples")
+    s2.append(["sample_id", "name", "depth"])
+    s2.append([1, "sampleA", 12.5])
+    s2.append([2, "sampleB", 8.7])
+    s2.append([3, "sampleC", 15.1])
+    wb.save(xlsx_path)
+
 # ── BCF (binary VCF, requires bcftools) ──────────────────────────────────────
 if have("bcftools"):
     # Make a self-contained VCF (with explicit ##contig lines) so bcftools is

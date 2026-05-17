@@ -61,6 +61,7 @@ See [INSTALL.md](INSTALL.md) for source builds, AUR, and the static AlmaLinux
 | UCSC big files    | `.bb` / `.bigBed`, `.bw` / `.bigWig` (vendored libBigWig; bigBed's embedded autoSql is parsed into typed columns) |
 | UCSC 2bit         | `.2bit` (sequence index: name / length / N-blocks / mask-blocks) |
 | SQLite            | `.sqlite`, `.sqlite3`, `.db` (each table → one TUI tab; types follow SQLite affinity) |
+| Excel             | `.xlsx`, `.xlsm` (each sheet → one TUI tab; column types inferred from cell text via Arrow's CSV reader) |
 | Sequences (FASTA) | `.fa`, `.fasta`, `.fna`, `.faa`, `.ffn`, `.frn` (plus `.gz`) |
 | Sequencing reads  | `.fq`, `.fastq` (plus `.gz`)                               |
 | Delimited text    | `.tsv`, `.csv` (plus `.gz`)                                |

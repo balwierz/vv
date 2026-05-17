@@ -139,6 +139,28 @@ target_link_libraries(bigwig PUBLIC ZLIB::ZLIB)
 # SQLITE_STATIC_LIB lookup below picks it up.
 find_package(SQLite3 REQUIRED)
 
+# ── xlsxio (for .xlsx / .xlsm spreadsheet source) ────────────────────────────
+# Two artefacts: libxlsxio_read (the reader; small wrapper around expat +
+# minizip-ng) and its single public header xlsxio_read.h. No pkg-config
+# file on Arch / AlmaLinux, so we use plain find_path / find_library and
+# fall back to the static archive in `../static-libs/` for the Docker build.
+find_path(XLSXIO_INCLUDE_DIR  xlsxio_read.h)
+find_library(XLSXIO_STATIC    NAMES libxlsxio_read.a   PATHS "${CMAKE_CURRENT_SOURCE_DIR}/../static-libs/lib" NO_DEFAULT_PATH)
+find_library(XLSXIO_SHARED    NAMES xlsxio_read libxlsxio_read.so libxlsxio_read.dylib)
+if(NOT XLSXIO_INCLUDE_DIR OR (NOT XLSXIO_STATIC AND NOT XLSXIO_SHARED))
+  message(FATAL_ERROR
+      "libxlsxio_read not found. Install `xlsxio` (AUR) on Arch, "
+      "`libxlsxio-dev` on Debian/Ubuntu, or `brew install xlsxio` on macOS.")
+endif()
+# Static-link prefers the .a; shared-link picks the .so/.dylib.
+set(XLSXIO_LIB $<IF:$<BOOL:${XLSXIO_STATIC}>,${XLSXIO_STATIC},${XLSXIO_SHARED}>)
+message(STATUS "xlsxio header: ${XLSXIO_INCLUDE_DIR}")
+if(XLSXIO_STATIC)
+  message(STATUS "xlsxio static: ${XLSXIO_STATIC}")
+else()
+  message(STATUS "xlsxio shared: ${XLSXIO_SHARED}")
+endif()
+
 # ── Static runtime (libstdc++, libgcc) ───────────────────────────────────────
 option(STATIC_RUNTIME "Link libstdc++ and libgcc statically" OFF)
 if(STATIC_RUNTIME)
@@ -171,6 +193,7 @@ target_include_directories(vv PRIVATE
     ${PARQUET_INCLUDE_DIRS}
     ${CURSES_INCLUDE_DIRS}
     ${HTSLIB_INCLUDE_DIRS}
+    ${XLSXIO_INCLUDE_DIR}
 )
 
 # Collect all static libs built into static-libs/
@@ -188,6 +211,10 @@ find_library(THRIFT_STATIC       NAMES libthrift.a       PATHS "${_static_libs_d
 find_library(SNAPPY_STATIC       NAMES libsnappy.a       PATHS "${_static_libs_dir}" NO_DEFAULT_PATH)
 find_library(ZLIB_STATIC         NAMES libz.a            PATHS "${_static_libs_dir}" NO_DEFAULT_PATH)
 find_library(SQLITE_STATIC       NAMES libsqlite3.a      PATHS "${_static_libs_dir}" NO_DEFAULT_PATH)
+# Transitive deps of libxlsxio_read.a — only needed in the AlmaLinux 8
+# static build; in shared mode they come along with libxlsxio_read.so.
+find_library(EXPAT_STATIC        NAMES libexpat.a        PATHS "${_static_libs_dir}" NO_DEFAULT_PATH)
+find_library(MINIZIP_STATIC      NAMES libminizip.a libminizip-ng.a PATHS "${_static_libs_dir}" NO_DEFAULT_PATH)
 
 # Collect every libabsl_*.a from static-libs/
 file(GLOB ABSL_STATIC_LIBS "${_static_libs_dir}/libabsl_*.a")
@@ -225,6 +252,9 @@ if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND NCURSES_STATIC_LIB)
   set(_snappy       $<IF:$<BOOL:${SNAPPY_STATIC}>,${SNAPPY_STATIC},-lsnappy>)
   set(_zlib         $<IF:$<BOOL:${ZLIB_STATIC}>,${ZLIB_STATIC},-lz>)
   set(_sqlite       $<IF:$<BOOL:${SQLITE_STATIC}>,${SQLITE_STATIC},-lsqlite3>)
+  set(_xlsxio       $<IF:$<BOOL:${XLSXIO_STATIC}>,${XLSXIO_STATIC},-lxlsxio_read>)
+  set(_expat        $<IF:$<BOOL:${EXPAT_STATIC}>,${EXPAT_STATIC},-lexpat>)
+  set(_minizip      $<IF:$<BOOL:${MINIZIP_STATIC}>,${MINIZIP_STATIC},-lminizip>)
 
   target_link_libraries(vv PRIVATE
       ${PARQUET_TARGET}
@@ -241,6 +271,10 @@ if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND NCURSES_STATIC_LIB)
       ${HTSLIB_STATIC_LIB}
       bigwig
       ${_sqlite}
+      # xlsxio + its transitive deps (expat for XML, minizip for ZIP).
+      # Order matters for static linking: xlsxio uses expat/minizip
+      # symbols, so they have to follow it.
+      ${_xlsxio} ${_expat} ${_minizip}
       ${_deflate} ${_zlib} ${_bz2} ${_lzma} ${_lz4} ${_zstd}
       ${_brotlienc} ${_brotlidec} ${_brotlicommon}
       ${_snappy} ${_utf8proc} ${_re2} ${_thrift}
@@ -264,6 +298,7 @@ else()
       ${HTSLIB_LINK_LIBRARIES}
       bigwig
       SQLite::SQLite3
+      ${XLSXIO_LIB}
   )
 endif()
 

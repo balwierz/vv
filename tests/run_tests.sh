@@ -381,6 +381,25 @@ if [ -f "$DATA/tiny.sqlite" ]; then
     assert_eq_file_inline "sqlite_filter_by_real"   "$SQL_FLT" "2"
 fi
 
+# Excel (.xlsx): two sheets; first ("peaks") dumps via --tsv, schema shows
+# sibling count, type inference catches the int / double / string mix from
+# the cell contents.
+if [ -f "$DATA/tiny.xlsx" ]; then
+    XL_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.xlsx" | wc -l)
+    assert_eq_file_inline "xlsx_first_sheet_rows"   "$XL_ROWS" "3"
+    XL_SCH=$("$VV" --schema "$DATA/tiny.xlsx" 2>&1)
+    assert_contains "xlsx_footer_format"            "$XL_SCH" "Format: Excel"
+    assert_contains "xlsx_footer_first_sheet"       "$XL_SCH" "Sheet: peaks"
+    assert_contains "xlsx_footer_sibling_count"     "$XL_SCH" "+1 more sheet"
+    # Type inference from Arrow CSV reader on the cell-text stream.
+    assert_contains "xlsx_type_text"                "$XL_SCH" "string"
+    assert_contains "xlsx_type_int"                 "$XL_SCH" "int64"
+    assert_contains "xlsx_type_real"                "$XL_SCH" "double"
+    # --filter against the inferred double column.
+    XL_FLT=$("$VV" --tsv --no-header --filter 'score > 5.0' "$DATA/tiny.xlsx" | wc -l)
+    assert_eq_file_inline "xlsx_filter_by_real"     "$XL_FLT" "2"
+fi
+
 echo "── Threading parity ──────────────────────────────────────"
 "$VV" --tsv --no-header -@ 1 "$DATA/tiny.parquet" > "$TMP/t1.out"
 "$VV" --tsv --no-header -@ 4 "$DATA/tiny.parquet" > "$TMP/t4.out"
