@@ -20,27 +20,30 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          # Ubuntu's `libhts-dev` hard-Depends on `libcurl4-gnutls-dev`,
-          # but GitHub-hosted runners preinstall the openssl variant.
-          # Apt declares gnutls-dev "not installable" until the conflict
-          # is broken. Remove openssl-dev first, then install gnutls-dev.
-          # The Apache Arrow apt repo's libarrow-dev pulls
-          # `libcurl4-openssl-dev | libcurl-dev` — the gnutls variant
-          # provides `libcurl-dev` and satisfies that alternative.
-          sudo apt-get remove -y libcurl4-openssl-dev || true
-          sudo apt-get install -y -V libcurl4-gnutls-dev
+          # libhts-dev hard-Depends on libcurl4-gnutls-dev; runners
+          # preinstall the openssl variant. Apache Arrow's libarrow-dev
+          # Depends on `libcurl4-openssl-dev | libcurl-dev`. The gnutls
+          # variant provides libcurl-dev and satisfies the alternative,
+          # but `apt-get`'s resolver doesn't pick the alternative when
+          # the named primary is "not installable". `aptitude` does.
+          sudo apt-get install -y -V aptitude
 
           # Apache Arrow apt repo (matches the version on each Ubuntu base).
           sudo apt-get install -y -V ca-certificates lsb-release wget
           wget https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
           sudo apt-get install -y -V ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
           sudo apt-get update
-          # `tabix` already provides bgzip — no separate `bgzip-tools`
-          # package on any Ubuntu. `python3-pyarrow` was dropped from
-          # Ubuntu 24.04's repos (and PEP 668 blocks `pip install`
-          # against the system Python) — installed into a per-job venv
-          # in the next step.
-          sudo apt-get install -y -V \
+
+          # Pull the openssl→gnutls swap and the multi-source install in
+          # one aptitude transaction so its resolver can see the full
+          # picture (otherwise `apt-get install libcurl4-gnutls-dev`
+          # leaves an awkward state where libarrow-dev's primary
+          # `libcurl4-openssl-dev` isn't installable). `-y` and the
+          # explicit `--without-recommends` keep it non-interactive.
+          # `tabix` already provides bgzip; `python3-pyarrow` was
+          # dropped from Ubuntu 24.04, installed into a venv below.
+          sudo aptitude install -y --without-recommends \
+            libcurl4-gnutls-dev \
             cmake g++ libarrow-dev libparquet-dev \
             libhts-dev libncursesw5-dev libsqlite3-dev pkg-config \
             python3 python3-venv python3-pip \
