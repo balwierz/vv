@@ -3864,8 +3864,11 @@ class BcfSource : public TabularSource {
             if (f[5] == "." || f[5].empty()) {
                 ARROW_RETURN_NOT_OK(qual_b.AppendNull());
             } else {
-                float q = 0.0f;
-                std::from_chars(f[5].data(), f[5].data() + f[5].size(), q);
+                // std::from_chars<float> is missing in Apple's libc++ on
+                // some macOS runners; strtof works everywhere. f[5] is a
+                // string_view (not nul-terminated), so copy to a temp.
+                std::string qbuf(f[5]);
+                float q = std::strtof(qbuf.c_str(), nullptr);
                 ARROW_RETURN_NOT_OK(qual_b.Append(q));
             }
             ARROW_RETURN_NOT_OK(filter_b.Append(f[6].data(), (int32_t)f[6].size()));
