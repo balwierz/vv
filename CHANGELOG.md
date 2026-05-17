@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **SQLite (`.sqlite`, `.sqlite3`, `.db`)** — single-file databases now
+  open natively; each user table becomes a TUI tab (`Tab` / `Shift+Tab`
+  cycle). Column types follow SQLite's type affinity: TEXT → string,
+  INTEGER → int64, REAL → double, BLOB → binary; `NOT NULL` is
+  preserved in the Arrow schema. The shared `sqlite3*` handle is
+  refcounted across the sibling sources so a single open serves the
+  whole file. Non-interactive output modes (`--tsv`, `--parquet`, …)
+  process the first table only; the footer notes how many more
+  exist (`Format: SQLite | Table: peaks | Rows: 3 | +1 more table(s)`).
+  Local builds link against the system `libsqlite3`; the AlmaLinux 8
+  static binary compiles the upstream amalgamation into a static
+  `libsqlite3.a` (`SQLITE_OMIT_LOAD_EXTENSION`, no external deps).
 - **ENCODE peak / signal formats** (`.narrowPeak`, `.broadPeak`,
   `.gappedPeak`, `.bedGraph` / `.bg`, `.tagAlign`, plus `.gz`
   variants). These are read as BED-family files with variant-aware

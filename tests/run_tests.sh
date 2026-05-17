@@ -363,6 +363,24 @@ if [ -f "$DATA/tiny.bedGraph" ]; then
     assert_contains "bedGraph_footer"               "$BG_SCH" "Format: bedGraph"
 fi
 
+# SQLite: each table becomes a tab; --tsv on the file dumps the first table.
+if [ -f "$DATA/tiny.sqlite" ]; then
+    SQL_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.sqlite" | wc -l)
+    assert_eq_file_inline "sqlite_first_table_rows" "$SQL_ROWS" "3"
+    SQL_SCH=$("$VV" --schema "$DATA/tiny.sqlite" 2>&1)
+    assert_contains "sqlite_footer_format"          "$SQL_SCH" "Format: SQLite"
+    assert_contains "sqlite_footer_first_table"     "$SQL_SCH" "Table: peaks"
+    assert_contains "sqlite_footer_sibling_count"   "$SQL_SCH" "+1 more"
+    # Column types follow SQLite affinity (TEXT → string, INTEGER → int64,
+    # REAL → double, declared NOT NULL preserved).
+    assert_contains "sqlite_type_text"              "$SQL_SCH" "string"
+    assert_contains "sqlite_type_int"               "$SQL_SCH" "int64"
+    assert_contains "sqlite_type_real"              "$SQL_SCH" "double"
+    # --filter works on declared-typed columns (SQLite REAL → Arrow double).
+    SQL_FLT=$("$VV" --tsv --no-header --filter 'score > 5.0' "$DATA/tiny.sqlite" | wc -l)
+    assert_eq_file_inline "sqlite_filter_by_real"   "$SQL_FLT" "2"
+fi
+
 echo "── Threading parity ──────────────────────────────────────"
 "$VV" --tsv --no-header -@ 1 "$DATA/tiny.parquet" > "$TMP/t1.out"
 "$VV" --tsv --no-header -@ 4 "$DATA/tiny.parquet" > "$TMP/t4.out"

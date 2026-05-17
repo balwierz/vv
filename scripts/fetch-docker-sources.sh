@@ -51,6 +51,7 @@ fetch utf8proc.tar.gz   https://github.com/JuliaStrings/utf8proc/archive/refs/ta
 fetch xz.tar.gz         https://github.com/tukaani-project/xz/releases/download/v5.4.6/xz-5.4.6.tar.gz
 fetch zlib.tar.gz       https://github.com/madler/zlib/archive/refs/tags/v1.3.1.tar.gz
 fetch zstd.tar.gz       https://github.com/facebook/zstd/archive/refs/tags/v1.5.6.tar.gz
+fetch sqlite.tar.gz     https://sqlite.org/2025/sqlite-autoconf-3490100.tar.gz
 
 # ── header-only deps repacked from upstream releases ───────────────────────
 # The Dockerfile expects these tarballs to extract directly under

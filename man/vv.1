@@ -47,6 +47,11 @@ columns
 \fB.bw\fR, \fB.bigWig\fR \(en UCSC bigWig; rendered as four columns
 (\fBchrom\fR, \fBstart\fR, \fBend\fR, \fBvalue\fR)
 .IP \(bu 2
+\fB.sqlite\fR, \fB.sqlite3\fR, \fB.db\fR \(en SQLite databases. Each
+user table becomes a TUI tab (\fBTab\fR / \fBShift+Tab\fR cycle).
+Column types follow SQLite type affinity: TEXT \(-> string, INTEGER
+\(-> int64, REAL \(-> double, BLOB \(-> binary. Read-only access.
+.IP \(bu 2
 \fB.2bit\fR \(en UCSC 2bit sequence container; rendered as a per-
 sequence index (\fBname\fR, \fBlength\fR, \fBn_blocks\fR,
 \fBmask_blocks\fR). DNA bases themselves are not decoded — too large

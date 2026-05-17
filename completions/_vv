@@ -24,6 +24,7 @@ _vv() {
         '*.paf' '*.paf.gz'
         '*.bb' '*.bigBed' '*.bw' '*.bigWig'
         '*.2bit'
+        '*.sqlite' '*.sqlite3' '*.db'
     )
 
     _arguments -s -S \

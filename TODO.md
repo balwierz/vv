@@ -83,6 +83,10 @@ user-facing summary).
   `.gappedPeak`, `.bedGraph` / `.bg`, `.tagAlign` (plus `.gz`)
   routed through DelimKind::BED with variant-aware column naming
   (signalValue / pValue / qValue / peak / value / sequence).
+- SQLite (`.sqlite` / `.sqlite3` / `.db`) — read-only; each user
+  table becomes a TUI tab. SqliteSource shares the sqlite3 handle
+  across sibling sources via shared_ptr. Type affinity drives the
+  Arrow schema.
 
 ## Performance / build
 

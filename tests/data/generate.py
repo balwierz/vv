@@ -244,6 +244,31 @@ loc = loc.replace_schema_metadata({"lociSSD_manifest": manifest})
 # pruning is actually exercised by region-query tests.
 pq.write_table(loc, HERE / "tiny.lociss", compression="zstd", row_group_size=2)
 
+# ── SQLite (two tables: peaks + samples) ────────────────────────────────────
+import sqlite3
+sqlite_path = HERE / "tiny.sqlite"
+if sqlite_path.exists():
+    sqlite_path.unlink()
+con = sqlite3.connect(sqlite_path)
+cur = con.cursor()
+cur.execute("""CREATE TABLE peaks(
+    chrom TEXT NOT NULL, start INTEGER, end INTEGER,
+    score REAL, name TEXT)""")
+cur.executemany("INSERT INTO peaks VALUES(?,?,?,?,?)", [
+    ("chr1", 100, 200, 5.2, "p1"),
+    ("chr1", 500, 800, 8.1, "p2"),
+    ("chr2", 1000, 1300, 3.4, "p3"),
+])
+cur.execute("""CREATE TABLE samples(
+    sample_id INTEGER PRIMARY KEY, name TEXT, depth REAL)""")
+cur.executemany("INSERT INTO samples VALUES(?,?,?)", [
+    (1, "sampleA", 12.5),
+    (2, "sampleB", 8.7),
+    (3, "sampleC", 15.1),
+])
+con.commit()
+con.close()
+
 # ── BCF (binary VCF, requires bcftools) ──────────────────────────────────────
 if have("bcftools"):
     # Make a self-contained VCF (with explicit ##contig lines) so bcftools is

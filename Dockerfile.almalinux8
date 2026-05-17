@@ -160,6 +160,20 @@ RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
         -DSNAPPY_BUILD_TESTS=OFF -DSNAPPY_BUILD_BENCHMARKS=OFF && \
     cmake --build snappy-bld -j$(nproc) && cmake --install snappy-bld
 
+# ── sqlite (single-file amalgamation; just compile sqlite3.c) ─────────────────
+FROM base AS build-sqlite
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/sqlite.tar.gz && mv sqlite-autoconf-* sqlite-src && \
+    cd sqlite-src && \
+    $CC -O2 -flto=auto -ffunction-sections -fdata-sections \
+        -DSQLITE_OMIT_LOAD_EXTENSION \
+        -DSQLITE_THREADSAFE=1 \
+        -c sqlite3.c -o sqlite3.o && \
+    gcc-ar rcs libsqlite3.a sqlite3.o && \
+    mkdir -p /build/static-libs/lib /build/static-libs/include && \
+    cp libsqlite3.a /build/static-libs/lib/ && \
+    cp sqlite3.h sqlite3ext.h /build/static-libs/include/
+
 # ── utf8proc ──────────────────────────────────────────────────────────────────
 FROM base AS build-utf8proc
 RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
@@ -264,6 +278,7 @@ COPY --from=build-re2      /build/static-libs /build/static-libs
 COPY --from=build-thrift   /build/static-libs /build/static-libs
 COPY --from=build-ncurses  /build/static-libs /build/static-libs
 COPY --from=build-htslib   /build/static-libs /build/static-libs
+COPY --from=build-sqlite   /build/static-libs /build/static-libs
 
 # ── Arrow 23.0.1 ──────────────────────────────────────────────────────────────
 FROM static-libs AS build-arrow

@@ -115,6 +115,13 @@ target_include_directories(bigwig
     PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/vendored/libBigWig"
            ${ZLIB_INCLUDE_DIRS})
 
+# ── SQLite (for .sqlite / .db / .sqlite3 source) ─────────────────────────────
+# Local builds use the system libsqlite3 (every distro ships it). The
+# AlmaLinux 8 static build compiles a libsqlite3.a from the upstream
+# amalgamation and installs it under static-libs/lib — the explicit
+# SQLITE_STATIC_LIB lookup below picks it up.
+find_package(SQLite3 REQUIRED)
+
 # ── Static runtime (libstdc++, libgcc) ───────────────────────────────────────
 option(STATIC_RUNTIME "Link libstdc++ and libgcc statically" OFF)
 if(STATIC_RUNTIME)
@@ -159,6 +166,7 @@ find_library(RE2_STATIC          NAMES libre2.a          PATHS "${_static_libs_d
 find_library(THRIFT_STATIC       NAMES libthrift.a       PATHS "${_static_libs_dir}" NO_DEFAULT_PATH)
 find_library(SNAPPY_STATIC       NAMES libsnappy.a       PATHS "${_static_libs_dir}" NO_DEFAULT_PATH)
 find_library(ZLIB_STATIC         NAMES libz.a            PATHS "${_static_libs_dir}" NO_DEFAULT_PATH)
+find_library(SQLITE_STATIC       NAMES libsqlite3.a      PATHS "${_static_libs_dir}" NO_DEFAULT_PATH)
 
 # Collect every libabsl_*.a from static-libs/
 file(GLOB ABSL_STATIC_LIBS "${_static_libs_dir}/libabsl_*.a")
@@ -195,6 +203,7 @@ if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND NCURSES_STATIC_LIB)
   set(_thrift       $<IF:$<BOOL:${THRIFT_STATIC}>,${THRIFT_STATIC},-lthrift>)
   set(_snappy       $<IF:$<BOOL:${SNAPPY_STATIC}>,${SNAPPY_STATIC},-lsnappy>)
   set(_zlib         $<IF:$<BOOL:${ZLIB_STATIC}>,${ZLIB_STATIC},-lz>)
+  set(_sqlite       $<IF:$<BOOL:${SQLITE_STATIC}>,${SQLITE_STATIC},-lsqlite3>)
 
   target_link_libraries(vv PRIVATE
       ${PARQUET_TARGET}
@@ -210,6 +219,7 @@ if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND NCURSES_STATIC_LIB)
       ${_tinfo_lib}
       ${HTSLIB_STATIC_LIB}
       bigwig
+      ${_sqlite}
       ${_deflate} ${_zlib} ${_bz2} ${_lzma} ${_lz4} ${_zstd}
       ${_brotlienc} ${_brotlidec} ${_brotlicommon}
       ${_snappy} ${_utf8proc} ${_re2} ${_thrift}
@@ -229,6 +239,7 @@ else()
       ${CURSES_LIBRARIES}
       ${HTSLIB_LINK_LIBRARIES}
       bigwig
+      SQLite::SQLite3
   )
 endif()
 

@@ -65,6 +65,7 @@ would need horizontal scrolling.
 | ENCODE peaks / signal | `.narrowPeak`, `.broadPeak`, `.gappedPeak`, `.bedGraph` / `.bg`, `.tagAlign` (plus `.gz`); BED-family with `signalValue` / `pValue` / `qValue` / `peak` / `value` named columns |
 | UCSC big files    | `.bb` / `.bigBed`, `.bw` / `.bigWig` (vendored libBigWig — bigBed's autoSql definition is parsed into typed columns) |
 | UCSC 2bit         | `.2bit` (sequence index: `name`, `length`, `n_blocks`, `mask_blocks`) |
+| SQLite            | `.sqlite`, `.sqlite3`, `.db`; each table becomes a TUI tab; types follow SQLite affinity (TEXT → string, INTEGER → int64, REAL → double, BLOB → binary) |
 | Sequences (FASTA) | `.fa`, `.fasta`, `.fna`, `.faa`, `.ffn`, `.frn` (plus `.gz`)|
 | Sequencing reads  | `.fq`, `.fastq` (plus `.gz`)                                |
 | Delimited text    | `.tsv`, `.csv` (plus `.gz`)                                 |
