@@ -6,7 +6,15 @@ FAIL=0
 
 assert_eq_file() {
     # $1 = name, $2 = actual_file, $3 = golden_file
-    if diff -u "$3" "$2" > /tmp/vv-test.diff 2>&1; then
+    # Normalise absolute fixture paths so goldens committed from one
+    # checkout (e.g. /home/piotr/Sources/ParquetViewer/tests/data) match
+    # output captured from another (e.g. /home/runner/work/vv/vv/tests/data
+    # on GitHub-hosted CI). Strips everything up to and including
+    # "/tests/data/" so the line reads "File: tests/data/tiny.parquet".
+    local _a="/tmp/vv-test.a" _b="/tmp/vv-test.b"
+    sed -E 's@(File: |/)/?[^[:space:]]*tests/data/@\1tests/data/@g' "$2" > "$_a"
+    sed -E 's@(File: |/)/?[^[:space:]]*tests/data/@\1tests/data/@g' "$3" > "$_b"
+    if diff -u "$_b" "$_a" > /tmp/vv-test.diff 2>&1; then
         PASS=$((PASS + 1))
         echo "  ok    $1"
     else

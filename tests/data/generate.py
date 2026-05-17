@@ -76,7 +76,10 @@ if have("bgzip") and have("tabix"):
     bed_gz = HERE / "tiny.bed.gz"
     if bed_gz.exists():
         bed_gz.unlink()
-    subprocess.run(["bgzip", "-k", str(HERE / "tiny.bed")], check=True)
+    # `bgzip -k` (keep input) only exists in htslib >= 1.14. Ubuntu 22.04
+    # ships htslib 1.13. Stream form (`bgzip -c < src > out`) is portable.
+    with open(HERE / "tiny.bed", "rb") as fin, open(bed_gz, "wb") as fout:
+        subprocess.run(["bgzip", "-c"], stdin=fin, stdout=fout, check=True)
     subprocess.run(["tabix", "-f", "-p", "bed", str(bed_gz)], check=True)
 else:
     print("warn: bgzip/tabix not found; skipping tiny.bed.gz", file=sys.stderr)
@@ -95,7 +98,8 @@ if have("bgzip") and have("tabix"):
     vcf_gz = HERE / "tiny.vcf.gz"
     if vcf_gz.exists():
         vcf_gz.unlink()
-    subprocess.run(["bgzip", "-k", str(HERE / "tiny.vcf")], check=True)
+    with open(HERE / "tiny.vcf", "rb") as fin, open(vcf_gz, "wb") as fout:
+        subprocess.run(["bgzip", "-c"], stdin=fin, stdout=fout, check=True)
     subprocess.run(["tabix", "-f", "-p", "vcf", str(vcf_gz)], check=True)
 
 # ── FASTA ────────────────────────────────────────────────────────────────────

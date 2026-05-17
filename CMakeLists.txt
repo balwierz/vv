@@ -277,8 +277,9 @@ target_link_options(vv PRIVATE
     -L${_static_libs_dir}
 )
 
-# Strip in Release
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
+# Strip in Release. `--strip-all` is GNU strip; macOS strip uses `-S -x`.
+# (Skipping is fine; macOS binaries already strip many debug symbols.)
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT APPLE)
   add_custom_command(TARGET vv POST_BUILD
       COMMAND ${CMAKE_STRIP} --strip-all $<TARGET_FILE:vv>
       COMMENT "Stripping binary")
