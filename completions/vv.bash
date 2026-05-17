@@ -5,7 +5,7 @@ _vv() {
     local cur prev words cword
     _init_completion || return
 
-    local file_exts='parquet arrow feather lociss bam cram sam vcf vcf.gz bcf gff gff.gz gff3 gff3.gz gtf gtf.gz bed bed.gz narrowPeak narrowPeak.gz broadPeak broadPeak.gz gappedPeak gappedPeak.gz bedGraph bedGraph.gz bg bg.gz tagAlign tagAlign.gz tsv tsv.gz csv csv.gz fa fa.gz fasta fasta.gz fna fna.gz faa faa.gz ffn ffn.gz frn frn.gz fq fq.gz fastq fastq.gz paf paf.gz bb bigBed bw bigWig 2bit sqlite sqlite3 db xlsx xlsm orc'
+    local file_exts='parquet arrow feather lociss bam cram sam vcf vcf.gz bcf gff gff.gz gff3 gff3.gz gtf gtf.gz bed bed.gz narrowPeak narrowPeak.gz broadPeak broadPeak.gz gappedPeak gappedPeak.gz bedGraph bedGraph.gz bg bg.gz tagAlign tagAlign.gz tsv tsv.gz csv csv.gz fa fa.gz fasta fasta.gz fna fna.gz faa faa.gz ffn ffn.gz frn frn.gz fq fq.gz fastq fastq.gz paf paf.gz bb bigBed bw bigWig 2bit sqlite sqlite3 db xlsx xlsm ods orc'
 
     case "$prev" in
         -n|-w|-c|-@|--threads|--decode-threads)

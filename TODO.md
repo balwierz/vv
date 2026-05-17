@@ -65,10 +65,6 @@ user-facing summary).
 ## Format gaps
 
 ### Open
-- OpenDocument Spreadsheet (`.ods`) — share the WorkbookSource base
-  introduced for Excel; ODS is also ZIP + XML and only needs its own
-  sheet-listing / row-streaming code (libzip + expat path, parallel
-  to what xlsxio does for `.xlsx`).
 - `.xls` (legacy binary, OLE2 compound document) — needs libxls or a
   hand-rolled OLE2 parser; biology data is overwhelmingly `.xlsx`
   today, so deferred until somebody asks.
@@ -83,6 +79,10 @@ user-facing summary).
 - Galaxy `.dat` / Galaxy archive — niche but visible.
 
 ### Done
+- OpenDocument Spreadsheet (`.ods`) — hand-rolled reader on minizip +
+  expat (already in the tree for xlsxio's deps). Reuses the
+  WorkbookSource framework introduced for Excel and the shared
+  `csv_buffer_to_table` helper.
 - Apache ORC (`.orc`) — opens via Arrow's ORC adapter. One stripe is
   one chunk; OrcSource mirrors IpcSource's lazy-load pattern. CMake
   detects the adapter header at configure time and gates the source

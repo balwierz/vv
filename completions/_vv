@@ -25,7 +25,7 @@ _vv() {
         '*.bb' '*.bigBed' '*.bw' '*.bigWig'
         '*.2bit'
         '*.sqlite' '*.sqlite3' '*.db'
-        '*.xlsx' '*.xlsm'
+        '*.xlsx' '*.xlsm' '*.ods'
         '*.orc'
     )
 

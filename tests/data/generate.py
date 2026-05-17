@@ -273,6 +273,49 @@ cur.executemany("INSERT INTO samples VALUES(?,?,?)", [
 con.commit()
 con.close()
 
+# ── OpenDocument Spreadsheet (.ods, two sheets, requires odfpy) ──────────────
+try:
+    from odf.opendocument import OpenDocumentSpreadsheet
+    from odf.table import Table, TableRow, TableCell
+    from odf.text import P
+except ImportError:
+    print("warn: odfpy not found; skipping tiny.ods", file=sys.stderr)
+else:
+    ods_path = HERE / "tiny.ods"
+    if ods_path.exists():
+        ods_path.unlink()
+    ods = OpenDocumentSpreadsheet()
+
+    def _add_sheet(name, rows):
+        t = Table(name=name)
+        for row in rows:
+            tr = TableRow()
+            for cell in row:
+                # Distinguish strings from numerics so the typed value
+                # attributes get set (lets Arrow CSV infer correctly).
+                if isinstance(cell, str):
+                    tc = TableCell(valuetype="string")
+                else:
+                    tc = TableCell(valuetype="float", value=str(cell))
+                tc.addElement(P(text=str(cell)))
+                tr.addElement(tc)
+            t.addElement(tr)
+        ods.spreadsheet.addElement(t)
+
+    _add_sheet("peaks", [
+        ["chrom", "start", "end", "score", "name"],
+        ["chr1",  100,     200,   5.2,     "p1"],
+        ["chr1",  500,     800,   8.1,     "p2"],
+        ["chr2",  1000,    1300,  3.4,     "p3"],
+    ])
+    _add_sheet("samples", [
+        ["sample_id", "name", "depth"],
+        [1, "sampleA", 12.5],
+        [2, "sampleB", 8.7],
+        [3, "sampleC", 15.1],
+    ])
+    ods.save(str(ods_path))
+
 # ── Apache ORC (columnar; pyarrow.orc is built into pyarrow when Arrow was
 # compiled with -DARROW_ORC=ON, which is the wheel default since pyarrow
 # 12.0). Soft-skip otherwise.

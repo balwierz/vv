@@ -41,6 +41,17 @@ extern "C" {
 extern "C" {
 #include <xlsxio_read.h>
 }
+// minizip + expat power the OpenDocument Spreadsheet (.ods) reader.
+// minizip extracts content.xml from the .ods ZIP; expat parses the
+// SpreadsheetML payload.
+extern "C" {
+// minizip's `unzip.h` lives under <minizip/> with the legacy zlib-contrib
+// fork (Arch/Ubuntu/Brew) and under <minizip-ng/> with minizip-ng (our
+// AlmaLinux static build). CMake's MINIZIP_INCLUDE_DIR points at the
+// correct subdir, so a plain unprefixed include resolves on both.
+#include <unzip.h>
+#include <expat.h>
+}
 
 #include <algorithm>
 #include <array>
@@ -484,6 +495,7 @@ static void print_usage(const char* prog) {
         "  .2bit                       UCSC 2bit (sequence index: name/length/blocks)\n"
         "  .sqlite  .sqlite3  .db      SQLite database (each table → one TUI tab)\n"
         "  .xlsx  .xlsm                Excel spreadsheet (each sheet → one TUI tab)\n"
+        "  .ods                        OpenDocument spreadsheet (each sheet → one TUI tab)\n"
         "  .orc                        Apache ORC (columnar; one stripe → one chunk)\n"
         "  .fa  .fasta  .fna  .faa     sequences (FASTA, plus .gz)\n"
         "  .fq  .fastq                 sequencing reads (FASTQ, plus .gz)\n"
@@ -5285,10 +5297,32 @@ static void csv_append_quoted(std::string& out, const char* s) {
     out += '"';
 }
 
+// Parse a complete CSV byte buffer into an arrow::Table via Arrow's CSV
+// TableReader. Type inference (int / float / bool / ISO-8601 date /
+// string) is whatever Arrow's CSV converter does. Shared between the
+// WorkbookSource subclasses (xlsx, ods) — both stream their sheet bodies
+// into an in-memory CSV first, then run them through this helper.
+static arrow::Result<std::shared_ptr<arrow::Table>>
+csv_buffer_to_table(const std::string& buf) {
+    auto in_buf = std::make_shared<arrow::Buffer>(
+        reinterpret_cast<const uint8_t*>(buf.data()), (int64_t)buf.size());
+    auto in_stream = std::make_shared<arrow::io::BufferReader>(in_buf);
+
+    auto ropts = arrow::csv::ReadOptions::Defaults();
+    ropts.use_threads = true;
+    auto popts = arrow::csv::ParseOptions::Defaults();
+    popts.delimiter = ',';
+    auto copts = arrow::csv::ConvertOptions::Defaults();
+    copts.strings_can_be_null = true;          // empty cell → null
+
+    ARROW_ASSIGN_OR_RAISE(auto reader, arrow::csv::TableReader::Make(
+        arrow::io::default_io_context(), in_stream, ropts, popts, copts));
+    return reader->Read();
+}
+
 // Convert one xlsx sheet to an arrow::Table by buffering rows as CSV and
-// running them through Arrow's TableReader. Type inference (int / float /
-// bool / ISO-8601 date / string) is whatever Arrow's CSV converter does.
-// `sheet_name` may be empty to open the first sheet by position.
+// running them through csv_buffer_to_table. `sheet_name` may be empty to
+// open the first sheet by position.
 static arrow::Result<std::shared_ptr<arrow::Table>>
 xlsx_sheet_to_table(xlsxioreader rdr, const std::string& sheet_name) {
     xlsxioreadersheet sh = xlsxioread_sheet_open(
@@ -5333,22 +5367,7 @@ xlsx_sheet_to_table(xlsxioreader rdr, const std::string& sheet_name) {
     if (header_cols == 0)
         return arrow::Status::IOError("xlsxio: sheet '", sheet_name,
                                        "' has no header row");
-
-    auto in_buf = std::make_shared<arrow::Buffer>(
-        reinterpret_cast<const uint8_t*>(buf.data()), (int64_t)buf.size());
-    auto in_stream = std::make_shared<arrow::io::BufferReader>(in_buf);
-
-    auto ropts = arrow::csv::ReadOptions::Defaults();
-    ropts.use_threads = true;
-    auto popts = arrow::csv::ParseOptions::Defaults();
-    popts.delimiter = ',';
-    auto copts = arrow::csv::ConvertOptions::Defaults();
-    copts.strings_can_be_null = true;          // empty cell → null
-
-    ARROW_ASSIGN_OR_RAISE(auto reader, arrow::csv::TableReader::Make(
-        arrow::io::default_io_context(), in_stream, ropts, popts, copts));
-    ARROW_ASSIGN_OR_RAISE(auto table, reader->Read());
-    return table;
+    return csv_buffer_to_table(buf);
 }
 
 class XlsxSource : public WorkbookSource {
@@ -5424,6 +5443,327 @@ public:
             std::string err = build_one(path(), workbook_, s, {}, &src);
             if (!err.empty()) {
                 std::fprintf(stderr, "vv: Excel sheet '%s': %s\n",
+                             s.c_str(), err.c_str());
+                continue;
+            }
+            out.push_back(std::move(src));
+        }
+        return out;
+    }
+};
+
+// ── OpenDocument Spreadsheet (.ods) source ───────────────────────────────────
+//
+// .ods is a ZIP archive whose `content.xml` carries the spreadsheet body
+// in OpenDocument SpreadsheetML. We unzip content.xml with minizip and
+// SAX-parse it with expat, emitting per-sheet CSV buffers that hit the
+// same WorkbookSource pipeline as the xlsx reader.
+//
+// Element grammar (only the parts we care about):
+//   <table:table table:name="…">                  ← sheet
+//     <table:table-row table:number-rows-repeated="N">
+//       <table:table-cell office:value-type="…"
+//                          office:value="…"
+//                          office:date-value="…"
+//                          office:boolean-value="…"
+//                          table:number-columns-repeated="K">
+//         <text:p>display-text</text:p>           ← cell text
+//       </table:table-cell>
+//     </table:table-row>
+//   </table:table>
+//
+// Type policy:
+//   value-type="float" / "percentage" / "currency" → use office:value
+//   value-type="date"                               → use office:date-value
+//   value-type="boolean"                            → use office:boolean-value
+//   value-type="time"                               → use office:time-value
+//   anything else (string, missing, …)              → use accumulated text
+// The typed attribute (when present) is canonical and locale-free, so it
+// feeds Arrow's CSV type inference reliably even if the spreadsheet
+// formats numbers with thousands separators.
+//
+// Compaction: ODS aggressively uses table:number-{columns,rows}-repeated
+// to collapse long runs of identical / empty cells. We honour the cell
+// repeat by emitting the cell N times — *unless* it's trailing-empty,
+// in which case it would balloon the CSV. We detect trailing empties by
+// buffering the row's cells and dropping the empty suffix at row close.
+
+static std::string ods_unzip_content_xml(const std::string& path,
+                                          std::string* out) {
+    unzFile zf = unzOpen(path.c_str());
+    if (!zf) return "Cannot open '" + path + "' as ODS (zip)";
+    if (unzLocateFile(zf, "content.xml", /*iCaseSensitivity=*/1) != UNZ_OK) {
+        unzClose(zf);
+        return "'" + path + "': not an ODS (missing content.xml)";
+    }
+    if (unzOpenCurrentFile(zf) != UNZ_OK) {
+        unzClose(zf);
+        return "'" + path + "': cannot open content.xml inside the zip";
+    }
+    char chunk[64 * 1024];
+    out->clear();
+    while (true) {
+        int n = unzReadCurrentFile(zf, chunk, sizeof(chunk));
+        if (n < 0) {
+            unzCloseCurrentFile(zf); unzClose(zf);
+            return "'" + path + "': error inflating content.xml";
+        }
+        if (n == 0) break;
+        out->append(chunk, n);
+    }
+    unzCloseCurrentFile(zf);
+    unzClose(zf);
+    return "";
+}
+
+namespace {
+struct OdsParserState {
+    // Output: name → CSV buffer, plus name order.
+    std::vector<std::pair<std::string, std::string>> sheets;
+
+    // Current sheet state.
+    std::string row_csv;                 // bytes for the current row (un-terminated)
+    std::vector<std::string> row_cells;  // cells buffered for trailing-empty trim
+    std::vector<int>         row_repeat; // repeat count per buffered cell
+    bool         in_sheet = false;
+
+    // Current cell state.
+    int          cell_depth = 0;          // > 0 while inside a table:table-cell
+    int          cell_repeat = 1;
+    std::string  cell_value_type;         // office:value-type
+    std::string  cell_typed_value;        // office:value / date-value / boolean-value
+    std::string  cell_text;               // accumulated <text:p>
+    bool         in_text_p = false;
+
+    // Header tracking for ragged-row padding.
+    size_t header_cols = 0;
+    bool   first_row_in_sheet = true;
+
+    static const char* attr(const char** atts, const char* key) {
+        for (int i = 0; atts && atts[i]; i += 2)
+            if (std::strcmp(atts[i], key) == 0) return atts[i + 1];
+        return nullptr;
+    }
+};
+}  // namespace
+
+static void XMLCALL ods_start(void* ud, const char* name, const char** atts) {
+    auto* s = static_cast<OdsParserState*>(ud);
+    if (std::strcmp(name, "table:table") == 0) {
+        s->sheets.push_back({"Sheet" + std::to_string(s->sheets.size() + 1),
+                              std::string{}});
+        if (auto n = OdsParserState::attr(atts, "table:name"))
+            s->sheets.back().first = n;
+        s->in_sheet = true;
+        s->first_row_in_sheet = true;
+        s->header_cols = 0;
+    } else if (s->in_sheet && std::strcmp(name, "table:table-row") == 0) {
+        s->row_cells.clear();
+        s->row_repeat.clear();
+        // ODS rarely uses table:number-rows-repeated for non-empty rows;
+        // if it does, we'd need to emit the row N times. Empty repeated
+        // rows at the bottom of a sheet are silently dropped (they contain
+        // only empty cells, which our trailing-empty trim removes).
+    } else if (s->in_sheet && std::strcmp(name, "table:table-cell") == 0) {
+        s->cell_depth = 1;
+        s->cell_repeat = 1;
+        s->cell_value_type.clear();
+        s->cell_typed_value.clear();
+        s->cell_text.clear();
+        if (auto v = OdsParserState::attr(atts, "office:value-type"))
+            s->cell_value_type = v;
+        if (auto v = OdsParserState::attr(atts, "office:value"))
+            s->cell_typed_value = v;
+        else if (auto v = OdsParserState::attr(atts, "office:date-value"))
+            s->cell_typed_value = v;
+        else if (auto v = OdsParserState::attr(atts, "office:time-value"))
+            s->cell_typed_value = v;
+        else if (auto v = OdsParserState::attr(atts, "office:boolean-value"))
+            s->cell_typed_value = v;
+        if (auto v = OdsParserState::attr(atts,
+                                           "table:number-columns-repeated")) {
+            int n = std::atoi(v);
+            if (n > 0 && n < 1000000) s->cell_repeat = n;
+        }
+    } else if (s->cell_depth > 0) {
+        s->cell_depth++;
+        if (std::strcmp(name, "text:p") == 0) s->in_text_p = true;
+    }
+}
+
+static void XMLCALL ods_chardata(void* ud, const char* data, int len) {
+    auto* s = static_cast<OdsParserState*>(ud);
+    if (s->cell_depth > 0 && s->in_text_p)
+        s->cell_text.append(data, len);
+}
+
+static void XMLCALL ods_end(void* ud, const char* name) {
+    auto* s = static_cast<OdsParserState*>(ud);
+    if (s->cell_depth > 0) {
+        if (std::strcmp(name, "text:p") == 0) s->in_text_p = false;
+        if (std::strcmp(name, "table:table-cell") == 0) {
+            // Pick the canonical value: typed attribute wins for numeric /
+            // date / boolean cells; text is the fallback (string cells +
+            // anything without office:value).
+            std::string v;
+            if (!s->cell_typed_value.empty() &&
+                s->cell_value_type != "string" &&
+                !s->cell_value_type.empty())
+                v = std::move(s->cell_typed_value);
+            else
+                v = std::move(s->cell_text);
+
+            // Multiple inline <text:p> children → newlines. The simplest
+            // sanitisation for CSV is to swap them for spaces; preserving
+            // them would require CR/LF quoting which Arrow CSV handles
+            // but few biology-data consumers will look for.
+            for (char& c : v) if (c == '\n' || c == '\r') c = ' ';
+
+            s->row_cells.push_back(std::move(v));
+            s->row_repeat.push_back(s->cell_repeat);
+            s->cell_depth = 0;
+        } else {
+            s->cell_depth--;
+        }
+        return;
+    }
+    if (s->in_sheet && std::strcmp(name, "table:table-row") == 0) {
+        // Drop trailing empty cells so a million-column-wide repeated
+        // empty doesn't poison the CSV. Keep the row only if it has at
+        // least one non-empty cell.
+        int last_nonempty = -1;
+        for (int i = 0; i < (int)s->row_cells.size(); ++i)
+            if (!s->row_cells[i].empty()) last_nonempty = i;
+        if (last_nonempty < 0) return;  // entirely empty row → skip
+
+        std::string& sheet_csv = s->sheets.back().second;
+        size_t emitted = 0;
+        for (int i = 0; i <= last_nonempty; ++i) {
+            int reps = s->row_repeat[i];
+            // Cap repeats sanely; ODS sometimes uses huge values for
+            // "rest of the row" even when there's no real data.
+            if (reps > 16384) reps = 16384;
+            for (int r = 0; r < reps; ++r) {
+                if (emitted) sheet_csv += ',';
+                csv_append_quoted(sheet_csv, s->row_cells[i].c_str());
+                ++emitted;
+            }
+        }
+        if (s->first_row_in_sheet) {
+            s->header_cols = emitted;
+            s->first_row_in_sheet = false;
+        } else {
+            while (emitted < s->header_cols) {
+                sheet_csv += ',';
+                ++emitted;
+            }
+        }
+        sheet_csv += '\n';
+    } else if (std::strcmp(name, "table:table") == 0) {
+        s->in_sheet = false;
+    }
+}
+
+static std::string ods_parse_sheets(const std::string& xml,
+                                     std::vector<std::pair<std::string,
+                                                            std::string>>* out) {
+    OdsParserState state;
+    XML_Parser p = XML_ParserCreate(nullptr);
+    if (!p) return "expat: cannot create parser";
+    XML_SetUserData(p, &state);
+    XML_SetElementHandler(p, ods_start, ods_end);
+    XML_SetCharacterDataHandler(p, ods_chardata);
+    if (XML_Parse(p, xml.data(), (int)xml.size(), 1) != XML_STATUS_OK) {
+        std::string err = "expat: ";
+        err += XML_ErrorString(XML_GetErrorCode(p));
+        XML_ParserFree(p);
+        return err;
+    }
+    XML_ParserFree(p);
+    *out = std::move(state.sheets);
+    return "";
+}
+
+class OdsSource : public WorkbookSource {
+    // The full set of (sheet_name, csv_buffer) pairs, shared across sibling
+    // sources via shared_ptr so a multi-sheet .ods is parsed once.
+    std::shared_ptr<std::vector<std::pair<std::string, std::string>>> all_sheets_;
+    std::string               sheet_;
+    std::vector<std::string>  sibling_sheets_;
+
+    OdsSource(std::shared_ptr<arrow::Table>  table,
+               std::string                     path,
+               std::string                     footer,
+               std::shared_ptr<std::vector<std::pair<std::string,
+                                                       std::string>>> all,
+               std::string                     sheet,
+               std::vector<std::string>        siblings)
+        : WorkbookSource(std::move(table), std::move(path),
+                          std::move(footer)),
+          all_sheets_(std::move(all)),
+          sheet_(std::move(sheet)),
+          sibling_sheets_(std::move(siblings)) {}
+
+    static std::string build_one(const std::string& path,
+                                  std::shared_ptr<std::vector<std::pair<
+                                      std::string, std::string>>> all,
+                                  const std::string& sheet,
+                                  std::vector<std::string> siblings,
+                                  std::unique_ptr<OdsSource>* out) {
+        const std::string* csv = nullptr;
+        for (auto& p : *all) if (p.first == sheet) { csv = &p.second; break; }
+        if (!csv || csv->empty())
+            return "'" + path + "': sheet '" + sheet + "' is empty";
+
+        auto tbl_or = csv_buffer_to_table(*csv);
+        if (!tbl_or.ok())
+            return tbl_or.status().ToString();
+
+        std::string footer = "Format: ODS  |  Sheet: " + sheet;
+        if (!siblings.empty())
+            footer += "  |  +" + std::to_string(siblings.size()) +
+                      " more sheet(s)";
+        out->reset(new OdsSource(*tbl_or, path, std::move(footer),
+                                  std::move(all), sheet,
+                                  std::move(siblings)));
+        return "";
+    }
+
+public:
+    static std::string open_first(const std::string& path,
+                                   std::unique_ptr<OdsSource>* out) {
+        std::string xml;
+        std::string err = ods_unzip_content_xml(path, &xml);
+        if (!err.empty()) return err;
+
+        auto all = std::make_shared<std::vector<std::pair<std::string,
+                                                            std::string>>>();
+        err = ods_parse_sheets(xml, all.get());
+        if (!err.empty())
+            return "Error parsing '" + path + "': " + err;
+        // Filter out sheets that turned out fully empty after trim.
+        all->erase(std::remove_if(all->begin(), all->end(),
+                                    [](const std::pair<std::string,std::string>& p){
+                                        return p.second.empty();
+                                    }),
+                     all->end());
+        if (all->empty())
+            return "'" + path + "': ODS file has no data sheets";
+
+        std::vector<std::string> siblings;
+        for (size_t i = 1; i < all->size(); ++i)
+            siblings.push_back((*all)[i].first);
+        return build_one(path, all, (*all)[0].first, std::move(siblings), out);
+    }
+
+    std::vector<std::unique_ptr<TabularSource>>
+    open_sibling_sheets() const override {
+        std::vector<std::unique_ptr<TabularSource>> out;
+        for (const auto& s : sibling_sheets_) {
+            std::unique_ptr<OdsSource> src;
+            std::string err = build_one(path(), all_sheets_, s, {}, &src);
+            if (!err.empty()) {
+                std::fprintf(stderr, "vv: ODS sheet '%s': %s\n",
                              s.c_str(), err.c_str());
                 continue;
             }
@@ -5558,6 +5898,12 @@ static std::string open_source(const std::string& path, const Config& cfg,
     } else if (fends(path, ".xlsx") || fends(path, ".xlsm")) {
         std::unique_ptr<XlsxSource> src;
         std::string err = XlsxSource::open_first(path, &src);
+        if (!err.empty()) return err;
+        *out = std::move(src);
+        return "";
+    } else if (fends(path, ".ods") || fends(path, ".fods")) {
+        std::unique_ptr<OdsSource> src;
+        std::string err = OdsSource::open_first(path, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";

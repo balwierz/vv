@@ -172,6 +172,34 @@ if(NOT XLSXIO_INCLUDE_DIR OR (NOT XLSXIO_STATIC AND NOT XLSXIO_SHARED))
 endif()
 # Static-link prefers the .a; shared-link picks the .so/.dylib.
 set(XLSXIO_LIB $<IF:$<BOOL:${XLSXIO_STATIC}>,${XLSXIO_STATIC},${XLSXIO_SHARED}>)
+
+# ── expat + minizip (for .ods + xlsxio's static archive) ─────────────────────
+# minizip's `<minizip/unzip.h>` and expat's `<expat.h>` are headers vv
+# itself includes (OdsSource). The shared-link path already brings them
+# in transitively via libxlsxio_read.so on most distros, but on systems
+# where libxlsxio_read.a is statically linked we have to pull them
+# explicitly on the link line. We also need the headers on the vv
+# include path so the dev build can compile.
+find_path(EXPAT_INCLUDE_DIR    expat.h)
+# minizip (zlib contrib fork) installs to <prefix>/include/minizip/unzip.h;
+# minizip-ng installs to <prefix>/include/minizip-ng/unzip.h. Use
+# PATH_SUFFIXES so MINIZIP_INCLUDE_DIR points at whichever subdir holds
+# unzip.h on this system — then a plain `#include <unzip.h>` resolves on
+# either layout (Arch, Ubuntu, Brew use the legacy fork; the AlmaLinux 8
+# static build vendors minizip-ng).
+find_path(MINIZIP_INCLUDE_DIR  unzip.h PATH_SUFFIXES minizip minizip-ng)
+find_library(EXPAT_SHARED      NAMES expat libexpat.so libexpat.dylib)
+find_library(MINIZIP_SHARED    NAMES minizip libminizip.so libminizip.dylib minizip-ng libminizip-ng.so)
+if(NOT EXPAT_INCLUDE_DIR OR NOT EXPAT_SHARED)
+  message(FATAL_ERROR
+      "libexpat not found. Install `expat` (Arch), "
+      "`libexpat1-dev` on Debian/Ubuntu, or `brew install expat` on macOS.")
+endif()
+if(NOT MINIZIP_INCLUDE_DIR OR NOT MINIZIP_SHARED)
+  message(FATAL_ERROR
+      "libminizip not found. Install `minizip` (Arch), "
+      "`libminizip-dev` on Debian/Ubuntu, or `brew install minizip` on macOS.")
+endif()
 message(STATUS "xlsxio header: ${XLSXIO_INCLUDE_DIR}")
 if(XLSXIO_STATIC)
   message(STATUS "xlsxio static: ${XLSXIO_STATIC}")
@@ -212,6 +240,8 @@ target_include_directories(vv PRIVATE
     ${CURSES_INCLUDE_DIRS}
     ${HTSLIB_INCLUDE_DIRS}
     ${XLSXIO_INCLUDE_DIR}
+    ${EXPAT_INCLUDE_DIR}
+    ${MINIZIP_INCLUDE_DIR}
 )
 if(ARROW_ORC_HEADER)
   target_compile_definitions(vv PRIVATE VV_HAVE_ORC=1)
@@ -320,6 +350,8 @@ else()
       bigwig
       SQLite::SQLite3
       ${XLSXIO_LIB}
+      ${EXPAT_SHARED}
+      ${MINIZIP_SHARED}
   )
 endif()
 

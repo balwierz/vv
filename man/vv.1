@@ -59,6 +59,13 @@ string). The legacy binary \fB.xls\fR format is not supported. Requires
 \fBlibxlsxio\fR (\fBxlsxio\fR AUR on Arch, \fBlibxlsxio-dev\fR on
 Debian/Ubuntu, \fBbrew install xlsxio\fR on macOS).
 .IP \(bu 2
+\fB.ods\fR \(en OpenDocument Spreadsheet. Each sheet becomes a TUI
+tab. Hand-rolled parser: minizip inflates \fBcontent.xml\fR from the
+.ods ZIP, expat SAX-parses the SpreadsheetML payload. Cells with a
+typed \fBoffice:value\fR (numeric / date / boolean) use that
+canonical value; string cells use the rendered text. Empty runs
+collapsed via \fBtable:number-columns-repeated\fR are honoured.
+.IP \(bu 2
 \fB.orc\fR \(en Apache ORC (Optimized Row Columnar). Columnar storage
 used by Hadoop / Hive / Spark. One ORC stripe is treated as one chunk
 for lazy loading. Read via Arrow's ORC adapter \(em Arrow must be

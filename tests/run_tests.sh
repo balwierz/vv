@@ -416,6 +416,22 @@ if [ -f "$DATA/tiny.xlsx" ]; then
     assert_eq_file_inline "xlsx_filter_by_real"     "$XL_FLT" "2"
 fi
 
+# OpenDocument Spreadsheet (.ods): two sheets; first ("peaks") dumps via
+# --tsv, schema shows sibling count, types inferred from cell contents.
+if [ -f "$DATA/tiny.ods" ]; then
+    OD_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.ods" | wc -l)
+    assert_eq_file_inline "ods_first_sheet_rows"    "$OD_ROWS" "3"
+    OD_SCH=$("$VV" --schema "$DATA/tiny.ods" 2>&1)
+    assert_contains "ods_footer_format"             "$OD_SCH" "Format: ODS"
+    assert_contains "ods_footer_first_sheet"        "$OD_SCH" "Sheet: peaks"
+    assert_contains "ods_footer_sibling_count"      "$OD_SCH" "+1 more sheet"
+    assert_contains "ods_type_text"                 "$OD_SCH" "string"
+    assert_contains "ods_type_int"                  "$OD_SCH" "int64"
+    assert_contains "ods_type_real"                 "$OD_SCH" "double"
+    OD_FLT=$("$VV" --tsv --no-header --filter 'score > 5.0' "$DATA/tiny.ods" | wc -l)
+    assert_eq_file_inline "ods_filter_by_real"      "$OD_FLT" "2"
+fi
+
 echo "── Threading parity ──────────────────────────────────────"
 "$VV" --tsv --no-header -@ 1 "$DATA/tiny.parquet" > "$TMP/t1.out"
 "$VV" --tsv --no-header -@ 4 "$DATA/tiny.parquet" > "$TMP/t4.out"

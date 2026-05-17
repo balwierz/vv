@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **OpenDocument Spreadsheet (`.ods`)** — hand-rolled reader on top of
+  minizip + expat: `content.xml` is inflated and SAX-parsed, with each
+  sheet routed through the existing `WorkbookSource` framework (one
+  sheet per TUI tab, shared in-memory CSV → Arrow CSV reader pipeline
+  with the Excel path). Honours `office:value-type` so numeric / date /
+  boolean cells use their canonical typed attribute instead of the
+  display text (which avoids locale-formatted thousands separators
+  poisoning type inference). Recognises `table:number-columns-repeated`
+  and trims trailing empty cells so ODS's "rest of the row" sentinel
+  doesn't balloon the in-memory CSV.
+- A reusable `csv_buffer_to_table` helper drops out of the xlsx
+  refactor: both `XlsxSource` and `OdsSource` route their per-sheet
+  CSV bytes through it.
 - **Apache ORC (`.orc`)** — columnar storage (Hadoop / Hive / Spark)
   opens via Arrow's ORC adapter. One ORC stripe is one chunk in vv's
   pipeline, so multi-GB files stream lazily. Read-only. Footer shows

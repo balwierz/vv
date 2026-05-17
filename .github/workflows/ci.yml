@@ -27,7 +27,8 @@ jobs:
           sudo apt-get remove -y libcurl4-openssl-dev || true
           sudo apt-get install -y -V \
             cmake g++ libcurl4-gnutls-dev \
-            libhts-dev libncursesw5-dev libsqlite3-dev libexpat1-dev libminizip-dev pkg-config \
+            libhts-dev libncursesw5-dev libsqlite3-dev \
+            libexpat1-dev libminizip-dev pkg-config \
             python3 python3-venv python3-pip \
             python3-pysam tabix bcftools ca-certificates lsb-release wget
 
@@ -94,7 +95,7 @@ jobs:
         run: |
           python3 -m venv /tmp/vvpy
           /tmp/vvpy/bin/pip install --upgrade pip
-          /tmp/vvpy/bin/pip install pyarrow openpyxl
+          /tmp/vvpy/bin/pip install pyarrow openpyxl odfpy
 
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -123,7 +124,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
-        run: brew install cmake apache-arrow htslib ncurses xlsxio
+        run: brew install cmake apache-arrow htslib ncurses xlsxio expat minizip
       - name: Configure
         # Homebrew's `apache-arrow` formula installs to its own prefix
         # (`$(brew --prefix apache-arrow)` — typically /opt/homebrew/opt/…
@@ -134,8 +135,11 @@ jobs:
           ARROW_PREFIX="$(brew --prefix apache-arrow)"
           HTSLIB_PREFIX="$(brew --prefix htslib)"
           NCURSES_PREFIX="$(brew --prefix ncurses)"
+          XLSXIO_PREFIX="$(brew --prefix xlsxio)"
+          EXPAT_PREFIX="$(brew --prefix expat)"
+          MINIZIP_PREFIX="$(brew --prefix minizip)"
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$ARROW_PREFIX;$HTSLIB_PREFIX;$NCURSES_PREFIX"
+            -DCMAKE_PREFIX_PATH="$ARROW_PREFIX;$HTSLIB_PREFIX;$NCURSES_PREFIX;$XLSXIO_PREFIX;$EXPAT_PREFIX;$MINIZIP_PREFIX"
       - name: Build
         run: cmake --build build -j$(sysctl -n hw.ncpu)
       - name: Sanity check
