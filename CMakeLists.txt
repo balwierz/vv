@@ -128,6 +128,9 @@ target_compile_options(bigwig PRIVATE -O2 -ffunction-sections -fdata-sections -w
 target_include_directories(bigwig
     PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/vendored/libBigWig"
            ${ZLIB_INCLUDE_DIRS})
+# Static library — propagate zlib link to consumers (vv) so `compress`,
+# `uncompress`, `compressBound` resolve.
+target_link_libraries(bigwig PUBLIC ZLIB::ZLIB)
 
 # ── SQLite (for .sqlite / .db / .sqlite3 source) ─────────────────────────────
 # Local builds use the system libsqlite3 (every distro ships it). The
