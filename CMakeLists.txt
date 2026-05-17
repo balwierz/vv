@@ -36,14 +36,17 @@ set(MI_OVERRIDE          OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(mimalloc)
 
 # ── Arrow / Parquet ───────────────────────────────────────────────────────────
-# Prefer a locally-built static Arrow (arrow-install/ next to this repo),
-# then fall back to the system install.
+# Prefer a locally-built static Arrow at ../arrow-install/ (the developer's
+# local Arrow build); otherwise fall back to whatever Arrow is on the
+# system search path (Ubuntu apt, Homebrew, etc.). The hint-based lookups
+# are QUIET — they may legitimately not find anything (e.g. on CI), in
+# which case the REQUIRED fallback below has to succeed.
 set(_arrow_hint   "${CMAKE_CURRENT_SOURCE_DIR}/../arrow-install/lib/cmake/Arrow")
 set(_parquet_hint "${CMAKE_CURRENT_SOURCE_DIR}/../arrow-install/lib/cmake/Parquet")
 set(_compute_hint "${CMAKE_CURRENT_SOURCE_DIR}/../arrow-install/lib/cmake/ArrowCompute")
-find_package(Arrow        REQUIRED PATHS "${_arrow_hint}"   NO_DEFAULT_PATH)
-find_package(Parquet      REQUIRED PATHS "${_parquet_hint}" NO_DEFAULT_PATH)
-find_package(ArrowCompute QUIET    PATHS "${_compute_hint}" NO_DEFAULT_PATH)
+find_package(Arrow        QUIET PATHS "${_arrow_hint}"   NO_DEFAULT_PATH)
+find_package(Parquet      QUIET PATHS "${_parquet_hint}" NO_DEFAULT_PATH)
+find_package(ArrowCompute QUIET PATHS "${_compute_hint}" NO_DEFAULT_PATH)
 
 if(NOT TARGET Arrow::arrow_static AND NOT TARGET Arrow::arrow_shared)
   find_package(Arrow        REQUIRED)

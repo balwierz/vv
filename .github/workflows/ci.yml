@@ -20,27 +20,28 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          # Ubuntu's `libhts-dev` hard-Depends on `libcurl4-gnutls-dev`,
-          # but GitHub-hosted runners preinstall the openssl variant.
-          # Apt declares gnutls-dev "not installable" until the conflict
-          # is broken. Remove openssl-dev first, then install gnutls-dev.
+          # libcurl variant: libhts-dev hard-Depends on libcurl4-gnutls-dev.
+          # GitHub-hosted runners preinstall libcurl4-openssl-dev, which
+          # provides the same files — apt declares gnutls-dev "not
+          # installable" until the openssl variant is removed.
+          # The Apache Arrow apt repo's libarrow-dev *insists* on the
+          # openssl variant, so we can't have both Arrow's apt repo and
+          # libhts-dev. Solution: use Ubuntu's stock libarrow-dev from
+          # universe — it's built against libcurl4-gnutls-dev (same as
+          # libhts-dev), so the two coexist. Loses access to the very
+          # latest Arrow (universe ships 7.x on 22.04, 16.x on 24.04),
+          # but vv's CI smoke-tests don't need bleeding-edge APIs.
           sudo apt-get remove -y libcurl4-openssl-dev || true
           sudo apt-get install -y -V libcurl4-gnutls-dev
 
-          # Apache Arrow apt repo (matches the version on each Ubuntu base).
-          sudo apt-get install -y -V ca-certificates lsb-release wget
-          wget https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
-          sudo apt-get install -y -V ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
-          sudo apt-get update
-          # Note on packages:
-          #   - `tabix` already provides bgzip; there's no separate
-          #     `bgzip-tools` package on any Ubuntu.
-          #   - `python3-pyarrow` was removed from Ubuntu 24.04's repos
-          #     (and PEP 668 forbids `pip install pyarrow` directly).
-          #     Use a per-job venv instead — pip works freely there.
+          # `tabix` already provides bgzip — no separate `bgzip-tools`
+          # package on any Ubuntu. `python3-pyarrow` was dropped from
+          # Ubuntu 24.04's repos (and PEP 668 blocks `pip install`
+          # against the system Python) — installed into a per-job venv
+          # in the next step.
           sudo apt-get install -y -V \
             cmake g++ libarrow-dev libparquet-dev \
-            libhts-dev libncursesw5-dev pkg-config \
+            libhts-dev libncursesw5-dev libsqlite3-dev pkg-config \
             python3 python3-venv python3-pip \
             python3-pysam tabix bcftools
 
