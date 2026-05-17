@@ -54,13 +54,24 @@ if(NOT TARGET Arrow::arrow_static AND NOT TARGET Arrow::arrow_shared)
   find_package(ArrowCompute QUIET)
 endif()
 
-if(TARGET Arrow::arrow_static)
+# Prefer Arrow's static targets only when the AlmaLinux 8 build's
+# `../static-libs/` is present (which supplies every transitive .a we
+# need — bz2, snappy, brotli, abseil, thrift, …). On plain Ubuntu / Mac
+# the system / brew packages ship libarrow.a too, but lack the static
+# transitive deps, so the link line would miss BZ2_*, ZSTD_*, etc.
+set(_static_libs_dir "${CMAKE_CURRENT_SOURCE_DIR}/../static-libs/lib")
+set(_prefer_static FALSE)
+if(IS_DIRECTORY "${_static_libs_dir}")
+  set(_prefer_static TRUE)
+endif()
+
+if(_prefer_static AND TARGET Arrow::arrow_static)
   set(ARROW_TARGET Arrow::arrow_static)
 else()
   set(ARROW_TARGET Arrow::arrow_shared)
 endif()
 
-if(TARGET Parquet::parquet_static)
+if(_prefer_static AND TARGET Parquet::parquet_static)
   set(PARQUET_TARGET Parquet::parquet_static)
 else()
   set(PARQUET_TARGET Parquet::parquet_shared)
@@ -69,7 +80,7 @@ endif()
 # Arrow Compute kernels — separate static archive when building from
 # arrow-install. Needed for LociSSD region filter (equal / less / greater /
 # filter); without it the runtime aborts with "No function registered".
-if(TARGET ArrowCompute::arrow_compute_static)
+if(_prefer_static AND TARGET ArrowCompute::arrow_compute_static)
   set(ARROW_COMPUTE_TARGET ArrowCompute::arrow_compute_static)
 elseif(TARGET ArrowCompute::arrow_compute_shared)
   set(ARROW_COMPUTE_TARGET ArrowCompute::arrow_compute_shared)
@@ -140,8 +151,7 @@ endif()
 # libhtscodecs.a for CRAM symbols, and Ubuntu doesn't ship that as a
 # static archive. Fall through to the shared-link else branch there.
 # Look up *.a archives only — `NAMES hts` would also match libhts.so.
-set(_static_libs_dir "${CMAKE_CURRENT_SOURCE_DIR}/../static-libs/lib")
-if(TARGET Arrow::arrow_static AND IS_DIRECTORY "${_static_libs_dir}")
+if(_prefer_static AND TARGET Arrow::arrow_static)
   pkg_check_modules(HTSLIB_STATIC QUIET htslib)
   find_library(HTSLIB_STATIC_LIB NAMES libhts.a)
   find_library(NCURSES_STATIC_LIB NAMES libncursesw.a libncurses.a libncursesw_g.a libncurses_g.a
