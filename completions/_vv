@@ -26,6 +26,7 @@ _vv() {
         '*.2bit'
         '*.sqlite' '*.sqlite3' '*.db'
         '*.xlsx' '*.xlsm'
+        '*.orc'
     )
 
     _arguments -s -S \

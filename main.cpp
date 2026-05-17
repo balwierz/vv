@@ -19,6 +19,9 @@
 #include <parquet/arrow/writer.h>
 #include <parquet/file_reader.h>
 #include <parquet/properties.h>
+#if VV_HAVE_ORC
+#include <arrow/adapters/orc/adapter.h>
+#endif
 
 #include <htslib/sam.h>
 #include <htslib/vcf.h>
@@ -481,6 +484,7 @@ static void print_usage(const char* prog) {
         "  .2bit                       UCSC 2bit (sequence index: name/length/blocks)\n"
         "  .sqlite  .sqlite3  .db      SQLite database (each table → one TUI tab)\n"
         "  .xlsx  .xlsm                Excel spreadsheet (each sheet → one TUI tab)\n"
+        "  .orc                        Apache ORC (columnar; one stripe → one chunk)\n"
         "  .fa  .fasta  .fna  .faa     sequences (FASTA, plus .gz)\n"
         "  .fq  .fastq                 sequencing reads (FASTQ, plus .gz)\n"
         "  .bcf                        binary VCF (htslib)\n"
@@ -5044,6 +5048,135 @@ public:
     }
 };
 
+// ── Apache ORC source ────────────────────────────────────────────────────────
+//
+// Compiled in only when the Arrow build we link against has the ORC adapter
+// (`arrow/adapters/orc/adapter.h`). CMake detects the header at configure
+// time and defines VV_HAVE_ORC. The Apache Arrow apt repo and Homebrew's
+// apache-arrow ship Arrow with ORC enabled; the AlmaLinux 8 static build
+// passes -DARROW_ORC=ON to the arrow-build stage. Local dev builds need
+// the same flag — without it `vv file.orc` reports a build-time message.
+
+#if VV_HAVE_ORC
+class OrcSource : public TabularSource {
+    std::string                                              path_;
+    std::shared_ptr<arrow::Schema>                           schema_;
+    std::unique_ptr<arrow::adapters::orc::ORCFileReader>     reader_;
+    int64_t                                                  num_stripes_ = 0;
+    int64_t                                                  num_rows_total_ = 0;
+    arrow::Compression::type                                 compression_ =
+        arrow::Compression::UNCOMPRESSED;
+    int64_t                                                  file_size_ = 0;
+    mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
+    mutable std::vector<int64_t>                             batch_first_row_;
+    mutable int64_t                                          rows_so_far_ = 0;
+
+    arrow::Status load_stripe(int i) const {
+        ARROW_ASSIGN_OR_RAISE(auto b,
+            const_cast<arrow::adapters::orc::ORCFileReader*>(reader_.get())
+                ->ReadStripe(i));
+        batch_first_row_.push_back(rows_so_far_);
+        rows_so_far_ += b->num_rows();
+        batches_.push_back(std::move(b));
+        return arrow::Status::OK();
+    }
+
+    static std::string fmt_size(int64_t sz) {
+        char buf[32];
+        if      (sz < 1024)             std::snprintf(buf,sizeof(buf),"%lld B",(long long)sz);
+        else if (sz < 1024*1024)        std::snprintf(buf,sizeof(buf),"%.1f KiB",sz/1024.0);
+        else if (sz < 1024LL*1024*1024) std::snprintf(buf,sizeof(buf),"%.2f MiB",sz/(1024.0*1024));
+        else                            std::snprintf(buf,sizeof(buf),"%.2f GiB",sz/(1024.0*1024*1024));
+        return buf;
+    }
+    static const char* codec_name(arrow::Compression::type c) {
+        switch (c) {
+            case arrow::Compression::UNCOMPRESSED: return "uncompressed";
+            case arrow::Compression::SNAPPY:       return "snappy";
+            case arrow::Compression::GZIP:         return "gzip";
+            case arrow::Compression::LZO:          return "lzo";
+            case arrow::Compression::LZ4:          return "lz4";
+            case arrow::Compression::LZ4_FRAME:    return "lz4_frame";
+            case arrow::Compression::ZSTD:         return "zstd";
+            default:                                return "?";
+        }
+    }
+
+public:
+    static std::string open(const std::string& path,
+                             std::unique_ptr<OrcSource>* out) {
+        auto self = std::make_unique<OrcSource>();
+        self->path_ = path;
+
+        auto maybe_file = arrow::io::ReadableFile::Open(path);
+        if (!maybe_file.ok())
+            return "Cannot open '" + path + "': " + maybe_file.status().ToString();
+        auto file = maybe_file.ValueOrDie();
+
+        auto maybe_rdr = arrow::adapters::orc::ORCFileReader::Open(
+            file, arrow::default_memory_pool());
+        if (!maybe_rdr.ok())
+            return "Not a valid ORC file: " + maybe_rdr.status().ToString();
+        self->reader_ = std::move(*maybe_rdr);
+
+        auto sch_or = self->reader_->ReadSchema();
+        if (!sch_or.ok())
+            return "ORC schema read failed: " + sch_or.status().ToString();
+        self->schema_         = *sch_or;
+        self->num_stripes_    = self->reader_->NumberOfStripes();
+        self->num_rows_total_ = self->reader_->NumberOfRows();
+        self->file_size_      = self->reader_->GetFileLength();
+        auto cmp_or = self->reader_->GetCompression();
+        if (cmp_or.ok()) self->compression_ = *cmp_or;
+
+        // Empty file: seed an empty batch so schema-only views still work.
+        if (self->num_stripes_ == 0) {
+            self->batch_first_row_.push_back(0);
+            self->batches_.push_back(arrow::RecordBatch::Make(
+                self->schema_, 0, std::vector<std::shared_ptr<arrow::Array>>(
+                    self->schema_->num_fields(),
+                    arrow::MakeArrayOfNull(arrow::utf8(), 0).ValueOrDie())));
+        }
+        *out = std::move(self);
+        return "";
+    }
+
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    int64_t total_rows() const override { return num_rows_total_; }
+    int     num_chunks() const override {
+        return num_stripes_ == 0 ? 1 : (int)num_stripes_;
+    }
+    ChunkMeta chunk_meta(int i) const override {
+        if (i >= (int)batches_.size())
+            const_cast<OrcSource*>(this)->ensure(i);
+        return {batch_first_row_[i], batches_[i]->num_rows()};
+    }
+    void ensure(int i) override {
+        while ((int)batches_.size() <= i &&
+               (int64_t)batches_.size() < num_stripes_) {
+            auto st = load_stripe((int)batches_.size());
+            if (!st.ok()) break;
+        }
+    }
+    arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
+                              std::shared_ptr<arrow::Table>* out) override {
+        ensure(i);
+        if (i >= (int)batches_.size())
+            return arrow::Status::IndexError("chunk ", i, " out of range");
+        *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
+        return arrow::Status::OK();
+    }
+    const std::string& path() const override { return path_; }
+    std::string footer() const override {
+        std::string s = "Format: ORC  |  Stripes: " +
+            std::to_string(num_stripes_);
+        s += "  |  Compressed: " + fmt_size(file_size_);
+        s += "  |  Codec: " + std::string(codec_name(compression_));
+        return s;
+    }
+};
+#endif  // VV_HAVE_ORC
+
 // ── Format detection + source factory ────────────────────────────────────────
 // (fends is defined above, near the preamble helpers)
 
@@ -5378,6 +5511,17 @@ static std::string open_source(const std::string& path, const Config& cfg,
         std::string err = IpcSource::open(path, true, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
+        return "";
+    } else if (fends(path, ".orc")) {
+#if VV_HAVE_ORC
+        std::unique_ptr<OrcSource> src;
+        std::string err = OrcSource::open(path, &src);
+        if (!err.empty()) return err;
+        *out = std::move(src);
+#else
+        return "'" + path + "': vv was built without Apache ORC support "
+               "(Arrow needs -DARROW_ORC=ON; rebuild Arrow and vv)";
+#endif
         return "";
     } else if (fends(path, ".bam") || fends(path, ".cram")) {
         std::unique_ptr<BamSource> src;

@@ -77,6 +77,24 @@ else()
   set(PARQUET_TARGET Parquet::parquet_shared)
 endif()
 
+# ORC adapter detection — Arrow ships `arrow/adapters/orc/adapter.h` only
+# when built with `-DARROW_ORC=ON`. We detect the header in Arrow's
+# include tree and (after `add_executable(vv …)` below) define VV_HAVE_ORC
+# for main.cpp. Without it the OrcSource class is excluded and the .orc
+# dispatch returns a "compiled without ORC" error. The Apache Arrow apt
+# repo, Homebrew's apache-arrow, and our AlmaLinux 8 arrow-build stage
+# all enable ORC.
+get_target_property(_arrow_iface_includes ${ARROW_TARGET}
+    INTERFACE_INCLUDE_DIRECTORIES)
+find_path(ARROW_ORC_HEADER arrow/adapters/orc/adapter.h
+    HINTS ${_arrow_iface_includes})
+if(ARROW_ORC_HEADER)
+  message(STATUS "Arrow ORC adapter: ${ARROW_ORC_HEADER}/arrow/adapters/orc/adapter.h")
+else()
+  message(STATUS "Arrow ORC adapter: not found (vv will not read .orc; "
+                 "rebuild Arrow with -DARROW_ORC=ON to enable)")
+endif()
+
 # Arrow Compute kernels — separate static archive when building from
 # arrow-install. Needed for LociSSD region filter (equal / less / greater /
 # filter); without it the runtime aborts with "No function registered".
@@ -195,6 +213,9 @@ target_include_directories(vv PRIVATE
     ${HTSLIB_INCLUDE_DIRS}
     ${XLSXIO_INCLUDE_DIR}
 )
+if(ARROW_ORC_HEADER)
+  target_compile_definitions(vv PRIVATE VV_HAVE_ORC=1)
+endif()
 
 # Collect all static libs built into static-libs/
 find_library(ZSTD_STATIC         NAMES libzstd.a         PATHS "${_static_libs_dir}" NO_DEFAULT_PATH)

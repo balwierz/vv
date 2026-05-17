@@ -273,6 +273,27 @@ cur.executemany("INSERT INTO samples VALUES(?,?,?)", [
 con.commit()
 con.close()
 
+# ── Apache ORC (columnar; pyarrow.orc is built into pyarrow when Arrow was
+# compiled with -DARROW_ORC=ON, which is the wheel default since pyarrow
+# 12.0). Soft-skip otherwise.
+try:
+    import pyarrow.orc as paorc                            # type: ignore
+except ImportError:
+    print("warn: pyarrow.orc not available; skipping tiny.orc", file=sys.stderr)
+else:
+    orc_path = HERE / "tiny.orc"
+    if orc_path.exists():
+        orc_path.unlink()
+    orc_tbl = pa.table({
+        "chrom": pa.array(["chr1", "chr1", "chr2"], type=pa.string()),
+        "start": pa.array([100, 500, 1000], type=pa.int64()),
+        "end":   pa.array([200, 800, 1300], type=pa.int64()),
+        "score": pa.array([5.2, 8.1, 3.4],  type=pa.float64()),
+        "name":  pa.array(["p1", "p2", "p3"], type=pa.string()),
+    })
+    # 2 rows per stripe → 2 stripes so num_chunks > 1 in vv's output.
+    paorc.write_table(orc_tbl, orc_path, compression="zstd", stripe_size=2)
+
 # ── Excel (.xlsx, two sheets, requires openpyxl) ─────────────────────────────
 # Soft-skip if openpyxl isn't installed (CI installs it in the venv alongside
 # pyarrow; local dev can `pip install openpyxl` to regenerate).

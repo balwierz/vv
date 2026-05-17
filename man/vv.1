@@ -59,6 +59,15 @@ string). The legacy binary \fB.xls\fR format is not supported. Requires
 \fBlibxlsxio\fR (\fBxlsxio\fR AUR on Arch, \fBlibxlsxio-dev\fR on
 Debian/Ubuntu, \fBbrew install xlsxio\fR on macOS).
 .IP \(bu 2
+\fB.orc\fR \(en Apache ORC (Optimized Row Columnar). Columnar storage
+used by Hadoop / Hive / Spark. One ORC stripe is treated as one chunk
+for lazy loading. Read via Arrow's ORC adapter \(em Arrow must be
+built with \fB-DARROW_ORC=ON\fR, which the Apache Arrow apt repo,
+Homebrew \fBapache-arrow\fR, and the conda-forge \fBpyarrow\fR wheel
+all have by default. The AlmaLinux 8 static binary currently does
+\fBnot\fR include ORC; \fBvv\fR reports "compiled without ORC support"
+when invoked on an .orc file there.
+.IP \(bu 2
 \fB.2bit\fR \(en UCSC 2bit sequence container; rendered as a per-
 sequence index (\fBname\fR, \fBlength\fR, \fBn_blocks\fR,
 \fBmask_blocks\fR). DNA bases themselves are not decoded — too large

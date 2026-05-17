@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Apache ORC (`.orc`)** — columnar storage (Hadoop / Hive / Spark)
+  opens via Arrow's ORC adapter. One ORC stripe is one chunk in vv's
+  pipeline, so multi-GB files stream lazily. Read-only. Footer shows
+  stripe count, file size, and codec (`Format: ORC | Stripes: N |
+  Compressed: K KiB | Codec: zstd`). Requires Arrow built with
+  `-DARROW_ORC=ON`, which the Apache Arrow apt repo, Homebrew
+  `apache-arrow`, and the conda-forge `pyarrow` wheel all default to.
+  CMake auto-detects the adapter; without it the .orc dispatch
+  reports "compiled without ORC support". The AlmaLinux 8 static
+  binary currently ships without ORC (TODO: add liborc + libprotobuf
+  static-build stages).
 - **Excel (`.xlsx`, `.xlsm`)** — Office Open XML workbooks open natively
   via `libxlsxio`; each sheet becomes a TUI tab (`Tab` / `Shift+Tab`
   cycle). Cell text streams through Arrow's CSV reader for column-type

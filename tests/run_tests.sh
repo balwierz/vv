@@ -381,6 +381,22 @@ if [ -f "$DATA/tiny.sqlite" ]; then
     assert_eq_file_inline "sqlite_filter_by_real"   "$SQL_FLT" "2"
 fi
 
+# Apache ORC: columnar; one stripe → one chunk. The fixture is small so it
+# lands in a single stripe even at stripe_size=2.
+if [ -f "$DATA/tiny.orc" ]; then
+    ORC_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.orc" | wc -l)
+    assert_eq_file_inline "orc_rows"                "$ORC_ROWS" "3"
+    ORC_SCH=$("$VV" --schema "$DATA/tiny.orc" 2>&1)
+    assert_contains "orc_footer_format"             "$ORC_SCH" "Format: ORC"
+    assert_contains "orc_footer_stripes"            "$ORC_SCH" "Stripes:"
+    assert_contains "orc_footer_codec_zstd"         "$ORC_SCH" "Codec: zstd"
+    assert_contains "orc_type_int"                  "$ORC_SCH" "int64"
+    assert_contains "orc_type_real"                 "$ORC_SCH" "double"
+    # --filter on the typed double column works as expected.
+    ORC_FLT=$("$VV" --tsv --no-header --filter 'score > 5.0' "$DATA/tiny.orc" | wc -l)
+    assert_eq_file_inline "orc_filter_by_real"      "$ORC_FLT" "2"
+fi
+
 # Excel (.xlsx): two sheets; first ("peaks") dumps via --tsv, schema shows
 # sibling count, type inference catches the int / double / string mix from
 # the cell contents.

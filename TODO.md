@@ -72,12 +72,21 @@ user-facing summary).
 - `.xls` (legacy binary, OLE2 compound document) — needs libxls or a
   hand-rolled OLE2 parser; biology data is overwhelmingly `.xlsx`
   today, so deferred until somebody asks.
+- Apache ORC in the AlmaLinux 8 static binary — needs new
+  `build-protobuf` and `build-orc` Docker stages plus
+  `-DARROW_ORC=ON` in `build-arrow`. Apt / Brew / Conda Arrow already
+  ship ORC, so the static-only release is the only platform where
+  `vv file.orc` reports "compiled without ORC support".
 - mpileup — samtools workflow staple; ragged columns make it a
   custom parser.
 - HDF5 / AnnData / Loom — single-cell omics. Heavy dep (libhdf5).
 - Galaxy `.dat` / Galaxy archive — niche but visible.
 
 ### Done
+- Apache ORC (`.orc`) — opens via Arrow's ORC adapter. One stripe is
+  one chunk; OrcSource mirrors IpcSource's lazy-load pattern. CMake
+  detects the adapter header at configure time and gates the source
+  with `VV_HAVE_ORC`.
 - Excel (`.xlsx`, `.xlsm`) — opens via libxlsxio; each sheet becomes
   a TUI tab through the new WorkbookSource abstraction (extends
   MemoryTableSource). Cell text streams through Arrow's CSV reader

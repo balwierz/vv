@@ -356,6 +356,13 @@ RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
         -DARROW_GCS=OFF \
         -DARROW_FLIGHT=OFF \
         -DARROW_GANDIVA=OFF \
+        # ARROW_ORC=ON would pull in liborc + libprotobuf as static deps
+        # for the AlmaLinux build, which would need two new build stages
+        # (~200 lines of Dockerfile). Apt / Brew binaries on the other
+        # CI legs already ship ORC, so the static binary is the only one
+        # without; `vv` reports "compiled without ORC support" if invoked
+        # on a .orc file. TODO: build protobuf + liborc stages and
+        # re-enable here.
         -DARROW_ORC=OFF \
         -DARROW_DATASET=OFF \
         -DARROW_COMPUTE=ON \
