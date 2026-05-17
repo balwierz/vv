@@ -273,6 +273,35 @@ cur.executemany("INSERT INTO samples VALUES(?,?,?)", [
 con.commit()
 con.close()
 
+# ── samtools mpileup (single-sample + two-sample fixtures) ──────────────────
+# Real samtools mpileup output. Six columns for single-sample; the
+# two-sample variant has 3 + 3*2 = 9 columns.
+mpileup_single = (
+    "chr1\t100\tA\t12\t..,,..C,c,..,\tIHGFGHIGFGFG\n"
+    "chr1\t101\tG\t13\t..,GG.gg..,.,\tIHHHGGGHGFFFG\n"
+    "chr1\t102\tT\t8\t..,..,,.\tHHHGGGFG\n"
+    "chr2\t500\tC\t20\t..,,...,..,.,..,..,.,\tHGFFGGGFGGFFGGFFGGFGF\n"
+)
+(HERE / "tiny.mpileup").write_text(mpileup_single)
+
+mpileup_multi = (
+    "chr1\t100\tA\t12\t..,,..C,c,..,\tIHGFGHIGFGFG\t5\t..,.,\tHGFGF\n"
+    "chr1\t101\tG\t13\t..,GG.gg..,.,\tIHHHGGGHGFFFG\t4\t...G\tHGFG\n"
+    "chr2\t500\tC\t20\t..,,...,..,.,..,..,.,\tHGFFGGGFGGFFGGFFGGFGF\t7\t..,..,.\tGFGFGFG\n"
+)
+(HERE / "tiny.multi.mpileup").write_text(mpileup_multi)
+
+# Bgzip + tabix index the single-sample file so range queries are exercised.
+# Mpileup uses single-position records, so tabix gets `-s 1 -b 2 -e 2`.
+if have("bgzip") and have("tabix"):
+    mp_gz = HERE / "tiny.mpileup.gz"
+    if mp_gz.exists():
+        mp_gz.unlink()
+    with open(HERE / "tiny.mpileup", "rb") as fin, open(mp_gz, "wb") as fout:
+        subprocess.run(["bgzip", "-c"], stdin=fin, stdout=fout, check=True)
+    subprocess.run(["tabix", "-f", "-s", "1", "-b", "2", "-e", "2", str(mp_gz)],
+                   check=True)
+
 # ── OpenDocument Spreadsheet (.ods, two sheets, requires odfpy) ──────────────
 try:
     from odf.opendocument import OpenDocumentSpreadsheet

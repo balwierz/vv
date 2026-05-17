@@ -432,6 +432,31 @@ if [ -f "$DATA/tiny.ods" ]; then
     assert_eq_file_inline "ods_filter_by_real"      "$OD_FLT" "2"
 fi
 
+# samtools mpileup: 6-col single-sample + 9-col two-sample fixtures; tabix
+# range query on the bgzipped variant.
+if [ -f "$DATA/tiny.mpileup" ]; then
+    MP_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.mpileup" | wc -l)
+    assert_eq_file_inline "mpileup_rows"           "$MP_ROWS" "4"
+    MP_SCH=$("$VV" --schema "$DATA/tiny.mpileup" 2>&1)
+    assert_contains "mpileup_footer_format"        "$MP_SCH" "Format: mpileup"
+    assert_contains "mpileup_footer_samples_1"     "$MP_SCH" "Samples: 1"
+    assert_contains "mpileup_col_chrom"            "$MP_SCH" "chrom"
+    assert_contains "mpileup_col_depth"            "$MP_SCH" "depth"
+    # --filter on the typed depth column.
+    MP_FLT=$("$VV" --tsv --no-header --filter 'depth >= 12' "$DATA/tiny.mpileup" | wc -l)
+    assert_eq_file_inline "mpileup_filter_by_depth" "$MP_FLT" "3"
+fi
+if [ -f "$DATA/tiny.multi.mpileup" ]; then
+    MM_SCH=$("$VV" --schema "$DATA/tiny.multi.mpileup" 2>&1)
+    assert_contains "mpileup_multi_footer_samples" "$MM_SCH" "Samples: 2"
+    assert_contains "mpileup_multi_col_depth_1"    "$MM_SCH" "depth_1"
+    assert_contains "mpileup_multi_col_depth_2"    "$MM_SCH" "depth_2"
+fi
+if [ -f "$DATA/tiny.mpileup.gz" ] && [ -f "$DATA/tiny.mpileup.gz.tbi" ]; then
+    MP_REG=$("$VV" --tsv --no-header -r chr1:100-100 "$DATA/tiny.mpileup.gz" | wc -l)
+    assert_eq_file_inline "mpileup_tabix_one_pos"  "$MP_REG" "1"
+fi
+
 echo "── Threading parity ──────────────────────────────────────"
 "$VV" --tsv --no-header -@ 1 "$DATA/tiny.parquet" > "$TMP/t1.out"
 "$VV" --tsv --no-header -@ 4 "$DATA/tiny.parquet" > "$TMP/t4.out"

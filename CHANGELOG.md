@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **samtools mpileup (`.pileup`, `.mpileup`, `.pile`, plus `.gz`)** —
+  per-base pileup output. Phase 1 of the mpileup work: the file is
+  routed through a new `DelimKind::Mpileup` variant of the existing
+  `DelimitedSource`, which counts tabs on the first row to derive
+  sample-aware column names (`chrom`, `pos`, `ref`, then
+  `depth` / `bases` / `quals` triplets — unsuffixed for single-sample
+  files, `_1` / `_2` / … for multi-sample). The packed `bases` column
+  stays as raw text in this iteration; range queries work on
+  bgzipped + tabix-indexed files (`tabix -s 1 -b 2 -e 2`). A future
+  `--decode-pileup` flag will explode `bases` into per-allele counts
+  for downstream filtering.
 - **OpenDocument Spreadsheet (`.ods`)** — hand-rolled reader on top of
   minizip + expat: `content.xml` is inflated and SAX-parsed, with each
   sheet routed through the existing `WorkbookSource` framework (one

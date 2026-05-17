@@ -488,6 +488,7 @@ static void print_usage(const char* prog) {
         "  .vcf  .vcf.gz               variant calls\n"
         "  .gff  .gff3  .gtf           and .gz variants  genome annotations\n"
         "  .bed  .tsv  .csv            and .gz variants\n"
+        "  .pileup  .mpileup  .pile        samtools mpileup output (single- or multi-sample)\n"
         "  .narrowPeak  .broadPeak  .gappedPeak  .bedGraph  .tagAlign\n"
         "                              ENCODE peak / signal formats (BED+typed cols)\n"
         "  .bb  .bigBed                UCSC bigBed (libBigWig; autoSql columns)\n"
@@ -3003,7 +3004,7 @@ public:
 
 // ── Delimited source (CSV / TSV / BED / VCF / GFF3+GTF / SAM, plain or gzip) ──
 
-enum class DelimKind { CSV, TSV, BED, VCF, GFF, SAM, PAF };
+enum class DelimKind { CSV, TSV, BED, VCF, GFF, SAM, PAF, Mpileup };
 
 // ENCODE peak / signal flavours of BED. Carried alongside DelimKind::BED so
 // the BED reader can apply variant-specific column names (signalValue,
@@ -3041,6 +3042,7 @@ class DelimitedSource : public TabularSource {
     std::vector<std::string>              preamble_lines_;
     int                                   bed_level_ = 3; // detected BED standard cols (3..9)
     BedVariant                            bed_variant_ = BedVariant::None;
+    int                                   mpileup_samples_ = 0; // samtools mpileup samples (>=1)
 
     // Growing cache of batches read so far (never evicted).
     mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
@@ -3277,7 +3279,8 @@ private:
             input = ti;
         }
 
-        bool autogen = (kind == DelimKind::BED);
+        bool autogen = (kind == DelimKind::BED) ||
+                       (kind == DelimKind::Mpileup);
         auto r = make_reader(input, self->delimiter_, autogen, col_names);
         if (!r.ok()) return "Cannot open '" + path + "': " + r.status().ToString();
         self->reader_ = r.ValueOrDie();
@@ -3387,6 +3390,36 @@ private:
             }
         }
 
+        // samtools mpileup: per-sample triplet (depth, bases, qualities)
+        // after the fixed chrom/pos/ref prefix. Single-sample files get
+        // unsuffixed names; multi-sample files get `_1`, `_2`, … so the
+        // user can still --select / --filter by column.
+        if (kind == DelimKind::Mpileup) {
+            int nf = self->schema_->num_fields();
+            if (nf >= 6 && (nf - 3) % 3 == 0) {
+                int samples = (nf - 3) / 3;
+                self->mpileup_samples_ = samples;
+                arrow::FieldVector fields;
+                fields.reserve(nf);
+                auto add = [&](const std::string& nm, int i) {
+                    auto t = self->schema_->field(i)->type();
+                    bool n = self->schema_->field(i)->nullable();
+                    fields.push_back(arrow::field(nm, t, n));
+                };
+                add("chrom", 0);
+                add("pos",   1);
+                add("ref",   2);
+                for (int s = 0; s < samples; ++s) {
+                    std::string sfx = (samples == 1) ? std::string{}
+                                        : "_" + std::to_string(s + 1);
+                    add("depth"  + sfx, 3 + s * 3);
+                    add("bases"  + sfx, 4 + s * 3);
+                    add("quals"  + sfx, 5 + s * 3);
+                }
+                self->schema_ = arrow::schema(fields);
+            }
+        }
+
         *out = std::move(self);
         return "";
     }
@@ -3420,6 +3453,13 @@ private:
             case DelimKind::GFF: return "Format: GFF3/GTF";
             case DelimKind::SAM: return "Format: SAM";
             case DelimKind::PAF: return "Format: PAF";
+            case DelimKind::Mpileup: {
+                std::string s = "Format: mpileup";
+                if (mpileup_samples_ > 0) {
+                    s += "  |  Samples: " + std::to_string(mpileup_samples_);
+                }
+                return s;
+            }
             case DelimKind::BED: {
                 int nf = schema_->num_fields();
                 if (bed_variant_ != BedVariant::None) {
@@ -5943,6 +5983,10 @@ static std::string open_source(const std::string& path, const Config& cfg,
             || fends(path, ".bg")         || fends(path, ".bg.gz")
             || fends(path, ".tagAlign")   || fends(path, ".tagAlign.gz")) {
         dk = DelimKind::BED;
+    } else if (fends(path, ".pileup")  || fends(path, ".pileup.gz")
+            || fends(path, ".mpileup") || fends(path, ".mpileup.gz")
+            || fends(path, ".pile")    || fends(path, ".pile.gz")) {
+        dk = DelimKind::Mpileup;
     } else if (fends(path, ".tsv")   || fends(path, ".tsv.gz")) {
         dk = DelimKind::TSV;
     } else if (fends(path, ".csv")   || fends(path, ".csv.gz")) {

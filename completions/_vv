@@ -27,6 +27,7 @@ _vv() {
         '*.sqlite' '*.sqlite3' '*.db'
         '*.xlsx' '*.xlsm' '*.ods'
         '*.orc'
+        '*.pileup' '*.pileup.gz' '*.mpileup' '*.mpileup.gz' '*.pile' '*.pile.gz'
     )
 
     _arguments -s -S \

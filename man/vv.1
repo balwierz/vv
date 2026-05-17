@@ -66,6 +66,14 @@ typed \fBoffice:value\fR (numeric / date / boolean) use that
 canonical value; string cells use the rendered text. Empty runs
 collapsed via \fBtable:number-columns-repeated\fR are honoured.
 .IP \(bu 2
+\fB.pileup\fR, \fB.mpileup\fR, \fB.pile\fR (plus \fB.gz\fR) \(en
+samtools mpileup output. Per-base pileup: \fBchrom\fR, \fBpos\fR
+(1-based), \fBref\fR, then a \fBdepth\fR / \fBbases\fR / \fBquals\fR
+triplet per sample. vv counts tabs to infer the sample count;
+multi-sample triplets are suffixed (\fBdepth_1\fR, …). Range
+queries work on bgzipped + tabix-indexed files (\fBtabix -s 1 -b 2
+-e 2\fR). The packed \fBbases\fR column is kept as raw text.
+.IP \(bu 2
 \fB.orc\fR \(en Apache ORC (Optimized Row Columnar). Columnar storage
 used by Hadoop / Hive / Spark. One ORC stripe is treated as one chunk
 for lazy loading. Read via Arrow's ORC adapter \(em Arrow must be
