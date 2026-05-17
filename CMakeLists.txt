@@ -232,11 +232,14 @@ if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND NCURSES_STATIC_LIB)
       -lm -pthread
   )
 else()
+  # `--whole-archive` is GNU ld syntax; macOS ld64 uses `-force_load`.
+  # For a shared Arrow build (else-branch on macOS / Linux) the compute
+  # kernels' static initialisers are already pulled by the .dylib /
+  # .so symbols, so we don't need either flag — Arrow's compute
+  # registry runs at .so init time, not at vv link time.
   target_link_libraries(vv PRIVATE
       ${PARQUET_TARGET}
-      $<$<BOOL:${ARROW_COMPUTE_TARGET}>:-Wl,--whole-archive>
       ${ARROW_COMPUTE_TARGET}
-      $<$<BOOL:${ARROW_COMPUTE_TARGET}>:-Wl,--no-whole-archive>
       ${ARROW_TARGET}
       mimalloc-static
       ${CURSES_LIBRARIES}
@@ -246,8 +249,12 @@ else()
   )
 endif()
 
+# `--gc-sections` is GNU ld; macOS ld64 strips unused sections by default
+# (via `-dead_strip`, which we don't need to pass explicitly).
+if(NOT APPLE)
+  target_link_options(vv PRIVATE -Wl,--gc-sections)
+endif()
 target_link_options(vv PRIVATE
-    -Wl,--gc-sections
     # Put static-libs dir first so -lzstd/-llz4/-lbz2/-llzma resolve to .a
     -L${_static_libs_dir}
 )

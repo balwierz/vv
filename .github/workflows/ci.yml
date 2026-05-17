@@ -51,16 +51,22 @@ jobs:
 
           mkdir -p /tmp/arrow-debs && cd /tmp/arrow-debs
           apt-get download libarrow-dev libparquet-dev
+          patched=()
           for deb in libarrow-dev_*.deb libparquet-dev_*.deb; do
             mkdir -p extract
             dpkg-deb -R "$deb" extract
-            # Remove the libcurl4-openssl-dev token (and any leading
-            # ", ") from the Depends line.
+            # Drop the libcurl4-openssl-dev token (and its leading
+            # ", " if any) from the Depends line.
             sed -i -E 's/(, *)?libcurl4-openssl-dev( *\([^)]*\))?//g' extract/DEBIAN/control
-            dpkg-deb -b extract patched.deb
-            sudo dpkg -i patched.deb
-            rm -rf extract patched.deb
+            out="/tmp/arrow-debs/$(basename "$deb" .deb).patched.deb"
+            dpkg-deb -b extract "$out"
+            patched+=("$out")
+            rm -rf extract
           done
+          # apt-get install on local .debs resolves the rest of the
+          # transitive deps (libabsl-dev, libsnappy-dev, libthrift-dev, …)
+          # from configured repos.
+          sudo apt-get install -y -V --no-install-recommends "${patched[@]}"
           cd -
 
       - name: Install pyarrow (venv)
