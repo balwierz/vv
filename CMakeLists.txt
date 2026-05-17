@@ -132,15 +132,22 @@ if(STATIC_RUNTIME)
 endif()
 
 # ── Static htslib / ncurses when arrow is static ─────────────────────────────
-# When we have static Arrow, prefer static htslib and ncurses too.
-if(TARGET Arrow::arrow_static)
+# Only enable the static-link branch when there's a `../static-libs/` dir
+# next to the source — that's the AlmaLinux 8 Docker build's vendored
+# deps directory, which contains every transitive .a we need (htscodecs,
+# abseil, thrift, …). On a plain Ubuntu CI box that dir is absent: even
+# though /usr/lib/x86_64-linux-gnu/libhts.a is present, it requires
+# libhtscodecs.a for CRAM symbols, and Ubuntu doesn't ship that as a
+# static archive. Fall through to the shared-link else branch there.
+# Look up *.a archives only — `NAMES hts` would also match libhts.so.
+set(_static_libs_dir "${CMAKE_CURRENT_SOURCE_DIR}/../static-libs/lib")
+if(TARGET Arrow::arrow_static AND IS_DIRECTORY "${_static_libs_dir}")
   pkg_check_modules(HTSLIB_STATIC QUIET htslib)
-  find_library(HTSLIB_STATIC_LIB NAMES libhts.a hts)
-  # Prefer freshly-built static ncurses (in static-libs/), fall back to system _g debug variant
-  find_library(NCURSES_STATIC_LIB NAMES libncursesw.a libncurses.a libncursesw_g.a libncurses_g.a ncursesw ncurses
-               PATHS "${CMAKE_CURRENT_SOURCE_DIR}/../static-libs/lib")
-  find_library(NCURSES_STATIC_TINFO NAMES libtinfow.a libtinfo.a tinfo
-               PATHS "${CMAKE_CURRENT_SOURCE_DIR}/../static-libs/lib")
+  find_library(HTSLIB_STATIC_LIB NAMES libhts.a)
+  find_library(NCURSES_STATIC_LIB NAMES libncursesw.a libncurses.a libncursesw_g.a libncurses_g.a
+               PATHS "${_static_libs_dir}")
+  find_library(NCURSES_STATIC_TINFO NAMES libtinfow.a libtinfo.a
+               PATHS "${_static_libs_dir}")
 endif()
 
 # ── Target ────────────────────────────────────────────────────────────────────
@@ -152,8 +159,6 @@ target_include_directories(vv PRIVATE
     ${CURSES_INCLUDE_DIRS}
     ${HTSLIB_INCLUDE_DIRS}
 )
-
-set(_static_libs_dir "${CMAKE_CURRENT_SOURCE_DIR}/../static-libs/lib")
 
 # Collect all static libs built into static-libs/
 find_library(ZSTD_STATIC         NAMES libzstd.a         PATHS "${_static_libs_dir}" NO_DEFAULT_PATH)
