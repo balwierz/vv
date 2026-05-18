@@ -1204,6 +1204,19 @@ static bool fends(const std::string& s, const std::string& sfx) {
     return s.size() >= sfx.size() &&
            s.compare(s.size() - sfx.size(), sfx.size(), sfx) == 0;
 }
+// Case-insensitive variant. Used for filename extensions so that
+// `.bigwig` (ENCODE convention), `.bigWig` (UCSC docs), `.BIGWIG`
+// (Windows habit) all resolve to the same matcher.
+static bool fends_ci(const std::string& s, const std::string& sfx) {
+    if (s.size() < sfx.size()) return false;
+    for (size_t i = 0; i < sfx.size(); ++i) {
+        char a = s[s.size() - sfx.size() + i];
+        char b = sfx[i];
+        if (std::tolower((unsigned char)a) !=
+            std::tolower((unsigned char)b)) return false;
+    }
+    return true;
+}
 
 // ── Preamble helpers and stream wrappers ──────────────────────────────────────
 
@@ -3153,7 +3166,7 @@ public:
         self->kind_      = kind;
         self->delimiter_ = (kind == DelimKind::CSV) ? ',' : '\t';
 
-        bool is_gz = fends(path, ".gz");
+        bool is_gz = fends_ci(path, ".gz");
 
         std::shared_ptr<arrow::io::ReadableFile>  raw;
         std::shared_ptr<arrow::io::InputStream>   input;
@@ -6449,21 +6462,21 @@ static std::string open_source(const std::string& path, const Config& cfg,
         return "";
     }
 
-    if (fends(path, ".parquet")) {
+    if (fends_ci(path, ".parquet")) {
         is_parquet = true;
-    } else if (fends(path, ".arrow")) {
+    } else if (fends_ci(path, ".arrow")) {
         std::unique_ptr<IpcSource> src;
         std::string err = IpcSource::open(path, false, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
-    } else if (fends(path, ".feather")) {
+    } else if (fends_ci(path, ".feather")) {
         std::unique_ptr<IpcSource> src;
         std::string err = IpcSource::open(path, true, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
-    } else if (fends(path, ".orc")) {
+    } else if (fends_ci(path, ".orc")) {
 #if VV_HAVE_ORC
         std::unique_ptr<OrcSource> src;
         std::string err = OrcSource::open(path, &src);
@@ -6474,7 +6487,7 @@ static std::string open_source(const std::string& path, const Config& cfg,
                "(Arrow needs -DARROW_ORC=ON; rebuild Arrow and vv)";
 #endif
         return "";
-    } else if (fends(path, ".bam") || fends(path, ".cram")) {
+    } else if (fends_ci(path, ".bam") || fends_ci(path, ".cram")) {
         if (cfg.pileup) {
             // --pileup: walk the alignments through htslib's bam_plp engine
             // and emit mpileup-style per-base rows instead of alignment
@@ -6498,94 +6511,96 @@ static std::string open_source(const std::string& path, const Config& cfg,
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
-    } else if (fends(path, ".bcf")) {
+    } else if (fends_ci(path, ".bcf")) {
         std::unique_ptr<BcfSource> src;
         std::string err = BcfSource::open(path, cfg, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
-    } else if (fends(path, ".bb") || fends(path, ".bigBed") ||
-               fends(path, ".bigbed") ||
-               fends(path, ".bw") || fends(path, ".bigWig") ||
-               fends(path, ".bigwig")) {
+    } else if (fends_ci(path, ".bb") || fends_ci(path, ".bigBed") ||
+               fends_ci(path, ".bw") || fends_ci(path, ".bigWig")) {
         std::unique_ptr<BigSource> src;
         std::string err = BigSource::open(path, cfg, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
-    } else if (fends(path, ".2bit")) {
+    } else if (fends_ci(path, ".2bit")) {
         std::unique_ptr<TwoBitSource> src;
         std::string err = TwoBitSource::open(path, cfg, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
-    } else if (fends(path, ".sqlite")  || fends(path, ".sqlite3") ||
-               fends(path, ".db")) {
+    } else if (fends_ci(path, ".sqlite")  || fends_ci(path, ".sqlite3") ||
+               fends_ci(path, ".db")) {
         std::unique_ptr<SqliteSource> src;
         std::string err = SqliteSource::open_first(path, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
-    } else if (fends(path, ".xlsx") || fends(path, ".xlsm")) {
+    } else if (fends_ci(path, ".xlsx") || fends_ci(path, ".xlsm")) {
         std::unique_ptr<XlsxSource> src;
         std::string err = XlsxSource::open_first(path, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
-    } else if (fends(path, ".ods") || fends(path, ".fods")) {
+    } else if (fends_ci(path, ".ods") || fends_ci(path, ".fods")) {
         std::unique_ptr<OdsSource> src;
         std::string err = OdsSource::open_first(path, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
-    } else if (fends(path, ".fa")    || fends(path, ".fa.gz")    ||
-               fends(path, ".fasta") || fends(path, ".fasta.gz") ||
-               fends(path, ".fna")   || fends(path, ".fna.gz")   ||
-               fends(path, ".faa")   || fends(path, ".faa.gz")   ||
-               fends(path, ".ffn")   || fends(path, ".ffn.gz")   ||
-               fends(path, ".frn")   || fends(path, ".frn.gz")) {
+    } else if (fends_ci(path, ".fa")    || fends_ci(path, ".fa.gz")    ||
+               fends_ci(path, ".fasta") || fends_ci(path, ".fasta.gz") ||
+               fends_ci(path, ".fna")   || fends_ci(path, ".fna.gz")   ||
+               fends_ci(path, ".faa")   || fends_ci(path, ".faa.gz")   ||
+               fends_ci(path, ".ffn")   || fends_ci(path, ".ffn.gz")   ||
+               fends_ci(path, ".frn")   || fends_ci(path, ".frn.gz")) {
         std::unique_ptr<FastxSource> src;
         std::string err = FastxSource::open(path, /*is_fastq=*/false, cfg, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
-    } else if (fends(path, ".fq")    || fends(path, ".fq.gz")    ||
-               fends(path, ".fastq") || fends(path, ".fastq.gz")) {
+    } else if (fends_ci(path, ".fq")    || fends_ci(path, ".fq.gz")    ||
+               fends_ci(path, ".fastq") || fends_ci(path, ".fastq.gz")) {
         std::unique_ptr<FastxSource> src;
         std::string err = FastxSource::open(path, /*is_fastq=*/true, cfg, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
-    } else if (fends(path, ".vcf")   || fends(path, ".vcf.gz")) {
+    } else if (fends_ci(path, ".vcf")   || fends_ci(path, ".vcf.gz")) {
         dk = DelimKind::VCF;
-    } else if (fends(path, ".gff")   || fends(path, ".gff.gz")  ||
-               fends(path, ".gff3")  || fends(path, ".gff3.gz") ||
-               fends(path, ".gtf")   || fends(path, ".gtf.gz")) {
+    } else if (fends_ci(path, ".gff")   || fends_ci(path, ".gff.gz")  ||
+               fends_ci(path, ".gff3")  || fends_ci(path, ".gff3.gz") ||
+               fends_ci(path, ".gtf")   || fends_ci(path, ".gtf.gz")) {
         dk = DelimKind::GFF;
-    } else if (fends(path, ".sam")) {
+    } else if (fends_ci(path, ".sam")) {
         dk = DelimKind::SAM;
-    } else if (fends(path, ".paf") || fends(path, ".paf.gz")) {
+    } else if (fends_ci(path, ".paf") || fends_ci(path, ".paf.gz")) {
         dk = DelimKind::PAF;
-    } else if (fends(path, ".bed")        || fends(path, ".bed.gz")
-            || fends(path, ".narrowPeak") || fends(path, ".narrowPeak.gz")
-            || fends(path, ".broadPeak")  || fends(path, ".broadPeak.gz")
-            || fends(path, ".gappedPeak") || fends(path, ".gappedPeak.gz")
-            || fends(path, ".bedGraph")   || fends(path, ".bedGraph.gz")
-            || fends(path, ".bg")         || fends(path, ".bg.gz")
-            || fends(path, ".tagAlign")   || fends(path, ".tagAlign.gz")) {
+    } else if (fends_ci(path, ".bed")        || fends_ci(path, ".bed.gz")
+            || fends_ci(path, ".narrowPeak") || fends_ci(path, ".narrowPeak.gz")
+            || fends_ci(path, ".broadPeak")  || fends_ci(path, ".broadPeak.gz")
+            || fends_ci(path, ".gappedPeak") || fends_ci(path, ".gappedPeak.gz")
+            || fends_ci(path, ".bedGraph")   || fends_ci(path, ".bedGraph.gz")
+            || fends_ci(path, ".bg")         || fends_ci(path, ".bg.gz")
+            || fends_ci(path, ".tagAlign")   || fends_ci(path, ".tagAlign.gz")) {
         dk = DelimKind::BED;
-    } else if (fends(path, ".pileup")  || fends(path, ".pileup.gz")
-            || fends(path, ".mpileup") || fends(path, ".mpileup.gz")
-            || fends(path, ".pile")    || fends(path, ".pile.gz")) {
+    } else if (fends_ci(path, ".pileup")  || fends_ci(path, ".pileup.gz")
+            || fends_ci(path, ".mpileup") || fends_ci(path, ".mpileup.gz")
+            || fends_ci(path, ".pile")    || fends_ci(path, ".pile.gz")) {
         dk = DelimKind::Mpileup;
-    } else if (fends(path, ".tsv")   || fends(path, ".tsv.gz")) {
+    } else if (fends_ci(path, ".tsv")   || fends_ci(path, ".tsv.gz")) {
         dk = DelimKind::TSV;
-    } else if (fends(path, ".csv")   || fends(path, ".csv.gz")) {
+    } else if (fends_ci(path, ".csv")   || fends_ci(path, ".csv.gz")) {
         dk = DelimKind::CSV;
     } else {
-        // Unknown extension: sniff magic bytes.
-        // Read 8 bytes: enough for Parquet (PAR1), Arrow IPC (ARROW1\0\0),
-        // and Feather v1 (FEA1).
+        // Unknown extension: only accept it if the magic bytes positively
+        // identify a known binary format. The previous fallback ran a
+        // tabs-vs-commas count on the first 4 KiB and routed everything
+        // else through the CSV reader — which produced cryptic parse
+        // errors on binary files (`Expected 1 columns, got 2: …<garbage>`)
+        // when the user's file was e.g. `.bigwig` (case mismatch) or a
+        // format we just don't know.
         auto rf = arrow::io::ReadableFile::Open(path);
         if (!rf.ok()) return "Cannot open '" + path + "': " + rf.status().ToString();
         auto buf = rf.ValueOrDie()->Read(8);
@@ -6609,22 +6624,9 @@ static std::string open_source(const std::string& path, const Config& cfg,
             return "";
         }
         if (!is_parquet) {
-            // Count tabs vs commas in first line to choose delimiter.
-            auto rf2 = arrow::io::ReadableFile::Open(path);
-            if (!rf2.ok()) return "Cannot open '" + path + "': " + rf2.status().ToString();
-            auto fh = rf2.ValueOrDie();
-            std::string line;
-            std::string first_line;
-            auto lb = fh->Read(4096);
-            (void)fh->Close();
-            if (lb.ok()) {
-                const char* d = (const char*)(*lb)->data();
-                int len = (int)(*lb)->size();
-                for (int i = 0; i < len; ++i) { if (d[i]=='\n') break; first_line += d[i]; }
-            }
-            int tabs   = (int)std::count(first_line.begin(), first_line.end(), '\t');
-            int commas = (int)std::count(first_line.begin(), first_line.end(), ',');
-            dk = (tabs >= commas) ? DelimKind::TSV : DelimKind::CSV;
+            return "'" + path + "': unrecognised file extension. "
+                   "Rename to one of the supported suffixes (see `vv --help`), "
+                   "or pipe the file via stdin: `cat \"" + path + "\" | vv -`.";
         }
     }
 
@@ -6645,12 +6647,12 @@ static std::string open_source(const std::string& path, const Config& cfg,
     // now that the schema is materialised.
     if (dk == DelimKind::BED) {
         BedVariant bv = BedVariant::None;
-        if      (fends(path, ".narrowPeak") || fends(path, ".narrowPeak.gz")) bv = BedVariant::NarrowPeak;
-        else if (fends(path, ".broadPeak")  || fends(path, ".broadPeak.gz"))  bv = BedVariant::BroadPeak;
-        else if (fends(path, ".gappedPeak") || fends(path, ".gappedPeak.gz")) bv = BedVariant::GappedPeak;
-        else if (fends(path, ".bedGraph")   || fends(path, ".bedGraph.gz")
-              || fends(path, ".bg")         || fends(path, ".bg.gz"))         bv = BedVariant::BedGraph;
-        else if (fends(path, ".tagAlign")   || fends(path, ".tagAlign.gz"))   bv = BedVariant::TagAlign;
+        if      (fends_ci(path, ".narrowPeak") || fends_ci(path, ".narrowPeak.gz")) bv = BedVariant::NarrowPeak;
+        else if (fends_ci(path, ".broadPeak")  || fends_ci(path, ".broadPeak.gz"))  bv = BedVariant::BroadPeak;
+        else if (fends_ci(path, ".gappedPeak") || fends_ci(path, ".gappedPeak.gz")) bv = BedVariant::GappedPeak;
+        else if (fends_ci(path, ".bedGraph")   || fends_ci(path, ".bedGraph.gz")
+              || fends_ci(path, ".bg")         || fends_ci(path, ".bg.gz"))         bv = BedVariant::BedGraph;
+        else if (fends_ci(path, ".tagAlign")   || fends_ci(path, ".tagAlign.gz"))   bv = BedVariant::TagAlign;
         if (bv != BedVariant::None) src->apply_bed_variant(bv);
     }
     // --decode-pileup: materialise the typed allele-count view from the
