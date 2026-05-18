@@ -65,12 +65,6 @@ user-facing summary).
 ## Format gaps
 
 ### Open
-- `--decode-pileup` flag — phase 2 of mpileup work. Walk the packed
-  `bases` string with a small state machine (handle `.` `,` `^X` `$`
-  `*` `+N<seq>` `-N<seq>`) and emit per-allele counts (A / C / G /
-  T / N / ins / del / fwd / rev / mean_qual) as derived columns,
-  hiding the raw `bases` / `quals`. Makes `--filter 'A > 5 and
-  depth > 10'` etc. useful.
 - `vv file.bam --pileup` — phase 3 of mpileup work. Call htslib's
   `bam_plp_*` API to generate mpileup rows on the fly from a BAM,
   without needing a pre-materialised `.pileup` file.
@@ -87,10 +81,15 @@ user-facing summary).
 
 ### Done
 - samtools mpileup (`.pileup` / `.mpileup` / `.pile`, plus `.gz`) —
-  phase 1: routed through `DelimKind::Mpileup`. Tab-count on the
-  first row infers single- vs multi-sample; columns get named
-  `chrom` / `pos` / `ref` / `depth[_i]` / `bases[_i]` / `quals[_i]`.
-  Range queries via the existing TabixInputStream path.
+  routed through `DelimKind::Mpileup`. Tab-count on the first row
+  infers single- vs multi-sample; columns get named `chrom` / `pos`
+  / `ref` / `depth[_i]` / `bases[_i]` / `quals[_i]`. Range queries
+  via the existing TabixInputStream path.
+- `--decode-pileup` — typed per-allele view (A/C/G/T/N + ins/del +
+  fwd/rev + mean_qual) replaces the packed `bases` / `quals`
+  columns. Hand-rolled state machine for the pileup bases language
+  (matches against ref, mismatches against literal base, indel
+  markers, deletion placeholders, mapq-after-`^`).
 - OpenDocument Spreadsheet (`.ods`) — hand-rolled reader on minizip +
   expat (already in the tree for xlsxio's deps). Reuses the
   WorkbookSource framework introduced for Excel and the shared

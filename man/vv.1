@@ -72,7 +72,11 @@ samtools mpileup output. Per-base pileup: \fBchrom\fR, \fBpos\fR
 triplet per sample. vv counts tabs to infer the sample count;
 multi-sample triplets are suffixed (\fBdepth_1\fR, …). Range
 queries work on bgzipped + tabix-indexed files (\fBtabix -s 1 -b 2
--e 2\fR). The packed \fBbases\fR column is kept as raw text.
+-e 2\fR). Pass \fB--decode-pileup\fR to replace the packed bases /
+qualities with typed per-allele counts: \fBA\fR, \fBC\fR, \fBG\fR,
+\fBT\fR, \fBN\fR, \fBdel_placeholder\fR, \fBins\fR, \fBdel\fR,
+\fBfwd\fR, \fBrev\fR, \fBmean_qual\fR (Phred mean). Multi-sample
+files get the same set suffixed per sample.
 .IP \(bu 2
 \fB.orc\fR \(en Apache ORC (Optimized Row Columnar). Columnar storage
 used by Hadoop / Hive / Spark. One ORC stripe is treated as one chunk

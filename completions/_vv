@@ -61,6 +61,7 @@ _vv() {
         '--md[Write a GitHub-flavored markdown table]' \
         '--markdown[Alias of --md]' \
         '--validate[Check LociSSD invariants and exit]' \
+        '--decode-pileup[mpileup: explode bases into per-allele counts]' \
         '(--select --cols)'{--select,--cols}'+[Project columns by name]:cols:' \
         '--filter+[Row predicate]:expr:' \
         '--schema[Print schema and exit]' \

@@ -65,6 +65,7 @@ extern "C" {
 #include <map>
 #include <memory>
 #include <optional>
+#include <numeric>
 #include <random>
 #include <regex>
 #include <set>
@@ -422,6 +423,9 @@ struct Config {
     std::string theme;                    // --theme NAME (empty = "use config-file value or default")
     int         tail_rows      = 0;      // --tail N
     bool        tail_rows_set  = false;
+    bool        decode_pileup  = false;  // --decode-pileup: explode mpileup's
+                                         // packed bases column into per-allele
+                                         // counts (A/C/G/T/N + ins/del + strand)
 };
 
 // Out-of-line definition of load_user_config — declared further up
@@ -530,6 +534,9 @@ static void print_usage(const char* prog) {
         "  --sample <N>        reservoir-sample N rows uniformly instead of head-N\n"
         "  --validate          check LociSSD invariants (sort order, MaxEndSoFar,\n"
         "                      manifest vs. data); exit non-zero on failure\n"
+        "  --decode-pileup     mpileup only: replace the packed bases/quals\n"
+        "                      columns with typed per-allele counts\n"
+        "                      (A, C, G, T, N, del, ins, fwd, rev, mean_qual)\n"
         "  --no-index          suppress the row-index column\n"
         "  --color[=WHEN]      colorize output: auto (default), always, never\n"
         "  --theme <name>      color palette: default, dark, light,\n"
@@ -682,6 +689,8 @@ static Config parse_args(int argc, char** argv) {
             cfg.md = true;
         } else if (!std::strcmp(argv[i], "--validate")) {
             cfg.validate = true;
+        } else if (!std::strcmp(argv[i], "--decode-pileup")) {
+            cfg.decode_pileup = true;
         } else if (!std::strcmp(argv[i], "--theme") && i + 1 < argc) {
             cfg.theme = argv[++i];
         } else if (!std::strcmp(argv[i], "--color") ||
@@ -5813,6 +5822,260 @@ public:
     }
 };
 
+// ── mpileup --decode-pileup helpers ──────────────────────────────────────────
+//
+// Explodes the packed `bases` cell of an mpileup row into per-allele
+// counts. Format: . = match on forward strand, , = match on reverse
+// strand, [ACGTNacgtn] = mismatch on that strand, * = deletion
+// placeholder (counts toward depth, consumes a quality char), ^X = start
+// of read where X-33 is mapping quality (the char *after* X is the
+// actual base), $ = end of read (postfix on previous base), +N<seq> =
+// insertion of N bases after the previous base (consumes N bases from
+// the string but no quality chars), -N<seq> = deletion of N bases
+// likewise. We count A/C/G/T/N (case-insensitive; matches map to the
+// reference allele), ins / del events, deletion placeholders, forward /
+// reverse strand reads, and mean Phred quality across the real bases.
+
+struct PileupCounts {
+    int64_t A = 0, C = 0, G = 0, T = 0, N = 0;
+    int64_t del_placeholder = 0;   // count of '*' characters
+    int64_t ins = 0;               // count of +N<seq> events
+    int64_t del = 0;               // count of -N<seq> events
+    int64_t fwd = 0, rev = 0;
+    double  mean_qual = -1.0;      // -1 when no quality chars consumed
+};
+
+static PileupCounts decode_pileup_cell(const std::string_view bases,
+                                        const std::string_view quals,
+                                        char ref) {
+    PileupCounts c;
+    char ref_upper = (char)std::toupper((unsigned char)ref);
+    size_t qual_idx = 0;
+    int64_t qual_sum = 0;
+    int     qual_count = 0;
+    auto consume_qual = [&]() {
+        if (qual_idx < quals.size()) {
+            qual_sum += (int)(unsigned char)quals[qual_idx] - 33;
+            ++qual_count;
+        }
+        ++qual_idx;
+    };
+    auto bump_base = [&](char b, bool reverse) {
+        char u = (char)std::toupper((unsigned char)b);
+        if      (u == 'A') ++c.A;
+        else if (u == 'C') ++c.C;
+        else if (u == 'G') ++c.G;
+        else if (u == 'T') ++c.T;
+        else               ++c.N;
+        if (reverse) ++c.rev; else ++c.fwd;
+        consume_qual();
+    };
+    for (size_t i = 0; i < bases.size(); ) {
+        char ch = bases[i];
+        if (ch == '^') {                       // ^<mapq><base>: skip ^ and mapq
+            i += 2; continue;
+        }
+        if (ch == '$') { ++i; continue; }      // postfix end-of-read marker
+        if (ch == '*') {                        // deletion placeholder
+            ++c.del_placeholder;
+            consume_qual();
+            ++i;
+            continue;
+        }
+        if (ch == '+' || ch == '-') {           // indel description on prev base
+            ++i;
+            int n = 0;
+            while (i < bases.size() && std::isdigit((unsigned char)bases[i])) {
+                n = n * 10 + (bases[i] - '0');
+                ++i;
+            }
+            if (ch == '+') ++c.ins; else ++c.del;
+            // Skip the indel sequence; no quality chars belong to it.
+            i = std::min(i + (size_t)n, bases.size());
+            continue;
+        }
+        if (ch == '.' || ch == ',') {
+            bump_base(ref_upper, /*reverse=*/ch == ',');
+            ++i;
+            continue;
+        }
+        if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')) {
+            bool reverse = (ch >= 'a' && ch <= 'z');
+            bump_base(ch, reverse);
+            ++i;
+            continue;
+        }
+        // Unknown char (rare; '>' '<' refskip markers fall here) — skip silently.
+        ++i;
+    }
+    c.mean_qual = (qual_count > 0)
+                  ? (double)qual_sum / qual_count
+                  : -1.0;
+    return c;
+}
+
+// Read every row from the underlying mpileup DelimitedSource, decode each
+// packed bases/quals cell, and return a TabularSource backed by an Arrow
+// Table with the typed per-allele schema. The decoded view is materialised
+// in memory; range queries on bgzipped mpileup files (-r chr:start-end)
+// still go through the underlying source first, so only the queried rows
+// hit the decoder.
+static std::string decode_mpileup_to_memory(
+        TabularSource& src,
+        const std::string& path,
+        std::unique_ptr<TabularSource>* out) {
+    auto schema = src.schema();
+    int nf = schema->num_fields();
+    if (nf < 6 || (nf - 3) % 3 != 0)
+        return "decode-pileup: unexpected column count (" +
+               std::to_string(nf) + ") for an mpileup file";
+    int samples = (nf - 3) / 3;
+
+    // Output schema: chrom/pos/ref + 11 typed columns per sample
+    // (depth + A/C/G/T/N + del_placeholder + ins/del + fwd/rev + mean_qual).
+    arrow::FieldVector fields;
+    fields.push_back(arrow::field("chrom", arrow::utf8()));
+    fields.push_back(arrow::field("pos",   arrow::int64()));
+    fields.push_back(arrow::field("ref",   arrow::utf8()));
+    static const char* kNames[] = {
+        "A", "C", "G", "T", "N",
+        "del_placeholder", "ins", "del",
+        "fwd", "rev", "mean_qual"
+    };
+    for (int s = 0; s < samples; ++s) {
+        std::string sfx = (samples == 1) ? std::string{}
+                                            : "_" + std::to_string(s + 1);
+        fields.push_back(arrow::field("depth" + sfx, arrow::int64()));
+        for (int k = 0; k < 11; ++k) {
+            auto t = (std::string(kNames[k]) == "mean_qual")
+                     ? arrow::float64() : arrow::int64();
+            fields.push_back(arrow::field(std::string(kNames[k]) + sfx, t));
+        }
+    }
+    auto out_schema = arrow::schema(fields);
+
+    // Builders in matching order.
+    arrow::StringBuilder  b_chrom;
+    arrow::Int64Builder   b_pos;
+    arrow::StringBuilder  b_ref;
+    struct SampleBuilders {
+        arrow::Int64Builder   depth;
+        arrow::Int64Builder   A, C, G, T, N;
+        arrow::Int64Builder   del_p, ins, del, fwd, rev;
+        arrow::DoubleBuilder  mean_qual;
+    };
+    std::vector<SampleBuilders> sb(samples);
+
+    int nc = src.num_chunks();
+    std::vector<int> all_cols(nf);
+    std::iota(all_cols.begin(), all_cols.end(), 0);
+
+    for (int ci = 0; ci < nc; ++ci) {
+        std::shared_ptr<arrow::Table> chunk;
+        auto st = src.read_chunk(ci, all_cols, &chunk);
+        if (!st.ok()) return "decode-pileup: " + st.ToString();
+        if (!chunk || chunk->num_rows() == 0) continue;
+        auto cmb = chunk->CombineChunks();
+        if (!cmb.ok()) return "decode-pileup: " + cmb.status().ToString();
+        chunk = *cmb;
+
+        auto col_chrom = std::dynamic_pointer_cast<arrow::StringArray>(
+            chunk->column(0)->chunk(0));
+        auto col_pos   = std::dynamic_pointer_cast<arrow::Int64Array>(
+            chunk->column(1)->chunk(0));
+        auto col_ref   = std::dynamic_pointer_cast<arrow::StringArray>(
+            chunk->column(2)->chunk(0));
+        if (!col_chrom || !col_pos || !col_ref)
+            return "decode-pileup: unexpected types in chrom/pos/ref columns";
+
+        std::vector<std::shared_ptr<arrow::Int64Array>>  col_depth(samples);
+        std::vector<std::shared_ptr<arrow::StringArray>> col_bases(samples);
+        std::vector<std::shared_ptr<arrow::StringArray>> col_quals(samples);
+        for (int s = 0; s < samples; ++s) {
+            col_depth[s] = std::dynamic_pointer_cast<arrow::Int64Array>(
+                chunk->column(3 + s*3)->chunk(0));
+            col_bases[s] = std::dynamic_pointer_cast<arrow::StringArray>(
+                chunk->column(4 + s*3)->chunk(0));
+            col_quals[s] = std::dynamic_pointer_cast<arrow::StringArray>(
+                chunk->column(5 + s*3)->chunk(0));
+            if (!col_depth[s] || !col_bases[s] || !col_quals[s])
+                return "decode-pileup: sample " + std::to_string(s+1) +
+                       " has unexpected types";
+        }
+
+        int64_t n = chunk->num_rows();
+        for (int64_t r = 0; r < n; ++r) {
+            (void)b_chrom.Append(col_chrom->GetView(r));
+            (void)b_pos.Append(col_pos->Value(r));
+            std::string_view rv = col_ref->IsNull(r)
+                                  ? std::string_view{}
+                                  : col_ref->GetView(r);
+            (void)b_ref.Append(rv);
+            char ref_char = rv.empty() ? 'N' : rv[0];
+            for (int s = 0; s < samples; ++s) {
+                int64_t depth_val = col_depth[s]->IsNull(r)
+                                    ? 0 : col_depth[s]->Value(r);
+                std::string_view bases = col_bases[s]->IsNull(r)
+                                          ? std::string_view{}
+                                          : col_bases[s]->GetView(r);
+                std::string_view quals = col_quals[s]->IsNull(r)
+                                          ? std::string_view{}
+                                          : col_quals[s]->GetView(r);
+                auto c = decode_pileup_cell(bases, quals, ref_char);
+                (void)sb[s].depth.Append(depth_val);
+                (void)sb[s].A.Append(c.A);
+                (void)sb[s].C.Append(c.C);
+                (void)sb[s].G.Append(c.G);
+                (void)sb[s].T.Append(c.T);
+                (void)sb[s].N.Append(c.N);
+                (void)sb[s].del_p.Append(c.del_placeholder);
+                (void)sb[s].ins.Append(c.ins);
+                (void)sb[s].del.Append(c.del);
+                (void)sb[s].fwd.Append(c.fwd);
+                (void)sb[s].rev.Append(c.rev);
+                if (c.mean_qual < 0)
+                    (void)sb[s].mean_qual.AppendNull();
+                else
+                    (void)sb[s].mean_qual.Append(c.mean_qual);
+            }
+        }
+    }
+
+    std::vector<std::shared_ptr<arrow::Array>> arrs;
+    auto finish = [&](auto& bldr) -> std::string {
+        std::shared_ptr<arrow::Array> a;
+        auto st = bldr.Finish(&a);
+        if (!st.ok()) return st.ToString();
+        arrs.push_back(std::move(a));
+        return "";
+    };
+    std::string ferr;
+    ferr = finish(b_chrom); if (!ferr.empty()) return "decode-pileup: " + ferr;
+    ferr = finish(b_pos);   if (!ferr.empty()) return "decode-pileup: " + ferr;
+    ferr = finish(b_ref);   if (!ferr.empty()) return "decode-pileup: " + ferr;
+    for (int s = 0; s < samples; ++s) {
+        ferr = finish(sb[s].depth);   if (!ferr.empty()) return "decode-pileup: " + ferr;
+        ferr = finish(sb[s].A);       if (!ferr.empty()) return "decode-pileup: " + ferr;
+        ferr = finish(sb[s].C);       if (!ferr.empty()) return "decode-pileup: " + ferr;
+        ferr = finish(sb[s].G);       if (!ferr.empty()) return "decode-pileup: " + ferr;
+        ferr = finish(sb[s].T);       if (!ferr.empty()) return "decode-pileup: " + ferr;
+        ferr = finish(sb[s].N);       if (!ferr.empty()) return "decode-pileup: " + ferr;
+        ferr = finish(sb[s].del_p);   if (!ferr.empty()) return "decode-pileup: " + ferr;
+        ferr = finish(sb[s].ins);     if (!ferr.empty()) return "decode-pileup: " + ferr;
+        ferr = finish(sb[s].del);     if (!ferr.empty()) return "decode-pileup: " + ferr;
+        ferr = finish(sb[s].fwd);     if (!ferr.empty()) return "decode-pileup: " + ferr;
+        ferr = finish(sb[s].rev);     if (!ferr.empty()) return "decode-pileup: " + ferr;
+        ferr = finish(sb[s].mean_qual); if (!ferr.empty()) return "decode-pileup: " + ferr;
+    }
+
+    auto table = arrow::Table::Make(out_schema, arrs);
+    std::string footer = "Format: mpileup (decoded)";
+    if (samples > 1)
+        footer += "  |  Samples: " + std::to_string(samples);
+    *out = std::make_unique<MemoryTableSource>(table, path, std::move(footer));
+    return "";
+}
+
 static std::string open_source(const std::string& path, const Config& cfg,
                                 std::unique_ptr<TabularSource>* out) {
     // ── Determine file kind ──────────────────────────────────────────────────
@@ -6061,6 +6324,17 @@ static std::string open_source(const std::string& path, const Config& cfg,
               || fends(path, ".bg")         || fends(path, ".bg.gz"))         bv = BedVariant::BedGraph;
         else if (fends(path, ".tagAlign")   || fends(path, ".tagAlign.gz"))   bv = BedVariant::TagAlign;
         if (bv != BedVariant::None) src->apply_bed_variant(bv);
+    }
+    // --decode-pileup: materialise the typed allele-count view from the
+    // underlying mpileup source. The original streaming source is consumed
+    // in full, decoded row by row, and replaced with a MemoryTableSource
+    // over the resulting Arrow table.
+    if (dk == DelimKind::Mpileup && cfg.decode_pileup) {
+        std::unique_ptr<TabularSource> decoded;
+        std::string err2 = decode_mpileup_to_memory(*src, path, &decoded);
+        if (!err2.empty()) return err2;
+        *out = std::move(decoded);
+        return "";
     }
     *out = std::move(src);
     return "";

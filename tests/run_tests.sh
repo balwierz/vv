@@ -457,6 +457,32 @@ if [ -f "$DATA/tiny.mpileup.gz" ] && [ -f "$DATA/tiny.mpileup.gz.tbi" ]; then
     assert_eq_file_inline "mpileup_tabix_one_pos"  "$MP_REG" "1"
 fi
 
+# --decode-pileup: typed per-allele counts on the same single-sample file.
+if [ -f "$DATA/tiny.mpileup" ]; then
+    DEC_SCH=$("$VV" --schema --decode-pileup "$DATA/tiny.mpileup" 2>&1)
+    assert_contains "decode_footer_format"          "$DEC_SCH" "mpileup (decoded)"
+    assert_contains "decode_col_A"                  "$DEC_SCH" "A "
+    assert_contains "decode_col_mean_qual"          "$DEC_SCH" "mean_qual"
+    assert_contains "decode_type_mean_qual_double"  "$DEC_SCH" "double"
+    # First row (chr1:100, ref=A): bases ".+2AC.,,..C,c-1G,..", depth 12.
+    # Decoder sees 10 ref-matches (.+,) + 2 mismatch-Cs (C,c) + ins=1 + del=1.
+    # fwd events: the 7 forward-strand chars (. and uppercase mismatches).
+    DEC=$("$VV" --tsv --no-header --decode-pileup --filter 'pos == 100' \
+        --select "A,C,ins,del,fwd,rev" "$DATA/tiny.mpileup")
+    assert_eq_file_inline "decode_row_chr1_100"     "$DEC" "10	2	1	1	7	5"
+    # --filter on the inferred int columns from the decoded schema.
+    DEC_C=$("$VV" --tsv --no-header --decode-pileup --filter 'C >= 2' \
+        --select 'chrom,pos' "$DATA/tiny.mpileup" | wc -l)
+    assert_eq_file_inline "decode_filter_C_2plus"   "$DEC_C" "2"
+fi
+# Multi-sample: --decode-pileup produces per-sample suffixed columns.
+if [ -f "$DATA/tiny.multi.mpileup" ]; then
+    DM_SCH=$("$VV" --schema --decode-pileup "$DATA/tiny.multi.mpileup" 2>&1)
+    assert_contains "decode_multi_col_A_1"          "$DM_SCH" "A_1"
+    assert_contains "decode_multi_col_A_2"          "$DM_SCH" "A_2"
+    assert_contains "decode_multi_col_mean_qual_2"  "$DM_SCH" "mean_qual_2"
+fi
+
 echo "── Threading parity ──────────────────────────────────────"
 "$VV" --tsv --no-header -@ 1 "$DATA/tiny.parquet" > "$TMP/t1.out"
 "$VV" --tsv --no-header -@ 4 "$DATA/tiny.parquet" > "$TMP/t4.out"

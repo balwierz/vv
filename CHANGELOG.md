@@ -8,16 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 - **samtools mpileup (`.pileup`, `.mpileup`, `.pile`, plus `.gz`)** —
-  per-base pileup output. Phase 1 of the mpileup work: the file is
-  routed through a new `DelimKind::Mpileup` variant of the existing
-  `DelimitedSource`, which counts tabs on the first row to derive
-  sample-aware column names (`chrom`, `pos`, `ref`, then
-  `depth` / `bases` / `quals` triplets — unsuffixed for single-sample
-  files, `_1` / `_2` / … for multi-sample). The packed `bases` column
-  stays as raw text in this iteration; range queries work on
-  bgzipped + tabix-indexed files (`tabix -s 1 -b 2 -e 2`). A future
-  `--decode-pileup` flag will explode `bases` into per-allele counts
-  for downstream filtering.
+  per-base pileup output. The file is routed through a new
+  `DelimKind::Mpileup` variant of the existing `DelimitedSource`,
+  which counts tabs on the first row to derive sample-aware column
+  names (`chrom`, `pos`, `ref`, then `depth` / `bases` / `quals`
+  triplets — unsuffixed for single-sample files, `_1` / `_2` / … for
+  multi-sample). Range queries work on bgzipped + tabix-indexed
+  files (`tabix -s 1 -b 2 -e 2`).
+- **`--decode-pileup`** — explodes the packed `bases` / `quals`
+  columns into typed per-allele counts: `A`, `C`, `G`, `T`, `N`,
+  `del_placeholder`, `ins`, `del`, `fwd`, `rev`, `mean_qual`. The
+  decoder walks each `bases` string with a small state machine that
+  handles `.` `,` `[ACGTNacgtn]` `*` `^X` `$` `+N<seq>` `-N<seq>`;
+  matches roll up against the reference allele (case-insensitive),
+  mismatches against their literal base, indel markers bump the
+  ins/del counts without consuming a quality character. Multi-sample
+  files emit the same set of counts per sample (`A_1`, `A_2`, …).
+  Lets `--filter 'A >= 5 and mean_qual >= 30'` work directly on the
+  parsed pileup.
 - **OpenDocument Spreadsheet (`.ods`)** — hand-rolled reader on top of
   minizip + expat: `content.xml` is inflated and SAX-parsed, with each
   sheet routed through the existing `WorkbookSource` framework (one

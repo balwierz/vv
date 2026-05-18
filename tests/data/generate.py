@@ -276,18 +276,24 @@ con.close()
 # ── samtools mpileup (single-sample + two-sample fixtures) ──────────────────
 # Real samtools mpileup output. Six columns for single-sample; the
 # two-sample variant has 3 + 3*2 = 9 columns.
+# Hand-crafted to be self-consistent: depth == count of base events in the
+# bases column == length of the quals column (after the decoder consumes
+# `^X` start markers, `$` end markers, and `+N<seq>` / `-N<seq>` indels).
+# Row 1 carries a single mismatch (C) on each strand, plus one insertion
+# and one deletion attached to forward-strand reads, so the decoded view
+# has non-zero values across the allele / indel columns.
 mpileup_single = (
-    "chr1\t100\tA\t12\t..,,..C,c,..,\tIHGFGHIGFGFG\n"
+    "chr1\t100\tA\t12\t.+2AC.,,..C,c-1G,..\tIHGFGHIGFGFG\n"
     "chr1\t101\tG\t13\t..,GG.gg..,.,\tIHHHGGGHGFFFG\n"
     "chr1\t102\tT\t8\t..,..,,.\tHHHGGGFG\n"
-    "chr2\t500\tC\t20\t..,,...,..,.,..,..,.,\tHGFFGGGFGGFFGGFFGGFGF\n"
+    "chr2\t500\tC\t20\t..,,...,..,.,..,..,.\tHGFFGGGFGGFFGGFFGGFG\n"
 )
 (HERE / "tiny.mpileup").write_text(mpileup_single)
 
 mpileup_multi = (
-    "chr1\t100\tA\t12\t..,,..C,c,..,\tIHGFGHIGFGFG\t5\t..,.,\tHGFGF\n"
+    "chr1\t100\tA\t12\t..,,..C,c,..\tIHGFGHIGFGFG\t5\t..,.,\tHGFGF\n"
     "chr1\t101\tG\t13\t..,GG.gg..,.,\tIHHHGGGHGFFFG\t4\t...G\tHGFG\n"
-    "chr2\t500\tC\t20\t..,,...,..,.,..,..,.,\tHGFFGGGFGGFFGGFFGGFGF\t7\t..,..,.\tGFGFGFG\n"
+    "chr2\t500\tC\t20\t..,,...,..,.,..,..,.\tHGFFGGGFGGFFGGFFGGFG\t7\t..,..,.\tGFGFGFG\n"
 )
 (HERE / "tiny.multi.mpileup").write_text(mpileup_multi)
 
