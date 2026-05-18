@@ -6505,7 +6505,9 @@ static std::string open_source(const std::string& path, const Config& cfg,
         *out = std::move(src);
         return "";
     } else if (fends(path, ".bb") || fends(path, ".bigBed") ||
-               fends(path, ".bw") || fends(path, ".bigWig")) {
+               fends(path, ".bigbed") ||
+               fends(path, ".bw") || fends(path, ".bigWig") ||
+               fends(path, ".bigwig")) {
         std::unique_ptr<BigSource> src;
         std::string err = BigSource::open(path, cfg, &src);
         if (!err.empty()) return err;
