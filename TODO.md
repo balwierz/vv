@@ -65,9 +65,11 @@ user-facing summary).
 ## Format gaps
 
 ### Open
-- `vv file.bam --pileup` — phase 3 of mpileup work. Call htslib's
-  `bam_plp_*` API to generate mpileup rows on the fly from a BAM,
-  without needing a pre-materialised `.pileup` file.
+- `vv x.bam --pileup -f ref.fa` — reference-aware pileup. The
+  current `--pileup` walker matches `samtools mpileup` without `-f`
+  (ref always `N`, no `.`/`,` match notation). Plumbing a FASTA in
+  via htslib's `faidx_fetch_seq` is mechanical; main cost is
+  threading the FASTA path through the Config.
 - `.xls` (legacy binary, OLE2 compound document) — needs libxls or a
   hand-rolled OLE2 parser; biology data is overwhelmingly `.xlsx`
   today, so deferred until somebody asks.
@@ -90,6 +92,10 @@ user-facing summary).
   columns. Hand-rolled state machine for the pileup bases language
   (matches against ref, mismatches against literal base, indel
   markers, deletion placeholders, mapq-after-`^`).
+- `vv x.bam --pileup` — BAM/CRAM-to-mpileup on the fly via htslib's
+  `bam_plp_auto`. Byte-identical to `samtools mpileup x.bam` (no
+  `-f`). Region queries trim emitted positions to the requested
+  span just like samtools.
 - OpenDocument Spreadsheet (`.ods`) — hand-rolled reader on minizip +
   expat (already in the tree for xlsxio's deps). Reuses the
   WorkbookSource framework introduced for Excel and the shared

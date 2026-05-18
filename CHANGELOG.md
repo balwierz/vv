@@ -15,6 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   triplets — unsuffixed for single-sample files, `_1` / `_2` / … for
   multi-sample). Range queries work on bgzipped + tabix-indexed
   files (`tabix -s 1 -b 2 -e 2`).
+- **`--pileup` on BAM / CRAM** — `vv x.bam --pileup` walks the
+  alignments through htslib's `bam_plp_auto` engine and emits
+  mpileup-style per-base rows directly, with no `samtools mpileup`
+  intermediate. The output schema matches the file-based mpileup
+  reader (`chrom`, `pos`, `ref`, `depth`, `bases`, `quals`) and is
+  byte-identical to `samtools mpileup x.bam`. Range queries via
+  `-r chrom:start-end` need a BAM index (`.bai` / `.csi`) or CRAM
+  index (`.crai`); positions are trimmed to the requested span the
+  same way `samtools mpileup -r` does. Composes with
+  `--decode-pileup`. No reference FASTA support yet — ref is `N`,
+  bases render as their literal letter case-by-strand.
 - **`--decode-pileup`** — explodes the packed `bases` / `quals`
   columns into typed per-allele counts: `A`, `C`, `G`, `T`, `N`,
   `del_placeholder`, `ins`, `del`, `fwd`, `rev`, `mean_qual`. The

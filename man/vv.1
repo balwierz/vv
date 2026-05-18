@@ -76,7 +76,13 @@ queries work on bgzipped + tabix-indexed files (\fBtabix -s 1 -b 2
 qualities with typed per-allele counts: \fBA\fR, \fBC\fR, \fBG\fR,
 \fBT\fR, \fBN\fR, \fBdel_placeholder\fR, \fBins\fR, \fBdel\fR,
 \fBfwd\fR, \fBrev\fR, \fBmean_qual\fR (Phred mean). Multi-sample
-files get the same set suffixed per sample.
+files get the same set suffixed per sample. Pass \fB--pileup\fR on
+a BAM/CRAM to walk the alignments through htslib's
+\fBbam_plp_auto\fR engine and emit the same mpileup rows directly,
+without a separate \fBsamtools mpileup\fR step. Range queries
+require an index (\fB.bai\fR / \fB.csi\fR / \fB.crai\fR). No
+reference FASTA support yet — ref is set to \fBN\fR, bases render
+as their literal letter case-by-strand.
 .IP \(bu 2
 \fB.orc\fR \(en Apache ORC (Optimized Row Columnar). Columnar storage
 used by Hadoop / Hive / Spark. One ORC stripe is treated as one chunk

@@ -74,7 +74,7 @@ _vv() {
                 --parquet --compression
                 --json --ndjson --md --markdown
                 --select --cols --filter
-                --schema --describe --stats --validate --decode-pileup
+                --schema --describe --stats --validate --decode-pileup --pileup
                 --unique --sample
                 --vertical
                 --no-header

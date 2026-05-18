@@ -426,6 +426,10 @@ struct Config {
     bool        decode_pileup  = false;  // --decode-pileup: explode mpileup's
                                          // packed bases column into per-allele
                                          // counts (A/C/G/T/N + ins/del + strand)
+    bool        pileup         = false;  // --pileup: BAM/CRAM only — emit
+                                         // mpileup-style per-base rows via
+                                         // htslib's bam_plp_auto engine
+                                         // instead of alignment records
 };
 
 // Out-of-line definition of load_user_config — declared further up
@@ -534,6 +538,9 @@ static void print_usage(const char* prog) {
         "  --sample <N>        reservoir-sample N rows uniformly instead of head-N\n"
         "  --validate          check LociSSD invariants (sort order, MaxEndSoFar,\n"
         "                      manifest vs. data); exit non-zero on failure\n"
+        "  --pileup            BAM/CRAM only: emit mpileup-style per-base rows\n"
+        "                      from the alignments via htslib's bam_plp engine\n"
+        "                      (equivalent to `samtools mpileup`, no -f / -B)\n"
         "  --decode-pileup     mpileup only: replace the packed bases/quals\n"
         "                      columns with typed per-allele counts\n"
         "                      (A, C, G, T, N, del, ins, fwd, rev, mean_qual)\n"
@@ -691,6 +698,8 @@ static Config parse_args(int argc, char** argv) {
             cfg.validate = true;
         } else if (!std::strcmp(argv[i], "--decode-pileup")) {
             cfg.decode_pileup = true;
+        } else if (!std::strcmp(argv[i], "--pileup")) {
+            cfg.pileup = true;
         } else if (!std::strcmp(argv[i], "--theme") && i + 1 < argc) {
             cfg.theme = argv[++i];
         } else if (!std::strcmp(argv[i], "--color") ||
@@ -3833,6 +3842,305 @@ public:
     }
 };
 
+// ── BAM/CRAM pileup source (`vv x.bam --pileup`) ─────────────────────────────
+//
+// Walks a sorted BAM/CRAM through htslib's bam_plp_auto engine, emitting one
+// row per covered position in a schema identical to DelimKind::Mpileup
+// (`chrom, pos, ref, depth, bases, quals`). The output is byte-for-byte
+// compatible with `samtools mpileup` invoked without a reference FASTA: ref
+// is set to 'N' on every row, and bases are rendered as literal letters
+// (uppercase forward, lowercase reverse) — there's no `.` / `,` match
+// notation because we have no reference to match against.
+//
+// Region queries (`-r chrom:start-end`) pipe through htslib's sam_itr_querys
+// so we only walk the requested span — essential for whole-genome BAMs where
+// `vv x.bam --pileup` over everything would emit ~3 billion rows. Composes
+// with `--decode-pileup`, which materialises the typed allele-count view on
+// top of this source.
+
+class BamPileupSource : public TabularSource {
+    std::string                              path_;
+    std::shared_ptr<arrow::Schema>           schema_;
+    std::string                              fmt_name_;     // BAM / CRAM / SAM
+
+    // htslib handles. The plp iterator owns the read-callback closure.
+    samFile*                                 fp_   = nullptr;
+    sam_hdr_t*                               hdr_  = nullptr;
+    hts_idx_t*                               idx_  = nullptr;   // optional
+    hts_itr_multi_t*                         iter_ = nullptr;   // optional
+    bam_plp_t                                plp_  = nullptr;
+    bam1_t*                                  rec_  = nullptr;   // scratch for callback
+
+    // Requested regions parsed at open time. bam_plp_auto emits every
+    // position covered by the iterator's fetched reads, so a query like
+    // `-r chr1:105-105` would otherwise spill the full span of any read
+    // touching pos 105. Match `samtools mpileup`'s behaviour by filtering
+    // emitted positions to the requested ranges.
+    struct RegionRange { int tid; hts_pos_t beg; hts_pos_t end; };
+    std::vector<RegionRange>                 regions_;
+
+    // Streaming-source plumbing (same shape as BamSource / BcfSource).
+    mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
+    mutable std::vector<int64_t>             batch_first_row_;
+    mutable int64_t                          rows_so_far_ = 0;
+    mutable bool                             all_read_    = false;
+    mutable int64_t                          num_rows_total_ = -1;
+
+    static constexpr int BATCH_ROWS = 16384;
+
+    // Per-pileup-iterator state. We give one of these to bam_plp_init so
+    // the read-callback knows where to pull alignments from.
+    struct PlpData {
+        samFile*           fp;
+        sam_hdr_t*         hdr;
+        hts_itr_multi_t*   iter;     // nullptr → full-file scan
+    };
+    PlpData plp_data_;
+
+    static int plp_callback(void* data, bam1_t* b) {
+        auto* d = static_cast<PlpData*>(data);
+        if (d->iter)
+            return sam_itr_multi_next(d->fp, d->iter, b);
+        return sam_read1(d->fp, d->hdr, b);
+    }
+
+    // Render one position's bases / quals strings from the bam_pileup1_t
+    // array. Mirrors `samtools mpileup` without -f: no ref, no `.`/`,`,
+    // bases are uppercase forward, lowercase reverse.
+    static void format_pileup_row(const bam_pileup1_t* plp, int n,
+                                   std::string& bases, std::string& quals) {
+        bases.clear();
+        quals.clear();
+        for (int i = 0; i < n; ++i) {
+            const bam_pileup1_t* p = &plp[i];
+            // Read-start marker: ^<mapq+33> precedes the base.
+            if (p->is_head) {
+                bases += '^';
+                int mq = p->b->core.qual;
+                if (mq > 93) mq = 93;
+                bases += (char)(mq + 33);
+            }
+            if (p->is_del) {
+                bases += '*';
+                quals += '*';   // samtools convention: '*' for deletion qual
+            } else {
+                uint8_t bnt = bam_seqi(bam_get_seq(p->b), p->qpos);
+                char nt = seq_nt16_str[bnt];
+                if (bam_is_rev(p->b)) nt = (char)std::tolower(nt);
+                bases += nt;
+                uint8_t q = bam_get_qual(p->b)[p->qpos];
+                // BAM stores Phred directly; pileup format is Phred+33.
+                quals += (char)((q == 0xff ? 0 : q) + 33);
+            }
+            // Indel description on the current base. Insertion bases come
+            // from the read at qpos+1 .. qpos+indel; deletion bases come
+            // from the reference (we use 'N' since -f isn't supported).
+            if (p->indel > 0) {
+                bases += '+';
+                bases += std::to_string(p->indel);
+                bool rev = bam_is_rev(p->b);
+                for (int k = 1; k <= p->indel; ++k) {
+                    uint8_t b = bam_seqi(bam_get_seq(p->b), p->qpos + k);
+                    char nt = seq_nt16_str[b];
+                    if (rev) nt = (char)std::tolower(nt);
+                    bases += nt;
+                }
+            } else if (p->indel < 0) {
+                int n_del = -p->indel;
+                bases += '-';
+                bases += std::to_string(n_del);
+                char fill = bam_is_rev(p->b) ? 'n' : 'N';
+                bases.append((size_t)n_del, fill);
+            }
+            if (p->is_tail) bases += '$';
+        }
+    }
+
+    arrow::Status advance() const {
+        if (all_read_) return arrow::Status::OK();
+        arrow::StringBuilder b_chrom, b_ref, b_bases, b_quals;
+        arrow::Int64Builder  b_pos, b_depth;
+
+        int count = 0;
+        int tid, pos, n_plp;
+        const bam_pileup1_t* plp_arr;
+        std::string bases_str, quals_str;
+        while (count < BATCH_ROWS &&
+               (plp_arr = bam_plp_auto(plp_, &tid, &pos, &n_plp)) != nullptr) {
+            if (tid < 0) continue;
+            // Match `samtools mpileup`'s region-trimming: bam_plp_auto
+            // returns every position covered by the iterator-fetched
+            // reads, but only those whose pos falls inside a requested
+            // range should be emitted.
+            if (!regions_.empty()) {
+                bool in_any = false;
+                for (const auto& r : regions_) {
+                    if (r.tid == tid && pos >= r.beg && pos < r.end) {
+                        in_any = true; break;
+                    }
+                }
+                if (!in_any) continue;
+            }
+            format_pileup_row(plp_arr, n_plp, bases_str, quals_str);
+            const char* chrom = sam_hdr_tid2name(hdr_, tid);
+            ARROW_RETURN_NOT_OK(b_chrom.Append(chrom ? chrom : "*"));
+            ARROW_RETURN_NOT_OK(b_pos.Append((int64_t)pos + 1));  // 1-based
+            ARROW_RETURN_NOT_OK(b_ref.Append("N"));               // no -f
+            ARROW_RETURN_NOT_OK(b_depth.Append(n_plp));
+            ARROW_RETURN_NOT_OK(b_bases.Append(bases_str));
+            ARROW_RETURN_NOT_OK(b_quals.Append(quals_str));
+            ++count;
+        }
+        if (count == 0) {
+            all_read_ = true;
+            num_rows_total_ = rows_so_far_;
+            return arrow::Status::OK();
+        }
+        std::shared_ptr<arrow::Array> a_chrom, a_pos, a_ref, a_depth, a_bases, a_quals;
+        ARROW_RETURN_NOT_OK(b_chrom.Finish(&a_chrom));
+        ARROW_RETURN_NOT_OK(b_pos.Finish(&a_pos));
+        ARROW_RETURN_NOT_OK(b_ref.Finish(&a_ref));
+        ARROW_RETURN_NOT_OK(b_depth.Finish(&a_depth));
+        ARROW_RETURN_NOT_OK(b_bases.Finish(&a_bases));
+        ARROW_RETURN_NOT_OK(b_quals.Finish(&a_quals));
+        auto batch = arrow::RecordBatch::Make(schema_, count,
+            {a_chrom, a_pos, a_ref, a_depth, a_bases, a_quals});
+        batch_first_row_.push_back(rows_so_far_);
+        rows_so_far_ += count;
+        batches_.push_back(std::move(batch));
+        return arrow::Status::OK();
+    }
+
+public:
+    ~BamPileupSource() {
+        if (plp_)  { bam_plp_destroy(plp_);  plp_  = nullptr; }
+        if (iter_) { hts_itr_multi_destroy(iter_); iter_ = nullptr; }
+        if (rec_)  { bam_destroy1(rec_);     rec_  = nullptr; }
+        if (idx_)  { hts_idx_destroy(idx_);  idx_  = nullptr; }
+        if (hdr_)  { sam_hdr_destroy(hdr_);  hdr_  = nullptr; }
+        if (fp_)   { sam_close(fp_);         fp_   = nullptr; }
+    }
+
+    static std::string open(const std::string& path, const Config& cfg,
+                             std::unique_ptr<BamPileupSource>* out) {
+        auto self = std::make_unique<BamPileupSource>();
+        self->path_ = path;
+
+        self->fp_ = sam_open(path.c_str(), "r");
+        if (!self->fp_) return "Cannot open '" + path + "'";
+        int n = effective_threads(cfg);
+        if (n > 1) hts_set_threads(self->fp_, n);
+
+        self->hdr_ = sam_hdr_read(self->fp_);
+        if (!self->hdr_)
+            return "Cannot read BAM/SAM header from '" + path + "'";
+
+        // Detect format for the footer string.
+        const htsFormat* fmt = hts_get_format(self->fp_);
+        switch (fmt ? fmt->format : unknown_format) {
+            case cram: self->fmt_name_ = "CRAM"; break;
+            case sam:  self->fmt_name_ = "SAM";  break;
+            default:   self->fmt_name_ = "BAM";  break;
+        }
+
+        // Optional region query. Needs a coordinate-sorted file with an
+        // index (.bai / .csi / .crai). We accept comma-separated regions
+        // via the same `chrom:start-end[,…]` syntax tabix uses.
+        if (!cfg.region.empty()) {
+            self->idx_ = sam_index_load(self->fp_, path.c_str());
+            if (!self->idx_)
+                return "'" + path + "': --pileup -r needs an index (.bai/.csi/.crai)";
+            std::vector<std::string> regs;
+            { std::string cur;
+              for (char c : cfg.region) {
+                  if (c == ',') { if (!cur.empty()) regs.push_back(cur); cur.clear(); }
+                  else          cur += c;
+              }
+              if (!cur.empty()) regs.push_back(cur);
+            }
+            std::vector<const char*> regp;
+            regp.reserve(regs.size());
+            for (auto& r : regs) regp.push_back(r.c_str());
+            self->iter_ = sam_itr_regarray(self->idx_, self->hdr_,
+                                            const_cast<char**>(regp.data()),
+                                            (unsigned)regp.size());
+            if (!self->iter_)
+                return "'" + path + "': cannot build iterator for region '" +
+                       cfg.region + "'";
+
+            // Also resolve each region into a tid + half-open [beg, end)
+            // span for the per-position filter applied during pileup
+            // emission. hts_parse_region accepts `chrom`, `chrom:N`, and
+            // `chrom:beg-end` (beg/end 1-based inclusive, returned as
+            // 0-based half-open).
+            for (auto& r : regs) {
+                hts_pos_t beg = 0, end = 0;
+                int tid = -1;
+                const char* rest = hts_parse_region(
+                    r.c_str(), &tid, &beg, &end,
+                    (hts_name2id_f)bam_name2id, self->hdr_,
+                    HTS_PARSE_THOUSANDS_SEP);
+                if (rest && tid >= 0)
+                    self->regions_.push_back({tid, beg, end});
+            }
+        }
+
+        self->plp_data_.fp   = self->fp_;
+        self->plp_data_.hdr  = self->hdr_;
+        self->plp_data_.iter = self->iter_;
+        self->plp_ = bam_plp_init(&BamPileupSource::plp_callback,
+                                    &self->plp_data_);
+        if (!self->plp_) return "Out of memory initialising pileup iterator";
+        // Match `samtools mpileup` default behaviour (no max-depth cap;
+        // INT_MAX yields the full per-position depth).
+        bam_plp_set_maxcnt(self->plp_, INT_MAX);
+
+        self->rec_ = bam_init1();
+
+        self->schema_ = arrow::schema({
+            arrow::field("chrom", arrow::utf8()),
+            arrow::field("pos",   arrow::int64()),
+            arrow::field("ref",   arrow::utf8()),
+            arrow::field("depth", arrow::int64()),
+            arrow::field("bases", arrow::utf8()),
+            arrow::field("quals", arrow::utf8()),
+        });
+
+        // Eager first batch so schema-only views see a populated source.
+        auto st = self->advance();
+        if (!st.ok())
+            return "Error pileup-walking '" + path + "': " + st.ToString();
+
+        *out = std::move(self);
+        return "";
+    }
+
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    int64_t total_rows() const override {
+        return all_read_ ? num_rows_total_ : -1;
+    }
+    int     num_chunks() const override { return (int)batches_.size(); }
+    ChunkMeta chunk_meta(int i) const override {
+        return {batch_first_row_[i], batches_[i]->num_rows()};
+    }
+    void ensure(int i) override {
+        while (!all_read_ && (int)batches_.size() <= i)
+            (void)advance();
+    }
+    arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
+                              std::shared_ptr<arrow::Table>* out) override {
+        ensure(i);
+        if (i >= (int)batches_.size())
+            return arrow::Status::IndexError("chunk ", i, " out of range");
+        *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
+        return arrow::Status::OK();
+    }
+    const std::string& path() const override { return path_; }
+    std::string footer() const override {
+        return "Format: mpileup (from " + fmt_name_ + ")";
+    }
+};
+
 // ── BCF source (binary VCF via htslib) ────────────────────────────────────────
 
 // Reads a BCF file via htslib's bcf_read, reformats each record to the
@@ -6167,6 +6475,24 @@ static std::string open_source(const std::string& path, const Config& cfg,
 #endif
         return "";
     } else if (fends(path, ".bam") || fends(path, ".cram")) {
+        if (cfg.pileup) {
+            // --pileup: walk the alignments through htslib's bam_plp engine
+            // and emit mpileup-style per-base rows instead of alignment
+            // records. Run the decoded view on top if --decode-pileup is
+            // also set.
+            std::unique_ptr<BamPileupSource> src;
+            std::string err = BamPileupSource::open(path, cfg, &src);
+            if (!err.empty()) return err;
+            if (cfg.decode_pileup) {
+                std::unique_ptr<TabularSource> decoded;
+                std::string err2 = decode_mpileup_to_memory(*src, path, &decoded);
+                if (!err2.empty()) return err2;
+                *out = std::move(decoded);
+            } else {
+                *out = std::move(src);
+            }
+            return "";
+        }
         std::unique_ptr<BamSource> src;
         std::string err = BamSource::open(path, cfg, &src);
         if (!err.empty()) return err;

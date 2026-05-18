@@ -273,6 +273,54 @@ cur.executemany("INSERT INTO samples VALUES(?,?,?)", [
 con.commit()
 con.close()
 
+# ── BAM (for --pileup tests; needs pysam) ────────────────────────────────────
+# Generate a sorted + indexed BAM with three reads on chr1:100 covering
+# positions 100–119, so the pileup engine emits 20 rows when invoked.
+try:
+    import pysam                                              # type: ignore
+except ImportError:
+    print("warn: pysam not found; skipping tiny.bam", file=sys.stderr)
+else:
+    bam_path = HERE / "tiny.bam"
+    if bam_path.exists():
+        bam_path.unlink()
+    bai_path = HERE / "tiny.bam.bai"
+    if bai_path.exists():
+        bai_path.unlink()
+    bam_header = {
+        "HD": {"VN": "1.6", "SO": "coordinate"},
+        "SQ": [
+            {"SN": "chr1", "LN": 1000},
+            {"SN": "chr2", "LN": 1000},
+        ],
+    }
+    # 3 reads spanning chr1:100-119 with deliberate mismatches at pos 105
+    # so the decoded pileup shows non-zero off-ref counts.
+    reads = [
+        # forward strand, 20bp, all match-T except pos 105 (offset 5) = G
+        ("r1", 99,  "TTTTTGTTTTTTTTTTTTTT", 0,    True),
+        # reverse strand, 20bp, all match-T except pos 105 = G
+        ("r2", 99,  "TTTTTGTTTTTTTTTTTTTT", 16,   True),
+        # forward strand starting at pos 102, only 17bp long (covers 102-118)
+        ("r3", 101, "TTTGTTTTTTTTTTTTT",     0,    True),
+    ]
+    with pysam.AlignmentFile(str(bam_path), "wb", header=bam_header) as bf:
+        for (qn, pos0, seq, flag, _) in reads:
+            r = pysam.AlignedSegment(header=bf.header)
+            r.query_name = qn
+            r.flag = flag
+            r.reference_id = 0
+            r.reference_start = pos0
+            r.mapping_quality = 60
+            r.cigarstring = f"{len(seq)}M"
+            r.query_sequence = seq
+            r.query_qualities = pysam.qualitystring_to_array("I" * len(seq))
+            r.next_reference_id = -1
+            r.next_reference_start = -1
+            r.template_length = 0
+            bf.write(r)
+    pysam.index(str(bam_path))
+
 # ── samtools mpileup (single-sample + two-sample fixtures) ──────────────────
 # Real samtools mpileup output. Six columns for single-sample; the
 # two-sample variant has 3 + 3*2 = 9 columns.

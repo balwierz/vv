@@ -483,6 +483,34 @@ if [ -f "$DATA/tiny.multi.mpileup" ]; then
     assert_contains "decode_multi_col_mean_qual_2"  "$DM_SCH" "mean_qual_2"
 fi
 
+# --pileup on a BAM file: htslib's bam_plp engine emits the same per-base
+# pileup that `samtools mpileup` does (without -f / -B). The fixture has
+# three reads spanning chr1:100-119 (20 positions); pos 105 carries a
+# uniform G mismatch on all reads.
+if [ -f "$DATA/tiny.bam" ]; then
+    PL_ROWS=$("$VV" --tsv --no-header --pileup "$DATA/tiny.bam" | wc -l)
+    assert_eq_file_inline "bam_pileup_rows"        "$PL_ROWS" "20"
+    PL_SCH=$("$VV" --schema --pileup "$DATA/tiny.bam" 2>&1)
+    assert_contains "bam_pileup_footer_format"     "$PL_SCH" "mpileup (from BAM)"
+    assert_contains "bam_pileup_col_bases"         "$PL_SCH" "bases"
+    # Range query: only emit positions within the requested span, matching
+    # samtools mpileup -r behaviour.
+    PL_REG=$("$VV" --tsv --no-header --pileup -r chr1:105-105 "$DATA/tiny.bam" | wc -l)
+    assert_eq_file_inline "bam_pileup_region_one"  "$PL_REG" "1"
+    # Compare a single row byte-for-byte against samtools mpileup if
+    # samtools is in PATH (skip otherwise — CI doesn't always ship it).
+    if command -v samtools >/dev/null 2>&1; then
+        VV_OUT=$("$VV" --tsv --no-header --pileup -r chr1:105-105 "$DATA/tiny.bam")
+        SAM_OUT=$(samtools mpileup -r chr1:105-105 "$DATA/tiny.bam" 2>/dev/null)
+        assert_eq_file_inline "bam_pileup_matches_samtools" "$VV_OUT" "$SAM_OUT"
+    fi
+    # --decode-pileup composes: pos 105 has 3 reads, all G — so G=3,
+    # other allele counts zero; fwd=2 (uppercase G), rev=1 (lowercase g).
+    DEC_BAM=$("$VV" --tsv --no-header --pileup --decode-pileup \
+        --filter 'pos == 105' --select 'A,C,G,T,N,fwd,rev' "$DATA/tiny.bam")
+    assert_eq_file_inline "bam_pileup_decoded_chr1_105" "$DEC_BAM" "0	0	3	0	0	2	1"
+fi
+
 echo "── Threading parity ──────────────────────────────────────"
 "$VV" --tsv --no-header -@ 1 "$DATA/tiny.parquet" > "$TMP/t1.out"
 "$VV" --tsv --no-header -@ 4 "$DATA/tiny.parquet" > "$TMP/t4.out"
