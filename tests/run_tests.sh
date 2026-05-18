@@ -382,8 +382,11 @@ if [ -f "$DATA/tiny.sqlite" ]; then
 fi
 
 # Apache ORC: columnar; one stripe → one chunk. The fixture is small so it
-# lands in a single stripe even at stripe_size=2.
-if [ -f "$DATA/tiny.orc" ]; then
+# lands in a single stripe even at stripe_size=2. The AlmaLinux 8 static
+# build currently has ARROW_ORC=OFF, so probe for ORC support at runtime
+# and skip these tests if vv was built without it.
+if [ -f "$DATA/tiny.orc" ] && \
+   ! "$VV" --schema "$DATA/tiny.orc" 2>&1 | grep -q "without Apache ORC"; then
     ORC_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.orc" | wc -l)
     assert_eq_file_inline "orc_rows"                "$ORC_ROWS" "3"
     ORC_SCH=$("$VV" --schema "$DATA/tiny.orc" 2>&1)

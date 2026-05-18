@@ -205,7 +205,12 @@ RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
         -DMZ_ZSTD=OFF -DMZ_PKCRYPT=OFF -DMZ_WZAES=OFF -DMZ_SIGNING=OFF \
         -DMZ_FETCH_LIBS=OFF -DMZ_FORCE_FETCH_LIBS=OFF \
         -DMZ_COMPAT=ON && \
-    cmake --build minizip-bld -j$(nproc) && cmake --install minizip-bld
+    cmake --build minizip-bld -j$(nproc) && cmake --install minizip-bld && \
+    # minizip-ng's MZ_COMPAT=ON drops compat headers at
+    # <prefix>/include/minizip/{unzip,zip,ioapi,...}.h. xlsxio with
+    # WITH_MINIZIP_NG=ON includes them as <minizip-ng/unzip.h> — symlink
+    # the dir so both spellings resolve to the same files.
+    ln -sfn minizip /build/static-libs/include/minizip-ng
 
 # ── xlsxio (reads .xlsx / .xlsm) ──────────────────────────────────────────────
 # Build the read-only library against our vendored expat + minizip-ng.
