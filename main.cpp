@@ -8524,7 +8524,25 @@ class TableTUI {
 
     // Ensure cache entry for chunk `c` exists and has all requested source
     // columns loaded.  A single read_chunk() call fetches whatever's missing.
-    void ensure_cols(int c, const std::vector<int>& src_cols) {
+    // Ensure cache entry for chunk `c` exists and has all requested source
+    // columns loaded. A single read_chunk() call fetches whatever's missing.
+    //
+    // `need_rows = -1` (default) means "decode the entire chunk". A positive
+    // value caps the decode at the first N rows from the start of the chunk
+    // — only useful for chunk 0, where `ParquetSource::read_first()` has a
+    // fast `GetRecordBatchReader`-based path that skips decoding the rest of
+    // the row group. The TUI passes the visible-window size plus a buffer
+    // for its first paint, so opening a multi-GB parquet with ~64K rows in
+    // its first row group draws in ~100 ms instead of the ~10 s the full
+    // row-group decode used to take. When the user later scrolls past the
+    // partial window, ensure_cols upgrades the entry by re-decoding every
+    // previously-loaded column at the full row-group size.
+    void ensure_cols(int c, const std::vector<int>& src_cols,
+                      int64_t need_rows = -1) {
+        const int64_t chunk_total = src_->chunk_meta(c).num_rows;
+        const int64_t target =
+            (need_rows < 0 || need_rows > chunk_total) ? chunk_total : need_rows;
+
         auto it = cache_.find(c);
         if (it == cache_.end()) {
             if ((int)cache_.size() >= MAX_CACHE) {
@@ -8532,7 +8550,7 @@ class TableTUI {
             }
             CachedRG cr;
             cr.first_row = src_->chunk_meta(c).first_row;
-            cr.num_rows  = src_->chunk_meta(c).num_rows;
+            cr.num_rows  = 0;        // nothing loaded yet
             cr.cols.assign(src_num_cols_, nullptr);
             it = cache_.emplace(c, std::move(cr)).first;
             lru_.push_front(c);
@@ -8541,18 +8559,42 @@ class TableTUI {
         }
         CachedRG& cr = it->second;
 
-        std::vector<int> missing;
-        for (int sc : src_cols)
-            if (sc >= 0 && sc < src_num_cols_ && !cr.cols[sc]) missing.push_back(sc);
-        if (missing.empty()) return;
+        // Columns to (re)load: never-loaded, OR previously loaded but with
+        // fewer rows than the new target. When target > cr.num_rows we have
+        // to also re-decode every column that's already in the cache, or we'd
+        // end up with a chunk whose columns have mismatched row counts.
+        std::vector<int> need;
+        for (int sc : src_cols) {
+            if (sc < 0 || sc >= src_num_cols_) continue;
+            if (!cr.cols[sc] ||
+                (int64_t)cr.cols[sc]->length() < target)
+                need.push_back(sc);
+        }
+        if (target > cr.num_rows) {
+            for (int sc = 0; sc < src_num_cols_; ++sc) {
+                if (!cr.cols[sc]) continue;
+                if ((int64_t)cr.cols[sc]->length() >= target) continue;
+                if (std::find(need.begin(), need.end(), sc) == need.end())
+                    need.push_back(sc);
+            }
+        }
+        if (need.empty()) return;
 
         src_->ensure(c);
         std::shared_ptr<arrow::Table> tbl;
-        if (!src_->read_chunk(c, missing, &tbl).ok()) return;
+        // Fast path: for chunk 0 we have a slice-read that decodes only the
+        // first N rows of the row group. read_first falls back to read_chunk
+        // for non-Parquet sources, so this is safe regardless of format.
+        if (c == 0 && target < chunk_total) {
+            if (!src_->read_first(target, need, &tbl).ok()) return;
+        } else {
+            if (!src_->read_chunk(c, need, &tbl).ok()) return;
+        }
         cr.ok       = true;
-        cr.num_rows = tbl->num_rows();  // may be smaller than chunk_meta for streaming sources
-        for (size_t i = 0; i < missing.size() && (int)i < tbl->num_columns(); ++i) {
-            int sc = missing[i];
+        cr.num_rows = std::max<int64_t>(cr.num_rows,
+                                          tbl ? tbl->num_rows() : 0);
+        for (size_t i = 0; i < need.size() && (int)i < tbl->num_columns(); ++i) {
+            int sc = need[i];
             auto ca = tbl->column((int)i);
             cr.cols[sc] = ca;
         }
@@ -8676,7 +8718,15 @@ class TableTUI {
         if (src_->num_chunks() == 0) { src_->ensure(0); return; }
         std::vector<int> src_cols = src_cols_for_virt(visible_virt_cols);
         int top_chunk = chunk_for_row(top_row_);
-        ensure_cols(top_chunk, src_cols);
+        // First paint of a Parquet file: only need rows within (and just
+        // past) the visible window. ensure_cols's read_first fast path
+        // skips decoding the rest of the row group. The +256 gives the
+        // user some scrolling headroom before we have to upgrade to a
+        // full row-group decode.
+        int64_t top_local = top_row_ -
+            src_->chunk_meta(top_chunk).first_row;
+        int64_t need = top_local + (int64_t)data_lines() + 256;
+        ensure_cols(top_chunk, src_cols, need);
         int64_t bot = top_row_ + (int64_t)data_lines() - 1;
         if (total_rows() > 0) bot = std::min(bot, total_rows() - 1);
         if (total_rows() < 0)
