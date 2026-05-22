@@ -28,6 +28,7 @@ _vv() {
         '*.xlsx' '*.xlsm' '*.ods'
         '*.orc'
         '*.pileup' '*.pileup.gz' '*.mpileup' '*.mpileup.gz' '*.pile' '*.pile.gz'
+        '*.md' '*.markdown' '*.mdown' '*.mkd'
     )
 
     _arguments -s -S \

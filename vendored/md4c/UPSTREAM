@@ -1,0 +1,15 @@
+Source:  https://github.com/mity/md4c
+Tag:     release-0.5.2
+License: MIT (see LICENSE in this directory)
+
+vv vendors md4c — Martin Mitáš's CommonMark + GFM parser — to render
+.md files in the terminal. We keep only the SAX parser:
+  md4c.c, md4c.h        — the parser itself
+  entity.c, entity.h    — HTML entity decoding (&amp; etc.)
+
+The HTML renderer (md4c-html.c / .h) is *not* vendored — vv drives
+the SAX callbacks itself to emit ANSI / ncurses output. The CLI tool
+(md2html.c) is likewise dropped.
+
+To bump the pinned version: replace the files above from the new tag
+and update this UPSTREAM file.

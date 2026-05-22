@@ -150,6 +150,18 @@ target_include_directories(bigwig
 # `uncompress`, `compressBound` resolve.
 target_link_libraries(bigwig PUBLIC ZLIB::ZLIB)
 
+# ── md4c (markdown viewer, vendored) ─────────────────────────────────────────
+# Vendored under vendored/md4c/ (md4c.c + entity.c, plus headers). MIT.
+# We use only the SAX parser; md4c's optional HTML renderer is not vendored.
+file(GLOB MD4C_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/vendored/md4c/*.c")
+add_library(md4c STATIC ${MD4C_SRCS})
+# md4c builds clean at high warning levels but third-party C in vv's CMake
+# inherits aggressive flags; quiet them so warnings in vendored code don't
+# break the build. `-O2 -ff/data-sections` matches libBigWig for consistency.
+target_compile_options(md4c PRIVATE -O2 -ffunction-sections -fdata-sections -w)
+target_include_directories(md4c
+    PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/vendored/md4c")
+
 # ── SQLite (for .sqlite / .db / .sqlite3 source) ─────────────────────────────
 # Local builds use the system libsqlite3 (every distro ships it). The
 # AlmaLinux 8 static build compiles a libsqlite3.a from the upstream
@@ -321,6 +333,7 @@ if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND NCURSES_STATIC_LIB)
       ${_tinfo_lib}
       ${HTSLIB_STATIC_LIB}
       bigwig
+      md4c
       ${_sqlite}
       # xlsxio + its transitive deps (expat for XML, minizip for ZIP).
       # Order matters for static linking: xlsxio uses expat/minizip
@@ -348,6 +361,7 @@ else()
       ${CURSES_LIBRARIES}
       ${HTSLIB_LINK_LIBRARIES}
       bigwig
+      md4c
       SQLite::SQLite3
       ${XLSXIO_LIB}
       ${EXPAT_SHARED}

@@ -514,6 +514,25 @@ if [ -f "$DATA/tiny.bam" ]; then
     assert_eq_file_inline "bam_pileup_decoded_chr1_105" "$DEC_BAM" "0	0	3	0	0	2	1"
 fi
 
+# Markdown viewer — prose + GFM tables routed through the existing
+# table renderer. The fixture tiny.md has two tables (one numeric,
+# one string) and one of each block type.
+if [ -f "$DATA/tiny.md" ]; then
+    MD_OUT=$("$VV" --color=never "$DATA/tiny.md" 2>&1)
+    assert_contains "md_heading_lvl1"        "$MD_OUT" "# tiny.md"
+    assert_contains "md_heading_lvl2"        "$MD_OUT" "## Lists"
+    assert_contains "md_list_bullet"         "$MD_OUT" "alpha"
+    assert_contains "md_table_caption_1"     "$MD_OUT" "Benchmark table"
+    assert_contains "md_table_caption_2"     "$MD_OUT" "Reference table"
+    assert_contains "md_table_footer"        "$MD_OUT" "Format: markdown table"
+    # First table has typed columns — int64 for rows, double for runtime_ms.
+    assert_contains "md_table_col_int64"     "$MD_OUT" "int64"
+    assert_contains "md_table_col_double"    "$MD_OUT" "double"
+    # Image stub for the missing.png reference (kitty/iTerm protocol off
+    # because $TERM_PROGRAM isn't set inside the test harness).
+    assert_contains "md_image_stub"          "$MD_OUT" "[placeholder image]"
+fi
+
 echo "── Threading parity ──────────────────────────────────────"
 "$VV" --tsv --no-header -@ 1 "$DATA/tiny.parquet" > "$TMP/t1.out"
 "$VV" --tsv --no-header -@ 4 "$DATA/tiny.parquet" > "$TMP/t4.out"

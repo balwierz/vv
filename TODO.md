@@ -65,6 +65,17 @@ user-facing summary).
 ## Format gaps
 
 ### Open
+- Markdown TUI mode — current `vv README.md` emits ANSI to stdout
+  (great for `vv README.md | less -R`). A proper scrollable
+  ncurses-based TUI integrated into `TableTUI` as a new `TabKind`
+  would let prose + GFM tables share a single multi-tab session and
+  pick up the existing `/`-search infrastructure. ~200 LOC of glue
+  on top of the renderer + TabState already in place.
+- Sixel image protocol (xterm / mlterm / WezTerm-no-iterm) for the
+  markdown viewer. Needs PNG → RGB decode + palette quantisation;
+  ~500 LOC vendored (stb_image.h + sixel encoder).
+- Markdown image fetch over HTTP (badges, hosted screenshots).
+  Currently any `https://…` URL falls through to the alt-text stub.
 - `vv x.bam --pileup -f ref.fa` — reference-aware pileup. The
   current `--pileup` walker matches `samtools mpileup` without `-f`
   (ref always `N`, no `.`/`,` match notation). Plumbing a FASTA in

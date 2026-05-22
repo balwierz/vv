@@ -93,6 +93,18 @@ all have by default. The AlmaLinux 8 static binary currently does
 \fBnot\fR include ORC; \fBvv\fR reports "compiled without ORC support"
 when invoked on an .orc file there.
 .IP \(bu 2
+\fB.md\fR, \fB.markdown\fR, \fB.mdown\fR, \fB.mkd\fR \(en CommonMark
++ GFM markdown rendered as ANSI to stdout. Headings, bold / italic /
+strike / code, lists, block quotes, fenced code blocks, horizontal
+rules, and links are styled per the active \fB--theme\fR. GFM
+\fB|\fR-tables are extracted and rendered through vv's normal table
+view (column types inferred from cell contents \(em a benchmark
+column of integers stays an int64). Local PNG / JPEG / GIF images
+display inline on kitty, iTerm2, and WezTerm terminals via their
+graphics protocols; everything else (remote URLs, SVG, terminals
+without graphics support) falls back to a \fB[image: alt-text]\fR
+stub. Pipe to \fBless -R\fR to scroll.
+.IP \(bu 2
 \fB.2bit\fR \(en UCSC 2bit sequence container; rendered as a per-
 sequence index (\fBname\fR, \fBlength\fR, \fBn_blocks\fR,
 \fBmask_blocks\fR). DNA bases themselves are not decoded — too large

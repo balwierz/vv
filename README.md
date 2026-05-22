@@ -65,6 +65,7 @@ See [INSTALL.md](INSTALL.md) for source builds, AUR, and the static AlmaLinux
 | OpenDocument      | `.ods` (each sheet → one TUI tab; hand-rolled minizip + expat SAX parser; types inferred from cell content via Arrow's CSV reader) |
 | samtools mpileup  | `.pileup`, `.mpileup`, `.pile` (plus `.gz`); per-base pileup with auto-named columns; multi-sample files get per-sample `depth_i` / `bases_i` / `quals_i` triplets; range queries on bgzipped + tabix-indexed files |
 | Apache ORC        | `.orc` (columnar; one stripe → one chunk; via Arrow's ORC adapter — requires Arrow built with `-DARROW_ORC=ON`, which apt/brew Arrow packages have by default) |
+| Markdown          | `.md`, `.markdown`, `.mdown`, `.mkd` — CommonMark + GFM via vendored md4c. Renders as ANSI on stdout (pipe to `less -R`). GFM tables are extracted and rendered through vv's regular table renderer with column-type inference. Local PNG/JPEG/GIF images inline on kitty / iTerm2 / WezTerm terminals via their graphics protocols. |
 | Sequences (FASTA) | `.fa`, `.fasta`, `.fna`, `.faa`, `.ffn`, `.frn` (plus `.gz`) |
 | Sequencing reads  | `.fq`, `.fastq` (plus `.gz`)                               |
 | Delimited text    | `.tsv`, `.csv` (plus `.gz`)                                |

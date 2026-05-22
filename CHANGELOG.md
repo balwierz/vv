@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Markdown viewer (`.md`, `.markdown`, `.mdown`, `.mkd`)** — renders
+  CommonMark + GFM via the vendored md4c parser. The prose body is
+  written to stdout as ANSI (headings, bold / italic / strike / code,
+  lists, block quotes, fenced code blocks, horizontal rules, link text
+  + URLs), word-wrapped to the terminal width. GFM `|`-tables are
+  extracted from the prose stream and rendered through vv's normal
+  table renderer, complete with column-type inference (so a benchmark
+  column of `121.7` / `1240.3` becomes `double` and `--filter` works
+  against it). Local PNG/JPEG/GIF images are rendered inline on
+  kitty / iTerm2 / WezTerm terminals via their graphics protocols;
+  remote URLs, SVGs, and graphics-blind terminals fall back to a
+  `🖼 [alt-text]` stub. Targets the "outdated Linux without root" use
+  case — `scp vv user@server:` and pipe READMEs through `less -R`.
 - **samtools mpileup (`.pileup`, `.mpileup`, `.pile`, plus `.gz`)** —
   per-base pileup output. The file is routed through a new
   `DelimKind::Mpileup` variant of the existing `DelimitedSource`,

@@ -52,6 +52,11 @@ extern "C" {
 #include <unzip.h>
 #include <expat.h>
 }
+// md4c — CommonMark + GFM parser, vendored under vendored/md4c/.
+// Drives the markdown viewer (`vv README.md`).
+extern "C" {
+#include <md4c.h>
+}
 
 #include <algorithm>
 #include <array>
@@ -506,6 +511,9 @@ static void print_usage(const char* prog) {
         "  .xlsx  .xlsm                Excel spreadsheet (each sheet → one TUI tab)\n"
         "  .ods                        OpenDocument spreadsheet (each sheet → one TUI tab)\n"
         "  .orc                        Apache ORC (columnar; one stripe → one chunk)\n"
+        "  .md  .markdown  .mdown  .mkd\n"
+        "                              CommonMark + GFM markdown (renders as ANSI;\n"
+        "                              GFM tables routed through the table renderer)\n"
         "  .fa  .fasta  .fna  .faa     sequences (FASTA, plus .gz)\n"
         "  .fq  .fastq                 sequencing reads (FASTQ, plus .gz)\n"
         "  .bcf                        binary VCF (htslib)\n"
@@ -6397,6 +6405,897 @@ static std::string decode_mpileup_to_memory(
     return "";
 }
 
+// ── Markdown viewer (.md / .markdown / .mdown / .mkd) ────────────────────────
+//
+// Renders CommonMark + GFM (tables, strikethrough, task lists, autolinks)
+// using the vendored md4c parser. The output model is a flat sequence of
+// MdLine values; each line is a list of styled MdSegment runs. Two output
+// modes consume the same model:
+//   1. Non-interactive: serialise to ANSI on stdout (one segment → SGR
+//      codes + literal text).
+//   2. TUI: ncurses drawing with attron/color_set per segment.
+// GFM tables are pulled out of the prose stream and surfaced as separate
+// MemoryTableSource entries (column types inferred via the existing
+// csv_buffer_to_table helper). The markdown viewer's main entry point
+// (view_markdown, near main()) wires these tables as additional tabs
+// alongside the prose tab.
+
+namespace md {
+
+// Style mask for a single text run. Bit-OR composable.
+enum MdStyleFlag : uint16_t {
+    MD_BOLD   = 1 << 0,
+    MD_ITALIC = 1 << 1,
+    MD_UNDER  = 1 << 2,
+    MD_STRIKE = 1 << 3,
+    MD_CODE   = 1 << 4,
+    MD_DIM    = 1 << 5,
+    MD_REV    = 1 << 6,    // reversed video (used for level-1 headings)
+};
+
+// Logical "colour role" for a run. Maps to a g_color field at render
+// time so light / dark / solarized themes work without re-rendering.
+enum MdRole : uint8_t {
+    ROLE_NONE = 0,
+    ROLE_H1, ROLE_H2, ROLE_H3, ROLE_H4_PLUS,
+    ROLE_CODE,
+    ROLE_QUOTE,
+    ROLE_LINK,
+    ROLE_LINK_URL,
+    ROLE_LIST_MARK,
+    ROLE_HR,
+    ROLE_IMAGE,
+};
+
+struct MdSegment {
+    std::string text;
+    uint16_t    style = 0;
+    uint8_t     role  = ROLE_NONE;
+};
+struct MdLine {
+    std::vector<MdSegment> runs;
+};
+
+enum class MdBlockKind {
+    Heading, Paragraph, Code, Quote, List, ListItem,
+    HRule, TablePlaceholder, Image, Spacer
+};
+
+struct MdBlock {
+    MdBlockKind kind = MdBlockKind::Paragraph;
+    int         level = 0;             // heading level OR list nesting
+    std::vector<MdLine> lines;
+    int         table_idx = -1;        // points into MarkdownDoc::tables
+    int         image_idx = -1;
+};
+
+struct MarkdownDoc {
+    std::vector<MdBlock> blocks;
+    std::vector<std::shared_ptr<arrow::Table>> tables;
+    std::vector<std::string>                   table_captions;
+    std::string  source_dir;
+    std::string  source_path;
+};
+
+// ── ANSI helpers ────────────────────────────────────────────────────────────
+//
+// Map a (style, role) pair to an SGR escape opener. Used in
+// non-interactive output. Reads the live g_color palette so theme
+// switches at runtime don't need re-rendering.
+
+static std::string ansi_open(uint16_t style, uint8_t role) {
+    // g_color.reset is empty when colour is disabled (no TTY without
+    // --color=always). In that mode we emit no SGR at all — keeps the
+    // output plain-text-pipe-friendly.
+    if (g_color.reset == nullptr || *g_color.reset == '\0') return std::string();
+    std::string s;
+    auto add = [&](const char* code) {
+        if (s.empty()) s = "\x1b[";
+        else           s += ';';
+        s += code;
+    };
+    if (style & MD_BOLD)   add("1");
+    if (style & MD_DIM)    add("2");
+    if (style & MD_ITALIC) add("3");
+    if (style & MD_UNDER)  add("4");
+    if (style & MD_REV)    add("7");
+    if (style & MD_STRIKE) add("9");
+    if (!s.empty()) s += 'm';
+    // Role colour overlays the SGR codes — extracted from g_color so
+    // the user's --theme picks the right shade. Roles map to themed
+    // strings (eg g_color.header); we just paste the escape verbatim.
+    switch (role) {
+        case ROLE_H1: case ROLE_H2: case ROLE_H3: case ROLE_H4_PLUS:
+            s += g_color.header; break;
+        case ROLE_CODE:      s += g_color.row_idx;  break;
+        case ROLE_QUOTE:     s += g_color.trunc;    break;
+        case ROLE_LINK:      s += g_color.number;   break;
+        case ROLE_LINK_URL:  s += g_color.trunc;    break;
+        case ROLE_LIST_MARK: s += g_color.number;   break;
+        case ROLE_HR:        s += g_color.border;   break;
+        case ROLE_IMAGE:     s += g_color.trunc;    break;
+        default: break;
+    }
+    return s;
+}
+
+static void emit_line_ansi(std::string& out, const MdLine& line) {
+    // Batch SGR opens — only emit a fresh sequence when the (style, role)
+    // pair changes. Close once at end-of-line. Cuts the per-line ANSI byte
+    // count by ~5× on a paragraph of bold text and matches what humans /
+    // less expect to see in well-formed escape streams.
+    uint16_t cur_style = 0;
+    uint8_t  cur_role  = ROLE_NONE;
+    bool     opened    = false;
+    for (const auto& r : line.runs) {
+        if (r.style != cur_style || r.role != cur_role) {
+            if (opened) out += g_color.reset;
+            std::string esc = ansi_open(r.style, r.role);
+            out += esc;
+            cur_style = r.style;
+            cur_role  = r.role;
+            opened    = (r.style || r.role) && !esc.empty();
+        }
+        out += r.text;
+    }
+    if (opened) out += g_color.reset;
+    out += '\n';
+}
+
+// ── Word-wrap ────────────────────────────────────────────────────────────────
+//
+// Wrap a list of styled runs to the given column width, preserving SGR
+// state across the wrap boundary. Splits on whitespace; falls back to
+// hard-cut for runs longer than the line. Style attributes carry over
+// per-run, so re-opening SGR after a wrap is automatic on emit.
+
+static void wrap_runs(const std::vector<MdSegment>& src,
+                      int width, int indent,
+                      std::vector<MdLine>* out) {
+    if (width <= 0) width = 80;
+    int pos = 0;
+    MdLine cur;
+    std::string lead(indent, ' ');
+    if (!lead.empty()) {
+        cur.runs.push_back({lead, 0, ROLE_NONE});
+        pos = indent;
+    }
+    auto push_line = [&]() {
+        out->push_back(std::move(cur));
+        cur = MdLine{};
+        pos = 0;
+        if (!lead.empty()) {
+            cur.runs.push_back({lead, 0, ROLE_NONE});
+            pos = indent;
+        }
+    };
+    // Tracks whether the previous tokens / segments ended with collapsible
+    // whitespace. Survives across segment boundaries so a heading whose
+    // lead-text ends in " " still gets a space before the next segment's
+    // first word.
+    bool pending_space = false;
+    uint16_t pending_space_style = 0;
+    uint8_t  pending_space_role  = 0;
+
+    for (const auto& seg : src) {
+        const std::string& t = seg.text;
+        size_t i = 0;
+        while (i < t.size()) {
+            // Skip whitespace; record that we'd want a space before the
+            // next token.
+            while (i < t.size() && (t[i] == ' ' || t[i] == '\t')) {
+                pending_space      = true;
+                pending_space_style = seg.style;
+                pending_space_role  = seg.role;
+                ++i;
+            }
+            if (i >= t.size()) break;
+            if (t[i] == '\n') {
+                push_line();
+                pending_space = false;
+                ++i;
+                continue;
+            }
+            // Read the next word (one whitespace-delimited token).
+            size_t j = i;
+            while (j < t.size() && t[j] != ' ' && t[j] != '\t' && t[j] != '\n')
+                ++j;
+            std::string word = t.substr(i, j - i);
+            int wlen = display_width(word);
+
+            // Emit the pending space iff we're past the leading indent.
+            // Drop a pending space at a line break (avoids leading spaces
+            // on wrapped lines).
+            if (pending_space && pos > indent) {
+                if (pos + 1 + wlen > width) {
+                    push_line();
+                    pending_space = false;
+                } else {
+                    cur.runs.push_back({" ", pending_space_style,
+                                         pending_space_role});
+                    ++pos;
+                    pending_space = false;
+                }
+            } else {
+                pending_space = false;
+            }
+
+            if (pos + wlen > width && pos > indent) push_line();
+            cur.runs.push_back({word, seg.style, seg.role});
+            pos += wlen;
+            i = j;
+        }
+    }
+    if (!cur.runs.empty() && !(cur.runs.size() == 1 && cur.runs[0].text == lead))
+        push_line();
+}
+
+// ── Inline-image protocol detection (kitty / iTerm2) ────────────────────────
+//
+// Detect once at parse time and stash the chosen protocol on the
+// renderer. Both kitty's graphics protocol and iTerm2's OSC 1337 inline-
+// images scheme accept the raw image file bytes — we don't need to
+// decode or resample, just base64-encode and emit. Falls back to a stub
+// `[image: alt]` when neither is available (works for SSH terminals
+// that won't ever display pixels).
+
+enum class ImageProto { None, Kitty, ITerm2 };
+
+static ImageProto detect_image_proto() {
+    const char* term_program = std::getenv("TERM_PROGRAM");
+    const char* lc_term      = std::getenv("LC_TERMINAL");
+    if ((term_program && std::string(term_program) == "iTerm.app") ||
+        (lc_term      && std::string(lc_term)      == "iTerm2") ||
+        (term_program && std::string(term_program) == "WezTerm"))
+        return ImageProto::ITerm2;
+    const char* term            = std::getenv("TERM");
+    const char* kitty_window    = std::getenv("KITTY_WINDOW_ID");
+    if (kitty_window ||
+        (term && std::string(term).find("kitty") != std::string::npos))
+        return ImageProto::Kitty;
+    return ImageProto::None;
+}
+
+static bool is_remote_url(const std::string& url) {
+    return url.rfind("http://",  0) == 0 ||
+           url.rfind("https://", 0) == 0 ||
+           url.rfind("data:",    0) == 0 ||
+           url.rfind("ftp://",   0) == 0;
+}
+
+// Recognise PNG / JPEG / GIF magic bytes. Returns nullptr for anything
+// else (SVG, BMP, WebP…) — we'll fall back to the alt-text stub there.
+static const char* sniff_image_kind(const std::string& bytes) {
+    if (bytes.size() >= 8 && (unsigned char)bytes[0] == 0x89 &&
+        bytes[1] == 'P' && bytes[2] == 'N' && bytes[3] == 'G') return "png";
+    if (bytes.size() >= 3 && (unsigned char)bytes[0] == 0xFF &&
+        (unsigned char)bytes[1] == 0xD8 && (unsigned char)bytes[2] == 0xFF)
+        return "jpeg";
+    if (bytes.size() >= 6 && (bytes.compare(0, 6, "GIF87a") == 0 ||
+                              bytes.compare(0, 6, "GIF89a") == 0)) return "gif";
+    return nullptr;
+}
+
+// Append the terminal-protocol escape that triggers an inline image
+// to `out`. Returns true on success; on failure (file missing / too
+// big / unsupported format / colour-off), leaves `out` untouched and
+// the caller falls back to the alt-text stub.
+static bool render_image_inline(const std::string& abs_path,
+                                 const std::string& alt,
+                                 ImageProto proto,
+                                 MdLine* out) {
+    if (proto == ImageProto::None) return false;
+    if (g_color.reset == nullptr || *g_color.reset == '\0')
+        return false;   // colour-off → keep output plain-text
+    std::ifstream f(abs_path, std::ios::binary);
+    if (!f) return false;
+    f.seekg(0, std::ios::end);
+    std::streamoff len = f.tellg();
+    if (len <= 0 || len > 5 * 1024 * 1024) return false;  // skip huge files
+    f.seekg(0, std::ios::beg);
+    std::string buf((size_t)len, '\0');
+    f.read(buf.data(), len);
+    if (!sniff_image_kind(buf)) return false;   // PNG/JPEG/GIF only
+    std::string b64 = base64_encode(buf);
+    std::string esc;
+    if (proto == ImageProto::ITerm2) {
+        // OSC 1337 ; File=name=<b64name>;inline=1;preserveAspectRatio=1
+        //          : <b64data> BEL
+        std::string fname_b64 = base64_encode(
+            abs_path.substr(abs_path.find_last_of('/') + 1));
+        esc = "\033]1337;File=name=" + fname_b64 +
+              ";inline=1;preserveAspectRatio=1:" + b64 + "\a";
+    } else {
+        // kitty: a=T (transmit+display), f=100 (PNG/JPEG/GIF); the
+        // payload is chunked into 4096-byte b64 segments per spec.
+        const size_t CHUNK = 4096;
+        for (size_t i = 0; i < b64.size(); i += CHUNK) {
+            size_t end   = std::min(i + CHUNK, b64.size());
+            bool   first = (i == 0);
+            bool   last  = (end == b64.size());
+            esc += "\033_G";
+            if (first) esc += "a=T,f=100,";
+            esc += "m=";
+            esc += (last ? "0" : "1");
+            esc += ';';
+            esc.append(b64.data() + i, end - i);
+            esc += "\033\\";
+        }
+    }
+    // Prefix with the alt-text stub for terminal-protocol-blind consumers
+    // (e.g. `less -R`); the escape itself is a no-op there.
+    out->runs.push_back({"\xf0\x9f\x96\xbc  [", MD_DIM, ROLE_IMAGE}); // 🖼
+    out->runs.push_back({alt, MD_DIM, ROLE_IMAGE});
+    out->runs.push_back({"]", MD_DIM, ROLE_IMAGE});
+    out->runs.push_back({esc, 0, ROLE_NONE});
+    return true;
+}
+
+// ── md4c renderer state ─────────────────────────────────────────────────────
+
+struct Renderer {
+    MarkdownDoc* doc;
+    int          width;          // terminal width for word wrap
+    ImageProto   img_proto = ImageProto::None;
+
+    // Span-style stack — md4c may nest spans (e.g., bold inside link).
+    uint16_t     style = 0;
+    uint8_t      role  = ROLE_NONE;
+
+    // Current block accumulator.
+    MdBlockKind  cur_block = MdBlockKind::Paragraph;
+    std::vector<MdSegment> cur_runs;    // text being collected for the block
+    int          list_depth = 0;
+    std::vector<int> list_index;        // per-nesting ordinal counter (0=ul)
+    std::vector<bool> list_is_ordered;
+    bool         li_first_text = false; // emit bullet before first text
+
+    int          heading_level = 0;
+    int          quote_depth   = 0;
+    int          code_lang_role = 0;
+
+    // Table accumulation.
+    bool                 in_table = false;
+    bool                 in_thead = false;
+    unsigned             tbl_cols = 0;
+    std::vector<std::string> tbl_headers;
+    std::vector<std::vector<std::string>> tbl_rows;
+    std::vector<std::string> cur_row;
+    std::string          cur_cell;
+
+    // Pending link/image href captured at enter_span(A) / IMG.
+    std::string          pending_href;
+    std::string          pending_img_src;
+    std::string          pending_img_alt;
+    bool                 collecting_img_alt = false;
+
+    // ── helpers ────────────────────────────────────────────────────────────
+    void finish_block(MdBlockKind kind, int indent = 0) {
+        MdBlock b;
+        b.kind = kind;
+        b.level = (kind == MdBlockKind::Heading) ? heading_level : 0;
+        if (!cur_runs.empty())
+            wrap_runs(cur_runs, width, indent, &b.lines);
+        doc->blocks.push_back(std::move(b));
+        cur_runs.clear();
+    }
+
+    void push_spacer() {
+        // Blank-line separator between blocks, never doubled.
+        if (!doc->blocks.empty() &&
+            doc->blocks.back().kind != MdBlockKind::Spacer)
+            doc->blocks.push_back({MdBlockKind::Spacer, 0, {MdLine{}}, -1, -1});
+    }
+
+    void emit_quote_prefix() {
+        if (quote_depth <= 0) return;
+        std::string s;
+        for (int i = 0; i < quote_depth; ++i) s += "\xe2\x96\x8c ";  // ▌
+        cur_runs.push_back({s, MD_DIM, ROLE_QUOTE});
+    }
+
+    void emit_list_bullet() {
+        if (list_depth <= 0) return;
+        std::string lead((list_depth - 1) * 2, ' ');
+        if (list_is_ordered.back()) {
+            list_index.back()++;
+            char buf[16];
+            std::snprintf(buf, sizeof(buf), "%d. ", list_index.back());
+            cur_runs.push_back({lead, 0, ROLE_NONE});
+            cur_runs.push_back({buf,  0, ROLE_LIST_MARK});
+        } else {
+            cur_runs.push_back({lead + "\xe2\x80\xa2 ", 0, ROLE_LIST_MARK}); // •
+        }
+    }
+
+    void open_heading(int lvl) {
+        finish_paragraph();
+        push_spacer();
+        heading_level = lvl;
+        cur_block = MdBlockKind::Heading;
+        // Heading lead: "# " coloured + bold for visual prefix.
+        std::string lead;
+        for (int i = 0; i < lvl; ++i) lead += '#';
+        lead += ' ';
+        cur_runs.push_back({lead, MD_BOLD, role_for_heading(lvl)});
+        // Subsequent text() calls will compose into the same block;
+        // we toggle MD_BOLD via style stack for the inner content.
+        style |= MD_BOLD;
+        if (lvl == 1) style |= MD_UNDER;
+        role = role_for_heading(lvl);
+    }
+    void close_heading() {
+        style = 0;
+        role = ROLE_NONE;
+        finish_block(MdBlockKind::Heading);
+    }
+    static uint8_t role_for_heading(int lvl) {
+        switch (lvl) {
+            case 1: return ROLE_H1;
+            case 2: return ROLE_H2;
+            case 3: return ROLE_H3;
+            default: return ROLE_H4_PLUS;
+        }
+    }
+
+    void finish_paragraph() {
+        if (cur_runs.empty()) return;
+        // Drop a trailing space that wrap_runs would emit otherwise.
+        MdBlockKind k = (quote_depth > 0) ? MdBlockKind::Quote
+                                          : MdBlockKind::Paragraph;
+        int indent = quote_depth * 2;
+        // For block quotes we put the ▌ glyphs at the start of every
+        // wrapped line, not just the first — easier to inject before wrap.
+        finish_block(k, indent);
+    }
+
+    // ── md4c callbacks ─────────────────────────────────────────────────────
+    int enter_block(MD_BLOCKTYPE type, void* detail) {
+        switch (type) {
+            case MD_BLOCK_DOC:        break;
+            case MD_BLOCK_QUOTE:
+                push_spacer();
+                quote_depth++;
+                break;
+            case MD_BLOCK_UL: {
+                push_spacer();
+                list_depth++;
+                list_is_ordered.push_back(false);
+                list_index.push_back(0);
+                break;
+            }
+            case MD_BLOCK_OL: {
+                push_spacer();
+                list_depth++;
+                list_is_ordered.push_back(true);
+                auto* d = (MD_BLOCK_OL_DETAIL*)detail;
+                list_index.push_back((int)d->start - 1);
+                break;
+            }
+            case MD_BLOCK_LI:
+                li_first_text = true;
+                break;
+            case MD_BLOCK_HR: {
+                push_spacer();
+                MdBlock b{MdBlockKind::HRule, 0, {}, -1, -1};
+                MdLine line;
+                std::string rule;
+                int w = width > 0 ? width : 80;
+                for (int i = 0; i < w; ++i) rule += "\xe2\x94\x80"; // ─
+                line.runs.push_back({rule, 0, ROLE_HR});
+                b.lines.push_back(std::move(line));
+                doc->blocks.push_back(std::move(b));
+                push_spacer();
+                break;
+            }
+            case MD_BLOCK_H: {
+                auto* d = (MD_BLOCK_H_DETAIL*)detail;
+                open_heading((int)d->level);
+                break;
+            }
+            case MD_BLOCK_CODE: {
+                push_spacer();
+                cur_block = MdBlockKind::Code;
+                break;
+            }
+            case MD_BLOCK_P:
+                if (list_depth > 0 && li_first_text) {
+                    emit_quote_prefix();
+                    emit_list_bullet();
+                    li_first_text = false;
+                } else if (quote_depth > 0) {
+                    emit_quote_prefix();
+                }
+                cur_block = MdBlockKind::Paragraph;
+                break;
+            case MD_BLOCK_TABLE: {
+                push_spacer();
+                auto* d = (MD_BLOCK_TABLE_DETAIL*)detail;
+                in_table = true;
+                tbl_cols = d->col_count;
+                tbl_headers.clear();
+                tbl_rows.clear();
+                cur_row.clear();
+                cur_cell.clear();
+                break;
+            }
+            case MD_BLOCK_THEAD:
+                in_thead = true;
+                break;
+            case MD_BLOCK_TBODY:
+                in_thead = false;
+                break;
+            case MD_BLOCK_TR:
+                cur_row.clear();
+                break;
+            case MD_BLOCK_TH:
+            case MD_BLOCK_TD:
+                cur_cell.clear();
+                break;
+            case MD_BLOCK_HTML:
+                // Treat raw HTML blocks as plain dim text. md4c sends the
+                // content via MD_TEXT_HTML; we collect normally.
+                cur_block = MdBlockKind::Paragraph;
+                style |= MD_DIM;
+                break;
+            default: break;
+        }
+        return 0;
+    }
+
+    int leave_block(MD_BLOCKTYPE type, void* detail) {
+        switch (type) {
+            case MD_BLOCK_DOC:
+                finish_paragraph();
+                break;
+            case MD_BLOCK_QUOTE:
+                quote_depth--;
+                if (quote_depth == 0) push_spacer();
+                break;
+            case MD_BLOCK_UL:
+            case MD_BLOCK_OL:
+                list_depth--;
+                list_is_ordered.pop_back();
+                list_index.pop_back();
+                if (list_depth == 0) push_spacer();
+                break;
+            case MD_BLOCK_LI:
+                finish_paragraph();
+                break;
+            case MD_BLOCK_H:
+                close_heading();
+                push_spacer();
+                break;
+            case MD_BLOCK_CODE: {
+                // Emit fenced code as its own block. cur_runs holds raw
+                // text with embedded newlines from text(CODE).
+                std::string buf;
+                for (const auto& seg : cur_runs) buf += seg.text;
+                cur_runs.clear();
+                MdBlock b{MdBlockKind::Code, 0, {}, -1, -1};
+                size_t pos = 0;
+                while (pos <= buf.size()) {
+                    size_t nl = buf.find('\n', pos);
+                    if (nl == std::string::npos) nl = buf.size();
+                    if (pos == buf.size() && nl == buf.size()) break;
+                    MdLine line;
+                    line.runs.push_back({buf.substr(pos, nl - pos),
+                                          0, ROLE_CODE});
+                    b.lines.push_back(std::move(line));
+                    if (nl == buf.size()) break;
+                    pos = nl + 1;
+                }
+                // Drop a trailing empty line (md4c emits one for trailing
+                // newline inside the fence).
+                if (!b.lines.empty() &&
+                    b.lines.back().runs.size() == 1 &&
+                    b.lines.back().runs[0].text.empty())
+                    b.lines.pop_back();
+                doc->blocks.push_back(std::move(b));
+                push_spacer();
+                break;
+            }
+            case MD_BLOCK_P:
+                finish_paragraph();
+                if (list_depth == 0) push_spacer();
+                break;
+            case MD_BLOCK_TABLE: {
+                in_table = false;
+                // Build an in-memory CSV buffer from collected headers /
+                // rows and hand to Arrow's CSV reader for type inference.
+                std::string csv;
+                auto append_quoted = [&](const std::string& s) {
+                    bool quote = false;
+                    for (char c : s)
+                        if (c == ',' || c == '"' || c == '\n' || c == '\r') {
+                            quote = true; break;
+                        }
+                    if (!quote) { csv += s; return; }
+                    csv += '"';
+                    for (char c : s) {
+                        if (c == '"') csv += '"';
+                        csv += c;
+                    }
+                    csv += '"';
+                };
+                for (size_t i = 0; i < tbl_headers.size(); ++i) {
+                    if (i) csv += ',';
+                    append_quoted(tbl_headers[i]);
+                }
+                csv += '\n';
+                for (const auto& row : tbl_rows) {
+                    for (size_t i = 0; i < row.size(); ++i) {
+                        if (i) csv += ',';
+                        append_quoted(row[i]);
+                    }
+                    // Pad short rows out to the header column count.
+                    for (size_t i = row.size(); i < tbl_headers.size(); ++i)
+                        csv += ',';
+                    csv += '\n';
+                }
+                auto tbl_or = csv_buffer_to_table(csv);
+                if (tbl_or.ok()) {
+                    doc->tables.push_back(*tbl_or);
+                    // Caption: the most recent heading text (if any), or
+                    // "Table N".
+                    std::string cap = "Table " +
+                        std::to_string(doc->tables.size());
+                    for (auto it = doc->blocks.rbegin();
+                         it != doc->blocks.rend(); ++it) {
+                        if (it->kind == MdBlockKind::Heading) {
+                            std::string h;
+                            for (auto& line : it->lines)
+                                for (auto& r : line.runs)
+                                    h += r.text;
+                            // Strip the leading "## " prefix.
+                            while (!h.empty() && (h[0] == '#' || h[0] == ' '))
+                                h.erase(h.begin());
+                            if (!h.empty()) cap = h + " (table " +
+                                std::to_string(doc->tables.size()) + ")";
+                            break;
+                        }
+                    }
+                    doc->table_captions.push_back(cap);
+                    MdBlock b{MdBlockKind::TablePlaceholder, 0, {}, -1, -1};
+                    b.table_idx = (int)doc->tables.size() - 1;
+                    MdLine line;
+                    line.runs.push_back({"\xe2\x96\xb6 [" + cap + "]",
+                                          MD_BOLD, ROLE_LINK});
+                    b.lines.push_back(std::move(line));
+                    doc->blocks.push_back(std::move(b));
+                    push_spacer();
+                }
+                tbl_headers.clear();
+                tbl_rows.clear();
+                break;
+            }
+            case MD_BLOCK_THEAD: in_thead = false; break;
+            case MD_BLOCK_TR:
+                if (!in_thead && !cur_row.empty())
+                    tbl_rows.push_back(std::move(cur_row));
+                cur_row.clear();
+                break;
+            case MD_BLOCK_TH:
+                tbl_headers.push_back(std::move(cur_cell));
+                cur_cell.clear();
+                break;
+            case MD_BLOCK_TD:
+                cur_row.push_back(std::move(cur_cell));
+                cur_cell.clear();
+                break;
+            case MD_BLOCK_HTML:
+                style &= ~MD_DIM;
+                finish_paragraph();
+                break;
+            default: break;
+        }
+        return 0;
+    }
+
+    int enter_span(MD_SPANTYPE type, void* detail) {
+        switch (type) {
+            case MD_SPAN_EM:        style |= MD_ITALIC; break;
+            case MD_SPAN_STRONG:    style |= MD_BOLD; break;
+            case MD_SPAN_U:         style |= MD_UNDER; break;
+            case MD_SPAN_DEL:       style |= MD_STRIKE; break;
+            case MD_SPAN_CODE:      style |= MD_CODE; role = ROLE_CODE; break;
+            case MD_SPAN_A: {
+                auto* d = (MD_SPAN_A_DETAIL*)detail;
+                pending_href.assign(d->href.text, d->href.size);
+                role = ROLE_LINK;
+                style |= MD_UNDER;
+                break;
+            }
+            case MD_SPAN_IMG: {
+                auto* d = (MD_SPAN_IMG_DETAIL*)detail;
+                pending_img_src.assign(d->src.text, d->src.size);
+                pending_img_alt.clear();
+                collecting_img_alt = true;
+                break;
+            }
+            default: break;
+        }
+        return 0;
+    }
+
+    int leave_span(MD_SPANTYPE type, void* detail) {
+        switch (type) {
+            case MD_SPAN_EM:    style &= ~MD_ITALIC; break;
+            case MD_SPAN_STRONG: style &= ~MD_BOLD; break;
+            case MD_SPAN_U:     style &= ~MD_UNDER; break;
+            case MD_SPAN_DEL:   style &= ~MD_STRIKE; break;
+            case MD_SPAN_CODE:
+                style &= ~MD_CODE;
+                role = ROLE_NONE;
+                break;
+            case MD_SPAN_A:
+                style &= ~MD_UNDER;
+                role = ROLE_NONE;
+                // Show URL after the link text in dim, unless it duplicates
+                // the displayed text (autolinks).
+                if (!pending_href.empty()) {
+                    bool autolink = ((MD_SPAN_A_DETAIL*)detail)->is_autolink;
+                    if (!autolink) {
+                        cur_runs.push_back({" (" + pending_href + ")",
+                                             MD_DIM, ROLE_LINK_URL});
+                    }
+                }
+                pending_href.clear();
+                break;
+            case MD_SPAN_IMG: {
+                collecting_img_alt = false;
+                std::string text = pending_img_alt.empty()
+                    ? pending_img_src : pending_img_alt;
+                bool inlined = false;
+                // Local file + supported terminal protocol → render via
+                // OSC 1337 / kitty graphics. Stub fallback for everything
+                // else (remote URLs, SVGs, files >5 MiB, terminals
+                // without graphics support, --color=never).
+                if (!pending_img_src.empty() &&
+                    !is_remote_url(pending_img_src) &&
+                    img_proto != ImageProto::None) {
+                    std::string abs_path = pending_img_src;
+                    if (!abs_path.empty() && abs_path[0] != '/')
+                        abs_path = doc->source_dir + "/" + abs_path;
+                    MdLine line;
+                    if (render_image_inline(abs_path, text, img_proto, &line)) {
+                        // The terminal-protocol escape is per-line; emit
+                        // any in-progress paragraph first so the image
+                        // doesn't fuse mid-word with surrounding prose.
+                        finish_paragraph();
+                        MdBlock b{MdBlockKind::Image, 0, {std::move(line)},
+                                   -1, -1};
+                        doc->blocks.push_back(std::move(b));
+                        inlined = true;
+                    }
+                }
+                if (!inlined) {
+                    cur_runs.push_back({"\xf0\x9f\x96\xbc  [", MD_DIM, ROLE_IMAGE});
+                    cur_runs.push_back({text, MD_DIM, ROLE_IMAGE});
+                    cur_runs.push_back({"]", MD_DIM, ROLE_IMAGE});
+                    if (!pending_img_src.empty() &&
+                        pending_img_src != text) {
+                        cur_runs.push_back({" (" + pending_img_src + ")",
+                                             MD_DIM, ROLE_LINK_URL});
+                    }
+                }
+                pending_img_src.clear();
+                pending_img_alt.clear();
+                break;
+            }
+            default: break;
+        }
+        return 0;
+    }
+
+    int text(MD_TEXTTYPE type, const MD_CHAR* text, MD_SIZE size) {
+        std::string s(text, size);
+        if (collecting_img_alt) {
+            pending_img_alt += s;
+            return 0;
+        }
+        if (in_table) {
+            if (type == MD_TEXT_BR || type == MD_TEXT_SOFTBR) cur_cell += ' ';
+            else                                                cur_cell += s;
+            return 0;
+        }
+        if (cur_block == MdBlockKind::Code) {
+            // Raw code: preserve newlines verbatim. md4c sends each line
+            // of a code block as a separate text(CODE, "...\n") call.
+            cur_runs.push_back({s, 0, ROLE_CODE});
+            return 0;
+        }
+        if (type == MD_TEXT_BR) {
+            cur_runs.push_back({"\n", style, role});
+        } else if (type == MD_TEXT_SOFTBR) {
+            cur_runs.push_back({" ", style, role});
+        } else {
+            cur_runs.push_back({s, style, role});
+        }
+        return 0;
+    }
+};
+
+// C-callable trampolines.
+static int cb_enter_block(MD_BLOCKTYPE type, void* detail, void* ud) {
+    return static_cast<Renderer*>(ud)->enter_block(type, detail);
+}
+static int cb_leave_block(MD_BLOCKTYPE type, void* detail, void* ud) {
+    return static_cast<Renderer*>(ud)->leave_block(type, detail);
+}
+static int cb_enter_span(MD_SPANTYPE type, void* detail, void* ud) {
+    return static_cast<Renderer*>(ud)->enter_span(type, detail);
+}
+static int cb_leave_span(MD_SPANTYPE type, void* detail, void* ud) {
+    return static_cast<Renderer*>(ud)->leave_span(type, detail);
+}
+static int cb_text(MD_TEXTTYPE type, const MD_CHAR* text, MD_SIZE size, void* ud) {
+    return static_cast<Renderer*>(ud)->text(type, text, size);
+}
+
+// Read the entire file. Returns "" on success, error message on failure.
+static std::string slurp_file(const std::string& path, std::string* out) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return "Cannot open '" + path + "'";
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    *out = ss.str();
+    return "";
+}
+
+// Public entry: parse a markdown file into a MarkdownDoc.
+static std::string parse_markdown_file(const std::string& path,
+                                        int width,
+                                        MarkdownDoc* out) {
+    std::string text;
+    std::string err = slurp_file(path, &text);
+    if (!err.empty()) return err;
+
+    out->source_path = path;
+    // Derive source_dir for relative image resolution.
+    auto slash = path.find_last_of('/');
+    out->source_dir = (slash == std::string::npos) ? "."
+                                                    : path.substr(0, slash);
+
+    Renderer r;
+    r.doc = out;
+    r.width = width;
+    r.img_proto = detect_image_proto();
+
+    MD_PARSER parser;
+    std::memset(&parser, 0, sizeof(parser));
+    parser.abi_version = 0;
+    parser.flags = MD_DIALECT_GITHUB | MD_FLAG_UNDERLINE;
+    parser.enter_block = cb_enter_block;
+    parser.leave_block = cb_leave_block;
+    parser.enter_span  = cb_enter_span;
+    parser.leave_span  = cb_leave_span;
+    parser.text        = cb_text;
+
+    int rc = md_parse(text.data(), (MD_SIZE)text.size(), &parser, &r);
+    if (rc != 0) return "md4c: parse failed (" + std::to_string(rc) + ")";
+    return "";
+}
+
+// Emit the prose body of `doc` to stdout as ANSI. Tables are referenced
+// by their inline `▶ [Table N: ...]` placeholder and printed afterwards
+// using the existing print_table pipeline (caller's responsibility — we
+// just emit the prose here).
+static void emit_markdown_stdout(const MarkdownDoc& doc) {
+    std::string out;
+    out.reserve(64 * 1024);
+    for (const auto& b : doc.blocks) {
+        if (b.kind == MdBlockKind::Spacer) {
+            out += '\n';
+            continue;
+        }
+        for (const auto& line : b.lines) emit_line_ansi(out, line);
+    }
+    std::fwrite(out.data(), 1, out.size(), stdout);
+}
+
+}  // namespace md
+
 static std::string open_source(const std::string& path, const Config& cfg,
                                 std::unique_ptr<TabularSource>* out) {
     // ── Determine file kind ──────────────────────────────────────────────────
@@ -11005,6 +11904,45 @@ int main(int argc, char** argv) {
     if (cfg.validate) {
         std::string err = validate_lociss(cfg.path);
         if (!err.empty()) { std::fprintf(stderr, "%s\n", err.c_str()); return 1; }
+        return 0;
+    }
+
+    // ── Markdown (`.md` / `.markdown` / `.mdown` / `.mkd`) ───────────────────
+    // Routed before the TabularSource pipeline because markdown isn't
+    // tabular. v1: parse via md4c, emit prose to stdout as ANSI, then
+    // dump every embedded GFM table via the existing print_table path
+    // so column-type inference / colours work the same as for a real
+    // .csv file.
+    if (fends_ci(cfg.path, ".md")        || fends_ci(cfg.path, ".markdown") ||
+        fends_ci(cfg.path, ".mdown")     || fends_ci(cfg.path, ".mkd")) {
+        int term_w = detect_terminal_width();
+        if (term_w <= 0) term_w = 80;
+        md::MarkdownDoc doc;
+        std::string merr = md::parse_markdown_file(cfg.path, term_w, &doc);
+        if (!merr.empty()) {
+            std::fprintf(stderr, "vv: %s\n", merr.c_str());
+            return 1;
+        }
+        md::emit_markdown_stdout(doc);
+        // Tables: each one wrapped in MemoryTableSource and printed via
+        // the regular table renderer. Caption goes between tables.
+        for (size_t i = 0; i < doc.tables.size(); ++i) {
+            std::fprintf(stdout, "\n%s%s%s\n",
+                          g_color.header,
+                          doc.table_captions[i].c_str(),
+                          g_color.reset);
+            MemoryTableSource ts(doc.tables[i],
+                                  doc.source_path,
+                                  "Format: markdown table");
+            // Honour --tsv / --csv / --schema if explicitly requested.
+            if (cfg.schema_only) {
+                /* schema-only doesn't make sense per-table; skip. */
+            } else if (cfg.delimiter) {
+                write_delimited(ts, cfg);
+            } else {
+                print_table(ts, cfg);
+            }
+        }
         return 0;
     }
 
