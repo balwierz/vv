@@ -521,7 +521,13 @@ if [ -f "$DATA/tiny.md" ]; then
     MD_OUT=$("$VV" --color=never "$DATA/tiny.md" 2>&1)
     assert_contains "md_heading_lvl1"        "$MD_OUT" "# tiny.md"
     assert_contains "md_heading_lvl2"        "$MD_OUT" "## Lists"
-    assert_contains "md_list_bullet"         "$MD_OUT" "alpha"
+    # Each unordered-list item should carry the `•` bullet glyph — caught
+    # a regression where tight-list rendering lost bullets entirely when
+    # md4c skipped the MD_BLOCK_P inside MD_BLOCK_LI.
+    BULLET=$(printf '\xe2\x80\xa2')
+    assert_contains "md_list_bullet"         "$MD_OUT" "$BULLET alpha"
+    assert_contains "md_list_bullet_beta"    "$MD_OUT" "$BULLET beta"
+    assert_contains "md_list_ordered"        "$MD_OUT" "1. first"
     assert_contains "md_table_caption_1"     "$MD_OUT" "Benchmark table"
     assert_contains "md_table_caption_2"     "$MD_OUT" "Reference table"
     assert_contains "md_table_footer"        "$MD_OUT" "Format: markdown table"

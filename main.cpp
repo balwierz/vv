@@ -6803,6 +6803,138 @@ static bool render_image_inline(const std::string& abs_path,
     return true;
 }
 
+// ── Tiny HTML token walker (for raw HTML in CommonMark) ─────────────────────
+//
+// GitHub READMEs lean heavily on raw HTML — `<p align="center">` banners,
+// `<a href><b>Link</b></a>` link bars, `<picture><source><img></picture>`
+// for dark/light logos, `<sub>` / `<sup>` for sub/superscripts. md4c
+// forwards these as MD_BLOCK_HTML (the whole block as one string) and
+// MD_TEXT_HTML (inline tags interleaved with normal text). The default
+// "dump as dim text" handling left them visually noisy.
+//
+// This tokeniser handles the tags we care about; everything else (style,
+// script, attributes we don't recognise) is dropped. The tokens drive
+// the existing Renderer style stack and OSC 8 hyperlink machinery, so
+// `<b>` is bold, `<a href>` becomes an OSC 8 link, `<img>` lands as our
+// usual image stub or kitty/iTerm2 protocol.
+
+struct HtmlTag {
+    std::string name;                   // lowercased, e.g. "a", "p", "br"
+    bool        closing    = false;     // </p>
+    bool        selfclose  = false;     // <br/>
+    std::map<std::string, std::string> attrs;   // lowercased keys
+};
+
+// Decode the (small) subset of HTML entities likely to show up in
+// README text. Anything we don't recognise passes through verbatim.
+static std::string html_decode_entities(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ) {
+        if (s[i] != '&') { out += s[i++]; continue; }
+        size_t semi = s.find(';', i + 1);
+        if (semi == std::string::npos || semi - i > 12) { out += s[i++]; continue; }
+        std::string ent = s.substr(i + 1, semi - i - 1);
+        if      (ent == "amp")   out += '&';
+        else if (ent == "lt")    out += '<';
+        else if (ent == "gt")    out += '>';
+        else if (ent == "quot")  out += '"';
+        else if (ent == "apos" || ent == "#39") out += '\'';
+        else if (ent == "nbsp")  out += ' ';
+        else if (ent == "mdash") out += "\xe2\x80\x94";  // —
+        else if (ent == "ndash") out += "\xe2\x80\x93";  // –
+        else if (ent == "hellip") out += "\xe2\x80\xa6"; // …
+        else if (ent.size() > 1 && ent[0] == '#') {
+            // Numeric character reference (decimal or hex).
+            unsigned cp = 0;
+            try {
+                cp = (ent[1] == 'x' || ent[1] == 'X')
+                       ? (unsigned)std::stoul(ent.substr(2), nullptr, 16)
+                       : (unsigned)std::stoul(ent.substr(1));
+            } catch (...) { cp = 0; }
+            if (cp == 0) { out += s.substr(i, semi - i + 1); }
+            else {
+                // UTF-8 encode the codepoint.
+                if      (cp < 0x80)    out += (char)cp;
+                else if (cp < 0x800)   { out += (char)(0xC0 | (cp >> 6));
+                                          out += (char)(0x80 | (cp & 0x3F)); }
+                else if (cp < 0x10000) { out += (char)(0xE0 | (cp >> 12));
+                                          out += (char)(0x80 | ((cp >> 6) & 0x3F));
+                                          out += (char)(0x80 | (cp & 0x3F)); }
+                else                   { out += (char)(0xF0 | (cp >> 18));
+                                          out += (char)(0x80 | ((cp >> 12) & 0x3F));
+                                          out += (char)(0x80 | ((cp >> 6) & 0x3F));
+                                          out += (char)(0x80 | (cp & 0x3F)); }
+            }
+        }
+        else                     out += s.substr(i, semi - i + 1);
+        i = semi + 1;
+    }
+    return out;
+}
+
+// Parse a single tag starting at s[*i] == '<'. Updates *i to point past
+// the closing '>'. On failure (malformed), advances *i by 1 and returns
+// false so the caller treats the '<' as literal.
+static bool html_parse_tag(const std::string& s, size_t* i, HtmlTag* out) {
+    size_t end = s.find('>', *i);
+    if (end == std::string::npos) { ++*i; return false; }
+    *out = HtmlTag{};
+    size_t p = *i + 1;
+    if (p < s.size() && s[p] == '/') { out->closing = true; ++p; }
+    // Tag name.
+    size_t name_start = p;
+    while (p < s.size() && !std::isspace((unsigned char)s[p]) &&
+           s[p] != '/' && s[p] != '>')
+        ++p;
+    if (p == name_start) { ++*i; return false; }
+    out->name = s.substr(name_start, p - name_start);
+    for (char& c : out->name) c = (char)std::tolower((unsigned char)c);
+    // Attributes.
+    while (p < end) {
+        while (p < end && std::isspace((unsigned char)s[p])) ++p;
+        if (p < end && s[p] == '/') { out->selfclose = true; ++p; continue; }
+        if (p >= end) break;
+        size_t kstart = p;
+        while (p < end && s[p] != '=' && s[p] != '/' &&
+               !std::isspace((unsigned char)s[p]))
+            ++p;
+        if (p == kstart) { ++p; continue; }
+        std::string key = s.substr(kstart, p - kstart);
+        for (char& c : key) c = (char)std::tolower((unsigned char)c);
+        std::string val;
+        while (p < end && std::isspace((unsigned char)s[p])) ++p;
+        if (p < end && s[p] == '=') {
+            ++p;
+            while (p < end && std::isspace((unsigned char)s[p])) ++p;
+            if (p < end && (s[p] == '"' || s[p] == '\'')) {
+                char q = s[p++];
+                size_t vstart = p;
+                while (p < end && s[p] != q) ++p;
+                val = s.substr(vstart, p - vstart);
+                if (p < end) ++p;
+            } else {
+                size_t vstart = p;
+                while (p < end && !std::isspace((unsigned char)s[p]) &&
+                       s[p] != '/')
+                    ++p;
+                val = s.substr(vstart, p - vstart);
+            }
+            val = html_decode_entities(val);
+        }
+        out->attrs[key] = val;
+    }
+    *i = end + 1;
+    return true;
+}
+
+// Drive the HTML token-walker. Translates tags into Renderer style/role
+// transitions; emits any literal text as styled segments using the
+// renderer's current style mask. Forward-declared because Renderer
+// references it.
+struct Renderer;
+static void html_apply(Renderer& r, const std::string& html);
+
 // ── md4c renderer state ─────────────────────────────────────────────────────
 
 struct Renderer {
@@ -6830,6 +6962,14 @@ struct Renderer {
     // Table accumulation.
     bool                 in_table = false;
     bool                 in_thead = false;
+
+    // HTML block accumulation. md4c sends `enter_block(HTML)` and then
+    // streams the block body via `text(HTML, …)`; we buffer it and run
+    // the full string through `html_apply()` once on `leave_block(HTML)`.
+    bool                 in_html_block = false;
+    std::string          html_buf;
+    int                  html_a_depth  = 0;     // <a> OSC 8 closes pending
+    int                  html_in_drop  = 0;     // inside <script>/<style>
     unsigned             tbl_cols = 0;
     std::vector<std::string> tbl_headers;
     std::vector<std::vector<std::string>> tbl_rows;
@@ -6947,6 +7087,14 @@ struct Renderer {
             }
             case MD_BLOCK_LI:
                 li_first_text = true;
+                // For tight lists md4c doesn't wrap items in MD_BLOCK_P,
+                // so we have to seed the bullet here. The MD_BLOCK_P
+                // handler below also calls emit_list_bullet under the
+                // same guard, but li_first_text becomes false after
+                // either path, so we emit exactly one bullet per item.
+                emit_quote_prefix();
+                emit_list_bullet();
+                li_first_text = false;
                 break;
             case MD_BLOCK_HR: {
                 push_spacer();
@@ -7006,10 +7154,13 @@ struct Renderer {
                 cur_cell.clear();
                 break;
             case MD_BLOCK_HTML:
-                // Treat raw HTML blocks as plain dim text. md4c sends the
-                // content via MD_TEXT_HTML; we collect normally.
+                // Accumulate the raw HTML; the actual rendering happens
+                // on `leave_block(HTML)` so we can drive a stateful
+                // tokeniser over the complete block.
+                finish_paragraph();
+                in_html_block = true;
+                html_buf.clear();
                 cur_block = MdBlockKind::Paragraph;
-                style |= MD_DIM;
                 break;
             default: break;
         }
@@ -7157,8 +7308,25 @@ struct Renderer {
                 cur_cell.clear();
                 break;
             case MD_BLOCK_HTML:
-                style &= ~MD_DIM;
+                // Drive the HTML token-walker over the buffered block.
+                in_html_block = false;
+                if (!html_buf.empty()) {
+                    html_apply(*this, html_buf);
+                    html_buf.clear();
+                }
+                // Close any unbalanced <a> OSC 8 wrappers.
+                while (html_a_depth > 0) {
+                    if (osc8 && g_color.reset != nullptr &&
+                        *g_color.reset != '\0') {
+                        MdSegment seg;
+                        seg.text     = "\033]8;;\033\\";
+                        seg.verbatim = true;
+                        cur_runs.push_back(std::move(seg));
+                    }
+                    --html_a_depth;
+                }
                 finish_paragraph();
+                push_spacer();
                 break;
             default: break;
         }
@@ -7300,6 +7468,22 @@ struct Renderer {
             cur_runs.push_back({s, 0, ROLE_CODE});
             return 0;
         }
+        // Block-level HTML — buffer; leave_block(HTML) runs html_apply.
+        if (in_html_block && type == MD_TEXT_HTML) {
+            html_buf += s;
+            return 0;
+        }
+        // Inline HTML inside a paragraph: walk immediately so the next
+        // text(NORMAL, …) inherits the right style stack.
+        if (type == MD_TEXT_HTML) {
+            html_apply(*this, s);
+            return 0;
+        }
+        // Decode entities ("&amp;" → "&", "&mdash;" → "—") in normal text.
+        if (type == MD_TEXT_ENTITY) {
+            cur_runs.push_back({html_decode_entities(s), style, role});
+            return 0;
+        }
         if (type == MD_TEXT_BR) {
             cur_runs.push_back({"\n", style, role});
         } else if (type == MD_TEXT_SOFTBR) {
@@ -7310,6 +7494,255 @@ struct Renderer {
         return 0;
     }
 };
+
+// ── HTML tag handler implementation ─────────────────────────────────────────
+//
+// Walks a string of HTML and emits style transitions / segments via the
+// Renderer's existing machinery. Block-level tags (<p>, <h1>–<h6>,
+// <div>, <hr>) flush the in-progress paragraph and start a new block of
+// the appropriate kind. Inline tags toggle style/role bits. <a href>
+// drives our OSC 8 hyperlink emitter; <img>, <picture>, <source> route
+// through the inline-image protocol path that markdown's ![](url) uses.
+// Unknown tags are dropped (only their text content is kept). <script>
+// and <style> bodies are dropped wholesale.
+
+static void html_apply(Renderer& r, const std::string& html) {
+    size_t i = 0;
+    while (i < html.size()) {
+        // Drop the body of a still-open <script>/<style> block.
+        if (r.html_in_drop > 0) {
+            // Look for the closing tag.
+            size_t lt = html.find('<', i);
+            if (lt == std::string::npos) { i = html.size(); break; }
+            // Try to parse it; if it's the matching close, drop the
+            // bytes and pop.
+            HtmlTag t;
+            size_t probe = lt;
+            if (html_parse_tag(html, &probe, &t) &&
+                t.closing && (t.name == "script" || t.name == "style")) {
+                r.html_in_drop = 0;
+                i = probe;
+                continue;
+            }
+            i = lt + 1;
+            continue;
+        }
+        if (html[i] != '<') {
+            // Literal text run — find next tag boundary.
+            size_t next = html.find('<', i);
+            if (next == std::string::npos) next = html.size();
+            std::string txt = html.substr(i, next - i);
+            txt = html_decode_entities(txt);
+            // Collapse whitespace (the HTML block usually has lots of it
+            // between centred-banner tags). Skip pure-whitespace runs
+            // sandwiched between tags so we don't emit blank padding.
+            bool all_ws = true;
+            for (char c : txt) if (!std::isspace((unsigned char)c))
+                { all_ws = false; break; }
+            if (!all_ws) {
+                // Convert internal runs of whitespace into a single
+                // space so wrap_runs has clean tokens to work with.
+                std::string clean;
+                clean.reserve(txt.size());
+                bool prev_ws = false;
+                for (char c : txt) {
+                    if (std::isspace((unsigned char)c)) {
+                        if (!prev_ws) clean += ' ';
+                        prev_ws = true;
+                    } else {
+                        clean += c;
+                        prev_ws = false;
+                    }
+                }
+                r.cur_runs.push_back({clean, r.style, r.role});
+            }
+            i = next;
+            continue;
+        }
+        // Comment fast-path.
+        if (i + 4 <= html.size() && html.compare(i, 4, "<!--") == 0) {
+            size_t end = html.find("-->", i + 4);
+            i = (end == std::string::npos) ? html.size() : end + 3;
+            continue;
+        }
+        // Skip <!DOCTYPE ...> and any other declarations / processing
+        // instructions.
+        if (i + 1 < html.size() && (html[i + 1] == '!' || html[i + 1] == '?')) {
+            size_t end = html.find('>', i);
+            i = (end == std::string::npos) ? html.size() : end + 1;
+            continue;
+        }
+        HtmlTag t;
+        if (!html_parse_tag(html, &i, &t)) {
+            // Malformed — emit the literal '<' and move on.
+            r.cur_runs.push_back({"<", r.style, r.role});
+            continue;
+        }
+        const std::string& n = t.name;
+        // ── Block-level transitions ───────────────────────────────────
+        auto open_paragraph = [&]() { r.finish_paragraph(); };
+        auto open_section_break = [&]() {
+            r.finish_paragraph();
+            r.push_spacer();
+        };
+        if (n == "p" || n == "div" || n == "center" || n == "section" ||
+            n == "article" || n == "header" || n == "footer" || n == "nav" ||
+            n == "main" || n == "aside")
+        {
+            if (t.closing) open_section_break();
+            else           open_paragraph();
+            continue;
+        }
+        if (n.size() == 2 && n[0] == 'h' && n[1] >= '1' && n[1] <= '6') {
+            int lvl = n[1] - '0';
+            if (t.closing) { r.close_heading(); r.push_spacer(); }
+            else            { r.open_heading(lvl); }
+            continue;
+        }
+        if (n == "br") {
+            r.finish_paragraph();
+            continue;
+        }
+        if (n == "hr") {
+            r.finish_paragraph();
+            r.push_spacer();
+            MdBlock b{MdBlockKind::HRule, 0, {}, -1, -1};
+            MdLine line;
+            std::string rule;
+            int w = r.width > 0 ? r.width : 80;
+            for (int k = 0; k < w; ++k) rule += "\xe2\x94\x80"; // ─
+            line.runs.push_back({rule, 0, ROLE_HR});
+            b.lines.push_back(std::move(line));
+            r.doc->blocks.push_back(std::move(b));
+            r.push_spacer();
+            continue;
+        }
+        // ── Inline style transitions ──────────────────────────────────
+        auto toggle_style = [&](uint16_t bit, bool on) {
+            if (on) r.style |= bit; else r.style &= ~bit;
+        };
+        if (n == "b" || n == "strong") {
+            toggle_style(MD_BOLD,   !t.closing);
+            continue;
+        }
+        if (n == "i" || n == "em") {
+            toggle_style(MD_ITALIC, !t.closing);
+            continue;
+        }
+        if (n == "u") {
+            toggle_style(MD_UNDER,  !t.closing);
+            continue;
+        }
+        if (n == "del" || n == "s" || n == "strike") {
+            toggle_style(MD_STRIKE, !t.closing);
+            continue;
+        }
+        if (n == "code" || n == "kbd" || n == "samp" || n == "tt") {
+            if (t.closing) { r.style &= ~MD_CODE; r.role = ROLE_NONE; }
+            else           { r.style |= MD_CODE;  r.role = ROLE_CODE; }
+            continue;
+        }
+        if (n == "mark") {     // emit as reverse-video, no role colour
+            toggle_style(MD_REV, !t.closing);
+            continue;
+        }
+        if (n == "sup" || n == "sub") {
+            // Terminals can't render super/sub; just dim them.
+            toggle_style(MD_DIM, !t.closing);
+            continue;
+        }
+        if (n == "small") {
+            toggle_style(MD_DIM, !t.closing);
+            continue;
+        }
+        // ── Links ─────────────────────────────────────────────────────
+        if (n == "a") {
+            if (t.closing) {
+                if (r.html_a_depth > 0) {
+                    r.style &= ~MD_UNDER;
+                    r.role  = ROLE_NONE;
+                    if (r.osc8 && g_color.reset != nullptr &&
+                        *g_color.reset != '\0') {
+                        MdSegment seg;
+                        seg.text     = "\033]8;;\033\\";
+                        seg.verbatim = true;
+                        r.cur_runs.push_back(std::move(seg));
+                    } else {
+                        // Stash the URL for the fallback stub. The href
+                        // for an open <a> lived on the renderer via
+                        // pending_href.
+                        if (!r.pending_href.empty()) {
+                            r.cur_runs.push_back(
+                                {" (" + r.pending_href + ")",
+                                  MD_DIM, ROLE_LINK});
+                        }
+                    }
+                    r.pending_href.clear();
+                    --r.html_a_depth;
+                }
+            } else {
+                auto it_href = t.attrs.find("href");
+                std::string href = (it_href != t.attrs.end()) ? it_href->second : "";
+                r.pending_href = href;
+                r.role  = ROLE_LINK;
+                r.style |= MD_UNDER;
+                if (r.osc8 && !href.empty() && g_color.reset != nullptr &&
+                    *g_color.reset != '\0') {
+                    MdSegment seg;
+                    seg.text     = "\033]8;;" + href + "\033\\";
+                    seg.verbatim = true;
+                    r.cur_runs.push_back(std::move(seg));
+                }
+                ++r.html_a_depth;
+            }
+            continue;
+        }
+        // ── Images ────────────────────────────────────────────────────
+        // <img src=…> on its own or wrapped in <picture><source>…<img>.
+        // We don't try to honour <source srcset=…> selection; the <img>
+        // src is the canonical fallback and that's what we render.
+        if (n == "img") {
+            std::string src = t.attrs.count("src") ? t.attrs["src"] : "";
+            std::string alt = t.attrs.count("alt") ? t.attrs["alt"] : "";
+            if (src.empty()) continue;
+            bool inlined = false;
+            if (!is_remote_url(src) && r.img_proto != ImageProto::None) {
+                std::string abs_path = src;
+                if (!abs_path.empty() && abs_path[0] != '/')
+                    abs_path = r.doc->source_dir + "/" + abs_path;
+                MdLine line;
+                if (render_image_inline(abs_path, alt, r.img_proto, &line)) {
+                    r.finish_paragraph();
+                    MdBlock b{MdBlockKind::Image, 0, {std::move(line)},
+                              -1, -1};
+                    r.doc->blocks.push_back(std::move(b));
+                    inlined = true;
+                }
+            }
+            if (!inlined) {
+                std::string text = alt.empty() ? src : alt;
+                r.cur_runs.push_back({"\xf0\x9f\x96\xbc  [", MD_DIM, ROLE_IMAGE});
+                r.cur_runs.push_back({text, MD_DIM, ROLE_IMAGE});
+                r.cur_runs.push_back({"]", MD_DIM, ROLE_IMAGE});
+                if (!src.empty() && src != text) {
+                    r.cur_runs.push_back({" (" + src + ")",
+                                           MD_DIM, ROLE_LINK_URL});
+                }
+            }
+            continue;
+        }
+        // <picture> / <source> are wrappers; drop the tags but keep their
+        // <img> children visible.
+        if (n == "picture" || n == "source") continue;
+        // Drop the bodies of these — we render no markup but text inside
+        // would be wrong to surface.
+        if (!t.closing && (n == "script" || n == "style"))
+            r.html_in_drop = 1;
+        // Anything else — ignore the tag, keep walking. Text content
+        // (children) will be picked up by the surrounding literal-text
+        // handler in the next iteration.
+    }
+}
 
 // C-callable trampolines.
 static int cb_enter_block(MD_BLOCKTYPE type, void* detail, void* ud) {
