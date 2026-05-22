@@ -55,7 +55,7 @@ fetch sqlite.tar.gz     https://sqlite.org/2025/sqlite-autoconf-3490100.tar.gz
 fetch expat.tar.gz      https://github.com/libexpat/libexpat/releases/download/R_2_6_4/expat-2.6.4.tar.gz
 fetch minizip-ng.tar.gz https://github.com/zlib-ng/minizip-ng/archive/refs/tags/4.0.7.tar.gz
 fetch xlsxio.tar.gz     https://github.com/brechtsanders/xlsxio/archive/refs/tags/0.2.36.tar.gz
-fetch hdf5.tar.gz       https://support.hdfgroup.org/releases/hdf5/v1_14/v1_14_4/downloads/hdf5-1.14.4.tar.gz
+fetch hdf5.tar.gz       https://github.com/HDFGroup/hdf5/releases/download/hdf5_1.14.4.3/hdf5-1.14.4-3.tar.gz
 
 # ── header-only deps repacked from upstream releases ───────────────────────
 # The Dockerfile expects these tarballs to extract directly under

@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-05-23
+
+### Fixed
+- Static-binary build: the HDF Group moved the HDF5 1.14.4 tarball
+  out of `support.hdfgroup.org`, breaking the AlmaLinux 8 fetch
+  step in the v1.8.0 release workflow. Switched to the GitHub
+  Releases mirror (`hdf5_1.14.4.3`) so the static x86_64 / aarch64
+  binaries build again. No source changes vs 1.8.0; this is purely
+  a packaging fix.
+
 ## [1.8.0] - 2026-05-23
 
 ### Added
