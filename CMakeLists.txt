@@ -225,12 +225,17 @@ endif()
 # HDF5 1.14.4 under static-libs/ — see the `build-hdf5` Dockerfile
 # stage. We disable the high-level / cxx / fortran / tools bindings so
 # the static archive is ~5 MB rather than 30 MB.
-find_path(HDF5_INCLUDE_DIR  hdf5.h)
-find_library(HDF5_STATIC    NAMES libhdf5.a
+# Ubuntu's libhdf5-dev tucks hdf5.h under `<prefix>/include/hdf5/serial/`
+# (alongside an `hdf5_serial.so` rename of the library). `PATH_SUFFIXES`
+# makes find_path land on whichever layout the local system uses.
+find_path(HDF5_INCLUDE_DIR  hdf5.h
+          PATH_SUFFIXES hdf5/serial hdf5)
+find_library(HDF5_STATIC    NAMES libhdf5.a libhdf5_serial.a
              PATHS "${CMAKE_CURRENT_SOURCE_DIR}/../static-libs/lib"
              NO_DEFAULT_PATH)
 find_library(HDF5_SHARED    NAMES hdf5 libhdf5.so libhdf5.dylib
-                                   hdf5_serial libhdf5_serial.so)
+                                   hdf5_serial libhdf5_serial.so
+             PATH_SUFFIXES hdf5/serial)
 if(NOT HDF5_INCLUDE_DIR OR (NOT HDF5_STATIC AND NOT HDF5_SHARED))
   message(FATAL_ERROR
       "libhdf5 not found. Install `hdf5` (Arch), `libhdf5-dev` on "
