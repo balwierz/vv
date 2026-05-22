@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-05-23
+
+### Fixed
+- Static-binary build: the vendored libhdf5 was configured with
+  `--disable-deprecated-symbols`, but main.cpp uses
+  `H5Dvlen_reclaim` to free variable-length strings (its 1.12+
+  replacement `H5Treclaim` doesn't exist on Ubuntu 22.04's libhdf5
+  1.10, so the deprecated name is the portable choice). Dropped
+  the flag from the AlmaLinux 8 build so the static binary
+  compiles. Packaging-only release; no source changes.
+
 ## [1.8.1] - 2026-05-23
 
 ### Fixed
