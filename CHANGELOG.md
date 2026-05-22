@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **AnnData / HDF5 viewer (`.h5ad`, `.h5`, `.hdf5`, `.loom`)** — opens
+  HDF5 containers via libhdf5. AnnData files (`.h5ad`) are detected
+  via the root `encoding-type="anndata"` attribute (or the modern
+  `/obs` + `/var` + `X` heuristic) and decode into a multi-tab view:
+  tab 0 is a summary (shape, X encoding, layer count), siblings are
+  `obs`, `var`, `X` (densified first-1000-row preview for CSR sparse),
+  and one tab per `obsm` / `varm` / `layers` entry. Categoricals
+  (`encoding-type="categorical"` groups with `codes` + `categories`
+  children) decode back to string columns. Generic HDF5 files
+  (`.h5`, `.hdf5`, `.loom`) get a hierarchy table listing every
+  group / dataset with `path`, `kind`, `shape`, `dtype`, `n_attrs`,
+  plus a tab for every 1-D / 2-D dataset (capped at 32 datasets / 32
+  columns so a chunky file doesn't explode the tab bar). 12 new
+  smoke tests, 190/190 pass. CSC sparse preview and `uns`
+  (unstructured) decoding are deferred to follow-ups.
 - **Markdown viewer auto-pager** — `vv README.md` on a TTY now pipes
   through `less -R -F -X --tabs=4` so the user gets scroll / search
   without us building a markdown-specific ncurses TUI. `-F` makes

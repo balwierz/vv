@@ -57,6 +57,10 @@ extern "C" {
 extern "C" {
 #include <md4c.h>
 }
+// libhdf5 — drives the AnnData / generic HDF5 viewer
+// (`vv x.h5ad`, `vv x.h5`). Headers are C-only; the C++ binding is
+// disabled in our static build.
+#include <hdf5.h>
 
 #include <algorithm>
 #include <array>
@@ -512,6 +516,8 @@ static void print_usage(const char* prog) {
         "  .sqlite  .sqlite3  .db      SQLite database (each table → one TUI tab)\n"
         "  .xlsx  .xlsm                Excel spreadsheet (each sheet → one TUI tab)\n"
         "  .ods                        OpenDocument spreadsheet (each sheet → one TUI tab)\n"
+        "  .h5ad                       AnnData (single-cell) — obs / var / X / obsm tabs\n"
+        "  .h5  .hdf5  .loom           generic HDF5 — hierarchy tab + per-dataset tabs\n"
         "  .orc                        Apache ORC (columnar; one stripe → one chunk)\n"
         "  .md  .markdown  .mdown  .mkd\n"
         "                              CommonMark + GFM markdown (renders as ANSI;\n"
@@ -6153,6 +6159,917 @@ public:
     }
 };
 
+// ── HDF5 / AnnData viewer (`.h5ad` / `.h5` / `.hdf5` / `.loom`) ──────────────
+//
+// One Hdf5Source instance == one TUI tab. Tab 0 is either:
+//   - For AnnData: a "summary" tab (shape, X encoding, layer count, …).
+//   - For generic HDF5: a "hierarchy" tab — one row per H5Lvisit object
+//     with path / kind / shape / dtype / compression / n_attrs columns.
+// Sibling tabs (one per AnnData component or one per 1-/2-D HDF5 dataset)
+// are constructed lazily via the existing WorkbookSource sibling-expansion
+// path in main(). The HDF5 file handle is refcounted across siblings so
+// the file stays open exactly as long as any tab references it (mirrors
+// SqliteSource's shared_ptr<sqlite3> trick).
+//
+// All read-time densification happens through small helpers that build
+// arrow::Tables column by column from hyperslab selections — Arrow
+// columns become typed (int64 / double / utf8) per HDF5 datatype class,
+// so `--filter`, `--describe`, sort, and search all work out of the box.
+
+namespace h5v {
+
+// RAII for HDF5 ids. H5Fclose etc. are idempotent on negative ids, so
+// the deleter handles the "open failed" case naturally.
+struct H5Closer {
+    int (*fn)(hid_t);
+    void operator()(hid_t* p) const noexcept {
+        if (p) { if (*p >= 0) fn(*p); delete p; }
+    }
+};
+using H5FilePtr  = std::shared_ptr<hid_t>;
+template <typename Fn>
+static std::unique_ptr<hid_t, H5Closer> own(hid_t id, Fn closer) {
+    return std::unique_ptr<hid_t, H5Closer>(new hid_t(id), H5Closer{closer});
+}
+
+// Look up a string attribute on an HDF5 object. Returns "" when absent
+// or non-string.
+static std::string read_string_attr(hid_t obj, const char* name) {
+    if (H5Aexists(obj, name) <= 0) return std::string{};
+    hid_t a = H5Aopen(obj, name, H5P_DEFAULT);
+    if (a < 0) return std::string{};
+    hid_t t = H5Aget_type(a);
+    H5T_class_t cls = H5Tget_class(t);
+    std::string out;
+    if (cls == H5T_STRING) {
+        if (H5Tis_variable_str(t)) {
+            char* buf = nullptr;
+            hid_t mt = H5Tcopy(H5T_C_S1);
+            H5Tset_size(mt, H5T_VARIABLE);
+            H5Tset_cset(mt, H5T_CSET_UTF8);
+            if (H5Aread(a, mt, &buf) >= 0 && buf) {
+                out = buf;
+                H5free_memory(buf);
+            }
+            H5Tclose(mt);
+        } else {
+            size_t sz = H5Tget_size(t);
+            std::string buf(sz, '\0');
+            if (H5Aread(a, t, buf.data()) >= 0) {
+                size_t n = strnlen(buf.data(), sz);
+                out.assign(buf.data(), n);
+            }
+        }
+    }
+    H5Tclose(t);
+    H5Aclose(a);
+    return out;
+}
+
+// Whether a child link exists directly under `parent`.
+static bool link_exists(hid_t parent, const char* name) {
+    return H5Lexists(parent, name, H5P_DEFAULT) > 0;
+}
+
+// Whether the named child is a group (rather than dataset / datatype).
+static bool is_group(hid_t parent, const char* name) {
+    H5O_info2_t info;
+    if (H5Oget_info_by_name3(parent, name, &info, H5O_INFO_BASIC,
+                              H5P_DEFAULT) < 0) return false;
+    return info.type == H5O_TYPE_GROUP;
+}
+
+// Human-readable description of an HDF5 datatype.
+static std::string dtype_to_string(hid_t t) {
+    H5T_class_t cls = H5Tget_class(t);
+    size_t size = H5Tget_size(t);
+    switch (cls) {
+        case H5T_INTEGER: {
+            H5T_sign_t s = H5Tget_sign(t);
+            return (s == H5T_SGN_NONE ? "uint" : "int") +
+                   std::to_string(size * 8);
+        }
+        case H5T_FLOAT:    return "float" + std::to_string(size * 8);
+        case H5T_STRING:   return H5Tis_variable_str(t) ? "string"
+                                                          : "string[" +
+                              std::to_string(size) + "]";
+        case H5T_COMPOUND: return "compound";
+        case H5T_ENUM:     return "enum";
+        case H5T_REFERENCE:return "ref";
+        case H5T_OPAQUE:   return "opaque";
+        case H5T_BITFIELD: return "bitfield";
+        default:           return "?";
+    }
+}
+
+// Format a dimension list like "10000 × 2" for the hierarchy table.
+static std::string shape_to_string(const std::vector<hsize_t>& dims) {
+    std::string s;
+    for (size_t i = 0; i < dims.size(); ++i) {
+        if (i) s += " \xc3\x97 ";   // ×
+        s += std::to_string(dims[i]);
+    }
+    return s;
+}
+
+// Read all immediate children of a group. Order: as returned by HDF5.
+static std::vector<std::string> list_children(hid_t group) {
+    std::vector<std::string> names;
+    H5G_info_t info;
+    if (H5Gget_info(group, &info) < 0) return names;
+    for (hsize_t i = 0; i < info.nlinks; ++i) {
+        ssize_t len = H5Lget_name_by_idx(group, ".", H5_INDEX_NAME,
+                                           H5_ITER_INC, i, nullptr, 0,
+                                           H5P_DEFAULT);
+        if (len <= 0) continue;
+        std::string nm((size_t)len, '\0');
+        H5Lget_name_by_idx(group, ".", H5_INDEX_NAME, H5_ITER_INC, i,
+                            nm.data(), len + 1, H5P_DEFAULT);
+        names.push_back(std::move(nm));
+    }
+    return names;
+}
+
+// ── Generic-HDF5 hierarchy walker ───────────────────────────────────────────
+//
+// One row per object reachable from the root via H5Lvisit_by_name. Skips
+// soft-link cycles. Builds an arrow::Table directly (string columns).
+
+struct HierarchyRow {
+    std::string path;
+    std::string kind;        // "Group" | "Dataset"
+    std::string shape;       // empty for groups
+    std::string dtype;       // empty for groups
+    int         n_attrs = 0;
+};
+
+struct HierarchyState {
+    std::vector<HierarchyRow> rows;
+    int max_depth = 1024;     // safety
+};
+
+static herr_t hierarchy_cb(hid_t loc_id, const char* name,
+                            const H5L_info2_t* /*linfo*/, void* data) {
+    auto* st = static_cast<HierarchyState*>(data);
+    if ((int)st->rows.size() > 1000000) return -1;  // 1 M nodes hard cap
+    H5O_info2_t info;
+    if (H5Oget_info_by_name3(loc_id, name, &info, H5O_INFO_BASIC | H5O_INFO_NUM_ATTRS,
+                              H5P_DEFAULT) < 0) return 0;
+    HierarchyRow row;
+    row.path = std::string("/") + name;
+    row.n_attrs = (int)info.num_attrs;
+    if (info.type == H5O_TYPE_GROUP) {
+        row.kind = "Group";
+    } else if (info.type == H5O_TYPE_DATASET) {
+        row.kind = "Dataset";
+        hid_t d = H5Dopen2(loc_id, name, H5P_DEFAULT);
+        if (d >= 0) {
+            hid_t s = H5Dget_space(d);
+            int   nd = H5Sget_simple_extent_ndims(s);
+            std::vector<hsize_t> dims((size_t)nd);
+            if (nd > 0) H5Sget_simple_extent_dims(s, dims.data(), nullptr);
+            row.shape = shape_to_string(dims);
+            hid_t t = H5Dget_type(d);
+            row.dtype = dtype_to_string(t);
+            H5Tclose(t);
+            H5Sclose(s);
+            H5Dclose(d);
+        }
+    } else {
+        row.kind = "Other";
+    }
+    st->rows.push_back(std::move(row));
+    return 0;
+}
+
+static std::shared_ptr<arrow::Table>
+build_hierarchy_table(hid_t file_id) {
+    HierarchyState st;
+    // Add the root.
+    HierarchyRow root{"/", "Group", "", "", 0};
+    H5O_info2_t rinfo;
+    if (H5Oget_info3(file_id, &rinfo, H5O_INFO_BASIC | H5O_INFO_NUM_ATTRS) >= 0)
+        root.n_attrs = (int)rinfo.num_attrs;
+    st.rows.push_back(std::move(root));
+    H5Lvisit2(file_id, H5_INDEX_NAME, H5_ITER_NATIVE, hierarchy_cb, &st);
+    arrow::StringBuilder b_path, b_kind, b_shape, b_dtype;
+    arrow::Int32Builder  b_attrs;
+    for (const auto& r : st.rows) {
+        (void)b_path.Append(r.path);
+        (void)b_kind.Append(r.kind);
+        (void)b_shape.Append(r.shape);
+        (void)b_dtype.Append(r.dtype);
+        (void)b_attrs.Append(r.n_attrs);
+    }
+    std::shared_ptr<arrow::Array> a_path, a_kind, a_shape, a_dtype, a_attrs;
+    (void)b_path.Finish(&a_path);
+    (void)b_kind.Finish(&a_kind);
+    (void)b_shape.Finish(&a_shape);
+    (void)b_dtype.Finish(&a_dtype);
+    (void)b_attrs.Finish(&a_attrs);
+    auto schema = arrow::schema({
+        arrow::field("path",    arrow::utf8()),
+        arrow::field("kind",    arrow::utf8()),
+        arrow::field("shape",   arrow::utf8()),
+        arrow::field("dtype",   arrow::utf8()),
+        arrow::field("n_attrs", arrow::int32()),
+    });
+    return arrow::Table::Make(schema, {a_path, a_kind, a_shape, a_dtype, a_attrs});
+}
+
+// ── Forward declarations ────────────────────────────────────────────────────
+struct OpenSpec;
+class Hdf5Source;
+static arrow::Result<std::shared_ptr<arrow::Table>>
+read_anndata_dataframe(hid_t group);
+static arrow::Result<std::shared_ptr<arrow::Table>>
+read_2d_dataset_table(hid_t dataset, int64_t row_cap);
+static arrow::Result<std::shared_ptr<arrow::Table>>
+read_1d_dataset_table(hid_t dataset);
+static arrow::Result<std::shared_ptr<arrow::Table>>
+read_sparse_preview(hid_t group, int64_t row_cap);
+
+// Tab specification: identifies which named object inside the HDF5 file
+// this tab should view, and how to render it.
+struct OpenSpec {
+    enum class Kind { Hierarchy, DataFrame, Matrix2D, Sparse, Dataset1D,
+                      Dataset2D, Summary };
+    Kind        kind;
+    std::string h5_path;     // group / dataset path inside the file
+    std::string display;     // tab label
+    std::string footer_hint; // additional footer text
+};
+
+// Read the AnnData layout and produce one OpenSpec per visible tab.
+static std::vector<OpenSpec> scan_anndata(hid_t file_id);
+// Same but for a generic HDF5 file (one spec per 1D/2D dataset).
+static std::vector<OpenSpec> scan_generic(hid_t file_id);
+
+// ── Hdf5Source: one tab's view of the file ──────────────────────────────────
+
+class Hdf5Source : public WorkbookSource {
+    H5FilePtr   file_;
+    std::string h5_path_;
+    OpenSpec    spec_;
+    // Every sibling tab's OpenSpec, shared across the original + sibling
+    // instances. The original holds the full list; siblings keep it
+    // alive for symmetry / future drill-down.
+    std::shared_ptr<std::vector<OpenSpec>> all_specs_;
+    // Sibling specs *other* than this one — emitted via
+    // open_sibling_sheets().
+    std::vector<OpenSpec> siblings_;
+
+    Hdf5Source(std::shared_ptr<arrow::Table> tbl,
+                std::string path,
+                std::string footer,
+                H5FilePtr file,
+                OpenSpec spec,
+                std::shared_ptr<std::vector<OpenSpec>> all_specs,
+                std::vector<OpenSpec> siblings)
+        : WorkbookSource(std::move(tbl), std::move(path), std::move(footer)),
+          file_(std::move(file)),
+          h5_path_(spec.h5_path),
+          spec_(std::move(spec)),
+          all_specs_(std::move(all_specs)),
+          siblings_(std::move(siblings)) {}
+
+    // Resolve an OpenSpec to a populated arrow::Table.
+    static std::string build_table(hid_t file_id,
+                                    const OpenSpec& spec,
+                                    std::shared_ptr<arrow::Table>* out,
+                                    std::string* footer) {
+        switch (spec.kind) {
+            case OpenSpec::Kind::Hierarchy: {
+                *out = build_hierarchy_table(file_id);
+                *footer = "Format: HDF5 (hierarchy)";
+                if (!spec.footer_hint.empty())
+                    *footer += "  |  " + spec.footer_hint;
+                return "";
+            }
+            case OpenSpec::Kind::Summary: {
+                // The summary table is built directly by scan_anndata
+                // and stuffed into spec.footer_hint as JSON-ish text;
+                // we just turn it back into rows here.
+                arrow::StringBuilder kb, vb;
+                std::stringstream ss(spec.footer_hint);
+                std::string line;
+                while (std::getline(ss, line)) {
+                    auto eq = line.find('\t');
+                    if (eq == std::string::npos) continue;
+                    (void)kb.Append(line.substr(0, eq));
+                    (void)vb.Append(line.substr(eq + 1));
+                }
+                std::shared_ptr<arrow::Array> ka, va;
+                (void)kb.Finish(&ka); (void)vb.Finish(&va);
+                auto sch = arrow::schema({
+                    arrow::field("key",   arrow::utf8()),
+                    arrow::field("value", arrow::utf8())});
+                *out = arrow::Table::Make(sch, {ka, va});
+                *footer = "Format: AnnData (summary)";
+                return "";
+            }
+            case OpenSpec::Kind::DataFrame: {
+                hid_t g = H5Gopen2(file_id, spec.h5_path.c_str(), H5P_DEFAULT);
+                if (g < 0) return "Cannot open group " + spec.h5_path;
+                auto r = read_anndata_dataframe(g);
+                H5Gclose(g);
+                if (!r.ok()) return r.status().ToString();
+                *out = *r;
+                *footer = "Format: AnnData " + spec.display;
+                if (*out) *footer += "  |  Rows: " +
+                    std::to_string((*out)->num_rows()) +
+                    "  |  Cols: " + std::to_string((*out)->num_columns());
+                return "";
+            }
+            case OpenSpec::Kind::Matrix2D:
+            case OpenSpec::Kind::Dataset2D: {
+                hid_t d = H5Dopen2(file_id, spec.h5_path.c_str(), H5P_DEFAULT);
+                if (d < 0) return "Cannot open dataset " + spec.h5_path;
+                auto r = read_2d_dataset_table(d, /*row_cap=*/-1);
+                H5Dclose(d);
+                if (!r.ok()) return r.status().ToString();
+                *out = *r;
+                *footer = "Format: HDF5 2D " + spec.display;
+                if (!spec.footer_hint.empty())
+                    *footer += "  |  " + spec.footer_hint;
+                return "";
+            }
+            case OpenSpec::Kind::Dataset1D: {
+                hid_t d = H5Dopen2(file_id, spec.h5_path.c_str(), H5P_DEFAULT);
+                if (d < 0) return "Cannot open dataset " + spec.h5_path;
+                auto r = read_1d_dataset_table(d);
+                H5Dclose(d);
+                if (!r.ok()) return r.status().ToString();
+                *out = *r;
+                *footer = "Format: HDF5 1D " + spec.display;
+                if (!spec.footer_hint.empty())
+                    *footer += "  |  " + spec.footer_hint;
+                return "";
+            }
+            case OpenSpec::Kind::Sparse: {
+                hid_t g = H5Gopen2(file_id, spec.h5_path.c_str(), H5P_DEFAULT);
+                if (g < 0) return "Cannot open sparse group " + spec.h5_path;
+                auto r = read_sparse_preview(g, 1000);
+                H5Gclose(g);
+                if (!r.ok()) return r.status().ToString();
+                *out = *r;
+                *footer = "Format: AnnData " + spec.display +
+                          "  |  preview: first " +
+                          std::to_string((*out)->num_rows()) + " rows";
+                if (!spec.footer_hint.empty())
+                    *footer += "  |  " + spec.footer_hint;
+                return "";
+            }
+        }
+        return "Unknown OpenSpec kind";
+    }
+
+    static std::string build_one(const std::string& path,
+                                  H5FilePtr file,
+                                  OpenSpec spec,
+                                  std::shared_ptr<std::vector<OpenSpec>> all,
+                                  std::vector<OpenSpec> siblings,
+                                  std::unique_ptr<Hdf5Source>* out) {
+        std::shared_ptr<arrow::Table> tbl;
+        std::string footer;
+        std::string err = build_table(*file, spec, &tbl, &footer);
+        if (!err.empty()) return err;
+        if (!tbl)
+            return "'" + spec.h5_path + "': decoded to empty table";
+        if (!siblings.empty()) {
+            footer += "  |  +" + std::to_string(siblings.size()) +
+                       " more tab(s)";
+        }
+        out->reset(new Hdf5Source(std::move(tbl), path, std::move(footer),
+                                    std::move(file), std::move(spec),
+                                    std::move(all), std::move(siblings)));
+        return "";
+    }
+
+public:
+    static std::string open_first(const std::string& path,
+                                    std::unique_ptr<Hdf5Source>* out);
+
+    std::vector<std::unique_ptr<TabularSource>>
+    open_sibling_sheets() const override {
+        std::vector<std::unique_ptr<TabularSource>> result;
+        for (const auto& sp : siblings_) {
+            std::unique_ptr<Hdf5Source> s;
+            std::string err = build_one(path(), file_, sp, all_specs_,
+                                          /*siblings=*/{}, &s);
+            if (!err.empty()) {
+                std::fprintf(stderr, "vv: HDF5 tab '%s': %s\n",
+                              sp.display.c_str(), err.c_str());
+                continue;
+            }
+            result.push_back(std::move(s));
+        }
+        return result;
+    }
+};
+
+// ── Read helpers — defined after Hdf5Source so they can be referenced
+// from build_table. ─────────────────────────────────────────────────────────
+
+// Read a 1-D dataset as a single-column Arrow table.
+static arrow::Result<std::shared_ptr<arrow::Table>>
+read_1d_dataset_table(hid_t dset) {
+    hid_t space = H5Dget_space(dset);
+    int nd = H5Sget_simple_extent_ndims(space);
+    if (nd != 1) {
+        H5Sclose(space);
+        return arrow::Status::Invalid("expected 1-D dataset");
+    }
+    hsize_t dim;
+    H5Sget_simple_extent_dims(space, &dim, nullptr);
+    H5Sclose(space);
+    hid_t t = H5Dget_type(dset);
+    H5T_class_t cls = H5Tget_class(t);
+    size_t tsz = H5Tget_size(t);
+    arrow::FieldVector fields = { arrow::field("value", arrow::utf8()) };
+    std::shared_ptr<arrow::Array> arr;
+    if (cls == H5T_INTEGER) {
+        std::vector<int64_t> buf((size_t)dim);
+        H5Dread(dset, H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data());
+        arrow::Int64Builder b;
+        for (auto v : buf) (void)b.Append(v);
+        (void)b.Finish(&arr);
+        fields[0] = arrow::field("value", arrow::int64());
+    } else if (cls == H5T_FLOAT) {
+        std::vector<double> buf((size_t)dim);
+        H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data());
+        arrow::DoubleBuilder b;
+        for (auto v : buf) (void)b.Append(v);
+        (void)b.Finish(&arr);
+        fields[0] = arrow::field("value", arrow::float64());
+    } else if (cls == H5T_STRING) {
+        arrow::StringBuilder b;
+        if (H5Tis_variable_str(t)) {
+            std::vector<char*> ptrs((size_t)dim, nullptr);
+            hid_t mt = H5Tcopy(H5T_C_S1);
+            H5Tset_size(mt, H5T_VARIABLE);
+            H5Tset_cset(mt, H5T_CSET_UTF8);
+            H5Dread(dset, mt, H5S_ALL, H5S_ALL, H5P_DEFAULT, ptrs.data());
+            for (auto* p : ptrs) (void)b.Append(p ? std::string(p) : std::string{});
+            // Free the vlens.
+            hid_t mem_space = H5Dget_space(dset);
+            H5Dvlen_reclaim(mt, mem_space, H5P_DEFAULT, ptrs.data());
+            H5Sclose(mem_space);
+            H5Tclose(mt);
+        } else {
+            std::vector<char> buf((size_t)dim * tsz, '\0');
+            H5Dread(dset, t, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data());
+            for (hsize_t i = 0; i < dim; ++i) {
+                size_t n = strnlen(buf.data() + i * tsz, tsz);
+                (void)b.Append(std::string(buf.data() + i * tsz, n));
+            }
+        }
+        (void)b.Finish(&arr);
+    } else {
+        // Fallback: bytes-as-hex.
+        arrow::StringBuilder b;
+        for (hsize_t i = 0; i < dim; ++i) (void)b.Append("?");
+        (void)b.Finish(&arr);
+    }
+    H5Tclose(t);
+    auto sch = arrow::schema(fields);
+    return arrow::Table::Make(sch, {arr});
+}
+
+// Read a 2-D numeric dataset as an Arrow table. Columns are named col0,
+// col1, … unless the dataset has a "column_names" attribute. row_cap < 0
+// means all rows.
+static arrow::Result<std::shared_ptr<arrow::Table>>
+read_2d_dataset_table(hid_t dset, int64_t row_cap) {
+    hid_t space = H5Dget_space(dset);
+    int nd = H5Sget_simple_extent_ndims(space);
+    if (nd != 2) {
+        H5Sclose(space);
+        return arrow::Status::Invalid("expected 2-D dataset");
+    }
+    hsize_t dims[2];
+    H5Sget_simple_extent_dims(space, dims, nullptr);
+    int64_t n_rows = (int64_t)dims[0];
+    int64_t n_cols = (int64_t)dims[1];
+    if (row_cap > 0 && row_cap < n_rows) n_rows = row_cap;
+    H5Sclose(space);
+
+    hid_t t = H5Dget_type(dset);
+    H5T_class_t cls = H5Tget_class(t);
+    H5Tclose(t);
+
+    // Build column names from the dataset's "column_names" attribute if
+    // present (AnnData uses it for some embeddings).
+    std::vector<std::string> names((size_t)n_cols);
+    for (int64_t c = 0; c < n_cols; ++c) names[(size_t)c] = "col" + std::to_string(c);
+
+    arrow::FieldVector fields((size_t)n_cols);
+    std::vector<std::shared_ptr<arrow::Array>> cols((size_t)n_cols);
+    if (cls == H5T_FLOAT) {
+        std::vector<double> buf((size_t)(n_rows * n_cols));
+        hid_t fs = H5Dget_space(dset);
+        hsize_t start[2] = {0, 0};
+        hsize_t count[2] = {(hsize_t)n_rows, (hsize_t)n_cols};
+        H5Sselect_hyperslab(fs, H5S_SELECT_SET, start, nullptr, count, nullptr);
+        hid_t ms = H5Screate_simple(2, count, nullptr);
+        H5Dread(dset, H5T_NATIVE_DOUBLE, ms, fs, H5P_DEFAULT, buf.data());
+        H5Sclose(ms); H5Sclose(fs);
+        for (int64_t c = 0; c < n_cols; ++c) {
+            arrow::DoubleBuilder b;
+            for (int64_t r = 0; r < n_rows; ++r)
+                (void)b.Append(buf[(size_t)(r * n_cols + c)]);
+            (void)b.Finish(&cols[(size_t)c]);
+            fields[(size_t)c] = arrow::field(names[(size_t)c], arrow::float64());
+        }
+    } else if (cls == H5T_INTEGER) {
+        std::vector<int64_t> buf((size_t)(n_rows * n_cols));
+        hid_t fs = H5Dget_space(dset);
+        hsize_t start[2] = {0, 0};
+        hsize_t count[2] = {(hsize_t)n_rows, (hsize_t)n_cols};
+        H5Sselect_hyperslab(fs, H5S_SELECT_SET, start, nullptr, count, nullptr);
+        hid_t ms = H5Screate_simple(2, count, nullptr);
+        H5Dread(dset, H5T_NATIVE_INT64, ms, fs, H5P_DEFAULT, buf.data());
+        H5Sclose(ms); H5Sclose(fs);
+        for (int64_t c = 0; c < n_cols; ++c) {
+            arrow::Int64Builder b;
+            for (int64_t r = 0; r < n_rows; ++r)
+                (void)b.Append(buf[(size_t)(r * n_cols + c)]);
+            (void)b.Finish(&cols[(size_t)c]);
+            fields[(size_t)c] = arrow::field(names[(size_t)c], arrow::int64());
+        }
+    } else {
+        // String / compound 2-D: not supported in v1, emit empty.
+        for (int64_t c = 0; c < n_cols; ++c) {
+            arrow::StringBuilder b;
+            (void)b.Finish(&cols[(size_t)c]);
+            fields[(size_t)c] = arrow::field(names[(size_t)c], arrow::utf8());
+        }
+    }
+    return arrow::Table::Make(arrow::schema(fields), cols);
+}
+
+// Read AnnData's obs / var DataFrame layout — one column per non-special
+// child link, categoricals expanded via the codes / categories sub-group.
+static arrow::Result<std::shared_ptr<arrow::Table>>
+read_anndata_dataframe(hid_t group) {
+    auto names = list_children(group);
+    // Identify the index column from the _index attribute if present.
+    std::string idx_name = read_string_attr(group, "_index");
+    arrow::FieldVector fields;
+    std::vector<std::shared_ptr<arrow::Array>> cols;
+
+    // Helper to convert one child into a (name, array) pair.
+    auto add_child = [&](const std::string& name) -> arrow::Status {
+        // Skip private / reserved children.
+        if (name == "__categories__") return arrow::Status::OK();
+        std::string display = name;
+        H5O_info2_t info;
+        if (H5Oget_info_by_name3(group, name.c_str(), &info, H5O_INFO_BASIC,
+                                   H5P_DEFAULT) < 0)
+            return arrow::Status::OK();
+        if (info.type == H5O_TYPE_GROUP) {
+            // AnnData modern categorical: group with "categories" + "codes" datasets.
+            hid_t sub = H5Gopen2(group, name.c_str(), H5P_DEFAULT);
+            if (sub < 0) return arrow::Status::OK();
+            std::string enc = read_string_attr(sub, "encoding-type");
+            if (enc == "categorical" &&
+                link_exists(sub, "categories") &&
+                link_exists(sub, "codes")) {
+                hid_t cats_d = H5Dopen2(sub, "categories", H5P_DEFAULT);
+                hid_t codes_d = H5Dopen2(sub, "codes", H5P_DEFAULT);
+                auto cats_t = read_1d_dataset_table(cats_d);
+                auto codes_t = read_1d_dataset_table(codes_d);
+                H5Dclose(cats_d); H5Dclose(codes_d); H5Gclose(sub);
+                if (cats_t.ok() && codes_t.ok()) {
+                    auto cats_arr = (*cats_t)->column(0)->chunk(0);
+                    auto codes_arr = (*codes_t)->column(0)->chunk(0);
+                    auto cats_s = std::dynamic_pointer_cast<arrow::StringArray>(cats_arr);
+                    auto codes_i = std::dynamic_pointer_cast<arrow::Int64Array>(codes_arr);
+                    arrow::StringBuilder b;
+                    int64_t n = codes_i ? codes_i->length() : 0;
+                    int64_t nc = cats_s ? cats_s->length() : 0;
+                    for (int64_t i = 0; i < n; ++i) {
+                        int64_t code = codes_i->Value(i);
+                        if (code < 0 || code >= nc)
+                            (void)b.AppendNull();
+                        else
+                            (void)b.Append(cats_s->GetString(code));
+                    }
+                    std::shared_ptr<arrow::Array> a;
+                    (void)b.Finish(&a);
+                    cols.push_back(a);
+                    fields.push_back(arrow::field(display, arrow::utf8()));
+                }
+                return arrow::Status::OK();
+            }
+            H5Gclose(sub);
+            return arrow::Status::OK();
+        }
+        if (info.type != H5O_TYPE_DATASET) return arrow::Status::OK();
+        hid_t d = H5Dopen2(group, name.c_str(), H5P_DEFAULT);
+        if (d < 0) return arrow::Status::OK();
+        auto t = read_1d_dataset_table(d);
+        H5Dclose(d);
+        if (t.ok() && (*t)->num_columns() > 0) {
+            cols.push_back((*t)->column(0)->chunk(0));
+            fields.push_back(arrow::field(display, (*t)->schema()->field(0)->type()));
+        }
+        return arrow::Status::OK();
+    };
+
+    // Emit the _index column first if it exists, then the rest in
+    // discovered order.
+    if (!idx_name.empty()) {
+        auto it = std::find(names.begin(), names.end(), idx_name);
+        if (it != names.end()) {
+            ARROW_RETURN_NOT_OK(add_child(*it));
+            names.erase(it);
+        }
+    }
+    for (const auto& n : names)
+        ARROW_RETURN_NOT_OK(add_child(n));
+
+    return arrow::Table::Make(arrow::schema(fields), cols);
+}
+
+// Densify the first `row_cap` rows of an AnnData CSR sparse matrix into
+// an Arrow table (one float64 column per matrix column).
+static arrow::Result<std::shared_ptr<arrow::Table>>
+read_sparse_preview(hid_t group, int64_t row_cap) {
+    // shape attribute = [n_rows, n_cols]
+    int64_t shape[2] = {0, 0};
+    if (H5Aexists(group, "shape") > 0) {
+        hid_t a = H5Aopen(group, "shape", H5P_DEFAULT);
+        H5Aread(a, H5T_NATIVE_INT64, shape);
+        H5Aclose(a);
+    }
+    std::string enc = read_string_attr(group, "encoding-type");
+    bool is_csr = (enc == "csr_matrix");
+    bool is_csc = (enc == "csc_matrix");
+    if (!is_csr && !is_csc)
+        return arrow::Status::Invalid("not a CSR/CSC sparse group");
+
+    int64_t n_rows = shape[0], n_cols = shape[1];
+    if (row_cap > 0 && row_cap < n_rows) n_rows = row_cap;
+    if (n_cols > 200) n_cols = 200;     // wide-table sanity cap
+
+    // For CSC we'd need to walk every column's indptr range; v1 only
+    // does CSR. Caller (scan_anndata) flags this in the footer.
+    if (!is_csr) {
+        return arrow::Status::Invalid("CSC preview not implemented in v1");
+    }
+    hid_t indptr_d = H5Dopen2(group, "indptr", H5P_DEFAULT);
+    hid_t indices_d = H5Dopen2(group, "indices", H5P_DEFAULT);
+    hid_t data_d    = H5Dopen2(group, "data",    H5P_DEFAULT);
+    if (indptr_d < 0 || indices_d < 0 || data_d < 0) {
+        if (indptr_d >= 0) H5Dclose(indptr_d);
+        if (indices_d >= 0) H5Dclose(indices_d);
+        if (data_d >= 0) H5Dclose(data_d);
+        return arrow::Status::IOError("sparse: missing indptr/indices/data");
+    }
+
+    // Read indptr[0 .. n_rows].
+    std::vector<int64_t> indptr((size_t)(n_rows + 1));
+    {
+        hid_t fs = H5Dget_space(indptr_d);
+        hsize_t start = 0, count = (hsize_t)(n_rows + 1);
+        H5Sselect_hyperslab(fs, H5S_SELECT_SET, &start, nullptr, &count, nullptr);
+        hid_t ms = H5Screate_simple(1, &count, nullptr);
+        H5Dread(indptr_d, H5T_NATIVE_INT64, ms, fs, H5P_DEFAULT, indptr.data());
+        H5Sclose(ms); H5Sclose(fs);
+    }
+    int64_t nnz_span = indptr.back() - indptr.front();
+    if (nnz_span < 0) nnz_span = 0;
+
+    std::vector<int64_t> indices((size_t)nnz_span);
+    std::vector<double>  data((size_t)nnz_span);
+    if (nnz_span > 0) {
+        hsize_t start = (hsize_t)indptr.front();
+        hsize_t count = (hsize_t)nnz_span;
+        {
+            hid_t fs = H5Dget_space(indices_d);
+            H5Sselect_hyperslab(fs, H5S_SELECT_SET, &start, nullptr, &count, nullptr);
+            hid_t ms = H5Screate_simple(1, &count, nullptr);
+            H5Dread(indices_d, H5T_NATIVE_INT64, ms, fs, H5P_DEFAULT, indices.data());
+            H5Sclose(ms); H5Sclose(fs);
+        }
+        {
+            hid_t fs = H5Dget_space(data_d);
+            H5Sselect_hyperslab(fs, H5S_SELECT_SET, &start, nullptr, &count, nullptr);
+            hid_t ms = H5Screate_simple(1, &count, nullptr);
+            H5Dread(data_d, H5T_NATIVE_DOUBLE, ms, fs, H5P_DEFAULT, data.data());
+            H5Sclose(ms); H5Sclose(fs);
+        }
+    }
+    H5Dclose(indptr_d); H5Dclose(indices_d); H5Dclose(data_d);
+
+    // Build per-column DoubleBuilders, fill with zeros, scatter sparse values.
+    int64_t cap = (int64_t)shape[1];
+    std::vector<arrow::DoubleBuilder> bs((size_t)n_cols);
+    for (auto& b : bs) (void)b.Reserve(n_rows);
+    std::vector<double> row(n_cols, 0.0);
+    for (int64_t r = 0; r < n_rows; ++r) {
+        std::fill(row.begin(), row.end(), 0.0);
+        int64_t s = indptr[(size_t)r] - indptr.front();
+        int64_t e = indptr[(size_t)(r + 1)] - indptr.front();
+        for (int64_t k = s; k < e; ++k) {
+            int64_t ci = indices[(size_t)k];
+            if (ci >= 0 && ci < n_cols) row[(size_t)ci] = data[(size_t)k];
+            (void)cap;
+        }
+        for (int64_t c = 0; c < n_cols; ++c)
+            (void)bs[(size_t)c].Append(row[(size_t)c]);
+    }
+    arrow::FieldVector fields;
+    std::vector<std::shared_ptr<arrow::Array>> cols;
+    for (int64_t c = 0; c < n_cols; ++c) {
+        std::shared_ptr<arrow::Array> a;
+        (void)bs[(size_t)c].Finish(&a);
+        cols.push_back(std::move(a));
+        fields.push_back(arrow::field("col" + std::to_string(c), arrow::float64()));
+    }
+    return arrow::Table::Make(arrow::schema(fields), cols);
+}
+
+// ── Scanners — decide which tabs to emit ────────────────────────────────────
+
+static std::vector<OpenSpec> scan_generic(hid_t file_id) {
+    std::vector<OpenSpec> specs;
+    // Tab 0 = hierarchy.
+    specs.push_back({OpenSpec::Kind::Hierarchy, "/", "hierarchy", ""});
+    // For each 1-D or 2-D dataset, add a tab.
+    struct Scan { std::vector<OpenSpec>* out; int n_dsets = 0; };
+    Scan ctx{&specs, 0};
+    auto cb = [](hid_t loc_id, const char* name, const H5L_info2_t*, void* data) -> herr_t {
+        auto* sc = static_cast<Scan*>(data);
+        if (sc->n_dsets > 32) return 0;          // cap to keep tab count sane
+        H5O_info2_t info;
+        if (H5Oget_info_by_name3(loc_id, name, &info, H5O_INFO_BASIC, H5P_DEFAULT) < 0)
+            return 0;
+        if (info.type != H5O_TYPE_DATASET) return 0;
+        hid_t d = H5Dopen2(loc_id, name, H5P_DEFAULT);
+        if (d < 0) return 0;
+        hid_t s = H5Dget_space(d);
+        int nd = H5Sget_simple_extent_ndims(s);
+        std::vector<hsize_t> dims((size_t)nd);
+        if (nd > 0) H5Sget_simple_extent_dims(s, dims.data(), nullptr);
+        H5Sclose(s); H5Dclose(d);
+        if (nd == 1) {
+            sc->out->push_back({OpenSpec::Kind::Dataset1D,
+                                  std::string("/") + name,
+                                  std::string("/") + name,
+                                  shape_to_string(dims)});
+            ++sc->n_dsets;
+        } else if (nd == 2 && dims[1] <= 32) {
+            sc->out->push_back({OpenSpec::Kind::Dataset2D,
+                                  std::string("/") + name,
+                                  std::string("/") + name,
+                                  shape_to_string(dims)});
+            ++sc->n_dsets;
+        }
+        return 0;
+    };
+    H5Lvisit2(file_id, H5_INDEX_NAME, H5_ITER_NATIVE,
+               (H5L_iterate2_t)cb, &ctx);
+    return specs;
+}
+
+static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
+    std::vector<OpenSpec> specs;
+
+    // Summary tab (key/value rows).
+    std::string summary;
+    auto add = [&](const std::string& k, const std::string& v) {
+        summary += k; summary += '\t'; summary += v; summary += '\n';
+    };
+    add("format", "AnnData");
+    std::string enc = read_string_attr(file_id, "encoding-type");
+    if (!enc.empty()) add("root-encoding", enc);
+
+    // X (matrix). Either a dataset (dense) or a group with
+    // encoding-type ∈ {csr_matrix, csc_matrix}.
+    bool x_is_sparse = false;
+    int64_t x_rows = 0, x_cols = 0;
+    if (link_exists(file_id, "X")) {
+        if (is_group(file_id, "X")) {
+            hid_t g = H5Gopen2(file_id, "X", H5P_DEFAULT);
+            std::string xenc = read_string_attr(g, "encoding-type");
+            if (xenc == "csr_matrix" || xenc == "csc_matrix") {
+                x_is_sparse = true;
+                int64_t shape[2] = {0, 0};
+                if (H5Aexists(g, "shape") > 0) {
+                    hid_t a = H5Aopen(g, "shape", H5P_DEFAULT);
+                    H5Aread(a, H5T_NATIVE_INT64, shape);
+                    H5Aclose(a);
+                }
+                x_rows = shape[0]; x_cols = shape[1];
+                add("X", xenc + "  (" + std::to_string(x_rows) +
+                          " \xc3\x97 " + std::to_string(x_cols) + ")");
+                if (xenc == "csr_matrix") {
+                    specs.push_back({OpenSpec::Kind::Sparse, "/X",
+                                      "X (preview)",
+                                      xenc + "  shape: " +
+                                      std::to_string(x_rows) + " \xc3\x97 " +
+                                      std::to_string(x_cols)});
+                } else {
+                    add("note", "CSC sparse preview not implemented in v1");
+                }
+            }
+            H5Gclose(g);
+        } else {
+            hid_t d = H5Dopen2(file_id, "X", H5P_DEFAULT);
+            hid_t s = H5Dget_space(d);
+            int nd = H5Sget_simple_extent_ndims(s);
+            std::vector<hsize_t> dims((size_t)nd);
+            if (nd > 0) H5Sget_simple_extent_dims(s, dims.data(), nullptr);
+            H5Sclose(s); H5Dclose(d);
+            if (nd == 2) {
+                x_rows = (int64_t)dims[0]; x_cols = (int64_t)dims[1];
+                add("X", "dense  (" + std::to_string(x_rows) +
+                          " \xc3\x97 " + std::to_string(x_cols) + ")");
+                specs.push_back({OpenSpec::Kind::Matrix2D, "/X",
+                                  "X", "dense"});
+            }
+        }
+    }
+
+    if (link_exists(file_id, "obs") && is_group(file_id, "obs")) {
+        hid_t g = H5Gopen2(file_id, "obs", H5P_DEFAULT);
+        H5G_info_t gi; H5Gget_info(g, &gi);
+        add("obs", std::to_string(x_rows) + " rows, " +
+                    std::to_string(gi.nlinks) + " columns");
+        H5Gclose(g);
+        specs.push_back({OpenSpec::Kind::DataFrame, "/obs", "obs", ""});
+    }
+    if (link_exists(file_id, "var") && is_group(file_id, "var")) {
+        hid_t g = H5Gopen2(file_id, "var", H5P_DEFAULT);
+        H5G_info_t gi; H5Gget_info(g, &gi);
+        add("var", std::to_string(x_cols) + " rows, " +
+                    std::to_string(gi.nlinks) + " columns");
+        H5Gclose(g);
+        specs.push_back({OpenSpec::Kind::DataFrame, "/var", "var", ""});
+    }
+
+    // obsm / varm / layers — each child becomes its own tab.
+    auto add_subgroup_tabs = [&](const char* parent_name,
+                                   OpenSpec::Kind k,
+                                   const char* footer_kind) {
+        if (!link_exists(file_id, parent_name) ||
+            !is_group(file_id, parent_name)) return;
+        hid_t g = H5Gopen2(file_id, parent_name, H5P_DEFAULT);
+        auto names = list_children(g);
+        H5Gclose(g);
+        for (const auto& nm : names) {
+            specs.push_back({k,
+                              std::string("/") + parent_name + "/" + nm,
+                              std::string(parent_name) + "[" + nm + "]",
+                              footer_kind});
+        }
+        if (!names.empty())
+            add(parent_name, std::to_string(names.size()) + " entries");
+    };
+    add_subgroup_tabs("obsm",   OpenSpec::Kind::Matrix2D, "obsm");
+    add_subgroup_tabs("varm",   OpenSpec::Kind::Matrix2D, "varm");
+    add_subgroup_tabs("layers", OpenSpec::Kind::Matrix2D, "layer");
+
+    // Prepend the summary tab.
+    OpenSpec sum_spec{OpenSpec::Kind::Summary, "/", "summary", summary};
+    specs.insert(specs.begin(), sum_spec);
+    return specs;
+}
+
+// ── Hdf5Source::open_first ──────────────────────────────────────────────────
+
+std::string Hdf5Source::open_first(const std::string& path,
+                                      std::unique_ptr<Hdf5Source>* out) {
+    // Silence HDF5's stderr error spew for missing attrs etc.
+    H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
+    hid_t fid = H5Fopen(path.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
+    if (fid < 0) return "Cannot open '" + path + "' as HDF5";
+    H5FilePtr file(new hid_t(fid), [](hid_t* p){
+        if (*p >= 0) H5Fclose(*p); delete p;
+    });
+
+    // AnnData detection: root attribute encoding-type == "anndata"
+    // OR the modern heuristic /obs + /var + X presence.
+    std::string root_enc = read_string_attr(fid, "encoding-type");
+    bool is_anndata = (root_enc == "anndata") ||
+        (link_exists(fid, "obs") && link_exists(fid, "var") &&
+         link_exists(fid, "X"));
+
+    std::vector<OpenSpec> specs = is_anndata ? scan_anndata(fid)
+                                                : scan_generic(fid);
+    if (specs.empty()) return "'" + path + "': no viewable HDF5 datasets";
+
+    auto all = std::make_shared<std::vector<OpenSpec>>(specs);
+    OpenSpec first = specs.front();
+    std::vector<OpenSpec> siblings(specs.begin() + 1, specs.end());
+    return build_one(path, std::move(file), std::move(first),
+                       std::move(all), std::move(siblings), out);
+}
+
+}  // namespace h5v
+
 // ── mpileup --decode-pileup helpers ──────────────────────────────────────────
 //
 // Explodes the packed `bases` cell of an mpileup row into per-allele
@@ -8048,6 +8965,13 @@ static std::string open_source(const std::string& path, const Config& cfg,
     } else if (fends_ci(path, ".ods") || fends_ci(path, ".fods")) {
         std::unique_ptr<OdsSource> src;
         std::string err = OdsSource::open_first(path, &src);
+        if (!err.empty()) return err;
+        *out = std::move(src);
+        return "";
+    } else if (fends_ci(path, ".h5ad") || fends_ci(path, ".h5") ||
+               fends_ci(path, ".hdf5") || fends_ci(path, ".loom")) {
+        std::unique_ptr<h5v::Hdf5Source> src;
+        std::string err = h5v::Hdf5Source::open_first(path, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";

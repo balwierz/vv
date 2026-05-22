@@ -219,6 +219,31 @@ else()
   message(STATUS "xlsxio shared: ${XLSXIO_SHARED}")
 endif()
 
+# ── HDF5 (for .h5ad / .h5 / .hdf5 / .loom — AnnData + generic) ───────────────
+# Local builds use the system libhdf5 (every distro ships it as
+# libhdf5-dev / hdf5 / brew hdf5). The AlmaLinux 8 static build vendors
+# HDF5 1.14.4 under static-libs/ — see the `build-hdf5` Dockerfile
+# stage. We disable the high-level / cxx / fortran / tools bindings so
+# the static archive is ~5 MB rather than 30 MB.
+find_path(HDF5_INCLUDE_DIR  hdf5.h)
+find_library(HDF5_STATIC    NAMES libhdf5.a
+             PATHS "${CMAKE_CURRENT_SOURCE_DIR}/../static-libs/lib"
+             NO_DEFAULT_PATH)
+find_library(HDF5_SHARED    NAMES hdf5 libhdf5.so libhdf5.dylib
+                                   hdf5_serial libhdf5_serial.so)
+if(NOT HDF5_INCLUDE_DIR OR (NOT HDF5_STATIC AND NOT HDF5_SHARED))
+  message(FATAL_ERROR
+      "libhdf5 not found. Install `hdf5` (Arch), `libhdf5-dev` on "
+      "Debian/Ubuntu, or `brew install hdf5` on macOS.")
+endif()
+set(HDF5_LIB $<IF:$<BOOL:${HDF5_STATIC}>,${HDF5_STATIC},${HDF5_SHARED}>)
+message(STATUS "hdf5 header: ${HDF5_INCLUDE_DIR}")
+if(HDF5_STATIC)
+  message(STATUS "hdf5 static: ${HDF5_STATIC}")
+else()
+  message(STATUS "hdf5 shared: ${HDF5_SHARED}")
+endif()
+
 # ── Static runtime (libstdc++, libgcc) ───────────────────────────────────────
 option(STATIC_RUNTIME "Link libstdc++ and libgcc statically" OFF)
 if(STATIC_RUNTIME)
@@ -254,6 +279,7 @@ target_include_directories(vv PRIVATE
     ${XLSXIO_INCLUDE_DIR}
     ${EXPAT_INCLUDE_DIR}
     ${MINIZIP_INCLUDE_DIR}
+    ${HDF5_INCLUDE_DIR}
 )
 if(ARROW_ORC_HEADER)
   target_compile_definitions(vv PRIVATE VV_HAVE_ORC=1)
@@ -318,6 +344,7 @@ if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND NCURSES_STATIC_LIB)
   set(_xlsxio       $<IF:$<BOOL:${XLSXIO_STATIC}>,${XLSXIO_STATIC},-lxlsxio_read>)
   set(_expat        $<IF:$<BOOL:${EXPAT_STATIC}>,${EXPAT_STATIC},-lexpat>)
   set(_minizip      $<IF:$<BOOL:${MINIZIP_STATIC}>,${MINIZIP_STATIC},-lminizip>)
+  set(_hdf5         $<IF:$<BOOL:${HDF5_STATIC}>,${HDF5_STATIC},-lhdf5>)
 
   target_link_libraries(vv PRIVATE
       ${PARQUET_TARGET}
@@ -339,6 +366,7 @@ if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND NCURSES_STATIC_LIB)
       # Order matters for static linking: xlsxio uses expat/minizip
       # symbols, so they have to follow it.
       ${_xlsxio} ${_expat} ${_minizip}
+      ${_hdf5}
       ${_deflate} ${_zlib} ${_bz2} ${_lzma} ${_lz4} ${_zstd}
       ${_brotlienc} ${_brotlidec} ${_brotlicommon}
       ${_snappy} ${_utf8proc} ${_re2} ${_thrift}
@@ -364,6 +392,7 @@ else()
       md4c
       SQLite::SQLite3
       ${XLSXIO_LIB}
+      ${HDF5_LIB}
       ${EXPAT_SHARED}
       ${MINIZIP_SHARED}
   )

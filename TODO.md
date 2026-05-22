@@ -89,7 +89,16 @@ user-facing summary).
   `-DARROW_ORC=ON` in `build-arrow`. Apt / Brew / Conda Arrow already
   ship ORC, so the static-only release is the only platform where
   `vv file.orc` reports "compiled without ORC support".
-- HDF5 / AnnData / Loom — single-cell omics. Heavy dep (libhdf5).
+- AnnData `uns` (unstructured) decoding — nested groups / scalars /
+  free-form arrays. v1 skips. A follow-up could surface scalars and
+  string entries using the existing hierarchy-table machinery.
+- AnnData CSC sparse preview — needs per-column indptr walking
+  rather than per-row. v1 only handles CSR; CSC files show a summary
+  but no value preview.
+- Cooler (`.cool`, `.mcool`) Hi-C contact matrices — HDF5 backbone
+  but very different layout (bins / pixels / chroms). Worth a
+  follow-up dedicated source class on top of the existing HDF5
+  plumbing.
 - Galaxy `.dat` / Galaxy archive — niche but visible.
 
 ### Done

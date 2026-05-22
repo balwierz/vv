@@ -399,6 +399,71 @@ else:
     ])
     ods.save(str(ods_path))
 
+# ── HDF5 / AnnData fixtures ──────────────────────────────────────────────────
+# tiny.h5ad: small AnnData with a CSR-sparse X, two obs columns
+# (one categorical), one var column, one obsm embedding. Exercises
+# the AnnData layout parser (summary + obs + var + X-preview + obsm tabs).
+# tiny.h5: plain HDF5 with nested groups + a 1-D and a 2-D dataset to
+# exercise the generic hierarchy walker + dataset readers.
+try:
+    import h5py                                              # type: ignore
+    import numpy as np                                       # type: ignore
+except ImportError:
+    print("warn: h5py / numpy not found; skipping tiny.h5 / tiny.h5ad",
+          file=sys.stderr)
+else:
+    # Plain HDF5 file with a group hierarchy and two datasets.
+    h5_path = HERE / "tiny.h5"
+    if h5_path.exists():
+        h5_path.unlink()
+    with h5py.File(h5_path, "w") as f:
+        grp = f.create_group("counts")
+        grp.create_dataset("rows", data=np.arange(10, dtype=np.int64))
+        grp.create_dataset("matrix",
+                            data=np.arange(20, dtype=np.float64).reshape(10, 2))
+        meta = f.create_group("meta")
+        meta.attrs["created_by"] = "vv tests"
+        meta.create_dataset("labels",
+                              data=np.array(["a", "b", "c"], dtype="S2"))
+
+try:
+    import anndata as ad                                     # type: ignore
+    import numpy as np                                       # type: ignore
+    from scipy import sparse                                 # type: ignore
+except ImportError:
+    print("warn: anndata / scipy not found; skipping tiny.h5ad",
+          file=sys.stderr)
+else:
+    h5ad_path = HERE / "tiny.h5ad"
+    if h5ad_path.exists():
+        h5ad_path.unlink()
+    # Tiny dataset: 5 "cells" × 4 "genes" with a CSR-sparse X.
+    rng = np.random.default_rng(42)
+    rows, cols, vals = [], [], []
+    for r in range(5):
+        for c in range(4):
+            if rng.random() < 0.5:
+                rows.append(r); cols.append(c)
+                vals.append(float(rng.integers(1, 100)))
+    X = sparse.csr_matrix((vals, (rows, cols)), shape=(5, 4),
+                            dtype=np.float64)
+    obs = ad.AnnData.__module__  # marker for older anndata versions
+    import pandas as pd                                       # type: ignore
+    obs_df = pd.DataFrame({
+        "cluster":  pd.Categorical(["A", "B", "A", "B", "A"]),
+        "n_counts": np.array([12, 7, 19, 4, 25], dtype=np.float64),
+    }, index=[f"cell{i}" for i in range(5)])
+    var_df = pd.DataFrame({
+        "gene_name": ["G1", "G2", "G3", "G4"],
+        "mt":        [False, False, True, False],
+    }, index=[f"gene{i}" for i in range(4)])
+    adata = ad.AnnData(X=X, obs=obs_df, var=var_df,
+                          obsm={"X_umap": np.array(
+                              [[0.1, 0.2], [-0.3, 0.4],
+                               [0.5, -0.1], [-0.2, -0.5],
+                               [0.0, 0.0]], dtype=np.float64)})
+    adata.write_h5ad(h5ad_path)
+
 # ── Apache ORC (columnar; pyarrow.orc is built into pyarrow when Arrow was
 # compiled with -DARROW_ORC=ON, which is the wheel default since pyarrow
 # 12.0). Soft-skip otherwise.

@@ -29,6 +29,7 @@ _vv() {
         '*.orc'
         '*.pileup' '*.pileup.gz' '*.mpileup' '*.mpileup.gz' '*.pile' '*.pile.gz'
         '*.md' '*.markdown' '*.mdown' '*.mkd'
+        '*.h5' '*.h5ad' '*.hdf5' '*.loom'
     )
 
     _arguments -s -S \

@@ -59,6 +59,18 @@ string). The legacy binary \fB.xls\fR format is not supported. Requires
 \fBlibxlsxio\fR (\fBxlsxio\fR AUR on Arch, \fBlibxlsxio-dev\fR on
 Debian/Ubuntu, \fBbrew install xlsxio\fR on macOS).
 .IP \(bu 2
+\fB.h5ad\fR, \fB.h5\fR, \fB.hdf5\fR, \fB.loom\fR \(en HDF5 containers
+read via libhdf5. AnnData (\fB.h5ad\fR) is detected by the root
+\fBencoding-type\fR attribute (or modern heuristic /obs + /var + X);
+the layout decodes into a summary tab plus \fBobs\fR, \fBvar\fR,
+\fBX\fR (densified first-N-row preview for CSR sparse), and one tab
+per entry under \fBobsm\fR / \fBvarm\fR / \fBlayers\fR. Categoricals
+(\fBcodes\fR / \fBcategories\fR groups) decode back to string columns.
+Generic HDF5 files surface a \fBhierarchy\fR tab listing every
+group / dataset with path / kind / shape / dtype, plus one tab per
+1-D or 2-D dataset (capped at 32 datasets / 32 columns). \fBuns\fR
+(unstructured) decoding and CSC sparse preview are deferred.
+.IP \(bu 2
 \fB.ods\fR \(en OpenDocument Spreadsheet. Each sheet becomes a TUI
 tab. Hand-rolled parser: minizip inflates \fBcontent.xml\fR from the
 .ods ZIP, expat SAX-parses the SpreadsheetML payload. Cells with a

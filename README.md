@@ -63,6 +63,7 @@ See [INSTALL.md](INSTALL.md) for source builds, AUR, and the static AlmaLinux
 | SQLite            | `.sqlite`, `.sqlite3`, `.db` (each table → one TUI tab; types follow SQLite affinity) |
 | Excel             | `.xlsx`, `.xlsm` (each sheet → one TUI tab; column types inferred from cell text via Arrow's CSV reader) |
 | OpenDocument      | `.ods` (each sheet → one TUI tab; hand-rolled minizip + expat SAX parser; types inferred from cell content via Arrow's CSV reader) |
+| AnnData / HDF5    | `.h5ad`, `.h5`, `.hdf5`, `.loom` (single-cell + generic). AnnData files surface as a summary tab plus obs / var / X-preview / obsm / varm / layers tabs; sparse X gets a first-N-row dense preview. Generic HDF5 opens with a hierarchy table and one tab per 1D / 2D dataset. |
 | samtools mpileup  | `.pileup`, `.mpileup`, `.pile` (plus `.gz`); per-base pileup with auto-named columns; multi-sample files get per-sample `depth_i` / `bases_i` / `quals_i` triplets; range queries on bgzipped + tabix-indexed files |
 | Apache ORC        | `.orc` (columnar; one stripe → one chunk; via Arrow's ORC adapter — requires Arrow built with `-DARROW_ORC=ON`, which apt/brew Arrow packages have by default) |
 | Markdown          | `.md`, `.markdown`, `.mdown`, `.mkd` — CommonMark + GFM via vendored md4c. Renders as ANSI on stdout (pipe to `less -R`). GFM tables are extracted and rendered through vv's regular table renderer with column-type inference. Local PNG/JPEG/GIF images inline on kitty / iTerm2 / WezTerm terminals via their graphics protocols. |

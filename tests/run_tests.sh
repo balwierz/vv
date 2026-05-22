@@ -435,6 +435,34 @@ if [ -f "$DATA/tiny.ods" ]; then
     assert_eq_file_inline "ods_filter_by_real"      "$OD_FLT" "2"
 fi
 
+# AnnData (.h5ad) — first tab is the summary; siblings are obs / var /
+# X-preview / obsm[X_umap]. Footer reports sibling count.
+if [ -f "$DATA/tiny.h5ad" ]; then
+    H5AD_SCH=$("$VV" --schema "$DATA/tiny.h5ad" 2>&1)
+    assert_contains "h5ad_footer_format"     "$H5AD_SCH" "Format: AnnData"
+    assert_contains "h5ad_footer_siblings"   "$H5AD_SCH" "+4 more tab(s)"
+    H5AD_OUT=$("$VV" --color=never --no-interactive "$DATA/tiny.h5ad" 2>&1)
+    # Summary table has rows for format / X / obs / var / obsm.
+    assert_contains "h5ad_summary_root"      "$H5AD_OUT" "AnnData"
+    assert_contains "h5ad_summary_X"         "$H5AD_OUT" "csr_matrix"
+    assert_contains "h5ad_summary_obs"       "$H5AD_OUT" "5 rows, 3 columns"
+    assert_contains "h5ad_summary_var"       "$H5AD_OUT" "4 rows, 3 columns"
+    assert_contains "h5ad_summary_obsm"      "$H5AD_OUT" "obsm"
+fi
+
+# Generic HDF5 (.h5) — first tab is the hierarchy table; siblings are
+# each 1D/2D dataset.
+if [ -f "$DATA/tiny.h5" ]; then
+    H5_SCH=$("$VV" --schema "$DATA/tiny.h5" 2>&1)
+    assert_contains "h5_footer_format"       "$H5_SCH" "Format: HDF5 (hierarchy)"
+    assert_contains "h5_footer_siblings"     "$H5_SCH" "+3 more tab(s)"
+    H5_OUT=$("$VV" --color=never --no-interactive "$DATA/tiny.h5" 2>&1)
+    assert_contains "h5_hierarchy_root"      "$H5_OUT" "/counts"
+    TIMES=$(printf '\xc3\x97')   # × — assert_contains uses grep -F; bytes must be literal
+    assert_contains "h5_hierarchy_matrix"    "$H5_OUT" "10 $TIMES 2"
+    assert_contains "h5_hierarchy_dtype"     "$H5_OUT" "float64"
+fi
+
 # samtools mpileup: 6-col single-sample + 9-col two-sample fixtures; tabix
 # range query on the bgzipped variant.
 if [ -f "$DATA/tiny.mpileup" ]; then
