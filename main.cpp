@@ -61,6 +61,23 @@ extern "C" {
 // (`vv x.h5ad`, `vv x.h5`). Headers are C-only; the C++ binding is
 // disabled in our static build.
 #include <hdf5.h>
+// API-version shims. `VV_H5O_INFO_T` / `VV_H5Oget_info_by_name` etc. were
+// introduced in HDF5 1.12. Ubuntu 22.04 / 24.04 still ship 1.10 where
+// only the older v1 / v2 forms exist. Map our usage to whichever
+// generation the installed library exposes.
+#if H5_VERSION_GE(1,12,0)
+  #define VV_H5O_INFO_T            H5O_info2_t
+  #define VV_H5L_INFO_T            H5L_info2_t
+  #define VV_H5Oget_info_by_name   H5Oget_info_by_name3
+  #define VV_H5Oget_info           H5Oget_info3
+  #define VV_H5L_ITERATE_T         H5L_iterate2_t
+#else
+  #define VV_H5O_INFO_T            H5O_info_t
+  #define VV_H5L_INFO_T            H5L_info_t
+  #define VV_H5Oget_info_by_name   H5Oget_info_by_name2
+  #define VV_H5Oget_info           H5Oget_info2
+  #define VV_H5L_ITERATE_T         H5L_iterate_t
+#endif
 
 #include <algorithm>
 #include <array>
@@ -6233,8 +6250,8 @@ static bool link_exists(hid_t parent, const char* name) {
 
 // Whether the named child is a group (rather than dataset / datatype).
 static bool is_group(hid_t parent, const char* name) {
-    H5O_info2_t info;
-    if (H5Oget_info_by_name3(parent, name, &info, H5O_INFO_BASIC,
+    VV_H5O_INFO_T info;
+    if (VV_H5Oget_info_by_name(parent, name, &info, H5O_INFO_BASIC,
                               H5P_DEFAULT) < 0) return false;
     return info.type == H5O_TYPE_GROUP;
 }
@@ -6309,11 +6326,11 @@ struct HierarchyState {
 };
 
 static herr_t hierarchy_cb(hid_t loc_id, const char* name,
-                            const H5L_info2_t* /*linfo*/, void* data) {
+                            const VV_H5L_INFO_T* /*linfo*/, void* data) {
     auto* st = static_cast<HierarchyState*>(data);
     if ((int)st->rows.size() > 1000000) return -1;  // 1 M nodes hard cap
-    H5O_info2_t info;
-    if (H5Oget_info_by_name3(loc_id, name, &info, H5O_INFO_BASIC | H5O_INFO_NUM_ATTRS,
+    VV_H5O_INFO_T info;
+    if (VV_H5Oget_info_by_name(loc_id, name, &info, H5O_INFO_BASIC | H5O_INFO_NUM_ATTRS,
                               H5P_DEFAULT) < 0) return 0;
     HierarchyRow row;
     row.path = std::string("/") + name;
@@ -6347,8 +6364,8 @@ build_hierarchy_table(hid_t file_id) {
     HierarchyState st;
     // Add the root.
     HierarchyRow root{"/", "Group", "", "", 0};
-    H5O_info2_t rinfo;
-    if (H5Oget_info3(file_id, &rinfo, H5O_INFO_BASIC | H5O_INFO_NUM_ATTRS) >= 0)
+    VV_H5O_INFO_T rinfo;
+    if (VV_H5Oget_info(file_id, &rinfo, H5O_INFO_BASIC | H5O_INFO_NUM_ATTRS) >= 0)
         root.n_attrs = (int)rinfo.num_attrs;
     st.rows.push_back(std::move(root));
     H5Lvisit2(file_id, H5_INDEX_NAME, H5_ITER_NATIVE, hierarchy_cb, &st);
@@ -6723,8 +6740,8 @@ read_anndata_dataframe(hid_t group) {
         // Skip private / reserved children.
         if (name == "__categories__") return arrow::Status::OK();
         std::string display = name;
-        H5O_info2_t info;
-        if (H5Oget_info_by_name3(group, name.c_str(), &info, H5O_INFO_BASIC,
+        VV_H5O_INFO_T info;
+        if (VV_H5Oget_info_by_name(group, name.c_str(), &info, H5O_INFO_BASIC,
                                    H5P_DEFAULT) < 0)
             return arrow::Status::OK();
         if (info.type == H5O_TYPE_GROUP) {
@@ -6900,11 +6917,11 @@ static std::vector<OpenSpec> scan_generic(hid_t file_id) {
     // For each 1-D or 2-D dataset, add a tab.
     struct Scan { std::vector<OpenSpec>* out; int n_dsets = 0; };
     Scan ctx{&specs, 0};
-    auto cb = [](hid_t loc_id, const char* name, const H5L_info2_t*, void* data) -> herr_t {
+    auto cb = [](hid_t loc_id, const char* name, const VV_H5L_INFO_T*, void* data) -> herr_t {
         auto* sc = static_cast<Scan*>(data);
         if (sc->n_dsets > 32) return 0;          // cap to keep tab count sane
-        H5O_info2_t info;
-        if (H5Oget_info_by_name3(loc_id, name, &info, H5O_INFO_BASIC, H5P_DEFAULT) < 0)
+        VV_H5O_INFO_T info;
+        if (VV_H5Oget_info_by_name(loc_id, name, &info, H5O_INFO_BASIC, H5P_DEFAULT) < 0)
             return 0;
         if (info.type != H5O_TYPE_DATASET) return 0;
         hid_t d = H5Dopen2(loc_id, name, H5P_DEFAULT);
@@ -6930,7 +6947,7 @@ static std::vector<OpenSpec> scan_generic(hid_t file_id) {
         return 0;
     };
     H5Lvisit2(file_id, H5_INDEX_NAME, H5_ITER_NATIVE,
-               (H5L_iterate2_t)cb, &ctx);
+               (VV_H5L_ITERATE_T)cb, &ctx);
     return specs;
 }
 
