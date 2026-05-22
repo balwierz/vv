@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-05-23
+
 ### Added
 - **AnnData / HDF5 viewer (`.h5ad`, `.h5`, `.hdf5`, `.loom`)** — opens
   HDF5 containers via libhdf5. AnnData files (`.h5ad`) are detected
@@ -150,6 +152,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   bigBed-flavored peak files (`.bb` with `narrowPeak` autoSql)
   already worked via the libBigWig path shipped in v1.5; this
   closes the gap for the plaintext variants.
+
+### Changed
+- AnnData files in the pre-0.7 layout (root has no `encoding-type`,
+  `obs` / `var` stored as compound HDF5 datasets, `X` keyed by
+  `h5sparse_format` instead of `encoding-type`) now refuse to open
+  with a clear migration hint, instead of rendering an almost-empty
+  summary. Re-save with a recent anndata to use the file with vv.
 
 ## [1.7.0] - 2026-05-16
 
