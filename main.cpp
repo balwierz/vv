@@ -71,12 +71,14 @@ extern "C" {
   #define VV_H5Oget_info_by_name   H5Oget_info_by_name3
   #define VV_H5Oget_info           H5Oget_info3
   #define VV_H5L_ITERATE_T         H5L_iterate2_t
+  #define VV_H5Lvisit              H5Lvisit2
 #else
   #define VV_H5O_INFO_T            H5O_info_t
   #define VV_H5L_INFO_T            H5L_info_t
   #define VV_H5Oget_info_by_name   H5Oget_info_by_name2
   #define VV_H5Oget_info           H5Oget_info2
   #define VV_H5L_ITERATE_T         H5L_iterate_t
+  #define VV_H5Lvisit              H5Lvisit
 #endif
 
 #include <algorithm>
@@ -6368,7 +6370,7 @@ build_hierarchy_table(hid_t file_id) {
     if (VV_H5Oget_info(file_id, &rinfo, H5O_INFO_BASIC | H5O_INFO_NUM_ATTRS) >= 0)
         root.n_attrs = (int)rinfo.num_attrs;
     st.rows.push_back(std::move(root));
-    H5Lvisit2(file_id, H5_INDEX_NAME, H5_ITER_NATIVE, hierarchy_cb, &st);
+    VV_H5Lvisit(file_id, H5_INDEX_NAME, H5_ITER_NATIVE, hierarchy_cb, &st);
     arrow::StringBuilder b_path, b_kind, b_shape, b_dtype;
     arrow::Int32Builder  b_attrs;
     for (const auto& r : st.rows) {
@@ -6946,7 +6948,7 @@ static std::vector<OpenSpec> scan_generic(hid_t file_id) {
         }
         return 0;
     };
-    H5Lvisit2(file_id, H5_INDEX_NAME, H5_ITER_NATIVE,
+    VV_H5Lvisit(file_id, H5_INDEX_NAME, H5_ITER_NATIVE,
                (VV_H5L_ITERATE_T)cb, &ctx);
     return specs;
 }
