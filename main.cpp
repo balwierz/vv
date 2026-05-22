@@ -6451,6 +6451,10 @@ struct MdSegment {
     std::string text;
     uint16_t    style = 0;
     uint8_t     role  = ROLE_NONE;
+    bool        verbatim = false;   // OSC-8 escape etc. — pass through
+                                    // emit_line_ansi without SGR wrapping,
+                                    // and don't count against the wrap
+                                    // budget in wrap_runs.
 };
 struct MdLine {
     std::vector<MdSegment> runs;
@@ -6528,6 +6532,12 @@ static void emit_line_ansi(std::string& out, const MdLine& line) {
     uint8_t  cur_role  = ROLE_NONE;
     bool     opened    = false;
     for (const auto& r : line.runs) {
+        if (r.verbatim) {
+            // Already a raw escape sequence — emit as-is without
+            // disturbing the current SGR window.
+            out += r.text;
+            continue;
+        }
         if (r.style != cur_style || r.role != cur_role) {
             if (opened) out += g_color.reset;
             std::string esc = ansi_open(r.style, r.role);
@@ -6578,6 +6588,13 @@ static void wrap_runs(const std::vector<MdSegment>& src,
     uint8_t  pending_space_role  = 0;
 
     for (const auto& seg : src) {
+        if (seg.verbatim) {
+            // Pure escape sequence (OSC 8 open / close etc.). Doesn't
+            // contribute to the line's display width and doesn't break
+            // on whitespace.
+            cur.runs.push_back(seg);
+            continue;
+        }
         const std::string& t = seg.text;
         size_t i = 0;
         while (i < t.size()) {
@@ -6628,6 +6645,59 @@ static void wrap_runs(const std::vector<MdSegment>& src,
     }
     if (!cur.runs.empty() && !(cur.runs.size() == 1 && cur.runs[0].text == lead))
         push_line();
+}
+
+// ── OSC 8 (clickable hyperlinks) detection ──────────────────────────────────
+//
+// OSC 8 lets us render link text as the visible string while the URL is
+// hidden from the visual flow but available on click. Supported in
+// modern terminals: kitty, iTerm2, WezTerm, foot, Alacritty, GNOME
+// Terminal 3.26+, Konsole 21.12+, xterm 360+, recent Apple Terminal,
+// and tmux 3.3+ passes them through.
+//
+// There's no reliable runtime query for OSC 8 support, so we go by env
+// vars. Conservative bias: a positive ID only when we're confident. The
+// fallback is the visible "(url)" tail in a contrast colour — readable
+// either way.
+static bool detect_osc8_support() {
+    auto eq = [](const char* env, const char* val) {
+        const char* v = std::getenv(env);
+        return v && std::string(v) == val;
+    };
+    auto has = [](const char* env) {
+        const char* v = std::getenv(env);
+        return v && *v;
+    };
+    // Strong positive signals.
+    if (eq("TERM_PROGRAM", "iTerm.app"))   return true;
+    if (eq("TERM_PROGRAM", "WezTerm"))     return true;
+    if (eq("TERM_PROGRAM", "vscode"))      return true;
+    if (eq("TERM_PROGRAM", "Apple_Terminal")) return true;
+    if (has("KITTY_WINDOW_ID"))            return true;
+    if (has("ALACRITTY_LOG"))              return true;
+    if (has("WEZTERM_PANE"))               return true;
+    if (has("VTE_VERSION")) {              // GNOME Terminal, Tilix, ...
+        // VTE >= 0.50 (≈May 2017) supports OSC 8.
+        return std::atoi(std::getenv("VTE_VERSION")) >= 5000;
+    }
+    if (has("KONSOLE_VERSION")) {
+        // Konsole 21.12 (December 2021) onwards. KONSOLE_VERSION is
+        // YYYYMMDD-style ('200000' = 2.0, '210800' = 21.08, '212200' = 21.22).
+        return std::atoi(std::getenv("KONSOLE_VERSION")) >= 211200;
+    }
+    if (has("KONSOLE_DBUS_SESSION"))       return true;  // older Konsole; try it
+    const char* term = std::getenv("TERM");
+    if (term) {
+        std::string t = term;
+        if (t.find("kitty") != std::string::npos) return true;
+        if (t.find("foot")  != std::string::npos) return true;
+        // tmux 3.3+ passes OSC 8 by default. Older tmux strips it but
+        // that's tolerable — the text still shows, just without a click
+        // target.
+        if (t.rfind("tmux", 0) == 0)              return true;
+        if (t.rfind("screen", 0) == 0 && has("TMUX")) return true;
+    }
+    return false;
 }
 
 // ── Inline-image protocol detection (kitty / iTerm2) ────────────────────────
@@ -6737,6 +6807,7 @@ struct Renderer {
     MarkdownDoc* doc;
     int          width;          // terminal width for word wrap
     ImageProto   img_proto = ImageProto::None;
+    bool         osc8       = false;  // emit OSC 8 hyperlinks for links
 
     // Span-style stack — md4c may nest spans (e.g., bold inside link).
     uint16_t     style = 0;
@@ -7104,6 +7175,17 @@ struct Renderer {
                 pending_href.assign(d->href.text, d->href.size);
                 role = ROLE_LINK;
                 style |= MD_UNDER;
+                // OSC 8: emit the open escape before the link text. The
+                // close is paired in leave_span(A). With OSC 8 we can
+                // drop the visible ` (url)` tail entirely — the terminal
+                // shows the link text as a clickable target.
+                if (osc8 && g_color.reset != nullptr && *g_color.reset != '\0' &&
+                    !pending_href.empty()) {
+                    MdSegment seg;
+                    seg.text     = "\033]8;;" + pending_href + "\033\\";
+                    seg.verbatim = true;
+                    cur_runs.push_back(std::move(seg));
+                }
                 break;
             }
             case MD_SPAN_IMG: {
@@ -7131,13 +7213,24 @@ struct Renderer {
             case MD_SPAN_A:
                 style &= ~MD_UNDER;
                 role = ROLE_NONE;
-                // Show URL after the link text in dim, unless it duplicates
-                // the displayed text (autolinks).
                 if (!pending_href.empty()) {
                     bool autolink = ((MD_SPAN_A_DETAIL*)detail)->is_autolink;
-                    if (!autolink) {
+                    if (osc8 && g_color.reset != nullptr &&
+                        *g_color.reset != '\0') {
+                        // Close the OSC 8 hyperlink. No visible URL stub
+                        // — the link text is clickable in the terminal.
+                        MdSegment seg;
+                        seg.text     = "\033]8;;\033\\";
+                        seg.verbatim = true;
+                        cur_runs.push_back(std::move(seg));
+                    } else if (!autolink) {
+                        // No OSC 8 support → show " (url)" after the
+                        // link text. Use ROLE_LINK (bright cyan from
+                        // g_color.number) so it stays readable on dark
+                        // backgrounds — g_color.trunc would be invisible
+                        // on a dark Konsole.
                         cur_runs.push_back({" (" + pending_href + ")",
-                                             MD_DIM, ROLE_LINK_URL});
+                                             MD_DIM, ROLE_LINK});
                     }
                 }
                 pending_href.clear();
@@ -7261,6 +7354,7 @@ static std::string parse_markdown_file(const std::string& path,
     r.doc = out;
     r.width = width;
     r.img_proto = detect_image_proto();
+    r.osc8      = detect_osc8_support();
 
     MD_PARSER parser;
     std::memset(&parser, 0, sizeof(parser));
