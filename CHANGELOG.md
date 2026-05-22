@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Markdown viewer auto-pager** — `vv README.md` on a TTY now pipes
+  through `less -R -F -X --tabs=4` so the user gets scroll / search
+  without us building a markdown-specific ncurses TUI. `-F` makes
+  short READMEs quit-on-fit; the user's own keybindings (`/`, `n`,
+  `g`, `G`, `q`, …) come along for free. Falls back to direct stdout
+  when less isn't on `$PATH`. Bypassed for scripted invocations
+  (`--no-interactive`, `--tsv`, `--csv`, `-n N`, `--schema`,
+  `--describe`, `--stats`, `--parquet OUT`) and when stdout is piped.
 - **Markdown viewer (`.md`, `.markdown`, `.mdown`, `.mkd`)** — renders
   CommonMark + GFM via the vendored md4c parser. The prose body is
   written to stdout as ANSI (headings, bold / italic / strike / code,

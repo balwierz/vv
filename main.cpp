@@ -78,6 +78,8 @@ extern "C" {
 #include <thread>
 #include <string>
 #include <unistd.h>
+#include <sys/wait.h>
+#include <signal.h>
 #include <unordered_map>
 #include <vector>
 #include <sys/ioctl.h>
@@ -7371,6 +7373,80 @@ static std::string parse_markdown_file(const std::string& path,
     return "";
 }
 
+// Pipe the rendered output through `less -R -F -X --tabs=4` when stdout
+// is a TTY — gives the user proper scroll / search without us building
+// a markdown-specific ncurses TUI. `emit_fn` does the actual writing
+// (via existing print_table / printf / fwrite calls); we just redirect
+// stdout to the pipe write end while it runs.
+//
+// `-R` interprets raw ANSI control sequences (colours, hyperlinks
+// thanks to less 632+), `-F` exits if the content fits on one screen
+// (so short READMEs don't need a `q`), `-X` keeps the screen contents
+// after exit, `--tabs=4` matches our render width assumptions.
+//
+// Falls back to direct emit if (a) fork / pipe fails, (b) less isn't
+// on $PATH (execlp returns; the child cat's its stdin to the original
+// terminal stdout so the user still sees the content). SIGPIPE is
+// ignored during emit because the user may quit less mid-render.
+static int g_pager_pid = -1;
+static void emit_via_pager(const std::function<void()>& emit_fn) {
+    int pfd[2];
+    if (pipe(pfd) != 0) { emit_fn(); return; }
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pfd[0]); close(pfd[1]);
+        emit_fn();
+        return;
+    }
+    if (pid == 0) {
+        // Child: stdin from pipe read; stdout stays attached to the
+        // user's terminal (inherited from parent BEFORE the parent
+        // redirected its own stdout to the pipe).
+        close(pfd[1]);
+        if (dup2(pfd[0], STDIN_FILENO) < 0) _exit(126);
+        close(pfd[0]);
+        // Set LESS for sensible defaults; user's env LESS takes
+        // precedence via setenv(... 0) — only set if not present.
+        setenv("LESSANSIENDCHARS", "mK", 0);
+        execlp("less", "less", "-R", "-F", "-X", "--tabs=4", (char*)nullptr);
+        // exec failed (less not installed) — cat stdin → stdout.
+        char buf[8192]; ssize_t n;
+        while ((n = read(STDIN_FILENO, buf, sizeof(buf))) > 0) {
+            ssize_t off = 0;
+            while (off < n) {
+                ssize_t w = write(STDOUT_FILENO, buf + off, n - off);
+                if (w < 0) { if (errno == EINTR) continue; break; }
+                off += w;
+            }
+        }
+        _exit(0);
+    }
+    // Parent: redirect own stdout to pipe write, run emit, restore.
+    g_pager_pid = pid;
+    int saved = dup(STDOUT_FILENO);
+    close(pfd[0]);
+    std::fflush(stdout);
+    if (saved < 0 || dup2(pfd[1], STDOUT_FILENO) < 0) {
+        close(pfd[1]);
+        if (saved >= 0) close(saved);
+        emit_fn();
+        waitpid(pid, nullptr, 0);
+        g_pager_pid = -1;
+        return;
+    }
+    close(pfd[1]);
+    // User-quit (q in less) closes the pipe read end — guard our writes
+    // so the resulting SIGPIPE doesn't terminate vv.
+    auto prev = signal(SIGPIPE, SIG_IGN);
+    emit_fn();
+    std::fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+    signal(SIGPIPE, prev);
+    waitpid(pid, nullptr, 0);
+    g_pager_pid = -1;
+}
+
 // Emit the prose body of `doc` to stdout as ANSI. Tables are referenced
 // by their inline `▶ [Table N: ...]` placeholder and printed afterwards
 // using the existing print_table pipeline (caller's responsibility — we
@@ -12003,10 +12079,12 @@ int main(int argc, char** argv) {
 
     // ── Markdown (`.md` / `.markdown` / `.mdown` / `.mkd`) ───────────────────
     // Routed before the TabularSource pipeline because markdown isn't
-    // tabular. v1: parse via md4c, emit prose to stdout as ANSI, then
-    // dump every embedded GFM table via the existing print_table path
-    // so column-type inference / colours work the same as for a real
-    // .csv file.
+    // tabular. Parse via md4c, render prose as ANSI, dump every
+    // embedded GFM table via the existing print_table path (so column-
+    // type inference / colours match a real `.csv`). On a TTY we pipe
+    // the whole stream through `less -R` for scroll / search — that's
+    // the "interactive" experience for markdown until a proper
+    // ncurses tab kind lands in TableTUI (TODO).
     if (fends_ci(cfg.path, ".md")        || fends_ci(cfg.path, ".markdown") ||
         fends_ci(cfg.path, ".mdown")     || fends_ci(cfg.path, ".mkd")) {
         int term_w = detect_terminal_width();
@@ -12017,26 +12095,38 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "vv: %s\n", merr.c_str());
             return 1;
         }
-        md::emit_markdown_stdout(doc);
-        // Tables: each one wrapped in MemoryTableSource and printed via
-        // the regular table renderer. Caption goes between tables.
-        for (size_t i = 0; i < doc.tables.size(); ++i) {
-            std::fprintf(stdout, "\n%s%s%s\n",
-                          g_color.header,
-                          doc.table_captions[i].c_str(),
-                          g_color.reset);
-            MemoryTableSource ts(doc.tables[i],
-                                  doc.source_path,
-                                  "Format: markdown table");
-            // Honour --tsv / --csv / --schema if explicitly requested.
-            if (cfg.schema_only) {
-                /* schema-only doesn't make sense per-table; skip. */
-            } else if (cfg.delimiter) {
-                write_delimited(ts, cfg);
-            } else {
-                print_table(ts, cfg);
+        auto emit = [&]() {
+            md::emit_markdown_stdout(doc);
+            for (size_t i = 0; i < doc.tables.size(); ++i) {
+                std::fprintf(stdout, "\n%s%s%s\n",
+                              g_color.header,
+                              doc.table_captions[i].c_str(),
+                              g_color.reset);
+                MemoryTableSource ts(doc.tables[i],
+                                      doc.source_path,
+                                      "Format: markdown table");
+                if (cfg.schema_only) {
+                    /* schema-only doesn't make sense per-table; skip. */
+                } else if (cfg.delimiter) {
+                    write_delimited(ts, cfg);
+                } else {
+                    print_table(ts, cfg);
+                }
             }
-        }
+        };
+        // Pager when we're plausibly interactive: TTY output, and the
+        // user hasn't asked for a scripted form (--tsv/--csv, --schema,
+        // -n, --no-interactive).
+        bool want_pager = isatty(STDOUT_FILENO)
+                          && !cfg.no_interactive
+                          && !cfg.delimiter
+                          && !cfg.head_rows_set
+                          && !cfg.schema_only
+                          && !cfg.describe
+                          && !cfg.stats_only
+                          && cfg.parquet_out.empty();
+        if (want_pager) md::emit_via_pager(emit);
+        else            emit();
         return 0;
     }
 
