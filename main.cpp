@@ -7076,6 +7076,21 @@ std::string Hdf5Source::open_first(const std::string& path,
         (link_exists(fid, "obs") && link_exists(fid, "var") &&
          link_exists(fid, "X"));
 
+    // Refuse the legacy (pre-anndata-0.7) layout up-front. Signature:
+    // root has no encoding-type, and obs/var are compound *datasets*
+    // instead of groups-of-columns. Decoding compound types + the
+    // legacy h5sparse X format is more work than it's worth without
+    // a real demand signal, and silently rendering an empty summary
+    // is worse than refusing.
+    if (is_anndata && root_enc != "anndata" &&
+        link_exists(fid, "obs") && !is_group(fid, "obs")) {
+        return "'" + path + "': legacy AnnData layout (pre-0.7) is not "
+               "supported. Re-save with a recent anndata: "
+               "`python -c \"import anndata; "
+               "anndata.read_h5ad('" + path + "')"
+               ".write_h5ad('out.h5ad')\"`";
+    }
+
     std::vector<OpenSpec> specs = is_anndata ? scan_anndata(fid)
                                                 : scan_generic(fid);
     if (specs.empty()) return "'" + path + "': no viewable HDF5 datasets";
