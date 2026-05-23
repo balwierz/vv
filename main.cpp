@@ -2504,6 +2504,14 @@ public:
     // Ensure chunk i is loaded (triggers forward reads for streaming sources).
     virtual void ensure(int i) {}
     virtual const std::string& path() const = 0;
+    // Short label shown on the multi-tab TUI tab bar. Defaults to the
+    // basename of path(); sub-tab sources (xlsx sheets, sqlite tables,
+    // HDF5 datasets) override to return the sheet/table/dataset name.
+    virtual std::string tab_label() const {
+        const std::string& p = path();
+        auto s = p.rfind('/');
+        return (s == std::string::npos) ? p : p.substr(s + 1);
+    }
     // One-line footer shown after the table / in the TUI status bar.
     virtual std::string footer() const = 0;
     virtual std::string created_by() const { return ""; }
@@ -5330,6 +5338,7 @@ public:
         return TabularSource::read_first(rows, col_indices, out);
     }
     const std::string& path() const override { return path_; }
+    std::string tab_label() const override { return table_; }
     std::string footer() const override {
         std::string s = "Format: SQLite  |  Table: " + table_;
         if (total_rows_ >= 0) s += "  |  Rows: " + std::to_string(total_rows_);
@@ -5840,6 +5849,8 @@ public:
                           std::move(siblings), out);
     }
 
+    std::string tab_label() const override { return sheet_; }
+
     std::vector<std::unique_ptr<TabularSource>>
     open_sibling_sheets() const override {
         std::vector<std::unique_ptr<TabularSource>> out;
@@ -6160,6 +6171,8 @@ public:
             siblings.push_back((*all)[i].first);
         return build_one(path, all, (*all)[0].first, std::move(siblings), out);
     }
+
+    std::string tab_label() const override { return sheet_; }
 
     std::vector<std::unique_ptr<TabularSource>>
     open_sibling_sheets() const override {
@@ -6568,6 +6581,8 @@ class Hdf5Source : public WorkbookSource {
 public:
     static std::string open_first(const std::string& path,
                                     std::unique_ptr<Hdf5Source>* out);
+
+    std::string tab_label() const override { return spec_.display; }
 
     std::vector<std::unique_ptr<TabularSource>>
     open_sibling_sheets() const override {
@@ -10689,7 +10704,8 @@ class TableTUI {
     // The TableTUI's "live" member fields are always the active tab's
     // values; switching tabs swaps the live fields with another snapshot.
     struct TabState {
-        std::string                     path;          // shown in tab indicator
+        std::string                     path;          // file path
+        std::string                     label;         // short label for the tab bar
         bool                            initialised = false;
         // Column metadata (built once per source by setup_for_active_source).
         int                             num_cols = 0;
@@ -10812,9 +10828,13 @@ class TableTUI {
     int64_t     detail_row_   = -1;  // -1 = pane closed
     int         detail_scroll_ = 0;  // vertical scroll offset within the pane
 
-    static constexpr int HDR_H = 2;
-    static constexpr int FTR_H = 1;
-    int data_lines() const { return std::max(0, scr_r_ - HDR_H - FTR_H); }
+    static constexpr int HDR_H = 2;   // column-name row + rule
+    static constexpr int FTR_H = 1;   // status bar
+    // Tab-bar row above the column header. Present only when more than
+    // one tab is open; recomputed at the top of draw().
+    int                  tabbar_h_ = 0;
+    int data_top_y()    const { return tabbar_h_ + HDR_H; }
+    int data_lines() const { return std::max(0, scr_r_ - HDR_H - tabbar_h_ - FTR_H); }
 
     // When a sort or filter is active the visible row count is the size of
     // sort_order_, not the underlying source size. Search wrap-around, the
@@ -11252,16 +11272,133 @@ class TableTUI {
 
     // ── Drawing ──────────────────────────────────────────────────────────────
 
+    // Hit zones for the multi-tab tab bar; rebuilt every draw() so that
+    // mouse clicks land on the correct tab even after window resizes.
+    struct TabHit { int x0; int x1; int idx; };
+    std::vector<TabHit>        tab_hit_zones_;
+
+    // Browser-style tab bar on row 0 (only when more than one tab is open).
+    // The active tab is rendered in reverse video so it "pops" out of the
+    // bar; inactive tabs are dimmed. If the bar overflows, we scroll so
+    // the active tab is always visible and append "›" / "‹" markers.
+    void draw_tabbar() {
+        tab_hit_zones_.clear();
+        if (tabbar_h_ == 0) return;
+
+        const int row = 0;
+        const std::string hint = " [Tab] next  [⇧Tab] prev ";
+        const int hint_w = (int)display_width(hint);
+
+        // Available width for the tabs themselves (leave room for the hint
+        // on the right if it fits; otherwise drop the hint and use the full width).
+        int max_tabs_w = scr_c_ - 1 - (hint_w + 1);
+        if (max_tabs_w < 12) max_tabs_w = scr_c_;  // hint hidden — too narrow
+
+        // Render each tab as " label " with a thin separator between.
+        // Build the full string first so we can scroll horizontally.
+        struct Rendered { std::string text; int idx; bool active; };
+        std::vector<Rendered> rendered;
+        rendered.reserve(tabs_.size());
+        for (int i = 0; i < (int)tabs_.size(); ++i) {
+            std::string lab = tabs_[i].label.empty()
+                ? "(unnamed)" : tabs_[i].label;
+            // Cap individual tab labels so a single very long sheet name
+            // doesn't push every other tab off-screen.
+            if ((int)display_width(lab) > 24) {
+                while ((int)display_width(lab) > 21) lab.pop_back();
+                lab += "…";
+            }
+            std::string txt = " " + lab + " ";
+            rendered.push_back({std::move(txt), i, i == active_tab_});
+        }
+
+        // Compute each tab's x range in an imaginary infinite-width bar.
+        std::vector<int> starts(rendered.size()+1, 0);
+        for (size_t i = 0; i < rendered.size(); ++i) {
+            starts[i+1] = starts[i] + (int)display_width(rendered[i].text);
+            if (i + 1 < rendered.size()) starts[i+1] += 1;  // separator
+        }
+        int total_w = starts.back();
+
+        // Scroll so the active tab is fully visible.
+        int scroll = 0;
+        if (total_w > max_tabs_w) {
+            int aL = starts[active_tab_];
+            int aR = starts[active_tab_+1];
+            // Push left edge so active tab fits in [scroll, scroll+max_tabs_w].
+            if (aR - scroll > max_tabs_w) scroll = aR - max_tabs_w;
+            if (aL < scroll)               scroll = aL;
+            if (scroll < 0) scroll = 0;
+        }
+
+        // Paint background of the bar so unfilled space picks up theme bg.
+        nc_str(row, 0, std::string(scr_c_, ' '), A_NORMAL, NCP_INDEX);
+
+        // Emit each tab, clipped to the visible window.
+        int win_x0 = scroll;
+        int win_x1 = scroll + max_tabs_w;
+        for (size_t i = 0; i < rendered.size(); ++i) {
+            int tab_L = starts[i];
+            int tab_R = starts[i+1];
+            if (tab_R <= win_x0 || tab_L >= win_x1) continue;  // off-screen
+            // Translate to screen x.
+            int sx = tab_L - scroll;
+            // Clip on the right if the tab is partially visible.
+            std::string txt = rendered[i].text;
+            int vis_w = std::min(tab_R, win_x1) - std::max(tab_L, win_x0);
+            // If clipped at the start, drop leading chars.
+            if (tab_L < win_x0) {
+                int drop = win_x0 - tab_L;
+                while (drop-- > 0 && !txt.empty()) txt.erase(txt.begin());
+                sx = 0;
+            }
+            // If clipped at the right, drop trailing chars.
+            if ((int)display_width(txt) > vis_w) {
+                while ((int)display_width(txt) > vis_w && !txt.empty())
+                    txt.pop_back();
+            }
+            attr_t a; int cp;
+            if (rendered[i].active) {
+                a  = (attr_t)(A_BOLD | A_REVERSE);
+                cp = NCP_HEADER;
+            } else {
+                a  = A_DIM;
+                cp = NCP_HEADER;
+            }
+            nc_str(row, sx, txt, a, cp);
+            tab_hit_zones_.push_back({sx, sx + (int)display_width(txt),
+                                       rendered[i].idx});
+            // Separator between tabs.
+            int sep_x = sx + (int)display_width(txt);
+            if (i + 1 < rendered.size() && sep_x < max_tabs_w) {
+                nc_str(row, sep_x, "│", A_DIM, NCP_SEP);
+            }
+        }
+
+        // Scroll arrows when the bar overflows.
+        if (scroll > 0)
+            nc_str(row, 0, "‹", A_DIM, NCP_SEP);
+        if (total_w - scroll > max_tabs_w && max_tabs_w >= 1)
+            nc_str(row, max_tabs_w - 1, "›", A_DIM, NCP_SEP);
+
+        // Hint on the right.
+        if (max_tabs_w < scr_c_) {
+            nc_str(row, scr_c_ - hint_w, hint, A_DIM, NCP_INDEX);
+        }
+    }
+
     void draw_header(const std::vector<ColVis>& vc) {
+        const int y_names = tabbar_h_;
+        const int y_rule  = tabbar_h_ + 1;
         if (!no_index_) {
-            nc_str(0, 0, " " + std::string(idx_w_, ' ') + " ", A_BOLD, NCP_INDEX);
-            nc_str(1, 0, " " + repeat_utf8(BOX_HLINE, idx_w_) + " ", A_NORMAL, NCP_SEP);
+            nc_str(y_names, 0, " " + std::string(idx_w_, ' ') + " ", A_BOLD, NCP_INDEX);
+            nc_str(y_rule,  0, " " + repeat_utf8(BOX_HLINE, idx_w_) + " ", A_NORMAL, NCP_SEP);
         }
         for (auto& col : vc) {
             std::string nm = truncate(col_names_[col.col], col.w);
-            nc_str(0, col.x, " " + fit(nm, col.w, right_align_[col.col]) + " ",
+            nc_str(y_names, col.x, " " + fit(nm, col.w, right_align_[col.col]) + " ",
                    A_BOLD, NCP_HEADER);
-            nc_str(1, col.x, " " + repeat_utf8(BOX_HLINE, col.w) + " ",
+            nc_str(y_rule, col.x, " " + repeat_utf8(BOX_HLINE, col.w) + " ",
                    A_NORMAL, NCP_SEP);
         }
     }
@@ -11397,18 +11534,13 @@ class TableTUI {
             s += std::to_string(vc.back().col+1)  + "/";
             s += std::to_string(num_cols_);
         }
-        // Tab indicator (only shown when more than one file is open).
+        // Tab indicator: just the numeric position. The browser-style
+        // tab bar above the column header carries the labels.
         if (sources_.size() > 1) {
             s += "  tab ";
             s += std::to_string(active_tab_ + 1);
             s += "/";
             s += std::to_string(sources_.size());
-            // Show basename of active file so the user knows where they are.
-            const std::string& p = tabs_[active_tab_].path;
-            auto slash = p.rfind('/');
-            std::string base = (slash == std::string::npos) ? p : p.substr(slash + 1);
-            if ((int)display_width(base) > 24) { base.resize(21); base += "..."; }
-            s += ": " + base;
         }
         // Filter indicator (truncate the expression so the bar stays one line).
         if (filter_active_) {
@@ -12332,6 +12464,9 @@ private:
     void draw() {
         getmaxyx(stdscr, scr_r_, scr_c_);
         erase();
+        // Reserve one screen row for the browser-style tab bar when more
+        // than one tab is open. data_lines() picks this up automatically.
+        tabbar_h_ = (sources_.size() > 1) ? 1 : 0;
         // Once total is known, clamp top_row_ so the last page stays filled.
         // This handles the case where the user scrolled past EOF while streaming.
         {
@@ -12355,10 +12490,11 @@ private:
             fit_integer_widths_to_visible(virt);
         }
         vc = visible_cols();
+        draw_tabbar();
         draw_header(vc);
         int dl = data_lines();
         for (int y = 0; y < dl; ++y)
-            draw_data_row(HDR_H + y, top_row_ + y, vc);
+            draw_data_row(data_top_y() + y, top_row_ + y, vc);
         draw_status(vc);
         draw_detail_pane();  // overlay if detail_row_ >= 0
         if (stats_open_)      draw_stats_overlay();
@@ -12427,7 +12563,8 @@ public:
         // tab's column metadata now; other tabs init lazily on first switch.
         tabs_.resize(sources_.size());
         for (size_t i = 0; i < sources_.size(); ++i) {
-            tabs_[i].path = sources_[i]->path();
+            tabs_[i].path  = sources_[i]->path();
+            tabs_[i].label = sources_[i]->tab_label();
         }
         if (!sources_.empty()) setup_for_active_source();
     }
@@ -12642,22 +12779,35 @@ public:
                                             BUTTON1_DOUBLE_CLICKED)) {
                         auto vc = visible_cols();
                         // Hit-test (y, x) against the current layout. y=0
-                        // is the column-name row; y=1 is the rule under it;
-                        // y >= HDR_H is data; y = scr_r_-1 is the status bar.
+                        // is the multi-tab bar (when visible); next two
+                        // rows are the column-name row + rule; rows below
+                        // are data; y = scr_r_-1 is the status bar.
                         int  hit_col = -1;            // virt col, -1 if none
                         for (const auto& v : vc) {
                             if (me.x >= v.x && me.x < v.x + v.w + 2) {
                                 hit_col = v.col; break;
                             }
                         }
-                        const bool in_header = (me.y >= 0 && me.y < HDR_H);
-                        const bool in_data   = (me.y >= HDR_H &&
+                        const int  data_y0   = data_top_y();
+                        const bool in_tabbar = (tabbar_h_ > 0 && me.y == 0);
+                        const bool in_header = (me.y >= tabbar_h_ &&
+                                                me.y < data_y0);
+                        const bool in_data   = (me.y >= data_y0 &&
                                                 me.y < scr_r_ - 1);
 
-                        if (me.bstate & BUTTON1_DOUBLE_CLICKED) {
+                        // Tab-bar click: switch to that tab.
+                        if (in_tabbar) {
+                            for (const auto& z : tab_hit_zones_) {
+                                if (me.x >= z.x0 && me.x < z.x1) {
+                                    int delta = z.idx - active_tab_;
+                                    if (delta) switch_tab(delta);
+                                    break;
+                                }
+                            }
+                        } else if (me.bstate & BUTTON1_DOUBLE_CLICKED) {
                             // Drill in: open detail pane on the clicked row.
                             if (in_data) {
-                                int64_t r = top_row_ + (me.y - HDR_H);
+                                int64_t r = top_row_ + (me.y - data_y0);
                                 int64_t tr = total_rows();
                                 if (tr < 0 || r < tr) {
                                     detail_row_    = r;
@@ -12678,7 +12828,7 @@ public:
                             // Single click on a data row: scroll it to the
                             // top and make its column the active one for
                             // follow-up S / y / s actions.
-                            int64_t r = top_row_ + (me.y - HDR_H);
+                            int64_t r = top_row_ + (me.y - data_y0);
                             int64_t tr = total_rows();
                             if (tr < 0 || r < tr) {
                                 int64_t mt = (tr >= 0)
