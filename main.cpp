@@ -10630,6 +10630,7 @@ class TableTUI {
     enum class SearchMode { None, Input, Active };
 
     std::vector<std::string> col_names_;
+    std::vector<std::string> col_types_str_;  // short label rendered under the column name
     std::vector<int>         col_widths_;
     std::vector<bool>        right_align_;
     std::vector<bool>        is_bool_;
@@ -10712,6 +10713,7 @@ class TableTUI {
         int                             src_num_cols = 0;
         int                             idx_w = 1;
         std::vector<std::string>        col_names;
+        std::vector<std::string>        col_types_str;
         std::vector<int>                col_widths;
         std::vector<bool>               right_align, is_bool, is_rgb, is_integer;
         std::vector<int>                virt_src_col;
@@ -10828,7 +10830,7 @@ class TableTUI {
     int64_t     detail_row_   = -1;  // -1 = pane closed
     int         detail_scroll_ = 0;  // vertical scroll offset within the pane
 
-    static constexpr int HDR_H = 2;   // column-name row + rule
+    static constexpr int HDR_H = 3;   // column-name row + type row + rule
     static constexpr int FTR_H = 1;   // status bar
     // Tab-bar row above the column header. Present only when more than
     // one tab is open; recomputed at the top of draw().
@@ -11389,15 +11391,23 @@ class TableTUI {
 
     void draw_header(const std::vector<ColVis>& vc) {
         const int y_names = tabbar_h_;
-        const int y_rule  = tabbar_h_ + 1;
+        const int y_types = tabbar_h_ + 1;
+        const int y_rule  = tabbar_h_ + 2;
         if (!no_index_) {
-            nc_str(y_names, 0, " " + std::string(idx_w_, ' ') + " ", A_BOLD, NCP_INDEX);
+            std::string idx_pad = " " + std::string(idx_w_, ' ') + " ";
+            nc_str(y_names, 0, idx_pad, A_BOLD, NCP_INDEX);
+            nc_str(y_types, 0, idx_pad, A_NORMAL, NCP_INDEX);
             nc_str(y_rule,  0, " " + repeat_utf8(BOX_HLINE, idx_w_) + " ", A_NORMAL, NCP_SEP);
         }
         for (auto& col : vc) {
             std::string nm = truncate(col_names_[col.col], col.w);
             nc_str(y_names, col.x, " " + fit(nm, col.w, right_align_[col.col]) + " ",
                    A_BOLD, NCP_HEADER);
+            std::string ty = (col.col < (int)col_types_str_.size())
+                             ? col_types_str_[col.col] : std::string();
+            ty = truncate(ty, col.w);
+            nc_str(y_types, col.x, " " + fit(ty, col.w, right_align_[col.col]) + " ",
+                   A_DIM, NCP_HEADER);
             nc_str(y_rule, col.x, " " + repeat_utf8(BOX_HLINE, col.w) + " ",
                    A_NORMAL, NCP_SEP);
         }
@@ -11981,6 +11991,7 @@ class TableTUI {
         t.src_num_cols   = src_num_cols_;
         t.idx_w          = idx_w_;
         t.col_names      = col_names_;
+        t.col_types_str  = col_types_str_;
         t.col_widths     = col_widths_;
         t.right_align    = right_align_;
         t.is_bool        = is_bool_;
@@ -12015,6 +12026,7 @@ class TableTUI {
         src_num_cols_    = t.src_num_cols;
         idx_w_           = t.idx_w;
         col_names_       = t.col_names;
+        col_types_str_   = t.col_types_str;
         col_widths_      = t.col_widths;
         right_align_     = t.right_align;
         is_bool_         = t.is_bool;
@@ -12631,6 +12643,19 @@ public:
         col_names_     = std::move(v_names);
         virt_src_col_  = std::move(v_src);
         virt_info_key_ = std::move(v_info);
+
+        // Short type label rendered between the column name and the rule.
+        // VCF INFO virtuals don't have a real Arrow field — synthesise one
+        // from the declared INFO type so the row stays consistent.
+        col_types_str_.assign(num_cols_, "");
+        for (int vc = 0; vc < num_cols_; ++vc) {
+            if (virt_info_key_[vc].empty()) {
+                col_types_str_[vc] = src.schema()->field(virt_src_col_[vc])
+                                         ->type()->ToString();
+            } else {
+                col_types_str_[vc] = arrow_type_for_id(v_types[vc])->ToString();
+            }
+        }
 
         col_widths_.assign(num_cols_, 0);
         right_align_.assign(num_cols_, false);
