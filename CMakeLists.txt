@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 project(vv
-    VERSION 1.8.2
+    VERSION 1.9.0
     DESCRIPTION "Universal genomic file viewer"
     HOMEPAGE_URL "https://github.com/balwierz/vv"
     LANGUAGES C CXX)
@@ -177,6 +177,13 @@ target_include_directories(md4c
 # amalgamation and installs it under static-libs/lib — the explicit
 # SQLITE_STATIC_LIB lookup below picks it up.
 find_package(SQLite3 REQUIRED)
+# Newer SQLite CMake configs export SQLite3::SQLite3 and deprecate the old
+# SQLite::SQLite3 alias; prefer the new name, fall back for older CMake.
+if(TARGET SQLite3::SQLite3)
+  set(SQLITE3_TARGET SQLite3::SQLite3)
+else()
+  set(SQLITE3_TARGET SQLite::SQLite3)
+endif()
 
 # ── xlsxio (for .xlsx / .xlsm spreadsheet source) ────────────────────────────
 # Two artefacts: libxlsxio_read (the reader; small wrapper around expat +
@@ -407,7 +414,7 @@ else()
       ${HTSLIB_LINK_LIBRARIES}
       bigwig
       md4c
-      SQLite::SQLite3
+      ${SQLITE3_TARGET}
       ${XLSXIO_LIB}
       ${HDF5_LIB}
       ${EXPAT_SHARED}

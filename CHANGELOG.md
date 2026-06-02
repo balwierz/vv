@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-06-02
+
 ### Added
 - **Qt6/KDE graphical mode (`vvg`)** — a desktop viewer with the same
   capabilities as the terminal version: multi-tab navigation of
@@ -28,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Feather, HDF5/AnnData, NumPy `.npz`), a `.desktop` entry, AppStream
   metainfo, and an icon. Packaged as a separate `vv-gui` (Arch split
   package + RPM subpackage); the lean CLI `vv` is unchanged.
+
+### Fixed
+- CMake: use the non-deprecated `SQLite3::SQLite3` target when available
+  (silences the deprecation warning on recent Arch / CMake).
 
 ## [1.8.2] - 2026-05-23
 

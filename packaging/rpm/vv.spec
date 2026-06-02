@@ -1,7 +1,7 @@
 # RPM spec for vv (CLI/TUI) + vv-gui (Qt6/KDE desktop viewer).
 # BuildRequires use Fedora package names; adjust for openSUSE/RHEL as needed.
 Name:           vv
-Version:        1.8.2
+Version:        1.9.0
 Release:        1%{?dist}
 Summary:        Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)
 License:        MIT

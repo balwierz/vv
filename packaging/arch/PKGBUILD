@@ -5,7 +5,7 @@
 # -DVV_BUILD_GUI=ON produces both; install whichever you want.
 pkgbase=vv
 pkgname=('vv' 'vv-gui')
-pkgver=1.8.2
+pkgver=1.9.0
 pkgrel=1
 pkgdesc="Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)"
 arch=('x86_64' 'aarch64')
