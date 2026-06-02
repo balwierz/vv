@@ -16,3 +16,6 @@ target_link_libraries(vvg PRIVATE vvcore Qt6::Widgets)
 message(STATUS "GUI target  : vvg (Qt6 ${Qt6_VERSION})")
 
 install(TARGETS vvg RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+# KDE Plasma integration: thumbnailer + metadata plugins + MIME/.desktop.
+add_subdirectory(kde)

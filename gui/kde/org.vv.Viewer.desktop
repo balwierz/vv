@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=vv
+GenericName=Data Table Viewer
+Comment=View Parquet, Arrow, HDF5/AnnData, NumPy, spreadsheets, CSV and genomic tables
+Exec=vvg %f
+Icon=vv
+Terminal=false
+Categories=Utility;Database;Qt;
+MimeType=application/vnd.apache.parquet;application/vnd.apache.arrow.file;application/x-hdf5;application/x-npz;application/vnd.sqlite3;application/vnd.ms-excel;application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;application/vnd.oasis.opendocument.spreadsheet;text/csv;text/tab-separated-values;

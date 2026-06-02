@@ -1,0 +1,16 @@
+{
+    "CacheThumbnail": true,
+    "KPlugin": {
+        "Id": "vvthumbnail",
+        "Name": "Data table thumbnails (vv)"
+    },
+    "MimeTypes": [
+        "application/vnd.apache.parquet",
+        "application/vnd.apache.arrow.file",
+        "application/x-hdf5",
+        "application/x-npz",
+        "application/vnd.sqlite3",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.oasis.opendocument.spreadsheet"
+    ]
+}
