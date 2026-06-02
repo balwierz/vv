@@ -109,8 +109,30 @@ extern "C" {
 #include <cerrno>
 #include <sys/stat.h>
 
+// The ncurses TUI is the CLI frontend only. libvvcore (VV_CORE_LIB) is the
+// headless reader core shared with the Qt GUI / KDE plugins and must not pull
+// in ncurses or define main().
+#ifndef VV_CORE_LIB
 #include <ncurses.h>
 #undef OK   // ncurses defines OK as 0; conflicts with arrow::Status::OK()
+#else
+// Headless core: the Theme tables hold ncurses 16-color indices in their
+// `nc16` fields but the core never paints with them. Provide the standard
+// constants so those tables still compile without <ncurses.h>.
+#define COLOR_BLACK   0
+#define COLOR_RED     1
+#define COLOR_GREEN   2
+#define COLOR_YELLOW  3
+#define COLOR_BLUE    4
+#define COLOR_MAGENTA 5
+#define COLOR_CYAN    6
+#define COLOR_WHITE   7
+#endif
+
+// Public reader-core surface (Config, TabularSource, FilterExpr, formatters,
+// open_source). Defined here in main.cpp; this header is what the Qt GUI and
+// the KF6 plugins include to drive libvvcore.
+#include "vv/vvcore.hpp"
 
 // ── Colors ────────────────────────────────────────────────────────────────────
 
@@ -290,7 +312,7 @@ static void init_colors() {
     g_color.meta_key   = t.meta_key;
 }
 
-struct Config;  // forward decl — full definition further down
+// (Config is defined in vv/vvcore.hpp, included above.)
 
 // ── User-settings persistence (XDG Base Directory Spec) ──────────────────────
 //
@@ -411,56 +433,7 @@ static arrow::Type::type display_type(const arrow::Field& f) {
 }
 
 // ── CLI args ─────────────────────────────────────────────────────────────────
-
-enum class ColorMode { Auto, Always, Never };
-
-struct Config {
-    std::string path;                    // first positional (back-compat)
-    std::vector<std::string> paths;      // every positional (multi-file TUI)
-    std::string region;                  // -r: tabix region(s), e.g. "chr1:1000-2000"
-    std::string regions_file;            // --regions-file BED: many windows from a BED
-    std::string region_cols;             // --region-cols Chr,Start,End for generic Parquet
-    int64_t     slop = 0;                // --slop N: pad each region by N bp
-    std::string parquet_out;             // --parquet <file>: write Parquet to this path
-    std::string compression = "zstd";    // --compression: parquet codec
-    int         head_rows      = 10;
-    bool        head_rows_set  = false;  // true when -n was given explicitly
-    int         max_col_w      = 32;
-    int         max_cols       = 0;
-    int         threads        = 0;      // -@ / --threads (0 = auto-detect)
-    int         decode_threads = 0;      // --decode-threads (0 = follow --threads;
-                                         // dedicated knob for Arrow's CPU pool
-                                         // which handles Parquet column decode)
-    bool        no_index       = false;
-    ColorMode   color          = ColorMode::Auto;
-    char        delimiter      = 0;      // 0 = table/interactive; '\t'/','= delimited
-    bool        no_header      = false;
-    bool        interactive    = false;  // -i / --interactive
-    bool        no_interactive = false;  // --no-interactive
-    bool        vertical       = false;  // --vertical (or invoked as `vh`)
-    bool        schema_only    = false;  // --schema: print schema + footer, exit
-    bool        describe       = false;  // --describe: per-column statistics
-    bool        stats_only     = false;  // --stats: Parquet metadata dump (no data read)
-    std::string unique_cols;             // --unique COL[,COL,...] : distinct value counts
-    int         sample_n       = 0;      // --sample N (reservoir sample of N rows)
-    std::string filter_expr;             // --filter "<col> <op> <literal> ..."
-    std::string select_cols;             // --select Chr,Start,End (name-based projection)
-    bool        json_array     = false;  // --json
-    bool        json_lines     = false;  // --ndjson
-    bool        md             = false;  // --md (GitHub-flavored markdown table)
-    bool        validate       = false;  // --validate (LociSSD invariants check)
-    bool        coords_one_based = false; // --coords NCBI (1-based inclusive)
-    std::string theme;                    // --theme NAME (empty = "use config-file value or default")
-    int         tail_rows      = 0;      // --tail N
-    bool        tail_rows_set  = false;
-    bool        decode_pileup  = false;  // --decode-pileup: explode mpileup's
-                                         // packed bases column into per-allele
-                                         // counts (A/C/G/T/N + ins/del + strand)
-    bool        pileup         = false;  // --pileup: BAM/CRAM only — emit
-                                         // mpileup-style per-base rows via
-                                         // htslib's bam_plp_auto engine
-                                         // instead of alignment records
-};
+// (ColorMode + Config are defined in vv/vvcore.hpp, included near the top.)
 
 // Out-of-line definition of load_user_config — declared further up
 // (near the other XDG-config helpers) but needs the full Config struct.
@@ -885,7 +858,7 @@ static bool is_numeric_type(arrow::Type::type t) {
     }
 }
 
-static int display_width(const std::string& s) {
+int display_width(const std::string& s) {
     // Count Unicode codepoints: UTF-8 continuation bytes (10xxxxxx) don't add columns.
     int w = 0;
     for (unsigned char c : s)
@@ -893,7 +866,7 @@ static int display_width(const std::string& s) {
     return w;
 }
 
-static std::string truncate(const std::string& s, int max_w) {
+std::string truncate(const std::string& s, int max_w) {
     if (max_w < 2) max_w = 2;
     if (display_width(s) <= max_w) return s;
 
@@ -939,7 +912,7 @@ static std::string truncate(const std::string& s, int max_w) {
 // (Python PEP 515 style).  A leading '-' or '+' is preserved.
 // e.g. "123456789" → "123_456_789", "-1000000" → "-1_000_000".
 // Non-numeric strings pass through unchanged.
-static std::string digits_with_sep(const std::string& s) {
+std::string digits_with_sep(const std::string& s) {
     if (s.empty()) return s;
     size_t off = (s[0] == '-' || s[0] == '+') ? 1 : 0;
     if (off == s.size()) return s;
@@ -970,7 +943,7 @@ static int nearest_256(int r, int g, int b) {
     return 16 + 36 * q(r) + 6 * q(g) + q(b);
 }
 
-static std::string cell_to_string(const arrow::Array& arr, int64_t row) {
+std::string cell_to_string(const arrow::Array& arr, int64_t row) {
     if (arr.IsNull(row)) return NULL_SYMBOL;
 
     switch (arr.type_id()) {
@@ -1101,7 +1074,7 @@ static std::string cell_to_string(const arrow::Array& arr, int64_t row) {
 // Like cell_to_string(), but formats integer values with '_' grouping for
 // human-readable display. Used for TUI + table view; CSV/TSV export and
 // any value comparisons go through cell_to_string() to keep raw digits.
-static std::string cell_to_display_string(const arrow::Array& arr, int64_t row) {
+std::string cell_to_display_string(const arrow::Array& arr, int64_t row) {
     if (arr.IsNull(row)) return NULL_SYMBOL;
     if (is_integer_type(arr.type_id()))
         return digits_with_sep(cell_to_string(arr, row));
@@ -1759,18 +1732,7 @@ static std::vector<Region> parse_region_list(const std::string& spec,
 // The expression is evaluated per row over a Table whose column order
 // matches the source's full schema, so atoms reference columns by their
 // schema field index (resolved at parse time from the column name).
-struct FilterAtom {
-    int      col_idx = -1;
-    enum Op { Eq, Ne, Lt, Le, Gt, Ge } op = Eq;
-    enum Kind { K_Int, K_Double, K_String } kind = K_String;
-    int64_t  i_lit = 0;
-    double   f_lit = 0.0;
-    std::string s_lit;
-};
-struct FilterExpr {
-    // OR of AND clauses; row matches iff some clause's atoms all match.
-    std::vector<std::vector<FilterAtom>> groups;
-};
+// (FilterAtom + FilterExpr are defined in vv/vvcore.hpp, included near the top.)
 
 static std::vector<std::string> filter_tokenize(const std::string& s) {
     std::vector<std::string> toks;
@@ -1815,7 +1777,7 @@ static bool filter_parse_op(const std::string& t, FilterAtom::Op* op) {
 
 // Parse the user's `--filter` expression. Returns true on success and
 // populates `out`. On failure, writes a human-readable reason to `err`.
-static bool parse_filter_expr(const std::string& expr,
+bool parse_filter_expr(const std::string& expr,
                               const arrow::Schema& schema,
                               FilterExpr* out, std::string* err) {
     out->groups.clear();
@@ -2032,6 +1994,40 @@ static std::vector<int> union_with_filter(
     std::set<int> s(base.begin(), base.end());
     for (auto& g : expr.groups) for (auto& a : g) s.insert(a.col_idx);
     return std::vector<int>(s.begin(), s.end());
+}
+
+// Evaluate a parsed filter over the entire source, returning the source row
+// indices that match, in source order. Drains streaming sources and reads
+// every chunk with all columns so any referenced column is present. The GUI
+// uses this to build a filtered view; CLI export paths use apply_filter on
+// the already-projected table instead.
+std::vector<int64_t> filter_rows(TabularSource& src, const FilterExpr& expr) {
+    std::vector<int64_t> keep;
+    int nf = src.schema()->num_fields();
+    std::vector<int> all((size_t)nf);
+    for (int i = 0; i < nf; ++i) all[(size_t)i] = i;
+    while (true) {                       // drain streaming sources
+        int n = src.num_chunks();
+        src.ensure(n);
+        if (src.num_chunks() == n) break;
+    }
+    for (int c = 0; c < src.num_chunks(); ++c) {
+        ChunkMeta m = src.chunk_meta(c);
+        std::shared_ptr<arrow::Table> tbl;
+        if (!src.read_chunk(c, all, &tbl).ok() || !tbl) continue;
+        int64_t n = tbl->num_rows();
+        for (int64_t r = 0; r < n; ++r) {
+            bool any = false;
+            for (const auto& clause : expr.groups) {
+                bool good = true;
+                for (const auto& a : clause)
+                    if (!eval_atom(*tbl, r, a, all)) { good = false; break; }
+                if (good) { any = true; break; }
+            }
+            if (any) keep.push_back(m.first_row + r);
+        }
+    }
+    return keep;
 }
 
 // Project `tbl` (which may contain extra columns loaded for the filter) down
@@ -2465,78 +2461,8 @@ public:
 // Common interface for Parquet, CSV, TSV, BED, etc.
 // "Chunks" map to row groups (Parquet) or read batches (delimited).
 
-struct ChunkMeta { int64_t first_row; int64_t num_rows; };
-
-class TabularSource {
-public:
-    virtual ~TabularSource() = default;
-    virtual std::shared_ptr<arrow::Schema> schema() const = 0;
-    virtual int64_t total_rows() const = 0;     // -1 = not yet fully scanned
-    virtual int     num_chunks() const = 0;     // known so far
-    virtual ChunkMeta chunk_meta(int i) const = 0;
-    // Read chunk i, keeping only col_indices columns.
-    virtual arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
-                                      std::shared_ptr<arrow::Table>* out) = 0;
-    // Read only the first `rows` rows with col_indices columns. Default impl
-    // reads forward via read_chunk() and concatenates; Parquet overrides with
-    // a RecordBatchReader-based fast path so a 10-row preview doesn't decode
-    // a whole 1M-row row group.
-    virtual arrow::Status read_first(int64_t rows,
-                                     const std::vector<int>& col_indices,
-                                     std::shared_ptr<arrow::Table>* out) {
-        std::shared_ptr<arrow::Table> acc;
-        for (int c = 0; ; ++c) {
-            ensure(c);
-            if (c >= num_chunks()) break;
-            std::shared_ptr<arrow::Table> chunk;
-            ARROW_RETURN_NOT_OK(read_chunk(c, col_indices, &chunk));
-            if (!acc) acc = chunk;
-            else {
-                auto r = arrow::ConcatenateTables({acc, chunk});
-                ARROW_RETURN_NOT_OK(r.status());
-                acc = r.ValueOrDie();
-            }
-            if (acc->num_rows() >= rows) break;
-        }
-        if (acc && acc->num_rows() > rows) acc = acc->Slice(0, rows);
-        *out = acc;
-        return arrow::Status::OK();
-    }
-    // Ensure chunk i is loaded (triggers forward reads for streaming sources).
-    virtual void ensure(int i) {}
-    // Step the slice axis for 3-D+ array sources (NPZ today). Default no-op.
-    // Returns true if the source rebuilt its table and the TUI should
-    // drop cached chunks + reset the viewport.
-    virtual bool change_slice(int /*delta*/, bool /*absolute*/,
-                                int64_t /*target*/) {
-        return false;
-    }
-    virtual const std::string& path() const = 0;
-    // Short label shown on the multi-tab TUI tab bar. Defaults to the
-    // basename of path(); sub-tab sources (xlsx sheets, sqlite tables,
-    // HDF5 datasets) override to return the sheet/table/dataset name.
-    virtual std::string tab_label() const {
-        const std::string& p = path();
-        auto s = p.rfind('/');
-        return (s == std::string::npos) ? p : p.substr(s + 1);
-    }
-    // One-line footer shown after the table / in the TUI status bar.
-    virtual std::string footer() const = 0;
-    virtual std::string created_by() const { return ""; }
-    // Header lines shown before the table (BED track/browser lines).
-    virtual std::vector<std::string> preamble_above() const { return {}; }
-    // Meta header lines shown after the schema (VCF/BAM/SAM/GFF).
-    virtual std::vector<std::string> preamble_below() const { return {}; }
-    // Post-process a cell value for human-readable display (table view and TUI).
-    // NOT called for delimited (--csv/--tsv) output.
-    virtual std::string format_cell(int /*col_idx*/, std::string val) const { return val; }
-    // Minimum display-column width for a given column index (TUI pre-sizes columns from this).
-    virtual int min_col_width(int /*col_idx*/) const { return 4; }
-    // Column names that should be hidden from human-facing views (table,
-    // vertical-head, TUI). Delimited and Parquet output keep all columns.
-    // Used e.g. to hide the derived `MaxEndSoFar` column in LociSSD files.
-    virtual std::vector<std::string> hidden_for_display() const { return {}; }
-};
+// (ChunkMeta + TabularSource are defined in vv/vvcore.hpp, included near the
+// top. Concrete sources below subclass TabularSource.)
 
 // Field indices to display in human-facing views, with `hidden_for_display`
 // names filtered out and `max_cols` honoured. Used by print_table, the
@@ -5319,6 +5245,9 @@ public:
         }
         return out;
     }
+    std::vector<std::unique_ptr<TabularSource>> expand_tabs() const override {
+        return open_sibling_tables();
+    }
 
     std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
     int64_t total_rows() const override {
@@ -5705,6 +5634,9 @@ public:
     using MemoryTableSource::MemoryTableSource;
     virtual std::vector<std::unique_ptr<TabularSource>>
     open_sibling_sheets() const = 0;
+    std::vector<std::unique_ptr<TabularSource>> expand_tabs() const override {
+        return open_sibling_sheets();
+    }
 };
 
 // Quote one CSV cell for inclusion in an in-memory buffer that we then
@@ -9411,7 +9343,7 @@ static void emit_markdown_stdout(const MarkdownDoc& doc) {
 
 }  // namespace md
 
-static std::string open_source(const std::string& path, const Config& cfg,
+std::string open_source(const std::string& path, const Config& cfg,
                                 std::unique_ptr<TabularSource>* out) {
     // ── Determine file kind ──────────────────────────────────────────────────
     bool        is_parquet = false;
@@ -10463,6 +10395,68 @@ static std::string validate_lociss(const std::string& path) {
 // ── --describe: per-column statistics ────────────────────────────────────────
 
 // Print "Column | Type | Count | Nulls | Min | Max | Mean | Distinct".
+// Structured per-column statistics for one source column. Drains streaming
+// sources and scans every value. Shares the per-value logic with the
+// (multi-column, text-formatting) print_describe below; kept separate so the
+// GUI gets a clean struct without the ASCII table.
+ColStats compute_col_stats(TabularSource& src, int src_col) {
+    ColStats cs;
+    if (src_col < 0 || src_col >= src.schema()->num_fields()) return cs;
+    auto f = src.schema()->field(src_col);
+    cs.name = f->name();
+    cs.type = f->type()->ToString();
+    cs.is_numeric = is_numeric_type(f->type()->id());
+    cs.valid = true;
+
+    double dmin = std::numeric_limits<double>::infinity();
+    double dmax = -std::numeric_limits<double>::infinity();
+    long double sum = 0.0L;
+    std::set<std::string> distinct;
+
+    while (true) { int n = src.num_chunks(); src.ensure(n); if (src.num_chunks() == n) break; }
+    for (int c = 0; c < src.num_chunks(); ++c) {
+        std::shared_ptr<arrow::Table> tbl;
+        if (!src.read_chunk(c, {src_col}, &tbl).ok() || !tbl) continue;
+        auto col = tbl->column(0);
+        for (auto& ch : col->chunks()) {
+            int64_t n = ch->length();
+            for (int64_t r = 0; r < n; ++r) {
+                if (ch->IsNull(r)) { cs.nulls++; continue; }
+                cs.count++;
+                if (cs.is_numeric) {
+                    double d;
+                    if (auto a = std::dynamic_pointer_cast<arrow::DoubleArray>(ch)) d = a->Value(r);
+                    else if (auto a = std::dynamic_pointer_cast<arrow::FloatArray>(ch))  d = a->Value(r);
+                    else if (auto a = std::dynamic_pointer_cast<arrow::Int64Array>(ch))  d = (double)a->Value(r);
+                    else if (auto a = std::dynamic_pointer_cast<arrow::Int32Array>(ch))  d = (double)a->Value(r);
+                    else if (auto a = std::dynamic_pointer_cast<arrow::Int16Array>(ch))  d = (double)a->Value(r);
+                    else if (auto a = std::dynamic_pointer_cast<arrow::Int8Array>(ch))   d = (double)a->Value(r);
+                    else if (auto a = std::dynamic_pointer_cast<arrow::UInt32Array>(ch)) d = (double)a->Value(r);
+                    else if (auto a = std::dynamic_pointer_cast<arrow::UInt64Array>(ch)) d = (double)a->Value(r);
+                    else continue;
+                    if (d < dmin) dmin = d;
+                    if (d > dmax) dmax = d;
+                    sum += d;
+                } else {
+                    std::string s = cell_to_string(*ch, r);
+                    if (cs.count == 1 || s < cs.s_min) cs.s_min = s;
+                    if (cs.count == 1 || s > cs.s_max) cs.s_max = s;
+                    if (!cs.distinct_overflow) {
+                        distinct.insert(s);
+                        if (distinct.size() > 16) { cs.distinct_overflow = true; distinct.clear(); }
+                    }
+                }
+            }
+        }
+    }
+    if (cs.is_numeric && cs.count > 0) {
+        cs.min = dmin; cs.max = dmax;
+        cs.mean = (double)(sum / (long double)cs.count);
+    }
+    cs.distinct.assign(distinct.begin(), distinct.end());
+    return cs;
+}
+
 // `Mean` only filled for numeric columns; `Distinct` only when small.
 static std::string print_describe(TabularSource& src, const Config& cfg) {
     std::vector<std::string> unknown;
@@ -11046,6 +11040,9 @@ static std::string build_tail(std::unique_ptr<TabularSource>& src,
 }
 
 // ── Interactive TUI viewer (ncurses) ─────────────────────────────────────────
+// Everything from here through the end of TableTUI is the ncurses CLI
+// frontend; excluded from libvvcore (the headless reader core).
+#ifndef VV_CORE_LIB
 
 // ncurses color-pair IDs  (0 = terminal default)
 enum : int {
@@ -13754,6 +13751,8 @@ public:
     }
 };
 
+#endif  // VV_CORE_LIB (end of ncurses TUI frontend)
+
 // ── Table display (non-interactive) ──────────────────────────────────────────
 
 // Detect terminal width. Falls back to $COLUMNS, then 80.
@@ -14177,6 +14176,7 @@ static std::string shorten_reader_error(std::string msg) {
     return msg;
 }
 
+#ifndef VV_CORE_LIB   // CLI entry point — excluded from libvvcore
 int main(int argc, char** argv) {
     Config cfg = parse_args(argc, argv);
 
@@ -14451,3 +14451,4 @@ int main(int argc, char** argv) {
     else              print_table(*src, cfg);
     return 0;
 }
+#endif  // VV_CORE_LIB

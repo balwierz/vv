@@ -277,6 +277,7 @@ endif()
 add_executable(vv main.cpp)
 
 target_include_directories(vv PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${ARROW_INCLUDE_DIRS}
     ${PARQUET_INCLUDE_DIRS}
     ${CURSES_INCLUDE_DIRS}
@@ -351,7 +352,11 @@ if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND NCURSES_STATIC_LIB)
   set(_minizip      $<IF:$<BOOL:${MINIZIP_STATIC}>,${MINIZIP_STATIC},-lminizip>)
   set(_hdf5         $<IF:$<BOOL:${HDF5_STATIC}>,${HDF5_STATIC},-lhdf5>)
 
-  target_link_libraries(vv PRIVATE
+  # Split into the common reader-dep list (shared with libvvcore / the GUI)
+  # and the ncurses bits, which only the CLI/TUI needs. libvvcore reuses
+  # _vv_link_common verbatim so the GUI links exactly what the CLI links.
+  set(_vv_curses ${NCURSES_STATIC_LIB} ${_tinfo_lib})
+  set(_vv_link_common
       ${PARQUET_TARGET}
       # arrow_compute kernels live in a separate archive; wrap in
       # --whole-archive so the static-initialisers that register
@@ -361,8 +366,6 @@ if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND NCURSES_STATIC_LIB)
       $<$<BOOL:${ARROW_COMPUTE_TARGET}>:-Wl,--no-whole-archive>
       ${ARROW_TARGET}
       mimalloc-static
-      ${NCURSES_STATIC_LIB}
-      ${_tinfo_lib}
       ${HTSLIB_STATIC_LIB}
       bigwig
       md4c
@@ -386,12 +389,12 @@ else()
   # kernels' static initialisers are already pulled by the .dylib /
   # .so symbols, so we don't need either flag — Arrow's compute
   # registry runs at .so init time, not at vv link time.
-  target_link_libraries(vv PRIVATE
+  set(_vv_curses ${CURSES_LIBRARIES})
+  set(_vv_link_common
       ${PARQUET_TARGET}
       ${ARROW_COMPUTE_TARGET}
       ${ARROW_TARGET}
       mimalloc-static
-      ${CURSES_LIBRARIES}
       ${HTSLIB_LINK_LIBRARIES}
       bigwig
       md4c
@@ -402,6 +405,8 @@ else()
       ${MINIZIP_SHARED}
   )
 endif()
+
+target_link_libraries(vv PRIVATE ${_vv_link_common} ${_vv_curses})
 
 # `--gc-sections` is GNU ld; macOS ld64 strips unused sections by default
 # (via `-dead_strip`, which we don't need to pass explicitly).
@@ -424,6 +429,38 @@ endif()
 message(STATUS "Build type  : ${CMAKE_BUILD_TYPE}")
 message(STATUS "Arrow target: ${ARROW_TARGET}")
 message(STATUS "htslib      : ${HTSLIB_VERSION}")
+
+# ── Optional Qt6/KDE graphical frontend ──────────────────────────────────────
+# libvvcore is the headless reader core shared by the Qt GUI (vvg) and the
+# KF6 thumbnailer / metadata plugins. It is the SAME main.cpp, compiled with
+# VV_CORE_LIB so that main() and the ncurses TUI are excluded. We mirror vv's
+# include directories and compile definitions via generator expressions so the
+# core and the CLI never drift; Arrow/Parquet are linked so their interface
+# include dirs + compile macros (e.g. -DNOCURL) reach the core compile.
+option(VV_BUILD_GUI "Build the Qt6/KDE graphical frontend (vvg) + KF6 plugins" OFF)
+if(VV_BUILD_GUI)
+  add_library(vvcore STATIC main.cpp)
+  set_target_properties(vvcore PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  target_compile_definitions(vvcore PRIVATE
+      VV_CORE_LIB=1
+      $<TARGET_PROPERTY:vv,COMPILE_DEFINITIONS>)
+  target_include_directories(vvcore
+      PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+      PRIVATE $<TARGET_PROPERTY:vv,INCLUDE_DIRECTORIES>)
+  # Reuse vv's exact reader-dep link list (minus ncurses) so the GUI links
+  # precisely what the CLI links — works for both the static (../static-libs)
+  # and the shared Arrow configurations. Propagate the -L static-libs dir too
+  # so any -l fallbacks resolve to the vendored archives.
+  target_link_libraries(vvcore PUBLIC ${_vv_link_common})
+  if(IS_DIRECTORY "${_static_libs_dir}")
+    target_link_options(vvcore INTERFACE -L${_static_libs_dir})
+  endif()
+  message(STATUS "GUI         : enabled (libvvcore + vvg)")
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/gui/CMakeLists.txt")
+    add_subdirectory(gui)
+  endif()
+endif()
 
 # ── Install rules ─────────────────────────────────────────────────────────────
 install(TARGETS vv RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
