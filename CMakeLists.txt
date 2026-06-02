@@ -10,6 +10,15 @@ include(GNUInstallDirs)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Optional Qt6/KDE graphical frontend. Declared early so the in-tree static
+# deps (mimalloc, bigwig, md4c) below are built position-independent — the KF6
+# plugins are shared objects and every archive they pull in must be PIC.
+# (The full GUI target wiring lives further down, after the vv target.)
+option(VV_BUILD_GUI "Build the Qt6/KDE graphical frontend (vvg) + KF6 plugins" OFF)
+if(VV_BUILD_GUI)
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
@@ -437,7 +446,7 @@ message(STATUS "htslib      : ${HTSLIB_VERSION}")
 # include directories and compile definitions via generator expressions so the
 # core and the CLI never drift; Arrow/Parquet are linked so their interface
 # include dirs + compile macros (e.g. -DNOCURL) reach the core compile.
-option(VV_BUILD_GUI "Build the Qt6/KDE graphical frontend (vvg) + KF6 plugins" OFF)
+# (VV_BUILD_GUI is declared near the top so PIC is set before the deps build.)
 if(VV_BUILD_GUI)
   add_library(vvcore STATIC main.cpp)
   set_target_properties(vvcore PROPERTIES POSITION_INDEPENDENT_CODE ON)

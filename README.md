@@ -181,6 +181,32 @@ picker. Key bindings (also visible in-app via `H` / `F1`):
 | `--theme`      | `default` / `dark` / `light` / `solarized-dark` / `solarized-light` |
 | q / Esc        | quit (Esc clears search / filter first)                 |
 
+### Graphical mode — `vvg` (Qt6 / KDE)
+
+A desktop viewer for when you want a window instead of a terminal. Same
+reader core as the CLI, so it opens every supported format:
+
+```sh
+vvg data.parquet            # or any supported file
+```
+
+- **Multi-tab** strip for multi-sheet / multi-dataset files (xlsx & ods
+  sheets, SQLite tables, HDF5 / AnnData components, NumPy arrays).
+- **Click a column header to sort** (typed, not lexical); two-line
+  *name + type* headers.
+- **Filter bar** using the same grammar as `--filter`
+  (`score > 5 and chrom == "chr1"`), and a **regex find** bar with
+  match highlighting.
+- **Σ Stats** per column, a **row-detail** dock, **Ctrl+C** copy-as-TSV,
+  and **◀/▶ slice** stepping for 3-D NumPy arrays.
+
+On **KDE Plasma**, installing the `vv-gui` package also wires vv into
+Dolphin: double-click (or *Open With*) launches `vvg`, the icon view
+shows **table-snapshot thumbnails**, and the **Information Panel** shows
+row/column counts, schema, codec, and generator. Build it yourself with
+`-DVV_BUILD_GUI=ON` (needs Qt6 + the KF6 `kio` / `kcoreaddons` /
+`kfilemetadata` modules).
+
 ### Color themes & user config
 
 Five built-in themes ship: `default`, `dark`, `light`, `solarized-dark`,

@@ -38,7 +38,9 @@ endif()
 find_package(KF6 COMPONENTS KIO CoreAddons QUIET)
 if(_vv_plugins_ok AND KF6KIO_FOUND AND KF6CoreAddons_FOUND)
   add_library(vvthumbnail MODULE vvthumbnail.cpp)
-  set_target_properties(vvthumbnail PROPERTIES AUTOMOC ON)
+  # KF6 plugins are discovered by JSON metadata, not filename, and drop the
+  # "lib" prefix by convention (audiothumbnail.so, etc.).
+  set_target_properties(vvthumbnail PROPERTIES AUTOMOC ON PREFIX "")
   target_link_libraries(vvthumbnail PRIVATE vvkde_core KF6::KIOGui KF6::CoreAddons)
   install(TARGETS vvthumbnail
           DESTINATION ${KDE_INSTALL_PLUGINDIR}/kf6/thumbcreator)
@@ -51,7 +53,7 @@ endif()
 find_package(KF6FileMetaData QUIET)
 if(_vv_plugins_ok AND KF6FileMetaData_FOUND)
   add_library(vvextractor MODULE vvextractor.cpp)
-  set_target_properties(vvextractor PROPERTIES AUTOMOC ON)
+  set_target_properties(vvextractor PROPERTIES AUTOMOC ON PREFIX "")
   target_link_libraries(vvextractor PRIVATE vvkde_core KF6::FileMetaData)
   install(TARGETS vvextractor
           DESTINATION ${KDE_INSTALL_PLUGINDIR}/kf6/kfilemetadata)

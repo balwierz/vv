@@ -23,6 +23,23 @@ For a debug build use `-DCMAKE_BUILD_TYPE=Debug`.
 A static portable binary is built via `Dockerfile.almalinux8` (glibc ≥ 2.28).
 See `INSTALL.md` for distribution channels.
 
+### GUI build (optional)
+
+```sh
+cmake -S . -B build-gui -DCMAKE_BUILD_TYPE=Release -DVV_BUILD_GUI=ON
+cmake --build build-gui -j$(nproc)
+```
+
+`VV_BUILD_GUI=ON` additionally builds `libvvcore` (the headless reader core),
+the Qt6 desktop viewer `gui/vvg`, and — when KF6 is present and the build uses
+shared deps — the Dolphin thumbnailer (`gui/kde/vvthumbnail.so`) and
+KFileMetaData extractor (`gui/kde/vvextractor.so`). Needs `qt6-base`,
+`extra-cmake-modules`, and the `kio` / `kcoreaddons` / `kfilemetadata` KF6
+modules. The KF6 plugins are skipped automatically in the static-libs
+configuration (a `.so` needs PIC deps; the vendored archives aren't PIC).
+`gui/kde/vvkdetest` is a headless harness that validates the plugin payloads
+without a display (`QT_QPA_PLATFORM=offscreen`).
+
 ## Tests
 
 ```sh
@@ -36,7 +53,15 @@ and re-run to regenerate.
 
 ## Architecture
 
-The entire program is a single file: `main.cpp`. No headers, no subdirectories.
+The reader core and the CLI/TUI live in one file, `main.cpp`, which flows
+top-to-bottom through the sections below. The public reader surface (`Config`,
+`TabularSource`, `FilterExpr`, the cell formatters, `open_source`,
+`filter_rows`, `compute_col_stats`) is declared in `include/vv/vvcore.hpp` and
+defined in `main.cpp`. Compiling `main.cpp` with `-DVV_CORE_LIB` excludes
+`main()` and the ncurses TUI, yielding `libvvcore` — the headless core that the
+Qt GUI (`gui/`) and the KF6 plugins (`gui/kde/`) link. The CLI build is
+unchanged by this split (the guards are inactive without the macro).
+
 The code flows top-to-bottom through these sections:
 
 1. **`Colors` / `init_colors()`** — ANSI escape codes stored in a global
@@ -134,8 +159,11 @@ The code flows top-to-bottom through these sections:
 ## Project layout
 
 ```
-main.cpp                  single-file source (~3700 lines)
-CMakeLists.txt            build + install rules
+main.cpp                  reader core + CLI/TUI (one file)
+include/vv/vvcore.hpp     public reader surface (shared by CLI + GUI + plugins)
+gui/                      Qt6 desktop viewer (vvg): ArrowTableModel + window
+gui/kde/                  KF6 thumbnailer + KFileMetaData plugins, MIME/.desktop
+CMakeLists.txt            build + install rules (VV_BUILD_GUI opt-in for the GUI)
 Dockerfile.almalinux8     static binary build (glibc ≥ 2.28)
 docker-sources/           bundled deps for the static build (gitignored)
 completions/              bash, fish, zsh tab completion
@@ -143,6 +171,6 @@ man/vv.1                  groff man page
 tests/data/               small test fixtures (committed)
 tests/golden/             expected outputs (committed)
 tests/run_tests.sh        smoke test harness
-packaging/                bioconda, homebrew, arch, docker recipes
+packaging/                bioconda, homebrew, arch (vv + vv-gui), rpm, docker
 .github/workflows/        CI + release workflows
 ```

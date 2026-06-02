@@ -6,6 +6,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Qt6/KDE graphical mode (`vvg`)** — a desktop viewer with the same
+  capabilities as the terminal version: multi-tab navigation of
+  multi-sheet / multi-dataset files (xlsx/ods sheets, SQLite tables,
+  HDF5/AnnData components), typed click-to-sort, a live `--filter`-DSL
+  bar, regex find with match highlighting, per-column statistics, a
+  row-detail dock, copy-as-TSV, NPZ 3-D slice stepping, and a two-line
+  name+type column header. Lazy chunk paging with an LRU cache keeps
+  large files responsive. Built with `-DVV_BUILD_GUI=ON` (Qt6 Widgets).
+- **Shared reader core (`libvvcore`)** — the file-format readers, Arrow
+  plumbing, filter engine, and formatters are now exposed via
+  `include/vv/vvcore.hpp` and compiled into a reusable static library
+  (the same `main.cpp` built with `-DVV_CORE_LIB`, minus `main()` and the
+  ncurses TUI). The CLI is byte-identical; the GUI and KDE plugins link
+  this core in-process.
+- **KDE Plasma integration** — a `KIO::ThumbnailCreator` plugin renders
+  table-snapshot thumbnails in Dolphin, and a `KFileMetaData` extractor
+  surfaces row/column counts, schema, codec, and generator in the
+  Information Panel. Ships shared-mime-info definitions (Parquet, Arrow/
+  Feather, HDF5/AnnData, NumPy `.npz`), a `.desktop` entry, AppStream
+  metainfo, and an icon. Packaged as a separate `vv-gui` (Arch split
+  package + RPM subpackage); the lean CLI `vv` is unchanged.
+
 ## [1.8.2] - 2026-05-23
 
 ### Fixed

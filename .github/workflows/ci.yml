@@ -118,6 +118,43 @@ jobs:
           ./build/vv --version
           ./build/vv --help
 
+      # ── Qt6/KDE GUI (24.04 only) ─────────────────────────────────────────
+      # Reuses the shared Arrow / htslib / hdf5 / sqlite / xlsxio stack
+      # installed above. This is where the KF6 plugins (.so) actually link —
+      # the static-libs CLI build can't (its archives aren't PIC), so the GUI
+      # build is validated here on shared deps.
+      - name: Install GUI dependencies (KF6)
+        if: matrix.os == '24.04'
+        run: |
+          sudo apt-get install -y -V \
+            qt6-base-dev \
+            extra-cmake-modules \
+            libkf6kio-dev \
+            libkf6coreaddons-dev \
+            libkf6filemetadata-dev
+
+      - name: Build GUI + KDE plugins
+        if: matrix.os == '24.04'
+        run: |
+          cmake -S . -B build-gui -DCMAKE_BUILD_TYPE=Release -DVV_BUILD_GUI=ON
+          cmake --build build-gui -j$(nproc)
+
+      - name: Verify GUI artifacts
+        if: matrix.os == '24.04'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -e
+          test -x build-gui/gui/vvg
+          # The KF6 plugins are shared objects — their presence proves the
+          # libvvcore-backed .so link succeeds on shared deps.
+          test -f build-gui/gui/kde/vvthumbnail.so
+          test -f build-gui/gui/kde/vvextractor.so
+          # Headless payload check: render a thumbnail + probe metadata.
+          ./build-gui/gui/kde/vvkdetest tests/data/tiny.parquet
+          # Model path end-to-end through libvvcore.
+          VVG_SELFTEST=1 ./build-gui/gui/vvg tests/data/tiny.parquet
+
   build-macos:
     name: Build (macOS)
     runs-on: macos-latest
