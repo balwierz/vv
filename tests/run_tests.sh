@@ -121,6 +121,22 @@ if [ -f "$DATA/tiny.bcf.csi" ]; then
     assert_eq_file_inline "bcf_region_boundary_excludes_start_variant" "$BCF_BOUNDARY" "1"
 fi
 
+# Empty tabix region: a window over a known chromosome that overlaps no records
+# must return an empty result with exit 0 — matching the Parquet/BCF/BAM paths —
+# rather than aborting with "Empty CSV file" (the tabix stream is empty, which
+# Arrow's CSV reader rejects). The column layout is still recovered from the
+# file so headers/schema render normally.
+assert_exit_zero "tabix_empty_region_bed_exit0" \
+    "$VV" --tsv --no-header -r chr1:9000000-9000001 "$DATA/tiny.bed.gz"
+EMPTY_BED=$("$VV" --tsv --no-header -r chr1:9000000-9000001 "$DATA/tiny.bed.gz" 2>/dev/null | grep -c . || true)
+assert_eq_file_inline "tabix_empty_region_bed_no_rows" "$EMPTY_BED" "0"
+EMPTY_SCH=$("$VV" --schema -r chr1:9000000-9000001 "$DATA/tiny.bed.gz" 2>&1)
+assert_contains "tabix_empty_region_schema_recovered" "$EMPTY_SCH" "BED5"
+if [ -f "$DATA/tiny.vcf.gz.tbi" ]; then
+    assert_exit_zero "tabix_empty_region_vcf_exit0" \
+        "$VV" --tsv --no-header -r chr1:9000000-9000001 "$DATA/tiny.vcf.gz"
+fi
+
 # bigBed / bigWig — autoSql expansion + range queries.
 if [ -f "$DATA/tiny.bb" ]; then
     BB_TSV=$("$VV" --tsv --no-header "$DATA/tiny.bb" | wc -l)
