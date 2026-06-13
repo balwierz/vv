@@ -621,6 +621,28 @@ if have("bcftools"):
     subprocess.run(["bcftools", "index", "-f",
                     str(HERE / "tiny.bcf")], check=True)
     bcf_input.unlink()
+
+    # tiny.samples.bcf: a BCF WITH genotype samples, so the reader emits a
+    # FORMAT_SAMPLES column. Exercises that the FORMAT spec (GT:AD:DP) is kept,
+    # not dropped in favour of the sample columns alone.
+    smp_input = HERE / "_bcf_samples.vcf"
+    smp_input.write_text(
+        "##fileformat=VCFv4.2\n"
+        "##contig=<ID=chr1>\n"
+        '##INFO=<ID=AF,Number=A,Type=Float,Description="Allele frequency">\n'
+        '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+        '##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths">\n'
+        '##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth">\n'
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\n"
+        "chr1\t100\trs1\tA\tG\t30\tPASS\tAF=0.5\tGT:AD:DP\t0/1:5,6:11\t1/1:0,9:9\n"
+        "chr1\t500\t.\tC\tT\t40\tPASS\tAF=0.1\tGT:AD:DP\t0/0:10,0:10\t0/1:4,4:8\n"
+    )
+    subprocess.run(["bcftools", "view", "-O", "b",
+                    str(smp_input), "-o", str(HERE / "tiny.samples.bcf")],
+                   check=True)
+    subprocess.run(["bcftools", "index", "-f",
+                    str(HERE / "tiny.samples.bcf")], check=True)
+    smp_input.unlink()
 else:
     print("warn: bcftools not found; skipping tiny.bcf", file=sys.stderr)
 

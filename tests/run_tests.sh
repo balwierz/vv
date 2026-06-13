@@ -139,6 +139,14 @@ if [ -f "$DATA/tiny.bcf.csi" ]; then
     assert_eq_file_inline "bcf_region_boundary_excludes_start_variant" "$BCF_BOUNDARY" "1"
 fi
 
+# BCF with genotype samples: the FORMAT_SAMPLES column must keep the FORMAT
+# spec (e.g. GT:AD:DP), not collapse to the per-sample values alone.
+if [ -f "$DATA/tiny.samples.bcf" ]; then
+    SMP_OUT=$("$VV" --tsv --no-header "$DATA/tiny.samples.bcf" 2>&1)
+    assert_contains "bcf_format_spec_preserved" "$SMP_OUT" "GT:AD:DP"
+    assert_contains "bcf_sample_values_present" "$SMP_OUT" "0/1:5,6:11"
+fi
+
 # Empty tabix region: a window over a known chromosome that overlaps no records
 # must return an empty result with exit 0 — matching the Parquet/BCF/BAM paths —
 # rather than aborting with "Empty CSV file" (the tabix stream is empty, which

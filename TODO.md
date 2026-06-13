@@ -243,7 +243,7 @@ be done first: it catches this whole bug class automatically.
   - Fix: Store a sticky arrow::Status member set by advance() on error (and set all_read_=true to stop the loop), then surface it from read_chunk()/total_rows() and from ensure() callers so the CLI prints the CSV parse…
 - [ ] `main.cpp:3920` — Pileup engine does not handle is_refskip (wrong output for spliced/RNA-seq reads)
   - Fix: Add `else if (p->is_refskip) { bases += bam_is_rev(p->b) ? '>' : '<'; quals += (char)('!'); }` before the base-call branch, matching samtools mpileup.
-- [ ] `main.cpp:4224` — BcfSource drops the FORMAT field from FORMAT_SAMPLES (data loss)
+- [x] `main.cpp:4224` — BcfSource drops the FORMAT field from FORMAT_SAMPLES (data loss) — fixed on `fix/bcf-format-field`
   - Fix: After the loop, `start` already points at the FORMAT field. Set `f[8] = line.substr(start);` (the entire remainder from FORMAT onward) for the fi==8 case, and drop the misnamed `info_end` re-scan entirely.
 - [x] `main.cpp:4346` — Region coordinate-convention mismatch: BCF/BamPileup pass 0-based half-open coords to 1-based-inclusive htslib parsers — fixed on `fix/region-coord-offbyone`
   - Fix: When rebuilding the region string for a 1-based-inclusive htslib parser from canonical 0-based half-open coords, convert: start_1based = start0 + 1, end stays (inclusive end == half-open end).
