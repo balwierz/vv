@@ -2923,10 +2923,31 @@ public:
             }
             return std::string();
         };
-        auto cell_int = [](const std::shared_ptr<arrow::Array>& a, int64_t r) -> int64_t {
-            if (auto x = std::dynamic_pointer_cast<arrow::Int64Array>(a))  return x->Value(r);
-            if (auto x = std::dynamic_pointer_cast<arrow::Int32Array>(a))  return x->Value(r);
-            return 0;
+        // Genomic coordinate columns use whatever integer width is most
+        // compact (UInt32 is common for positions) and may be dictionary-
+        // encoded. Reading only Int32/Int64 returned 0 for every other type,
+        // which made the window test (en <= w.start) reject every row and
+        // silently empty the region result.
+        auto plain_int = [](const arrow::Array& a, int64_t r) -> int64_t {
+            switch (a.type_id()) {
+                case arrow::Type::INT8:   return static_cast<const arrow::Int8Array&>(a).Value(r);
+                case arrow::Type::INT16:  return static_cast<const arrow::Int16Array&>(a).Value(r);
+                case arrow::Type::INT32:  return static_cast<const arrow::Int32Array&>(a).Value(r);
+                case arrow::Type::INT64:  return static_cast<const arrow::Int64Array&>(a).Value(r);
+                case arrow::Type::UINT8:  return static_cast<const arrow::UInt8Array&>(a).Value(r);
+                case arrow::Type::UINT16: return static_cast<const arrow::UInt16Array&>(a).Value(r);
+                case arrow::Type::UINT32: return static_cast<const arrow::UInt32Array&>(a).Value(r);
+                case arrow::Type::UINT64: return (int64_t)static_cast<const arrow::UInt64Array&>(a).Value(r);
+                default: return 0;
+            }
+        };
+        auto cell_int = [&](const std::shared_ptr<arrow::Array>& a, int64_t r) -> int64_t {
+            if (a->type_id() == arrow::Type::DICTIONARY) {
+                const auto& d = static_cast<const arrow::DictionaryArray&>(*a);
+                if (d.IsNull(r)) return 0;
+                return plain_int(*d.dictionary(), d.GetValueIndex(r));
+            }
+            return plain_int(*a, r);
         };
 
         std::vector<std::shared_ptr<arrow::Table>> runs;

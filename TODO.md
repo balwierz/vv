@@ -237,7 +237,7 @@ be done first: it catches this whole bug class automatically.
 **Correctness bugs**
 - [ ] `gui/kde/thumbrender.cpp:25` — KDE plugins call libvvcore (which uses .ValueOrDie()) with no exception/abort guard — malformed file can crash the worker
   - Fix: Wrap the body of vv_render_thumbnail and vv_probe_meta in try/catch(...) returning an empty QImage / unset VvMeta on any exception.
-- [ ] `main.cpp:2897` — Region queries on Parquet return empty/wrong results when Start/End are not Int32/Int64
+- [x] `main.cpp:2897` — Region queries on Parquet return empty/wrong results when Start/End are not Int32/Int64 — fixed on `fix/parquet-region-int-types` (cell_int handles all integer widths + dictionary-of-int)
   - Fix: Handle the remaining integer Arrow types (Int8/16, UInt8/16/32/64) and dictionary-encoded indices, or use arrow's scalar visitor;
 - [x] `main.cpp:3448` — Malformed delimited row past the first block silently truncates output with exit code 0 — fixed on `fix/delimited-silent-truncation` (sticky read_status + non-zero exit; also closes the latent ensure() hang)
   - Fix: Store a sticky arrow::Status member set by advance() on error (and set all_read_=true to stop the loop), then surface it from read_chunk()/total_rows() and from ensure() callers so the CLI prints the CSV parse…

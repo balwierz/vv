@@ -49,6 +49,16 @@ table = pa.table({
 # exercise row-group pruning (otherwise everything fits in row group 0).
 pq.write_table(table, HERE / "tiny.parquet", compression="snappy", row_group_size=5)
 
+# tiny.uint32.parquet: Start/End stored as UInt32 (a common compact encoding
+# for genomic positions). The region predicate used to read only Int32/Int64
+# and returned 0 for any other width, silently emptying the result.
+pq.write_table(pa.table({
+    "Chr":   pa.array(["chr1", "chr1", "chr1", "chr2"], pa.string()),
+    "Start": pa.array([100, 1100, 2100, 500], pa.uint32()),
+    "End":   pa.array([200, 1200, 2200, 600], pa.uint32()),
+    "Score": pa.array([0.0, 0.1, 0.2, 0.3], pa.float64()),
+}), HERE / "tiny.uint32.parquet")
+
 # ── Arrow IPC ────────────────────────────────────────────────────────────────
 with pa.OSFile(str(HERE / "tiny.arrow"), "wb") as f:
     with ipc.new_file(f, schema) as w:

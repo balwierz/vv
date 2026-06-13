@@ -113,6 +113,13 @@ PQ_REG_OV=$("$VV" --tsv --no-header -r chr1:1000-2500 --region-cols Chr,Start,En
 assert_eq_file_inline "parquet_region_cols_override_two_rows" "$PQ_REG_OV" "2"
 PQ_REG_BAD=$("$VV" -r chr1:0-100 --region-cols NoSuch,Start,End "$DATA/tiny.parquet" 2>&1 || true)
 assert_contains "parquet_region_cols_unknown_errors" "$PQ_REG_BAD" "not found"
+# Region predicate must handle compact integer coordinate types, not just
+# Int32/Int64. tiny.uint32.parquet stores Start/End as UInt32; chr1:1000-2500
+# overlaps two rows. Pre-fix the predicate read 0 for UInt32 and returned none.
+if [ -f "$DATA/tiny.uint32.parquet" ]; then
+    PQ_U32=$("$VV" --tsv --no-header -r chr1:1000-2500 "$DATA/tiny.uint32.parquet" | wc -l)
+    assert_eq_file_inline "parquet_region_uint32_coords_two_rows" "$PQ_U32" "2"
+fi
 
 # --slop on tabix BED.
 SLOP_OUT=$("$VV" --tsv --no-header -r chr1:1500-1500 --slop 4000 "$DATA/tiny.bed.gz" | wc -l)
