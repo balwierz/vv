@@ -73,6 +73,24 @@ else
 fi
 rm -f "$BIGTSV"
 
+# Streaming FASTX error handling: a malformed record BEYOND the first batch
+# (BATCH_SIZE=4096) must surface as a non-zero exit and must not spin forever
+# in ensure(). Build a FASTQ with >4096 good records then a truncated one
+# (quality shorter than the sequence, at EOF) in $TMP.
+BADFQ="$TMP/bigbad.fq"
+awk 'BEGIN{for(i=1;i<=4200;i++)printf "@r%d\nACGT\n+\nIIII\n",i;
+          printf "@bad\nACGTACGT\n+\nII\n"}' > "$BADFQ"
+timeout 30 "$VV" --tsv --no-header "$BADFQ" >/dev/null 2>/dev/null
+FQ_RC=$?
+if [ "$FQ_RC" -eq 124 ]; then
+    FAIL=$((FAIL+1)); echo "  FAIL  fastx_midstream_error_no_hang (timed out / hung)"
+elif [ "$FQ_RC" -ne 0 ]; then
+    PASS=$((PASS+1)); echo "  ok    fastx_midstream_error_no_hang"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  fastx_midstream_error_no_hang (silent truncation, exit 0)"
+fi
+rm -f "$BADFQ"
+
 if [ -f "$DATA/tiny.bcf" ]; then
     run_case bcf_tsv  --tsv --no-header "$DATA/tiny.bcf"
 fi
