@@ -4783,6 +4783,7 @@ class FastxSource : public TabularSource {
     mutable std::vector<int64_t>           batch_first_row_;
     mutable int64_t                        rows_so_far_ = 0;
     mutable bool                           all_read_    = false;
+    mutable arrow::Status                  read_status_;   // sticky stream error
 
     static constexpr int BATCH_SIZE = 4096;
 
@@ -4804,8 +4805,14 @@ class FastxSource : public TabularSource {
                     ks_->qual.s ? ks_->qual.s : "", (int32_t)ks_->qual.l));
             ++count;
         }
-        if (ret < -1)
-            return arrow::Status::IOError("Error reading FASTA/FASTQ from ", path_);
+        if (ret < -1) {
+            // Malformed record (kseq_read returns < -1). Record it stickily and
+            // stop so ensure()'s (void)advance() loop can't spin forever.
+            read_status_ = arrow::Status::IOError(
+                "Error reading FASTA/FASTQ from ", path_);
+            all_read_ = true;
+            return read_status_;
+        }
         if (count == 0) { all_read_ = true; return arrow::Status::OK(); }
         if (ret < 0) all_read_ = true;
 
@@ -4885,6 +4892,7 @@ public:
             ARROW_RETURN_NOT_OK(advance(rows));
         return TabularSource::read_first(rows, col_indices, out);
     }
+    arrow::Status read_status() const override { return read_status_; }
     const std::string& path() const override { return path_; }
     std::string footer() const override {
         return std::string("Format: ") + (is_fastq_ ? "FASTQ" : "FASTA");
@@ -5135,6 +5143,7 @@ class SqliteSource : public TabularSource {
     mutable std::vector<int64_t>             batch_first_row_;
     mutable int64_t                          rows_so_far_ = 0;
     mutable bool                             all_read_   = false;
+    mutable arrow::Status                    read_status_;   // sticky stream error
     mutable sqlite3_stmt*                    stmt_       = nullptr;
 
     static constexpr int BATCH_SIZE = 4096;
@@ -5160,8 +5169,12 @@ class SqliteSource : public TabularSource {
             int rc = sqlite3_step(stmt_);
             if (rc == SQLITE_DONE) { all_read_ = true; break; }
             if (rc != SQLITE_ROW) {
-                return arrow::Status::IOError(
+                // A step error mid-scan: record it stickily and stop so
+                // ensure()'s (void)advance() loop can't spin forever.
+                read_status_ = arrow::Status::IOError(
                     std::string("SQLite step error: ") + sqlite3_errmsg(db_.get()));
+                all_read_ = true;
+                return read_status_;
             }
             for (int i = 0; i < (int)col_types_.size(); ++i) {
                 if (sqlite3_column_type(stmt_, i) == SQLITE_NULL) {
@@ -5328,6 +5341,7 @@ public:
         return total_rows_ >= 0 ? total_rows_ : (all_read_ ? rows_so_far_ : -1);
     }
     int     num_chunks() const override { return (int)batches_.size(); }
+    arrow::Status read_status() const override { return read_status_; }
     ChunkMeta chunk_meta(int i) const override {
         return {batch_first_row_[i], batches_[i]->num_rows()};
     }
@@ -5371,6 +5385,7 @@ class IpcSource : public TabularSource {
     mutable std::vector<int64_t>                      batch_first_row_;
     mutable int64_t                                   total_rows_ = 0;
     mutable bool                                      all_read_   = false;
+    mutable arrow::Status                             read_status_;  // sticky error
 
     static constexpr int64_t BATCH_ROWS = 65536;
 
@@ -5396,7 +5411,15 @@ class IpcSource : public TabularSource {
         if (all_read_) return arrow::Status::OK();
         int i = (int)batches_.size();
         if (i >= num_record_batches_) { all_read_ = true; return arrow::Status::OK(); }
-        ARROW_ASSIGN_OR_RAISE(auto b, rdr_->ReadRecordBatch(i));
+        auto maybe_b = rdr_->ReadRecordBatch(i);
+        if (!maybe_b.ok()) {
+            // A batch that fails to decode (truncated/corrupt IPC) must not
+            // leave ensure() spinning: record the error stickily and stop.
+            read_status_ = maybe_b.status();
+            all_read_ = true;
+            return maybe_b.status();
+        }
+        auto b = maybe_b.ValueOrDie();
         batch_first_row_.push_back(total_rows_);
         total_rows_ += b->num_rows();
         batches_.push_back(std::move(b));
@@ -5460,6 +5483,7 @@ public:
     int     num_chunks()                        const override {
         return is_feather_ ? (int)batches_.size() : num_record_batches_;
     }
+    arrow::Status read_status()                 const override { return read_status_; }
     ChunkMeta chunk_meta(int i)                 const override {
         if (!is_feather_ && i >= (int)batches_.size())
             const_cast<IpcSource*>(this)->ensure(i);

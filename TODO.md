@@ -251,7 +251,7 @@ be done first: it catches this whole bug class automatically.
   - Fix: Validate seq_count against the file size before reserving (each index entry needs at least 1+1+4 bytes), or cap the reserve (e.g.
 - [x] `main.cpp:5044` — SQLite columns with NUMERIC/DATE/DATETIME/BOOLEAN/unknown affinity are silently coerced to double, corrupting dates and losing 64-bit integer precision — fixed on `fix/sqlite-type-affinity` (NUMERIC affinity → string, lossless)
   - Fix: Default the unknown/NUMERIC/DATE branch to STRING (or decide per-value via sqlite3_column_type at read time, mapping SQLITE_INTEGER->int64, SQLITE_FLOAT->double, SQLITE_TEXT->string), so dates and…
-- [ ] `main.cpp:5398` — ensure() infinite-loops (hangs) when a streaming source's advance() returns an error without setting all_read_
+- [x] `main.cpp:5398` — ensure() infinite-loops (hangs) when a streaming source's advance() returns an error without setting all_read_ — fixed on `fix/streaming-ensure-hang` (IpcSource/FastxSource/SqliteSource set sticky read_status_ + all_read_ on error; surfaced via [[main.cpp:3448]]'s read_status())
   - Fix: Make ensure() break out on any error: have load_next_ipc()/advance() set all_read_=true (or a separate failed_ flag) before returning a non-OK status, and/or have ensure() capture the returned Status and break…
 - [ ] `main.cpp:5684` — Workbook rows wider than the first row cause the whole sheet to fail (XLSX & ODS)
   - Fix: Compute the maximum column count across all buffered rows (XLSX: track max col; ODS: track max emitted) and pad every row to that width before invoking Arrow, instead of locking the width to the first row.
