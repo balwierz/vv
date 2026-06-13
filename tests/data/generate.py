@@ -464,6 +464,39 @@ else:
                                [0.0, 0.0]], dtype=np.float64)})
     adata.write_h5ad(h5ad_path)
 
+# tiny.malformed.h5ad: a hostile AnnData that previously crashed the reader.
+# Derived from the valid tiny.h5ad (so it stays AnnData-detectable and reaches
+# the sparse-X path) by poking two attributes that HDF5's H5Aread fills one
+# element per dataspace point:
+#   - /X "shape": 16 int64 values instead of 2 → smashed the fixed int64[2]
+#   - /obs "_index": a 6-element string array → smashed a single-string buffer
+# vv must now open it without crashing (it reads only the first two dims and
+# treats the array-valued string attr as absent).
+try:
+    import h5py                                              # type: ignore
+    import numpy as np                                       # type: ignore
+except ImportError:
+    pass
+else:
+    base = HERE / "tiny.h5ad"
+    if base.exists():
+        import shutil
+        mal = HERE / "tiny.malformed.h5ad"
+        if mal.exists():
+            mal.unlink()
+        shutil.copy(base, mal)
+        with h5py.File(mal, "r+") as f:
+            if "X" in f:
+                if "shape" in f["X"].attrs:
+                    del f["X"].attrs["shape"]
+                f["X"].attrs.create("shape", np.arange(16, dtype=np.int64))
+            if "obs" in f:
+                if "_index" in f["obs"].attrs:
+                    del f["obs"].attrs["_index"]
+                f["obs"].attrs.create(
+                    "_index", np.array([b"i0", b"i1", b"i2",
+                                        b"i3", b"i4", b"i5"], dtype="S2"))
+
 # ── Apache ORC (columnar; pyarrow.orc is built into pyarrow when Arrow was
 # compiled with -DARROW_ORC=ON, which is the wheel default since pyarrow
 # 12.0). Soft-skip otherwise.

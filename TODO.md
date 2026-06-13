@@ -223,9 +223,9 @@ be done first: it catches this whole bug class automatically.
 
 - [x] `main.cpp:3286` — Region coordinates are 0-based when handed to htslib's 1-based region parser (off-by-one start on every tabix/BAM/BCF range query) — fixed on `fix/region-coord-offbyone`
   - Fix: Pick one convention and convert at the boundary. Since cfg.region is canonicalised to 0-based half-open, convert back to 1-based inclusive (start+1, end unchanged) when building the region STRING handed to any…
-- [ ] `main.cpp:6202` — Buffer overflow in read_string_attr for array-valued string attributes
+- [x] `main.cpp:6202` — Buffer overflow in read_string_attr for array-valued string attributes — fixed on `fix/hdf5-attr-overflow`
   - Fix: Query H5Aget_space + H5Sget_simple_extent_npoints and bail out (return "") if npoints != 1, or size the destination buffer to npoints.
-- [ ] `main.cpp:6789` — Stack/heap buffer overflow reading HDF5 'shape' attribute into a fixed 2-element buffer
+- [x] `main.cpp:6789` — Stack/heap buffer overflow reading HDF5 'shape' attribute into a fixed 2-element buffer — fixed on `fix/hdf5-attr-overflow`
   - Fix: Before reading, query the attribute's dataspace size: open the space with H5Aget_space, get H5Sget_simple_extent_npoints, and only read into a 2-slot buffer when the count is exactly 2 (or read into a…
 - [ ] `main.cpp:7216` — NPY shape parsing accepts negative dimensions -> size_t wrap and huge allocation/OOB
   - Fix: Reject any shape component < 0 (and treat the whole header as invalid). Validate each dimension is in [0, sane_max] before storing.

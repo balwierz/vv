@@ -6231,6 +6231,14 @@ static std::string read_string_attr(hid_t obj, const char* name) {
     if (H5Aexists(obj, name) <= 0) return std::string{};
     hid_t a = H5Aopen(obj, name, H5P_DEFAULT);
     if (a < 0) return std::string{};
+    // H5Aread writes one element per dataspace point, so an array-valued
+    // attribute (npoints > 1) would overflow the single-element buffers below
+    // (and, in the variable-length case, leak every pointer past the first).
+    // We only support a scalar string here; treat anything else as absent.
+    hid_t sp = H5Aget_space(a);
+    hssize_t npoints = (sp >= 0) ? H5Sget_simple_extent_npoints(sp) : -1;
+    if (sp >= 0) H5Sclose(sp);
+    if (npoints != 1) { H5Aclose(a); return std::string{}; }
     hid_t t = H5Aget_type(a);
     H5T_class_t cls = H5Tget_class(t);
     std::string out;
@@ -6257,6 +6265,32 @@ static std::string read_string_attr(hid_t obj, const char* name) {
     H5Tclose(t);
     H5Aclose(a);
     return out;
+}
+
+// Read up to two int64s from a "shape"-style attribute (e.g. [n_rows, n_cols])
+// into out[2]. H5Aread writes one value per dataspace point, so reading
+// straight into a fixed two-slot buffer overflows the stack when a malformed
+// or hostile file declares a shape attribute with more than two elements.
+// Size the read buffer to the attribute's actual point count and copy back
+// only the first two; leave out = {0, 0} for absent / empty / absurd shapes.
+static void read_shape2(hid_t obj, const char* name, int64_t out[2]) {
+    out[0] = 0; out[1] = 0;
+    if (H5Aexists(obj, name) <= 0) return;
+    hid_t a = H5Aopen(obj, name, H5P_DEFAULT);
+    if (a < 0) return;
+    hid_t sp = H5Aget_space(a);
+    hssize_t n = (sp >= 0) ? H5Sget_simple_extent_npoints(sp) : -1;
+    if (sp >= 0) H5Sclose(sp);
+    // A real shape has a handful of dims; reject empty / negative / absurd
+    // counts rather than allocate on an attacker-controlled length.
+    if (n >= 1 && n <= 1024) {
+        std::vector<int64_t> tmp((size_t)n, 0);
+        if (H5Aread(a, H5T_NATIVE_INT64, tmp.data()) >= 0) {
+            out[0] = tmp[0];
+            if (n >= 2) out[1] = tmp[1];
+        }
+    }
+    H5Aclose(a);
 }
 
 // Whether a child link exists directly under `parent`.
@@ -6833,11 +6867,7 @@ static arrow::Result<std::shared_ptr<arrow::Table>>
 read_sparse_preview(hid_t group, int64_t row_cap) {
     // shape attribute = [n_rows, n_cols]
     int64_t shape[2] = {0, 0};
-    if (H5Aexists(group, "shape") > 0) {
-        hid_t a = H5Aopen(group, "shape", H5P_DEFAULT);
-        H5Aread(a, H5T_NATIVE_INT64, shape);
-        H5Aclose(a);
-    }
+    read_shape2(group, "shape", shape);
     std::string enc = read_string_attr(group, "encoding-type");
     bool is_csr = (enc == "csr_matrix");
     bool is_csc = (enc == "csc_matrix");
@@ -6992,11 +7022,7 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
             if (xenc == "csr_matrix" || xenc == "csc_matrix") {
                 x_is_sparse = true;
                 int64_t shape[2] = {0, 0};
-                if (H5Aexists(g, "shape") > 0) {
-                    hid_t a = H5Aopen(g, "shape", H5P_DEFAULT);
-                    H5Aread(a, H5T_NATIVE_INT64, shape);
-                    H5Aclose(a);
-                }
+                read_shape2(g, "shape", shape);
                 x_rows = shape[0]; x_cols = shape[1];
                 add("X", xenc + "  (" + std::to_string(x_rows) +
                           " \xc3\x97 " + std::to_string(x_cols) + ")");

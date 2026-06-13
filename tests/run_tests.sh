@@ -505,6 +505,18 @@ if [ -f "$DATA/tiny.h5" ]; then
     assert_contains "h5_hierarchy_dtype"     "$H5_OUT" "float64"
 fi
 
+# Malformed HDF5: a hostile AnnData whose /X "shape" attribute carries 16
+# int64s and whose /obs "_index" is a 6-element string array. H5Aread fills
+# one element per dataspace point, so the reader used to smash a fixed
+# int64[2] / single-string buffer and segfault. Opening it must now exit 0
+# (reads only the first two dims; treats the array string attr as absent).
+if [ -f "$DATA/tiny.malformed.h5ad" ]; then
+    assert_exit_zero "h5_malformed_shape_attr_no_crash" \
+        "$VV" --schema "$DATA/tiny.malformed.h5ad"
+    assert_exit_zero "h5_malformed_table_no_crash" \
+        "$VV" --no-interactive --color=never "$DATA/tiny.malformed.h5ad"
+fi
+
 # samtools mpileup: 6-col single-sample + 9-col two-sample fixtures; tabix
 # range query on the bgzipped variant.
 if [ -f "$DATA/tiny.mpileup" ]; then
