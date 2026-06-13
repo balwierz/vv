@@ -123,17 +123,27 @@ jobs:
       # installed above. This is where the KF6 plugins (.so) actually link —
       # the static-libs CLI build can't (its archives aren't PIC), so the GUI
       # build is validated here on shared deps.
-      - name: Install GUI dependencies (KF6)
+      - name: Install GUI dependencies (Qt6; KF6 if available)
         if: matrix.os == '24.04'
+        id: gui_deps
         run: |
-          sudo apt-get install -y -V \
-            qt6-base-dev \
-            extra-cmake-modules \
-            libkf6kio-dev \
-            libkf6coreaddons-dev \
-            libkf6filemetadata-dev
+          # Qt6 + ECM are all the Qt GUI (vvg) and the KF6-free plugin cores
+          # (vvkde_core / vvkdetest) need, and are always in the 24.04 archive.
+          sudo apt-get install -y -V qt6-base-dev extra-cmake-modules
+          # The KF6 dev packages (KIO / CoreAddons / FileMetaData) are NOT in
+          # the Ubuntu 24.04 archive — they first appear in 24.10. CMake builds
+          # the Dolphin thumbnailer / KFileMetaData .so plugins only when KF6
+          # is found (find_package(... QUIET)) and otherwise skips them, so
+          # install KF6 best-effort and record whether it succeeded.
+          if sudo apt-get install -y -V \
+               libkf6kio-dev libkf6coreaddons-dev libkf6filemetadata-dev; then
+            echo "kf6=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "kf6=no" >> "$GITHUB_OUTPUT"
+            echo "::notice::KF6 dev packages unavailable on this runner; building the Qt GUI without the Dolphin/KFileMetaData plugins."
+          fi
 
-      - name: Build GUI + KDE plugins
+      - name: Build GUI (+ KDE plugins when KF6 present)
         if: matrix.os == '24.04'
         run: |
           cmake -S . -B build-gui -DCMAKE_BUILD_TYPE=Release -DVV_BUILD_GUI=ON
@@ -145,15 +155,21 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           set -e
+          # vvg and the headless plugin-core harness build with just Qt6 — they
+          # exercise libvvcore end to end and need no KF6.
           test -x build-gui/gui/vvg
-          # The KF6 plugins are shared objects — their presence proves the
-          # libvvcore-backed .so link succeeds on shared deps.
-          test -f build-gui/gui/kde/vvthumbnail.so
-          test -f build-gui/gui/kde/vvextractor.so
           # Headless payload check: render a thumbnail + probe metadata.
           ./build-gui/gui/kde/vvkdetest tests/data/tiny.parquet
           # Model path end-to-end through libvvcore.
           VVG_SELFTEST=1 ./build-gui/gui/vvg tests/data/tiny.parquet
+          if [ "${{ steps.gui_deps.outputs.kf6 }}" = "yes" ]; then
+            # KF6 present: the Dolphin thumbnailer + KFileMetaData .so plugins
+            # must have linked against libvvcore.
+            test -f build-gui/gui/kde/vvthumbnail.so
+            test -f build-gui/gui/kde/vvextractor.so
+          else
+            echo "Skipping KF6 .so plugin checks (KF6 not installed)."
+          fi
 
   build-macos:
     name: Build (macOS)
