@@ -3090,13 +3090,24 @@ class DelimitedSource : public TabularSource {
     mutable std::vector<int64_t>          batch_first_row_;
     mutable int64_t                       rows_so_far_ = 0;
     mutable bool                          all_read_    = false;
+    mutable arrow::Status                 read_status_;   // sticky stream error
 
     mutable std::shared_ptr<arrow::csv::StreamingReader> reader_;
 
     arrow::Status advance() const {
         if (all_read_) return arrow::Status::OK();
         std::shared_ptr<arrow::RecordBatch> batch;
-        ARROW_RETURN_NOT_OK(reader_->ReadNext(&batch));
+        arrow::Status st = reader_->ReadNext(&batch);
+        if (!st.ok()) {
+            // A malformed row (bad column count, encoding, …) anywhere past the
+            // first block surfaces here. Record it stickily and stop: callers
+            // that ignore advance()'s result (ensure()) must not spin forever,
+            // and the CLI can report the truncation and exit non-zero instead
+            // of silently emitting a partial result with status 0.
+            read_status_ = st;
+            all_read_ = true;
+            return st;
+        }
         if (!batch) { all_read_ = true; return arrow::Status::OK(); }
         batch_first_row_.push_back(rows_so_far_);
         rows_so_far_ += batch->num_rows();
@@ -3495,6 +3506,7 @@ private:
     std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
     int64_t total_rows() const override { return all_read_ ? rows_so_far_ : -1; }
     int     num_chunks() const override { return (int)batches_.size(); }
+    arrow::Status read_status() const override { return read_status_; }
     ChunkMeta chunk_meta(int i) const override {
         return {batch_first_row_[i], batches_[i]->num_rows()};
     }
@@ -14554,6 +14566,12 @@ int main(int argc, char** argv) {
         Config dcfg = cfg;
         if (!dcfg.head_rows_set) dcfg.head_rows = 0;
         write_delimited(*src, dcfg);
+        // A streaming source that hit a parse/I/O error mid-file has emitted a
+        // truncated result; report it and exit non-zero so pipelines can tell.
+        if (!src->read_status().ok()) {
+            report(cfg.path, shorten_reader_error(src->read_status().ToString()));
+            return 1;
+        }
         return 0;
     }
 
@@ -14572,6 +14590,10 @@ int main(int argc, char** argv) {
     // Table display
     if (cfg.vertical) print_vertical_table(*src, cfg);
     else              print_table(*src, cfg);
+    if (!src->read_status().ok()) {
+        report(cfg.path, shorten_reader_error(src->read_status().ToString()));
+        return 1;
+    }
     return 0;
 }
 #endif  // VV_CORE_LIB

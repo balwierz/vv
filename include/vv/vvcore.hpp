@@ -175,6 +175,11 @@ public:
     }
     // Ensure chunk i is loaded (triggers forward reads for streaming sources).
     virtual void ensure(int i) {}
+    // Sticky status of the underlying streaming read. A source that hits an
+    // I/O or parse error mid-stream records it here so callers can tell a
+    // complete result apart from a silently truncated one (and exit non-zero).
+    // Default: always OK.
+    virtual arrow::Status read_status() const { return arrow::Status::OK(); }
     // Step the slice axis for 3-D+ array sources (NPZ today). Default no-op.
     // Returns true if the source rebuilt its table and the TUI should
     // drop cached chunks + reset the viewport.

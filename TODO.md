@@ -239,7 +239,7 @@ be done first: it catches this whole bug class automatically.
   - Fix: Wrap the body of vv_render_thumbnail and vv_probe_meta in try/catch(...) returning an empty QImage / unset VvMeta on any exception.
 - [ ] `main.cpp:2897` — Region queries on Parquet return empty/wrong results when Start/End are not Int32/Int64
   - Fix: Handle the remaining integer Arrow types (Int8/16, UInt8/16/32/64) and dictionary-encoded indices, or use arrow's scalar visitor;
-- [ ] `main.cpp:3448` — Malformed delimited row past the first block silently truncates output with exit code 0
+- [x] `main.cpp:3448` — Malformed delimited row past the first block silently truncates output with exit code 0 — fixed on `fix/delimited-silent-truncation` (sticky read_status + non-zero exit; also closes the latent ensure() hang)
   - Fix: Store a sticky arrow::Status member set by advance() on error (and set all_read_=true to stop the loop), then surface it from read_chunk()/total_rows() and from ensure() callers so the CLI prints the CSV parse…
 - [ ] `main.cpp:3920` — Pileup engine does not handle is_refskip (wrong output for spliced/RNA-seq reads)
   - Fix: Add `else if (p->is_refskip) { bases += bam_is_rev(p->b) ? '>' : '<'; quals += (char)('!'); }` before the base-call branch, matching samtools mpileup.
@@ -293,7 +293,7 @@ be done first: it catches this whole bug class automatically.
 - [ ] `main.cpp:865` — display_width() counts codepoints, not terminal columns — wide/combining/zero-width chars misalign the table
 - [ ] `main.cpp:912` — truncate() byte-based fallback splits a multibyte UTF-8 codepoint, emitting invalid UTF-8
 - [ ] `main.cpp:2628` — Generic Parquet region pruning uses Arrow field index as a Parquet leaf index
-- [ ] `main.cpp:3070` — advance() error is swallowed at every call site, so I/O/parse errors never reach the user
+- [~] `main.cpp:3070` — advance() error is swallowed at every call site, so I/O/parse errors never reach the user — partly addressed by [[main.cpp:3448]] (a `read_status()` accessor now surfaces it on the delimited + table output paths); `--describe`/`--unique` and the TUI status bar still don't check it
 - [ ] `main.cpp:3306` — Header detection misclassifies real headers named like numbers (nan, inf, 1e5, hex)
 - [ ] `main.cpp:3963` — Pileup treats mid-stream read errors as clean EOF
 - [ ] `main.cpp:4185` — BCF region-mode silently swallows read errors (truncated/corrupt file -> partial output)
