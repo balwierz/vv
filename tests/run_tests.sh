@@ -517,6 +517,32 @@ if [ -f "$DATA/tiny.malformed.h5ad" ]; then
         "$VV" --no-interactive --color=never "$DATA/tiny.malformed.h5ad"
 fi
 
+# NumPy .npz — valid archive (summary lists each array) plus a malformed one.
+if [ -f "$DATA/tiny.npz" ]; then
+    NPZ_OUT=$("$VV" --no-interactive --color=never "$DATA/tiny.npz" 2>&1)
+    assert_contains "npz_summary_vec"    "$NPZ_OUT" "vec"
+    assert_contains "npz_summary_mat"    "$NPZ_OUT" "mat"
+    assert_contains "npz_summary_cube"   "$NPZ_OUT" "cube"
+fi
+# Malformed .npz: the member's .npy header declares shape (1000000000,) <f8
+# (8 GB) but stores only 16 bytes. The reader derived element counts / byte
+# offsets straight from the shape, driving an out-of-bounds read. vv must now
+# reject it at open with a clear error instead of crashing or reading OOB.
+if [ -f "$DATA/tiny.malformed.npz" ]; then
+    NPZ_BAD=$("$VV" --schema "$DATA/tiny.malformed.npz" 2>&1 || true)
+    assert_contains "npz_malformed_shape_rejected" "$NPZ_BAD" "shape"
+    # Must fail cleanly (exit non-zero), never crash (signal → 128+).
+    "$VV" --schema "$DATA/tiny.malformed.npz" >/dev/null 2>&1
+    NPZ_RC=$?
+    if [ "$NPZ_RC" -eq 0 ]; then
+        FAIL=$((FAIL+1)); echo "  FAIL  npz_malformed_rejected_cleanly (accepted bad file)"
+    elif [ "$NPZ_RC" -ge 128 ]; then
+        FAIL=$((FAIL+1)); echo "  FAIL  npz_malformed_rejected_cleanly (crashed, signal $((NPZ_RC-128)))"
+    else
+        PASS=$((PASS+1)); echo "  ok    npz_malformed_rejected_cleanly"
+    fi
+fi
+
 # samtools mpileup: 6-col single-sample + 9-col two-sample fixtures; tabix
 # range query on the bgzipped variant.
 if [ -f "$DATA/tiny.mpileup" ]; then
