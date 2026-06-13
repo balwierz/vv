@@ -497,6 +497,41 @@ else:
                     "_index", np.array([b"i0", b"i1", b"i2",
                                         b"i3", b"i4", b"i5"], dtype="S2"))
 
+# ── NumPy .npz fixtures ──────────────────────────────────────────────────────
+# tiny.npz: a valid archive with a 1-D, 2-D and 3-D array — exercises the
+# NPZ summary tab and the per-array densification paths.
+# tiny.malformed.npz: a hostile archive whose single member's .npy header
+# declares shape (1000000000,) <f8 (8 GB) but stores only 16 bytes. The reader
+# derived element counts / byte offsets straight from the shape, so this drove
+# an out-of-bounds read; vv must now reject it at open with a clear error.
+try:
+    import numpy as np                                       # type: ignore
+    import zipfile, struct                                   # type: ignore
+except ImportError:
+    print("warn: numpy not found; skipping tiny.npz / tiny.malformed.npz",
+          file=sys.stderr)
+else:
+    np.savez(HERE / "tiny.npz",
+             vec=np.arange(6, dtype=np.int64),
+             mat=np.arange(12, dtype=np.float64).reshape(3, 4),
+             cube=np.arange(24, dtype=np.float32).reshape(2, 3, 4))
+
+    def _make_npy(descr, shape, data):
+        tup = "(" + ", ".join(str(s) for s in shape) + \
+              ("," if len(shape) == 1 else "") + ")"
+        hdr = "{'descr': '%s', 'fortran_order': False, 'shape': %s, }" % (descr, tup)
+        pad = (64 - (10 + len(hdr) + 1) % 64) % 64
+        hdr = hdr + " " * pad + "\n"
+        return (b"\x93NUMPY\x01\x00" + struct.pack("<H", len(hdr))
+                + hdr.encode() + data)
+
+    mal_npz = HERE / "tiny.malformed.npz"
+    if mal_npz.exists():
+        mal_npz.unlink()
+    with zipfile.ZipFile(mal_npz, "w", zipfile.ZIP_STORED) as z:
+        # header claims 1e9 float64 elements; body is only 16 bytes
+        z.writestr("a.npy", _make_npy("<f8", (1000000000,), b"\x00" * 16))
+
 # ── Apache ORC (columnar; pyarrow.orc is built into pyarrow when Arrow was
 # compiled with -DARROW_ORC=ON, which is the wheel default since pyarrow
 # 12.0). Soft-skip otherwise.

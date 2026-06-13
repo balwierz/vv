@@ -227,9 +227,9 @@ be done first: it catches this whole bug class automatically.
   - Fix: Query H5Aget_space + H5Sget_simple_extent_npoints and bail out (return "") if npoints != 1, or size the destination buffer to npoints.
 - [x] `main.cpp:6789` — Stack/heap buffer overflow reading HDF5 'shape' attribute into a fixed 2-element buffer — fixed on `fix/hdf5-attr-overflow`
   - Fix: Before reading, query the attribute's dataspace size: open the space with H5Aget_space, get H5Sget_simple_extent_npoints, and only read into a 2-slot buffer when the count is exactly 2 (or read into a…
-- [ ] `main.cpp:7216` — NPY shape parsing accepts negative dimensions -> size_t wrap and huge allocation/OOB
+- [x] `main.cpp:7216` — NPY shape parsing accepts negative dimensions -> size_t wrap and huge allocation/OOB — fixed on `fix/npz-shape-validation`
   - Fix: Reject any shape component < 0 (and treat the whole header as invalid). Validate each dimension is in [0, sane_max] before storing.
-- [ ] `main.cpp:7457` — NPZ/NPY: no bounds check that declared shape fits the array body — out-of-bounds read on malformed input
+- [x] `main.cpp:7457` — NPZ/NPY: no bounds check that declared shape fits the array body — out-of-bounds read on malformed input — fixed on `fix/npz-shape-validation`
   - Fix: After parsing the header, compute the required element count with overflow-checked multiplication and verify `data_offset + total_elems*item_size <= bytes->size()`.
 
 ### High (24)
@@ -259,9 +259,9 @@ be done first: it catches this whole bug class automatically.
   - Fix: Parse table:number-rows-repeated in ods_start (with a sane cap), and at row close emit the assembled row line N times (skip when the row is entirely empty so trailing blank runs still collapse).
 - [ ] `main.cpp:6472` — Dense AnnData/HDF5 2-D matrix is fully densified into RAM with no row or column cap (OOM)
   - Fix: Pass a sane row_cap for Matrix2D/Dataset2D (mirroring the sparse 1000-row preview, or honoring cfg.head_rows), and cap n_cols for dense matrices the way scan_generic already caps Dataset2D at dims[1]<=32 and…
-- [ ] `main.cpp:7295` — build_2d_table builds one Arrow column per declared cols — unbounded column count is an OOM/DoS
+- [ ] `main.cpp:7295` — build_2d_table builds one Arrow column per declared cols — unbounded column count is an OOM/DoS (tiny-file attack vector now blocked by the [[main.cpp:7457]] bounds guard on `fix/npz-shape-validation`; a column cap for genuinely-wide arrays is still TODO)
   - Fix: Clamp the number of rendered columns to a sane maximum (e.g. a few thousand) and surface a 'array too wide to display, showing first N columns' footer, mirroring how other wide sources are handled.
-- [ ] `main.cpp:7499` — Integer overflow in element/byte-count multiplications for NPY arrays
+- [x] `main.cpp:7499` — Integer overflow in element/byte-count multiplications for NPY arrays — fixed on `fix/npz-shape-validation` (product is overflow-checked and bounded to the buffer)
   - Fix: Use checked multiplication (e.g. __builtin_mul_overflow or compare against (SIZE_MAX/item_size)) when computing every element-count and byte-offset;
 - [ ] `main.cpp:9852` — Inf values in a float column poison heatmap normalization (NaN -> lround UB, blank plot)
   - Fix: Treat non-finite values like missing: in the scan use `if (!ok || !std::isfinite(d)) d = std::nan("");` (only update lo/hi for finite d), and in the pixel loop test `if (!std::isfinite(d))` instead of just…

@@ -7292,6 +7292,31 @@ static std::string parse_npy_header(const uint8_t* buf, size_t n, NpyHeader* out
         catch (...) { return "npy: bad shape '" + sh + "'"; }
     }
     out->data_offset = hdr_start + hdr_len;
+
+    // Validate the declared shape against the data actually present. .npy/.npz
+    // input is untrusted (zip members), and the downstream readers derive
+    // element counts and byte offsets straight from the shape. Without this, a
+    // header like (1000000000,), a negative dimension, or dims whose product
+    // overflows would drive out-of-bounds reads, huge allocations, or
+    // wrapped-offset pointer arithmetic. Unsupported dtypes are never read, so
+    // they skip the check.
+    if (!out->unsupported && out->item_size > 0) {
+        uint64_t elems = 1;
+        for (int64_t d : out->shape) {
+            if (d < 0) return "npy: negative dimension in shape (" + sh + ")";
+            uint64_t dd = (uint64_t)d;
+            if (dd != 0 && elems > UINT64_MAX / dd)
+                return "npy: shape too large (" + sh + ")";
+            elems *= dd;
+        }
+        if (elems > UINT64_MAX / (uint64_t)out->item_size)
+            return "npy: shape too large (" + sh + ")";
+        uint64_t need  = elems * (uint64_t)out->item_size;
+        uint64_t avail = (uint64_t)n - (uint64_t)out->data_offset;  // data_offset<=n
+        if (need > avail)
+            return "npy: declared shape needs " + std::to_string(need) +
+                   " bytes but only " + std::to_string(avail) + " present";
+    }
     return "";
 }
 
@@ -7563,6 +7588,17 @@ class NpzSource : public WorkbookSource {
 
         // 3-D+. Render a 2-D slice along the leading axis.
         int64_t leading = h.shape[0];
+        if (leading <= 0) {
+            // Empty leading axis (e.g. shape (0, …)): nothing to slice, and a
+            // negative idx clamp would otherwise form a wild pointer.
+            *tbl = build_2d_table(h.dtype_id, data, /*rows=*/0, /*cols=*/1,
+                                   h.item_size, h.fortran_order);
+            if (!*tbl) return "NPZ: dtype not supported for '" + e->name + "'";
+            *footer = "Format: NumPy NPZ  |  Array: " + e->name +
+                      "  |  " + shape_str(h.shape) +
+                      "  |  dtype: " + h.dtype_str + "  |  empty";
+            return "";
+        }
         int64_t idx = spec.slice_idx;
         if (idx < 0) idx = 0;
         if (idx >= leading) idx = leading - 1;
