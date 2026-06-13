@@ -3326,7 +3326,31 @@ private:
         bool autogen = (kind == DelimKind::BED) ||
                        (kind == DelimKind::Mpileup);
         auto r = make_reader(input, self->delimiter_, autogen, col_names);
-        if (!r.ok()) return "Cannot open '" + path + "': " + r.status().ToString();
+        if (!r.ok()) {
+            // A region query whose window overlaps no records leaves the tabix
+            // stream empty, and Arrow's CSV reader rejects empty input with
+            // "Empty CSV file". The Parquet/BCF/BAM paths return a valid empty
+            // result (exit 0) in this situation, so match them: recover the
+            // column layout from the full file (region-free) and present zero
+            // rows. Reading the whole file region-free is unnecessary — the
+            // probe only needs the first block to settle names/types (and, for
+            // BED, the column level). Falls through to the original error if
+            // the file itself cannot be opened.
+            if (!region.empty() &&
+                r.status().ToString().find("Empty CSV") != std::string::npos) {
+                std::unique_ptr<DelimitedSource> probe;
+                if (open(path, kind, /*region=*/"", &probe).empty()) {
+                    self->schema_          = probe->schema_;
+                    self->bed_level_       = probe->bed_level_;
+                    self->bed_variant_     = probe->bed_variant_;
+                    self->mpileup_samples_ = probe->mpileup_samples_;
+                    self->all_read_        = true;   // zero matching rows
+                    *out = std::move(self);
+                    return "";
+                }
+            }
+            return "Cannot open '" + path + "': " + r.status().ToString();
+        }
         self->reader_ = r.ValueOrDie();
         self->schema_ = self->reader_->schema();
 
