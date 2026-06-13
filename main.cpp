@@ -4274,20 +4274,21 @@ class BcfSource : public TabularSource {
             for (size_t i = 0; i < line.size() && fi < 8; ++i) {
                 if (line[i] == '\t') { f[fi++] = line.substr(start, i - start); start = i + 1; }
             }
-            // Field 8 (INFO) ends at the next tab or end-of-line.
-            // After it, anything else (FORMAT + sample columns) goes into f[8].
-            size_t info_end = line.find('\t', start);
+            // After the eight fixed fields (CHROM..INFO), `start` points at the
+            // FORMAT field. Everything from there on — FORMAT plus the
+            // per-sample columns — is kept verbatim as the FORMAT_SAMPLES value.
+            // (Previously this skipped to after the next tab, dropping the
+            // FORMAT spec such as GT:AD:DP entirely.)
             if (fi < 8) {
-                // Pathological short line — fill remaining with "."
-                f[fi++] = (info_end == std::string_view::npos)
+                // Pathological short line — fill remaining columns with ".".
+                size_t end = line.find('\t', start);
+                f[fi++] = (end == std::string_view::npos)
                           ? line.substr(start)
-                          : line.substr(start, info_end - start);
+                          : line.substr(start, end - start);
                 while (fi < 8) f[fi++] = ".";
                 f[8] = std::string_view{};
-            } else if (info_end == std::string_view::npos) {
-                f[8] = std::string_view{};
             } else {
-                f[8] = line.substr(info_end + 1);
+                f[8] = line.substr(start);   // FORMAT + samples, verbatim
             }
 
             ARROW_RETURN_NOT_OK(chrom_b.Append(f[0].data(), (int32_t)f[0].size()));
