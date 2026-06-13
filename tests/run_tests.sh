@@ -55,6 +55,24 @@ run_case csv_tsv      --tsv --no-header "$DATA/tiny.csv"
 run_case arrow_tsv    --tsv --no-header "$DATA/tiny.arrow"
 run_case paf_tsv      --tsv --no-header "$DATA/tiny.paf"
 run_case paf_gz_tsv   --tsv --no-header "$DATA/tiny.paf.gz"
+
+# Streaming delimited error handling: a malformed row BEYOND the first 16 MiB
+# CSV block must surface as a non-zero exit, not be swallowed into a silently
+# truncated result with status 0. Build the fixture in $TMP (too big to commit:
+# the first block must be full of good rows so the bad one lands in a later
+# block).
+BIGTSV="$TMP/truncate.tsv"
+{ printf 'a\tb\tc\n'; yes "$(printf 'row\t123\t4.5')" | head -n 2000000; \
+  printf 'BADROW_ONLY_ONE_COL\n'; } > "$BIGTSV"
+"$VV" --tsv --no-header "$BIGTSV" >/dev/null 2>/dev/null
+TRUNC_RC=$?
+if [ "$TRUNC_RC" -ne 0 ]; then
+    PASS=$((PASS+1)); echo "  ok    delimited_midstream_error_exits_nonzero"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  delimited_midstream_error_exits_nonzero (silent truncation, exit 0)"
+fi
+rm -f "$BIGTSV"
+
 if [ -f "$DATA/tiny.bcf" ]; then
     run_case bcf_tsv  --tsv --no-header "$DATA/tiny.bcf"
 fi
