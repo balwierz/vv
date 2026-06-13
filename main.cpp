@@ -1717,6 +1717,39 @@ static std::vector<Region> parse_region_list(const std::string& spec,
     return out;
 }
 
+// ── htslib region-string conventions ─────────────────────────────────────────
+//
+// vv canonicalises every region to UCSC 0-based half-open (see Region /
+// parse_region_one / apply_region_modifiers). htslib's region parsers
+// (tbx_itr_querys, sam_itr_regarray, hts_parse_region, bcf_itr_querys) instead
+// interpret a "chrom:beg-end" STRING as 1-based inclusive at both ends. Feeding
+// them a 0-based string therefore shifts every query one base to the left and
+// turns the half-open end into an inclusive one — and makes htslib-backed
+// formats (tabix BED/VCF/GFF, BAM pileup, BCF) silently disagree with the
+// Parquet interval path for the same -r query. Convert at the boundary:
+//   UCSC [s, e)  ==  htslib  chrom:(s+1)-e
+static std::string region_to_htslib(const Region& r) {
+    // Whole-chromosome (both bounds open) → bare chrom name.
+    if (r.start == INT64_MIN && r.end == INT64_MAX) return r.chrom;
+    int64_t beg1 = (r.start == INT64_MIN) ? 1 : r.start + 1;
+    if (beg1 < 1) beg1 = 1;
+    std::string s = r.chrom + ":" + std::to_string(beg1);
+    // Open upper bound → "chrom:beg" (htslib reads it as beg..end-of-chrom).
+    if (r.end != INT64_MAX) s += "-" + std::to_string(r.end);
+    return s;
+}
+
+// Convert a canonical (0-based half-open) comma-separated region list into the
+// comma-separated 1-based-inclusive form htslib's parsers expect.
+static std::string regions_to_htslib(const std::string& canonical) {
+    std::string acc;
+    for (const auto& r : parse_region_list(canonical)) {
+        if (!acc.empty()) acc += ",";
+        acc += region_to_htslib(r);
+    }
+    return acc;
+}
+
 // ── Simple value-predicate filter (--filter) ─────────────────────────────────
 //
 // Grammar:
@@ -3278,8 +3311,11 @@ private:
         // with a tabix iterator that yields only records overlapping `region`.
         // Preamble + column names already came from the original file above.
         if (!region.empty()) {
+            // `region` is canonical 0-based half-open; tbx_itr_querys reads its
+            // string argument as 1-based inclusive, so convert at the boundary.
             std::shared_ptr<TabixInputStream> tabix;
-            std::string err = TabixInputStream::open(path, region, &tabix);
+            std::string err =
+                TabixInputStream::open(path, regions_to_htslib(region), &tabix);
             if (!err.empty()) return err;
             std::shared_ptr<arrow::io::InputStream> ti = tabix;
             if (kind == DelimKind::GFF) ti = std::make_shared<TruncateFieldsStream>(ti, 9);
@@ -4040,14 +4076,12 @@ public:
             self->idx_ = sam_index_load(self->fp_, path.c_str());
             if (!self->idx_)
                 return "'" + path + "': --pileup -r needs an index (.bai/.csi/.crai)";
+            // cfg.region is canonical 0-based half-open; both sam_itr_regarray
+            // and the hts_parse_region filter below read region strings as
+            // 1-based inclusive, so convert each window at the boundary.
             std::vector<std::string> regs;
-            { std::string cur;
-              for (char c : cfg.region) {
-                  if (c == ',') { if (!cur.empty()) regs.push_back(cur); cur.clear(); }
-                  else          cur += c;
-              }
-              if (!cur.empty()) regs.push_back(cur);
-            }
+            for (const auto& w : parse_region_list(cfg.region))
+                regs.push_back(region_to_htslib(w));
             std::vector<const char*> regp;
             regp.reserve(regs.size());
             for (auto& r : regs) regp.push_back(r.c_str());
@@ -4329,17 +4363,12 @@ public:
             if (!self->idx_)
                 return "No BCF index for '" + path + "' (try: "
                        "`bcftools index '" + path + "'`)";
-            auto regs = parse_region_list(cfg.region, cfg.coords_one_based);
-            for (auto& r : regs) {
-                hts_itr_t* it = bcf_itr_querys(self->idx_, self->hdr_, r.chrom.c_str());
-                // bcf_itr_querys takes a "chrom:start-end" string directly,
-                // but we already parsed; rebuild the canonical form here.
-                if (it) hts_itr_destroy(it);
-                std::string rstr = r.chrom + ":";
-                if (r.start != INT64_MIN) rstr += std::to_string(r.start);
-                rstr += "-";
-                if (r.end != INT64_MAX) rstr += std::to_string(r.end);
-                it = bcf_itr_querys(self->idx_, self->hdr_, rstr.c_str());
+            // cfg.region is canonical 0-based half-open; bcf_itr_querys reads
+            // its string argument as 1-based inclusive, so convert per window.
+            for (const auto& r : parse_region_list(cfg.region)) {
+                std::string rstr = region_to_htslib(r);
+                hts_itr_t* it =
+                    bcf_itr_querys(self->idx_, self->hdr_, rstr.c_str());
                 if (!it)
                     return "Cannot query region '" + rstr + "' in '" + path + "'";
                 self->iters_.push_back(it);

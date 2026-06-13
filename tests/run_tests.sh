@@ -95,6 +95,32 @@ if [ -f "$DATA/tiny.bcf.csi" ]; then
     assert_eq_file_inline "bcf_region_returns_two_rows" "$BCF_REGION" "2"
 fi
 
+# Coordinate-convention regression: -r windows are UCSC 0-based half-open for
+# EVERY format. The htslib-backed paths (tabix BED/VCF/GFF, BAM pileup, BCF)
+# used to forward the 0-based string straight to htslib's 1-based-inclusive
+# region parsers, shifting every query one base and disagreeing with the
+# Parquet interval path. These cases sit exactly on a feature boundary, where
+# the old off-by-one flipped the result.
+#
+# tiny.bed.gz / tiny.parquet share peak_0 = chr1 [100, 200) (0-based half-open).
+# The half-open window [200, 250) starts where the peak ends, so it must match
+# NOTHING — and tabix BED must agree with Parquet. (An empty tabix region also
+# exits non-zero with "Empty CSV file"; we assert on stdout row count only.)
+BED_BOUNDARY=$("$VV" --tsv --no-header -r chr1:200-250 "$DATA/tiny.bed.gz" 2>/dev/null | grep -c . || true)
+PQ_BOUNDARY=$("$VV"  --tsv --no-header -r chr1:200-250 "$DATA/tiny.parquet" 2>/dev/null | grep -c . || true)
+assert_eq_file_inline "region_tabix_bed_boundary_excludes_peak" "$BED_BOUNDARY" "0"
+assert_eq_file_inline "region_tabix_parquet_agree_at_boundary"  "$BED_BOUNDARY" "$PQ_BOUNDARY"
+# Interior window [150, 160) lies strictly inside peak_0 → exactly one row.
+BED_INTERIOR=$("$VV" --tsv --no-header -r chr1:150-160 "$DATA/tiny.bed.gz" 2>/dev/null | grep -c . || true)
+assert_eq_file_inline "region_tabix_bed_interior_matches_peak" "$BED_INTERIOR" "1"
+# BCF: variant at POS 500 is 0-based base 499, so the half-open window
+# [500, 1600) must EXCLUDE it and return only POS 1500 (one row). The old
+# off-by-one (htslib read "500-1600" as 1-based inclusive) returned two.
+if [ -f "$DATA/tiny.bcf.csi" ]; then
+    BCF_BOUNDARY=$("$VV" --tsv --no-header -r chr1:500-1600 "$DATA/tiny.bcf" | wc -l)
+    assert_eq_file_inline "bcf_region_boundary_excludes_start_variant" "$BCF_BOUNDARY" "1"
+fi
+
 # bigBed / bigWig — autoSql expansion + range queries.
 if [ -f "$DATA/tiny.bb" ]; then
     BB_TSV=$("$VV" --tsv --no-header "$DATA/tiny.bb" | wc -l)
@@ -484,7 +510,9 @@ if [ -f "$DATA/tiny.multi.mpileup" ]; then
     assert_contains "mpileup_multi_col_depth_2"    "$MM_SCH" "depth_2"
 fi
 if [ -f "$DATA/tiny.mpileup.gz" ] && [ -f "$DATA/tiny.mpileup.gz.tbi" ]; then
-    MP_REG=$("$VV" --tsv --no-header -r chr1:100-100 "$DATA/tiny.mpileup.gz" | wc -l)
+    # -r is UCSC 0-based half-open for every format, so 1-based pileup pos 100
+    # is selected by the window [99, 100). (samtools would say chr1:100-100.)
+    MP_REG=$("$VV" --tsv --no-header -r chr1:99-100 "$DATA/tiny.mpileup.gz" | wc -l)
     assert_eq_file_inline "mpileup_tabix_one_pos"  "$MP_REG" "1"
 fi
 
@@ -524,14 +552,17 @@ if [ -f "$DATA/tiny.bam" ]; then
     PL_SCH=$("$VV" --schema --pileup "$DATA/tiny.bam" 2>&1)
     assert_contains "bam_pileup_footer_format"     "$PL_SCH" "mpileup (from BAM)"
     assert_contains "bam_pileup_col_bases"         "$PL_SCH" "bases"
-    # Range query: only emit positions within the requested span, matching
-    # samtools mpileup -r behaviour.
-    PL_REG=$("$VV" --tsv --no-header --pileup -r chr1:105-105 "$DATA/tiny.bam" | wc -l)
+    # Range query: only emit positions within the requested span. vv's -r is
+    # UCSC 0-based half-open for every format, so 1-based pileup pos 105 is the
+    # window [104, 105) (samtools' own -r is 1-based: chr1:105-105).
+    PL_REG=$("$VV" --tsv --no-header --pileup -r chr1:104-105 "$DATA/tiny.bam" | wc -l)
     assert_eq_file_inline "bam_pileup_region_one"  "$PL_REG" "1"
-    # Compare a single row byte-for-byte against samtools mpileup if
-    # samtools is in PATH (skip otherwise — CI doesn't always ship it).
+    # Compare a single row byte-for-byte against samtools mpileup if samtools is
+    # in PATH (skip otherwise — CI doesn't always ship it). The pileup *content*
+    # must match; only the -r convention differs (vv 0-based [104,105) selects
+    # the same base as samtools' 1-based chr1:105-105).
     if command -v samtools >/dev/null 2>&1; then
-        VV_OUT=$("$VV" --tsv --no-header --pileup -r chr1:105-105 "$DATA/tiny.bam")
+        VV_OUT=$("$VV" --tsv --no-header --pileup -r chr1:104-105 "$DATA/tiny.bam")
         SAM_OUT=$(samtools mpileup -r chr1:105-105 "$DATA/tiny.bam" 2>/dev/null)
         assert_eq_file_inline "bam_pileup_matches_samtools" "$VV_OUT" "$SAM_OUT"
     fi
