@@ -423,6 +423,18 @@ if [ -f "$DATA/tiny.sqlite" ]; then
     assert_eq_file_inline "sqlite_filter_by_real"   "$SQL_FLT" "2"
 fi
 
+# SQLite NUMERIC-affinity columns (DATE / DATETIME / NUMERIC / BOOLEAN) must be
+# preserved verbatim, not coerced through double. Pre-fix, dates rendered as
+# their leading year (2026) and the two distinct 2^53-exceeding integers both
+# collapsed to 9.0072e+15.
+if [ -f "$DATA/tiny.types.sqlite" ]; then
+    TYPES_OUT=$("$VV" --tsv --no-header "$DATA/tiny.types.sqlite" 2>&1)
+    assert_contains "sqlite_date_preserved"      "$TYPES_OUT" "2026-06-10"
+    assert_contains "sqlite_datetime_preserved"  "$TYPES_OUT" "2026-06-10 12:34:56"
+    assert_contains "sqlite_bigint_exact"        "$TYPES_OUT" "9007199254740993"
+    assert_contains "sqlite_bigint_distinct"     "$TYPES_OUT" "9007199254740995"
+fi
+
 # Apache ORC: columnar; one stripe → one chunk. The fixture is small so it
 # lands in a single stripe even at stripe_size=2. The AlmaLinux 8 static
 # build currently has ARROW_ORC=OFF, so probe for ORC support at runtime

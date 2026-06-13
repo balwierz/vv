@@ -249,7 +249,7 @@ be done first: it catches this whole bug class automatically.
   - Fix: When rebuilding the region string for a 1-based-inclusive htslib parser from canonical 0-based half-open coords, convert: start_1based = start0 + 1, end stays (inclusive end == half-open end).
 - [ ] `main.cpp:4906` — Unbounded reserve(seq_count) on attacker-controlled 2bit header field aborts the process (OOM/bad_alloc DoS)
   - Fix: Validate seq_count against the file size before reserving (each index entry needs at least 1+1+4 bytes), or cap the reserve (e.g.
-- [ ] `main.cpp:5044` — SQLite columns with NUMERIC/DATE/DATETIME/BOOLEAN/unknown affinity are silently coerced to double, corrupting dates and losing 64-bit integer precision
+- [x] `main.cpp:5044` — SQLite columns with NUMERIC/DATE/DATETIME/BOOLEAN/unknown affinity are silently coerced to double, corrupting dates and losing 64-bit integer precision — fixed on `fix/sqlite-type-affinity` (NUMERIC affinity → string, lossless)
   - Fix: Default the unknown/NUMERIC/DATE branch to STRING (or decide per-value via sqlite3_column_type at read time, mapping SQLITE_INTEGER->int64, SQLITE_FLOAT->double, SQLITE_TEXT->string), so dates and…
 - [ ] `main.cpp:5398` — ensure() infinite-loops (hangs) when a streaming source's advance() returns an error without setting all_read_
   - Fix: Make ensure() break out on any error: have load_next_ipc()/advance() set all_read_=true (or a separate failed_ flag) before returning a non-OK status, and/or have ensure() capture the returned Status and break…

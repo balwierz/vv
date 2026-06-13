@@ -273,6 +273,25 @@ cur.executemany("INSERT INTO samples VALUES(?,?,?)", [
 con.commit()
 con.close()
 
+# tiny.types.sqlite: exercises NUMERIC-affinity columns (DATE / NUMERIC /
+# DATETIME / BOOLEAN). These used to be mapped to Arrow double and read via
+# sqlite3_column_double, which corrupted text dates ('2026-06-10' → 2026.0)
+# and rounded 64-bit integers beyond a double's 2^53 exact range.
+types_path = HERE / "tiny.types.sqlite"
+if types_path.exists():
+    types_path.unlink()
+con = sqlite3.connect(types_path)
+cur = con.cursor()
+cur.execute("""CREATE TABLE events(
+    d DATE, ts DATETIME, big NUMERIC, flag BOOLEAN, label TEXT)""")
+cur.executemany("INSERT INTO events VALUES(?,?,?,?,?)", [
+    # 9007199254740993 == 2**53 + 1, NOT exactly representable as a double.
+    ("2026-06-10", "2026-06-10 12:34:56", 9007199254740993, 1, "alpha"),
+    ("2025-01-02", "2025-01-02 00:00:00", 9007199254740995, 0, "beta"),
+])
+con.commit()
+con.close()
+
 # ── BAM (for --pileup tests; needs pysam) ────────────────────────────────────
 # Generate a sorted + indexed BAM with three reads on chr1:100 covering
 # positions 100–119, so the pileup engine emits 20 rows when invoked.
