@@ -187,6 +187,13 @@ for rec in seq_records:
     out += rec
 (HERE / "tiny.2bit").write_bytes(bytes(out))
 
+# tiny.malformed.2bit: a header declaring 0xFFFFFFFF sequences over a 16-byte
+# (header-only) file. The reader used to reserve() ~170 GB for the index up
+# front (abort/OOM on systems without memory overcommit); it must now reject
+# the impossible count cleanly.
+(HERE / "tiny.malformed.2bit").write_bytes(
+    struct.pack("<IIII", 0x1A412743, 0, 0xFFFFFFFF, 0))
+
 # ── FASTQ ────────────────────────────────────────────────────────────────────
 fq = """@read1 lane=1
 ACGTACGTACGTACGT

@@ -4973,7 +4973,19 @@ public:
         // Pass 1: read the sequence index (name + 32-bit offset per seq).
         struct Idx { std::string name; uint32_t offset; };
         std::vector<Idx> idx;
-        idx.reserve(seq_count);
+        // seq_count is an attacker-controllable uint32 (up to ~4.3e9). Each
+        // index entry needs at least 5 bytes on disk (1-byte name length + ≥0
+        // name + 4-byte offset), so reject a count the file cannot possibly
+        // hold rather than let reserve() request ~170 GB and abort the process.
+        long fsize = (std::fseek(fp, 0, SEEK_END) == 0) ? std::ftell(fp) : -1;
+        std::fseek(fp, 16, SEEK_SET);   // rewind to just past the header
+        uint64_t max_seqs = (fsize >= 16) ? ((uint64_t)fsize - 16) / 5 : 0;
+        if (fsize >= 16 && seq_count > max_seqs) {
+            std::fclose(fp);
+            return "2bit sequence count " + std::to_string(seq_count) +
+                   " exceeds the size of '" + path + "'";
+        }
+        idx.reserve(std::min<uint32_t>(seq_count, 1u << 20));
         for (uint32_t i = 0; i < seq_count; ++i) {
             uint8_t name_size;
             if (std::fread(&name_size, 1, 1, fp) != 1) {
@@ -5015,8 +5027,10 @@ public:
                 std::fclose(fp);
                 return "Truncated 2bit seqRecord (header)";
             }
-            // Skip the N-block start/size arrays.
-            if (std::fseek(fp, (long)(n_block_count * 8), SEEK_CUR) != 0) {
+            // Skip the N-block start/size arrays. Compute the byte count in
+            // 64-bit: n_block_count*8 in uint32 would overflow for a crafted
+            // count > 0x1FFFFFFF and seek to the wrong offset.
+            if (std::fseek(fp, (long)((uint64_t)n_block_count * 8), SEEK_CUR) != 0) {
                 std::fclose(fp);
                 return "Cannot skip 2bit N-block table";
             }

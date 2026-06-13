@@ -247,7 +247,7 @@ be done first: it catches this whole bug class automatically.
   - Fix: After the loop, `start` already points at the FORMAT field. Set `f[8] = line.substr(start);` (the entire remainder from FORMAT onward) for the fi==8 case, and drop the misnamed `info_end` re-scan entirely.
 - [x] `main.cpp:4346` — Region coordinate-convention mismatch: BCF/BamPileup pass 0-based half-open coords to 1-based-inclusive htslib parsers — fixed on `fix/region-coord-offbyone`
   - Fix: When rebuilding the region string for a 1-based-inclusive htslib parser from canonical 0-based half-open coords, convert: start_1based = start0 + 1, end stays (inclusive end == half-open end).
-- [ ] `main.cpp:4906` — Unbounded reserve(seq_count) on attacker-controlled 2bit header field aborts the process (OOM/bad_alloc DoS)
+- [x] `main.cpp:4906` — Unbounded reserve(seq_count) on attacker-controlled 2bit header field aborts the process (OOM/bad_alloc DoS) — fixed on `fix/twobit-bounds` (validate seq_count against file size + cap the reserve)
   - Fix: Validate seq_count against the file size before reserving (each index entry needs at least 1+1+4 bytes), or cap the reserve (e.g.
 - [x] `main.cpp:5044` — SQLite columns with NUMERIC/DATE/DATETIME/BOOLEAN/unknown affinity are silently coerced to double, corrupting dates and losing 64-bit integer precision — fixed on `fix/sqlite-type-affinity` (NUMERIC affinity → string, lossless)
   - Fix: Default the unknown/NUMERIC/DATE branch to STRING (or decide per-value via sqlite3_column_type at read time, mapping SQLITE_INTEGER->int64, SQLITE_FLOAT->double, SQLITE_TEXT->string), so dates and…
@@ -297,7 +297,7 @@ be done first: it catches this whole bug class automatically.
 - [ ] `main.cpp:3306` — Header detection misclassifies real headers named like numbers (nan, inf, 1e5, hex)
 - [ ] `main.cpp:3963` — Pileup treats mid-stream read errors as clean EOF
 - [ ] `main.cpp:4185` — BCF region-mode silently swallows read errors (truncated/corrupt file -> partial output)
-- [ ] `main.cpp:4949` — 2bit N-block table skip computes n_block_count*8 in 32-bit arithmetic, overflowing and seeking to the wrong offset
+- [x] `main.cpp:4949` — 2bit N-block table skip computes n_block_count*8 in 32-bit arithmetic, overflowing and seeking to the wrong offset — fixed on `fix/twobit-bounds` (compute the skip in 64-bit)
 - [ ] `main.cpp:6778` — AnnData DataFrame builds tables from columns of unequal length without validation
 - [ ] `main.cpp:6818` — Sparse preview trusts the 'shape' attribute for n_rows without validating against indptr length
 - [ ] `main.cpp:7410` — NPZ entry names assumed unique; duplicate .npy members silently shadowed and a wrong array can be displayed

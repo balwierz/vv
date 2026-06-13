@@ -218,6 +218,13 @@ if [ -f "$DATA/tiny.2bit" ]; then
     TBT_FOOTER=$("$VV" --schema "$DATA/tiny.2bit" 2>&1)
     assert_contains      "twobit_footer_shows_format"        "$TBT_FOOTER" "Format: 2bit"
 fi
+# Malformed 2bit: a header declaring 0xFFFFFFFF sequences over a 16-byte file
+# must be rejected before the index reserve (which would request ~170 GB and
+# abort on systems without memory overcommit), not after a generic truncation.
+if [ -f "$DATA/tiny.malformed.2bit" ]; then
+    TBT_BAD=$("$VV" --schema "$DATA/tiny.malformed.2bit" 2>&1 || true)
+    assert_contains "twobit_malformed_seqcount_rejected" "$TBT_BAD" "exceeds the size"
+fi
 # --tsv must keep MaxEndSoFar; table must not show it.
 TSV_OUT=$("$VV" --tsv --no-header "$DATA/tiny.lociss")
 assert_contains "lociss_tsv_keeps_maxendsofar"  "$TSV_OUT"  "1800"
