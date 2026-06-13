@@ -5074,10 +5074,18 @@ public:
 //   contains CHAR/CLOB/TEXT      → string
 //   contains BLOB / blank        → binary
 //   contains REAL/FLOA/DOUB      → double
-//   anything else (NUMERIC, …)   → double
+//   anything else (NUMERIC, …)   → string
 // Column accessors (sqlite3_column_int64 / _double / _text / _blob)
 // gracefully convert at read time, so a declared-INT column that
 // actually holds a string still produces a sensible integer (or 0).
+//
+// The "anything else" bucket (NUMERIC affinity) covers NUMERIC, DECIMAL,
+// DATE, DATETIME, TIMESTAMP, BOOLEAN, … — declarations that may legitimately
+// store text (ISO dates), 64-bit integers beyond a double's 2^53 exact range,
+// or booleans. Reading those through sqlite3_column_double silently corrupts
+// them ('2026-06-10' → 2026.0; a big id rounded). SQLite is dynamically typed
+// and such a column can hold mixed storage classes, so the only lossless fixed
+// Arrow type is string: sqlite3_column_text renders each value faithfully.
 
 static arrow::Type::type sqlite_type_to_arrow(const std::string& declared) {
     std::string u = declared;
@@ -5090,7 +5098,7 @@ static arrow::Type::type sqlite_type_to_arrow(const std::string& declared) {
     if (u.find("REAL") != std::string::npos
      || u.find("FLOA") != std::string::npos
      || u.find("DOUB") != std::string::npos) return arrow::Type::DOUBLE;
-    return arrow::Type::DOUBLE;
+    return arrow::Type::STRING;   // NUMERIC affinity — preserve verbatim
 }
 static std::shared_ptr<arrow::DataType> arrow_type_for_id(arrow::Type::type t) {
     switch (t) {
