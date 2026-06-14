@@ -266,7 +266,7 @@ be done first: it catches this whole bug class automatically.
   - Fix: Compute the maximum column count across all buffered rows (XLSX: track max col; ODS: track max emitted) and pad every row to that width before invoking Arrow, instead of locking the width to the first row.
 - [ ] `main.cpp:5928` — ODS table:number-rows-repeated on non-empty rows silently drops data
   - Fix: Parse table:number-rows-repeated in ods_start (with a sane cap), and at row close emit the assembled row line N times (skip when the row is entirely empty so trailing blank runs still collapse).
-- [ ] `main.cpp:6472` — Dense AnnData/HDF5 2-D matrix is fully densified into RAM with no row or column cap (OOM)
+- [x] `main.cpp:6472` — Dense AnnData/HDF5 2-D matrix is fully densified into RAM with no row or column cap (OOM) — fixed on `fix/anndata-dense-oom` (read_2d_dataset_table now reads only the first 1000 rows × 200 cols corner hyperslab; the true dimensions are reported in the footer as a "preview: first N of M" note; regression fixture tiny.dense.h5ad + GUI CI assertion)
   - Fix: Pass a sane row_cap for Matrix2D/Dataset2D (mirroring the sparse 1000-row preview, or honoring cfg.head_rows), and cap n_cols for dense matrices the way scan_generic already caps Dataset2D at dims[1]<=32 and…
 - [ ] `main.cpp:7295` — build_2d_table builds one Arrow column per declared cols — unbounded column count is an OOM/DoS (tiny-file attack vector now blocked by the [[main.cpp:7457]] bounds guard on `fix/npz-shape-validation`; a column cap for genuinely-wide arrays is still TODO)
   - Fix: Clamp the number of rendered columns to a sane maximum (e.g. a few thousand) and surface a 'array too wide to display, showing first N columns' footer, mirroring how other wide sources are handled.

@@ -6531,8 +6531,18 @@ struct OpenSpec;
 class Hdf5Source;
 static arrow::Result<std::shared_ptr<arrow::Table>>
 read_anndata_dataframe(hid_t group);
+// Dense 2-D preview caps. A dense AnnData X (Matrix2D) carries no column gate
+// (scan_anndata emits it for any width) and neither dense path caps rows, so a
+// matrix with tens of thousands of genes / millions of cells would be fully
+// densified into RAM (OOM/DoS). Cap the materialised preview the same way the
+// sparse path does (read_sparse_preview); the real dimensions are still
+// reported in the footer.
+static constexpr int64_t kDense2DRowCap = 1000;
+static constexpr int64_t kDense2DColCap = 200;
 static arrow::Result<std::shared_ptr<arrow::Table>>
-read_2d_dataset_table(hid_t dataset, int64_t row_cap);
+read_2d_dataset_table(hid_t dataset, int64_t row_cap, int64_t col_cap = -1,
+                      int64_t* full_rows = nullptr,
+                      int64_t* full_cols = nullptr);
 static arrow::Result<std::shared_ptr<arrow::Table>>
 read_1d_dataset_table(hid_t dataset);
 static arrow::Result<std::shared_ptr<arrow::Table>>
@@ -6634,11 +6644,28 @@ class Hdf5Source : public WorkbookSource {
             case OpenSpec::Kind::Dataset2D: {
                 hid_t d = H5Dopen2(file_id, spec.h5_path.c_str(), H5P_DEFAULT);
                 if (d < 0) return "Cannot open dataset " + spec.h5_path;
-                auto r = read_2d_dataset_table(d, /*row_cap=*/-1);
+                int64_t fr = 0, fc = 0;
+                auto r = read_2d_dataset_table(d, kDense2DRowCap, kDense2DColCap,
+                                               &fr, &fc);
                 H5Dclose(d);
                 if (!r.ok()) return r.status().ToString();
                 *out = *r;
                 *footer = "Format: HDF5 2D " + spec.display;
+                // Note any preview truncation so the cap isn't mistaken for the
+                // real shape.
+                int64_t sr = *out ? (*out)->num_rows() : 0;
+                int64_t sc = *out ? (*out)->num_columns() : 0;
+                if (sr < fr || sc < fc) {
+                    std::string note = "preview: ";
+                    if (sr < fr)
+                        note += "first " + std::to_string(sr) + " of " +
+                                std::to_string(fr) + " rows";
+                    if (sr < fr && sc < fc) note += ", ";
+                    if (sc < fc)
+                        note += "first " + std::to_string(sc) + " of " +
+                                std::to_string(fc) + " cols";
+                    *footer += "  |  " + note;
+                }
                 if (!spec.footer_hint.empty())
                     *footer += "  |  " + spec.footer_hint;
                 return "";
@@ -6788,10 +6815,13 @@ read_1d_dataset_table(hid_t dset) {
 }
 
 // Read a 2-D numeric dataset as an Arrow table. Columns are named col0,
-// col1, … unless the dataset has a "column_names" attribute. row_cap < 0
-// means all rows.
+// col1, … unless the dataset has a "column_names" attribute. row_cap / col_cap
+// < 0 mean "all"; only the first row_cap rows and col_cap columns are read
+// (the corner hyperslab), bounding memory. The full pre-cap dimensions are
+// reported through full_rows / full_cols when those pointers are non-null.
 static arrow::Result<std::shared_ptr<arrow::Table>>
-read_2d_dataset_table(hid_t dset, int64_t row_cap) {
+read_2d_dataset_table(hid_t dset, int64_t row_cap, int64_t col_cap,
+                      int64_t* full_rows, int64_t* full_cols) {
     hid_t space = H5Dget_space(dset);
     int nd = H5Sget_simple_extent_ndims(space);
     if (nd != 2) {
@@ -6802,7 +6832,10 @@ read_2d_dataset_table(hid_t dset, int64_t row_cap) {
     H5Sget_simple_extent_dims(space, dims, nullptr);
     int64_t n_rows = (int64_t)dims[0];
     int64_t n_cols = (int64_t)dims[1];
+    if (full_rows) *full_rows = n_rows;
+    if (full_cols) *full_cols = n_cols;
     if (row_cap > 0 && row_cap < n_rows) n_rows = row_cap;
+    if (col_cap > 0 && col_cap < n_cols) n_cols = col_cap;
     H5Sclose(space);
 
     hid_t t = H5Dget_type(dset);

@@ -500,6 +500,21 @@ else:
                                [0.0, 0.0]], dtype=np.float64)})
     adata.write_h5ad(h5ad_path)
 
+    # tiny.dense.h5ad: a *dense* X that is wider than the 200-column dense
+    # preview cap (3 cells × 250 genes). scan_anndata emits a Matrix2D tab for
+    # a dense X with no column gate, so without the cap this densifies the whole
+    # matrix into RAM (the OOM/DoS guarded by read_2d_dataset_table). Here it
+    # must preview as 3 × 200 with a "first 200 of 250 cols" footer.
+    dense_path = HERE / "tiny.dense.h5ad"
+    if dense_path.exists():
+        dense_path.unlink()
+    n_obs, n_var = 3, 250
+    Xd = np.arange(n_obs * n_var, dtype=np.float64).reshape(n_obs, n_var)
+    dobs = pd.DataFrame({"cluster": pd.Categorical(["A", "B", "A"])},
+                        index=[f"cell{i}" for i in range(n_obs)])
+    dvar = pd.DataFrame(index=[f"gene{i}" for i in range(n_var)])
+    ad.AnnData(X=Xd, obs=dobs, var=dvar).write_h5ad(dense_path)
+
 # tiny.malformed.h5ad: a hostile AnnData that previously crashed the reader.
 # Derived from the valid tiny.h5ad (so it stays AnnData-detectable and reaches
 # the sparse-X path) by poking two attributes that HDF5's H5Aread fills one
