@@ -271,7 +271,7 @@ be done first: it catches this whole bug class automatically.
   - Fix: When stdout is not a TTY and image_mode is empty/auto, either error out ("--heatmap requires a terminal; pick --image-mode explicitly") or downgrade to a plain ASCII intensity grid.
 
 **Performance**
-- [ ] `gui/arrowtablemodel.cpp:78` — chunkForRow() is O(num_chunks) per cell — quadratic-ish scan on every cell access/repaint
+- [x] `gui/arrowtablemodel.cpp:78` — chunkForRow() is O(num_chunks) per cell — quadratic-ish scan on every cell access/repaint — fixed on `gui/improvements` (cumulative first-row offset table + std::upper_bound, O(log chunks))
   - Fix: Maintain a sorted vector of cumulative chunk first_row offsets and binary-search it (std::upper_bound) to map row->chunk in O(log chunks). Rebuild/extend it lazily as chunks are discovered.
 - [ ] `gui/arrowtablemodel.cpp:196` — Sorting/filtering loads the entire file column(s) into RAM and drains streaming sources
   - Fix: For sort, read only the sort column once and keep it as a ChunkedArray without forcing total materialization where avoidable;
