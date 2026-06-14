@@ -6,6 +6,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-06-14
+
+A feature and robustness release: a new terminal **heatmap** view, a major
+upgrade to the Qt6 desktop GUI (`vvg`), and the remaining high-severity
+correctness/OOM fixes from the code audit.
+
+### Added
+- **`--heatmap`** — render the numeric columns as a colour heatmap in the
+  terminal (rows × numeric-columns, globally normalised, viridis palette).
+  `--image-mode` selects the backend: `auto` (kitty graphics if supported, else
+  half-block), `kitty`, `sixel`, `halfblock`, or `ascii`. When stdout is not a
+  terminal a plain ASCII intensity grid is written instead of raw escape
+  sequences.
+- **Qt6 GUI (`vvg`)** — a real desktop application: menu bar, File▸Open
+  (multi-file → tabs), drag-and-drop, recent files, and error dialogs; a
+  **genomic region/tabix query bar** with a pileup toggle (re-opens BAM/VCF/BED
+  over a region); a View menu (column show/hide, go-to-row, shortcuts help).
+  Filtering, sorting and find now run **off the UI thread** with a progress bar
+  and a Cancel button, so the window stays responsive on large files.
+
+### Fixed
+- **HDF5 / AnnData** — a dense `X` matrix tab is previewed (first 1000 rows ×
+  200 columns) instead of densifying the entire matrix into RAM, which could
+  OOM/abort the reader on a real dataset.
+- **Workbooks (XLSX & ODS)** — a row wider than the header no longer makes
+  Arrow reject the whole sheet; every row is padded to the widest and the
+  overflow header columns are named `colN`.
+- **ODS** — `table:number-rows-repeated` on a non-empty row now expands to N
+  rows (capped) instead of silently dropping the duplicates.
+- **TUI** — sort / filter / stats / search drain a streaming source to EOF
+  first, so they cover the whole file instead of only the chunks scrolled
+  through so far.
+- **`--heatmap`** — `Inf`/`NaN` cells no longer poison normalization (they're
+  treated as gaps); the scan buffer is bounded; non-TTY output is guarded.
+- **KDE plugins** — the Dolphin thumbnailer and KFileMetaData extractor handle
+  malformed input gracefully (empty result, no worker abort).
+
+### Performance
+- **GUI** — row→chunk mapping is `O(log chunks)` via a cumulative-offset binary
+  search (was `O(chunks)` per cell); find navigates a precomputed match list in
+  `O(log matches)` and uses an Arrow `match_substring` prefilter for literals.
+
+### Docs
+- Documented `--heatmap` / `--image-mode`, NumPy `.npz` / `.npy`, and `.fods`
+  across `--help`, the man page, the README, and the bash/fish/zsh completions;
+  clarified that the KF6 GUI plugins are optional.
+
 ## [1.9.1] - 2026-06-14
 
 A correctness- and robustness-focused patch release: it fixes a class of
