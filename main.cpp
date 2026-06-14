@@ -6039,6 +6039,7 @@ struct OdsParserState {
     std::string row_csv;                 // bytes for the current row (un-terminated)
     std::vector<std::string> row_cells;  // cells buffered for trailing-empty trim
     std::vector<int>         row_repeat; // repeat count per buffered cell
+    int          row_repeat_count = 1;   // table:number-rows-repeated for this row
     bool         in_sheet = false;
 
     // Current cell state.
@@ -6076,10 +6077,16 @@ static void XMLCALL ods_start(void* ud, const char* name, const char** atts) {
     } else if (s->in_sheet && std::strcmp(name, "table:table-row") == 0) {
         s->row_cells.clear();
         s->row_repeat.clear();
-        // ODS rarely uses table:number-rows-repeated for non-empty rows;
-        // if it does, we'd need to emit the row N times. Empty repeated
-        // rows at the bottom of a sheet are silently dropped (they contain
-        // only empty cells, which our trailing-empty trim removes).
+        // table:number-rows-repeated repeats the whole row N times. Empty
+        // repeated rows (trailing/filler) are still dropped by the
+        // trailing-empty trim at row close; a *non-empty* repeated row is
+        // emitted N times (capped) instead of losing the duplicates.
+        s->row_repeat_count = 1;
+        if (auto v = OdsParserState::attr(atts,
+                                          "table:number-rows-repeated")) {
+            int n = std::atoi(v);
+            if (n > 1) s->row_repeat_count = n;
+        }
     } else if (s->in_sheet && std::strcmp(name, "table:table-cell") == 0) {
         s->cell_depth = 1;
         s->cell_repeat = 1;
@@ -6167,8 +6174,15 @@ static void XMLCALL ods_end(void* ud, const char* name) {
                 ++emitted;
             }
         }
-        s->sheet_rows.push_back(std::move(line));
-        s->sheet_widths.push_back(emitted);
+        // Emit the row table:number-rows-repeated times (non-empty rows only;
+        // empty ones already returned above). Cap to keep a hostile "repeat a
+        // data row a million times" from exploding the CSV buffer.
+        int row_reps = s->row_repeat_count;
+        if (row_reps > 16384) row_reps = 16384;
+        for (int r = 0; r < row_reps; ++r) {
+            s->sheet_rows.push_back(line);
+            s->sheet_widths.push_back(emitted);
+        }
     } else if (std::strcmp(name, "table:table") == 0) {
         s->sheets.back().second =
             assemble_ragged_csv(s->sheet_rows, s->sheet_widths);
