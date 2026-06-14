@@ -174,6 +174,11 @@ jobs:
           # Background (off-UI-thread) filter returns the same rows as the CLI.
           VVG_WINTEST=1 VVG_AFILTER='Score > 0.2' ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -q 'afilter .* rows=16'
+          # Background (off-UI-thread) find returns the same match count as a
+          # full per-cell scan ("chr1" matches 12 displayed cells; the Arrow
+          # match_substring prefilter must not drop any).
+          VVG_WINTEST=1 VVG_AFIND='chr1' ./build-gui/gui/vvg tests/data/tiny.parquet \
+            | grep -q 'afind .* matches=12'
           if [ "${{ steps.gui_deps.outputs.kf6 }}" = "yes" ]; then
             # KF6 present: the Dolphin thumbnailer + KFileMetaData .so plugins
             # must have linked against libvvcore.

@@ -145,6 +145,17 @@ public:
             QCoreApplication::processEvents();
         return (int)m->viewRows();
     }
+    // Drive the *async* find end-to-end: scan off-thread, pump until the match
+    // list is installed, return the number of matches.
+    qint64 findAsyncForTest(const QString& pattern) {
+        auto* m = activeModel();
+        if (!m) return -1;
+        m->findAsync(QRegularExpression(pattern,
+                                        QRegularExpression::CaseInsensitiveOption));
+        for (int guard = 0; m->isComputing() && guard < 2000000; ++guard)
+            QCoreApplication::processEvents();
+        return m->findMatchCount();
+    }
     // Headless mode (window self-test): route would-be modal dialogs to stderr
     // so an offscreen run never blocks on a QMessageBox::exec().
     void setHeadless(bool h) { headless_ = h; }
@@ -201,6 +212,8 @@ private:
                 [this, model](qint64){ onRecomputeFinished(model); });
         connect(model, &ArrowTableModel::recomputeCanceled, this,
                 [this]{ onRecomputeStopped(); });
+        connect(model, &ArrowTableModel::findReady, this,
+                [this, model](qint64 n){ onFindReady(model, n); });
 
         views_.push_back(view);
         models_.push_back(model);
@@ -219,6 +232,7 @@ private:
             models_.erase(models_.begin() + i);
         }
         if (m) sortOrder_.remove(m);
+        if (m == pendingFindModel_) pendingFindModel_ = nullptr;
         if (m == computingModel_) {   // its worker is cancelled+joined in ~ArrowTableModel
             computingModel_ = nullptr;
             if (progress_)  progress_->setVisible(false);
@@ -567,17 +581,53 @@ private:
     void doFind(bool forward) {
         auto* m = activeModel();
         auto* v = activeView();
-        if (!m || !v) return;
+        if (!m || !v || m->isComputing()) return;   // a worker already owns src_
         QString pat = findEdit_->text();
         if (pat.isEmpty()) { m->clearSearch(); return; }
-        m->setSearch(QRegularExpression(pat, QRegularExpression::CaseInsensitiveOption));
-        QModelIndex hit = m->findNext(v->currentIndex(), forward);
+        QRegularExpression re(pat, QRegularExpression::CaseInsensitiveOption);
+        m->setSearch(re);                       // live cell highlight
+        if (m->findResultsValid(re)) {
+            jumpToFind(m, v, v->currentIndex(), forward);   // instant (F3 replay)
+            return;
+        }
+        // Stale/new pattern: scan off the UI thread, jump when findReady fires.
+        QModelIndex cur = v->currentIndex();
+        pendingFindRow_     = cur.isValid() ? cur.row() : -1;
+        pendingFindCol_     = cur.isValid() ? cur.column() : -1;
+        pendingFindForward_ = forward;
+        pendingFindModel_   = m;
+        m->findAsync(re);
+    }
+
+    // Jump the view to the next/previous match relative to `from`.
+    void jumpToFind(ArrowTableModel* m, QTableView* v,
+                    const QModelIndex& from, bool forward) {
+        QModelIndex hit = m->findNext(from, forward);
         if (hit.isValid()) {
             v->setCurrentIndex(hit);
             v->scrollTo(hit, QAbstractItemView::PositionAtCenter);
         } else {
             statusBar()->showMessage(tr("find: no match"), 2000);
         }
+    }
+
+    void onFindReady(ArrowTableModel* m, qint64 matches) {
+        if (m == computingModel_) computingModel_ = nullptr;
+        if (progress_)  progress_->setVisible(false);
+        if (cancelBtn_) cancelBtn_->setVisible(false);
+        if (m != activeModel() || m != pendingFindModel_) return;
+        pendingFindModel_ = nullptr;
+        if (matches == 0) {
+            statusBar()->showMessage(tr("find: no match"), 2000);
+            return;
+        }
+        auto* v = activeView();
+        if (!v) return;
+        QModelIndex from = (pendingFindRow_ >= 0 && pendingFindCol_ >= 0)
+            ? m->index(pendingFindRow_, pendingFindCol_)
+            : QModelIndex();   // no prior selection → search from the start
+        statusBar()->showMessage(tr("find: %1 match(es)").arg(matches), 3000);
+        jumpToFind(m, v, from, pendingFindForward_);
     }
 
     void stepSlice(int delta) {
@@ -678,6 +728,10 @@ private:
     QProgressBar*                  progress_   = nullptr;
     QPushButton*                   cancelBtn_  = nullptr;
     ArrowTableModel*               computingModel_ = nullptr;  // model with a live worker
+    ArrowTableModel*               pendingFindModel_ = nullptr;  // awaiting findReady
+    int                            pendingFindRow_ = -1;
+    int                            pendingFindCol_ = -1;
+    bool                           pendingFindForward_ = true;
     QString                        lastDir_;
     bool                           headless_ = false;   // suppress modal dialogs
     QStringList                    openedPaths_;   // files currently loaded
@@ -787,6 +841,11 @@ int main(int argc, char** argv) {
         if (const char* af = std::getenv("VVG_AFILTER"); af && *af) {
             int rows = win.applyFilterAsyncForTest(QString::fromLocal8Bit(af));
             std::printf("afilter '%s' -> rows=%d\n", af, rows);
+        }
+        // Optional async-find check: VVG_AFIND="<regex>" (off-thread + pump).
+        if (const char* fa = std::getenv("VVG_AFIND"); fa && *fa) {
+            qint64 n = win.findAsyncForTest(QString::fromLocal8Bit(fa));
+            std::printf("afind '%s' -> matches=%lld\n", fa, (long long)n);
         }
         return 0;
     }
