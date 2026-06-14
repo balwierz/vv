@@ -291,6 +291,19 @@ are escaped as \fB\\|\fR and newlines become \fB<br>\fR. Honours
 .TP
 .B \-\-no\-header
 Omit the header row in delimited output.
+.SS Visualization
+.TP
+.B \-\-heatmap
+Render the numeric columns as a colour heatmap in the terminal: a
+\fIrows \(mu numeric-columns\fR image, globally normalised (a viridis
+palette). Non-finite cells (NaN/Inf) and non-numeric columns are skipped.
+When stdout is not a terminal (redirected to a file or pipe), a plain
+ASCII intensity grid is written instead of raw terminal escape sequences.
+.TP
+.BI \-\-image\-mode " HOW"
+Heatmap rendering backend: \fBauto\fR (default \(en kitty graphics if the
+terminal supports it, else half-block), \fBkitty\fR, \fBsixel\fR,
+\fBhalfblock\fR, or \fBascii\fR (plain text).
 .SS Range queries
 .TP
 .BI \-\-region\-cols " NAMES"

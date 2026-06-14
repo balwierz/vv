@@ -46,6 +46,10 @@ complete -c vv -c vh -l csv                -d 'Write comma-separated values'
 complete -c vv -c vh -l delimiter -r       -d 'Write with a custom single-character delimiter'
 complete -c vv -c vh -l no-header          -d 'Omit the header row in delimited output'
 
+# Visualization
+complete -c vv -c vh -l heatmap            -d 'Render numeric columns as a terminal heatmap'
+complete -c vv -c vh -l image-mode -r -a 'auto kitty sixel halfblock ascii' -d 'Heatmap backend'
+
 # Parquet output
 complete -c vv -c vh -l parquet -r -F      -d 'Write a Parquet file at this path'
 complete -c vv -c vh -l compression -r -a 'zstd snappy gzip lz4 none' -d 'Parquet codec'

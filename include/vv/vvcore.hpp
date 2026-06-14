@@ -71,6 +71,9 @@ struct Config {
                                          // mpileup-style per-base rows via
                                          // htslib's bam_plp_auto engine
                                          // instead of alignment records
+    bool        heatmap        = false;  // --heatmap: render the numeric matrix
+                                         // as a colour heatmap to the terminal
+    std::string image_mode;              // --image-mode auto|kitty|sixel|halfblock|ascii
 };
 
 // ── Cell formatting helpers (defined in libvvcore) ───────────────────────────

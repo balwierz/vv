@@ -561,6 +561,13 @@ static void print_usage(const char* prog) {
         "                      field is a row; show as many records per line as\n"
         "                      fit. Implies --no-interactive. Default when the\n"
         "                      binary is invoked as `vh`.\n"
+        "\nVisualization (replaces table view):\n"
+        "  --heatmap           render the numeric columns as a colour heatmap in\n"
+        "                      the terminal (rows x numeric-columns, globally\n"
+        "                      normalised). Writes a plain ASCII grid when stdout\n"
+        "                      is not a terminal.\n"
+        "  --image-mode <how>  heatmap backend: auto (default), kitty, sixel,\n"
+        "                      halfblock, ascii\n"
         "\nDelimited output (replaces table view):\n"
         "  --tsv               write tab-separated values to stdout\n"
         "  --csv               write comma-separated values to stdout\n"
@@ -709,6 +716,10 @@ static Config parse_args(int argc, char** argv) {
             cfg.decode_pileup = true;
         } else if (!std::strcmp(argv[i], "--pileup")) {
             cfg.pileup = true;
+        } else if (!std::strcmp(argv[i], "--heatmap")) {
+            cfg.heatmap = true;
+        } else if (!std::strcmp(argv[i], "--image-mode") && i + 1 < argc) {
+            cfg.image_mode = argv[++i];
         } else if (!std::strcmp(argv[i], "--theme") && i + 1 < argc) {
             cfg.theme = argv[++i];
         } else if (!std::strcmp(argv[i], "--color") ||
@@ -9888,6 +9899,301 @@ std::string open_source(const std::string& path, const Config& cfg,
     return "";
 }
 
+// ── Terminal heatmap / image emission (kitty · sixel · half-block) ──────────
+//
+// Proof-of-concept "pop a plot in the terminal" path: rasterise the source's
+// numeric matrix to a palette-indexed image, then emit it with the best
+// terminal-graphics method available. Designed for the remote-bioinformatics
+// case (view a Hi-C matrix / coverage / track over SSH). The emit layer is
+// reusable for any image vv generates; the codec-rich decode side is left to
+// an external viewer (e.g. moderncore's vv) — see docs.
+//
+// Half-block (▀ + 24-bit fg/bg, 2 px per character row) is the universal
+// fallback: it needs only a truecolor terminal, which is ~everything modern.
+// kitty's graphics protocol is used when detected (best fidelity); sixel is
+// available on request and emits straight from our palette (no quantisation).
+
+namespace img {
+
+struct PalImage {                    // palette-indexed image
+    int w = 0, h = 0;
+    std::vector<uint8_t>  px;        // w*h indices into pal
+    std::vector<uint32_t> pal;       // 0x00RRGGBB, ≤256 entries
+};
+
+enum class Mode { Auto, Kitty, Sixel, HalfBlock, Ascii };
+
+// Viridis-ish palette: interpolate a handful of anchors into `n` entries.
+static std::vector<uint32_t> viridis_palette(int n) {
+    static const int A[][3] = {
+        { 68,  1, 84}, { 72, 40,120}, { 62, 73,137}, { 49,104,142},
+        { 38,130,142}, { 31,158,137}, { 53,183,121}, {110,206, 88},
+        {181,222, 43}, {253,231, 37},
+    };
+    const int na = (int)(sizeof(A)/sizeof(A[0]));
+    std::vector<uint32_t> pal((size_t)n);
+    for (int i = 0; i < n; ++i) {
+        double t = (n == 1) ? 0.0 : (double)i / (n - 1);
+        double f = t * (na - 1);
+        int a = (int)f, b = std::min(a + 1, na - 1);
+        double g = f - a;
+        int r = (int)std::lround(A[a][0] + (A[b][0] - A[a][0]) * g);
+        int gg= (int)std::lround(A[a][1] + (A[b][1] - A[a][1]) * g);
+        int bl= (int)std::lround(A[a][2] + (A[b][2] - A[a][2]) * g);
+        pal[(size_t)i] = ((uint32_t)r << 16) | ((uint32_t)gg << 8) | (uint32_t)bl;
+    }
+    return pal;
+}
+
+// Terminal size in character cells (fallback 80x24).
+static void term_cells(int* cols, int* rows) {
+    struct winsize ws{};
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) {
+        *cols = ws.ws_col; *rows = ws.ws_row > 0 ? ws.ws_row : 24;
+    } else { *cols = 80; *rows = 24; }
+}
+
+// Nearest-neighbour resample of a palette-indexed image to (tw, th).
+static PalImage resample(const PalImage& s, int tw, int th) {
+    if (tw < 1) tw = 1;
+    if (th < 1) th = 1;
+    PalImage d; d.w = tw; d.h = th; d.pal = s.pal; d.px.resize((size_t)tw * th);
+    for (int y = 0; y < th; ++y) {
+        int sy = (int)((int64_t)y * s.h / th);
+        for (int x = 0; x < tw; ++x) {
+            int sx = (int)((int64_t)x * s.w / tw);
+            d.px[(size_t)y * tw + x] = s.px[(size_t)sy * s.w + sx];
+        }
+    }
+    return d;
+}
+
+// ── emitters ────────────────────────────────────────────────────────────────
+// Plain-text intensity grid: one character per pixel, no colour, no escape
+// sequences — safe to write to a file or pipe. The palette index (0 = low,
+// last = high) maps onto a 10-step density ramp.
+static void emit_ascii(const PalImage& im) {
+    static const char ramp[] = " .:-=+*#%@";          // 10 levels, low → high
+    const int steps = (int)sizeof(ramp) - 2;          // 9 (exclude the NUL)
+    const uint32_t last = im.pal.empty() ? 0 : (uint32_t)im.pal.size() - 1;
+    std::string out;
+    out.reserve((size_t)(im.w + 1) * im.h);
+    for (int y = 0; y < im.h; ++y) {
+        for (int x = 0; x < im.w; ++x) {
+            uint32_t idx = im.px[(size_t)y * im.w + x];
+            int level = last ? (int)((uint64_t)idx * steps / last) : 0;
+            out += ramp[level];
+        }
+        out += '\n';
+    }
+    std::fwrite(out.data(), 1, out.size(), stdout);
+}
+
+static void emit_halfblock(const PalImage& im) {
+    auto rgb = [&](uint8_t i){ return im.pal[i]; };
+    std::string out;
+    for (int y = 0; y < im.h; y += 2) {
+        for (int x = 0; x < im.w; ++x) {
+            uint32_t top = rgb(im.px[(size_t)y * im.w + x]);
+            char buf[64];
+            if (y + 1 < im.h) {
+                uint32_t bot = rgb(im.px[(size_t)(y + 1) * im.w + x]);
+                std::snprintf(buf, sizeof buf,
+                    "\033[38;2;%u;%u;%um\033[48;2;%u;%u;%um\xe2\x96\x80",
+                    (top>>16)&255,(top>>8)&255,top&255,
+                    (bot>>16)&255,(bot>>8)&255,bot&255);
+            } else {  // odd final row: top half over default background
+                std::snprintf(buf, sizeof buf,
+                    "\033[49m\033[38;2;%u;%u;%um\xe2\x96\x80",
+                    (top>>16)&255,(top>>8)&255,top&255);
+            }
+            out += buf;
+        }
+        out += "\033[0m\n";
+    }
+    std::fwrite(out.data(), 1, out.size(), stdout);
+}
+
+static void emit_kitty(const PalImage& im, int cell_cols, int cell_rows) {
+    std::string rgba((size_t)im.w * im.h * 4, '\0');
+    for (size_t i = 0; i < im.px.size(); ++i) {
+        uint32_t c = im.pal[im.px[i]];
+        rgba[i*4+0] = (char)((c>>16)&255);
+        rgba[i*4+1] = (char)((c>>8)&255);
+        rgba[i*4+2] = (char)(c&255);
+        rgba[i*4+3] = (char)255;
+    }
+    std::string b64 = base64_encode(rgba);
+    const size_t CHUNK = 4096;
+    std::string out;
+    for (size_t off = 0; off < b64.size(); off += CHUNK) {
+        size_t n = std::min(CHUNK, b64.size() - off);
+        bool first = (off == 0), last = (off + n >= b64.size());
+        out += "\033_G";
+        if (first) {
+            char hdr[96];
+            std::snprintf(hdr, sizeof hdr, "a=T,f=32,s=%d,v=%d,c=%d,r=%d,",
+                          im.w, im.h, cell_cols, cell_rows);
+            out += hdr;
+        }
+        out += "m="; out += (last ? '0' : '1'); out += ';';
+        out.append(b64, off, n);
+        out += "\033\\";
+    }
+    out += "\n";
+    std::fwrite(out.data(), 1, out.size(), stdout);
+}
+
+static void emit_sixel(const PalImage& im) {
+    std::string out = "\033Pq";                     // sixel start
+    for (size_t i = 0; i < im.pal.size(); ++i) {    // register palette (0-100)
+        uint32_t c = im.pal[i];
+        char buf[48];
+        std::snprintf(buf, sizeof buf, "#%zu;2;%u;%u;%u", i,
+            (((c>>16)&255)*100+127)/255, (((c>>8)&255)*100+127)/255,
+            ((c&255)*100+127)/255);
+        out += buf;
+    }
+    std::vector<uint8_t> seen(im.pal.size());
+    for (int band = 0; band * 6 < im.h; ++band) {
+        // colours present in this 6-row band
+        std::fill(seen.begin(), seen.end(), 0);
+        for (int k = 0; k < 6; ++k) {
+            int row = band*6 + k; if (row >= im.h) break;
+            for (int x = 0; x < im.w; ++x) seen[im.px[(size_t)row*im.w + x]] = 1;
+        }
+        for (size_t c = 0; c < im.pal.size(); ++c) {
+            if (!seen[c]) continue;
+            out += '#'; out += std::to_string(c);
+            for (int x = 0; x < im.w; ++x) {
+                int bits = 0;
+                for (int k = 0; k < 6; ++k) {
+                    int row = band*6 + k;
+                    if (row < im.h && im.px[(size_t)row*im.w + x] == c) bits |= (1<<k);
+                }
+                out += (char)(0x3F + bits);
+            }
+            out += '$';                              // graphics CR (overlay next colour)
+        }
+        out += '-';                                  // graphics NL (next band)
+    }
+    out += "\033\\";                                 // sixel end
+    std::fwrite(out.data(), 1, out.size(), stdout);
+}
+
+// Auto-select and emit, scaling to fit the terminal. Assumes a ~8x16 px cell
+// for the pixel-based protocols.
+static void emit(const PalImage& src, Mode mode) {
+    int cols, rows; term_cells(&cols, &rows);
+    if (mode == Mode::Auto)
+        mode = (md::detect_image_proto() == md::ImageProto::Kitty) ? Mode::Kitty
+                                                                   : Mode::HalfBlock;
+    // Fit a cell box preserving aspect (image px aspect vs ~2:1 cell aspect).
+    int box_cols = std::min(cols, std::max(1, src.w));
+    int box_rows = std::max(1, (int)std::lround(
+        (double)box_cols * src.h / src.w / 2.0));
+    if (box_rows > rows - 1) {
+        box_rows = std::max(1, rows - 1);
+        box_cols = std::min(cols, std::max(1, (int)std::lround(
+            (double)box_rows * 2.0 * src.w / src.h)));
+    }
+    if (mode == Mode::Ascii) {
+        emit_ascii(resample(src, box_cols, box_rows));        // one char per cell
+    } else if (mode == Mode::HalfBlock) {
+        emit_halfblock(resample(src, box_cols, box_rows * 2));
+    } else if (mode == Mode::Sixel) {
+        emit_sixel(resample(src, box_cols * 8, box_rows * 16));
+    } else { // Kitty
+        emit_kitty(resample(src, box_cols * 8, box_rows * 16), box_cols, box_rows);
+    }
+}
+
+}  // namespace img
+
+// --heatmap: build a colour heatmap from the source's numeric matrix (rows ×
+// numeric columns), globally normalised, and emit it to the terminal.
+static std::string render_heatmap(TabularSource& src, const Config& cfg) {
+    auto schema = src.schema();
+    std::vector<int> ncols;                          // numeric source columns
+    for (int i = 0; i < schema->num_fields(); ++i)
+        if (is_numeric_type(schema->field(i)->type()->id())) ncols.push_back(i);
+    if (ncols.empty()) return "--heatmap: no numeric columns to plot";
+
+    // Source-resolution caps. The image is resampled down to the terminal box
+    // anyway, so a few thousand rows/cols is ample; the cap also bounds the
+    // scan buffer (<= 2048*2048*8 B ≈ 32 MiB worst case, vs 128 MiB before).
+    const int   MAXROWS = 2048, MAXCOLS = 2048;
+    const int    W = std::min((int)ncols.size(), MAXCOLS);
+    std::vector<int> use(ncols.begin(), ncols.begin() + W);
+
+    std::vector<double> vals;                         // row-major, W per row
+    vals.reserve((size_t)W * 256);                    // avoid early reallocations
+    int rows_read = 0;
+    double lo = std::numeric_limits<double>::infinity(), hi = -lo;
+    for (int c = 0; rows_read < MAXROWS; ++c) {
+        src.ensure(c);
+        if (c >= src.num_chunks()) break;
+        std::shared_ptr<arrow::Table> tbl;
+        if (!src.read_chunk(c, use, &tbl).ok() || !tbl) continue;
+        int64_t n = tbl->num_rows();
+        for (int64_t r = 0; r < n && rows_read < MAXROWS; ++r, ++rows_read) {
+            for (int j = 0; j < W; ++j) {
+                double d;
+                bool ok = cell_as_double(*tbl, j, r, &d);
+                // Treat missing *and* non-finite (Inf/NaN) cells as gaps: they
+                // must not skew the min/max range (an Inf would make every
+                // other value normalise to 0) nor reach lround() below, where
+                // a non-finite argument is undefined behaviour.
+                if (!ok || !std::isfinite(d)) d = std::nan("");
+                else { lo = std::min(lo, d); hi = std::max(hi, d); }
+                vals.push_back(d);
+            }
+        }
+    }
+    if (rows_read == 0) return "--heatmap: no rows to plot";
+    if (!std::isfinite(lo))                            // every cell was a gap
+        return "--heatmap: no finite numeric values to plot";
+    if (!(hi > lo)) hi = lo + 1.0;                    // flat matrix → avoid /0
+
+    img::PalImage im;
+    im.w = W; im.h = rows_read;
+    im.pal = img::viridis_palette(240);
+    im.px.resize(vals.size());
+    const uint32_t last = (uint32_t)im.pal.size() - 1;
+    for (size_t i = 0; i < vals.size(); ++i) {
+        double d = vals[i];
+        if (!std::isfinite(d)) { im.px[i] = 0; continue; }  // gap → palette floor
+        double t = (d - lo) / (hi - lo);
+        uint32_t idx = (uint32_t)std::lround(t * last);
+        im.px[i] = (uint8_t)std::min(last, idx);
+    }
+
+    img::Mode mode = img::Mode::Auto;
+    if      (cfg.image_mode.empty() || cfg.image_mode == "auto") mode = img::Mode::Auto;
+    else if (cfg.image_mode == "kitty")     mode = img::Mode::Kitty;
+    else if (cfg.image_mode == "sixel")     mode = img::Mode::Sixel;
+    else if (cfg.image_mode == "halfblock") mode = img::Mode::HalfBlock;
+    else if (cfg.image_mode == "ascii")     mode = img::Mode::Ascii;
+    else return "--image-mode: unknown mode '" + cfg.image_mode +
+                "' (use auto|kitty|sixel|halfblock|ascii)";
+
+    // The graphical backends write raw terminal escape/control sequences. If
+    // stdout isn't a terminal (redirected to a file or a pipe) and the user
+    // didn't force a backend, fall back to the plain-text grid so we don't
+    // corrupt the output.
+    if (mode == img::Mode::Auto && !isatty(STDOUT_FILENO))
+        mode = img::Mode::Ascii;
+
+    std::string note;
+    if (rows_read >= MAXROWS)        note += "  (first " + std::to_string(MAXROWS) + " rows)";
+    if (W < (int)ncols.size())       note += "  (first " + std::to_string(W) +
+                                             " of " + std::to_string(ncols.size()) + " numeric cols)";
+    std::fprintf(stderr, "heatmap: %d rows \xc3\x97 %d cols  range [%g, %g]%s\n",
+                 rows_read, W, lo, hi, note.c_str());
+    img::emit(im, mode);
+    return "";
+}
+
 // ── Delimited output ──────────────────────────────────────────────────────────
 // (write_csv_field is defined above)
 
@@ -14592,6 +14898,13 @@ int main(int argc, char** argv) {
     // --describe: per-column statistics.
     if (cfg.describe) {
         std::string err = print_describe(*src, cfg);
+        if (!err.empty()) { report(cfg.path, err); return 1; }
+        return 0;
+    }
+
+    // --heatmap: render the numeric matrix as a terminal colour heatmap.
+    if (cfg.heatmap) {
+        std::string err = render_heatmap(*src, cfg);
         if (!err.empty()) { report(cfg.path, err); return 1; }
         return 0;
     }

@@ -52,6 +52,10 @@ _vv() {
             COMPREPLY=( $(compgen -W 'zstd snappy gzip lz4 none' -- "$cur") )
             return
             ;;
+        --image-mode)
+            COMPREPLY=( $(compgen -W 'auto kitty sixel halfblock ascii' -- "$cur") )
+            return
+            ;;
     esac
 
     case "$cur" in
@@ -78,6 +82,7 @@ _vv() {
                 --unique --sample
                 --vertical
                 --no-header
+                --heatmap --image-mode
             '
             COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
             return

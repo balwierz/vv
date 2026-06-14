@@ -272,11 +272,11 @@ be done first: it catches this whole bug class automatically.
   - Fix: Clamp the number of rendered columns to a sane maximum (e.g. a few thousand) and surface a 'array too wide to display, showing first N columns' footer, mirroring how other wide sources are handled.
 - [x] `main.cpp:7499` — Integer overflow in element/byte-count multiplications for NPY arrays — fixed on `fix/npz-shape-validation` (product is overflow-checked and bounded to the buffer)
   - Fix: Use checked multiplication (e.g. __builtin_mul_overflow or compare against (SIZE_MAX/item_size)) when computing every element-count and byte-offset;
-- [ ] `main.cpp:9852` — Inf values in a float column poison heatmap normalization (NaN -> lround UB, blank plot)
+- [x] `main.cpp:9852` — Inf values in a float column poison heatmap normalization (NaN -> lround UB, blank plot) — fixed on `feat/heatmap` (non-finite cells treated as gaps: excluded from min/max and from lround; all-non-finite matrix errors gracefully)
   - Fix: Treat non-finite values like missing: in the scan use `if (!ok || !std::isfinite(d)) d = std::nan("");` (only update lo/hi for finite d), and in the pixel loop test `if (!std::isfinite(d))` instead of just…
 - [x] `main.cpp:13038` — TUI sort / filter / stats / search silently operate on only the loaded prefix of a streaming source — fixed on `fix/tui-streaming-prefix` (shared drain_to_eof() helper, mirroring the `G` handler, called at the head of rebuild_display_order / compute_stats_for / find_next; the `G` handler now reuses it). Verified with a 3-block CSV: at op time only 2 of 3 chunks were loaded; the drain pulls in the third so the op covers the whole file.
   - Fix: Before these full-file passes, drain streaming sources to EOF (the same `while (src_->total_rows() < 0) src_->ensure(src_->num_chunks());` loop used by the `G` handler, with a 'Loading…' status), then re-read…
-- [ ] `main.cpp:14579` — --heatmap emits raw terminal escape sequences with no isatty guard (corrupts pipes/files)
+- [x] `main.cpp:14579` — --heatmap emits raw terminal escape sequences with no isatty guard (corrupts pipes/files) — fixed on `feat/heatmap` (a new `ascii` mode is auto-selected when stdout is not a TTY and the backend is `auto`; emits a plain intensity grid)
   - Fix: When stdout is not a TTY and image_mode is empty/auto, either error out ("--heatmap requires a terminal; pick --image-mode explicitly") or downgrade to a plain ASCII intensity grid.
 
 **Performance**
@@ -331,9 +331,9 @@ be done first: it catches this whole bug class automatically.
 - [ ] `main.cpp:11686` — Searching a sorted view re-decodes a full chunk per row in the worst case
 
 **Usability**
-- [ ] `main.cpp:490` — --heatmap and --image-mode are undocumented in print_usage (undiscoverable flags)
+- [x] `main.cpp:490` — --heatmap and --image-mode are undocumented in print_usage (undiscoverable flags) — fixed on `feat/heatmap` (new "Visualization" section in --help)
 - [ ] `main.cpp:635` — Missing argument to a known flag reports "Unknown option" and dumps full usage
-- [ ] `main.cpp:712` — --heatmap and --image-mode are implemented but undocumented in every reference (help, man, README, all 3 completions)
+- [x] `main.cpp:712` — --heatmap and --image-mode are implemented but undocumented in every reference (help, man, README, all 3 completions) — fixed on `feat/heatmap` (help + man + README + bash/fish/zsh completions all updated)
 - [ ] `main.cpp:3117` — CSV/TSV type inference silently corrupts leading-zero IDs and scientific notation
 - [ ] `main.cpp:9874` — --image-mode value is never validated; typos silently fall back to Auto
 - [ ] `main.cpp:12054` — A single column wider than the terminal renders a completely blank table
@@ -364,7 +364,7 @@ be done first: it catches this whole bug class automatically.
 - [ ] `main.cpp:5441` — ORC read_chunk decodes every column of a stripe even when only a few columns are requested
 - [ ] `main.cpp:6016` — csv_append_quoted re-scans and re-emits a repeated ODS cell up to 16384 times
 - [ ] `main.cpp:7356` — unz_file_info.uncompressed_size used directly for reserve() — attacker-controlled allocation hint
-- [ ] `main.cpp:9838` — render_heatmap can buffer up to ~128 MB of doubles with no reserve
+- [x] `main.cpp:9838` — render_heatmap can buffer up to ~128 MB of doubles with no reserve — fixed on `feat/heatmap` (source caps lowered to 2048×2048 ≈ 32 MiB ceiling; vals reserved; truncation noted on stderr)
 - [ ] `main.cpp:11789` — row_matches_search lowercases the query once per visible row, per redraw
 - [ ] `main.cpp:11965` — Per-redraw integer width refit re-stringifies every visible cell on every keypress
 
