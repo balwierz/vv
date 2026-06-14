@@ -165,6 +165,9 @@ jobs:
           ./build-gui/gui/kde/vvkdetest --allow-empty tests/data/tiny.malformed.npz
           # Model path end-to-end through libvvcore.
           VVG_SELFTEST=1 ./build-gui/gui/vvg tests/data/tiny.parquet
+          # App-shell path: build the QMainWindow offscreen and open a file via
+          # the same addSourceTab/loadSources path the menus and drag-drop use.
+          test "$(VVG_WINTEST=1 ./build-gui/gui/vvg tests/data/tiny.parquet)" = "win_tabs=1"
           if [ "${{ steps.gui_deps.outputs.kf6 }}" = "yes" ]; then
             # KF6 present: the Dolphin thumbnailer + KFileMetaData .so plugins
             # must have linked against libvvcore.
