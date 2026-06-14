@@ -235,7 +235,7 @@ be done first: it catches this whole bug class automatically.
 ### High (24)
 
 **Correctness bugs**
-- [ ] `gui/kde/thumbrender.cpp:25` — KDE plugins call libvvcore (which uses .ValueOrDie()) with no exception/abort guard — malformed file can crash the worker
+- [~] `gui/kde/thumbrender.cpp:25` — KDE plugins call libvvcore (which uses .ValueOrDie()) with no exception/abort guard — malformed file can crash the worker — `gui/improvements` wraps both cores in function-try-blocks (catches C++ exceptions; .ValueOrDie() aborts remain, but the source readers now validate untrusted input up front)
   - Fix: Wrap the body of vv_render_thumbnail and vv_probe_meta in try/catch(...) returning an empty QImage / unset VvMeta on any exception.
 - [x] `main.cpp:2897` — Region queries on Parquet return empty/wrong results when Start/End are not Int32/Int64 — fixed on `fix/parquet-region-int-types` (cell_int handles all integer widths + dictionary-of-int)
   - Fix: Handle the remaining integer Arrow types (Int8/16, UInt8/16/32/64) and dictionary-encoded indices, or use arrow's scalar visitor;

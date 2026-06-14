@@ -160,6 +160,9 @@ jobs:
           test -x build-gui/gui/vvg
           # Headless payload check: render a thumbnail + probe metadata.
           ./build-gui/gui/kde/vvkdetest tests/data/tiny.parquet
+          # Crash-safety: a malformed file must be handled gracefully (empty
+          # result, exit 0) rather than aborting the Dolphin/Baloo worker.
+          ./build-gui/gui/kde/vvkdetest --allow-empty tests/data/tiny.malformed.npz
           # Model path end-to-end through libvvcore.
           VVG_SELFTEST=1 ./build-gui/gui/vvg tests/data/tiny.parquet
           if [ "${{ steps.gui_deps.outputs.kf6 }}" = "yes" ]; then
