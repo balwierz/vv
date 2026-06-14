@@ -435,6 +435,37 @@ else:
     ])
     ods.save(str(ods_path))
 
+# ── Ragged ODS: a row wider than the header (.ods) ───────────────────────────
+# A 3-column header followed by a 4-column data row. The reader used to lock the
+# width to the header and Arrow's CSV reader then rejected the whole sheet
+# ("Expected 3 columns, got 4"). The fix pads every row to the widest, naming
+# the header's overflow column "col4".
+try:
+    from odf.opendocument import OpenDocumentSpreadsheet
+    from odf.table import Table, TableRow, TableCell
+    from odf.text import P
+except ImportError:
+    print("warn: odfpy not found; skipping tiny.ragged.ods", file=sys.stderr)
+else:
+    rg_path = HERE / "tiny.ragged.ods"
+    if rg_path.exists():
+        rg_path.unlink()
+    doc = OpenDocumentSpreadsheet()
+    t = Table(name="ragged")
+    for row in [["chrom", "start", "end"],
+                ["chr1", 100, 200],
+                ["chr2", 300, 400, "EXTRA"],   # wider than the header
+                ["chr3", 500]]:                # shorter than the header
+        tr = TableRow()
+        for cell in row:
+            tc = (TableCell(valuetype="string") if isinstance(cell, str)
+                  else TableCell(valuetype="float", value=str(cell)))
+            tc.addElement(P(text=str(cell)))
+            tr.addElement(tc)
+        t.addElement(tr)
+    doc.spreadsheet.addElement(t)
+    doc.save(str(rg_path))
+
 # ── HDF5 / AnnData fixtures ──────────────────────────────────────────────────
 # tiny.h5ad: small AnnData with a CSR-sparse X, two obs columns
 # (one categorical), one var column, one obsm embedding. Exercises
@@ -631,6 +662,21 @@ else:
     s2.append([2, "sampleB", 8.7])
     s2.append([3, "sampleC", 15.1])
     wb.save(xlsx_path)
+
+    # Ragged workbook: a row wider than the header (.xlsx). See the matching
+    # tiny.ragged.ods note — the wider row used to make Arrow reject the sheet.
+    rg_xlsx = HERE / "tiny.ragged.xlsx"
+    if rg_xlsx.exists():
+        rg_xlsx.unlink()
+    rwb = openpyxl.Workbook()
+    rs = rwb.active
+    assert rs is not None
+    rs.title = "ragged"
+    rs.append(["chrom", "start", "end"])
+    rs.append(["chr1", 100, 200])
+    rs.append(["chr2", 300, 400, "EXTRA"])   # wider than the header
+    rs.append(["chr3", 500])                  # shorter than the header
+    rwb.save(rg_xlsx)
 
 # ── BCF (binary VCF, requires bcftools) ──────────────────────────────────────
 if have("bcftools"):
