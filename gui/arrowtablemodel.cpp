@@ -75,33 +75,58 @@ int64_t ArrowTableModel::viewRows() const {
     return src_->total_rows() >= 0 ? src_->total_rows() : loaded_rows_;
 }
 
-const ArrowTableModel::LoadedChunk* ArrowTableModel::chunkForRow(int64_t row) const {
-    if (row < 0) return nullptr;
-    for (int c = 0; ; ++c) {
-        src_->ensure(c);
-        if (c >= src_->num_chunks()) break;
-        ChunkMeta m = src_->chunk_meta(c);
-        if (row < m.first_row || row >= m.first_row + m.num_rows) continue;
-
-        auto it = cache_.find(c);
-        if (it == cache_.end()) {
-            std::shared_ptr<arrow::Table> tbl;
-            if (!src_->read_chunk(c, displayCols_, &tbl).ok() || !tbl)
-                return nullptr;
-            it = cache_.emplace(c, LoadedChunk{c, m.first_row, std::move(tbl)}).first;
-            lru_.push_front(c);
-            while ((int)lru_.size() > kMaxCache) {
-                int victim = lru_.back();
-                lru_.pop_back();
-                if (victim != c) cache_.erase(victim);
-            }
-        } else {
-            lru_.remove(c);
-            lru_.push_front(c);
-        }
-        return &it->second;
+int ArrowTableModel::chunkIndexForRow(int64_t row) const {
+    if (row < 0) return -1;
+    // Extend the offset table to cover every currently-known chunk.
+    auto syncIndex = [&] {
+        int n = src_->num_chunks();
+        for (int c = (int)chunkFirstRow_.size(); c < n; ++c)
+            chunkFirstRow_.push_back(src_->chunk_meta(c).first_row);
+    };
+    src_->ensure(0);
+    syncIndex();
+    // For streaming sources, pull more chunks forward until `row` is within the
+    // known frontier (or the stream is exhausted) — mirrors the old forward scan.
+    while (!chunkFirstRow_.empty()) {
+        int last = (int)chunkFirstRow_.size() - 1;
+        ChunkMeta lm = src_->chunk_meta(last);
+        if (row < lm.first_row + lm.num_rows) break;          // covered
+        int before = src_->num_chunks();
+        src_->ensure(before);
+        if (src_->num_chunks() == before) break;              // exhausted
+        syncIndex();
     }
-    return nullptr;
+    if (chunkFirstRow_.empty()) return -1;
+    // Last chunk whose first_row <= row (O(log chunks)).
+    auto it = std::upper_bound(chunkFirstRow_.begin(), chunkFirstRow_.end(), row);
+    if (it == chunkFirstRow_.begin()) return -1;
+    int c = (int)(std::prev(it) - chunkFirstRow_.begin());
+    ChunkMeta m = src_->chunk_meta(c);
+    if (row < m.first_row || row >= m.first_row + m.num_rows) return -1;
+    return c;
+}
+
+const ArrowTableModel::LoadedChunk* ArrowTableModel::chunkForRow(int64_t row) const {
+    int c = chunkIndexForRow(row);
+    if (c < 0) return nullptr;
+    ChunkMeta m = src_->chunk_meta(c);
+    auto it = cache_.find(c);
+    if (it == cache_.end()) {
+        std::shared_ptr<arrow::Table> tbl;
+        if (!src_->read_chunk(c, displayCols_, &tbl).ok() || !tbl)
+            return nullptr;
+        it = cache_.emplace(c, LoadedChunk{c, m.first_row, std::move(tbl)}).first;
+        lru_.push_front(c);
+        while ((int)lru_.size() > kMaxCache) {
+            int victim = lru_.back();
+            lru_.pop_back();
+            if (victim != c) cache_.erase(victim);
+        }
+    } else {
+        lru_.remove(c);
+        lru_.push_front(c);
+    }
+    return &it->second;
 }
 
 QString ArrowTableModel::cellText(int viewRow, int dispCol) const {
@@ -299,7 +324,7 @@ ColStats ArrowTableModel::columnStats(int displayCol) const {
 bool ArrowTableModel::stepSlice(int delta) {
     if (!src_->change_slice(delta, /*absolute=*/false, 0)) return false;
     beginResetModel();
-    cache_.clear(); lru_.clear();
+    cache_.clear(); lru_.clear(); chunkFirstRow_.clear();   // source rebuilt
     order_.clear(); sortCol_ = -1;
     hasFilter_ = false; filter_ = FilterExpr{};
     schema_ = src_->schema();

@@ -72,6 +72,10 @@ private:
     };
 
     const LoadedChunk* chunkForRow(int64_t srcRow) const;
+    // Map a source row to its chunk index in O(log chunks) via a cumulative
+    // first-row offset table (chunkFirstRow_), built lazily and extended
+    // forward for streaming sources. Returns -1 if the row is out of range.
+    int                chunkIndexForRow(int64_t srcRow) const;
     int64_t   sourceRow(int viewRow) const {
         return order_.empty() ? (int64_t)viewRow : order_[viewRow];
     }
@@ -90,6 +94,10 @@ private:
     mutable std::map<int, LoadedChunk> cache_;
     mutable std::list<int>             lru_;
     static constexpr int               kMaxCache = 8;
+    // chunkFirstRow_[c] == chunk_meta(c).first_row, ascending. Indexes source
+    // rows → chunks; invariant under sort/filter (those only permute order_),
+    // so it is cleared only when the source rebuilds (stepSlice / re-open).
+    mutable std::vector<int64_t>       chunkFirstRow_;
 
     std::vector<int64_t> order_;          // display row -> source row; empty = identity
     int                  sortCol_   = -1;

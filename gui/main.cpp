@@ -12,23 +12,35 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QComboBox>
 #include <QDockWidget>
 #include <QAction>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QItemSelectionModel>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMainWindow>
 #include <QMap>
+#include <QMenu>
+#include <QMenuBar>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QRegularExpression>
+#include <QSettings>
 #include <QShortcut>
+#include <QSpinBox>
 #include <QStatusBar>
 #include <QTabWidget>
 #include <QTableView>
 #include <QTableWidget>
 #include <QToolBar>
+#include <QUrl>
 
 #include <cstdio>
 #include <cstdlib>
@@ -39,66 +51,375 @@
 #include "arrowtablemodel.h"
 #include "vv/vvcore.hpp"
 
+// Open every path through libvvcore (using a shared base Config so a later
+// region/pileup query applies uniformly) and flatten each file's sibling tabs
+// — sheets / tables / datasets / NPZ arrays — into one source list. Per-path
+// open errors are collected rather than thrown; `opened` lists the paths that
+// produced at least one source (for the recent-files list).
+struct LoadResult {
+    std::vector<std::unique_ptr<TabularSource>> sources;
+    QStringList                                 opened;
+    QStringList                                 errors;
+};
+static LoadResult loadSources(const Config& base, const QStringList& paths) {
+    LoadResult r;
+    for (const QString& p : paths) {
+        Config cfg = base;
+        cfg.path = p.toStdString();
+        std::unique_ptr<TabularSource> src;
+        std::string err = open_source(cfg.path, cfg, &src);
+        if (!err.empty() || !src) {
+            r.errors << QStringLiteral("%1: %2").arg(
+                p, QString::fromStdString(err.empty() ? "open failed" : err));
+            continue;
+        }
+        auto siblings = src->expand_tabs();
+        r.sources.push_back(std::move(src));
+        for (auto& s : siblings) r.sources.push_back(std::move(s));
+        r.opened << p;
+    }
+    return r;
+}
+
 class MainWindow : public QMainWindow {
 public:
-    explicit MainWindow(std::vector<std::unique_ptr<TabularSource>> sources) {
+    explicit MainWindow(std::vector<std::unique_ptr<TabularSource>> sources = {}) {
         tabs_ = new QTabWidget(this);
+        tabs_->setTabsClosable(true);
+        tabs_->setDocumentMode(true);
         setCentralWidget(tabs_);
+        setAcceptDrops(true);
 
-        for (auto& src : sources) {
-            auto* model = new ArrowTableModel(std::move(src), this);
-            auto* view  = new QTableView(tabs_);
-            view->setModel(model);
-            view->setAlternatingRowColors(true);
-            view->setEditTriggers(QAbstractItemView::NoEditTriggers);
-            view->setSelectionBehavior(QAbstractItemView::SelectItems);
-            view->horizontalHeader()->setSectionsClickable(true);
-            view->verticalHeader()->setDefaultSectionSize(
-                view->fontMetrics().height() + 6);
-
-            // Click a column header to sort (toggle asc/desc), typed via Arrow.
-            connect(view->horizontalHeader(), &QHeaderView::sectionClicked,
-                    this, [this, view, model](int section) {
-                        Qt::SortOrder ord = Qt::AscendingOrder;
-                        if (model->sortColumn() == section &&
-                            sortOrder_.value(model, Qt::AscendingOrder) == Qt::AscendingOrder)
-                            ord = Qt::DescendingOrder;
-                        sortOrder_[model] = ord;
-                        model->sortByDisplayColumn(section, ord);
-                        view->horizontalHeader()->setSortIndicatorShown(true);
-                        view->horizontalHeader()->setSortIndicator(section, ord);
-                    });
-
-            connect(view->selectionModel(), &QItemSelectionModel::currentChanged,
-                    this, [this](const QModelIndex& cur, const QModelIndex&) {
-                        updateDetail(cur);
-                    });
-
-            views_.push_back(view);
-            models_.push_back(model);
-            tabs_->addTab(view, QString::fromStdString(src_label(model)));
-        }
-
+        connect(tabs_, &QTabWidget::tabCloseRequested, this,
+                [this](int i){ closeTab(i); });
         connect(tabs_, &QTabWidget::currentChanged, this, [this](int) {
             refreshStatus();
+            refreshColumnsMenu();
             if (auto* v = activeView())
                 updateDetail(v->selectionModel()->currentIndex());
         });
 
+        buildMenus();
         buildDetailDock();
         buildToolbar();
         buildSearchBar();
+        buildRegionBar();
         new QShortcut(QKeySequence::Copy, this, [this]{ copySelection(); });
         new QShortcut(QKeySequence::FindNext, this, [this]{ doFind(true); });
 
+        for (auto& src : sources) addSourceTab(std::move(src));
+
         resize(1100, 760);
         refreshStatus();
+    }
+
+    // Open each path through libvvcore (with the current session region/coords/
+    // slop/pileup) and add the resulting flattened tabs. Public so the headless
+    // window self-test (VVG_WINTEST) can drive it.
+    void openPaths(const QStringList& paths, bool quiet = false) {
+        if (paths.isEmpty()) return;
+        lastDir_ = QFileInfo(paths.first()).absolutePath();
+        LoadResult r = loadWithSession(paths);
+        for (auto& s : r.sources) addSourceTab(std::move(s));
+        for (const QString& p : r.opened) { addRecent(p); openedPaths_ << p; }
+        reportLoadErrors(r, quiet, tr("vvg — open"));
+        if (!r.opened.isEmpty())
+            setWindowTitle(r.opened.last() + QStringLiteral(" — vv"));
+        refreshStatus();
+    }
+    int tabCount() const { return tabs_->count(); }
+    int firstTabRows() const { return models_.empty() ? 0 : models_.front()->rowCount(); }
+    // Headless mode (window self-test): route would-be modal dialogs to stderr
+    // so an offscreen run never blocks on a QMessageBox::exec().
+    void setHeadless(bool h) { headless_ = h; }
+    // Programmatic region query for the self-test / future scripting.
+    void applyRegionQuery(const QString& region, bool ncbi = false,
+                          int slop = 0, bool pileup = false) {
+        if (regionEdit_)  regionEdit_->setText(region);
+        if (coordsCombo_) coordsCombo_->setCurrentIndex(ncbi ? 1 : 0);
+        if (slopSpin_)    slopSpin_->setValue(slop);
+        if (pileupAction_) pileupAction_->setChecked(pileup);
+        applyRegion();
     }
 
 private:
     static std::string src_label(ArrowTableModel* m) {
         return m->source()->tab_label();
     }
+
+    // Build one model+view tab from a source and wire sort + detail-pane.
+    void addSourceTab(std::unique_ptr<TabularSource> src) {
+        auto* model = new ArrowTableModel(std::move(src), this);
+        auto* view  = new QTableView(tabs_);
+        view->setModel(model);
+        view->setAlternatingRowColors(true);
+        view->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        view->setSelectionBehavior(QAbstractItemView::SelectItems);
+        view->horizontalHeader()->setSectionsClickable(true);
+        view->verticalHeader()->setDefaultSectionSize(
+            view->fontMetrics().height() + 6);
+
+        // Click a column header to sort (toggle asc/desc), typed via Arrow.
+        connect(view->horizontalHeader(), &QHeaderView::sectionClicked,
+                this, [this, view, model](int section) {
+                    Qt::SortOrder ord = Qt::AscendingOrder;
+                    if (model->sortColumn() == section &&
+                        sortOrder_.value(model, Qt::AscendingOrder) == Qt::AscendingOrder)
+                        ord = Qt::DescendingOrder;
+                    sortOrder_[model] = ord;
+                    model->sortByDisplayColumn(section, ord);
+                    view->horizontalHeader()->setSortIndicatorShown(true);
+                    view->horizontalHeader()->setSortIndicator(section, ord);
+                });
+
+        connect(view->selectionModel(), &QItemSelectionModel::currentChanged,
+                this, [this](const QModelIndex& cur, const QModelIndex&) {
+                    updateDetail(cur);
+                });
+
+        views_.push_back(view);
+        models_.push_back(model);
+        int idx = tabs_->addTab(view, QString::fromStdString(src_label(model)));
+        tabs_->setCurrentIndex(idx);
+    }
+
+    void closeTab(int i) {
+        if (i < 0 || i >= tabs_->count()) return;
+        // views_/models_ are kept index-aligned with the tab order.
+        ArrowTableModel* m = (i < (int)models_.size()) ? models_[i] : nullptr;
+        QWidget* w = tabs_->widget(i);
+        tabs_->removeTab(i);
+        if (i < (int)views_.size()) {
+            views_.erase(views_.begin() + i);
+            models_.erase(models_.begin() + i);
+        }
+        if (m) sortOrder_.remove(m);
+        delete w;   // QTableView (detaches from its model)
+        delete m;   // model is parented to MainWindow; free it now
+        refreshStatus();
+    }
+
+    void buildMenus() {
+        auto* file = menuBar()->addMenu(tr("&File"));
+        QAction* open = new QAction(tr("&Open…"), this);
+        open->setShortcut(QKeySequence::Open);
+        connect(open, &QAction::triggered, this, [this]{ openFilesDialog(); });
+        file->addAction(open);
+        recentMenu_ = file->addMenu(tr("Open &Recent"));
+        rebuildRecentMenu();
+        file->addSeparator();
+        QAction* close = new QAction(tr("&Close Tab"), this);
+        close->setShortcut(QKeySequence::Close);
+        connect(close, &QAction::triggered, this, [this]{ closeTab(tabs_->currentIndex()); });
+        file->addAction(close);
+        file->addSeparator();
+        QAction* quit = new QAction(tr("&Quit"), this);
+        quit->setShortcut(QKeySequence::Quit);
+        connect(quit, &QAction::triggered, qApp, &QApplication::quit);
+        file->addAction(quit);
+
+        auto* edit = menuBar()->addMenu(tr("&Edit"));
+        QAction* cp = new QAction(tr("&Copy"), this);
+        cp->setShortcut(QKeySequence::Copy);
+        connect(cp, &QAction::triggered, this, [this]{ copySelection(); });
+        edit->addAction(cp);
+
+        auto* view = menuBar()->addMenu(tr("&View"));
+        QAction* go = new QAction(tr("&Go to Row…"), this);
+        go->setShortcut(QKeySequence(QStringLiteral("Ctrl+G")));
+        connect(go, &QAction::triggered, this, [this]{ gotoRow(); });
+        view->addAction(go);
+        view->addSeparator();
+        columnsMenu_ = view->addMenu(tr("&Columns"));
+        refreshColumnsMenu();
+
+        auto* help = menuBar()->addMenu(tr("&Help"));
+        connect(help->addAction(tr("&Shortcuts && Syntax")), &QAction::triggered, this, [this]{
+            QMessageBox::information(this, tr("vvg — help"),
+                tr("Sort:    click a column header (toggles ascending/descending)\n"
+                   "Filter:  the Filter bar — e.g.  score > 5 and chrom == \"chr1\"\n"
+                   "Find:    the Find bar (regex); Ctrl+F / F3 for next match\n"
+                   "Region:  the Region bar — chr1:1000-2000 (UCSC) / NCBI; Pileup for BAM\n"
+                   "Copy:    Ctrl+C copies the selection as TSV\n"
+                   "Slice:   ◀ / ▶ steps the leading axis of NPZ 3-D+ arrays\n"
+                   "Go to:   Ctrl+G jumps to a row; View ▸ Columns shows/hides columns"));
+        });
+        connect(help->addAction(tr("&About vvg")), &QAction::triggered, this, [this]{
+            QMessageBox::about(this, tr("vvg"),
+                tr("vv — graphical viewer.\n\nOpens every format the vv CLI supports "
+                   "(Parquet, Arrow, BAM/VCF/BCF, BED/GFF, HDF5/AnnData, NPZ, xlsx/ods, "
+                   "SQLite, …) through the shared libvvcore reader core."));
+        });
+    }
+
+    // Rebuild the View ▸ Columns checkable list for the active table.
+    void refreshColumnsMenu() {
+        if (!columnsMenu_) return;
+        columnsMenu_->clear();
+        auto* m = activeModel();
+        auto* v = activeView();
+        if (!m || !v || m->displayColumnCount() == 0) {
+            columnsMenu_->addAction(tr("(no columns)"))->setEnabled(false);
+            return;
+        }
+        for (int c = 0; c < m->displayColumnCount(); ++c) {
+            QAction* a = columnsMenu_->addAction(m->columnName(c));
+            a->setCheckable(true);
+            a->setChecked(!v->isColumnHidden(c));
+            connect(a, &QAction::toggled, this, [v, c](bool on){
+                v->setColumnHidden(c, !on);
+            });
+        }
+    }
+
+    void gotoRow() {
+        auto* m = activeModel();
+        auto* v = activeView();
+        if (!m || !v || m->rowCount() == 0) return;
+        bool ok = false;
+        int row = QInputDialog::getInt(this, tr("Go to row"), tr("Row (1-based):"),
+                                       1, 1, m->rowCount(), 1, &ok);
+        if (ok) {
+            QModelIndex idx = m->index(row - 1, 0);
+            v->setCurrentIndex(idx);
+            v->scrollTo(idx, QAbstractItemView::PositionAtTop);
+        }
+    }
+
+    void openFilesDialog() {
+        QStringList files = QFileDialog::getOpenFileNames(
+            this, tr("Open data file(s)"), lastDir_, tr("All files (*)"));
+        openPaths(files);
+    }
+
+    void addRecent(const QString& path) {
+        QSettings s(QStringLiteral("vv"), QStringLiteral("vvg"));
+        QStringList recent = s.value(QStringLiteral("recentFiles")).toStringList();
+        QString abs = QFileInfo(path).absoluteFilePath();
+        recent.removeAll(abs);
+        recent.prepend(abs);
+        while (recent.size() > 10) recent.removeLast();
+        s.setValue(QStringLiteral("recentFiles"), recent);
+        rebuildRecentMenu();
+    }
+    void rebuildRecentMenu() {
+        if (!recentMenu_) return;
+        recentMenu_->clear();
+        QStringList recent = QSettings(QStringLiteral("vv"), QStringLiteral("vvg"))
+                                 .value(QStringLiteral("recentFiles")).toStringList();
+        if (recent.isEmpty()) {
+            recentMenu_->addAction(tr("(none)"))->setEnabled(false);
+            return;
+        }
+        for (const QString& p : recent)
+            connect(recentMenu_->addAction(p), &QAction::triggered, this,
+                    [this, p]{ openPaths({p}); });
+        recentMenu_->addSeparator();
+        connect(recentMenu_->addAction(tr("Clear Recent")), &QAction::triggered, this, [this]{
+            QSettings(QStringLiteral("vv"), QStringLiteral("vvg"))
+                .remove(QStringLiteral("recentFiles"));
+            rebuildRecentMenu();
+        });
+    }
+
+    // Open paths with the current session Config (region/coords/slop/pileup),
+    // canonicalising the region first. Errors are collected, not thrown.
+    LoadResult loadWithSession(const QStringList& paths) {
+        Config base = sessionCfg_;
+        std::string err = apply_region_modifiers(base);
+        if (!err.empty()) {
+            LoadResult r; r.errors << QString::fromStdString(err); return r;
+        }
+        return loadSources(base, paths);
+    }
+    void reportLoadErrors(const LoadResult& r, bool quiet, const QString& title) {
+        if (r.errors.isEmpty()) return;
+        QString joined = r.errors.join(QLatin1Char('\n'));
+        if (quiet || headless_)
+            std::fprintf(stderr, "vvg: %s\n", joined.toStdString().c_str());
+        else
+            QMessageBox::warning(this, title, joined);
+    }
+
+    void buildRegionBar() {
+        auto* tb = addToolBar(tr("Region"));
+        tb->addWidget(new QLabel(tr("  Region: ")));
+        regionEdit_ = new QLineEdit(tb);
+        regionEdit_->setPlaceholderText(tr("chr1:1000-2000[,chr2:…]"));
+        regionEdit_->setClearButtonEnabled(true);
+        regionEdit_->setMinimumWidth(200);
+        tb->addWidget(regionEdit_);
+        connect(regionEdit_, &QLineEdit::returnPressed, this, [this]{ applyRegion(); });
+
+        coordsCombo_ = new QComboBox(tb);
+        coordsCombo_->addItem(tr("UCSC 0-based"));   // index 0
+        coordsCombo_->addItem(tr("NCBI 1-based"));   // index 1
+        coordsCombo_->setToolTip(tr("Coordinate convention for the region box"));
+        tb->addWidget(coordsCombo_);
+
+        tb->addWidget(new QLabel(tr(" slop ")));
+        slopSpin_ = new QSpinBox(tb);
+        slopSpin_->setRange(0, 1000000000);
+        slopSpin_->setSingleStep(100);
+        slopSpin_->setToolTip(tr("Pad each window by N bp on both sides"));
+        tb->addWidget(slopSpin_);
+
+        connect(tb->addAction(tr("Apply")), &QAction::triggered, this,
+                [this]{ applyRegion(); });
+        connect(tb->addAction(tr("Clear")), &QAction::triggered, this,
+                [this]{ regionEdit_->clear(); applyRegion(); });
+
+        pileupAction_ = tb->addAction(tr("Pileup"));
+        pileupAction_->setCheckable(true);
+        pileupAction_->setToolTip(
+            tr("BAM/CRAM: emit samtools mpileup-style per-base rows"));
+        connect(pileupAction_, &QAction::toggled, this, [this](bool){ applyRegion(); });
+    }
+
+    void applyRegion() {
+        sessionCfg_.region           = regionEdit_->text().trimmed().toStdString();
+        sessionCfg_.coords_one_based = (coordsCombo_->currentIndex() == 1);
+        sessionCfg_.slop             = slopSpin_->value();
+        sessionCfg_.pileup           = pileupAction_->isChecked();
+        reopenAll();
+    }
+
+    // Re-open every currently-loaded file under the session Config. Transactional:
+    // load the new sources first and only replace the tab set if at least one
+    // opened — a failed region query (e.g. un-indexed file) keeps the old view.
+    void reopenAll() {
+        if (openedPaths_.isEmpty()) return;
+        LoadResult r = loadWithSession(openedPaths_);
+        if (r.sources.empty()) {
+            QString why = r.errors.isEmpty() ? tr("no data for this query")
+                                             : r.errors.join(QLatin1Char('\n'));
+            if (headless_)
+                std::fprintf(stderr, "vvg region: %s\n", why.toStdString().c_str());
+            else
+                QMessageBox::warning(this, tr("vvg — region"),
+                    tr("Nothing to show — keeping the current view.\n\n%1\n\n"
+                       "(Tabix/BCF region queries need a .tbi/.csi index; Pileup "
+                       "needs a BAM/CRAM file.)").arg(why));
+            return;
+        }
+        while (tabs_->count() > 0) closeTab(0);
+        for (auto& s : r.sources) addSourceTab(std::move(s));
+        reportLoadErrors(r, /*quiet=*/false, tr("vvg — region"));
+        refreshStatus();
+    }
+
+protected:
+    void dragEnterEvent(QDragEnterEvent* e) override {
+        if (e->mimeData()->hasUrls()) e->acceptProposedAction();
+    }
+    void dropEvent(QDropEvent* e) override {
+        QStringList paths;
+        for (const QUrl& u : e->mimeData()->urls())
+            if (u.isLocalFile()) paths << u.toLocalFile();
+        openPaths(paths);
+    }
+
+private:
     QTableView*     activeView()  const {
         return views_.empty() ? nullptr
                               : views_[std::max(0, tabs_->currentIndex())];
@@ -284,6 +605,16 @@ private:
     QTableWidget*                  detail_ = nullptr;
     QLineEdit*                     filterEdit_ = nullptr;
     QLineEdit*                     findEdit_   = nullptr;
+    QLineEdit*                     regionEdit_ = nullptr;
+    QComboBox*                     coordsCombo_ = nullptr;
+    QSpinBox*                      slopSpin_   = nullptr;
+    QAction*                       pileupAction_ = nullptr;
+    QMenu*                         recentMenu_  = nullptr;
+    QMenu*                         columnsMenu_ = nullptr;
+    QString                        lastDir_;
+    bool                           headless_ = false;   // suppress modal dialogs
+    QStringList                    openedPaths_;   // files currently loaded
+    Config                         sessionCfg_;    // region/coords/slop/pileup
     std::vector<QTableView*>       views_;
     std::vector<ArrowTableModel*>  models_;
     QMap<ArrowTableModel*, Qt::SortOrder> sortOrder_;
@@ -292,26 +623,25 @@ private:
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
 
-    std::string path;
+    QStringList paths;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
-        if (!a.empty() && a[0] != '-') { path = a; break; }
+        if (!a.empty() && a[0] != '-') paths << QString::fromStdString(a);
     }
-    if (path.empty()) { std::fprintf(stderr, "usage: vvg <file>\n"); return 2; }
-
-    Config cfg;
-    cfg.path = path;
-    std::unique_ptr<TabularSource> src;
-    std::string err = open_source(path, cfg, &src);
-    if (!err.empty()) { std::fprintf(stderr, "vvg: %s\n", err.c_str()); return 1; }
-
-    // Gather the first source plus any sibling tabs.
-    std::vector<std::unique_ptr<TabularSource>> sources;
-    auto siblings = src->expand_tabs();
-    sources.push_back(std::move(src));
-    for (auto& s : siblings) sources.push_back(std::move(s));
 
     if (const char* st = std::getenv("VVG_SELFTEST"); st && *st && *st != '0') {
+        // Model-level self-test (CI path): needs a file on the command line.
+        if (paths.isEmpty()) { std::fprintf(stderr, "usage: vvg <file>\n"); return 2; }
+        Config cfg;
+        cfg.path = paths.first().toStdString();
+        std::unique_ptr<TabularSource> src;
+        std::string err = open_source(cfg.path, cfg, &src);
+        if (!err.empty()) { std::fprintf(stderr, "vvg: %s\n", err.c_str()); return 1; }
+        std::vector<std::unique_ptr<TabularSource>> sources;
+        auto siblings = src->expand_tabs();
+        sources.push_back(std::move(src));
+        for (auto& s : siblings) sources.push_back(std::move(s));
+
         ArrowTableModel m(std::move(sources.front()));
         std::printf("tabs=%zu rows=%d cols=%d\n", sources.size(),
                     m.rowCount(), m.columnCount());
@@ -367,8 +697,31 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    MainWindow win(std::move(sources));
-    win.setWindowTitle(QString::fromStdString(path) + " — vv");
+    // Window-level offscreen smoke test: build the shell and open the file(s)
+    // headlessly (quiet = no blocking modal dialogs). Exercises the
+    // addSourceTab / loadSources path the menus and drag-and-drop also use.
+    if (const char* wt = std::getenv("VVG_WINTEST"); wt && *wt && *wt != '0') {
+        MainWindow win;
+        win.setHeadless(true);
+        win.openPaths(paths, /*quiet=*/true);
+        std::printf("win_tabs=%d\n", win.tabCount());
+        // Optional region/pileup re-open check: VVG_REGION="chr1:…" [VVG_NCBI=1]
+        // [VVG_PILEUP=1].
+        const char* rg = std::getenv("VVG_REGION");
+        bool pileup = std::getenv("VVG_PILEUP") != nullptr;
+        if ((rg && *rg) || pileup) {
+            win.applyRegionQuery(QString::fromLocal8Bit(rg ? rg : ""),
+                                 std::getenv("VVG_NCBI") != nullptr, 0, pileup);
+            std::printf("region '%s' pileup=%d -> tabs=%d rows=%d\n",
+                        rg ? rg : "", pileup ? 1 : 0,
+                        win.tabCount(), win.firstTabRows());
+        }
+        return 0;
+    }
+
+    MainWindow win;
     win.show();
+    if (!paths.isEmpty()) win.openPaths(paths);
+    else                  win.setWindowTitle(QStringLiteral("vv"));
     return app.exec();
 }

@@ -22,6 +22,15 @@ user-facing summary).
 ### Open
 - LociSSD `lociSSD_interval_index` consumption (spec §6.5) — helps
   when the window is much smaller than a row group.
+- Region-mode `total_rows()` / `chunk_meta().num_rows` on generic-Parquet /
+  LociSSD report the *slice* size (pre per-row-overlap filter), while
+  `read_chunk()` returns only the matching rows. The CLI is unaffected (it
+  iterates the actual chunk tables), but the Qt GUI trusts `total_rows()` for
+  `rowCount()`, so a region query there shows a trailing **blank** row per
+  within-slice non-match (cosmetic; surfaced by the new region bar in
+  `gui/improvements`). Tabix/BCF/BAM region paths are exact. Fix: have
+  region-mode report post-filter counts (or have the GUI model fall back to
+  summing actual chunk-table sizes when a source filters within chunks).
 
 ### Done
 - `--regions-file foo.bed` — batch many windows from a BED's first
@@ -235,7 +244,7 @@ be done first: it catches this whole bug class automatically.
 ### High (24)
 
 **Correctness bugs**
-- [ ] `gui/kde/thumbrender.cpp:25` — KDE plugins call libvvcore (which uses .ValueOrDie()) with no exception/abort guard — malformed file can crash the worker
+- [~] `gui/kde/thumbrender.cpp:25` — KDE plugins call libvvcore (which uses .ValueOrDie()) with no exception/abort guard — malformed file can crash the worker — `gui/improvements` wraps both cores in function-try-blocks (catches C++ exceptions; .ValueOrDie() aborts remain, but the source readers now validate untrusted input up front)
   - Fix: Wrap the body of vv_render_thumbnail and vv_probe_meta in try/catch(...) returning an empty QImage / unset VvMeta on any exception.
 - [x] `main.cpp:2897` — Region queries on Parquet return empty/wrong results when Start/End are not Int32/Int64 — fixed on `fix/parquet-region-int-types` (cell_int handles all integer widths + dictionary-of-int)
   - Fix: Handle the remaining integer Arrow types (Int8/16, UInt8/16/32/64) and dictionary-encoded indices, or use arrow's scalar visitor;
@@ -271,7 +280,7 @@ be done first: it catches this whole bug class automatically.
   - Fix: When stdout is not a TTY and image_mode is empty/auto, either error out ("--heatmap requires a terminal; pick --image-mode explicitly") or downgrade to a plain ASCII intensity grid.
 
 **Performance**
-- [ ] `gui/arrowtablemodel.cpp:78` — chunkForRow() is O(num_chunks) per cell — quadratic-ish scan on every cell access/repaint
+- [x] `gui/arrowtablemodel.cpp:78` — chunkForRow() is O(num_chunks) per cell — quadratic-ish scan on every cell access/repaint — fixed on `gui/improvements` (cumulative first-row offset table + std::upper_bound, O(log chunks))
   - Fix: Maintain a sorted vector of cumulative chunk first_row offsets and binary-search it (std::upper_bound) to map row->chunk in O(log chunks). Rebuild/extend it lazily as chunks are discovered.
 - [ ] `gui/arrowtablemodel.cpp:196` — Sorting/filtering loads the entire file column(s) into RAM and drains streaming sources
   - Fix: For sort, read only the sort column once and keep it as a ChunkedArray without forcing total materialization where avoidable;

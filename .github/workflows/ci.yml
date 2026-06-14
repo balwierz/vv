@@ -160,8 +160,17 @@ jobs:
           test -x build-gui/gui/vvg
           # Headless payload check: render a thumbnail + probe metadata.
           ./build-gui/gui/kde/vvkdetest tests/data/tiny.parquet
+          # Crash-safety: a malformed file must be handled gracefully (empty
+          # result, exit 0) rather than aborting the Dolphin/Baloo worker.
+          ./build-gui/gui/kde/vvkdetest --allow-empty tests/data/tiny.malformed.npz
           # Model path end-to-end through libvvcore.
           VVG_SELFTEST=1 ./build-gui/gui/vvg tests/data/tiny.parquet
+          # App-shell path: build the QMainWindow offscreen and open a file via
+          # the same addSourceTab/loadSources path the menus and drag-drop use.
+          test "$(VVG_WINTEST=1 ./build-gui/gui/vvg tests/data/tiny.parquet)" = "win_tabs=1"
+          # Region re-open (tabix): chr1:1099-1200 overlaps exactly one BED row.
+          VVG_WINTEST=1 VVG_REGION=chr1:1099-1200 ./build-gui/gui/vvg tests/data/tiny.bed.gz \
+            | grep -q 'rows=1'
           if [ "${{ steps.gui_deps.outputs.kf6 }}" = "yes" ]; then
             # KF6 present: the Dolphin thumbnailer + KFileMetaData .so plugins
             # must have linked against libvvcore.

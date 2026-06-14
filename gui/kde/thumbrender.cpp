@@ -22,13 +22,20 @@ QString cell_text(const std::shared_ptr<arrow::Table>& tbl, int col, int64_t row
 }
 }  // namespace
 
-QImage vv_render_thumbnail(const QString& path, const QSize& target) {
+// Runs inside Dolphin's thumbnail worker on whatever files the user browses,
+// so a malformed/corrupt input must never take the process down. The
+// function-try-block turns any C++ exception (std::bad_alloc, an Arrow/htslib
+// throw) into "no thumbnail". (Note: a libvvcore .ValueOrDie() on an error
+// Status would std::abort and is *not* catchable — the source readers validate
+// untrusted input up front to avoid reaching those.)
+QImage vv_render_thumbnail(const QString& path, const QSize& target) try {
     Config cfg;
     cfg.path = path.toStdString();
     std::unique_ptr<TabularSource> src;
     if (!open_source(cfg.path, cfg, &src).empty() || !src) return {};
 
     auto schema = src->schema();
+    if (!schema) return {};
     const int ncols = std::min(6, schema->num_fields());
     if (ncols <= 0) return {};
     std::vector<int> cols;
@@ -89,4 +96,6 @@ QImage vv_render_thumbnail(const QString& path, const QSize& target) {
 
     p.end();
     return img;
+} catch (...) {
+    return {};   // corrupt / unsupported input → no thumbnail, never abort
 }
