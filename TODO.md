@@ -282,7 +282,7 @@ be done first: it catches this whole bug class automatically.
 **Performance**
 - [x] `gui/arrowtablemodel.cpp:78` — chunkForRow() is O(num_chunks) per cell — quadratic-ish scan on every cell access/repaint — fixed on `gui/improvements` (cumulative first-row offset table + std::upper_bound, O(log chunks))
   - Fix: Maintain a sorted vector of cumulative chunk first_row offsets and binary-search it (std::upper_bound) to map row->chunk in O(log chunks). Rebuild/extend it lazily as chunks are discovered.
-- [ ] `gui/arrowtablemodel.cpp:196` — Sorting/filtering loads the entire file column(s) into RAM and drains streaming sources
+- [~] `gui/arrowtablemodel.cpp:196` — Sorting/filtering loads the entire file column(s) into RAM and drains streaming sources — responsiveness fixed on `gui/threaded-filter-sort` (compute moved to a worker thread with progress + cancel; UI no longer freezes); the full-column/whole-source drain itself remains (inherent to a global sort/filter — a separate memory optimization)
   - Fix: For sort, read only the sort column once and keep it as a ChunkedArray without forcing total materialization where avoidable;
 - [ ] `gui/arrowtablemodel.cpp:284` — findNext() is a full O(rows*cols) linear scan that decodes every cell on the GUI thread
   - Fix: Search column-by-column over already-loaded chunks using Arrow compute (e.g. match_substring/MatchSubstringRegex) to vectorize, or scan in a background thread with a cancellable progress indicator.

@@ -12,7 +12,9 @@
 #pragma once
 
 #include <QAbstractTableModel>
+#include <QFutureWatcher>
 #include <QRegularExpression>
+#include <atomic>
 #include <list>
 #include <map>
 #include <memory>
@@ -25,6 +27,7 @@ class ArrowTableModel : public QAbstractTableModel {
 public:
     explicit ArrowTableModel(std::unique_ptr<TabularSource> src,
                              QObject* parent = nullptr);
+    ~ArrowTableModel() override;
 
     int      rowCount(const QModelIndex& parent = {}) const override;
     int      columnCount(const QModelIndex& parent = {}) const override;
@@ -35,14 +38,33 @@ public:
     void fetchMore(const QModelIndex& parent) override;
 
     // Sort by a display column (typed). displayCol < 0 clears the sort.
+    // *Sync* variant: computes inline (used by the headless self-test).
     void    sortByDisplayColumn(int displayCol, Qt::SortOrder order);
     int     sortColumn() const { return sortCol_; }
 
     // Live filter using vv's --filter DSL (already parsed). clearFilter()
-    // restores the unfiltered view.
+    // restores the unfiltered view. *Sync* variants compute inline.
     void    setFilter(const FilterExpr& expr);
     void    clearFilter();
     bool    hasFilter() const { return hasFilter_; }
+
+    // Async variants: filter_rows / readFullColumn / sort_indices run on a
+    // worker thread while the model is "blanked" (rowCount()==0, data()=={})
+    // so the UI thread never touches the source concurrently; the result is
+    // installed on completion. Emit recomputeStarted/Finished/Canceled for a
+    // progress indicator. The GUI uses these; cancelRecompute() aborts.
+    void    setFilterAsync(const FilterExpr& expr);
+    void    clearFilterAsync();
+    void    sortAsyncByDisplayColumn(int displayCol, Qt::SortOrder order);
+    void    cancelRecompute();
+    bool    isComputing() const { return computing_; }
+
+signals:
+    void    recomputeStarted();
+    void    recomputeFinished(qint64 viewRows);
+    void    recomputeCanceled();
+
+public:
 
     // Search overlay: matching cells are highlighted; findNext walks matches.
     void        setSearch(const QRegularExpression& re);
@@ -83,7 +105,16 @@ private:
     void      drainStreaming() const;
     std::shared_ptr<arrow::ChunkedArray> readFullColumn(int srcCol) const;
     void      reseedRowCount();
-    void      rebuildOrder();             // recompute order_ from filter + sort
+    void      rebuildOrder();             // sync: order_ = computeOrderVec(...)
+    // Pure computation of the display→source permutation from a filter + sort.
+    // Runs on a worker thread for the async path; polls `cancel` between phases
+    // and returns {} (identity) if aborted. Drives the source exclusively while
+    // the model is blanked, so no UI-thread source access races it.
+    std::vector<int64_t> computeOrderVec(FilterExpr filter, bool hasFilter,
+                                         int sortCol, Qt::SortOrder order,
+                                         std::atomic<bool>* cancel) const;
+    void      startRecompute();           // blank + launch worker
+    void      onRecomputeDone();          // install the worker's result
 
     std::unique_ptr<TabularSource> src_;
     std::shared_ptr<arrow::Schema> schema_;
@@ -107,6 +138,11 @@ private:
 
     QRegularExpression   searchRe_;
     bool                 hasSearch_ = false;
+
+    // Async recompute (filter/sort off the UI thread).
+    QFutureWatcher<std::vector<int64_t>>* watcher_ = nullptr;
+    std::shared_ptr<std::atomic<bool>>    cancel_;   // worker holds a copy
+    bool                                  computing_ = false;
 
     mutable int64_t loaded_rows_  = 0;
     mutable bool    fully_loaded_ = false;

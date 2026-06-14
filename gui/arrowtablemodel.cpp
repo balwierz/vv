@@ -3,6 +3,7 @@
 #include <QBrush>
 #include <QColor>
 #include <QString>
+#include <QtConcurrent>
 #include <algorithm>
 #include <unordered_set>
 #include <arrow/compute/api.h>
@@ -33,7 +34,17 @@ ArrowTableModel::ArrowTableModel(std::unique_ptr<TabularSource> src,
         colNames_.push_back(QString::fromStdString(f->name()));
         colTypes_.push_back(QString::fromStdString(f->type()->ToString()));
     }
+    watcher_ = new QFutureWatcher<std::vector<int64_t>>(this);
+    connect(watcher_, &QFutureWatcher<std::vector<int64_t>>::finished,
+            this, &ArrowTableModel::onRecomputeDone);
     reseedRowCount();
+}
+
+ArrowTableModel::~ArrowTableModel() {
+    // The worker drives src_ (a member); make sure it has stopped before the
+    // source is destroyed. cancel_ makes it bail at the next phase boundary.
+    if (cancel_) cancel_->store(true);
+    if (watcher_ && watcher_->isRunning()) watcher_->waitForFinished();
 }
 
 void ArrowTableModel::reseedRowCount() {
@@ -59,6 +70,7 @@ void ArrowTableModel::drainStreaming() const {
 }
 
 int64_t ArrowTableModel::sourceTotal() const {
+    if (computing_) return loaded_rows_;   // don't touch src_ while a worker owns it
     drainStreaming();
     int64_t tr = src_->total_rows();
     if (tr >= 0) return tr;
@@ -141,6 +153,7 @@ QString ArrowTableModel::cellText(int viewRow, int dispCol) const {
 
 int ArrowTableModel::rowCount(const QModelIndex& parent) const {
     if (parent.isValid()) return 0;
+    if (computing_) return 0;   // blanked while a worker recomputes order_
     int64_t n = viewRows();
     return (n > 2'000'000'000LL) ? 2'000'000'000 : (int)n;
 }
@@ -151,7 +164,7 @@ int ArrowTableModel::columnCount(const QModelIndex& parent) const {
 }
 
 QVariant ArrowTableModel::data(const QModelIndex& index, int role) const {
-    if (!index.isValid()) return {};
+    if (!index.isValid() || computing_) return {};
     if (role == Qt::DisplayRole || role == Qt::ToolTipRole)
         return cellText(index.row(), index.column());
     if (role == Qt::BackgroundRole && hasSearch_) {
@@ -176,12 +189,12 @@ QVariant ArrowTableModel::headerData(int section, Qt::Orientation o, int role) c
 }
 
 bool ArrowTableModel::canFetchMore(const QModelIndex& parent) const {
-    if (parent.isValid() || !order_.empty()) return false;
+    if (parent.isValid() || computing_ || !order_.empty()) return false;
     return !fully_loaded_;
 }
 
 void ArrowTableModel::fetchMore(const QModelIndex& parent) {
-    if (parent.isValid() || fully_loaded_ || !order_.empty()) return;
+    if (parent.isValid() || computing_ || fully_loaded_ || !order_.empty()) return;
     int known = src_->num_chunks();
     src_->ensure(known);
     int now = src_->num_chunks();
@@ -217,43 +230,56 @@ ArrowTableModel::readFullColumn(int srcCol) const {
     return std::make_shared<arrow::ChunkedArray>(std::move(chunks), type);
 }
 
-// Recompute order_ = filter (kept rows, source order) then sort within them.
-void ArrowTableModel::rebuildOrder() {
-    std::vector<int64_t> base;
-    if (hasFilter_) base = filter_rows(*src_, filter_);   // source order
+// Pure computation: order_ = filter (kept rows, source order) then sort within
+// them. Polls `cancel` between the (coarse) phases; returns {} if aborted.
+std::vector<int64_t> ArrowTableModel::computeOrderVec(
+        FilterExpr filter, bool hasFilter, int sortCol, Qt::SortOrder order,
+        std::atomic<bool>* cancel) const {
+    auto aborted = [&]{ return cancel && cancel->load(); };
 
-    if (sortCol_ >= 0 && sortCol_ < (int)displayCols_.size()) {
-        auto ca = readFullColumn(displayCols_[sortCol_]);
+    std::vector<int64_t> base;
+    if (hasFilter) base = filter_rows(*src_, filter);     // source order
+    if (aborted()) return {};
+
+    if (sortCol >= 0 && sortCol < (int)displayCols_.size()) {
+        auto ca = readFullColumn(displayCols_[sortCol]);
+        if (aborted()) return {};
         if (ca && ca->length() > 0) {
             arrow::compute::SortOptions opts(
                 {arrow::compute::SortKey(
-                    "", sortOrder_ == Qt::AscendingOrder
+                    "", order == Qt::AscendingOrder
                             ? arrow::compute::SortOrder::Ascending
                             : arrow::compute::SortOrder::Descending)});
             auto res = arrow::compute::CallFunction("sort_indices",
                                                     {arrow::Datum(ca)}, &opts);
+            if (aborted()) return {};
             if (res.ok()) {
                 auto idx = std::static_pointer_cast<arrow::UInt64Array>(
                     res->make_array());
-                if (hasFilter_) {
+                std::vector<int64_t> out;
+                if (hasFilter) {
                     std::unordered_set<int64_t> keep(base.begin(), base.end());
-                    order_.clear();
-                    order_.reserve(keep.size());
+                    out.reserve(keep.size());
                     for (int64_t i = 0; i < idx->length(); ++i) {
+                        if ((i & 0xffff) == 0 && aborted()) return {};
                         int64_t r = (int64_t)idx->Value(i);
-                        if (keep.count(r)) order_.push_back(r);
+                        if (keep.count(r)) out.push_back(r);
                     }
                 } else {
-                    order_.resize(idx->length());
+                    out.resize(idx->length());
                     for (int64_t i = 0; i < idx->length(); ++i)
-                        order_[i] = (int64_t)idx->Value(i);
+                        out[i] = (int64_t)idx->Value(i);
                 }
-                return;
+                return out;
             }
         }
     }
     // No sort (or sort failed): filtered rows in source order, else identity.
-    order_ = hasFilter_ ? std::move(base) : std::vector<int64_t>{};
+    return hasFilter ? base : std::vector<int64_t>{};
+}
+
+void ArrowTableModel::rebuildOrder() {
+    order_ = computeOrderVec(filter_, hasFilter_, sortCol_, sortOrder_, nullptr);
 }
 
 void ArrowTableModel::sortByDisplayColumn(int displayCol, Qt::SortOrder order) {
@@ -281,6 +307,61 @@ void ArrowTableModel::clearFilter() {
     rebuildOrder();
     cache_.clear(); lru_.clear();
     endResetModel();
+}
+
+// ── Async filter/sort: compute order_ on a worker, swap in on completion ──────
+void ArrowTableModel::setFilterAsync(const FilterExpr& expr) {
+    filter_ = expr; hasFilter_ = true; startRecompute();
+}
+void ArrowTableModel::clearFilterAsync() {
+    hasFilter_ = false; filter_ = FilterExpr{}; startRecompute();
+}
+void ArrowTableModel::sortAsyncByDisplayColumn(int displayCol, Qt::SortOrder order) {
+    if (displayCol < 0 || displayCol >= (int)displayCols_.size()) sortCol_ = -1;
+    else { sortCol_ = displayCol; sortOrder_ = order; }
+    startRecompute();
+}
+
+void ArrowTableModel::startRecompute() {
+    // Supersede any in-flight job: flag its (shared) cancel so it bails; the
+    // watcher is repointed at the new future below, so the orphan's result is
+    // ignored. order_ is left intact (restored if this one is canceled).
+    if (cancel_) cancel_->store(true);
+    beginResetModel();        // blank: rowCount()==0, data()=={} → UI leaves src_ alone
+    computing_ = true;
+    endResetModel();
+    emit recomputeStarted();
+
+    auto cf = std::make_shared<std::atomic<bool>>(false);
+    cancel_ = cf;
+    FilterExpr  fsnap = filter_;
+    bool        hf    = hasFilter_;
+    int         sc    = sortCol_;
+    Qt::SortOrder so  = sortOrder_;
+    watcher_->setFuture(QtConcurrent::run(
+        [this, fsnap, hf, sc, so, cf] {
+            return computeOrderVec(fsnap, hf, sc, so, cf.get());
+        }));
+}
+
+void ArrowTableModel::onRecomputeDone() {
+    if (!computing_) return;                 // already finalized or canceled
+    if (cancel_ && cancel_->load()) return;  // superseded/canceled — ignore
+    beginResetModel();
+    order_ = watcher_->result();
+    cache_.clear(); lru_.clear();
+    computing_ = false;
+    endResetModel();
+    emit recomputeFinished((qint64)viewRows());
+}
+
+void ArrowTableModel::cancelRecompute() {
+    if (!computing_) return;
+    if (cancel_) cancel_->store(true);       // worker bails at next phase
+    beginResetModel();                       // restore the prior view (order_ unchanged)
+    computing_ = false;
+    endResetModel();
+    emit recomputeCanceled();
 }
 
 void ArrowTableModel::setSearch(const QRegularExpression& re) {
@@ -317,11 +398,13 @@ QModelIndex ArrowTableModel::findNext(const QModelIndex& from, bool forward) con
 }
 
 ColStats ArrowTableModel::columnStats(int displayCol) const {
+    if (computing_) return {};   // would drain src_ while a worker owns it
     if (displayCol < 0 || displayCol >= (int)displayCols_.size()) return {};
     return compute_col_stats(*src_, displayCols_[displayCol]);
 }
 
 bool ArrowTableModel::stepSlice(int delta) {
+    if (computing_) return false;   // don't rebuild the source mid-recompute
     if (!src_->change_slice(delta, /*absolute=*/false, 0)) return false;
     beginResetModel();
     cache_.clear(); lru_.clear(); chunkFirstRow_.clear();   // source rebuilt
@@ -334,6 +417,7 @@ bool ArrowTableModel::stepSlice(int delta) {
 }
 
 QString ArrowTableModel::footer() const {
+    if (computing_) return QStringLiteral("Working…");
     return QString::fromStdString(src_->footer());
 }
 QString ArrowTableModel::columnName(int c) const {
