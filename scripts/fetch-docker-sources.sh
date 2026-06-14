@@ -30,7 +30,7 @@ fetch() {
         return
     fi
     echo "  fetch $out ← $url"
-    curl -fsSL --retry 3 -o "$DST/$out.part" "$url"
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 -o "$DST/$out.part" "$url"
     mv "$DST/$out.part" "$DST/$out"
 }
 
@@ -75,7 +75,7 @@ repack_header_only() {
         return
     fi
     echo "  fetch $out ← $url (repacking $subpath → $topdir/)"
-    curl -fsSL --retry 3 -o "$TMP/raw.tar.gz" "$url"
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 -o "$TMP/raw.tar.gz" "$url"
     mkdir -p "$TMP/extract"
     tar -xzf "$TMP/raw.tar.gz" -C "$TMP/extract"
     # The upstream tarball has exactly one top-level dir.
@@ -107,7 +107,7 @@ repack_xsimd() {
     fi
     local url="https://github.com/xtensor-stack/xsimd/archive/refs/tags/14.1.0.tar.gz"
     echo "  fetch $out ← $url (cmake-install to harvest headers + Config)"
-    curl -fsSL --retry 3 -o "$TMP/xsimd.tar.gz" "$url"
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 -o "$TMP/xsimd.tar.gz" "$url"
     mkdir -p "$TMP/x-extract"
     tar -xzf "$TMP/xsimd.tar.gz" -C "$TMP/x-extract"
     local upstream_top
@@ -144,7 +144,7 @@ repack_boost() {
     fi
     local url="https://archives.boost.io/release/1.90.0/source/boost_1_90_0.tar.gz"
     echo "  fetch $out ← $url (≈150 MB download; extracting headers only)"
-    curl -fsSL --retry 3 -o "$TMP/boost.tar.gz" "$url"
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 -o "$TMP/boost.tar.gz" "$url"
     mkdir -p "$TMP/b-extract"
     tar -xzf "$TMP/boost.tar.gz" -C "$TMP/b-extract"
     local upstream_top

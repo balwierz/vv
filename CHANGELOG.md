@@ -6,6 +6,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-06-14
+
+A correctness- and robustness-focused patch release: it fixes a class of
+silently-wrong results, several crash/hang/OOM paths on malformed input found
+in a code audit, and the release/CI pipeline. No user-facing feature changes.
+
+### Fixed
+- **Region coordinates** — every htslib-backed range query (tabix BED/VCF/GFF,
+  BAM `--pileup -r`, BCF) fed vv's canonical UCSC 0-based half-open coordinates
+  to htslib's 1-based-inclusive region parsers, shifting every query one base
+  and disagreeing with the Parquet path for the same `-r`. Coordinates are now
+  converted at the htslib boundary so all formats agree.
+- **Parquet region queries** now handle every integer coordinate width
+  (UInt32/Int16/…, and dictionary-encoded ints), not just Int32/Int64 — a
+  UInt32 `Start`/`End` column previously made region queries return nothing.
+- **SQLite** `NUMERIC`/`DATE`/`DATETIME`/`BOOLEAN` columns are preserved
+  verbatim instead of being coerced through `double` (which turned dates into
+  their year and rounded 64-bit integers beyond 2^53).
+- **BCF** keeps the `FORMAT` field (e.g. `GT:AD:DP`) in the `FORMAT_SAMPLES`
+  column instead of dropping it.
+- **Delimited streaming** surfaces a mid-file parse error (a malformed row
+  beyond the first 16 MiB block) as a non-zero exit instead of silently
+  truncating output with status 0.
+- **Streaming sources** (Arrow IPC, FASTA/FASTQ, SQLite) no longer spin or
+  silently truncate when a read error occurs past the first batch.
+- **Empty tabix region** (a window overlapping no records) returns an empty
+  result with exit 0, matching the Parquet/BCF/BAM paths, instead of erroring.
+
+### Security
+Memory-safety fixes for malformed/untrusted input (reachable in-process via
+the KDE thumbnailer / KFileMetaData extractor):
+- **HDF5** — array-valued attributes no longer overflow fixed-size buffers in
+  `H5Aread` (a crafted `shape`/string attribute could smash the stack — verified
+  segfault, now rejected).
+- **NumPy `.npz`** — the declared array shape is validated against the stored
+  data (rejecting negative dimensions, overflowing products, and shapes larger
+  than the buffer) instead of driving an out-of-bounds read.
+- **2bit** — the header `seqCount` is bounded against the file size before
+  reserving (a crafted value requested ~170 GB and aborted the process); the
+  N-block table skip is computed in 64-bit.
+
+### Build / CI
+- The KF6 Dolphin/KFileMetaData GUI plugins are now optional in CI so the
+  Ubuntu 24.04 job (which lacks the KF6 dev packages) builds the Qt GUI without
+  them rather than failing.
+- The static-binary release fetch step retries on transfer timeouts
+  (`--retry-all-errors`, connect timeout), fixing the flaky-download failure
+  that blocked the 1.9.0 release.
+
 ## [1.9.0] - 2026-06-02
 
 ### Added

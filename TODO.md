@@ -329,7 +329,7 @@ be done first: it catches this whole bug class automatically.
 - [ ] `main.cpp:9874` — --image-mode value is never validated; typos silently fall back to Auto
 - [ ] `main.cpp:12054` — A single column wider than the terminal renders a completely blank table
 - [ ] `main.cpp:14459` — No NO_COLOR environment-variable support
-- [ ] `man/vv.1:1` — Man page version/date stale: shows 1.4.0 / May 2026 while binary is 1.9.0
+- [x] `man/vv.1:1` — Man page version/date stale: shows 1.4.0 / May 2026 while binary is 1.9.0 — bumped to 1.9.1 / June 2026 in the release-prep commit
 - [ ] `man/vv.1:119` — NumPy .npz format missing from man page and from all three shell completions
 - [ ] `tests/run_tests.sh:43` — Several formats have zero smoke-test coverage (.npz, .paf range, .cram, .sam, .gff/.gtf, .loom/generic h5 already partial)
 
