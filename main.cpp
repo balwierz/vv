@@ -11663,6 +11663,7 @@ class TableTUI {
     // Shows "Searching…" in the status line while scanning large files.
     int64_t find_next(int64_t from_row, bool forward) {
         if (search_query_.empty()) return -1;
+        drain_to_eof();   // search must cover the whole streaming file
         std::string q = search_query_;
         for (auto& c : q) c = (char)std::tolower((unsigned char)c);
 
@@ -12497,6 +12498,7 @@ class TableTUI {
         int sc = (virt_col >= 0 && virt_col < (int)virt_src_col_.size())
                   ? virt_src_col_[virt_col] : -1;
         if (sc < 0) { stats_data_ = std::move(cs); return; }
+        drain_to_eof();   // stats must cover the whole streaming file
         auto field = src_->schema()->field(sc);
         cs.name = col_names_[virt_col];
         cs.type = field->type()->ToString();
@@ -12982,6 +12984,20 @@ private:
         return false;
     }
 
+    // Full-file passes (sort / filter / stats / search) iterate
+    // src_->num_chunks(), which for a forward-only streaming source only
+    // exposes the chunks loaded so far (the scrolled-through prefix). Drain the
+    // stream to EOF first — mirroring the 'G' handler — so those passes see the
+    // whole file instead of silently operating on a prefix. A no-op for
+    // random-access sources (total_rows() already known).
+    void drain_to_eof() {
+        if (src_->total_rows() >= 0) return;
+        mvaddstr(scr_r_ - 1, 0, " Loading to end of file… ");
+        clrtoeol(); refresh();
+        while (src_->total_rows() < 0)
+            src_->ensure(src_->num_chunks());
+    }
+
     // ── Rebuild display→source mapping (sort + filter) ──────────────────────
     //
     // Combines the two view-of-the-data features into one full-file pass:
@@ -12998,6 +13014,7 @@ private:
         sort_order_.clear();
         filter_total_ = 0;
         if (sort_col_ < 0 && !filter_active_) return;
+        drain_to_eof();   // sort/filter must cover the whole streaming file
 
         // Resolve sort column (if any).
         bool num = false;
@@ -13865,12 +13882,9 @@ public:
                 case 'g': case KEY_HOME: top_row_ = 0; break;
                 case 'G': case KEY_END:
                     // For streaming sources we must read to EOF before we know
-                    // the last row.  Show a status message and drain the stream.
+                    // the last row.
                     if (tr < 0) {
-                        mvaddstr(scr_r_ - 1, 0, " Loading to end of file… ");
-                        refresh();
-                        while (src_->total_rows() < 0)
-                            src_->ensure(src_->num_chunks());
+                        drain_to_eof();
                         tr = total_rows();
                     }
                     top_row_ = std::max<int64_t>(0, tr - dl);
