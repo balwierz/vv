@@ -9,8 +9,9 @@ A fast, self-contained command-line viewer for tabular and bioinformatics
 file formats. One binary covers Parquet, Arrow IPC / Feather, LociSSD,
 BAM/CRAM/SAM, VCF/BCF, GFF/GTF, BED, FASTA/FASTQ, PAF, UCSC bigBed /
 bigWig / 2bit, and plain TSV/CSV — with gzip / bgzip on the fly,
-range queries, and a full ncurses browser. On a terminal it opens an
-interactive viewer; elsewhere it prints to stdout.
+range queries, a full ncurses browser, and an optional Qt6 / KDE desktop
+app (`vvg`). On a terminal it opens an interactive viewer; elsewhere it
+prints to stdout.
 
 ```
 $ vv variants.vcf
@@ -189,17 +190,26 @@ reader core as the CLI, so it opens every supported format:
 
 ```sh
 vvg data.parquet            # or any supported file
+vvg a.bam b.vcf.gz c.h5ad   # multiple files → one tab each
 ```
 
-- **Multi-tab** strip for multi-sheet / multi-dataset files (xlsx & ods
-  sheets, SQLite tables, HDF5 / AnnData components, NumPy arrays).
+- **Application shell** — menu bar, **File ▸ Open** (multiple files → tabs),
+  drag-and-drop, a recent-files list, and error dialogs. The **multi-tab**
+  strip also expands multi-sheet / multi-dataset files (xlsx & ods sheets,
+  SQLite tables, HDF5 / AnnData components, NumPy arrays).
+- **Genomic region bar** — type `chr1:1000-2000` (UCSC or NCBI coordinates,
+  optional slop) to re-open the file(s) over a tabix/`.csi`-indexed range; a
+  **Pileup** toggle renders BAM/CRAM as mpileup rows. Mirrors the CLI `-r`.
+- **Responsive on big files** — filtering, sorting and find run **off the UI
+  thread** with a progress bar and a **Cancel** button, so the window never
+  freezes while a multi-GB file is scanned.
 - **Click a column header to sort** (typed, not lexical); two-line
-  *name + type* headers.
-- **Filter bar** using the same grammar as `--filter`
-  (`score > 5 and chrom == "chr1"`), and a **regex find** bar with
-  match highlighting.
-- **Σ Stats** per column, a **row-detail** dock, **Ctrl+C** copy-as-TSV,
-  and **◀/▶ slice** stepping for 3-D NumPy arrays.
+  *name + type* headers. **Filter bar** using the same grammar as `--filter`
+  (`score > 5 and chrom == "chr1"`), and a **regex find** bar with match
+  highlighting.
+- **View menu** — show/hide columns, go-to-row, and a shortcuts/filter-DSL
+  help overlay. **Σ Stats** per column, a **row-detail** dock, **Ctrl+C**
+  copy-as-TSV, and **◀/▶ slice** stepping for 3-D NumPy arrays.
 
 On **KDE Plasma**, installing the `vv-gui` package also wires vv into
 Dolphin: double-click (or *Open With*) launches `vvg`, the icon view
@@ -307,6 +317,22 @@ $ vv --parquet peaks.parquet --compression zstd peaks.bed
 [20 rows → peaks.parquet, zstd]
 
 $ vv --filter 'Score > 0.5' --parquet - big.lociss | duckdb -c "..."
+```
+
+### Terminal heatmap — `--heatmap`
+
+Render the numeric columns as a colour heatmap right in the terminal
+(rows × numeric-columns, globally normalised, viridis palette) — a quick look
+at the shape of a matrix without leaving the shell. `--image-mode` picks the
+backend: `auto` (kitty graphics if the terminal supports it, else Unicode
+half-blocks), `kitty`, `sixel`, `halfblock`, or `ascii`. When stdout is not a
+terminal a plain ASCII intensity grid is written instead of raw escape
+sequences, so redirection and `| less` stay clean. Non-finite cells (`NaN` /
+`Inf`) are treated as gaps.
+
+```sh
+$ vv --heatmap counts.parquet              # colour heatmap in the terminal
+$ vv --heatmap --image-mode ascii embedding.npy > grid.txt
 ```
 
 ## Features
