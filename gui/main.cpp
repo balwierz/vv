@@ -12,6 +12,7 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QComboBox>
 #include <QDockWidget>
 #include <QAction>
 #include <QDragEnterEvent>
@@ -32,6 +33,7 @@
 #include <QRegularExpression>
 #include <QSettings>
 #include <QShortcut>
+#include <QSpinBox>
 #include <QStatusBar>
 #include <QTabWidget>
 #include <QTableView>
@@ -99,6 +101,7 @@ public:
         buildDetailDock();
         buildToolbar();
         buildSearchBar();
+        buildRegionBar();
         new QShortcut(QKeySequence::Copy, this, [this]{ copySelection(); });
         new QShortcut(QKeySequence::FindNext, this, [this]{ doFind(true); });
 
@@ -108,27 +111,34 @@ public:
         refreshStatus();
     }
 
-    // Open each path through libvvcore and add the resulting (flattened) tabs.
-    // Public so the headless window self-test (VVG_WINTEST) can drive it.
-    void openPaths(const QStringList& paths, const Config& base = Config{},
-                   bool quiet = false) {
+    // Open each path through libvvcore (with the current session region/coords/
+    // slop/pileup) and add the resulting flattened tabs. Public so the headless
+    // window self-test (VVG_WINTEST) can drive it.
+    void openPaths(const QStringList& paths, bool quiet = false) {
         if (paths.isEmpty()) return;
         lastDir_ = QFileInfo(paths.first()).absolutePath();
-        LoadResult r = loadSources(base, paths);
+        LoadResult r = loadWithSession(paths);
         for (auto& s : r.sources) addSourceTab(std::move(s));
-        for (const QString& p : r.opened) addRecent(p);
-        if (!r.errors.isEmpty()) {
-            QString joined = r.errors.join(QLatin1Char('\n'));
-            if (quiet)   // headless: never pop a modal that would block forever
-                std::fprintf(stderr, "vvg: %s\n", joined.toStdString().c_str());
-            else
-                QMessageBox::warning(this, tr("vvg — open"), joined);
-        }
+        for (const QString& p : r.opened) { addRecent(p); openedPaths_ << p; }
+        reportLoadErrors(r, quiet, tr("vvg — open"));
         if (!r.opened.isEmpty())
             setWindowTitle(r.opened.last() + QStringLiteral(" — vv"));
         refreshStatus();
     }
     int tabCount() const { return tabs_->count(); }
+    int firstTabRows() const { return models_.empty() ? 0 : models_.front()->rowCount(); }
+    // Headless mode (window self-test): route would-be modal dialogs to stderr
+    // so an offscreen run never blocks on a QMessageBox::exec().
+    void setHeadless(bool h) { headless_ = h; }
+    // Programmatic region query for the self-test / future scripting.
+    void applyRegionQuery(const QString& region, bool ncbi = false,
+                          int slop = 0, bool pileup = false) {
+        if (regionEdit_)  regionEdit_->setText(region);
+        if (coordsCombo_) coordsCombo_->setCurrentIndex(ncbi ? 1 : 0);
+        if (slopSpin_)    slopSpin_->setValue(slop);
+        if (pileupAction_) pileupAction_->setChecked(pileup);
+        applyRegion();
+    }
 
 private:
     static std::string src_label(ArrowTableModel* m) {
@@ -255,6 +265,92 @@ private:
                 .remove(QStringLiteral("recentFiles"));
             rebuildRecentMenu();
         });
+    }
+
+    // Open paths with the current session Config (region/coords/slop/pileup),
+    // canonicalising the region first. Errors are collected, not thrown.
+    LoadResult loadWithSession(const QStringList& paths) {
+        Config base = sessionCfg_;
+        std::string err = apply_region_modifiers(base);
+        if (!err.empty()) {
+            LoadResult r; r.errors << QString::fromStdString(err); return r;
+        }
+        return loadSources(base, paths);
+    }
+    void reportLoadErrors(const LoadResult& r, bool quiet, const QString& title) {
+        if (r.errors.isEmpty()) return;
+        QString joined = r.errors.join(QLatin1Char('\n'));
+        if (quiet || headless_)
+            std::fprintf(stderr, "vvg: %s\n", joined.toStdString().c_str());
+        else
+            QMessageBox::warning(this, title, joined);
+    }
+
+    void buildRegionBar() {
+        auto* tb = addToolBar(tr("Region"));
+        tb->addWidget(new QLabel(tr("  Region: ")));
+        regionEdit_ = new QLineEdit(tb);
+        regionEdit_->setPlaceholderText(tr("chr1:1000-2000[,chr2:…]"));
+        regionEdit_->setClearButtonEnabled(true);
+        regionEdit_->setMinimumWidth(200);
+        tb->addWidget(regionEdit_);
+        connect(regionEdit_, &QLineEdit::returnPressed, this, [this]{ applyRegion(); });
+
+        coordsCombo_ = new QComboBox(tb);
+        coordsCombo_->addItem(tr("UCSC 0-based"));   // index 0
+        coordsCombo_->addItem(tr("NCBI 1-based"));   // index 1
+        coordsCombo_->setToolTip(tr("Coordinate convention for the region box"));
+        tb->addWidget(coordsCombo_);
+
+        tb->addWidget(new QLabel(tr(" slop ")));
+        slopSpin_ = new QSpinBox(tb);
+        slopSpin_->setRange(0, 1000000000);
+        slopSpin_->setSingleStep(100);
+        slopSpin_->setToolTip(tr("Pad each window by N bp on both sides"));
+        tb->addWidget(slopSpin_);
+
+        connect(tb->addAction(tr("Apply")), &QAction::triggered, this,
+                [this]{ applyRegion(); });
+        connect(tb->addAction(tr("Clear")), &QAction::triggered, this,
+                [this]{ regionEdit_->clear(); applyRegion(); });
+
+        pileupAction_ = tb->addAction(tr("Pileup"));
+        pileupAction_->setCheckable(true);
+        pileupAction_->setToolTip(
+            tr("BAM/CRAM: emit samtools mpileup-style per-base rows"));
+        connect(pileupAction_, &QAction::toggled, this, [this](bool){ applyRegion(); });
+    }
+
+    void applyRegion() {
+        sessionCfg_.region           = regionEdit_->text().trimmed().toStdString();
+        sessionCfg_.coords_one_based = (coordsCombo_->currentIndex() == 1);
+        sessionCfg_.slop             = slopSpin_->value();
+        sessionCfg_.pileup           = pileupAction_->isChecked();
+        reopenAll();
+    }
+
+    // Re-open every currently-loaded file under the session Config. Transactional:
+    // load the new sources first and only replace the tab set if at least one
+    // opened — a failed region query (e.g. un-indexed file) keeps the old view.
+    void reopenAll() {
+        if (openedPaths_.isEmpty()) return;
+        LoadResult r = loadWithSession(openedPaths_);
+        if (r.sources.empty()) {
+            QString why = r.errors.isEmpty() ? tr("no data for this query")
+                                             : r.errors.join(QLatin1Char('\n'));
+            if (headless_)
+                std::fprintf(stderr, "vvg region: %s\n", why.toStdString().c_str());
+            else
+                QMessageBox::warning(this, tr("vvg — region"),
+                    tr("Nothing to show — keeping the current view.\n\n%1\n\n"
+                       "(Tabix/BCF region queries need a .tbi/.csi index; Pileup "
+                       "needs a BAM/CRAM file.)").arg(why));
+            return;
+        }
+        while (tabs_->count() > 0) closeTab(0);
+        for (auto& s : r.sources) addSourceTab(std::move(s));
+        reportLoadErrors(r, /*quiet=*/false, tr("vvg — region"));
+        refreshStatus();
     }
 
 protected:
@@ -454,8 +550,15 @@ private:
     QTableWidget*                  detail_ = nullptr;
     QLineEdit*                     filterEdit_ = nullptr;
     QLineEdit*                     findEdit_   = nullptr;
+    QLineEdit*                     regionEdit_ = nullptr;
+    QComboBox*                     coordsCombo_ = nullptr;
+    QSpinBox*                      slopSpin_   = nullptr;
+    QAction*                       pileupAction_ = nullptr;
     QMenu*                         recentMenu_ = nullptr;
     QString                        lastDir_;
+    bool                           headless_ = false;   // suppress modal dialogs
+    QStringList                    openedPaths_;   // files currently loaded
+    Config                         sessionCfg_;    // region/coords/slop/pileup
     std::vector<QTableView*>       views_;
     std::vector<ArrowTableModel*>  models_;
     QMap<ArrowTableModel*, Qt::SortOrder> sortOrder_;
@@ -543,8 +646,20 @@ int main(int argc, char** argv) {
     // addSourceTab / loadSources path the menus and drag-and-drop also use.
     if (const char* wt = std::getenv("VVG_WINTEST"); wt && *wt && *wt != '0') {
         MainWindow win;
-        win.openPaths(paths, Config{}, /*quiet=*/true);
+        win.setHeadless(true);
+        win.openPaths(paths, /*quiet=*/true);
         std::printf("win_tabs=%d\n", win.tabCount());
+        // Optional region/pileup re-open check: VVG_REGION="chr1:…" [VVG_NCBI=1]
+        // [VVG_PILEUP=1].
+        const char* rg = std::getenv("VVG_REGION");
+        bool pileup = std::getenv("VVG_PILEUP") != nullptr;
+        if ((rg && *rg) || pileup) {
+            win.applyRegionQuery(QString::fromLocal8Bit(rg ? rg : ""),
+                                 std::getenv("VVG_NCBI") != nullptr, 0, pileup);
+            std::printf("region '%s' pileup=%d -> tabs=%d rows=%d\n",
+                        rg ? rg : "", pileup ? 1 : 0,
+                        win.tabCount(), win.firstTabRows());
+        }
         return 0;
     }
 

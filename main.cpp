@@ -2087,7 +2087,9 @@ static std::shared_ptr<arrow::Table> project_to_requested(
 // Apply --regions-file (read BED chrom/start/end, append to cfg.region) and
 // --slop N (pad every window by N bp on each side). Mutates `cfg` to reflect
 // the effective region list in cfg.region. Returns "" on success.
-static std::string apply_region_modifiers(Config& cfg) {
+// Declared in vvcore.hpp (external linkage) so GUI frontends can offer region
+// queries; parse_region_list / Region stay internal to this TU.
+std::string apply_region_modifiers(Config& cfg) {
     // 0) Canonicalise to UCSC (0-based half-open). --coords NCBI applies only
     // to -r / --region inputs; --regions-file entries are always BED (UCSC)
     // per the spec. After this, cfg.region is guaranteed UCSC convention

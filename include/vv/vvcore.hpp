@@ -229,3 +229,10 @@ public:
 // tab; siblings expand via the WorkbookSource / SqliteSource hooks.
 std::string open_source(const std::string& path, const Config& cfg,
                         std::unique_ptr<TabularSource>* out);
+
+// Canonicalise region inputs in `cfg` *before* open_source(): folds --coords
+// (NCBI↔UCSC), --regions-file, and --slop into cfg.region as a UCSC 0-based
+// half-open comma list and clears cfg.coords_one_based, so downstream readers
+// are coordinate-agnostic. A frontend offering region queries calls this once
+// before open_source(). Returns "" on success or a human-readable error.
+std::string apply_region_modifiers(Config& cfg);
