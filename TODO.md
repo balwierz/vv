@@ -274,7 +274,7 @@ be done first: it catches this whole bug class automatically.
   - Fix: Use checked multiplication (e.g. __builtin_mul_overflow or compare against (SIZE_MAX/item_size)) when computing every element-count and byte-offset;
 - [ ] `main.cpp:9852` — Inf values in a float column poison heatmap normalization (NaN -> lround UB, blank plot)
   - Fix: Treat non-finite values like missing: in the scan use `if (!ok || !std::isfinite(d)) d = std::nan("");` (only update lo/hi for finite d), and in the pixel loop test `if (!std::isfinite(d))` instead of just…
-- [ ] `main.cpp:13038` — TUI sort / filter / stats / search silently operate on only the loaded prefix of a streaming source
+- [x] `main.cpp:13038` — TUI sort / filter / stats / search silently operate on only the loaded prefix of a streaming source — fixed on `fix/tui-streaming-prefix` (shared drain_to_eof() helper, mirroring the `G` handler, called at the head of rebuild_display_order / compute_stats_for / find_next; the `G` handler now reuses it). Verified with a 3-block CSV: at op time only 2 of 3 chunks were loaded; the drain pulls in the third so the op covers the whole file.
   - Fix: Before these full-file passes, drain streaming sources to EOF (the same `while (src_->total_rows() < 0) src_->ensure(src_->num_chunks());` loop used by the `G` handler, with a 'Loading…' status), then re-read…
 - [ ] `main.cpp:14579` — --heatmap emits raw terminal escape sequences with no isatty guard (corrupts pipes/files)
   - Fix: When stdout is not a TTY and image_mode is empty/auto, either error out ("--heatmap requires a terminal; pick --image-mode explicitly") or downgrade to a plain ASCII intensity grid.
