@@ -58,6 +58,8 @@ _vv() {
         '--no-header[Omit the header row]' \
         '--parquet+[Write a Parquet file]:path:_files' \
         '--compression+[Parquet codec]:codec:(zstd snappy gzip lz4 none)' \
+        '--heatmap[Render numeric columns as a terminal heatmap]' \
+        '--image-mode+[Heatmap backend]:how:(auto kitty sixel halfblock ascii)' \
         '--json[Write a JSON array]' \
         '--ndjson[Write one JSON object per line]' \
         '--md[Write a GitHub-flavored markdown table]' \

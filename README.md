@@ -372,6 +372,7 @@ a headless browser such as `chromium`).
 | `-@`, `--threads <N>`      | worker threads (default auto, capped at 8)           |
 | `--tsv` / `--csv` / `--json` / `--ndjson` / `--md` | non-interactive output |
 | `--parquet OUT`            | convert input to a Parquet file (or `-` for stdout)  |
+| `--heatmap`                | render numeric columns as a terminal heatmap (`--image-mode auto/kitty/sixel/halfblock/ascii`) |
 | `--schema` / `--describe` / `--stats` / `--unique` / `--sample` | data-exploration modes |
 | `--validate`               | LociSSD invariants check; exits non-zero on failure  |
 | `--vertical`               | transposed (vh) preview                              |

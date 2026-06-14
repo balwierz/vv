@@ -776,6 +776,25 @@ assert_eq_file "decode_threads_8_matches_t1" "$TMP/d8.out" "$TMP/t1.out"
 assert_eq_file "decode_threads_16_matches_t1" "$TMP/d16.out" "$TMP/t1.out"
 
 echo
+echo "── Heatmap (--heatmap) ───────────────────────────────────"
+# Deterministic ASCII grid (stdout only — the status line goes to stderr).
+"$VV" --heatmap --image-mode ascii "$DATA/tiny.parquet" 2>/dev/null > "$TMP/heatmap_ascii.out"
+assert_eq_file "heatmap_ascii" "$TMP/heatmap_ascii.out" "$GOLDEN/heatmap_ascii.expected"
+# Not a TTY (piped) + auto mode must fall back to ASCII — no escape sequences.
+HM_PIPED=$("$VV" --heatmap "$DATA/tiny.parquet" 2>/dev/null | tr -dc '\033' | wc -c)
+assert_eq_file_inline "heatmap_no_escapes_when_piped" "$HM_PIPED" "0"
+# Unknown backend is rejected.
+if "$VV" --heatmap --image-mode bogus "$DATA/tiny.parquet" >/dev/null 2>&1; then
+    FAIL=$((FAIL + 1)); echo "  FAIL  heatmap_bad_mode_rejected (exit 0)"
+else
+    PASS=$((PASS + 1)); echo "  ok    heatmap_bad_mode_rejected"
+fi
+# Help documents the flags.
+HM_HELP=$("$VV" --help 2>&1 || true)
+assert_contains "help_has_heatmap"    "$HM_HELP" "--heatmap"
+assert_contains "help_has_image_mode" "$HM_HELP" "--image-mode"
+
+echo
 echo "── Help / version ────────────────────────────────────────"
 HELP_OUT=$("$VV" --help 2>&1 || true)
 assert_contains "help_has_tagline" "$HELP_OUT" "vv -- universal genomic file viewer"
