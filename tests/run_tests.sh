@@ -562,6 +562,18 @@ if [ -f "$DATA/tiny.h5ad" ]; then
     assert_contains "h5ad_summary_obsm"      "$H5AD_OUT" "obsm"
 fi
 
+# Dense-X AnnData (.h5ad) — a 3 × 250 dense X. The summary reports the true
+# shape; the X tab (a sibling, only materialised by the GUI / TUI) is capped to
+# the 200-column dense preview so a wide dense matrix can't OOM the reader (the
+# cap itself is asserted by the GUI CI job via VVG_TABDIMS).
+if [ -f "$DATA/tiny.dense.h5ad" ]; then
+    TIMES=$(printf '\xc3\x97')
+    DENSE_OUT=$("$VV" --color=never --no-interactive "$DATA/tiny.dense.h5ad" 2>&1)
+    assert_contains "h5ad_dense_summary_shape" "$DENSE_OUT" "3 $TIMES 250"
+    assert_exit_zero "h5ad_dense_no_crash" \
+        "$VV" --no-interactive --color=never "$DATA/tiny.dense.h5ad"
+fi
+
 # Generic HDF5 (.h5) — first tab is the hierarchy table; siblings are
 # each 1D/2D dataset.
 if [ -f "$DATA/tiny.h5" ]; then

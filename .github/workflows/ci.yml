@@ -179,6 +179,13 @@ jobs:
           # match_substring prefilter must not drop any).
           VVG_WINTEST=1 VVG_AFIND='chr1' ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -q 'afind .* matches=12'
+          # A dense AnnData X wider than the preview cap must materialise as a
+          # 200-column preview (not the full 250), so a huge dense matrix can't
+          # OOM the reader. The sibling X tab is only materialised by the GUI.
+          if [ -f tests/data/tiny.dense.h5ad ]; then
+            VVG_WINTEST=1 VVG_TABDIMS=1 ./build-gui/gui/vvg tests/data/tiny.dense.h5ad \
+              | grep -qE "tab 'X' rows=3 cols=200 .*first 200 of 250 cols"
+          fi
           if [ "${{ steps.gui_deps.outputs.kf6 }}" = "yes" ]; then
             # KF6 present: the Dolphin thumbnailer + KFileMetaData .so plugins
             # must have linked against libvvcore.

@@ -132,6 +132,16 @@ public:
     }
     int tabCount() const { return tabs_->count(); }
     int firstTabRows() const { return models_.empty() ? 0 : models_.front()->rowCount(); }
+    // Print every open tab's materialised dimensions — used by the self-test to
+    // confirm dense 2-D matrices are previewed (row/col capped) rather than
+    // fully densified.
+    void dumpTabDims() const {
+        for (auto* m : models_)
+            std::printf("tab '%s' rows=%d cols=%d footer=%s\n",
+                        m->source()->tab_label().c_str(),
+                        m->rowCount(), m->displayColumnCount(),
+                        m->footer().toStdString().c_str());
+    }
     // Drive the *async* filter end-to-end for the self-test: launch it, pump the
     // event loop until the worker's result is installed, return the row count.
     int applyFilterAsyncForTest(const QString& expr) {
@@ -826,6 +836,10 @@ int main(int argc, char** argv) {
         win.setHeadless(true);
         win.openPaths(paths, /*quiet=*/true);
         std::printf("win_tabs=%d\n", win.tabCount());
+        // Optional per-tab dimension dump: VVG_TABDIMS=1 (verifies dense 2-D
+        // matrix previews are capped, not fully densified).
+        if (const char* td = std::getenv("VVG_TABDIMS"); td && *td && *td != '0')
+            win.dumpTabDims();
         // Optional region/pileup re-open check: VVG_REGION="chr1:…" [VVG_NCBI=1]
         // [VVG_PILEUP=1].
         const char* rg = std::getenv("VVG_REGION");
