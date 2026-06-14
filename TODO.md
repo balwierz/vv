@@ -363,7 +363,7 @@ be done first: it catches this whole bug class automatically.
 - [ ] `main.cpp:718` — `--color always` (space-separated) misparsed as a filename → "file not found"
 - [ ] `main.cpp:1657` — No chrom-name normalization between query and file ('chr1' vs '1') silently returns zero rows
 - [ ] `main.cpp:1698` — `-r chrom:N` (single coordinate) means a 1-bp window, diverging from the samtools convention users expect
-- [ ] `main.cpp:9496` — .fods (Flat ODS) is dispatched in code but documented/completed nowhere
+- [~] `main.cpp:9496` — .fods (Flat ODS) is dispatched in code but documented/completed nowhere — now in the README formats table (`docs/readme-npz-gui`); man page + shell completions still pending
 - [ ] `main.cpp:9803` — Auto mode never uses inline-image protocols on iTerm2/WezTerm (falls to half-block)
 - [ ] `main.cpp:12334` — Status bar row range overshoots loaded data on streaming sources
 - [ ] `main.cpp:14683` — Auto-TUI failure falls through silently with no diagnostic unless -i was given
