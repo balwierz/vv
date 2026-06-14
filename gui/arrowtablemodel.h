@@ -59,14 +59,31 @@ public:
     void    cancelRecompute();
     bool    isComputing() const { return computing_; }
 
+    // Async find: scans the whole view off the UI thread (same blank-while-
+    // computing discipline as the filter/sort path) and builds a sorted list of
+    // match positions. String columns are vectorized with Arrow
+    // match_substring as a *candidate* prefilter for literal needles; the Qt
+    // regex on the displayed cell text is always the source of truth. Emits
+    // findReady(matches) on completion; cancelRecompute() aborts. Once a scan
+    // for a pattern is done, findNext() navigates it in O(log matches) without
+    // touching the source. The sync findNext (self-test) triggers a synchronous
+    // scan first if the results are stale (see findResultsValid).
+    void    findAsync(const QRegularExpression& re);
+    bool    findResultsValid(const QRegularExpression& re) const;
+    qint64  findMatchCount() const { return (qint64)findPos_.size(); }
+
 signals:
     void    recomputeStarted();
     void    recomputeFinished(qint64 viewRows);
     void    recomputeCanceled();
+    void    findReady(qint64 matches);
 
 public:
 
-    // Search overlay: matching cells are highlighted; findNext walks matches.
+    // Search overlay: matching cells are highlighted (Qt regex over the visible
+    // cells, the source of truth). findNext walks the precomputed match list
+    // (findAsync) in O(log matches); if no scan has run for the active pattern
+    // it computes one synchronously (the self-test path).
     void        setSearch(const QRegularExpression& re);
     void        clearSearch();
     QModelIndex findNext(const QModelIndex& from, bool forward) const;
@@ -115,6 +132,13 @@ private:
                                          std::atomic<bool>* cancel) const;
     void      startRecompute();           // blank + launch worker
     void      onRecomputeDone();          // install the worker's result
+    // Pure find computation: scan the view (chunk by chunk in source order),
+    // returning the matching cell positions (viewRow*cols + col), sorted. Polls
+    // `cancel`; returns {} if aborted. Runs on the worker for findAsync and
+    // inline for the synchronous findNext fallback.
+    std::vector<int64_t> computeFindPos(QRegularExpression re,
+                                        std::atomic<bool>* cancel) const;
+    void      invalidateFind();           // drop stale match list (view changed)
 
     std::unique_ptr<TabularSource> src_;
     std::shared_ptr<arrow::Schema> schema_;
@@ -139,10 +163,20 @@ private:
     QRegularExpression   searchRe_;
     bool                 hasSearch_ = false;
 
-    // Async recompute (filter/sort off the UI thread).
+    // Async recompute (filter/sort/find off the UI thread). One worker at a
+    // time; pendingJob_ tells onRecomputeDone how to install the result.
+    enum class Job { None, Order, Find };
     QFutureWatcher<std::vector<int64_t>>* watcher_ = nullptr;
     std::shared_ptr<std::atomic<bool>>    cancel_;   // worker holds a copy
     bool                                  computing_ = false;
+    Job                                   pendingJob_ = Job::None;
+    QRegularExpression                    pendingRe_;     // for Job::Find
+
+    // Precomputed match positions (viewRow*cols + col), ascending. Valid for
+    // findPattern_ until the view (order_) or source changes.
+    std::vector<int64_t>                  findPos_;
+    QString                               findPattern_;
+    bool                                  findValid_ = false;
 
     mutable int64_t loaded_rows_  = 0;
     mutable bool    fully_loaded_ = false;
