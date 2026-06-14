@@ -20,6 +20,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QItemSelectionModel>
 #include <QKeySequence>
 #include <QLabel>
@@ -93,6 +94,7 @@ public:
                 [this](int i){ closeTab(i); });
         connect(tabs_, &QTabWidget::currentChanged, this, [this](int) {
             refreshStatus();
+            refreshColumnsMenu();
             if (auto* v = activeView())
                 updateDetail(v->selectionModel()->currentIndex());
         });
@@ -222,13 +224,66 @@ private:
         connect(cp, &QAction::triggered, this, [this]{ copySelection(); });
         edit->addAction(cp);
 
+        auto* view = menuBar()->addMenu(tr("&View"));
+        QAction* go = new QAction(tr("&Go to Row…"), this);
+        go->setShortcut(QKeySequence(QStringLiteral("Ctrl+G")));
+        connect(go, &QAction::triggered, this, [this]{ gotoRow(); });
+        view->addAction(go);
+        view->addSeparator();
+        columnsMenu_ = view->addMenu(tr("&Columns"));
+        refreshColumnsMenu();
+
         auto* help = menuBar()->addMenu(tr("&Help"));
+        connect(help->addAction(tr("&Shortcuts && Syntax")), &QAction::triggered, this, [this]{
+            QMessageBox::information(this, tr("vvg — help"),
+                tr("Sort:    click a column header (toggles ascending/descending)\n"
+                   "Filter:  the Filter bar — e.g.  score > 5 and chrom == \"chr1\"\n"
+                   "Find:    the Find bar (regex); Ctrl+F / F3 for next match\n"
+                   "Region:  the Region bar — chr1:1000-2000 (UCSC) / NCBI; Pileup for BAM\n"
+                   "Copy:    Ctrl+C copies the selection as TSV\n"
+                   "Slice:   ◀ / ▶ steps the leading axis of NPZ 3-D+ arrays\n"
+                   "Go to:   Ctrl+G jumps to a row; View ▸ Columns shows/hides columns"));
+        });
         connect(help->addAction(tr("&About vvg")), &QAction::triggered, this, [this]{
             QMessageBox::about(this, tr("vvg"),
-                tr("vv — graphical viewer.\n\nClick a column header to sort (typed); "
-                   "use the Filter and Find bars; ◀/▶ Slice steps NPZ 3-D arrays.\n"
-                   "Open files via File ▸ Open, drag-and-drop, or the command line."));
+                tr("vv — graphical viewer.\n\nOpens every format the vv CLI supports "
+                   "(Parquet, Arrow, BAM/VCF/BCF, BED/GFF, HDF5/AnnData, NPZ, xlsx/ods, "
+                   "SQLite, …) through the shared libvvcore reader core."));
         });
+    }
+
+    // Rebuild the View ▸ Columns checkable list for the active table.
+    void refreshColumnsMenu() {
+        if (!columnsMenu_) return;
+        columnsMenu_->clear();
+        auto* m = activeModel();
+        auto* v = activeView();
+        if (!m || !v || m->displayColumnCount() == 0) {
+            columnsMenu_->addAction(tr("(no columns)"))->setEnabled(false);
+            return;
+        }
+        for (int c = 0; c < m->displayColumnCount(); ++c) {
+            QAction* a = columnsMenu_->addAction(m->columnName(c));
+            a->setCheckable(true);
+            a->setChecked(!v->isColumnHidden(c));
+            connect(a, &QAction::toggled, this, [v, c](bool on){
+                v->setColumnHidden(c, !on);
+            });
+        }
+    }
+
+    void gotoRow() {
+        auto* m = activeModel();
+        auto* v = activeView();
+        if (!m || !v || m->rowCount() == 0) return;
+        bool ok = false;
+        int row = QInputDialog::getInt(this, tr("Go to row"), tr("Row (1-based):"),
+                                       1, 1, m->rowCount(), 1, &ok);
+        if (ok) {
+            QModelIndex idx = m->index(row - 1, 0);
+            v->setCurrentIndex(idx);
+            v->scrollTo(idx, QAbstractItemView::PositionAtTop);
+        }
     }
 
     void openFilesDialog() {
@@ -554,7 +609,8 @@ private:
     QComboBox*                     coordsCombo_ = nullptr;
     QSpinBox*                      slopSpin_   = nullptr;
     QAction*                       pileupAction_ = nullptr;
-    QMenu*                         recentMenu_ = nullptr;
+    QMenu*                         recentMenu_  = nullptr;
+    QMenu*                         columnsMenu_ = nullptr;
     QString                        lastDir_;
     bool                           headless_ = false;   // suppress modal dialogs
     QStringList                    openedPaths_;   // files currently loaded
