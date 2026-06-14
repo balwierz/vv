@@ -31,6 +31,8 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QProgressBar>
+#include <QPushButton>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QShortcut>
@@ -104,6 +106,7 @@ public:
         buildToolbar();
         buildSearchBar();
         buildRegionBar();
+        buildProgressUI();
         new QShortcut(QKeySequence::Copy, this, [this]{ copySelection(); });
         new QShortcut(QKeySequence::FindNext, this, [this]{ doFind(true); });
 
@@ -129,6 +132,19 @@ public:
     }
     int tabCount() const { return tabs_->count(); }
     int firstTabRows() const { return models_.empty() ? 0 : models_.front()->rowCount(); }
+    // Drive the *async* filter end-to-end for the self-test: launch it, pump the
+    // event loop until the worker's result is installed, return the row count.
+    int applyFilterAsyncForTest(const QString& expr) {
+        auto* m = activeModel();
+        if (!m) return -1;
+        FilterExpr fx; std::string e;
+        if (!parse_filter_expr(expr.toStdString(), *m->source()->schema(), &fx, &e))
+            return -2;
+        m->setFilterAsync(fx);
+        for (int guard = 0; m->isComputing() && guard < 2000000; ++guard)
+            QCoreApplication::processEvents();
+        return (int)m->viewRows();
+    }
     // Headless mode (window self-test): route would-be modal dialogs to stderr
     // so an offscreen run never blocks on a QMessageBox::exec().
     void setHeadless(bool h) { headless_ = h; }
@@ -159,7 +175,8 @@ private:
         view->verticalHeader()->setDefaultSectionSize(
             view->fontMetrics().height() + 6);
 
-        // Click a column header to sort (toggle asc/desc), typed via Arrow.
+        // Click a column header to sort (toggle asc/desc), typed via Arrow,
+        // off the UI thread.
         connect(view->horizontalHeader(), &QHeaderView::sectionClicked,
                 this, [this, view, model](int section) {
                     Qt::SortOrder ord = Qt::AscendingOrder;
@@ -167,7 +184,7 @@ private:
                         sortOrder_.value(model, Qt::AscendingOrder) == Qt::AscendingOrder)
                         ord = Qt::DescendingOrder;
                     sortOrder_[model] = ord;
-                    model->sortByDisplayColumn(section, ord);
+                    model->sortAsyncByDisplayColumn(section, ord);
                     view->horizontalHeader()->setSortIndicatorShown(true);
                     view->horizontalHeader()->setSortIndicator(section, ord);
                 });
@@ -176,6 +193,14 @@ private:
                 this, [this](const QModelIndex& cur, const QModelIndex&) {
                     updateDetail(cur);
                 });
+
+        // Background filter/sort progress for this model.
+        connect(model, &ArrowTableModel::recomputeStarted, this,
+                [this, model]{ onRecomputeStarted(model); });
+        connect(model, &ArrowTableModel::recomputeFinished, this,
+                [this, model](qint64){ onRecomputeFinished(model); });
+        connect(model, &ArrowTableModel::recomputeCanceled, this,
+                [this]{ onRecomputeStopped(); });
 
         views_.push_back(view);
         models_.push_back(model);
@@ -194,6 +219,11 @@ private:
             models_.erase(models_.begin() + i);
         }
         if (m) sortOrder_.remove(m);
+        if (m == computingModel_) {   // its worker is cancelled+joined in ~ArrowTableModel
+            computingModel_ = nullptr;
+            if (progress_)  progress_->setVisible(false);
+            if (cancelBtn_) cancelBtn_->setVisible(false);
+        }
         delete w;   // QTableView (detaches from its model)
         delete m;   // model is parented to MainWindow; free it now
         refreshStatus();
@@ -450,7 +480,7 @@ private:
         QAction* clr = tb->addAction(tr("Clear sort"));
         connect(clr, &QAction::triggered, this, [this]{
             if (auto* m = activeModel()) {
-                m->sortByDisplayColumn(-1, Qt::AscendingOrder);
+                m->sortAsyncByDisplayColumn(-1, Qt::AscendingOrder);
                 if (auto* v = activeView())
                     v->horizontalHeader()->setSortIndicatorShown(false);
             }
@@ -518,9 +548,8 @@ private:
         if (!m) return;
         QString text = filterEdit_->text().trimmed();
         if (text.isEmpty()) {
-            m->clearFilter();
             filterEdit_->setStyleSheet({});
-            refreshStatus();
+            m->clearFilterAsync();   // status updates on recomputeFinished
             return;
         }
         FilterExpr fx;
@@ -532,11 +561,7 @@ private:
             return;
         }
         filterEdit_->setStyleSheet({});
-        m->setFilter(fx);
-        statusBar()->showMessage(tr("filter: %1 / %2 rows  —  %3")
-            .arg((qlonglong)m->viewRows())
-            .arg((qlonglong)m->sourceTotal())
-            .arg(m->footer()));
+        m->setFilterAsync(fx);       // runs off the UI thread; result on finish
     }
 
     void doFind(bool forward) {
@@ -601,6 +626,45 @@ private:
             statusBar()->showMessage(m->footer());
     }
 
+    void buildProgressUI() {
+        progress_ = new QProgressBar(this);
+        progress_->setRange(0, 0);          // indeterminate "busy" spinner
+        progress_->setMaximumWidth(160);
+        progress_->setVisible(false);
+        cancelBtn_ = new QPushButton(tr("Cancel"), this);
+        cancelBtn_->setVisible(false);
+        connect(cancelBtn_, &QPushButton::clicked, this, [this]{
+            if (computingModel_) computingModel_->cancelRecompute();
+        });
+        statusBar()->addPermanentWidget(progress_);
+        statusBar()->addPermanentWidget(cancelBtn_);
+    }
+    void onRecomputeStarted(ArrowTableModel* m) {
+        computingModel_ = m;
+        progress_->setVisible(true);
+        cancelBtn_->setVisible(true);
+        statusBar()->showMessage(tr("Working…"));
+    }
+    void onRecomputeFinished(ArrowTableModel* m) {
+        if (m == computingModel_) computingModel_ = nullptr;
+        progress_->setVisible(false);
+        cancelBtn_->setVisible(false);
+        if (m != activeModel()) return;
+        if (m->hasFilter())
+            statusBar()->showMessage(tr("filter: %1 / %2 rows  —  %3")
+                .arg((qlonglong)m->viewRows())
+                .arg((qlonglong)m->sourceTotal())
+                .arg(m->footer()));
+        else
+            refreshStatus();
+    }
+    void onRecomputeStopped() {           // canceled
+        computingModel_ = nullptr;
+        progress_->setVisible(false);
+        cancelBtn_->setVisible(false);
+        statusBar()->showMessage(tr("canceled"), 2000);
+    }
+
     QTabWidget*                    tabs_   = nullptr;
     QTableWidget*                  detail_ = nullptr;
     QLineEdit*                     filterEdit_ = nullptr;
@@ -611,6 +675,9 @@ private:
     QAction*                       pileupAction_ = nullptr;
     QMenu*                         recentMenu_  = nullptr;
     QMenu*                         columnsMenu_ = nullptr;
+    QProgressBar*                  progress_   = nullptr;
+    QPushButton*                   cancelBtn_  = nullptr;
+    ArrowTableModel*               computingModel_ = nullptr;  // model with a live worker
     QString                        lastDir_;
     bool                           headless_ = false;   // suppress modal dialogs
     QStringList                    openedPaths_;   // files currently loaded
@@ -715,6 +782,11 @@ int main(int argc, char** argv) {
             std::printf("region '%s' pileup=%d -> tabs=%d rows=%d\n",
                         rg ? rg : "", pileup ? 1 : 0,
                         win.tabCount(), win.firstTabRows());
+        }
+        // Optional async-filter check: VVG_AFILTER="<expr>" (off-thread + pump).
+        if (const char* af = std::getenv("VVG_AFILTER"); af && *af) {
+            int rows = win.applyFilterAsyncForTest(QString::fromLocal8Bit(af));
+            std::printf("afilter '%s' -> rows=%d\n", af, rows);
         }
         return 0;
     }

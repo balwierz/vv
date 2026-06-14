@@ -171,6 +171,9 @@ jobs:
           # Region re-open (tabix): chr1:1099-1200 overlaps exactly one BED row.
           VVG_WINTEST=1 VVG_REGION=chr1:1099-1200 ./build-gui/gui/vvg tests/data/tiny.bed.gz \
             | grep -q 'rows=1'
+          # Background (off-UI-thread) filter returns the same rows as the CLI.
+          VVG_WINTEST=1 VVG_AFILTER='Score > 0.2' ./build-gui/gui/vvg tests/data/tiny.parquet \
+            | grep -q 'afilter .* rows=16'
           if [ "${{ steps.gui_deps.outputs.kf6 }}" = "yes" ]; then
             # KF6 present: the Dolphin thumbnailer + KFileMetaData .so plugins
             # must have linked against libvvcore.
