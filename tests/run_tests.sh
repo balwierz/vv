@@ -567,6 +567,16 @@ if [ -f "$DATA/tiny.ragged.ods" ]; then
     assert_contains "ods_ragged_wide_value"         "$RGO_TSV" "EXTRA"
 fi
 
+# ODS table:number-rows-repeated on a non-empty row: the "dup" row (repeat=3)
+# must expand to 3 rows, so the sheet has 5 data rows (a + dup×3 + z) instead of
+# the 3 it dropped to before the fix.
+if [ -f "$DATA/tiny.rowrep.ods" ]; then
+    RR_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.rowrep.ods" | wc -l)
+    assert_eq_file_inline "ods_rowrep_expands"      "$RR_ROWS" "5"
+    RR_DUP=$("$VV" --tsv --no-header "$DATA/tiny.rowrep.ods" | grep -c '^dup')
+    assert_eq_file_inline "ods_rowrep_dup_count"    "$RR_DUP" "3"
+fi
+
 # AnnData (.h5ad) — first tab is the summary; siblings are obs / var /
 # X-preview / obsm[X_umap]. Footer reports sibling count.
 if [ -f "$DATA/tiny.h5ad" ]; then

@@ -466,6 +466,35 @@ else:
     doc.spreadsheet.addElement(t)
     doc.save(str(rg_path))
 
+    # tiny.rowrep.ods: a *non-empty* row carrying table:number-rows-repeated.
+    # The reader used to ignore the attribute and emit the row once, silently
+    # dropping the duplicates. The "dup" row (repeat=3) must yield 3 rows, so
+    # the sheet has 5 data rows total (a + dup×3 + z) under a 2-column header.
+    rr_path = HERE / "tiny.rowrep.ods"
+    if rr_path.exists():
+        rr_path.unlink()
+    rdoc = OpenDocumentSpreadsheet()
+    rt = Table(name="rep")
+
+    def _rr_cell(c):
+        tc = (TableCell(valuetype="string") if isinstance(c, str)
+              else TableCell(valuetype="float", value=str(c)))
+        tc.addElement(P(text=str(c)))
+        return tc
+
+    def _rr_row(cells, repeat=None):
+        tr = TableRow(numberrowsrepeated=str(repeat)) if repeat else TableRow()
+        for c in cells:
+            tr.addElement(_rr_cell(c))
+        rt.addElement(tr)
+
+    _rr_row(["k", "v"])                # header
+    _rr_row(["a", 1])
+    _rr_row(["dup", 9], repeat=3)      # non-empty row repeated 3×
+    _rr_row(["z", 2])
+    rdoc.spreadsheet.addElement(rt)
+    rdoc.save(str(rr_path))
+
 # ── HDF5 / AnnData fixtures ──────────────────────────────────────────────────
 # tiny.h5ad: small AnnData with a CSR-sparse X, two obs columns
 # (one categorical), one var column, one obsm embedding. Exercises
