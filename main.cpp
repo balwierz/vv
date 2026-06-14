@@ -485,7 +485,7 @@ static int effective_decode_threads(const Config& cfg) {
     return effective_threads(cfg);
 }
 
-static constexpr const char* kVersion = "1.9.1";
+static constexpr const char* kVersion = "1.10.0";
 
 static void print_usage(const char* prog) {
     std::fprintf(stderr,
