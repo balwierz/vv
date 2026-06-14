@@ -547,6 +547,26 @@ if [ -f "$DATA/tiny.ods" ]; then
     assert_eq_file_inline "ods_filter_by_real"      "$OD_FLT" "2"
 fi
 
+# Ragged workbooks: a data row wider than the 3-column header. The sheet must
+# parse in full (a wider row used to make Arrow reject the whole sheet) with the
+# overflow column named "col4" and the extra value preserved.
+if [ -f "$DATA/tiny.ragged.xlsx" ]; then
+    RG_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.ragged.xlsx" | wc -l)
+    assert_eq_file_inline "xlsx_ragged_rows"        "$RG_ROWS" "3"
+    RG_OUT=$("$VV" --schema "$DATA/tiny.ragged.xlsx" 2>&1)
+    assert_contains "xlsx_ragged_overflow_col"      "$RG_OUT" "col4"
+    RG_TSV=$("$VV" --tsv "$DATA/tiny.ragged.xlsx" 2>&1)
+    assert_contains "xlsx_ragged_wide_value"        "$RG_TSV" "EXTRA"
+fi
+if [ -f "$DATA/tiny.ragged.ods" ]; then
+    RGO_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.ragged.ods" | wc -l)
+    assert_eq_file_inline "ods_ragged_rows"         "$RGO_ROWS" "3"
+    RGO_OUT=$("$VV" --schema "$DATA/tiny.ragged.ods" 2>&1)
+    assert_contains "ods_ragged_overflow_col"       "$RGO_OUT" "col4"
+    RGO_TSV=$("$VV" --tsv "$DATA/tiny.ragged.ods" 2>&1)
+    assert_contains "ods_ragged_wide_value"         "$RGO_TSV" "EXTRA"
+fi
+
 # AnnData (.h5ad) — first tab is the summary; siblings are obs / var /
 # X-preview / obsm[X_umap]. Footer reports sibling count.
 if [ -f "$DATA/tiny.h5ad" ]; then

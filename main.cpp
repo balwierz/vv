@@ -5817,6 +5817,31 @@ csv_buffer_to_table(const std::string& buf) {
     return reader->Read();
 }
 
+// Assemble per-row CSV fragments (each a comma-joined run of quoted cells, with
+// no trailing padding) into one buffer where *every* row is padded out to the
+// widest row. Workbook readers used to lock the column count to the first
+// (header) row and only pad shorter rows; a later row with *more* columns than
+// the header then made Arrow's CSV reader reject the whole sheet as ragged.
+// Padding to the maximum keeps that data instead of dropping the sheet. Header
+// cells past the original header width are given synthetic "colN" names (N =
+// 1-based column position) so the widened header has no duplicate empty names.
+static std::string assemble_ragged_csv(const std::vector<std::string>& rows,
+                                       const std::vector<size_t>& widths) {
+    size_t max_cols = 0;
+    for (size_t w : widths) max_cols = std::max(max_cols, w);
+    std::string buf;
+    for (size_t i = 0; i < rows.size(); ++i) {
+        buf += rows[i];
+        for (size_t c = widths[i]; c < max_cols; ++c) {
+            buf += ',';
+            if (i == 0)                       // name the header's overflow cols
+                buf += "col" + std::to_string(c + 1);
+        }
+        buf += '\n';
+    }
+    return buf;
+}
+
 // Convert one xlsx sheet to an arrow::Table by buffering rows as CSV and
 // running them through csv_buffer_to_table. `sheet_name` may be empty to
 // open the first sheet by position.
@@ -5829,42 +5854,32 @@ xlsx_sheet_to_table(xlsxioreader rdr, const std::string& sheet_name) {
         return arrow::Status::IOError("xlsxio: cannot open sheet '",
                                        sheet_name, "'");
 
-    std::string buf;
-    buf.reserve(64 * 1024);
-    size_t header_cols = 0;
-    bool   first_row   = true;
-
+    // Buffer each row's cells, then pad every row to the widest one (a row
+    // wider than the header must not make Arrow reject the sheet — see
+    // assemble_ragged_csv).
+    std::vector<std::string> rows;
+    std::vector<size_t>      widths;
     while (xlsxioread_sheet_next_row(sh)) {
-        bool first_cell = true;
+        std::string line;
+        bool   first_cell = true;
         size_t col = 0;
         char* cell;
         while ((cell = xlsxioread_sheet_next_cell(sh)) != nullptr) {
-            if (!first_cell) buf += ',';
-            csv_append_quoted(buf, cell);
+            if (!first_cell) line += ',';
+            csv_append_quoted(line, cell);
             xlsxioread_free(cell);
             first_cell = false;
             ++col;
         }
-        // Pad short rows out to the header's column count so Arrow's CSV
-        // reader doesn't complain about ragged rows. Empty trailing cells
-        // become empty strings (→ nulls under default ConvertOptions).
-        if (first_row) {
-            header_cols = col;
-            first_row = false;
-        } else {
-            while (col < header_cols) {
-                buf += ',';
-                ++col;
-            }
-        }
-        buf += '\n';
+        rows.push_back(std::move(line));
+        widths.push_back(col);
     }
     xlsxioread_sheet_close(sh);
 
-    if (header_cols == 0)
+    if (rows.empty() || widths.front() == 0)
         return arrow::Status::IOError("xlsxio: sheet '", sheet_name,
                                        "' has no header row");
-    return csv_buffer_to_table(buf);
+    return csv_buffer_to_table(assemble_ragged_csv(rows, widths));
 }
 
 class XlsxSource : public WorkbookSource {
@@ -6034,9 +6049,11 @@ struct OdsParserState {
     std::string  cell_text;               // accumulated <text:p>
     bool         in_text_p = false;
 
-    // Header tracking for ragged-row padding.
-    size_t header_cols = 0;
-    bool   first_row_in_sheet = true;
+    // Buffered rows for the current sheet (one comma-joined CSV fragment per
+    // row, plus its field count); assembled with max-width padding at sheet
+    // close so a row wider than the header doesn't make Arrow reject the sheet.
+    std::vector<std::string> sheet_rows;
+    std::vector<size_t>      sheet_widths;
 
     static const char* attr(const char** atts, const char* key) {
         for (int i = 0; atts && atts[i]; i += 2)
@@ -6054,8 +6071,8 @@ static void XMLCALL ods_start(void* ud, const char* name, const char** atts) {
         if (auto n = OdsParserState::attr(atts, "table:name"))
             s->sheets.back().first = n;
         s->in_sheet = true;
-        s->first_row_in_sheet = true;
-        s->header_cols = 0;
+        s->sheet_rows.clear();
+        s->sheet_widths.clear();
     } else if (s->in_sheet && std::strcmp(name, "table:table-row") == 0) {
         s->row_cells.clear();
         s->row_repeat.clear();
@@ -6135,7 +6152,9 @@ static void XMLCALL ods_end(void* ud, const char* name) {
             if (!s->row_cells[i].empty()) last_nonempty = i;
         if (last_nonempty < 0) return;  // entirely empty row → skip
 
-        std::string& sheet_csv = s->sheets.back().second;
+        // Render the row as one comma-joined CSV fragment (no trailing pad);
+        // assemble_ragged_csv pads every row to the sheet's widest at close.
+        std::string line;
         size_t emitted = 0;
         for (int i = 0; i <= last_nonempty; ++i) {
             int reps = s->row_repeat[i];
@@ -6143,22 +6162,18 @@ static void XMLCALL ods_end(void* ud, const char* name) {
             // "rest of the row" even when there's no real data.
             if (reps > 16384) reps = 16384;
             for (int r = 0; r < reps; ++r) {
-                if (emitted) sheet_csv += ',';
-                csv_append_quoted(sheet_csv, s->row_cells[i].c_str());
+                if (emitted) line += ',';
+                csv_append_quoted(line, s->row_cells[i].c_str());
                 ++emitted;
             }
         }
-        if (s->first_row_in_sheet) {
-            s->header_cols = emitted;
-            s->first_row_in_sheet = false;
-        } else {
-            while (emitted < s->header_cols) {
-                sheet_csv += ',';
-                ++emitted;
-            }
-        }
-        sheet_csv += '\n';
+        s->sheet_rows.push_back(std::move(line));
+        s->sheet_widths.push_back(emitted);
     } else if (std::strcmp(name, "table:table") == 0) {
+        s->sheets.back().second =
+            assemble_ragged_csv(s->sheet_rows, s->sheet_widths);
+        s->sheet_rows.clear();
+        s->sheet_widths.clear();
         s->in_sheet = false;
     }
 }
