@@ -6,6 +6,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-06-15
+
+Large-AnnData usability, a Debian package, and build/CI maintenance.
+
+### Added
+- **`--tab <name>`** — view a named component tab (AnnData `obs` / `var` / `X`,
+  a workbook sheet, …) straight from the CLI, e.g.
+  `vv cells.h5ad --tab obs -n 20`. Case-insensitive; an unknown name lists the
+  available tabs. The data components were previously only reachable in the
+  interactive TUI.
+- **Debian package** — `packaging/debian/build-deb.sh` wraps the static
+  AlmaLinux 8 binary into a self-contained `.deb` (`Depends: libc6` only), and
+  the release workflow now publishes a `vv_<version>_<arch>.deb` for x86_64 and
+  aarch64 alongside the tarballs.
+
+### Fixed
+- **Large AnnData components no longer stall.** Opening a multi-GB `.h5ad`
+  (e.g. a 100M-cell atlas plate with a 4.7M-row `obs`) used to hang for minutes:
+  the TUI eagerly materialised every component and read `obs`/`var` in full.
+  Now each component tab is built lazily (only when viewed), and `obs`/`var`/`X`
+  are read as a bounded first-rows preview (footer notes the true size). A
+  high-cardinality categorical (e.g. a per-cell barcode with millions of
+  categories) is shown as integer codes instead of reading its whole dictionary.
+- **Arrow deprecation warnings** in the Parquet read paths silenced by moving to
+  the `arrow::Result` overloads of `ReadRowGroups` / `GetRecordBatchReader`
+  (version-guarded so the Arrow 23.0.1 static build still compiles).
+
+### Build / CI
+- ncurses is fetched from the GNU mirror (`ftp.gnu.org`) instead of
+  `invisible-mirror.net`, which intermittently WAF-blocked CI runners and broke
+  a release.
+- GitHub Actions bumped to their Node 24 runtimes ahead of the forced migration.
+
 ## [1.10.0] - 2026-06-14
 
 A feature and robustness release: a new terminal **heatmap** view, a major

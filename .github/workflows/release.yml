@@ -64,7 +64,12 @@ jobs:
           cp LICENSE README.md CHANGELOG.md "$stem/"
           cp man/vv.1 "$stem/" 2>/dev/null || true
           tar -czf "$stem.tar.gz" "$stem"
-          sha256sum "$stem.tar.gz" > "SHA256SUMS-${{ matrix.arch }}"
+          # Also wrap the same static binary in a .deb (the runner is Debian-
+          # based, so dpkg-deb + the right `dpkg --print-architecture` are on
+          # hand). Self-contained → Depends: libc6 only.
+          bash packaging/debian/build-deb.sh dist/vv .
+          deb="$(ls vv_*_*.deb)"
+          sha256sum "$stem.tar.gz" "$deb" > "SHA256SUMS-${{ matrix.arch }}"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
@@ -72,6 +77,7 @@ jobs:
           name: linux-${{ matrix.arch }}
           path: |
             vv-*-linux-${{ matrix.arch }}.tar.gz
+            vv_*_*.deb
             SHA256SUMS-${{ matrix.arch }}
 
   release:
@@ -97,8 +103,9 @@ jobs:
         run: |
           mkdir -p release
           find dist-all -name 'vv-*-linux-*.tar.gz' -exec cp {} release/ \;
+          find dist-all -name 'vv_*_*.deb'          -exec cp {} release/ \;
           # Merge per-arch SHA256SUMS into one file so the user can verify
-          # any tarball with `sha256sum -c SHA256SUMS`.
+          # any tarball or .deb with `sha256sum -c SHA256SUMS`.
           (cd release && find ../dist-all -name 'SHA256SUMS-*' \
               -exec cat {} \;) | sort -u > release/SHA256SUMS
           ls -lh release/
@@ -124,4 +131,5 @@ jobs:
           body_path: release-notes.md
           files: |
             release/vv-*-linux-*.tar.gz
+            release/vv_*_*.deb
             release/SHA256SUMS
