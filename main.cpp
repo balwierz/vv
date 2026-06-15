@@ -2855,8 +2855,18 @@ public:
     }
     arrow::Status read_chunk(int i, const std::vector<int>& cols,
                               std::shared_ptr<arrow::Table>* out) override {
-        if (!region_mode_)
+        if (!region_mode_) {
+            // The Result-returning ReadRowGroups overload landed in Arrow 24.0.0
+            // (when the Status one was deprecated); the static build still pins
+            // Arrow 23.0.1, so keep the old call there.
+#if ARROW_VERSION_MAJOR >= 24
+            ARROW_ASSIGN_OR_RAISE(
+                *out, reader_->ReadRowGroups({i}, arrow_to_leaf_indices(cols)));
+            return arrow::Status::OK();
+#else
             return reader_->ReadRowGroups({i}, arrow_to_leaf_indices(cols), out);
+#endif
+        }
 
         // Region mode: read the full row group of the slice, slice it to the
         // pruned row range, then apply the BED-style overlap predicate
@@ -2877,8 +2887,13 @@ public:
         std::vector<int> need(need_set.begin(), need_set.end());
 
         std::shared_ptr<arrow::Table> raw;
+#if ARROW_VERSION_MAJOR >= 24
+        ARROW_ASSIGN_OR_RAISE(raw, reader_->ReadRowGroups(
+            {s.row_group}, arrow_to_leaf_indices(need)));
+#else
         ARROW_RETURN_NOT_OK(reader_->ReadRowGroups(
             {s.row_group}, arrow_to_leaf_indices(need), &raw));
+#endif
         // Slice to the chromosome's portion of the row group.
         raw = raw->Slice(s.off_in_rg, s.len);
 
@@ -10851,9 +10866,13 @@ static std::string validate_lociss(const std::string& path) {
     std::vector<int> all_rgs;
     for (int g = 0; g < meta->num_row_groups(); ++g) all_rgs.push_back(g);
     std::shared_ptr<arrow::RecordBatchReader> rb;
-    st = reader->GetRecordBatchReader(all_rgs, leaf_cols, &rb);
-    if (!st.ok()) {
-        fail("cannot read columns: " + st.ToString());
+    // The Result-returning GetRecordBatchReader has shipped since the Status one
+    // was deprecated (Arrow 21.0.0), so this needs no version guard (the static
+    // build's Arrow 23.0.1 already uses it elsewhere).
+    if (auto rb_res = reader->GetRecordBatchReader(all_rgs, leaf_cols); rb_res.ok()) {
+        rb = std::move(*rb_res);
+    } else {
+        fail("cannot read columns: " + rb_res.status().ToString());
         return "validation failed: read error";
     }
 
