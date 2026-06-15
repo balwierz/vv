@@ -4036,17 +4036,29 @@ class BamPileupSource : public TabularSource {
                 if (mq > 93) mq = 93;
                 bases += (char)(mq + 33);
             }
+            // Base column: '*' for a deletion, '>' / '<' (forward/reverse) for
+            // a reference skip — CIGAR N, e.g. an RNA-seq intron — else the
+            // read base (uppercase forward, lowercase reverse). htslib sets
+            // is_del for both deletions and refskips; is_refskip distinguishes
+            // the two. (Previously refskips were rendered as '*', mislabelling
+            // spliced reads as deletions.)
             if (p->is_del) {
-                bases += '*';
-                quals += '*';   // samtools convention: '*' for deletion qual
+                if (p->is_refskip) bases += bam_is_rev(p->b) ? '<' : '>';
+                else               bases += '*';
             } else {
                 uint8_t bnt = bam_seqi(bam_get_seq(p->b), p->qpos);
                 char nt = seq_nt16_str[bnt];
                 if (bam_is_rev(p->b)) nt = (char)std::tolower(nt);
                 bases += nt;
-                uint8_t q = bam_get_qual(p->b)[p->qpos];
-                // BAM stores Phred directly; pileup format is Phred+33.
-                quals += (char)((q == 0xff ? 0 : q) + 33);
+            }
+            // Quality column: samtools emits the base quality at qpos for every
+            // element — including deletions and reference skips — never '*'.
+            // BAM stores Phred directly; pileup format is Phred+33.
+            {
+                int q = (p->qpos < p->b->core.l_qseq)
+                            ? bam_get_qual(p->b)[p->qpos] : 0;
+                if (q == 0xff) q = 0;
+                quals += (char)(q + 33);
             }
             // Indel description on the current base. Insertion bases come
             // from the read at qpos+1 .. qpos+indel; deletion bases come

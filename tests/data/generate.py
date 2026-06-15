@@ -357,6 +357,36 @@ else:
             bf.write(r)
     pysam.index(str(bam_path))
 
+    # tiny.splice.bam: reads with a reference skip (CIGAR N, e.g. an RNA-seq
+    # intron) and a deletion (CIGAR D), on both strands, so --pileup can be
+    # checked byte-for-byte against `samtools mpileup`. Refskips must render as
+    # '>' / '<' (not '*'), and del/refskip quality columns use the real base
+    # quality, never '*'.
+    sp_path = HERE / "tiny.splice.bam"
+    for p in (sp_path, HERE / "tiny.splice.bam.bai"):
+        if p.exists():
+            p.unlink()
+    sp_reads = [
+        ("sfwd", 0,  "5M3N5M", "AAAAACCCCC", 0),    # refskip, forward → '>'
+        ("srev", 0,  "5M3N5M", "GGGGGTTTTT", 16),   # refskip, reverse → '<'
+        ("sdel", 20, "5M3D5M", "AAAAACCCCC", 0),    # deletion → '*'
+    ]
+    with pysam.AlignmentFile(str(sp_path), "wb", header=bam_header) as bf:
+        for (qn, pos0, cig, seq, flag) in sp_reads:
+            r = pysam.AlignedSegment(header=bf.header)
+            r.query_name = qn
+            r.flag = flag
+            r.reference_id = 0
+            r.reference_start = pos0
+            r.mapping_quality = 60
+            r.cigarstring = cig
+            r.query_sequence = seq
+            r.query_qualities = pysam.qualitystring_to_array("I" * len(seq))
+            r.next_reference_id = -1
+            r.next_reference_start = -1
+            bf.write(r)
+    pysam.index(str(sp_path))
+
 # ── samtools mpileup (single-sample + two-sample fixtures) ──────────────────
 # Real samtools mpileup output. Six columns for single-sample; the
 # two-sample variant has 3 + 3*2 = 9 columns.
