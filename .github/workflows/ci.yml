@@ -15,7 +15,7 @@ jobs:
       matrix:
         os: ["24.04", "22.04"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install dependencies
         run: |
@@ -199,7 +199,7 @@ jobs:
     name: Build (macOS)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install dependencies
         run: brew install cmake apache-arrow htslib ncurses xlsxio expat minizip hdf5
       - name: Configure
