@@ -22,15 +22,6 @@ user-facing summary).
 ### Open
 - LociSSD `lociSSD_interval_index` consumption (spec §6.5) — helps
   when the window is much smaller than a row group.
-- Region-mode `total_rows()` / `chunk_meta().num_rows` on generic-Parquet /
-  LociSSD report the *slice* size (pre per-row-overlap filter), while
-  `read_chunk()` returns only the matching rows. The CLI is unaffected (it
-  iterates the actual chunk tables), but the Qt GUI trusts `total_rows()` for
-  `rowCount()`, so a region query there shows a trailing **blank** row per
-  within-slice non-match (cosmetic; surfaced by the new region bar in
-  `gui/improvements`). Tabix/BCF/BAM region paths are exact. Fix: have
-  region-mode report post-filter counts (or have the GUI model fall back to
-  summing actual chunk-table sizes when a source filters within chunks).
 
 ### Done
 - `--regions-file foo.bed` — batch many windows from a BED's first
@@ -40,6 +31,11 @@ user-facing summary).
 - Generic Parquet range queries — auto-detect Chromosome / Start /
   End or override with `--region-cols`. Pruning via Parquet
   statistics; dict-encoded chroms handled.
+- Region-mode exact row counts (`fix/region-rowcount`) — `total_rows()` /
+  `chunk_meta()` for generic-Parquet / LociSSD regions now report the
+  post-filter count (computed by running the overlap predicate once per slice
+  at open), instead of the pre-filter slice size. Fixes the phantom trailing
+  rows in the table view and the trailing blank row in the Qt GUI.
 
 ## Output / pipelines
 

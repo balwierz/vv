@@ -2598,6 +2598,7 @@ class ParquetSource : public TabularSource {
     bool                          region_mode_ = false;
     std::vector<RegionSlice>      slices_;
     std::vector<int64_t>          slice_first_row_;  // cumulative virtual row offsets
+    std::vector<int64_t>          slice_count_;      // exact post-filter rows per slice
     int64_t                       region_total_rows_ = 0;
     // Column indices we need for filtering (looked up once at open()).
     int                           j_chrom_=-1, j_start_=-1, j_end_=-1, j_mes_=-1;
@@ -2819,6 +2820,24 @@ public:
             }
             self->region_total_rows_ = virt;
             self->region_mode_       = true;
+
+            // The slice lengths above are only row-group/manifest-pruned bounds;
+            // read_chunk further applies the per-row overlap predicate, so they
+            // over-report the visible rows — badly for plain Parquet, where a
+            // slice spans a whole row group. Run that same filter once per slice
+            // (single-column projection) to record the exact counts, so
+            // total_rows() / chunk_meta() agree with read_chunk and the
+            // TUI/table view shows no phantom trailing rows.
+            self->slice_count_.assign(self->slices_.size(), 0);
+            int64_t exact = 0;
+            for (size_t i = 0; i < self->slices_.size(); ++i) {
+                self->slice_first_row_[i] = exact;
+                std::shared_ptr<arrow::Table> t;
+                if (self->read_chunk((int)i, {self->j_chrom_}, &t).ok() && t)
+                    self->slice_count_[i] = t->num_rows();
+                exact += self->slice_count_[i];
+            }
+            self->region_total_rows_ = exact;
         }
 
         *out = std::move(self);
@@ -2827,16 +2846,16 @@ public:
 
     std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
     int64_t total_rows() const override {
-        // Region mode: the pre-filter slice total. The per-row predicate
-        // applied in read_chunk may reduce this slightly; close enough for
-        // the TUI status bar and the [N rows × M columns] footer.
+        // Region mode: the exact post-filter total (computed at open by running
+        // the overlap predicate once per slice), so it matches the rows
+        // read_chunk actually yields.
         return region_mode_ ? region_total_rows_ : meta_->num_rows();
     }
     int     num_chunks() const override {
         return region_mode_ ? (int)slices_.size() : meta_->num_row_groups();
     }
     ChunkMeta chunk_meta(int i) const override {
-        if (region_mode_) return {slice_first_row_[i], slices_[i].len};
+        if (region_mode_) return {slice_first_row_[i], slice_count_[i]};
         return {chunk_start_[i], meta_->RowGroup(i)->num_rows()};
     }
     // ReadRowGroups / GetRecordBatchReader take Parquet *leaf* column indices,
