@@ -171,6 +171,11 @@ jobs:
           # Region re-open (tabix): chr1:1099-1200 overlaps exactly one BED row.
           VVG_WINTEST=1 VVG_REGION=chr1:1099-1200 ./build-gui/gui/vvg tests/data/tiny.bed.gz \
             | grep -q 'rows=1'
+          # Region re-open (generic Parquet): the rowCount must be the exact
+          # post-filter count (3), not the pre-filter slice size — i.e. no
+          # phantom trailing blank rows in the GUI.
+          VVG_WINTEST=1 VVG_REGION=chr1:0-3000 ./build-gui/gui/vvg tests/data/tiny.parquet \
+            | grep -q 'rows=3'
           # Background (off-UI-thread) filter returns the same rows as the CLI.
           VVG_WINTEST=1 VVG_AFILTER='Score > 0.2' ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -q 'afilter .* rows=16'

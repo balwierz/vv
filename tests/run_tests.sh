@@ -120,6 +120,16 @@ if [ -f "$DATA/tiny.uint32.parquet" ]; then
     PQ_U32=$("$VV" --tsv --no-header -r chr1:1000-2500 "$DATA/tiny.uint32.parquet" | wc -l)
     assert_eq_file_inline "parquet_region_uint32_coords_two_rows" "$PQ_U32" "2"
 fi
+# Region row count must be exact (post-filter), not the pre-filter slice size:
+# the table-mode "[N rows]" must match the streamed (--tsv) row count. Generic
+# Parquet is the worst case — a slice spans a whole row group — where pre-fix
+# this reported the row-group size with phantom trailing rows.
+for f in tiny.parquet tiny.lociss; do
+    REG_TSV=$("$VV" --tsv --no-header -r chr1:0-3000 "$DATA/$f" 2>/dev/null | wc -l)
+    REG_TBL=$("$VV" -r chr1:0-3000 --no-interactive --color=never "$DATA/$f" 2>/dev/null \
+        | grep -oE '\[[0-9]+ rows' | grep -oE '[0-9]+')
+    assert_eq_file_inline "region_count_exact_${f#tiny.}" "$REG_TBL" "$REG_TSV"
+done
 
 # --slop on tabix BED.
 SLOP_OUT=$("$VV" --tsv --no-header -r chr1:1500-1500 --slop 4000 "$DATA/tiny.bed.gz" | wc -l)
