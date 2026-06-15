@@ -250,7 +250,7 @@ be done first: it catches this whole bug class automatically.
   - Fix: Handle the remaining integer Arrow types (Int8/16, UInt8/16/32/64) and dictionary-encoded indices, or use arrow's scalar visitor;
 - [x] `main.cpp:3448` — Malformed delimited row past the first block silently truncates output with exit code 0 — fixed on `fix/delimited-silent-truncation` (sticky read_status + non-zero exit; also closes the latent ensure() hang)
   - Fix: Store a sticky arrow::Status member set by advance() on error (and set all_read_=true to stop the loop), then surface it from read_chunk()/total_rows() and from ensure() callers so the CLI prints the CSV parse…
-- [ ] `main.cpp:3920` — Pileup engine does not handle is_refskip (wrong output for spliced/RNA-seq reads)
+- [x] `main.cpp:3920` — Pileup engine does not handle is_refskip (wrong output for spliced/RNA-seq reads) — fixed on `fix/pileup-refskip` (refskips render as '>'/'<' by strand, not '*'; the quality column now carries the real base quality at qpos for del/refskip too, matching samtools). Regression fixture tiny.splice.bam + byte-for-byte samtools-equivalence test.
   - Fix: Add `else if (p->is_refskip) { bases += bam_is_rev(p->b) ? '>' : '<'; quals += (char)('!'); }` before the base-call branch, matching samtools mpileup.
 - [x] `main.cpp:4224` — BcfSource drops the FORMAT field from FORMAT_SAMPLES (data loss) — fixed on `fix/bcf-format-field`
   - Fix: After the loop, `start` already points at the FORMAT field. Set `f[8] = line.substr(start);` (the entire remainder from FORMAT onward) for the fi==8 case, and drop the misnamed `info_end` re-scan entirely.

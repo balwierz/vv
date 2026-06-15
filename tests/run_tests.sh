@@ -764,6 +764,21 @@ if [ -f "$DATA/tiny.bam" ]; then
     assert_eq_file_inline "bam_pileup_decoded_chr1_105" "$DEC_BAM" "0	0	3	0	0	2	1"
 fi
 
+# Reference skips (CIGAR N, e.g. RNA-seq introns) and deletions: the whole
+# pileup must match samtools mpileup byte-for-byte — refskips render as '>'/'<'
+# (strand), deletions as '*', and the quality column always carries the real
+# base quality (never '*'). tiny.splice.bam has both, on both strands.
+if [ -f "$DATA/tiny.splice.bam" ] && command -v samtools >/dev/null 2>&1; then
+    SP_VV=$("$VV" --tsv --no-header --pileup "$DATA/tiny.splice.bam" 2>/dev/null)
+    SP_SAM=$(samtools mpileup "$DATA/tiny.splice.bam" 2>/dev/null)
+    assert_eq_file_inline "bam_pileup_splice_matches_samtools" "$SP_VV" "$SP_SAM"
+    # Belt-and-braces: the refskip rows show >/< with real (non-'*') quals.
+    SP_SKIP=$("$VV" --tsv --no-header --pileup "$DATA/tiny.splice.bam" 2>/dev/null \
+        | awk -F'\t' '$2==6')
+    assert_contains "bam_pileup_refskip_bases" "$SP_SKIP" "><"
+    assert_contains "bam_pileup_refskip_quals" "$SP_SKIP" "II"
+fi
+
 # Markdown viewer — prose + GFM tables routed through the existing
 # table renderer. The fixture tiny.md has two tables (one numeric,
 # one string) and one of each block type.
