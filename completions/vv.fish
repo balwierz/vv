@@ -66,6 +66,7 @@ complete -c vv -c vh -l select -r          -d 'Project columns by name (comma-se
 complete -c vv -c vh -l cols -r            -d 'Alias of --select'
 complete -c vv -c vh -l filter -r          -d 'Row predicate: <col> <op> <value> [AND/OR ...]'
 complete -c vv -c vh -l schema             -d 'Print schema + metadata and exit'
+complete -c vv -c vh -l tab -r             -d 'View a named component tab (AnnData obs/var/X, sheet)'
 complete -c vv -c vh -l describe           -d 'Per-column statistics and exit'
 complete -c vv -c vh -l stats              -d 'Parquet metadata dump (no data read)'
 complete -c vv -c vh -l unique -r          -d 'Distinct value counts per column'

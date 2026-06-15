@@ -604,6 +604,31 @@ if [ -f "$DATA/tiny.dense.h5ad" ]; then
         "$VV" --no-interactive --color=never "$DATA/tiny.dense.h5ad"
 fi
 
+# --tab: view a named AnnData component (obs/var/X) from the CLI — the data
+# tabs are otherwise only reachable in the interactive TUI.
+if [ -f "$DATA/tiny.h5ad" ]; then
+    TAB_OBS=$("$VV" --tab obs --no-interactive --color=never "$DATA/tiny.h5ad" 2>&1)
+    assert_contains "h5ad_tab_obs_col"     "$TAB_OBS" "cluster"
+    assert_contains "h5ad_tab_obs_data"    "$TAB_OBS" "cell0"
+    TAB_VAR=$("$VV" --tab var --schema "$DATA/tiny.h5ad" 2>&1)
+    assert_contains "h5ad_tab_var"         "$TAB_VAR" "gene_name"
+    # 'X' matches the 'X (preview)' tab via the word-boundary prefix rule.
+    TAB_X=$("$VV" --tab X --schema "$DATA/tiny.h5ad" 2>&1)
+    assert_contains "h5ad_tab_x_prefix"    "$TAB_X" "X (preview)"
+    TAB_BAD=$("$VV" --tab nope "$DATA/tiny.h5ad" 2>&1)
+    assert_contains "h5ad_tab_unknown"     "$TAB_BAD" "no tab named"
+    assert_contains "h5ad_tab_unknown_avail" "$TAB_BAD" "available:"
+fi
+
+# Component preview cap: a 1500-row obs must render the first 1000 only (so a
+# multi-million-row component can't stall the reader).
+if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
+    BIG_OBS=$("$VV" --tab obs --no-interactive --color=never "$DATA/tiny.bigobs.h5ad" 2>&1)
+    assert_contains "h5ad_obs_preview_note" "$BIG_OBS" "first 1000 of 1500 rows"
+    BIG_ROWS=$("$VV" --tab obs --tsv --no-header "$DATA/tiny.bigobs.h5ad" | wc -l)
+    assert_eq_file_inline "h5ad_obs_preview_rowcount" "$BIG_ROWS" "1000"
+fi
+
 # Generic HDF5 (.h5) — first tab is the hierarchy table; siblings are
 # each 1D/2D dataset.
 if [ -f "$DATA/tiny.h5" ]; then

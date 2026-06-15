@@ -540,6 +540,9 @@ static void print_usage(const char* prog) {
         "  --filter <expr>     keep rows matching: <col> <op> <literal> joined by AND/OR\n"
         "                      ops: == != < <= > >=  e.g. --filter 'Score > 0.5'\n"
         "  --schema            print schema + file metadata and exit\n"
+        "  --tab <name>        view a named component tab (AnnData obs/var/X,\n"
+        "                      a workbook sheet, …) instead of the first; e.g.\n"
+        "                      `vv cells.h5ad --tab obs -n 20`\n"
         "  --describe          per-column statistics and exit\n"
         "  --stats             print Parquet metadata footer (row groups, codecs,\n"
         "                      per-column sizes) without reading data; exit\n"
@@ -720,6 +723,8 @@ static Config parse_args(int argc, char** argv) {
             cfg.heatmap = true;
         } else if (!std::strcmp(argv[i], "--image-mode") && i + 1 < argc) {
             cfg.image_mode = argv[++i];
+        } else if (!std::strcmp(argv[i], "--tab") && i + 1 < argc) {
+            cfg.tab = argv[++i];
         } else if (!std::strcmp(argv[i], "--theme") && i + 1 < argc) {
             cfg.theme = argv[++i];
         } else if (!std::strcmp(argv[i], "--color") ||
@@ -6584,22 +6589,30 @@ build_hierarchy_table(hid_t file_id) {
 // ── Forward declarations ────────────────────────────────────────────────────
 struct OpenSpec;
 class Hdf5Source;
+// Preview row caps. AnnData components can be enormous (a Tahoe-100M plate has
+// ~4.7M-row obs and a 4.7M×62k X); reading one in full stalls for minutes on a
+// slow mount and burns GBs of RAM. Cap every component to a head preview (the
+// CSR X path already did); the real row count is still reported in the footer.
+static constexpr int64_t kDense2DRowCap   = 1000;   // dense 2-D matrix rows
+static constexpr int64_t kDense2DColCap   = 200;    // dense 2-D matrix cols
+static constexpr int64_t kDataFrameRowCap = 1000;   // obs / var DataFrame rows
+// A categorical column whose dictionary exceeds this is shown as integer codes
+// rather than decoded to strings: a per-cell-unique categorical (e.g. a barcode
+// column with millions of categories) would otherwise force reading the whole
+// dictionary — minutes over a slow mount — just to render a preview.
+static constexpr int64_t kCategoryDictCap = 65536;
+// `row_cap` < 0 means "all rows"; otherwise only the first row_cap rows are
+// read (HDF5 hyperslab). The full pre-cap length is reported via full_rows.
 static arrow::Result<std::shared_ptr<arrow::Table>>
-read_anndata_dataframe(hid_t group);
-// Dense 2-D preview caps. A dense AnnData X (Matrix2D) carries no column gate
-// (scan_anndata emits it for any width) and neither dense path caps rows, so a
-// matrix with tens of thousands of genes / millions of cells would be fully
-// densified into RAM (OOM/DoS). Cap the materialised preview the same way the
-// sparse path does (read_sparse_preview); the real dimensions are still
-// reported in the footer.
-static constexpr int64_t kDense2DRowCap = 1000;
-static constexpr int64_t kDense2DColCap = 200;
+read_anndata_dataframe(hid_t group, int64_t row_cap = -1,
+                       int64_t* full_rows = nullptr);
 static arrow::Result<std::shared_ptr<arrow::Table>>
 read_2d_dataset_table(hid_t dataset, int64_t row_cap, int64_t col_cap = -1,
                       int64_t* full_rows = nullptr,
                       int64_t* full_cols = nullptr);
 static arrow::Result<std::shared_ptr<arrow::Table>>
-read_1d_dataset_table(hid_t dataset);
+read_1d_dataset_table(hid_t dataset, int64_t row_cap = -1,
+                      int64_t* full_rows = nullptr);
 static arrow::Result<std::shared_ptr<arrow::Table>>
 read_sparse_preview(hid_t group, int64_t row_cap);
 
@@ -6632,6 +6645,10 @@ class Hdf5Source : public WorkbookSource {
     // Sibling specs *other* than this one — emitted via
     // open_sibling_sheets().
     std::vector<OpenSpec> siblings_;
+    // Lazy materialization: a sibling tab's table is built only on first
+    // access (ensure_built). The eager constructor sets built_ = true so its
+    // overrides are no-ops; the lazy constructor leaves it false.
+    mutable bool built_ = true;
 
     Hdf5Source(std::shared_ptr<arrow::Table> tbl,
                 std::string path,
@@ -6646,6 +6663,42 @@ class Hdf5Source : public WorkbookSource {
           spec_(std::move(spec)),
           all_specs_(std::move(all_specs)),
           siblings_(std::move(siblings)) {}
+
+    // Lazy constructor: no table yet. ensure_built() reads it from `spec` on
+    // first access, so opening a multi-component file (e.g. AnnData) doesn't
+    // materialise every component up-front — only the tab(s) actually viewed.
+    Hdf5Source(std::string path,
+                H5FilePtr file,
+                OpenSpec spec,
+                std::shared_ptr<std::vector<OpenSpec>> all_specs)
+        : WorkbookSource(nullptr, std::move(path), std::string{}),
+          file_(std::move(file)),
+          h5_path_(spec.h5_path),
+          spec_(std::move(spec)),
+          all_specs_(std::move(all_specs)),
+          built_(false) {}
+
+    // Build this tab's table from its spec on first access (lazy ctor only).
+    void ensure_built() const {
+        if (built_) return;
+        built_ = true;
+        auto* self = const_cast<Hdf5Source*>(this);
+        std::shared_ptr<arrow::Table> tbl;
+        std::string footer;
+        std::string err = build_table(*file_, spec_, &tbl, &footer);
+        if (!err.empty() || !tbl) {
+            // Surface the failure as a one-cell table instead of crashing a
+            // null-table access (matches the eager path's graceful skip).
+            std::string msg = err.empty()
+                ? ("'" + spec_.h5_path + "': decoded to empty table") : err;
+            arrow::StringBuilder b; (void)b.Append(msg);
+            std::shared_ptr<arrow::Array> a; (void)b.Finish(&a);
+            tbl = arrow::Table::Make(
+                arrow::schema({arrow::field("error", arrow::utf8())}), {a});
+            footer = "Format: HDF5 " + spec_.display + "  |  error: " + msg;
+        }
+        self->replace_table(std::move(tbl), std::move(footer));
+    }
 
     // Resolve an OpenSpec to a populated arrow::Table.
     static std::string build_table(hid_t file_id,
@@ -6685,14 +6738,20 @@ class Hdf5Source : public WorkbookSource {
             case OpenSpec::Kind::DataFrame: {
                 hid_t g = H5Gopen2(file_id, spec.h5_path.c_str(), H5P_DEFAULT);
                 if (g < 0) return "Cannot open group " + spec.h5_path;
-                auto r = read_anndata_dataframe(g);
+                int64_t full = 0;
+                auto r = read_anndata_dataframe(g, kDataFrameRowCap, &full);
                 H5Gclose(g);
                 if (!r.ok()) return r.status().ToString();
                 *out = *r;
-                *footer = "Format: AnnData " + spec.display;
-                if (*out) *footer += "  |  Rows: " +
-                    std::to_string((*out)->num_rows()) +
-                    "  |  Cols: " + std::to_string((*out)->num_columns());
+                int64_t shown = *out ? (*out)->num_rows() : 0;
+                int64_t ncol  = *out ? (*out)->num_columns() : 0;
+                *footer = "Format: AnnData " + spec.display +
+                          "  |  Cols: " + std::to_string(ncol);
+                if (shown < full)   // preview note so the cap isn't read as the real size
+                    *footer += "  |  preview: first " + std::to_string(shown) +
+                               " of " + std::to_string(full) + " rows";
+                else
+                    *footer += "  |  Rows: " + std::to_string(shown);
                 return "";
             }
             case OpenSpec::Kind::Matrix2D:
@@ -6781,22 +6840,44 @@ public:
     static std::string open_first(const std::string& path,
                                     std::unique_ptr<Hdf5Source>* out);
 
+    // tab_label() reads only the spec — no build, so the tab strip and the
+    // --tab selector can list/match components without materialising them.
     std::string tab_label() const override { return spec_.display; }
+
+    // Data accessors force the lazy build first; for an eagerly-built source
+    // (built_ == true) ensure_built() is a no-op.
+    std::shared_ptr<arrow::Schema> schema() const override {
+        ensure_built(); return MemoryTableSource::schema();
+    }
+    int64_t total_rows() const override {
+        ensure_built(); return MemoryTableSource::total_rows();
+    }
+    int num_chunks() const override {
+        ensure_built(); return MemoryTableSource::num_chunks();
+    }
+    ChunkMeta chunk_meta(int i) const override {
+        ensure_built(); return MemoryTableSource::chunk_meta(i);
+    }
+    arrow::Status read_chunk(int i, const std::vector<int>& cols,
+                             std::shared_ptr<arrow::Table>* out) override {
+        ensure_built(); return MemoryTableSource::read_chunk(i, cols, out);
+    }
+    std::string footer() const override {
+        ensure_built(); return MemoryTableSource::footer();
+    }
+    std::vector<std::string> hidden_for_display() const override {
+        ensure_built(); return MemoryTableSource::hidden_for_display();
+    }
 
     std::vector<std::unique_ptr<TabularSource>>
     open_sibling_sheets() const override {
         std::vector<std::unique_ptr<TabularSource>> result;
-        for (const auto& sp : siblings_) {
-            std::unique_ptr<Hdf5Source> s;
-            std::string err = build_one(path(), file_, sp, all_specs_,
-                                          /*siblings=*/{}, &s);
-            if (!err.empty()) {
-                std::fprintf(stderr, "vv: HDF5 tab '%s': %s\n",
-                              sp.display.c_str(), err.c_str());
-                continue;
-            }
-            result.push_back(std::move(s));
-        }
+        // Construct each sibling lazily: its table is read only when the tab is
+        // first viewed (ensure_built), so opening a 14-component AnnData file
+        // over a slow mount doesn't read every component up-front.
+        for (const auto& sp : siblings_)
+            result.push_back(std::unique_ptr<TabularSource>(
+                new Hdf5Source(path(), file_, sp, all_specs_)));
         return result;
     }
 };
@@ -6804,9 +6885,11 @@ public:
 // ── Read helpers — defined after Hdf5Source so they can be referenced
 // from build_table. ─────────────────────────────────────────────────────────
 
-// Read a 1-D dataset as a single-column Arrow table.
+// Read a 1-D dataset as a single-column Arrow table. Only the first `row_cap`
+// elements are read (a hyperslab) when row_cap >= 0; the full length is
+// reported via full_rows. Bounds the read for huge obs/var columns.
 static arrow::Result<std::shared_ptr<arrow::Table>>
-read_1d_dataset_table(hid_t dset) {
+read_1d_dataset_table(hid_t dset, int64_t row_cap, int64_t* full_rows) {
     hid_t space = H5Dget_space(dset);
     int nd = H5Sget_simple_extent_ndims(space);
     if (nd != 1) {
@@ -6816,21 +6899,38 @@ read_1d_dataset_table(hid_t dset) {
     hsize_t dim;
     H5Sget_simple_extent_dims(space, &dim, nullptr);
     H5Sclose(space);
+    if (full_rows) *full_rows = (int64_t)dim;
+    hsize_t n = dim;
+    if (row_cap >= 0 && (hsize_t)row_cap < dim) n = (hsize_t)row_cap;
+
+    // Read the first `n` elements of `dset` into `buf` via a hyperslab; `ms`
+    // (the matching memory dataspace) is returned so vlen strings can be
+    // reclaimed against it.
+    auto read_first_n = [&](hid_t memtype, void* buf) -> hid_t {
+        hid_t fs = H5Dget_space(dset);
+        hsize_t start = 0, count = n;
+        H5Sselect_hyperslab(fs, H5S_SELECT_SET, &start, nullptr, &count, nullptr);
+        hid_t ms = H5Screate_simple(1, &count, nullptr);
+        if (n > 0) H5Dread(dset, memtype, ms, fs, H5P_DEFAULT, buf);
+        H5Sclose(fs);
+        return ms;   // caller closes
+    };
+
     hid_t t = H5Dget_type(dset);
     H5T_class_t cls = H5Tget_class(t);
     size_t tsz = H5Tget_size(t);
     arrow::FieldVector fields = { arrow::field("value", arrow::utf8()) };
     std::shared_ptr<arrow::Array> arr;
     if (cls == H5T_INTEGER) {
-        std::vector<int64_t> buf((size_t)dim);
-        H5Dread(dset, H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data());
+        std::vector<int64_t> buf((size_t)n);
+        hid_t ms = read_first_n(H5T_NATIVE_INT64, buf.data()); H5Sclose(ms);
         arrow::Int64Builder b;
         for (auto v : buf) (void)b.Append(v);
         (void)b.Finish(&arr);
         fields[0] = arrow::field("value", arrow::int64());
     } else if (cls == H5T_FLOAT) {
-        std::vector<double> buf((size_t)dim);
-        H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data());
+        std::vector<double> buf((size_t)n);
+        hid_t ms = read_first_n(H5T_NATIVE_DOUBLE, buf.data()); H5Sclose(ms);
         arrow::DoubleBuilder b;
         for (auto v : buf) (void)b.Append(v);
         (void)b.Finish(&arr);
@@ -6838,30 +6938,29 @@ read_1d_dataset_table(hid_t dset) {
     } else if (cls == H5T_STRING) {
         arrow::StringBuilder b;
         if (H5Tis_variable_str(t)) {
-            std::vector<char*> ptrs((size_t)dim, nullptr);
+            std::vector<char*> ptrs((size_t)n, nullptr);
             hid_t mt = H5Tcopy(H5T_C_S1);
             H5Tset_size(mt, H5T_VARIABLE);
             H5Tset_cset(mt, H5T_CSET_UTF8);
-            H5Dread(dset, mt, H5S_ALL, H5S_ALL, H5P_DEFAULT, ptrs.data());
+            hid_t ms = read_first_n(mt, ptrs.data());
             for (auto* p : ptrs) (void)b.Append(p ? std::string(p) : std::string{});
-            // Free the vlens.
-            hid_t mem_space = H5Dget_space(dset);
-            H5Dvlen_reclaim(mt, mem_space, H5P_DEFAULT, ptrs.data());
-            H5Sclose(mem_space);
+            // Free the vlens read into the first-n buffer.
+            if (n > 0) H5Dvlen_reclaim(mt, ms, H5P_DEFAULT, ptrs.data());
+            H5Sclose(ms);
             H5Tclose(mt);
         } else {
-            std::vector<char> buf((size_t)dim * tsz, '\0');
-            H5Dread(dset, t, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data());
-            for (hsize_t i = 0; i < dim; ++i) {
-                size_t n = strnlen(buf.data() + i * tsz, tsz);
-                (void)b.Append(std::string(buf.data() + i * tsz, n));
+            std::vector<char> buf((size_t)n * tsz, '\0');
+            hid_t ms = read_first_n(t, buf.data()); H5Sclose(ms);
+            for (hsize_t i = 0; i < n; ++i) {
+                size_t len = strnlen(buf.data() + i * tsz, tsz);
+                (void)b.Append(std::string(buf.data() + i * tsz, len));
             }
         }
         (void)b.Finish(&arr);
     } else {
         // Fallback: bytes-as-hex.
         arrow::StringBuilder b;
-        for (hsize_t i = 0; i < dim; ++i) (void)b.Append("?");
+        for (hsize_t i = 0; i < n; ++i) (void)b.Append("?");
         (void)b.Finish(&arr);
     }
     H5Tclose(t);
@@ -6950,12 +7049,13 @@ read_2d_dataset_table(hid_t dset, int64_t row_cap, int64_t col_cap,
 // Read AnnData's obs / var DataFrame layout — one column per non-special
 // child link, categoricals expanded via the codes / categories sub-group.
 static arrow::Result<std::shared_ptr<arrow::Table>>
-read_anndata_dataframe(hid_t group) {
+read_anndata_dataframe(hid_t group, int64_t row_cap, int64_t* full_rows) {
     auto names = list_children(group);
     // Identify the index column from the _index attribute if present.
     std::string idx_name = read_string_attr(group, "_index");
     arrow::FieldVector fields;
     std::vector<std::shared_ptr<arrow::Array>> cols;
+    int64_t maxfull = 0;   // longest pre-cap child length (the real row count)
 
     // Helper to convert one child into a (name, array) pair.
     auto add_child = [&](const std::string& name) -> arrow::Status {
@@ -6976,8 +7076,33 @@ read_anndata_dataframe(hid_t group) {
                 link_exists(sub, "codes")) {
                 hid_t cats_d = H5Dopen2(sub, "categories", H5P_DEFAULT);
                 hid_t codes_d = H5Dopen2(sub, "codes", H5P_DEFAULT);
+                // `codes` is row-length (cap it); `categories` is the lookup
+                // table — read in full only if it's small enough.
+                int64_t cats_len = 0;
+                { hid_t sp = H5Dget_space(cats_d);
+                  hsize_t dd = 0;
+                  if (H5Sget_simple_extent_ndims(sp) == 1)
+                      H5Sget_simple_extent_dims(sp, &dd, nullptr);
+                  H5Sclose(sp); cats_len = (int64_t)dd; }
+                int64_t cf = 0;
+                auto codes_t = read_1d_dataset_table(codes_d, row_cap, &cf);
+                maxfull = std::max(maxfull, cf);
+
+                if (cats_len > kCategoryDictCap) {
+                    // High-cardinality (e.g. per-cell barcodes): decoding would
+                    // require reading the whole multi-million-entry dictionary.
+                    // Show the integer codes instead for the preview.
+                    H5Dclose(cats_d); H5Dclose(codes_d); H5Gclose(sub);
+                    if (codes_t.ok() && (*codes_t)->num_columns() > 0) {
+                        cols.push_back((*codes_t)->column(0)->chunk(0));
+                        fields.push_back(arrow::field(
+                            display + " (codes)",
+                            (*codes_t)->schema()->field(0)->type()));
+                    }
+                    return arrow::Status::OK();
+                }
+
                 auto cats_t = read_1d_dataset_table(cats_d);
-                auto codes_t = read_1d_dataset_table(codes_d);
                 H5Dclose(cats_d); H5Dclose(codes_d); H5Gclose(sub);
                 if (cats_t.ok() && codes_t.ok()) {
                     auto cats_arr = (*cats_t)->column(0)->chunk(0);
@@ -7007,7 +7132,9 @@ read_anndata_dataframe(hid_t group) {
         if (info.type != H5O_TYPE_DATASET) return arrow::Status::OK();
         hid_t d = H5Dopen2(group, name.c_str(), H5P_DEFAULT);
         if (d < 0) return arrow::Status::OK();
-        auto t = read_1d_dataset_table(d);
+        int64_t cf = 0;
+        auto t = read_1d_dataset_table(d, row_cap, &cf);
+        maxfull = std::max(maxfull, cf);
         H5Dclose(d);
         if (t.ok() && (*t)->num_columns() > 0) {
             cols.push_back((*t)->column(0)->chunk(0));
@@ -7028,6 +7155,7 @@ read_anndata_dataframe(hid_t group) {
     for (const auto& n : names)
         ARROW_RETURN_NOT_OK(add_child(n));
 
+    if (full_rows) *full_rows = maxfull;
     return arrow::Table::Make(arrow::schema(fields), cols);
 }
 
@@ -14899,6 +15027,44 @@ int main(int argc, char** argv) {
         }
         report(cfg.path, shorten_reader_error(std::move(detail)));
         return 1;
+    }
+
+    // --tab NAME: view a named component tab (AnnData obs/var/X, a workbook
+    // sheet, …) instead of the first one. Lets the CLI reach the data tabs that
+    // are otherwise only navigable in the interactive TUI. Matching is
+    // case-insensitive: exact, or a prefix at a word boundary so `--tab X`
+    // selects "X (preview)". Tabs are enumerated by label without building
+    // them (lazy), so only the selected component is read.
+    if (!cfg.tab.empty()) {
+        auto lc = [](std::string s) {
+            for (char& c : s) c = (char)std::tolower((unsigned char)c);
+            return s;
+        };
+        const std::string want = lc(cfg.tab);
+        auto matches = [&](const std::string& label) {
+            std::string a = lc(label);
+            if (a == want) return true;
+            return a.size() > want.size() &&
+                   a.compare(0, want.size(), want) == 0 &&
+                   (a[want.size()] == ' ' || a[want.size()] == '(' ||
+                    a[want.size()] == '[');
+        };
+        std::vector<std::string> avail{ src->tab_label() };
+        if (!matches(src->tab_label())) {
+            std::unique_ptr<TabularSource> chosen;
+            for (auto& sib : src->expand_tabs()) {
+                avail.push_back(sib->tab_label());
+                if (!chosen && matches(sib->tab_label())) chosen = std::move(sib);
+            }
+            if (!chosen) {
+                std::string list;
+                for (auto& a : avail) { if (!list.empty()) list += ", "; list += a; }
+                report(cfg.path, "no tab named '" + cfg.tab +
+                                 "'; available: " + list);
+                return 1;
+            }
+            src = std::move(chosen);
+        }
     }
 
     // --schema: just print schema + footer, then exit.

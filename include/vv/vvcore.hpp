@@ -74,6 +74,8 @@ struct Config {
     bool        heatmap        = false;  // --heatmap: render the numeric matrix
                                          // as a colour heatmap to the terminal
     std::string image_mode;              // --image-mode auto|kitty|sixel|halfblock|ascii
+    std::string tab;                     // --tab NAME: view a named component
+                                         // tab (AnnData obs/var/X, sheet, …)
 };
 
 // ── Cell formatting helpers (defined in libvvcore) ───────────────────────────
