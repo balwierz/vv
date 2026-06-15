@@ -1465,37 +1465,24 @@ public:
     }
 };
 
-// Single-byte fallback for seekable streams (preamble strippers that need Seek).
-// Returns true if a newline was found; false on EOF.
-static bool read_stream_line(
-    const std::shared_ptr<arrow::io::InputStream>& input, std::string* out)
-{
-    out->clear();
-    for (;;) {
-        auto r = input->Read(1);
-        if (!r.ok() || (*r)->size() == 0) return !out->empty();
-        char c = static_cast<char>((*r)->data()[0]);
-        if (c == '\n') return true;
-        if (c != '\r') *out += c;
-    }
-}
+// All four preamble strippers read through the buffered LineReader (8 KiB
+// reads) rather than one byte at a time — a VCF with a 50–100 KiB ## header
+// otherwise meant 100 K single-byte Read()s, each allocating an Arrow Buffer.
+// When the first data line is reached it (plus any bytes the LineReader read
+// ahead, via leftover()) is handed back through *put_back, which the caller
+// replays with a PrependInputStream — so there is no need to Seek the
+// underlying stream back, and the gz / stdin (non-seekable) and regular-file
+// paths are now identical.
 
-// Reads and strips "track"/"browser" preamble lines from the current stream position.
-// For seekable streams (non-gz): leaves the stream positioned at the first data byte.
-// For non-seekable streams (gz): writes the first non-preamble line to *put_back.
+// Reads and strips "track"/"browser" preamble lines from the current position.
 static std::vector<std::string> strip_bed_preamble(
-    const std::shared_ptr<arrow::io::InputStream>& input,
-    bool seekable, std::string* put_back)
+    const std::shared_ptr<arrow::io::InputStream>& input, std::string* put_back)
 {
     std::vector<std::string> headers;
-    int64_t after_last = 0;
-    if (seekable) {
-        auto rf = std::static_pointer_cast<arrow::io::RandomAccessFile>(input);
-        if (auto t = rf->Tell(); t.ok()) after_last = *t;
-    }
+    LineReader lr(input);
     for (;;) {
         std::string line;
-        bool ok = read_stream_line(input, &line);
+        bool ok = lr.read_line(&line);
         if (!ok && line.empty()) break;
         auto has_prefix = [&](const char* p, size_t n) {
             return line.size() >= n && line.compare(0, n, p, n) == 0 &&
@@ -1503,55 +1490,32 @@ static std::vector<std::string> strip_bed_preamble(
         };
         if (has_prefix("track", 5) || has_prefix("browser", 7)) {
             headers.push_back(line);
-            if (seekable) {
-                auto rf = std::static_pointer_cast<arrow::io::RandomAccessFile>(input);
-                if (auto t = rf->Tell(); t.ok()) after_last = *t;
-            }
             if (!ok) break;
         } else {
-            if (seekable) {
-                auto rf = std::static_pointer_cast<arrow::io::RandomAccessFile>(input);
-                (void)rf->Seek(after_last);
-            } else if (put_back) {
-                *put_back = line + "\n";
-            }
+            if (put_back) *put_back = line + "\n" + lr.leftover();
             break;
         }
     }
     return headers;
 }
 
-// Strips lines whose first character equals prefix_char (e.g. '#' for GFF3, '@' for SAM).
-// Seekable: stream left positioned at the first non-preamble line.
-// Non-seekable (gz): first non-preamble line → *put_back.
+// Strips lines whose first character equals prefix_char (e.g. '#' for GFF3,
+// '@' for SAM); the first data line (+ look-ahead) goes to *put_back.
 static std::vector<std::string> strip_prefix_preamble(
     const std::shared_ptr<arrow::io::InputStream>& input,
-    char prefix_char, bool seekable, std::string* put_back)
+    char prefix_char, std::string* put_back)
 {
     std::vector<std::string> preamble;
-    int64_t after_last = 0;
-    if (seekable) {
-        auto rf = std::static_pointer_cast<arrow::io::RandomAccessFile>(input);
-        if (auto t = rf->Tell(); t.ok()) after_last = *t;
-    }
+    LineReader lr(input);
     for (;;) {
         std::string line;
-        bool ok = read_stream_line(input, &line);
+        bool ok = lr.read_line(&line);
         if (!ok && line.empty()) break;
         if (!line.empty() && line[0] == prefix_char) {
             preamble.push_back(line);
-            if (seekable) {
-                auto rf = std::static_pointer_cast<arrow::io::RandomAccessFile>(input);
-                if (auto t = rf->Tell(); t.ok()) after_last = *t;
-            }
             if (!ok) break;
         } else {
-            if (seekable) {
-                auto rf = std::static_pointer_cast<arrow::io::RandomAccessFile>(input);
-                (void)rf->Seek(after_last);
-            } else if (put_back) {
-                *put_back = line + "\n";
-            }
+            if (put_back) *put_back = line + "\n" + lr.leftover();
             break;
         }
     }
@@ -1563,25 +1527,31 @@ static std::vector<std::string> strip_prefix_preamble(
 // *col_names_out is populated from #CHROM; returned vector contains ## lines only.
 static std::vector<std::string> strip_vcf_preamble(
     const std::shared_ptr<arrow::io::InputStream>& input,
-    std::vector<std::string>* col_names_out)
+    std::vector<std::string>* col_names_out, std::string* put_back)
 {
     std::vector<std::string> preamble;
+    LineReader lr(input);
     for (;;) {
         std::string line;
-        bool ok = read_stream_line(input, &line);
+        bool ok = lr.read_line(&line);
         if (!ok && line.empty()) break;
         if (line.size() >= 2 && line[0] == '#' && line[1] == '#') {
             preamble.push_back(line);
             if (!ok) break;
         } else if (!line.empty() && line[0] == '#') {
-            // #CHROM line: strip leading '#', split on tab → column names
+            // #CHROM line: strip leading '#', split on tab → column names. The
+            // data follows it; hand the LineReader's look-ahead back so the CSV
+            // reader resumes exactly at the first record.
             std::istringstream ss(line.substr(1));
             std::string tok;
             while (std::getline(ss, tok, '\t'))
                 col_names_out->push_back(tok);
+            if (put_back) *put_back = lr.leftover();
             break;
         } else {
-            break;  // data before #CHROM (malformed); don't consume
+            // data before #CHROM (malformed): replay it rather than drop it.
+            if (put_back) *put_back = line + "\n" + lr.leftover();
+            break;
         }
     }
     return preamble;
@@ -1593,31 +1563,22 @@ static std::vector<std::string> strip_vcf_preamble(
 // the leading '#'); otherwise leave it in the preamble.
 static std::vector<std::string> strip_tsv_csv_preamble(
     const std::shared_ptr<arrow::io::InputStream>& input,
-    char delim, bool seekable, std::string* put_back,
+    char delim, std::string* put_back,
     std::vector<std::string>* col_names_out)
 {
     std::vector<std::string> preamble;
     std::string first_data_line;
-    int64_t pre_line_pos = 0;
+    LineReader lr(input);
     for (;;) {
-        if (seekable) {
-            auto rf = std::static_pointer_cast<arrow::io::RandomAccessFile>(input);
-            if (auto t = rf->Tell(); t.ok()) pre_line_pos = *t;
-        }
         std::string line;
-        bool ok = read_stream_line(input, &line);
+        bool ok = lr.read_line(&line);
         if (!ok && line.empty()) break;
         if (!line.empty() && line[0] == '#') {
             preamble.push_back(line);
             if (!ok) break;
         } else {
             first_data_line = line;
-            if (seekable) {
-                auto rf = std::static_pointer_cast<arrow::io::RandomAccessFile>(input);
-                (void)rf->Seek(pre_line_pos);
-            } else if (put_back) {
-                *put_back = line + "\n";
-            }
+            if (put_back) *put_back = line + "\n" + lr.leftover();
             break;
         }
     }
@@ -3327,10 +3288,6 @@ private:
         bool is_gz, DelimKind kind, const std::string& region,
         std::unique_ptr<DelimitedSource>* out) {
         const std::string& path = self->path_;
-        // Path-based opens with a regular file are seekable; gzipped or
-        // stream-based (stdin) inputs are not.
-        const bool seekable = !is_gz && path != "-";
-
         // Format-specific preamble stripping and column-name determination.
         // GFF and SAM wrap the stream in TruncateFieldsStream to handle variable columns.
         std::vector<std::string> col_names;
@@ -3338,13 +3295,13 @@ private:
 
         switch (kind) {
             case DelimKind::BED:
-                self->preamble_lines_ = strip_bed_preamble(input, seekable, &put_back);
+                self->preamble_lines_ = strip_bed_preamble(input, &put_back);
                 break;
             case DelimKind::VCF:
-                self->preamble_lines_ = strip_vcf_preamble(input, &col_names);
+                self->preamble_lines_ = strip_vcf_preamble(input, &col_names, &put_back);
                 break;
             case DelimKind::GFF: {
-                self->preamble_lines_ = strip_prefix_preamble(input, '#', seekable, &put_back);
+                self->preamble_lines_ = strip_prefix_preamble(input, '#', &put_back);
                 col_names = {"seqname","source","feature","start","end",
                              "score","strand","frame","attributes"};
                 // Rebuild input with put_back then truncate to 9 fields
@@ -3357,7 +3314,7 @@ private:
                 break;
             }
             case DelimKind::SAM: {
-                self->preamble_lines_ = strip_prefix_preamble(input, '@', seekable, &put_back);
+                self->preamble_lines_ = strip_prefix_preamble(input, '@', &put_back);
                 col_names = {"QNAME","FLAG","RNAME","POS","MAPQ",
                              "CIGAR","RNEXT","PNEXT","TLEN","SEQ","QUAL"};
                 std::shared_ptr<arrow::io::InputStream> base =
@@ -3381,7 +3338,7 @@ private:
             case DelimKind::CSV:
             case DelimKind::TSV:
                 self->preamble_lines_ = strip_tsv_csv_preamble(
-                    input, self->delimiter_, seekable, &put_back, &col_names);
+                    input, self->delimiter_, &put_back, &col_names);
                 break;
             default:
                 break;
