@@ -21,15 +21,15 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Cache bundled source tarballs
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: docker-sources
           # The fetch script encodes every pinned version; hash it so a
@@ -67,7 +67,7 @@ jobs:
           sha256sum "$stem.tar.gz" > "SHA256SUMS-${{ matrix.arch }}"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-${{ matrix.arch }}
           path: |
@@ -81,12 +81,15 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        # Pinned to v7 (not v8): v8 defaults a download hash-mismatch to a hard
+        # error and migrated to ESM. v7 already runs on Node 24, which is all we
+        # need here.
+        uses: actions/download-artifact@v7
         with:
           path: dist-all
 
@@ -116,7 +119,7 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           body_path: release-notes.md
           files: |
