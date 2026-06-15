@@ -768,15 +768,20 @@ fi
 # pileup must match samtools mpileup byte-for-byte — refskips render as '>'/'<'
 # (strand), deletions as '*', and the quality column always carries the real
 # base quality (never '*'). tiny.splice.bam has both, on both strands.
-if [ -f "$DATA/tiny.splice.bam" ] && command -v samtools >/dev/null 2>&1; then
-    SP_VV=$("$VV" --tsv --no-header --pileup "$DATA/tiny.splice.bam" 2>/dev/null)
-    SP_SAM=$(samtools mpileup "$DATA/tiny.splice.bam" 2>/dev/null)
-    assert_eq_file_inline "bam_pileup_splice_matches_samtools" "$SP_VV" "$SP_SAM"
-    # Belt-and-braces: the refskip rows show >/< with real (non-'*') quals.
+if [ -f "$DATA/tiny.splice.bam" ]; then
+    # vv-only checks (no samtools needed — CI has pysam to build the fixture but
+    # not samtools): the refskip row (pos 6) shows '>'/'<' with the real base
+    # quality, not '*'.
     SP_SKIP=$("$VV" --tsv --no-header --pileup "$DATA/tiny.splice.bam" 2>/dev/null \
         | awk -F'\t' '$2==6')
     assert_contains "bam_pileup_refskip_bases" "$SP_SKIP" "><"
     assert_contains "bam_pileup_refskip_quals" "$SP_SKIP" "II"
+    # Whole-pileup byte-for-byte against samtools when it's available (local).
+    if command -v samtools >/dev/null 2>&1; then
+        SP_VV=$("$VV" --tsv --no-header --pileup "$DATA/tiny.splice.bam" 2>/dev/null)
+        SP_SAM=$(samtools mpileup "$DATA/tiny.splice.bam" 2>/dev/null)
+        assert_eq_file_inline "bam_pileup_splice_matches_samtools" "$SP_VV" "$SP_SAM"
+    fi
 fi
 
 # Markdown viewer — prose + GFM tables routed through the existing
