@@ -399,6 +399,7 @@ a headless browser such as `chromium`).
 | `--tsv` / `--csv` / `--json` / `--ndjson` / `--md` | non-interactive output |
 | `--parquet OUT`            | convert input to a Parquet file (or `-` for stdout)  |
 | `--heatmap`                | render numeric columns as a terminal heatmap (`--image-mode auto/kitty/sixel/halfblock/ascii`) |
+| `--tab <name>`             | view a named component tab from the CLI (AnnData `obs`/`var`/`X`, a workbook sheet) — e.g. `vv cells.h5ad --tab obs -n 20` |
 | `--schema` / `--describe` / `--stats` / `--unique` / `--sample` | data-exploration modes |
 | `--validate`               | LociSSD invariants check; exits non-zero on failure  |
 | `--vertical`               | transposed (vh) preview                              |

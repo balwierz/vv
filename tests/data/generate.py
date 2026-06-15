@@ -575,6 +575,23 @@ else:
     dvar = pd.DataFrame(index=[f"gene{i}" for i in range(n_var)])
     ad.AnnData(X=Xd, obs=dobs, var=dvar).write_h5ad(dense_path)
 
+    # tiny.bigobs.h5ad: 1500 obs rows — exceeds the 1000-row component preview
+    # cap, so the obs / X tabs must render "preview: first 1000 of 1500 rows"
+    # instead of reading every row (the fix for stalling on huge AnnData
+    # components over a slow mount).
+    big_path = HERE / "tiny.bigobs.h5ad"
+    if big_path.exists():
+        big_path.unlink()
+    nbig = 1500
+    Xb = sparse.random(nbig, 4, density=0.3, format="csr", dtype=np.float64,
+                       random_state=0)
+    bobs = pd.DataFrame({
+        "grp": pd.Categorical((["A", "B", "C"] * ((nbig // 3) + 1))[:nbig]),
+        "val": np.arange(nbig, dtype=np.float64),
+    }, index=[f"cell{i}" for i in range(nbig)])
+    bvar = pd.DataFrame(index=[f"gene{i}" for i in range(4)])
+    ad.AnnData(X=Xb, obs=bobs, var=bvar).write_h5ad(big_path)
+
 # tiny.malformed.h5ad: a hostile AnnData that previously crashed the reader.
 # Derived from the valid tiny.h5ad (so it stays AnnData-detectable and reaches
 # the sparse-X path) by poking two attributes that HDF5's H5Aread fills one

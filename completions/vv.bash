@@ -79,6 +79,7 @@ _vv() {
                 --json --ndjson --md --markdown
                 --select --cols --filter
                 --schema --describe --stats --validate --decode-pileup --pileup
+                --tab
                 --unique --sample
                 --vertical
                 --no-header

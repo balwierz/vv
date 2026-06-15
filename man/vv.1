@@ -181,6 +181,14 @@ row-group stats) so combining with \fB\-r\fR is fine.
 Print column names, Arrow types, nullability, and the file-info
 footer (row groups, compression, creator) and exit.
 .TP
+.BI \-\-tab " NAME"
+View a named component tab instead of the first one: AnnData
+\fBobs\fR / \fBvar\fR / \fBX\fR, a workbook sheet, and so on. Lets the
+CLI reach the data components that are otherwise only navigable in the
+interactive TUI, e.g. \fBvv cells.h5ad \-\-tab obs \-n 20\fR. Matching is
+case-insensitive; an unknown name lists the available tabs. Large
+components are shown as a capped preview (the footer notes the full size).
+.TP
 .B \-\-describe
 Per-column statistics: count, nulls, min, max, mean (numeric),
 distinct count (string, capped at 16). Respects \fB\-\-select\fR
