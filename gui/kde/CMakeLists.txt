@@ -6,8 +6,13 @@
 find_package(ECM QUIET NO_MODULE)
 if(ECM_FOUND)
   list(APPEND CMAKE_MODULE_PATH ${ECM_KDE_MODULE_DIR} ${ECM_MODULE_PATH})
-  include(KDEInstallDirs)
 endif()
+# We deliberately do NOT include(KDEInstallDirs) here. The top-level
+# CMakeLists already includes GNUInstallDirs (for the CLI install rules), and
+# KDEInstallDirs then warns that every KDE_INSTALL_* dir is being seeded from
+# the GNU ones. We only need the KF6 plugin dir, which on KF6 is always
+# <libdir>/qt6/plugins — exactly what KDE_INSTALL_PLUGINDIR resolves to — so we
+# derive it directly and skip the noisy (and otherwise unused) include.
 if(NOT DEFINED KDE_INSTALL_PLUGINDIR)
   set(KDE_INSTALL_PLUGINDIR "${CMAKE_INSTALL_LIBDIR}/qt6/plugins")
 endif()
