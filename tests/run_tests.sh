@@ -671,6 +671,18 @@ if [ -f "$DATA/tiny.npz" ]; then
     assert_contains "npz_summary_mat"    "$NPZ_OUT" "mat"
     assert_contains "npz_summary_cube"   "$NPZ_OUT" "cube"
 fi
+# Wide .npz: a 2-D array with 5000 columns. vv builds one Arrow column per
+# declared column, so it must render only the first kNpzMaxCols (4096) and flag
+# the truncation in the footer — otherwise a genuinely-wide (or hostile) array
+# would allocate unboundedly.
+if [ -f "$DATA/tiny.wide.npz" ]; then
+    # The array is a sibling tab (the summary tab opens first); --tab selects it.
+    NPZ_WIDE=$("$VV" --no-interactive --color=never --tab wide \
+        "$DATA/tiny.wide.npz" 2>&1)
+    assert_contains "npz_wide_col_cap_footer" "$NPZ_WIDE" \
+        "showing first 4096 of 5000 columns"
+    refute_contains "npz_wide_no_overflow_col" "$NPZ_WIDE" "c4096"
+fi
 # Malformed .npz: the member's .npy header declares shape (1000000000,) <f8
 # (8 GB) but stores only 16 bytes. The reader derived element counts / byte
 # offsets straight from the shape, driving an out-of-bounds read. vv must now

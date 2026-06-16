@@ -37,6 +37,18 @@ assert_contains() {
     fi
 }
 
+refute_contains() {
+    # $1 = name, $2 = haystack, $3 = needle (must be ABSENT)
+    if printf '%s' "$2" | grep -qF -- "$3"; then
+        FAIL=$((FAIL + 1))
+        echo "  FAIL  $1 (unexpected '$3')"
+        echo "       got: $2"
+    else
+        PASS=$((PASS + 1))
+        echo "  ok    $1"
+    fi
+}
+
 assert_exit_zero() {
     # $1 = name, "$@" rest = command
     local name="$1"; shift
