@@ -7668,19 +7668,31 @@ build_1d_table(const std::string& name, arrow::Type::type id,
 }
 
 // Convert a 2-D slab (rows × cols) C-contiguous to an Arrow table.
+// Cap on the number of columns rendered from a 2-D array: one Arrow Array +
+// Field is built per column, so a genuinely-wide array (or a hostile one that
+// passes the shape/buffer bounds check) would otherwise allocate unboundedly.
+// The full width is reported to the caller so the footer can flag truncation.
+static constexpr int64_t kNpzMaxCols = 4096;
+
 // fortran_order arrays would have transposed memory layout — we handle
 // the common (False) case; F-order falls back to column-major read.
+// Only the first kNpzMaxCols columns are materialised; `full_cols_out` (when
+// non-null) receives the declared width so callers can note any truncation.
 static std::shared_ptr<arrow::Table>
 build_2d_table(arrow::Type::type id, const uint8_t* data,
                 int64_t rows, int64_t cols, size_t item_size,
-                bool fortran_order) {
+                bool fortran_order, int64_t* full_cols_out = nullptr) {
+    if (full_cols_out) *full_cols_out = cols;
+    const int64_t full_cols = cols;        // row stride in the C-order buffer
+    if (cols > kNpzMaxCols) cols = kNpzMaxCols;
     arrow::FieldVector fields;
     std::vector<std::shared_ptr<arrow::Array>> cols_out;
     auto dt = arrow_dt(id);
     std::vector<uint8_t> tmp;
     for (int64_t c = 0; c < cols; ++c) {
-        // Gather column c. C-order: stride = cols * item_size between rows.
-        // F-order: column is contiguous (stride = item_size).
+        // Gather column c. C-order: stride = full_cols * item_size between rows
+        // (the declared width, even when capped). F-order: column is contiguous
+        // (stride = item_size).
         tmp.assign(rows * item_size, 0);
         if (fortran_order) {
             std::memcpy(tmp.data(), data + c * rows * item_size,
@@ -7688,7 +7700,7 @@ build_2d_table(arrow::Type::type id, const uint8_t* data,
         } else {
             for (int64_t r = 0; r < rows; ++r) {
                 std::memcpy(tmp.data() + r * item_size,
-                            data + (r * cols + c) * item_size,
+                            data + (r * full_cols + c) * item_size,
                             item_size);
             }
         }
@@ -7863,12 +7875,17 @@ class NpzSource : public WorkbookSource {
         }
 
         if (h.shape.size() == 2) {
+            int64_t full_c = 0;
             *tbl = build_2d_table(h.dtype_id, data, h.shape[0], h.shape[1],
-                                   h.item_size, h.fortran_order);
+                                   h.item_size, h.fortran_order, &full_c);
             if (!*tbl) return "NPZ: dtype not supported for '" + e->name + "'";
             *footer = "Format: NumPy NPZ  |  Array: " + e->name +
                       "  |  " + shape_str(h.shape) +
                       "  |  dtype: " + h.dtype_str;
+            if ((*tbl)->num_columns() < full_c)
+                *footer += "  |  showing first " +
+                           std::to_string((*tbl)->num_columns()) + " of " +
+                           std::to_string(full_c) + " columns";
             return "";
         }
 
@@ -7896,9 +7913,10 @@ class NpzSource : public WorkbookSource {
         size_t slice_bytes = (size_t)inner_rows * inner_cols * h.item_size;
         const uint8_t* slice_data = data + (size_t)idx * slice_bytes;
 
+        int64_t full_c = 0;
         *tbl = build_2d_table(h.dtype_id, slice_data,
                                inner_rows, inner_cols,
-                               h.item_size, h.fortran_order);
+                               h.item_size, h.fortran_order, &full_c);
         if (!*tbl) return "NPZ: dtype not supported for '" + e->name + "'";
 
         std::string slice_desc = "[" + std::to_string(idx) + ", :, :";
@@ -7910,6 +7928,10 @@ class NpzSource : public WorkbookSource {
                   "  |  slice " + slice_desc +
                   " (" + std::to_string(idx + 1) + "/" + std::to_string(leading)
                   + ")  |  [ / ] step slice  •  :slice N jumps";
+        if ((*tbl)->num_columns() < full_c)
+            *footer += "  |  showing first " +
+                       std::to_string((*tbl)->num_columns()) + " of " +
+                       std::to_string(full_c) + " columns";
         return "";
     }
 

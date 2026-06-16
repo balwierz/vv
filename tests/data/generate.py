@@ -674,6 +674,14 @@ else:
              mat=np.arange(12, dtype=np.float64).reshape(3, 4),
              cube=np.arange(24, dtype=np.float32).reshape(2, 3, 4))
 
+    # tiny.wide.npz: a 2-D array wider than the NPZ column cap
+    # (kNpzMaxCols = 4096). vv builds one Arrow column per declared column,
+    # so a genuinely-wide (or hostile) array would otherwise allocate
+    # unboundedly; vv must render only the first 4096 columns and flag the
+    # truncation in the footer.
+    np.savez(HERE / "tiny.wide.npz",
+             wide=np.arange(2 * 5000, dtype=np.int32).reshape(2, 5000))
+
     def _make_npy(descr, shape, data):
         tup = "(" + ", ".join(str(s) for s in shape) + \
               ("," if len(shape) == 1 else "") + ")"
