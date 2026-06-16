@@ -12129,33 +12129,35 @@ class TableTUI {
         };
 
         // Sort active: scan display rows one at a time, translating each to
-        // its source row via sort_order_. Slower (per-row chunk lookups
-        // instead of streaming chunk-by-chunk) but correct — and acceptable
-        // because the LRU cache absorbs locality within a sort run.
+        // its source row via sort_order_. Consecutive display rows can land in
+        // different row groups, so route every lookup through the shared LRU
+        // chunk cache (ensure_cols / cache_) rather than a single last-chunk
+        // slot — a sort that bounces between a handful of row groups then
+        // re-decodes each at most once per eviction, not once per row.
         if (!sort_order_.empty()) {
             int64_t N = (int64_t)sort_order_.size();
             int64_t r = from_row;
             int64_t end = forward ? N : -1;
             int64_t step = forward ? +1 : -1;
-            int last_chunk = -1;
-            std::shared_ptr<arrow::Table> tbl;
-            int64_t tbl_first = 0;
+            int64_t scanned = 0;
             for (; r != end; r += step) {
                 if (r < 0 || r >= N) break;
-                int64_t srow = sort_order_[r];
-                int c = chunk_for_row(srow);
-                if (c != last_chunk) {
-                    auto meta = src_->chunk_meta(c);
+                // Throttle the progress repaint: the decode is now cached, so
+                // an un-throttled refresh per row would dominate the scan.
+                if ((scanned++ & 8191) == 0) {
                     mvprintw(scr_r_-1, 0, " Searching (sorted)… row %lld ",
                              (long long)r);
                     clrtoeol(); refresh();
-                    if (!src_->read_chunk(c, all_cols, &tbl).ok()) continue;
-                    tbl_first = meta.first_row;
-                    last_chunk = c;
                 }
-                int64_t local = srow - tbl_first;
-                if (local < 0 || local >= tbl->num_rows()) continue;
-                if (row_matches(tbl, local)) return r;
+                int64_t srow = sort_order_[r];
+                int c = chunk_for_row(srow);
+                ensure_cols(c, all_cols);
+                auto it = cache_.find(c);
+                if (it == cache_.end() || !it->second.ok) continue;
+                const CachedRG& cr = it->second;
+                int64_t local = srow - cr.first_row;
+                if (local < 0 || local >= cr.num_rows) continue;
+                if (cached_row_matches(cr, local, q)) return r;
             }
             return -1;
         }
@@ -12222,6 +12224,25 @@ class TableTUI {
         }
     }
 
+    // True if any column of cached chunk `cr` matches the lowercased query `q`
+    // at row offset `local`. Shared by the sorted find scan and the
+    // highlight check, so both consult the same decoded row groups.
+    bool cached_row_matches(const CachedRG& cr, int64_t local,
+                            const std::string& q) const {
+        for (auto& arr : cr.cols) {
+            if (!arr) continue;
+            int64_t off = local;
+            for (auto& chunk : arr->chunks()) {
+                if (off < chunk->length()) {
+                    if (cell_matches(cell_to_string(*chunk, off), q)) return true;
+                    break;
+                }
+                off -= chunk->length();
+            }
+        }
+        return false;
+    }
+
     // True if `row` matches the active search, *without* loading new chunks.
     // Used by draw_data_row to highlight every visible match — only consults
     // already-cached cells. Returns false if the row's chunk isn't loaded.
@@ -12237,19 +12258,7 @@ class TableTUI {
         if (local < 0 || local >= cr.num_rows) return false;
         std::string q = search_query_;
         for (auto& c2 : q) c2 = (char)std::tolower((unsigned char)c2);
-        for (int col = 0; col < (int)cr.cols.size(); ++col) {
-            auto arr = cr.cols[col];
-            if (!arr) continue;
-            int64_t off = local;
-            for (auto& chunk : arr->chunks()) {
-                if (off < chunk->length()) {
-                    if (cell_matches(cell_to_string(*chunk, off), q)) return true;
-                    break;
-                }
-                off -= chunk->length();
-            }
-        }
-        return false;
+        return cached_row_matches(cr, local, q);
     }
 
     // ── Cache ────────────────────────────────────────────────────────────────
