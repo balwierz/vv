@@ -11936,6 +11936,16 @@ class TableTUI {
     std::list<int>          lru_;
     static constexpr int    MAX_CACHE = 4;
 
+    // Per-frame formatted-cell memo, keyed by frame_key(source_row, virt_col).
+    // The width-fitting pass and the render pass both want the formatted text
+    // of every visible integer cell; without this they'd each format it once
+    // (integer columns — Start/End genomic positions — are the common case).
+    // Cleared at the top of every draw(); bounded by the visible cell count.
+    std::unordered_map<int64_t, std::string> frame_cells_;
+    int64_t frame_key(int64_t srow, int vc) const {
+        return srow * (int64_t)num_cols_ + vc;
+    }
+
     int64_t top_row_  = 0;
     int     left_col_ = 0;
     int     scr_r_ = 24, scr_c_ = 80;
@@ -12449,28 +12459,25 @@ class TableTUI {
         if (bot < top_row_) return;
         for (int vc : visible_virt_cols) {
             if (vc < 0 || vc >= num_cols_ || !is_integer_[vc]) continue;
-            int sc = virt_src_col_[vc];
             int w = (int)display_width(col_names_[vc]);
             for (int64_t r = top_row_; r <= bot; ++r) {
-                int c = chunk_for_row(r);
+                int64_t srow = source_row(r);
+                int c = chunk_for_row(srow);
                 auto it = cache_.find(c);
                 if (it == cache_.end() || !it->second.ok) continue;
                 const CachedRG& cr = it->second;
-                int64_t local = r - cr.first_row;
+                int64_t local = srow - cr.first_row;
                 if (local < 0 || local >= cr.num_rows) continue;
-                auto arr = (sc >= 0 && sc < (int)cr.cols.size()) ? cr.cols[sc] : nullptr;
-                if (!arr) continue;
-                int64_t off = local;
-                for (auto& chunk : arr->chunks()) {
-                    if (off < chunk->length()) {
-                        if (!chunk->IsNull(off)) {
-                            int ww = display_width(
-                                digits_with_sep(cell_to_string(*chunk, off)));
-                            if (ww > w) w = ww;
-                        }
-                        break;
-                    }
-                    off -= chunk->length();
+                // Format the cell through the same path draw_data_row uses and
+                // memoize it for the render pass — cell_at returns integers
+                // untruncated, so this is the true display width and matches
+                // what's painted (format_cell included). Nulls render as the
+                // null glyph; skip them from the width like the old code did.
+                std::string val = cell_at(cr, local, vc, nullptr, nullptr, 0);
+                frame_cells_[frame_key(srow, vc)] = val;
+                if (val != NULL_SYMBOL) {
+                    int ww = display_width(val);
+                    if (ww > w) w = ww;
                 }
             }
             col_widths_[vc] = w;
@@ -12740,8 +12747,15 @@ class TableTUI {
         std::unordered_map<std::string, std::string> parsed;
         int parsed_row = -1;
         for (auto& col : vc) {
-            std::string val = cell_at(it->second, local, col.col,
-                                      &parsed, &parsed_row, local);
+            // Reuse the string the width-fitting pass already formatted for
+            // this cell (integer columns); otherwise format it now. Keyed by
+            // source row, so it hits in the common unsorted case and falls
+            // back cleanly under an active sort.
+            auto mit = frame_cells_.find(frame_key(srow, col.col));
+            std::string val = (mit != frame_cells_.end())
+                ? mit->second
+                : cell_at(it->second, local, col.col,
+                          &parsed, &parsed_row, local);
 
             if (is_match) {
                 // Whole row rendered with NCP_SEARCH highlight; the n/N
@@ -13829,6 +13843,7 @@ private:
             virt.reserve(vc.size());
             for (auto& c : vc) virt.push_back(c.col);
             prefetch_visible(virt);
+            frame_cells_.clear();   // per-frame; populated by the fit pass below
             fit_integer_widths_to_visible(virt);
         }
         vc = visible_cols();
