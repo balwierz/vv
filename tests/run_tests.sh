@@ -73,6 +73,22 @@ else
 fi
 rm -f "$BIGTSV"
 
+# Streaming retention window: a forward-only stream keeps only a bounded window
+# of decoded batches (so deep scroll / G on a huge file doesn't grow RAM
+# without bound). Forcing the window to a single batch (VV_STREAM_BATCH_CAP=1)
+# over a >16 MiB input (several CSV blocks → several batches) must STILL export
+# every row: eviction frees old batches, but a sequential read consumes each
+# one once, as it's produced, so nothing is dropped. (2M rows ≈ 24 MiB.)
+WINTSV="$TMP/window.tsv"
+{ printf 'a\tb\tc\n'; yes "$(printf 'row\t123\t4.5')" | head -n 2000000; } > "$WINTSV"
+WIN_OUT=$(VV_STREAM_BATCH_CAP=1 "$VV" --tsv --no-header "$WINTSV" | wc -l | tr -d ' ')
+assert_eq_file_inline "stream_window_export_complete_under_eviction" "$WIN_OUT" "2000000"
+# --unique drives ensure() sequentially too: the distinct count must be exact
+# (one repeated row → 2,000,000 occurrences of a single value) under eviction.
+WIN_UNIQ=$(VV_STREAM_BATCH_CAP=1 "$VV" --unique a "$WINTSV" 2>&1)
+assert_contains "stream_window_unique_count_exact" "$WIN_UNIQ" "2_000_000"
+rm -f "$WINTSV"
+
 # Streaming FASTX error handling: a malformed record BEYOND the first batch
 # (BATCH_SIZE=4096) must surface as a non-zero exit and must not spin forever
 # in ensure(). Build a FASTQ with >4096 good records then a truncated one
