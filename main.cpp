@@ -11935,6 +11935,20 @@ static std::string build_tail(std::unique_ptr<TabularSource>& src,
 // frontend; excluded from libvvcore (the headless reader core).
 #ifndef VV_CORE_LIB
 
+// Terminal restoration on fatal signals. While the TUI owns the terminal
+// (raw/no-echo/alt-screen), a SIGINT (Ctrl-C), SIGTERM or SIGHUP would kill the
+// process before endwin() runs, leaving the user's shell unusable. We install
+// handlers for the duration of run() that endwin() first, then re-raise with
+// the default disposition so the exit status still reflects the signal (130 for
+// SIGINT, etc.). endwin() is not formally async-signal-safe, but it's the
+// standard pragmatic cleanup and only runs on the way out.
+static volatile sig_atomic_t g_tui_active = 0;
+static void tui_signal_restore(int sig) {
+    if (g_tui_active) { g_tui_active = 0; endwin(); }
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
 // ncurses color-pair IDs  (0 = terminal default)
 enum : int {
     NCP_HEADER = 1,   // column header row
@@ -14216,6 +14230,11 @@ public:
         SCREEN* scr = newterm(nullptr, stdout, stdin);
         if (!scr) return false;
         set_term(scr);
+        // Restore the terminal if we're killed while owning it (see above).
+        g_tui_active = 1;
+        auto prev_int  = signal(SIGINT,  tui_signal_restore);
+        auto prev_term = signal(SIGTERM, tui_signal_restore);
+        auto prev_hup  = signal(SIGHUP,  tui_signal_restore);
         noecho(); cbreak(); keypad(stdscr, TRUE); curs_set(0);
         set_escdelay(25); setup_colors();
         // Mouse: scroll wheel (BUTTON4 / BUTTON5) + click and double-click.
@@ -14677,7 +14696,12 @@ public:
                 default: break;
             }
         }
+        g_tui_active = 0;
         endwin();
+        // Hand the signals back to whatever was there before the TUI ran.
+        signal(SIGINT,  prev_int);
+        signal(SIGTERM, prev_term);
+        signal(SIGHUP,  prev_hup);
         delscreen(scr);
         return true;
     }
