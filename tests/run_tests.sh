@@ -251,6 +251,23 @@ fi
 # one 8-letter element; at width 14 the whole "[promoter, TF]" fits.
 NARROW=$("$VV" -w 14 --no-interactive --no-index --color=never -n 6 "$DATA/tiny.parquet")
 assert_contains "trunc_lists_fit_multiple_elements" "$NARROW" "[promoter, TF]"
+# UTF-8-safe truncation: truncate() must cut on a codepoint boundary, not
+# mid-byte. "é" is 2 bytes; at a narrow width the byte-based fallback used to
+# split the trailing 'é' and emit invalid UTF-8. The truncated cell (and the
+# whole table, which is full of multibyte box-drawing) must round-trip iconv.
+UTF8TSV="$TMP/utf8trunc.tsv"
+printf 'v\nééééééééé\n' > "$UTF8TSV"
+UTF8_OUT=$("$VV" --no-interactive --color=never -w 6 "$UTF8TSV" 2>&1)
+if command -v iconv >/dev/null 2>&1; then
+    if printf '%s' "$UTF8_OUT" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+        PASS=$((PASS+1)); echo "  ok    truncate_utf8_codepoint_boundary"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  truncate_utf8_codepoint_boundary (invalid UTF-8)"
+    fi
+fi
+# The kept prefix is whole codepoints + ellipsis (5×'é' then '…' at width 6).
+assert_contains "truncate_utf8_keeps_whole_codepoints" "$UTF8_OUT" "ééééé…"
+rm -f "$UTF8TSV"
 # 2bit — UCSC sequence-index reader.
 if [ -f "$DATA/tiny.2bit" ]; then
     TBT_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.2bit" | wc -l)
