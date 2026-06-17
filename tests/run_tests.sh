@@ -884,6 +884,27 @@ if [ -f "$DATA/tiny.md" ]; then
     assert_contains "md_image_stub"          "$MD_OUT" "[placeholder image]"
 fi
 
+# Terminal-injection defence: a hostile markdown file must not be able to emit
+# raw control bytes (ESC/CSI/OSC/BEL) to the terminal — not from body text, and
+# not via a link URL embedded in an OSC 8 escape. Render with colour forced on
+# (exercises the escape-emitting paths) and confirm none of the planted control
+# sequences survive, while the visible link text still renders.
+MDINJ="$TMP/inject.md"
+printf 'Heading\n\nNormal \x1b]0;PWNED\x07 text and a [click](http://e\x1b[31mvil.example).\n' \
+    > "$MDINJ"
+MD_INJ_OUT=$("$VV" --color=always "$MDINJ" 2>&1)
+if printf '%s' "$MD_INJ_OUT" | grep -qaF $'\x1b]0;'; then
+    FAIL=$((FAIL+1)); echo "  FAIL  md_no_osc_title_injection (raw OSC survived)"
+else PASS=$((PASS+1)); echo "  ok    md_no_osc_title_injection"; fi
+if printf '%s' "$MD_INJ_OUT" | grep -qaF $'\x07'; then
+    FAIL=$((FAIL+1)); echo "  FAIL  md_no_bel_injection (raw BEL survived)"
+else PASS=$((PASS+1)); echo "  ok    md_no_bel_injection"; fi
+if printf '%s' "$MD_INJ_OUT" | grep -qaF $'\x1b[31mvil'; then
+    FAIL=$((FAIL+1)); echo "  FAIL  md_no_url_csi_injection (raw CSI from URL survived)"
+else PASS=$((PASS+1)); echo "  ok    md_no_url_csi_injection"; fi
+assert_contains "md_injection_link_text_preserved" "$MD_INJ_OUT" "click"
+rm -f "$MDINJ"
+
 echo "── Threading parity ──────────────────────────────────────"
 "$VV" --tsv --no-header -@ 1 "$DATA/tiny.parquet" > "$TMP/t1.out"
 "$VV" --tsv --no-header -@ 4 "$DATA/tiny.parquet" > "$TMP/t4.out"
