@@ -882,6 +882,25 @@ int display_width(const std::string& s) {
     return w;
 }
 
+// Byte offset just past the first `n` UTF-8 codepoints of s (clamped to
+// s.size()). A codepoint starts on any non-continuation byte (top bits != 10);
+// continuation bytes belong to the current codepoint. Used to truncate on a
+// codepoint boundary instead of mid-byte — display_width counts codepoints, so
+// this keeps the two consistent and never emits invalid UTF-8.
+static size_t utf8_prefix_bytes(const std::string& s, int n) {
+    if (n <= 0) return 0;
+    size_t i = 0;
+    int cp = 0;
+    while (i < s.size()) {
+        if (((unsigned char)s[i] & 0xC0u) != 0x80u) {  // start of a codepoint
+            if (cp == n) break;
+            ++cp;
+        }
+        ++i;
+    }
+    return i;
+}
+
 std::string truncate(const std::string& s, int max_w) {
     if (max_w < 2) max_w = 2;
     if (display_width(s) <= max_w) return s;
@@ -920,8 +939,10 @@ std::string truncate(const std::string& s, int max_w) {
         }
     }
 
-    // ELLIPSIS is 3 UTF-8 bytes but 1 display column, so we keep (max_w-1) content chars.
-    return s.substr(0, max_w - 1) + ELLIPSIS;
+    // ELLIPSIS is 3 UTF-8 bytes but 1 display column, so we keep (max_w-1)
+    // content codepoints. Cut on a codepoint boundary — a byte-based substr
+    // would split a multibyte codepoint and emit invalid UTF-8.
+    return s.substr(0, utf8_prefix_bytes(s, max_w - 1)) + ELLIPSIS;
 }
 
 // Format a decimal integer string with '_' grouping every three digits
