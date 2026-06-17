@@ -357,6 +357,15 @@ assert_contains "schema_has_maxendsofar" "$SCHEMA_OUT" "MaxEndSoFar"
 DESCRIBE_OUT=$("$VV" --describe "$DATA/tiny.lociss")
 assert_contains "describe_has_columns_header" "$DESCRIBE_OUT" "Column"
 assert_contains "describe_has_distinct_for_string" "$DESCRIBE_OUT" "Chromosome"
+# --describe must summarise the WHOLE table, not just the first head_rows (10)
+# preview rows. tiny.parquet has 20 rows → the per-column Count must read 20.
+DESC_COUNT=$("$VV" --describe "$DATA/tiny.parquet" 2>&1 \
+             | awk '/^Chr[[:space:]]/{print $3; exit}')
+assert_eq_file_inline "describe_scans_all_rows" "$DESC_COUNT" "20"
+# An explicit -n still caps the describe scan.
+DESC_N=$("$VV" --describe -n 5 "$DATA/tiny.parquet" 2>&1 \
+         | awk '/^Chr[[:space:]]/{print $3; exit}')
+assert_eq_file_inline "describe_honors_explicit_head_rows" "$DESC_N" "5"
 SELECT_OUT=$("$VV" --tsv --no-header --select Chromosome,Score "$DATA/tiny.lociss" \
              | head -1)
 assert_eq_file_inline "select_two_cols" "$SELECT_OUT" "chr1	0.5"
