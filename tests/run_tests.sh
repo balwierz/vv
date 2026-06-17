@@ -107,6 +107,17 @@ else
 fi
 rm -f "$BADFQ"
 
+# Streaming retention window on a second source family (FastxSource): a FASTQ
+# with >BATCH_SIZE (4096) records spans multiple batches. With the window
+# forced to 1 batch, a sequential export must still emit every record — the
+# same bounded-window helper as DelimitedSource, exercised here on FASTQ.
+WINFQ="$TMP/window.fq"
+awk 'BEGIN{for(i=1;i<=10000;i++)printf "@r%d\nACGTACGT\n+\nIIIIIIII\n",i}' > "$WINFQ"
+WINFQ_OUT=$(VV_STREAM_BATCH_CAP=1 "$VV" --tsv --no-header "$WINFQ" | wc -l | tr -d ' ')
+assert_eq_file_inline "stream_window_fastq_export_complete_under_eviction" \
+    "$WINFQ_OUT" "10000"
+rm -f "$WINFQ"
+
 if [ -f "$DATA/tiny.bcf" ]; then
     run_case bcf_tsv  --tsv --no-header "$DATA/tiny.bcf"
 fi

@@ -3131,6 +3131,33 @@ inline int stream_batch_cap() {
     return cap;
 }
 
+// Append a freshly-decoded batch to a forward-only streaming source's storage:
+// record its (first_row, num_rows) metadata (kept forever, so chunk_meta() /
+// total_rows() stay exact after eviction) and enforce the bounded trailing
+// window — free the batch that just fell out, unless retention is pinned. The
+// freed slot stays in `batches` as nullptr so indices remain stable; callers
+// detect it (read_chunk returns CapacityError). Shared by every forward-only
+// source.
+inline void stream_retain(
+        std::vector<std::shared_ptr<arrow::RecordBatch>>& batches,
+        std::vector<int64_t>& first_row,
+        std::vector<int64_t>& num_rows,
+        int64_t& rows_so_far,
+        bool retain_all, bool& evicted_any,
+        std::shared_ptr<arrow::RecordBatch> batch) {
+    first_row.push_back(rows_so_far);
+    num_rows.push_back(batch->num_rows());
+    rows_so_far += batch->num_rows();
+    batches.push_back(std::move(batch));
+    if (!retain_all) {
+        int drop = (int)batches.size() - stream_batch_cap();
+        if (drop > 0 && batches[drop - 1]) {
+            batches[drop - 1].reset();
+            evicted_any = true;
+        }
+    }
+}
+
 class DelimitedSource : public TabularSource {
     std::string                           path_;
     char                                  delimiter_;
@@ -3153,20 +3180,10 @@ class DelimitedSource : public TabularSource {
     mutable bool                          evicted_any_ = false; // any batch freed?
     mutable arrow::Status                 read_status_;   // sticky stream error
 
-    // Append a freshly-decoded batch: record its metadata (kept forever) and
-    // enforce the trailing window (free the batch that fell out, unless pinned).
+    // Append a freshly-decoded batch via the shared bounded-window helper.
     void retain_(std::shared_ptr<arrow::RecordBatch> batch) const {
-        batch_first_row_.push_back(rows_so_far_);
-        batch_num_rows_.push_back(batch->num_rows());
-        rows_so_far_ += batch->num_rows();
-        batches_.push_back(std::move(batch));
-        if (!retain_all_) {
-            int drop = (int)batches_.size() - stream_batch_cap();
-            if (drop > 0 && batches_[drop - 1]) {
-                batches_[drop - 1].reset();
-                evicted_any_ = true;
-            }
-        }
+        stream_retain(batches_, batch_first_row_, batch_num_rows_, rows_so_far_,
+                      retain_all_, evicted_any_, std::move(batch));
     }
 
     mutable std::shared_ptr<arrow::csv::StreamingReader> reader_;
@@ -3736,8 +3753,11 @@ class BamSource : public TabularSource {
 
     mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
     mutable std::vector<int64_t>          batch_first_row_;
+    mutable std::vector<int64_t>          batch_num_rows_;   // kept after eviction
     mutable int64_t                       rows_so_far_ = 0;
     mutable bool                          all_read_    = false;
+    mutable bool                          retain_all_  = false;
+    mutable bool                          evicted_any_ = false;
 
     static constexpr int BATCH_SIZE = 32768;
 
@@ -3854,9 +3874,8 @@ class BamSource : public TabularSource {
 
         auto batch = arrow::RecordBatch::Make(schema_, count,
             {a[0],a[1],a[2],a[3],a[4],a[5],a[6],a[7],a[8],a[9],a[10]});
-        batch_first_row_.push_back(rows_so_far_);
-        rows_so_far_ += count;
-        batches_.push_back(std::move(batch));
+        stream_retain(batches_, batch_first_row_, batch_num_rows_, rows_so_far_,
+                      retain_all_, evicted_any_, std::move(batch));
         return arrow::Status::OK();
     }
 
@@ -3941,8 +3960,10 @@ public:
     int64_t total_rows() const override { return all_read_ ? rows_so_far_ : -1; }
     int     num_chunks() const override { return (int)batches_.size(); }
     ChunkMeta chunk_meta(int i) const override {
-        return {batch_first_row_[i], batches_[i]->num_rows()};
+        return {batch_first_row_[i], batch_num_rows_[i]};
     }
+    void set_retain_all(bool b) override { retain_all_ = b; }
+    bool evicted_any() const override { return evicted_any_; }
     void ensure(int i) override {
         while (!all_read_ && (int)batches_.size() <= i)
             (void)advance();
@@ -3952,6 +3973,9 @@ public:
         ensure(i);
         if (i >= (int)batches_.size())
             return arrow::Status::IndexError("chunk ", i, " out of range");
+        if (!batches_[i])
+            return arrow::Status::CapacityError(
+                "chunk ", i, " was released by the streaming window");
         *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
         return arrow::Status::OK();
     }
@@ -4026,8 +4050,11 @@ class BamPileupSource : public TabularSource {
     // Streaming-source plumbing (same shape as BamSource / BcfSource).
     mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
     mutable std::vector<int64_t>             batch_first_row_;
+    mutable std::vector<int64_t>             batch_num_rows_;   // kept after eviction
     mutable int64_t                          rows_so_far_ = 0;
     mutable bool                             all_read_    = false;
+    mutable bool                             retain_all_  = false;
+    mutable bool                             evicted_any_ = false;
     mutable int64_t                          num_rows_total_ = -1;
 
     static constexpr int BATCH_ROWS = 16384;
@@ -4161,9 +4188,8 @@ class BamPileupSource : public TabularSource {
         ARROW_RETURN_NOT_OK(b_quals.Finish(&a_quals));
         auto batch = arrow::RecordBatch::Make(schema_, count,
             {a_chrom, a_pos, a_ref, a_depth, a_bases, a_quals});
-        batch_first_row_.push_back(rows_so_far_);
-        rows_so_far_ += count;
-        batches_.push_back(std::move(batch));
+        stream_retain(batches_, batch_first_row_, batch_num_rows_, rows_so_far_,
+                      retain_all_, evicted_any_, std::move(batch));
         return arrow::Status::OK();
     }
 
@@ -4275,8 +4301,10 @@ public:
     }
     int     num_chunks() const override { return (int)batches_.size(); }
     ChunkMeta chunk_meta(int i) const override {
-        return {batch_first_row_[i], batches_[i]->num_rows()};
+        return {batch_first_row_[i], batch_num_rows_[i]};
     }
+    void set_retain_all(bool b) override { retain_all_ = b; }
+    bool evicted_any() const override { return evicted_any_; }
     void ensure(int i) override {
         while (!all_read_ && (int)batches_.size() <= i)
             (void)advance();
@@ -4286,6 +4314,9 @@ public:
         ensure(i);
         if (i >= (int)batches_.size())
             return arrow::Status::IndexError("chunk ", i, " out of range");
+        if (!batches_[i])
+            return arrow::Status::CapacityError(
+                "chunk ", i, " was released by the streaming window");
         *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
         return arrow::Status::OK();
     }
@@ -4320,8 +4351,11 @@ class BcfSource : public TabularSource {
 
     mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
     mutable std::vector<int64_t>             batch_first_row_;
+    mutable std::vector<int64_t>             batch_num_rows_;   // kept after eviction
     mutable int64_t                          rows_so_far_ = 0;
     mutable bool                             all_read_ = false;
+    mutable bool                             retain_all_  = false;
+    mutable bool                             evicted_any_ = false;
 
     static constexpr int BATCH_SIZE = 32768;
 
@@ -4433,9 +4467,8 @@ class BcfSource : public TabularSource {
         }
 
         auto batch = arrow::RecordBatch::Make(schema_, count, a);
-        batch_first_row_.push_back(rows_so_far_);
-        rows_so_far_ += count;
-        batches_.push_back(std::move(batch));
+        stream_retain(batches_, batch_first_row_, batch_num_rows_, rows_so_far_,
+                      retain_all_, evicted_any_, std::move(batch));
         return arrow::Status::OK();
     }
 
@@ -4531,8 +4564,10 @@ public:
     int64_t total_rows() const override { return all_read_ ? rows_so_far_ : -1; }
     int     num_chunks() const override { return (int)batches_.size(); }
     ChunkMeta chunk_meta(int i) const override {
-        return {batch_first_row_[i], batches_[i]->num_rows()};
+        return {batch_first_row_[i], batch_num_rows_[i]};
     }
+    void set_retain_all(bool b) override { retain_all_ = b; }
+    bool evicted_any() const override { return evicted_any_; }
     void ensure(int i) override {
         while (!all_read_ && (int)batches_.size() <= i)
             (void)advance();
@@ -4542,6 +4577,9 @@ public:
         ensure(i);
         if (i >= (int)batches_.size())
             return arrow::Status::IndexError("chunk ", i, " out of range");
+        if (!batches_[i])
+            return arrow::Status::CapacityError(
+                "chunk ", i, " was released by the streaming window");
         *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
         return arrow::Status::OK();
     }
@@ -4597,7 +4635,10 @@ class BigSource : public TabularSource {
 
     mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
     mutable std::vector<int64_t>             batch_first_row_;
+    mutable std::vector<int64_t>             batch_num_rows_;   // kept after eviction
     mutable int64_t                          rows_so_far_ = 0;
+    mutable bool                             retain_all_  = false;
+    mutable bool                             evicted_any_ = false;
 
     static constexpr int BATCH_SIZE = 32768;
 
@@ -4745,9 +4786,8 @@ class BigSource : public TabularSource {
             a.push_back(tmp);
         }
         auto batch = arrow::RecordBatch::Make(schema_, count, a);
-        batch_first_row_.push_back(rows_so_far_);
-        rows_so_far_ += count;
-        batches_.push_back(std::move(batch));
+        stream_retain(batches_, batch_first_row_, batch_num_rows_, rows_so_far_,
+                      retain_all_, evicted_any_, std::move(batch));
         return arrow::Status::OK();
     }
 
@@ -4835,8 +4875,10 @@ public:
     int64_t total_rows() const override { return all_read_ ? rows_so_far_ : -1; }
     int     num_chunks() const override { return (int)batches_.size(); }
     ChunkMeta chunk_meta(int i) const override {
-        return {batch_first_row_[i], batches_[i]->num_rows()};
+        return {batch_first_row_[i], batch_num_rows_[i]};
     }
+    void set_retain_all(bool b) override { retain_all_ = b; }
+    bool evicted_any() const override { return evicted_any_; }
     void ensure(int i) override {
         while (!all_read_ && (int)batches_.size() <= i)
             (void)advance();
@@ -4846,6 +4888,9 @@ public:
         ensure(i);
         if (i >= (int)batches_.size())
             return arrow::Status::IndexError("chunk ", i, " out of range");
+        if (!batches_[i])
+            return arrow::Status::CapacityError(
+                "chunk ", i, " was released by the streaming window");
         *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
         return arrow::Status::OK();
     }
@@ -4875,8 +4920,11 @@ class FastxSource : public TabularSource {
 
     mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
     mutable std::vector<int64_t>           batch_first_row_;
+    mutable std::vector<int64_t>           batch_num_rows_;   // kept after eviction
     mutable int64_t                        rows_so_far_ = 0;
     mutable bool                           all_read_    = false;
+    mutable bool                           retain_all_  = false;
+    mutable bool                           evicted_any_ = false;
     mutable arrow::Status                  read_status_;   // sticky stream error
 
     static constexpr int BATCH_SIZE = 4096;
@@ -4920,9 +4968,8 @@ class FastxSource : public TabularSource {
             a.push_back(tmp);
         }
         auto batch = arrow::RecordBatch::Make(schema_, count, a);
-        batch_first_row_.push_back(rows_so_far_);
-        rows_so_far_ += count;
-        batches_.push_back(std::move(batch));
+        stream_retain(batches_, batch_first_row_, batch_num_rows_, rows_so_far_,
+                      retain_all_, evicted_any_, std::move(batch));
         return arrow::Status::OK();
     }
 
@@ -4966,8 +5013,10 @@ public:
     int64_t total_rows() const override { return all_read_ ? rows_so_far_ : -1; }
     int     num_chunks() const override { return (int)batches_.size(); }
     ChunkMeta chunk_meta(int i) const override {
-        return {batch_first_row_[i], batches_[i]->num_rows()};
+        return {batch_first_row_[i], batch_num_rows_[i]};
     }
+    void set_retain_all(bool b) override { retain_all_ = b; }
+    bool evicted_any() const override { return evicted_any_; }
     void ensure(int i) override {
         while (!all_read_ && (int)batches_.size() <= i)
             (void)advance();
@@ -4977,6 +5026,9 @@ public:
         ensure(i);
         if (i >= (int)batches_.size())
             return arrow::Status::IndexError("chunk ", i, " out of range");
+        if (!batches_[i])
+            return arrow::Status::CapacityError(
+                "chunk ", i, " was released by the streaming window");
         *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
         return arrow::Status::OK();
     }
@@ -5249,8 +5301,11 @@ class SqliteSource : public TabularSource {
 
     mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
     mutable std::vector<int64_t>             batch_first_row_;
+    mutable std::vector<int64_t>             batch_num_rows_;   // kept after eviction
     mutable int64_t                          rows_so_far_ = 0;
     mutable bool                             all_read_   = false;
+    mutable bool                             retain_all_  = false;
+    mutable bool                             evicted_any_ = false;
     mutable arrow::Status                    read_status_;   // sticky stream error
     mutable sqlite3_stmt*                    stmt_       = nullptr;
 
@@ -5328,9 +5383,9 @@ class SqliteSource : public TabularSource {
             ARROW_RETURN_NOT_OK(b->Finish(&a));
             arrays.push_back(a);
         }
-        batch_first_row_.push_back(rows_so_far_);
-        rows_so_far_ += count;
-        batches_.push_back(arrow::RecordBatch::Make(schema_, count, arrays));
+        stream_retain(batches_, batch_first_row_, batch_num_rows_, rows_so_far_,
+                      retain_all_, evicted_any_,
+                      arrow::RecordBatch::Make(schema_, count, arrays));
         return arrow::Status::OK();
     }
 
@@ -5451,8 +5506,10 @@ public:
     int     num_chunks() const override { return (int)batches_.size(); }
     arrow::Status read_status() const override { return read_status_; }
     ChunkMeta chunk_meta(int i) const override {
-        return {batch_first_row_[i], batches_[i]->num_rows()};
+        return {batch_first_row_[i], batch_num_rows_[i]};
     }
+    void set_retain_all(bool b) override { retain_all_ = b; }
+    bool evicted_any() const override { return evicted_any_; }
     void ensure(int i) override {
         while (!all_read_ && (int)batches_.size() <= i) (void)advance();
     }
@@ -5461,6 +5518,9 @@ public:
         ensure(i);
         if (i >= (int)batches_.size())
             return arrow::Status::IndexError("chunk ", i, " out of range");
+        if (!batches_[i])
+            return arrow::Status::CapacityError(
+                "chunk ", i, " was released by the streaming window");
         *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
         return arrow::Status::OK();
     }
