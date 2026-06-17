@@ -311,7 +311,7 @@ be done first: it catches this whole bug class automatically.
 - [ ] `main.cpp:8090` — wrap_runs never hard-cuts over-long words — they overflow the wrap width (contradicting its own doc comment)
 - [ ] `main.cpp:8396` — role is a single value, not a stack — nested spans that both set a role lose the outer role on inner close
 - [ ] `main.cpp:8758` — Unbalanced inline HTML style tags leak style/role into the rest of the document
-- [ ] `main.cpp:8803` — Link/image hrefs and raw source bytes are emitted to the terminal without escape-sanitisation (terminal injection)
+- [x] `main.cpp:8803` — Link/image hrefs and raw source bytes are emitted to the terminal without escape-sanitisation (terminal injection) — fixed on `fix/md-terminal-injection` (new sanitize_terminal() drops C0 control bytes + DEL; applied to every non-verbatim run at the emit_line_ansi chokepoint (body text, alt text, " (url)" stubs, code) and inline to the URL embedded in both OSC 8 escape sites (markdown + inline-HTML <a>). The image-protocol payload run is now flagged verbatim so the sanitiser leaves its base64 escape intact. Tests plant ESC/CSI/OSC-title/BEL in body + a link URL and confirm none survive while link text still renders.) Note: generic table-cell values (any format) emitted via print_table are a separate, broader surface not covered here.
 - [ ] `main.cpp:9831` — DECIMAL/TIMESTAMP/DATE/TIME/DURATION columns counted as numeric but rendered as missing
 - [ ] `main.cpp:11665` — Forward search is bounded by already-loaded chunks even for indexed Parquet vs streaming inconsistency
 - [ ] `main.cpp:13536` — No SIGINT/SIGTERM handler: Ctrl-C in the TUI leaves the terminal broken (no endwin())

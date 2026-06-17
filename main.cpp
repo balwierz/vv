@@ -8525,6 +8525,25 @@ static std::string ansi_open(uint16_t style, uint8_t role) {
     return s;
 }
 
+// Strip terminal control bytes from text that originates in a viewed file
+// (markdown body, link/image URLs and alt text). Without this a hostile
+// document could embed raw escape sequences — ESC/CSI/OSC/BEL — and hijack the
+// terminal (rewrite the title, move the cursor, on some terminals worse) the
+// moment it's rendered. Drop C0 controls (0x00–0x1F) and DEL (0x7F); keep TAB
+// and newline, which are legitimate layout. `keep_ws=false` also strips TAB and
+// newline — used for a URL embedded in an OSC 8 escape, which must be a single
+// clean token that can't break out of the sequence.
+static std::string sanitize_terminal(const std::string& s, bool keep_ws = true) {
+    std::string out;
+    out.reserve(s.size());
+    for (unsigned char c : s) {
+        if (c == '\t' || c == '\n') { if (keep_ws) out += (char)c; continue; }
+        if (c < 0x20 || c == 0x7F) continue;   // drop C0 control bytes + DEL
+        out += (char)c;
+    }
+    return out;
+}
+
 static void emit_line_ansi(std::string& out, const MdLine& line) {
     // Batch SGR opens — only emit a fresh sequence when the (style, role)
     // pair changes. Close once at end-of-line. Cuts the per-line ANSI byte
@@ -8548,7 +8567,10 @@ static void emit_line_ansi(std::string& out, const MdLine& line) {
             cur_role  = r.role;
             opened    = (r.style || r.role) && !esc.empty();
         }
-        out += r.text;
+        // Non-verbatim runs are file-derived display text — never let it carry
+        // raw terminal control bytes. (Verbatim runs are our own OSC 8 / image
+        // escapes, handled above.)
+        out += sanitize_terminal(r.text);
     }
     if (opened) out += g_color.reset;
     out += '\n';
@@ -8799,7 +8821,12 @@ static bool render_image_inline(const std::string& abs_path,
     out->runs.push_back({"\xf0\x9f\x96\xbc  [", MD_DIM, ROLE_IMAGE}); // 🖼
     out->runs.push_back({alt, MD_DIM, ROLE_IMAGE});
     out->runs.push_back({"]", MD_DIM, ROLE_IMAGE});
-    out->runs.push_back({esc, 0, ROLE_NONE});
+    // The image-protocol payload is a raw escape (and pure base64 + fixed
+    // tokens — no file-derived text): pass it through verbatim so the
+    // terminal-control sanitiser in emit_line_ansi doesn't strip it.
+    MdSegment img_seg{esc, 0, ROLE_NONE};
+    img_seg.verbatim = true;
+    out->runs.push_back(std::move(img_seg));
     return true;
 }
 
@@ -9352,7 +9379,9 @@ struct Renderer {
                 if (osc8 && g_color.reset != nullptr && *g_color.reset != '\0' &&
                     !pending_href.empty()) {
                     MdSegment seg;
-                    seg.text     = "\033]8;;" + pending_href + "\033\\";
+                    seg.text     = "\033]8;;" +
+                                   sanitize_terminal(pending_href, false) +
+                                   "\033\\";
                     seg.verbatim = true;
                     cur_runs.push_back(std::move(seg));
                 }
@@ -9689,7 +9718,8 @@ static void html_apply(Renderer& r, const std::string& html) {
                 if (r.osc8 && !href.empty() && g_color.reset != nullptr &&
                     *g_color.reset != '\0') {
                     MdSegment seg;
-                    seg.text     = "\033]8;;" + href + "\033\\";
+                    seg.text     = "\033]8;;" +
+                                   sanitize_terminal(href, false) + "\033\\";
                     seg.verbatim = true;
                     r.cur_runs.push_back(std::move(seg));
                 }
