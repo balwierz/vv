@@ -180,6 +180,17 @@ public:
     }
     // Ensure chunk i is loaded (triggers forward reads for streaming sources).
     virtual void ensure(int i) {}
+    // Pin/unpin batch retention. Forward-only streaming sources keep only a
+    // bounded trailing window of decoded batches by default (so deep scrolling
+    // / G on a huge file doesn't grow RAM without bound); a full-pass operation
+    // that must read every row (search, sort, filter, column stats) calls
+    // set_retain_all(true) first so nothing it has already passed is evicted.
+    // No-op for random-access / in-memory sources. Default: no-op.
+    virtual void set_retain_all(bool /*retain*/) {}
+    // True if this source has freed any already-read batch under the retention
+    // window — i.e. a full-pass result may be incomplete for the freed range.
+    // Default: false (nothing is ever evicted).
+    virtual bool evicted_any() const { return false; }
     // Sticky status of the underlying streaming read. A source that hits an
     // I/O or parse error mid-stream records it here so callers can tell a
     // complete result apart from a silently truncated one (and exit non-zero).

@@ -2016,6 +2016,7 @@ std::vector<int64_t> filter_rows(TabularSource& src, const FilterExpr& expr) {
     int nf = src.schema()->num_fields();
     std::vector<int> all((size_t)nf);
     for (int i = 0; i < nf; ++i) all[(size_t)i] = i;
+    src.set_retain_all(true);            // re-reads every chunk after draining
     while (true) {                       // drain streaming sources
         int n = src.num_chunks();
         src.ensure(n);
@@ -3109,6 +3110,27 @@ static std::shared_ptr<arrow::Table> batch_slice_to_table(
     return arrow::Table::Make(arrow::schema(fields), cols, batch.num_rows());
 }
 
+// Trailing-window size (in decoded batches) for forward-only streaming
+// sources. A forward-only stream can't re-read a freed batch, so we keep only
+// the most-recent `cap` batches resident and free older ones; their
+// (first_row, num_rows) metadata is retained forever so total_rows() /
+// chunk_meta() / num_chunks() stay exact. This bounds RAM to ~cap×batch
+// regardless of file size: pressing G / deep-scrolling a multi-GB stream no
+// longer loads the whole file. Override with VV_STREAM_BATCH_CAP (used by the
+// test suite to force eviction on a modest fixture). Operations that must see
+// the whole file at once (search / sort / filter / stats) pin retention first
+// (set_retain_all), so they keep their current behaviour.
+inline int stream_batch_cap() {
+    static const int cap = [] {
+        if (const char* e = std::getenv("VV_STREAM_BATCH_CAP")) {
+            int v = std::atoi(e);
+            if (v > 0) return v;
+        }
+        return 64;
+    }();
+    return cap;
+}
+
 class DelimitedSource : public TabularSource {
     std::string                           path_;
     char                                  delimiter_;
@@ -3119,12 +3141,33 @@ class DelimitedSource : public TabularSource {
     BedVariant                            bed_variant_ = BedVariant::None;
     int                                   mpileup_samples_ = 0; // samtools mpileup samples (>=1)
 
-    // Growing cache of batches read so far (never evicted).
+    // Decoded batches in a bounded trailing window: older entries are freed
+    // (set null) once retain_all_ is false and the window overflows. Per-batch
+    // metadata below is kept for every batch, evicted or not.
     mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
     mutable std::vector<int64_t>          batch_first_row_;
+    mutable std::vector<int64_t>          batch_num_rows_;  // retained after eviction
     mutable int64_t                       rows_so_far_ = 0;
     mutable bool                          all_read_    = false;
+    mutable bool                          retain_all_  = false; // pinned by full-pass ops
+    mutable bool                          evicted_any_ = false; // any batch freed?
     mutable arrow::Status                 read_status_;   // sticky stream error
+
+    // Append a freshly-decoded batch: record its metadata (kept forever) and
+    // enforce the trailing window (free the batch that fell out, unless pinned).
+    void retain_(std::shared_ptr<arrow::RecordBatch> batch) const {
+        batch_first_row_.push_back(rows_so_far_);
+        batch_num_rows_.push_back(batch->num_rows());
+        rows_so_far_ += batch->num_rows();
+        batches_.push_back(std::move(batch));
+        if (!retain_all_) {
+            int drop = (int)batches_.size() - stream_batch_cap();
+            if (drop > 0 && batches_[drop - 1]) {
+                batches_[drop - 1].reset();
+                evicted_any_ = true;
+            }
+        }
+    }
 
     mutable std::shared_ptr<arrow::csv::StreamingReader> reader_;
 
@@ -3143,9 +3186,7 @@ class DelimitedSource : public TabularSource {
             return st;
         }
         if (!batch) { all_read_ = true; return arrow::Status::OK(); }
-        batch_first_row_.push_back(rows_so_far_);
-        rows_so_far_ += batch->num_rows();
-        batches_.push_back(std::move(batch));
+        retain_(std::move(batch));
         return arrow::Status::OK();
     }
 
@@ -3462,7 +3503,7 @@ private:
                 // Allele disambiguation: only trigger if detection stopped at BED4
                 // (col 3 string, col 4 not numeric) — in BED5+ layouts the presence
                 // of Score/Strand/etc. in the right slots is strong signal.
-                if (lvl == 4 && !self->batches_.empty()) {
+                if (lvl == 4 && !self->batches_.empty() && self->batches_[0]) {
                     auto col3 = self->batches_[0]->column(3);
                     int64_t n_rows = std::min<int64_t>(self->batches_[0]->num_rows(), 100);
                     int n_nonnull = 0;
@@ -3538,8 +3579,16 @@ private:
     int     num_chunks() const override { return (int)batches_.size(); }
     arrow::Status read_status() const override { return read_status_; }
     ChunkMeta chunk_meta(int i) const override {
-        return {batch_first_row_[i], batches_[i]->num_rows()};
+        // num_rows is read from retained metadata, not the batch, so it stays
+        // valid after the batch's data is evicted from the trailing window.
+        return {batch_first_row_[i], batch_num_rows_[i]};
     }
+
+    // Pin retention: stop evicting (used by full-pass ops — search / sort /
+    // filter / stats — that must read every row). Already-evicted batches can't
+    // be recovered (forward-only stream); evicted_any() reports that case.
+    void set_retain_all(bool b) override { retain_all_ = b; }
+    bool evicted_any() const override { return evicted_any_; }
 
     void ensure(int i) override {
         while (!all_read_ && (int)batches_.size() <= i)
@@ -3551,6 +3600,9 @@ private:
         ensure(i);
         if (i >= (int)batches_.size())
             return arrow::Status::IndexError("chunk ", i, " out of range");
+        if (!batches_[i])
+            return arrow::Status::CapacityError(
+                "chunk ", i, " was released by the streaming window");
         *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
         return arrow::Status::OK();
     }
@@ -11135,6 +11187,7 @@ ColStats compute_col_stats(TabularSource& src, int src_col) {
     long double sum = 0.0L;
     std::set<std::string> distinct;
 
+    src.set_retain_all(true);  // re-reads every chunk after draining
     while (true) { int n = src.num_chunks(); src.ensure(n); if (src.num_chunks() == n) break; }
     for (int c = 0; c < src.num_chunks(); ++c) {
         std::shared_ptr<arrow::Table> tbl;
@@ -12136,6 +12189,7 @@ class TableTUI {
     // Shows "Searching…" in the status line while scanning large files.
     int64_t find_next(int64_t from_row, bool forward) {
         if (search_query_.empty()) return -1;
+        src_->set_retain_all(true);  // search re-reads every chunk: keep them
         drain_to_eof();   // search must cover the whole streaming file
         std::string q = search_query_;
         for (auto& c : q) c = (char)std::tolower((unsigned char)c);
@@ -12984,6 +13038,7 @@ class TableTUI {
         int sc = (virt_col >= 0 && virt_col < (int)virt_src_col_.size())
                   ? virt_src_col_[virt_col] : -1;
         if (sc < 0) { stats_data_ = std::move(cs); return; }
+        src_->set_retain_all(true);  // stats re-read every chunk: keep them
         drain_to_eof();   // stats must cover the whole streaming file
         auto field = src_->schema()->field(sc);
         cs.name = col_names_[virt_col];
@@ -13500,6 +13555,7 @@ private:
         sort_order_.clear();
         filter_total_ = 0;
         if (sort_col_ < 0 && !filter_active_) return;
+        src_->set_retain_all(true);  // sort/filter re-read every row: keep them
         drain_to_eof();   // sort/filter must cover the whole streaming file
 
         // Resolve sort column (if any).
