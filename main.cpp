@@ -11333,7 +11333,12 @@ static std::string print_describe(TabularSource& src, const Config& cfg) {
         stats[k].is_num = is_numeric_type(f->type()->id());
     }
 
-    int64_t rows_left = (cfg.head_rows <= 0) ? INT64_MAX : (int64_t)cfg.head_rows;
+    // --describe summarises the WHOLE table by default (Config::head_rows
+    // defaults to 10, the table-view preview size — but a describe over only
+    // the first 10 rows would be misleading). Honour -n only when the user set
+    // it explicitly, matching the --json/--md/--parquet output paths.
+    int64_t rows_left = (!cfg.head_rows_set || cfg.head_rows <= 0)
+                        ? INT64_MAX : (int64_t)cfg.head_rows;
     for (int c = 0; rows_left > 0; ++c) {
         src.ensure(c);
         if (c >= src.num_chunks()) break;
