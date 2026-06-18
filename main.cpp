@@ -1885,19 +1885,52 @@ static bool cell_as_int(const arrow::Table& tbl, int col, int64_t row,
     }
     return false;
 }
+// Extract any value of a type is_numeric_type() accepts from array `a` at
+// index `r` as a double. Returns false on null or a genuinely non-numeric
+// type. Branches on type_id() (no per-cell dynamic_pointer_cast / RTTI).
+// Temporal types yield their underlying epoch / elapsed count, so they sort
+// chronologically and scale in heatmaps; decimals honour their scale.
+static bool array_value_as_double(const arrow::Array& a, int64_t r, double* out) {
+    if (a.IsNull(r)) return false;
+    switch (a.type_id()) {
+        case arrow::Type::DOUBLE: *out = static_cast<const arrow::DoubleArray&>(a).Value(r); return true;
+        case arrow::Type::FLOAT:  *out = static_cast<const arrow::FloatArray&>(a).Value(r);  return true;
+        case arrow::Type::INT64:  *out = (double)static_cast<const arrow::Int64Array&>(a).Value(r);  return true;
+        case arrow::Type::INT32:  *out = (double)static_cast<const arrow::Int32Array&>(a).Value(r);  return true;
+        case arrow::Type::INT16:  *out = (double)static_cast<const arrow::Int16Array&>(a).Value(r);  return true;
+        case arrow::Type::INT8:   *out = (double)static_cast<const arrow::Int8Array&>(a).Value(r);   return true;
+        case arrow::Type::UINT64: *out = (double)static_cast<const arrow::UInt64Array&>(a).Value(r); return true;
+        case arrow::Type::UINT32: *out = (double)static_cast<const arrow::UInt32Array&>(a).Value(r); return true;
+        case arrow::Type::UINT16: *out = (double)static_cast<const arrow::UInt16Array&>(a).Value(r); return true;
+        case arrow::Type::UINT8:  *out = (double)static_cast<const arrow::UInt8Array&>(a).Value(r);  return true;
+        case arrow::Type::DATE32: *out = (double)static_cast<const arrow::Date32Array&>(a).Value(r); return true;
+        case arrow::Type::DATE64: *out = (double)static_cast<const arrow::Date64Array&>(a).Value(r); return true;
+        case arrow::Type::TIME32: *out = (double)static_cast<const arrow::Time32Array&>(a).Value(r); return true;
+        case arrow::Type::TIME64: *out = (double)static_cast<const arrow::Time64Array&>(a).Value(r); return true;
+        case arrow::Type::TIMESTAMP: *out = (double)static_cast<const arrow::TimestampArray&>(a).Value(r); return true;
+        case arrow::Type::DURATION:  *out = (double)static_cast<const arrow::DurationArray&>(a).Value(r);  return true;
+        case arrow::Type::DECIMAL128: {
+            const auto& arr = static_cast<const arrow::Decimal128Array&>(a);
+            *out = arrow::Decimal128(arr.GetValue(r)).ToDouble(
+                static_cast<const arrow::Decimal128Type&>(*a.type()).scale());
+            return true;
+        }
+        case arrow::Type::DECIMAL256: {
+            const auto& arr = static_cast<const arrow::Decimal256Array&>(a);
+            *out = arrow::Decimal256(arr.GetValue(r)).ToDouble(
+                static_cast<const arrow::Decimal256Type&>(*a.type()).scale());
+            return true;
+        }
+        default: return false;
+    }
+}
+
 static bool cell_as_double(const arrow::Table& tbl, int col, int64_t row,
                             double* out) {
     auto chunked = tbl.column(col);
     int64_t r = row;
     for (const auto& ch : chunked->chunks()) {
-        if (r < ch->length()) {
-            if (ch->IsNull(r)) return false;
-            if (auto a = std::dynamic_pointer_cast<arrow::DoubleArray>(ch)) { *out = a->Value(r); return true; }
-            if (auto a = std::dynamic_pointer_cast<arrow::FloatArray>(ch))  { *out = a->Value(r); return true; }
-            int64_t i;
-            if (cell_as_int(tbl, col, row, &i)) { *out = (double)i; return true; }
-            return false;
-        }
+        if (r < ch->length()) return array_value_as_double(*ch, r, out);
         r -= ch->length();
     }
     return false;
@@ -11311,15 +11344,7 @@ ColStats compute_col_stats(TabularSource& src, int src_col) {
                 cs.count++;
                 if (cs.is_numeric) {
                     double d;
-                    if (auto a = std::dynamic_pointer_cast<arrow::DoubleArray>(ch)) d = a->Value(r);
-                    else if (auto a = std::dynamic_pointer_cast<arrow::FloatArray>(ch))  d = a->Value(r);
-                    else if (auto a = std::dynamic_pointer_cast<arrow::Int64Array>(ch))  d = (double)a->Value(r);
-                    else if (auto a = std::dynamic_pointer_cast<arrow::Int32Array>(ch))  d = (double)a->Value(r);
-                    else if (auto a = std::dynamic_pointer_cast<arrow::Int16Array>(ch))  d = (double)a->Value(r);
-                    else if (auto a = std::dynamic_pointer_cast<arrow::Int8Array>(ch))   d = (double)a->Value(r);
-                    else if (auto a = std::dynamic_pointer_cast<arrow::UInt32Array>(ch)) d = (double)a->Value(r);
-                    else if (auto a = std::dynamic_pointer_cast<arrow::UInt64Array>(ch)) d = (double)a->Value(r);
-                    else continue;
+                    if (!array_value_as_double(*ch, r, &d)) continue;
                     if (d < dmin) dmin = d;
                     if (d > dmax) dmax = d;
                     sum += d;
@@ -11413,14 +11438,7 @@ static std::string print_describe(TabularSource& src, const Config& cfg) {
                     cs.count++;
                     if (cs.is_num) {
                         double d;
-                        if (auto a = std::dynamic_pointer_cast<arrow::DoubleArray>(ch)) d = a->Value(r);
-                        else if (auto a = std::dynamic_pointer_cast<arrow::FloatArray>(ch))  d = a->Value(r);
-                        else if (auto a = std::dynamic_pointer_cast<arrow::Int64Array>(ch))  d = (double)a->Value(r);
-                        else if (auto a = std::dynamic_pointer_cast<arrow::Int32Array>(ch))  d = (double)a->Value(r);
-                        else if (auto a = std::dynamic_pointer_cast<arrow::Int16Array>(ch))  d = (double)a->Value(r);
-                        else if (auto a = std::dynamic_pointer_cast<arrow::Int8Array>(ch))   d = (double)a->Value(r);
-                        else if (auto a = std::dynamic_pointer_cast<arrow::UInt32Array>(ch)) d = (double)a->Value(r);
-                        else continue;
+                        if (!array_value_as_double(*ch, r, &d)) continue;
                         if (d < cs.d_min) cs.d_min = d;
                         if (d > cs.d_max) cs.d_max = d;
                         cs.sum += d;
@@ -13207,15 +13225,11 @@ class TableTUI {
                     cs.count++;
                     if (cs.is_num) {
                         double d;
-                        if (auto a = std::dynamic_pointer_cast<arrow::DoubleArray>(ch)) d = a->Value(r);
-                        else if (auto a = std::dynamic_pointer_cast<arrow::FloatArray>(ch))  d = a->Value(r);
-                        else if (auto a = std::dynamic_pointer_cast<arrow::Int64Array>(ch))  d = (double)a->Value(r);
-                        else if (auto a = std::dynamic_pointer_cast<arrow::Int32Array>(ch))  d = (double)a->Value(r);
-                        else if (auto a = std::dynamic_pointer_cast<arrow::Int16Array>(ch))  d = (double)a->Value(r);
-                        else if (auto a = std::dynamic_pointer_cast<arrow::Int8Array>(ch))   d = (double)a->Value(r);
-                        else if (auto a = std::dynamic_pointer_cast<arrow::UInt64Array>(ch)) d = (double)a->Value(r);
-                        else if (auto a = std::dynamic_pointer_cast<arrow::UInt32Array>(ch)) d = (double)a->Value(r);
-                        else { try { d = std::stod(raw); } catch (...) { continue; } }
+                        if (!array_value_as_double(*ch, r, &d)) {
+                            // Last resort for an is_numeric type the extractor
+                            // somehow can't read: parse the string repr.
+                            try { d = std::stod(raw); } catch (...) { continue; }
+                        }
                         if (d < cs.d_min) cs.d_min = d;
                         if (d > cs.d_max) cs.d_max = d;
                         cs.sum += d;
@@ -13792,15 +13806,10 @@ private:
                 if (num) {
                     double d = 0;
                     if (!is_null) {
-                        if      (auto a = std::dynamic_pointer_cast<arrow::DoubleArray>(ch_arr)) d = a->Value(ch_off);
-                        else if (auto a = std::dynamic_pointer_cast<arrow::FloatArray>(ch_arr))  d = a->Value(ch_off);
-                        else if (auto a = std::dynamic_pointer_cast<arrow::Int64Array>(ch_arr))  d = (double)a->Value(ch_off);
-                        else if (auto a = std::dynamic_pointer_cast<arrow::Int32Array>(ch_arr))  d = (double)a->Value(ch_off);
-                        else if (auto a = std::dynamic_pointer_cast<arrow::Int16Array>(ch_arr))  d = (double)a->Value(ch_off);
-                        else if (auto a = std::dynamic_pointer_cast<arrow::Int8Array>(ch_arr))   d = (double)a->Value(ch_off);
-                        else if (auto a = std::dynamic_pointer_cast<arrow::UInt64Array>(ch_arr)) d = (double)a->Value(ch_off);
-                        else if (auto a = std::dynamic_pointer_cast<arrow::UInt32Array>(ch_arr)) d = (double)a->Value(ch_off);
-                        else { try { d = std::stod(cell_to_string(*ch_arr, ch_off)); } catch (...) { is_null = true; } }
+                        if (!array_value_as_double(*ch_arr, ch_off, &d)) {
+                            try { d = std::stod(cell_to_string(*ch_arr, ch_off)); }
+                            catch (...) { is_null = true; }
+                        }
                     }
                     nk.push_back({d, is_null, srow});
                 } else {

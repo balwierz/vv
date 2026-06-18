@@ -383,6 +383,20 @@ assert_eq_file_inline "describe_scans_all_rows" "$DESC_COUNT" "20"
 DESC_N=$("$VV" --describe -n 5 "$DATA/tiny.parquet" 2>&1 \
          | awk '/^Chr[[:space:]]/{print $3; exit}')
 assert_eq_file_inline "describe_honors_explicit_head_rows" "$DESC_N" "5"
+# Temporal/decimal columns are numeric: the value extractor must read date /
+# timestamp / decimal (previously skipped → blank stats, blank heatmap).
+if [ -f "$DATA/tiny.temporal.parquet" ]; then
+    TEMP_DESC=$("$VV" --describe "$DATA/tiny.temporal.parquet" 2>&1)
+    # decimal128(10,2) min/max with scale honoured.
+    assert_contains "describe_decimal_min_scaled" "$TEMP_DESC" "0.01"
+    assert_contains "describe_decimal_max_scaled" "$TEMP_DESC" "99.99"
+    # date32(2024-01-01) = 19723 days since the epoch — proves the date column
+    # now yields a numeric value instead of a blank min/max.
+    assert_contains "describe_date_extracts" "$TEMP_DESC" "19723"
+    # --heatmap must treat date/timestamp/decimal as plottable numeric columns.
+    TEMP_HM=$("$VV" --heatmap --image-mode ascii "$DATA/tiny.temporal.parquet" 2>&1)
+    refute_contains "heatmap_accepts_temporal_cols" "$TEMP_HM" "no numeric columns"
+fi
 SELECT_OUT=$("$VV" --tsv --no-header --select Chromosome,Score "$DATA/tiny.lociss" \
              | head -1)
 assert_eq_file_inline "select_two_cols" "$SELECT_OUT" "chr1	0.5"
