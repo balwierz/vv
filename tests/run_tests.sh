@@ -936,6 +936,21 @@ assert_contains "help_has_heatmap"    "$HM_HELP" "--heatmap"
 assert_contains "help_has_image_mode" "$HM_HELP" "--image-mode"
 
 echo
+echo "── TUI signal handling ───────────────────────────────────"
+# Ctrl-C (SIGINT) in the interactive TUI must restore the terminal (endwin)
+# before the process dies — otherwise the shell is left in raw/alt-screen mode.
+# Driven under a pty by tui_sigint_check.py (needs python3; soft-skip otherwise).
+if command -v python3 >/dev/null 2>&1; then
+    if python3 "$HERE/tui_sigint_check.py" "$VV" "$DATA/tiny.parquet"; then
+        PASS=$((PASS+1)); echo "  ok    tui_sigint_restores_terminal"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_sigint_restores_terminal"
+    fi
+else
+    echo "  skip  tui_sigint_restores_terminal (python3 not found)"
+fi
+
+echo
 echo "── Help / version ────────────────────────────────────────"
 HELP_OUT=$("$VV" --help 2>&1 || true)
 assert_contains "help_has_tagline" "$HELP_OUT" "vv -- universal genomic file viewer"
