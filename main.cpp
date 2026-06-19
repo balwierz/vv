@@ -6769,6 +6769,9 @@ read_1d_dataset_table(hid_t dataset, int64_t row_cap = -1,
                       int64_t* full_rows = nullptr);
 static arrow::Result<std::shared_ptr<arrow::Table>>
 read_sparse_preview(hid_t group, int64_t row_cap);
+// Label an AnnData X preview with its obs (row) / var (column) identifiers.
+static void apply_anndata_x_labels(hid_t file_id,
+                                   std::shared_ptr<arrow::Table>* tbl);
 
 // Tab specification: identifies which named object inside the HDF5 file
 // this tab should view, and how to render it.
@@ -6936,6 +6939,10 @@ class Hdf5Source : public WorkbookSource {
                 }
                 if (!spec.footer_hint.empty())
                     *footer += "  |  " + spec.footer_hint;
+                // A dense AnnData X (Matrix2D, never generic Dataset2D) gets
+                // var/obs identifiers for its columns / row labels.
+                if (spec.kind == OpenSpec::Kind::Matrix2D)
+                    apply_anndata_x_labels(file_id, out);
                 return "";
             }
             case OpenSpec::Kind::Dataset1D: {
@@ -6962,6 +6969,8 @@ class Hdf5Source : public WorkbookSource {
                           std::to_string((*out)->num_rows()) + " rows";
                 if (!spec.footer_hint.empty())
                     *footer += "  |  " + spec.footer_hint;
+                // Name columns by var (genes), prepend obs (cells) row labels.
+                apply_anndata_x_labels(file_id, out);
                 return "";
             }
         }
@@ -7459,6 +7468,80 @@ read_sparse_preview(hid_t group, int64_t row_cap) {
         fields.push_back(arrow::field("col" + std::to_string(c), arrow::float64()));
     }
     return arrow::Table::Make(arrow::schema(fields), cols);
+}
+
+// Read up to `cap` values of an AnnData component group's index dataset (the
+// dataset named by the group's `_index` attribute, e.g. obs/var cell & gene
+// identifiers) as display strings. `*index_name` receives that dataset's name
+// for use as a column header. Leaves the outputs empty on any problem.
+static void read_anndata_index_labels(hid_t file_id, const char* group_path,
+                                      int64_t cap,
+                                      std::vector<std::string>* out,
+                                      std::string* index_name) {
+    out->clear();
+    if (index_name) index_name->clear();
+    hid_t g = H5Gopen2(file_id, group_path, H5P_DEFAULT);
+    if (g < 0) return;
+    std::string idx = read_string_attr(g, "_index");
+    if (idx.empty()) idx = "_index";           // anndata's conventional default
+    if (!link_exists(g, idx.c_str())) { H5Gclose(g); return; }
+    hid_t d = H5Dopen2(g, idx.c_str(), H5P_DEFAULT);
+    if (d < 0) { H5Gclose(g); return; }
+    auto t = read_1d_dataset_table(d, cap);
+    H5Dclose(d); H5Gclose(g);
+    if (!t.ok() || (*t)->num_columns() == 0) return;
+    if (index_name) *index_name = idx;
+    auto col = (*t)->column(0)->chunk(0);
+    for (int64_t i = 0; i < col->length(); ++i)
+        out->push_back(cell_to_string(*col, i));
+}
+
+// Label an AnnData X preview with its obs / var identifiers. X is
+// (n_obs x n_vars) = cells x genes, so the value columns are named by the var
+// index (gene names) and an obs-index column (cell barcodes) is prepended as a
+// row label. No-op for a non-AnnData file (no obs/var groups → empty labels).
+static void apply_anndata_x_labels(hid_t file_id,
+                                   std::shared_ptr<arrow::Table>* tbl) {
+    if (!tbl || !*tbl) return;
+    auto t = *tbl;
+    const int64_t ncols = t->num_columns();
+    const int64_t nrows = t->num_rows();
+
+    // Columns ← var index (genes). Rename only as far as we have labels.
+    std::vector<std::string> var_labels;
+    std::string var_idx_name;
+    read_anndata_index_labels(file_id, "/var", ncols, &var_labels, &var_idx_name);
+    if (!var_labels.empty()) {
+        std::vector<std::string> names;
+        names.reserve((size_t)ncols);
+        for (int64_t i = 0; i < ncols; ++i)
+            names.push_back(i < (int64_t)var_labels.size()
+                                ? var_labels[(size_t)i]
+                                : t->field((int)i)->name());
+        auto r = t->RenameColumns(names);
+        if (r.ok()) t = *r;
+    }
+
+    // Rows ← obs index (cells), prepended as a leading column.
+    std::vector<std::string> obs_labels;
+    std::string obs_idx_name;
+    read_anndata_index_labels(file_id, "/obs", nrows, &obs_labels, &obs_idx_name);
+    if (!obs_labels.empty()) {
+        arrow::StringBuilder b;
+        for (int64_t i = 0; i < nrows; ++i) {
+            if (i < (int64_t)obs_labels.size()) (void)b.Append(obs_labels[(size_t)i]);
+            else                                (void)b.AppendNull();
+        }
+        std::shared_ptr<arrow::Array> a;
+        if (b.Finish(&a).ok()) {
+            std::string header = obs_idx_name.empty() || obs_idx_name == "_index"
+                                     ? "obs" : obs_idx_name;
+            auto col = std::make_shared<arrow::ChunkedArray>(a);
+            auto r = t->AddColumn(0, arrow::field(header, arrow::utf8()), col);
+            if (r.ok()) t = *r;
+        }
+    }
+    *tbl = t;
 }
 
 // ── Scanners — decide which tabs to emit ────────────────────────────────────

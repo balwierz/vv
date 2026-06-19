@@ -692,6 +692,12 @@ if [ -f "$DATA/tiny.h5ad" ]; then
     # 'X' matches the 'X (preview)' tab via the word-boundary prefix rule.
     TAB_X=$("$VV" --tab X --schema "$DATA/tiny.h5ad" 2>&1)
     assert_contains "h5ad_tab_x_prefix"    "$TAB_X" "X (preview)"
+    # X is (obs x var) = cells x genes: the preview names its value columns by
+    # the var index (gene names) and prepends the obs index (cell barcodes) as
+    # a row-label column, instead of generic col0/col1 and bare row numbers.
+    X_VIEW=$("$VV" --no-interactive --color=never --tab X "$DATA/tiny.h5ad" 2>&1)
+    assert_contains "anndata_x_var_column_names" "$X_VIEW" "gene0"
+    assert_contains "anndata_x_obs_row_labels"   "$X_VIEW" "cell0"
     TAB_BAD=$("$VV" --tab nope "$DATA/tiny.h5ad" 2>&1)
     assert_contains "h5ad_tab_unknown"     "$TAB_BAD" "no tab named"
     assert_contains "h5ad_tab_unknown_avail" "$TAB_BAD" "available:"
