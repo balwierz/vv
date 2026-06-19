@@ -697,6 +697,23 @@ if [ -f "$DATA/tiny.h5ad" ]; then
     assert_contains "h5ad_tab_unknown_avail" "$TAB_BAD" "available:"
 fi
 
+# Hostile AnnData: the CSR `X` group's shape attribute claims 100 rows but
+# indptr holds only 2, and the obs DataFrame has unequal-length columns. vv
+# must clamp to the real dataset extents (no OOB read) and normalise the
+# columns (no invalid table), rendering a bounded preview instead of crashing.
+if [ -f "$DATA/tiny.badsparse.h5ad" ]; then
+    BADX=$("$VV" --tsv --no-header --tab X "$DATA/tiny.badsparse.h5ad" 2>/dev/null)
+    assert_eq_file_inline "anndata_bad_sparse_exit0" "$?" "0"
+    # Clamped to the 2 rows indptr actually describes, not the claimed 100.
+    assert_eq_file_inline "anndata_bad_sparse_clamped_rows" \
+        "$(printf '%s\n' "$BADX" | grep -c .)" "2"
+    BADOBS=$("$VV" --tsv --no-header --tab obs "$DATA/tiny.badsparse.h5ad" 2>/dev/null)
+    assert_eq_file_inline "anndata_bad_obs_exit0" "$?" "0"
+    # 3 rows: the short column is null-padded to match the index column.
+    assert_eq_file_inline "anndata_bad_obs_normalised_rows" \
+        "$(printf '%s\n' "$BADOBS" | grep -c .)" "3"
+fi
+
 # Component preview cap: a 1500-row obs must render the first 1000 only (so a
 # multi-million-row component can't stall the reader).
 if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
