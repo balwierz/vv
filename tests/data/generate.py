@@ -59,6 +59,24 @@ pq.write_table(pa.table({
     "Score": pa.array([0.0, 0.1, 0.2, 0.3], pa.float64()),
 }), HERE / "tiny.uint32.parquet")
 
+# tiny.temporal.parquet: date / timestamp / decimal columns. These are
+# is_numeric_type() but the numeric value extractor used to skip them, so
+# --heatmap rendered them blank and --describe showed no min/max. The decimal
+# min/max must honour the column scale (0.01 .. 99.99).
+import datetime as _dt
+import decimal as _dec
+pq.write_table(pa.table({
+    "n":   pa.array([1, 2, 3, 4], pa.int32()),
+    "d":   pa.array([_dt.date(2024, 1, 1), _dt.date(2024, 6, 1),
+                     _dt.date(2024, 12, 31), _dt.date(2025, 3, 15)], pa.date32()),
+    "ts":  pa.array([_dt.datetime(2024, 1, 1, 12), _dt.datetime(2024, 6, 1, 8),
+                     _dt.datetime(2024, 12, 31, 23), _dt.datetime(2025, 3, 15, 6)],
+                    pa.timestamp("us")),
+    "dec": pa.array([_dec.Decimal("1.50"), _dec.Decimal("2.25"),
+                     _dec.Decimal("99.99"), _dec.Decimal("0.01")],
+                    pa.decimal128(10, 2)),
+}), HERE / "tiny.temporal.parquet")
+
 # ── Arrow IPC ────────────────────────────────────────────────────────────────
 with pa.OSFile(str(HERE / "tiny.arrow"), "wb") as f:
     with ipc.new_file(f, schema) as w:
