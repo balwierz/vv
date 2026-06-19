@@ -305,8 +305,8 @@ be done first: it catches this whole bug class automatically.
 - [ ] `main.cpp:3963` — Pileup treats mid-stream read errors as clean EOF
 - [ ] `main.cpp:4185` — BCF region-mode silently swallows read errors (truncated/corrupt file -> partial output)
 - [x] `main.cpp:4949` — 2bit N-block table skip computes n_block_count*8 in 32-bit arithmetic, overflowing and seeking to the wrong offset — fixed on `fix/twobit-bounds` (compute the skip in 64-bit)
-- [ ] `main.cpp:6778` — AnnData DataFrame builds tables from columns of unequal length without validation
-- [ ] `main.cpp:6818` — Sparse preview trusts the 'shape' attribute for n_rows without validating against indptr length
+- [x] `main.cpp:6778` — AnnData DataFrame builds tables from columns of unequal length without validation — fixed on `fix/anndata-validation` (read_anndata_dataframe normalises every column to the longest length — pads short ones with trailing nulls via MakeArrayOfNull+Concatenate, slices over-long ones — and passes the explicit row count to Table::Make, so a malformed file can't produce an invalid table / OOB paging)
+- [x] `main.cpp:6818` — Sparse preview trusts the 'shape' attribute for n_rows without validating against indptr length — fixed on `fix/anndata-validation` (read_sparse_preview clamps n_rows to the real indptr extent (h5_len_1d), clamps the nnz read window to the actual indices/data extents, and bounds-checks the per-row scatter offsets so a non-monotonic / lying indptr can't read out of range; shape values are floored at 0). Shared hostile fixture tiny.badsparse.h5ad (shape claims 100 rows, indptr has 2; unequal obs columns) + no-crash/clamp/normalise tests.
 - [ ] `main.cpp:7410` — NPZ entry names assumed unique; duplicate .npy members silently shadowed and a wrong array can be displayed
 - [ ] `main.cpp:8090` — wrap_runs never hard-cuts over-long words — they overflow the wrap width (contradicting its own doc comment)
 - [ ] `main.cpp:8396` — role is a single value, not a stack — nested spans that both set a role lose the outer role on inner close

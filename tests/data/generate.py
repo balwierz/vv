@@ -570,6 +570,28 @@ else:
         meta.create_dataset("labels",
                               data=np.array(["a", "b", "c"], dtype="S2"))
 
+    # tiny.badsparse.h5ad: a HOSTILE AnnData. The CSR `X` group's `shape`
+    # attribute lies (claims 100 rows) but `indptr` holds only 2 rows; and the
+    # `obs` DataFrame has children of unequal length. vv used to derive row
+    # counts / nnz from the untrusted shape (OOB hyperslab read) and to build a
+    # table from unequal-length columns (invalid → OOB paging). It must now
+    # clamp to the real extents and render a bounded, valid preview — no crash.
+    bad_path = HERE / "tiny.badsparse.h5ad"
+    if bad_path.exists():
+        bad_path.unlink()
+    with h5py.File(bad_path, "w") as f:
+        f.attrs["encoding-type"] = "anndata"      # marks it as AnnData to vv
+        X = f.create_group("X")
+        X.attrs["encoding-type"] = "csr_matrix"
+        X.attrs["shape"] = np.array([100, 5], dtype=np.int64)   # lies: 2 real rows
+        X.create_dataset("indptr",  data=np.array([0, 1, 2], dtype=np.int64))
+        X.create_dataset("indices", data=np.array([0, 3], dtype=np.int64))
+        X.create_dataset("data",    data=np.array([1.0, 2.0], dtype=np.float64))
+        obs = f.create_group("obs")
+        obs.attrs["_index"] = "idx"
+        obs.create_dataset("idx", data=np.array([0, 1, 2], dtype=np.int64))  # 3
+        obs.create_dataset("bad", data=np.array([10, 20], dtype=np.int64))   # 2
+
 try:
     import anndata as ad                                     # type: ignore
     import numpy as np                                       # type: ignore

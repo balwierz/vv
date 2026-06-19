@@ -7310,7 +7310,35 @@ read_anndata_dataframe(hid_t group, int64_t row_cap, int64_t* full_rows) {
         ARROW_RETURN_NOT_OK(add_child(n));
 
     if (full_rows) *full_rows = maxfull;
-    return arrow::Table::Make(arrow::schema(fields), cols);
+
+    // Every column of a DataFrame must share the same length. A malformed
+    // AnnData (children of differing sizes, or a categorical whose codes are a
+    // different length than its siblings) would otherwise produce an invalid
+    // Arrow table and out-of-bounds reads when the TUI pages a row that exists
+    // in one column but not another. Normalise to the longest column: pad
+    // short ones with trailing nulls, slice over-long ones.
+    int64_t target = 0;
+    for (const auto& a : cols) target = std::max(target, a->length());
+    for (auto& a : cols) {
+        if (a->length() == target) continue;
+        if (a->length() > target) { a = a->Slice(0, target); continue; }
+        auto nulls = arrow::MakeArrayOfNull(a->type(), target - a->length());
+        if (!nulls.ok()) continue;
+        auto cat = arrow::Concatenate({a, *nulls});
+        if (cat.ok()) a = *cat;
+    }
+    return arrow::Table::Make(arrow::schema(fields), cols, target);
+}
+
+// Number of elements in a 1-D HDF5 dataset (0 if not rank-1 / on error).
+static int64_t h5_len_1d(hid_t d) {
+    hid_t sp = H5Dget_space(d);
+    if (sp < 0) return 0;
+    hsize_t dd = 0;
+    if (H5Sget_simple_extent_ndims(sp) == 1)
+        H5Sget_simple_extent_dims(sp, &dd, nullptr);
+    H5Sclose(sp);
+    return (int64_t)dd;
 }
 
 // Densify the first `row_cap` rows of an AnnData CSR sparse matrix into
@@ -7327,6 +7355,8 @@ read_sparse_preview(hid_t group, int64_t row_cap) {
         return arrow::Status::Invalid("not a CSR/CSC sparse group");
 
     int64_t n_rows = shape[0], n_cols = shape[1];
+    if (n_rows < 0) n_rows = 0;          // shape attribute is untrusted
+    if (n_cols < 0) n_cols = 0;
     if (row_cap > 0 && row_cap < n_rows) n_rows = row_cap;
     if (n_cols > 200) n_cols = 200;     // wide-table sanity cap
 
@@ -7345,6 +7375,17 @@ read_sparse_preview(hid_t group, int64_t row_cap) {
         return arrow::Status::IOError("sparse: missing indptr/indices/data");
     }
 
+    // The 'shape' attribute is untrusted: a CSR matrix has exactly
+    // (real_rows + 1) indptr entries, so clamp n_rows to what indptr actually
+    // holds — otherwise the hyperslab below reads past the dataset extent.
+    int64_t indptr_len = h5_len_1d(indptr_d);
+    if (indptr_len < 1) {
+        H5Dclose(indptr_d); H5Dclose(indices_d); H5Dclose(data_d);
+        return arrow::Status::Invalid("sparse: empty/!1-D indptr");
+    }
+    if (n_rows + 1 > indptr_len) n_rows = indptr_len - 1;
+    const int64_t nnz_avail = std::min(h5_len_1d(indices_d), h5_len_1d(data_d));
+
     // Read indptr[0 .. n_rows].
     std::vector<int64_t> indptr((size_t)(n_rows + 1));
     {
@@ -7355,13 +7396,20 @@ read_sparse_preview(hid_t group, int64_t row_cap) {
         H5Dread(indptr_d, H5T_NATIVE_INT64, ms, fs, H5P_DEFAULT, indptr.data());
         H5Sclose(ms); H5Sclose(fs);
     }
-    int64_t nnz_span = indptr.back() - indptr.front();
+    // indptr values are untrusted too: the read window [front, back) into
+    // indices/data must stay inside their actual extent, or the hyperslab
+    // reads out of bounds.
+    int64_t front = indptr.front();
+    if (front < 0) front = 0;
+    if (front > nnz_avail) front = nnz_avail;
+    int64_t nnz_span = indptr.back() - front;
     if (nnz_span < 0) nnz_span = 0;
+    if (nnz_span > nnz_avail - front) nnz_span = nnz_avail - front;
 
     std::vector<int64_t> indices((size_t)nnz_span);
     std::vector<double>  data((size_t)nnz_span);
     if (nnz_span > 0) {
-        hsize_t start = (hsize_t)indptr.front();
+        hsize_t start = (hsize_t)front;
         hsize_t count = (hsize_t)nnz_span;
         {
             hid_t fs = H5Dget_space(indices_d);
@@ -7387,8 +7435,13 @@ read_sparse_preview(hid_t group, int64_t row_cap) {
     std::vector<double> row(n_cols, 0.0);
     for (int64_t r = 0; r < n_rows; ++r) {
         std::fill(row.begin(), row.end(), 0.0);
-        int64_t s = indptr[(size_t)r] - indptr.front();
-        int64_t e = indptr[(size_t)(r + 1)] - indptr.front();
+        // Offsets are relative to the clamped read window `front`, and bounded
+        // to [0, nnz_span] so a non-monotonic / corrupt indptr can't index the
+        // indices/data vectors out of range.
+        int64_t s = indptr[(size_t)r] - front;
+        int64_t e = indptr[(size_t)(r + 1)] - front;
+        if (s < 0) s = 0;             if (s > nnz_span) s = nnz_span;
+        if (e < s) e = s;             if (e > nnz_span) e = nnz_span;
         for (int64_t k = s; k < e; ++k) {
             int64_t ci = indices[(size_t)k];
             if (ci >= 0 && ci < n_cols) row[(size_t)ci] = data[(size_t)k];
