@@ -12091,11 +12091,17 @@ static std::string build_tail(std::unique_ptr<TabularSource>& src,
 
 // Terminal restoration on fatal signals. While the TUI owns the terminal
 // (raw/no-echo/alt-screen), a SIGINT (Ctrl-C), SIGTERM or SIGHUP would kill the
-// process before endwin() runs, leaving the user's shell unusable. We install
-// handlers for the duration of run() that endwin() first, then re-raise with
-// the default disposition so the exit status still reflects the signal (130 for
-// SIGINT, etc.). endwin() is not formally async-signal-safe, but it's the
-// standard pragmatic cleanup and only runs on the way out.
+// process before endwin() runs, leaving the user's shell unusable. The handler
+// runs endwin() then re-raises with the default disposition so the exit status
+// still reflects the signal (130 for SIGINT, etc.).
+//
+// endwin() is not async-signal-safe (it allocates/frees) — if the signal lands
+// while the program is inside malloc (e.g. mid-draw()), running endwin() from
+// the handler re-enters the allocator and aborts the process. run() therefore
+// BLOCKS these signals around everything except the blocking getch() call, so
+// delivery (and thus endwin) can only happen while parked in read() — never
+// mid-allocation. getch() is reliably interrupted there, which the
+// set-a-flag-and-poll approach can't guarantee (ncurses restarts on EINTR).
 static volatile sig_atomic_t g_tui_active = 0;
 static void tui_signal_restore(int sig) {
     if (g_tui_active) { g_tui_active = 0; endwin(); }
@@ -14376,10 +14382,18 @@ public:
         if (!scr) return false;
         set_term(scr);
         // Restore the terminal if we're killed while owning it (see above).
+        // Handlers stay installed for the whole TUI; the signals are blocked
+        // except around getch() so endwin() only runs from a safe context.
         g_tui_active = 1;
         auto prev_int  = signal(SIGINT,  tui_signal_restore);
         auto prev_term = signal(SIGTERM, tui_signal_restore);
         auto prev_hup  = signal(SIGHUP,  tui_signal_restore);
+        sigset_t tui_sigs;
+        sigemptyset(&tui_sigs);
+        sigaddset(&tui_sigs, SIGINT);
+        sigaddset(&tui_sigs, SIGTERM);
+        sigaddset(&tui_sigs, SIGHUP);
+        sigprocmask(SIG_BLOCK, &tui_sigs, nullptr);
         noecho(); cbreak(); keypad(stdscr, TRUE); curs_set(0);
         set_escdelay(25); setup_colors();
         // Mouse: scroll wheel (BUTTON4 / BUTTON5) + click and double-click.
@@ -14395,7 +14409,12 @@ public:
         bool quit = false;
         while (!quit) {
             draw();
+            // Allow the fatal signals only while parked in getch(): any that
+            // arrived during draw() is delivered here (in read(), not mid-
+            // malloc), where the endwin() in the handler is safe.
+            sigprocmask(SIG_UNBLOCK, &tui_sigs, nullptr);
             int ch = getch();
+            sigprocmask(SIG_BLOCK, &tui_sigs, nullptr);
             int dl = data_lines();
 
             // ── Help overlay: any key dismisses it (and is consumed) ─────────
@@ -14843,10 +14862,12 @@ public:
         }
         g_tui_active = 0;
         endwin();
-        // Hand the signals back to whatever was there before the TUI ran.
+        // Hand the signals back to whatever was there before the TUI ran and
+        // restore the original mask.
         signal(SIGINT,  prev_int);
         signal(SIGTERM, prev_term);
         signal(SIGHUP,  prev_hup);
+        sigprocmask(SIG_UNBLOCK, &tui_sigs, nullptr);
         delscreen(scr);
         return true;
     }
