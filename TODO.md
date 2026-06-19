@@ -107,6 +107,12 @@ user-facing summary).
 - Galaxy `.dat` / Galaxy archive — niche but visible.
 
 ### Done
+- AnnData X preview labelled with obs / var identifiers (`feat/anndata-x-labels`)
+  — X is (n_obs × n_vars) = cells × genes, so the sparse / dense X preview now
+  names its value columns by the var index (gene names) and prepends the obs
+  index (cell barcodes) as a row-label column, instead of generic col0/col1
+  and bare row numbers. `apply_anndata_x_labels` reads the sibling /var and
+  /obs `_index` datasets; no-op for non-AnnData HDF5 (Dataset2D untouched).
 - samtools mpileup (`.pileup` / `.mpileup` / `.pile`, plus `.gz`) —
   routed through `DelimKind::Mpileup`. Tab-count on the first row
   infers single- vs multi-sample; columns get named `chrom` / `pos`
