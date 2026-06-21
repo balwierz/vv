@@ -7650,8 +7650,10 @@ static int64_t h5_len_1d(hid_t d) {
     return (int64_t)dd;
 }
 
-// Densify the first `row_cap` rows of an AnnData CSR sparse matrix into
-// an Arrow table (one float64 column per matrix column).
+// Densify the first `row_cap` rows (and first 200 columns) of an AnnData sparse
+// matrix into an Arrow table (one float64 column per matrix column). Handles
+// both CSR (indptr per row, indices are columns) and CSC (indptr per column,
+// indices are rows) — the output is rows × columns either way.
 static arrow::Result<std::shared_ptr<arrow::Table>>
 read_sparse_preview(hid_t group, int64_t row_cap) {
     // shape attribute = [n_rows, n_cols]
@@ -7669,11 +7671,6 @@ read_sparse_preview(hid_t group, int64_t row_cap) {
     if (row_cap > 0 && row_cap < n_rows) n_rows = row_cap;
     if (n_cols > 200) n_cols = 200;     // wide-table sanity cap
 
-    // For CSC we'd need to walk every column's indptr range; v1 only
-    // does CSR. Caller (scan_anndata) flags this in the footer.
-    if (!is_csr) {
-        return arrow::Status::Invalid("CSC preview not implemented in v1");
-    }
     hid_t indptr_d = H5Dopen2(group, "indptr", H5P_DEFAULT);
     hid_t indices_d = H5Dopen2(group, "indices", H5P_DEFAULT);
     hid_t data_d    = H5Dopen2(group, "data",    H5P_DEFAULT);
@@ -7684,22 +7681,24 @@ read_sparse_preview(hid_t group, int64_t row_cap) {
         return arrow::Status::IOError("sparse: missing indptr/indices/data");
     }
 
-    // The 'shape' attribute is untrusted: a CSR matrix has exactly
-    // (real_rows + 1) indptr entries, so clamp n_rows to what indptr actually
-    // holds — otherwise the hyperslab below reads past the dataset extent.
+    // The compressed (indptr) axis is rows for CSR and columns for CSC. The
+    // 'shape' attribute is untrusted: indptr has exactly (compressed_len + 1)
+    // entries, so clamp that axis to what indptr actually holds — otherwise the
+    // hyperslab below reads past the dataset extent.
     int64_t indptr_len = h5_len_1d(indptr_d);
     if (indptr_len < 1) {
         H5Dclose(indptr_d); H5Dclose(indices_d); H5Dclose(data_d);
         return arrow::Status::Invalid("sparse: empty/!1-D indptr");
     }
-    if (n_rows + 1 > indptr_len) n_rows = indptr_len - 1;
+    int64_t& n_major = is_csr ? n_rows : n_cols;   // axis the indptr indexes
+    if (n_major + 1 > indptr_len) n_major = indptr_len - 1;
     const int64_t nnz_avail = std::min(h5_len_1d(indices_d), h5_len_1d(data_d));
 
-    // Read indptr[0 .. n_rows].
-    std::vector<int64_t> indptr((size_t)(n_rows + 1));
+    // Read indptr[0 .. n_major].
+    std::vector<int64_t> indptr((size_t)(n_major + 1));
     {
         hid_t fs = H5Dget_space(indptr_d);
-        hsize_t start = 0, count = (hsize_t)(n_rows + 1);
+        hsize_t start = 0, count = (hsize_t)(n_major + 1);
         H5Sselect_hyperslab(fs, H5S_SELECT_SET, &start, nullptr, &count, nullptr);
         hid_t ms = H5Screate_simple(1, &count, nullptr);
         H5Dread(indptr_d, H5T_NATIVE_INT64, ms, fs, H5P_DEFAULT, indptr.data());
@@ -7737,37 +7736,41 @@ read_sparse_preview(hid_t group, int64_t row_cap) {
     }
     H5Dclose(indptr_d); H5Dclose(indices_d); H5Dclose(data_d);
 
-    // Build per-column DoubleBuilders, fill with zeros, scatter sparse values.
-    int64_t cap = (int64_t)shape[1];
-    std::vector<arrow::DoubleBuilder> bs((size_t)n_cols);
-    for (auto& b : bs) (void)b.Reserve(n_rows);
-    std::vector<double> row(n_cols, 0.0);
-    for (int64_t r = 0; r < n_rows; ++r) {
-        std::fill(row.begin(), row.end(), 0.0);
+    // Densify into a column-major buffer (always rows × cols). Walk each
+    // compressed-axis slice and scatter its values: for CSR `m` is a row and
+    // the index is a column; for CSC `m` is a column and the index is a row.
+    std::vector<std::vector<double>> colbuf((size_t)n_cols,
+                                            std::vector<double>((size_t)n_rows, 0.0));
+    for (int64_t m = 0; m < n_major; ++m) {
         // Offsets are relative to the clamped read window `front`, and bounded
         // to [0, nnz_span] so a non-monotonic / corrupt indptr can't index the
         // indices/data vectors out of range.
-        int64_t s = indptr[(size_t)r] - front;
-        int64_t e = indptr[(size_t)(r + 1)] - front;
+        int64_t s = indptr[(size_t)m] - front;
+        int64_t e = indptr[(size_t)(m + 1)] - front;
         if (s < 0) s = 0;             if (s > nnz_span) s = nnz_span;
         if (e < s) e = s;             if (e > nnz_span) e = nnz_span;
         for (int64_t k = s; k < e; ++k) {
-            int64_t ci = indices[(size_t)k];
-            if (ci >= 0 && ci < n_cols) row[(size_t)ci] = data[(size_t)k];
-            (void)cap;
+            int64_t idx = indices[(size_t)k];        // minor-axis index
+            if (is_csr) {                            // m = row, idx = column
+                if (idx >= 0 && idx < n_cols)
+                    colbuf[(size_t)idx][(size_t)m] = data[(size_t)k];
+            } else {                                 // m = column, idx = row
+                if (idx >= 0 && idx < n_rows)
+                    colbuf[(size_t)m][(size_t)idx] = data[(size_t)k];
+            }
         }
-        for (int64_t c = 0; c < n_cols; ++c)
-            (void)bs[(size_t)c].Append(row[(size_t)c]);
     }
     arrow::FieldVector fields;
     std::vector<std::shared_ptr<arrow::Array>> cols;
     for (int64_t c = 0; c < n_cols; ++c) {
+        arrow::DoubleBuilder b;
+        (void)b.AppendValues(colbuf[(size_t)c]);
         std::shared_ptr<arrow::Array> a;
-        (void)bs[(size_t)c].Finish(&a);
+        (void)b.Finish(&a);
         cols.push_back(std::move(a));
         fields.push_back(arrow::field("col" + std::to_string(c), arrow::float64()));
     }
-    return arrow::Table::Make(arrow::schema(fields), cols);
+    return arrow::Table::Make(arrow::schema(fields), cols, n_rows);
 }
 
 // Read up to `cap` values of an AnnData component group's index dataset (the
@@ -7914,15 +7917,12 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
                 x_rows = shape[0]; x_cols = shape[1];
                 add("X", xenc + "  (" + std::to_string(x_rows) +
                           " \xc3\x97 " + std::to_string(x_cols) + ")");
-                if (xenc == "csr_matrix") {
-                    specs.push_back({OpenSpec::Kind::Sparse, "/X",
-                                      "X (preview)",
-                                      xenc + "  shape: " +
-                                      std::to_string(x_rows) + " \xc3\x97 " +
-                                      std::to_string(x_cols)});
-                } else {
-                    add("note", "CSC sparse preview not implemented in v1");
-                }
+                // Both CSR and CSC densify to the same rows × columns preview.
+                specs.push_back({OpenSpec::Kind::Sparse, "/X",
+                                  "X (preview)",
+                                  xenc + "  shape: " +
+                                  std::to_string(x_rows) + " \xc3\x97 " +
+                                  std::to_string(x_cols)});
             }
             H5Gclose(g);
         } else {

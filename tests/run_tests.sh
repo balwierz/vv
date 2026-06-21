@@ -786,6 +786,25 @@ if [ -f "$DATA/tiny.h5ad" ]; then
     assert_contains "h5ad_tab_unknown_avail" "$TAB_BAD" "available:"
 fi
 
+# CSC-sparse X: the preview must densify identically to CSR by walking each
+# column's indptr range (here the indices are row indices). tiny.csc.h5ad's X is
+# the fixed 3×4 matrix [[1,0,0,2],[0,3,0,0],[0,0,4,5]]; the summary must now
+# offer a preview tab (no "not implemented" note) and the X-labels still apply.
+if [ -f "$DATA/tiny.csc.h5ad" ]; then
+    CSC_SUM=$("$VV" --no-interactive --color=never "$DATA/tiny.csc.h5ad" 2>&1)
+    refute_contains "anndata_csc_no_unimpl_note" "$CSC_SUM" "not implemented"
+    assert_contains "anndata_csc_summary_enc"    "$CSC_SUM" "csc_matrix"
+    CSC_X=$("$VV" --no-interactive --color=never --tab X "$DATA/tiny.csc.h5ad" 2>&1)
+    assert_contains "anndata_csc_x_gene_labels"  "$CSC_X" "gene0"
+    assert_contains "anndata_csc_x_cell_labels"  "$CSC_X" "cell2"
+    CSC_TSV=$("$VV" --tsv --no-header --tab X "$DATA/tiny.csc.h5ad" 2>/dev/null)
+    assert_eq_file_inline "anndata_csc_exit0" "$?" "0"
+    assert_contains "anndata_csc_row0_densified" \
+        "$(printf '%s\n' "$CSC_TSV" | sed -n 1p)" "$(printf 'cell0\t1\t0\t0\t2')"
+    assert_contains "anndata_csc_row2_densified" \
+        "$(printf '%s\n' "$CSC_TSV" | sed -n 3p)" "$(printf 'cell2\t0\t0\t4\t5')"
+fi
+
 # Hostile AnnData: the CSR `X` group's shape attribute claims 100 rows but
 # indptr holds only 2, and the obs DataFrame has unequal-length columns. vv
 # must clamp to the real dataset extents (no OOB read) and normalise the

@@ -678,6 +678,23 @@ else:
     bvar = pd.DataFrame(index=[f"gene{i}" for i in range(4)])
     ad.AnnData(X=Xb, obs=bobs, var=bvar).write_h5ad(big_path)
 
+    # tiny.csc.h5ad: a CSC-sparse X (encoding-type csc_matrix). The preview must
+    # densify identically to CSR — rows × columns — by walking each column's
+    # indptr range (indices are row indices). Fixed values so the test can
+    # assert exact cells; gene/cell identifiers exercise the X-labels path too.
+    csc_path = HERE / "tiny.csc.h5ad"
+    if csc_path.exists():
+        csc_path.unlink()
+    dense = np.array([[1., 0., 0., 2.],
+                      [0., 3., 0., 0.],
+                      [0., 0., 4., 5.]], dtype=np.float64)
+    Xc = sparse.csc_matrix(dense)
+    cobs = pd.DataFrame({"cluster": pd.Categorical(["A", "B", "A"])},
+                        index=[f"cell{i}" for i in range(3)])
+    cvar = pd.DataFrame({"gene_name": ["G1", "G2", "G3", "G4"]},
+                        index=[f"gene{i}" for i in range(4)])
+    ad.AnnData(X=Xc, obs=cobs, var=cvar).write_h5ad(csc_path)
+
 # tiny.malformed.h5ad: a hostile AnnData that previously crashed the reader.
 # Derived from the valid tiny.h5ad (so it stays AnnData-detectable and reaches
 # the sparse-X path) by poking two attributes that HDF5's H5Aread fills one
