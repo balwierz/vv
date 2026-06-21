@@ -187,9 +187,12 @@ jobs:
           # A dense AnnData X wider than the preview cap must materialise as a
           # 200-column preview (not the full 250), so a huge dense matrix can't
           # OOM the reader. The sibling X tab is only materialised by the GUI.
+          # cols=201 = the 200 capped gene (var) columns + the prepended obs
+          # (cell) row-label column; the footer still reports the 200-of-250
+          # value-column cap.
           if [ -f tests/data/tiny.dense.h5ad ]; then
             VVG_WINTEST=1 VVG_TABDIMS=1 ./build-gui/gui/vvg tests/data/tiny.dense.h5ad \
-              | grep -qE "tab 'X' rows=3 cols=200 .*first 200 of 250 cols"
+              | grep -qE "tab 'X' rows=3 cols=201 .*first 200 of 250 cols"
           fi
           if [ "${{ steps.gui_deps.outputs.kf6 }}" = "yes" ]; then
             # KF6 present: the Dolphin thumbnailer + KFileMetaData .so plugins
