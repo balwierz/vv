@@ -110,25 +110,42 @@ rm -f "$BADFQ"
 # htslib pileup mid-stream read error must surface, not be swallowed as a clean
 # EOF. bam_plp_auto() returns nullptr on both EOF and error; the BamPileupSource
 # read callback now records the underlying return code so advance() can tell
-# them apart. tiny.multiblock.bam spans several BGZF blocks; truncating inside
-# its final data block (drop the 28-byte EOF marker + part of the last block)
-# makes most reads decode and then one error — that must exit non-zero, not
-# emit a partial pileup with status 0. (A single-block tiny BAM would fail at
-# open instead, a different path.)
-if [ -f "$DATA/tiny.multiblock.bam" ]; then
-    MBTRUNC="$TMP/mb.trunc.bam"
-    MBSZ=$(wc -c < "$DATA/tiny.multiblock.bam" | tr -d ' ')
-    head -c $((MBSZ - 50)) "$DATA/tiny.multiblock.bam" > "$MBTRUNC"
-    timeout 30 "$VV" --pileup "$MBTRUNC" >/dev/null 2>/dev/null
-    MB_RC=$?
-    if [ "$MB_RC" -eq 124 ]; then
-        FAIL=$((FAIL+1)); echo "  FAIL  pileup_midstream_error_exits_nonzero (hung)"
-    elif [ "$MB_RC" -ne 0 ]; then
-        PASS=$((PASS+1)); echo "  ok    pileup_midstream_error_exits_nonzero"
+# them apart. tiny.multiblock.bam spans several BGZF blocks; we break the magic
+# of its last data block so the pileup decodes the earlier reads and then hits
+# an invalid block — that must exit non-zero, not emit a partial pileup with
+# status 0. (We corrupt a late block rather than truncating the tail: an
+# invalid block header is a hard error on every htslib, whereas a truncated
+# tail is treated as a benign missing-EOF by some versions. A single-block tiny
+# BAM would fail at open instead, a different path.) Needs python3 (stdlib).
+if [ -f "$DATA/tiny.multiblock.bam" ] && command -v python3 >/dev/null 2>&1; then
+    MBCORRUPT="$TMP/mb.corrupt.bam"
+    if python3 - "$DATA/tiny.multiblock.bam" "$MBCORRUPT" <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+sig = b"\x1f\x8b\x08\x04"                  # BGZF (gzip) block start
+offs = []
+i = data.find(sig)
+while i != -1:
+    offs.append(i); i = data.find(sig, i + 1)
+if len(offs) < 3:                          # not multi-block — can't test this
+    sys.exit(2)
+b = bytearray(data); b[offs[-2]] = 0xff    # break the last data block's magic
+open(sys.argv[2], "wb").write(b)
+PY
+    then
+        timeout 30 "$VV" --pileup "$MBCORRUPT" >/dev/null 2>/dev/null
+        MB_RC=$?
+        if [ "$MB_RC" -eq 124 ]; then
+            FAIL=$((FAIL+1)); echo "  FAIL  pileup_midstream_error_exits_nonzero (hung)"
+        elif [ "$MB_RC" -ne 0 ]; then
+            PASS=$((PASS+1)); echo "  ok    pileup_midstream_error_exits_nonzero"
+        else
+            FAIL=$((FAIL+1)); echo "  FAIL  pileup_midstream_error_exits_nonzero (silent, exit 0)"
+        fi
+        rm -f "$MBCORRUPT"
     else
-        FAIL=$((FAIL+1)); echo "  FAIL  pileup_midstream_error_exits_nonzero (silent, exit 0)"
+        echo "  skip  pileup_midstream_error_exits_nonzero (fixture not multi-block)"
     fi
-    rm -f "$MBTRUNC"
 fi
 
 # Streaming retention window on a second source family (FastxSource): a FASTQ
