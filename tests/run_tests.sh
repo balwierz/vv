@@ -924,6 +924,22 @@ if [ -f "$DATA/tiny.malformed.npz" ]; then
     fi
 fi
 
+# NPZ allocation hint: the zip central-directory uncompressed_size is
+# attacker-controllable. tiny.badsize.npz claims ~2 GiB for a 5-element array.
+# vv must handle it gracefully — never a crash / OOM from reserving the bogus
+# size. Whether the zip layer tolerates the size mismatch and reads the array
+# (exit 0) or rejects it as malformed (clean non-zero) varies by minizip
+# version, so accept either; the point is that it must not die by signal.
+if [ -f "$DATA/tiny.badsize.npz" ]; then
+    "$VV" --no-interactive --color=never "$DATA/tiny.badsize.npz" >/dev/null 2>&1
+    BADSIZE_RC=$?
+    if [ "$BADSIZE_RC" -lt 128 ]; then
+        PASS=$((PASS+1)); echo "  ok    npz_badsize_no_crash"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  npz_badsize_no_crash (signal $((BADSIZE_RC-128)))"
+    fi
+fi
+
 # samtools mpileup: 6-col single-sample + 9-col two-sample fixtures; tabix
 # range query on the bgzipped variant.
 if [ -f "$DATA/tiny.mpileup" ]; then

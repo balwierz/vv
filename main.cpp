@@ -8490,7 +8490,14 @@ static std::string load_archive(const std::string& path,
             return "'" + path + "': cannot open '" + name + "' inside NPZ";
         }
         auto buf = std::make_shared<std::vector<uint8_t>>();
-        buf->reserve(info.uncompressed_size);
+        // `info.uncompressed_size` is from the zip central directory — i.e.
+        // attacker-controllable. Reserving it blindly lets a tiny crafted entry
+        // that claims gigabytes force a huge allocation (OOM / crash). It's only
+        // a pre-sizing hint (the read loop grows the vector as needed), so clamp
+        // it to a sane ceiling; a genuinely large array still loads via the loop.
+        constexpr uint64_t kMaxReserve = 64u << 20;   // 64 MiB
+        buf->reserve((size_t)std::min<uint64_t>(
+            (uint64_t)info.uncompressed_size, kMaxReserve));
         uint8_t chunk[64 * 1024];
         while (true) {
             int n = unzReadCurrentFile(zf, chunk, sizeof(chunk));
