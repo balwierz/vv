@@ -336,7 +336,7 @@ be done first: it catches this whole bug class automatically.
 
 **Usability**
 - [x] `main.cpp:490` — --heatmap and --image-mode are undocumented in print_usage (undiscoverable flags) — fixed on `feat/heatmap` (new "Visualization" section in --help)
-- [ ] `main.cpp:635` — Missing argument to a known flag reports "Unknown option" and dumps full usage
+- [x] `main.cpp:635` — Missing argument to a known flag reports "Unknown option" and dumps full usage — fixed on `fix/missing-arg-error` (an arg-taking flag in last position fails its `i + 1 < argc` guard and fell through to the generic else; that branch now checks the flag against the set of arg-taking options and prints "Option X requires an argument." (exit 2, no full-usage dump — matching the existing --coords/--delimiter targeted errors) instead of the misleading "Unknown option". A genuinely unknown flag still reports "Unknown option" + usage.) Tests: `vv --tab` → targeted error, not "Unknown option"; `vv --bogus-flag` → still "Unknown option".
 - [x] `main.cpp:712` — --heatmap and --image-mode are implemented but undocumented in every reference (help, man, README, all 3 completions) — fixed on `feat/heatmap` (help + man + README + bash/fish/zsh completions all updated)
 - [ ] `main.cpp:3117` — CSV/TSV type inference silently corrupts leading-zero IDs and scientific notation
 - [ ] `main.cpp:9874` — --image-mode value is never validated; typos silently fall back to Auto

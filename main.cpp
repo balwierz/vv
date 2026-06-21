@@ -751,6 +751,22 @@ static Config parse_args(int argc, char** argv) {
             if (positional++ == 0) cfg.path = argv[i];
             cfg.paths.push_back(argv[i]);
         } else {
+            // A known flag that takes an argument falls through to here only
+            // when it's the last token (its `i + 1 < argc` guard failed), so
+            // report the missing argument specifically rather than the
+            // misleading "Unknown option".
+            static const std::set<std::string> needs_arg = {
+                "-n", "-w", "-c", "-r", "--region", "--window",
+                "--regions-file", "--region-cols", "--slop", "--coords",
+                "--tail", "-@", "--threads", "--decode-threads", "--parquet",
+                "--compression", "--unique", "--sample", "--filter",
+                "--select", "--cols", "--image-mode", "--tab", "--theme",
+                "--delimiter",
+            };
+            if (needs_arg.count(argv[i])) {
+                std::fprintf(stderr, "Option %s requires an argument.\n", argv[i]);
+                std::exit(2);
+            }
             std::fprintf(stderr, "Unknown option: %s\n", argv[i]);
             print_usage(argv[0]); std::exit(1);
         }
