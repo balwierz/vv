@@ -5495,7 +5495,8 @@ class SqliteSource : public TabularSource {
     std::shared_ptr<sqlite3>                 db_;
     std::shared_ptr<arrow::Schema>           schema_;
     std::vector<arrow::Type::type>           col_types_;
-    int64_t                                  total_rows_ = -1;
+    mutable int64_t                          total_rows_     = -1;  // lazy COUNT(*)
+    mutable bool                             total_counted_  = false;
     std::vector<std::string>                 sibling_tables_;  // others in same DB
 
     mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
@@ -5621,13 +5622,9 @@ class SqliteSource : public TabularSource {
             return "SQLite table '" + table + "' has no columns (or doesn't exist)";
         self->schema_ = arrow::schema(fields);
 
-        // Total row count (best-effort).
-        std::string cq = "SELECT COUNT(*) FROM \"" + table + "\"";
-        if (sqlite3_prepare_v2(db.get(), cq.c_str(), -1, &st, nullptr) == SQLITE_OK) {
-            if (sqlite3_step(st) == SQLITE_ROW)
-                self->total_rows_ = sqlite3_column_int64(st, 0);
-            sqlite3_finalize(st);
-        }
+        // Total row count is computed lazily (see total_rows()) — a COUNT(*) is
+        // a full table scan, wasteful for an `-n` preview or a thumbnail that
+        // never asks for the total.
 
         // Prepare the streaming SELECT and read the first batch.
         std::string sq = "SELECT * FROM \"" + table + "\"";
@@ -5700,6 +5697,21 @@ public:
 
     std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
     int64_t total_rows() const override {
+        // Once we've streamed the whole table the exact count is free.
+        if (all_read_) return rows_so_far_;
+        // Otherwise run COUNT(*) once, on first ask — so a preview / thumbnail
+        // that never needs the total doesn't trigger a full table scan.
+        if (!total_counted_) {
+            total_counted_ = true;
+            std::string cq = "SELECT COUNT(*) FROM \"" + table_ + "\"";
+            sqlite3_stmt* st = nullptr;
+            if (db_ && sqlite3_prepare_v2(db_.get(), cq.c_str(), -1, &st,
+                                          nullptr) == SQLITE_OK) {
+                if (sqlite3_step(st) == SQLITE_ROW)
+                    total_rows_ = sqlite3_column_int64(st, 0);
+                sqlite3_finalize(st);
+            }
+        }
         return total_rows_ >= 0 ? total_rows_ : (all_read_ ? rows_so_far_ : -1);
     }
     int     num_chunks() const override { return (int)batches_.size(); }
@@ -5733,7 +5745,10 @@ public:
     std::string tab_label() const override { return table_; }
     std::string footer() const override {
         std::string s = "Format: SQLite  |  Table: " + table_;
-        if (total_rows_ >= 0) s += "  |  Rows: " + std::to_string(total_rows_);
+        // total_rows() runs the lazy COUNT(*); the footer is a "real" view
+        // (table / TUI) where the count is wanted, unlike a thumbnail.
+        int64_t tr = total_rows();
+        if (tr >= 0) s += "  |  Rows: " + std::to_string(tr);
         if (!sibling_tables_.empty())
             s += "  |  +" + std::to_string(sibling_tables_.size()) + " more table(s)";
         return s;
