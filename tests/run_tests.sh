@@ -653,6 +653,16 @@ if [ -f "$DATA/tiny.types.sqlite" ]; then
     assert_contains "sqlite_bigint_distinct"     "$TYPES_OUT" "9007199254740995"
 fi
 
+# SQLite identifier quoting: a table named a"b (embedded double quote) must be
+# read, not produce the malformed/injectable SQL `"a"b"`. Exercises the PRAGMA,
+# the SELECT * and the lazy COUNT(*) — all of which quote the table name.
+if [ -f "$DATA/tiny.quoteid.sqlite" ]; then
+    QID_OUT=$("$VV" --no-interactive --color=never "$DATA/tiny.quoteid.sqlite" 2>&1)
+    assert_contains "sqlite_quoted_ident_reads"   "$QID_OUT" "hello"
+    assert_contains "sqlite_quoted_ident_table"   "$QID_OUT" 'Table: a"b'
+    assert_contains "sqlite_quoted_ident_count"   "$QID_OUT" "Rows: 2"
+fi
+
 # Apache ORC: columnar; one stripe → one chunk. The fixture is small so it
 # lands in a single stripe even at stripe_size=2. The AlmaLinux 8 static
 # build currently has ARROW_ORC=OFF, so probe for ORC support at runtime

@@ -343,6 +343,20 @@ cur.executemany("INSERT INTO events VALUES(?,?,?,?,?)", [
 con.commit()
 con.close()
 
+# tiny.quoteid.sqlite: a table whose name contains a double quote (a"b). vv
+# quotes the table name when building its PRAGMA / SELECT, so without escaping
+# the embedded quote it produced the malformed (and, for an untrusted DB,
+# injectable) SQL `"a"b"` and failed to open the table.
+quote_path = HERE / "tiny.quoteid.sqlite"
+if quote_path.exists():
+    quote_path.unlink()
+con = sqlite3.connect(quote_path)
+cur = con.cursor()
+cur.execute('CREATE TABLE "a""b" (id INTEGER, label TEXT)')
+cur.executemany('INSERT INTO "a""b" VALUES(?,?)', [(1, "hello"), (2, "world")])
+con.commit()
+con.close()
+
 # ── BAM (for --pileup tests; needs pysam) ────────────────────────────────────
 # Generate a sorted + indexed BAM with three reads on chr1:100 covering
 # positions 100–119, so the pileup engine emits 20 rows when invoked.

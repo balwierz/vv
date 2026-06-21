@@ -5609,6 +5609,17 @@ static std::shared_ptr<arrow::DataType> arrow_type_for_id(arrow::Type::type t) {
     }
 }
 
+// Quote a SQLite identifier (table name), escaping any embedded double quote by
+// doubling it, per SQL. Table names come from the database's own catalog, so a
+// table created as `a"b` would otherwise build the malformed — and, for an
+// untrusted .sqlite, injectable — SQL `"a"b"`.
+static std::string sqlite_quote_ident(const std::string& id) {
+    std::string out = "\"";
+    for (char c : id) { if (c == '"') out += '"'; out += c; }
+    out += '"';
+    return out;
+}
+
 class SqliteSource : public TabularSource {
     std::string                              path_;
     std::string                              table_;
@@ -5720,9 +5731,9 @@ class SqliteSource : public TabularSource {
         self->db_    = db;
         self->sibling_tables_ = siblings;
 
-        // Schema from PRAGMA table_info. Need to quote the table name in
-        // case it contains spaces or special chars.
-        std::string q = "PRAGMA table_info(\"" + table + "\")";
+        // Schema from PRAGMA table_info. Quote the table name (escaping embedded
+        // quotes) in case it contains spaces or special chars.
+        std::string q = "PRAGMA table_info(" + sqlite_quote_ident(table) + ")";
         sqlite3_stmt* st = nullptr;
         if (sqlite3_prepare_v2(db.get(), q.c_str(), -1, &st, nullptr) != SQLITE_OK) {
             return std::string("SQLite prepare failed: ") + sqlite3_errmsg(db.get());
@@ -5747,7 +5758,7 @@ class SqliteSource : public TabularSource {
         // never asks for the total.
 
         // Prepare the streaming SELECT and read the first batch.
-        std::string sq = "SELECT * FROM \"" + table + "\"";
+        std::string sq = "SELECT * FROM " + sqlite_quote_ident(table);
         if (sqlite3_prepare_v2(db.get(), sq.c_str(), -1, &self->stmt_, nullptr) != SQLITE_OK)
             return std::string("SQLite prepare failed: ") + sqlite3_errmsg(db.get());
 
@@ -5823,7 +5834,7 @@ public:
         // that never needs the total doesn't trigger a full table scan.
         if (!total_counted_) {
             total_counted_ = true;
-            std::string cq = "SELECT COUNT(*) FROM \"" + table_ + "\"";
+            std::string cq = "SELECT COUNT(*) FROM " + sqlite_quote_ident(table_);
             sqlite3_stmt* st = nullptr;
             if (db_ && sqlite3_prepare_v2(db_.get(), cq.c_str(), -1, &st,
                                           nullptr) == SQLITE_OK) {
