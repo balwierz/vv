@@ -7363,11 +7363,21 @@ class Hdf5Source : public WorkbookSource {
             case OpenSpec::Kind::Dataset1D: {
                 hid_t d = H5Dopen2(file_id, spec.h5_path.c_str(), H5P_DEFAULT);
                 if (d < 0) return "Cannot open dataset " + spec.h5_path;
-                auto r = read_1d_dataset_table(d);
+                // Cap the read: a generic HDF5 1-D dataset can be millions of
+                // elements (e.g. a per-read array), and reading it in full
+                // stalls / OOMs. Preview the head; report the real length.
+                int64_t full = 0;
+                auto r = read_1d_dataset_table(d, kDense2DRowCap, &full);
                 H5Dclose(d);
                 if (!r.ok()) return r.status().ToString();
                 *out = *r;
                 *footer = "Format: HDF5 1D " + spec.display;
+                int64_t shown = *out ? (*out)->num_rows() : 0;
+                if (shown < full)   // preview note so the cap isn't read as the real size
+                    *footer += "  |  preview: first " + std::to_string(shown) +
+                               " of " + std::to_string(full) + " rows";
+                else
+                    *footer += "  |  Rows: " + std::to_string(shown);
                 if (!spec.footer_hint.empty())
                     *footer += "  |  " + spec.footer_hint;
                 return "";

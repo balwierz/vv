@@ -876,6 +876,16 @@ if [ -f "$DATA/tiny.malformed.h5ad" ]; then
         "$VV" --no-interactive --color=never "$DATA/tiny.malformed.h5ad"
 fi
 
+# Generic HDF5 1-D dataset preview cap: a 1500-element 1-D dataset must render
+# the first 1000 rows only (so a multi-million-element array can't OOM/stall the
+# reader), with the real length reported in the footer.
+if [ -f "$DATA/tiny.big1d.h5" ]; then
+    BIG1D=$("$VV" --no-interactive --color=never --tab /big "$DATA/tiny.big1d.h5" 2>&1)
+    assert_contains "hdf5_1d_preview_cap_note" "$BIG1D" "first 1000 of 1500 rows"
+    BIG1D_ROWS=$("$VV" --tsv --no-header --tab /big "$DATA/tiny.big1d.h5" 2>/dev/null | wc -l)
+    assert_eq_file_inline "hdf5_1d_preview_cap_rows" "$(echo $BIG1D_ROWS)" "1000"
+fi
+
 # NumPy .npz — valid archive (summary lists each array) plus a malformed one.
 if [ -f "$DATA/tiny.npz" ]; then
     NPZ_OUT=$("$VV" --no-interactive --color=never "$DATA/tiny.npz" 2>&1)

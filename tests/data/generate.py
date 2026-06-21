@@ -586,6 +586,15 @@ else:
         meta.create_dataset("labels",
                               data=np.array(["a", "b", "c"], dtype="S2"))
 
+    # tiny.big1d.h5: a generic HDF5 whose 1-D dataset (1500 elements) exceeds
+    # the 1000-row preview cap, so the Dataset1D tab must render "first 1000 of
+    # 1500 rows" instead of reading the whole array into RAM.
+    big1d_path = HERE / "tiny.big1d.h5"
+    if big1d_path.exists():
+        big1d_path.unlink()
+    with h5py.File(big1d_path, "w") as f:
+        f.create_dataset("big", data=np.arange(1500, dtype=np.int64))
+
     # tiny.badsparse.h5ad: a HOSTILE AnnData. The CSR `X` group's `shape`
     # attribute lies (claims 100 rows) but `indptr` holds only 2 rows; and the
     # `obs` DataFrame has children of unequal length. vv used to derive row
