@@ -3516,12 +3516,26 @@ private:
         self->schema_ = self->reader_->schema();
 
         // For CSV/TSV: if all column names are numeric, the file has no header → retry.
+        // strtod() also accepts "nan", "inf"/"infinity" and "0x…" hex floats —
+        // a column literally named one of those is far more likely a real
+        // header than headerless numeric data, so require a plain decimal /
+        // scientific token (digits, sign, dot, e/E exponent only) and let
+        // strtod confirm it actually parses. (A header of bare numbers like
+        // "1,2,3" is genuinely ambiguous and still treated as headerless data.)
+        auto looks_like_plain_number = [](const std::string& s) {
+            if (s.empty()) return false;
+            for (unsigned char c : s)
+                if (!std::isdigit(c) && c != '+' && c != '-' &&
+                    c != '.' && c != 'e' && c != 'E')
+                    return false;
+            char* ep; std::strtod(s.c_str(), &ep);
+            return *ep == '\0';
+        };
         if (kind == DelimKind::CSV || kind == DelimKind::TSV) {
             bool all_numeric = self->schema_->num_fields() > 0;
             for (int i = 0; i < self->schema_->num_fields() && all_numeric; ++i) {
                 const std::string& nm = self->schema_->field(i)->name();
-                char* ep; std::strtod(nm.c_str(), &ep);
-                if (*ep != '\0') all_numeric = false;
+                if (!looks_like_plain_number(nm)) all_numeric = false;
             }
             if (all_numeric) {
                 std::shared_ptr<arrow::io::ReadableFile>  raw2;

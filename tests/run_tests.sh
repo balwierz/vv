@@ -380,6 +380,21 @@ echo "── --schema / --describe / --select / --filter / --json ─"
 SCHEMA_OUT=$("$VV" --schema "$DATA/tiny.lociss")
 assert_contains "schema_has_chromosome" "$SCHEMA_OUT" "Chromosome"
 assert_contains "schema_has_maxendsofar" "$SCHEMA_OUT" "MaxEndSoFar"
+# Header detection: a header row of word-like float tokens (nan / inf / hex)
+# must be kept as column NAMES, not mistaken for headerless numeric data.
+# strtod() accepts those, so the real header used to be dropped.
+WORDHDR="$TMP/wordhdr.csv"
+printf 'nan,inf\n1,2\n3,4\n' > "$WORDHDR"
+WORDHDR_SCHEMA=$("$VV" --schema "$WORDHDR" 2>&1)
+assert_contains "header_nan_kept_as_column_name" "$WORDHDR_SCHEMA" "nan"
+assert_contains "header_inf_kept_as_column_name" "$WORDHDR_SCHEMA" "inf"
+# A genuinely headerless numeric CSV is still detected (auto-named f0/f1), so
+# the first data row isn't consumed as a header.
+NUMDATA="$TMP/numdata.csv"
+printf '1,2\n3,4\n5,6\n' > "$NUMDATA"
+NUMDATA_SCHEMA=$("$VV" --schema "$NUMDATA" 2>&1)
+assert_contains "headerless_numeric_autogen_f0" "$NUMDATA_SCHEMA" "f0"
+rm -f "$WORDHDR" "$NUMDATA"
 DESCRIBE_OUT=$("$VV" --describe "$DATA/tiny.lociss")
 assert_contains "describe_has_columns_header" "$DESCRIBE_OUT" "Column"
 assert_contains "describe_has_distinct_for_string" "$DESCRIBE_OUT" "Chromosome"
