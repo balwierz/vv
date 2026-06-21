@@ -890,29 +890,110 @@ static bool is_numeric_type(arrow::Type::type t) {
     }
 }
 
+// Decode one UTF-8 codepoint at s[i]; *len receives its byte length. An invalid
+// lead byte or a truncated sequence decodes as the single byte (length 1) so we
+// always make forward progress and never read past the end.
+static uint32_t utf8_decode(const std::string& s, size_t i, int* len) {
+    unsigned char c = (unsigned char)s[i];
+    auto cont = [&](size_t k) { return k < s.size() &&
+                                       ((unsigned char)s[k] & 0xC0u) == 0x80u; };
+    if (c < 0x80) { *len = 1; return c; }
+    if ((c & 0xE0u) == 0xC0u && cont(i + 1)) {
+        *len = 2; return ((c & 0x1Fu) << 6) | ((unsigned char)s[i+1] & 0x3Fu);
+    }
+    if ((c & 0xF0u) == 0xE0u && cont(i + 1) && cont(i + 2)) {
+        *len = 3; return ((c & 0x0Fu) << 12) | (((unsigned char)s[i+1] & 0x3Fu) << 6)
+                       | ((unsigned char)s[i+2] & 0x3Fu);
+    }
+    if ((c & 0xF8u) == 0xF0u && cont(i + 1) && cont(i + 2) && cont(i + 3)) {
+        *len = 4; return ((c & 0x07u) << 18) | (((unsigned char)s[i+1] & 0x3Fu) << 12)
+                       | (((unsigned char)s[i+2] & 0x3Fu) << 6)
+                       | ((unsigned char)s[i+3] & 0x3Fu);
+    }
+    *len = 1; return c;
+}
+
+// Terminal column width of one codepoint (wcwidth-style): 0 for combining /
+// zero-width / control, 2 for East Asian Wide & Fullwidth and emoji, else 1.
+// Sorted ranges (binary search); a wide/combining char counted as 1 (or a
+// combining mark counted as 1) is what previously misaligned the table.
+static bool cp_in_ranges(uint32_t cp, const uint32_t (*r)[2], size_t n) {
+    size_t lo = 0, hi = n;
+    while (lo < hi) {
+        size_t mid = (lo + hi) >> 1;
+        if (cp < r[mid][0]) hi = mid;
+        else if (cp > r[mid][1]) lo = mid + 1;
+        else return true;
+    }
+    return false;
+}
+static int codepoint_width(uint32_t cp) {
+    if (cp == 0) return 0;
+    if (cp < 0x20u || (cp >= 0x7Fu && cp < 0xA0u)) return 0;   // C0 / C1 control
+    static const uint32_t kZeroWidth[][2] = {
+        {0x0300,0x036F},{0x0483,0x0489},{0x0591,0x05BD},{0x05BF,0x05BF},
+        {0x05C1,0x05C2},{0x05C4,0x05C5},{0x05C7,0x05C7},{0x0610,0x061A},
+        {0x064B,0x065F},{0x0670,0x0670},{0x06D6,0x06DC},{0x06DF,0x06E4},
+        {0x06E7,0x06E8},{0x06EA,0x06ED},{0x0711,0x0711},{0x0730,0x074A},
+        {0x07A6,0x07B0},{0x07EB,0x07F3},{0x0816,0x0823},{0x0825,0x082D},
+        {0x0859,0x085B},{0x08E3,0x0902},{0x093C,0x093C},{0x0941,0x0948},
+        {0x094D,0x094D},{0x0951,0x0957},{0x0962,0x0963},{0x0981,0x0981},
+        {0x09BC,0x09BC},{0x09C1,0x09C4},{0x09CD,0x09CD},{0x0A3C,0x0A3C},
+        {0x0A41,0x0A42},{0x0A47,0x0A48},{0x0A4B,0x0A4D},{0x0ABC,0x0ABC},
+        {0x0AC1,0x0AC5},{0x0AC7,0x0AC8},{0x0ACD,0x0ACD},{0x0B3C,0x0B3C},
+        {0x0B41,0x0B44},{0x0B4D,0x0B4D},{0x0BC0,0x0BC0},{0x0BCD,0x0BCD},
+        {0x0C3E,0x0C40},{0x0C46,0x0C48},{0x0C4A,0x0C4D},{0x0CBC,0x0CBC},
+        {0x0CCC,0x0CCD},{0x0D41,0x0D44},{0x0D4D,0x0D4D},{0x0DCA,0x0DCA},
+        {0x0E31,0x0E31},{0x0E34,0x0E3A},{0x0E47,0x0E4E},{0x0EB1,0x0EB1},
+        {0x0EB4,0x0EBC},{0x0EC8,0x0ECD},{0x0F71,0x0F7E},{0x0F80,0x0F84},
+        {0x0F90,0x0F97},{0x0F99,0x0FBC},{0x102D,0x1030},{0x1032,0x1037},
+        {0x1039,0x103A},{0x103D,0x103E},{0x1058,0x1059},{0x135D,0x135F},
+        {0x1712,0x1714},{0x1732,0x1734},{0x1A17,0x1A18},{0x1AB0,0x1AFF},
+        {0x1B6B,0x1B73},{0x1DC0,0x1DFF},{0x200B,0x200F},{0x202A,0x202E},
+        {0x2060,0x2064},{0x206A,0x206F},{0x20D0,0x20FF},{0x302A,0x302D},
+        {0x3099,0x309A},{0xFB1E,0xFB1E},{0xFE00,0xFE0F},{0xFE20,0xFE2F},
+        {0xFEFF,0xFEFF},{0xFFF9,0xFFFB},{0xE0100,0xE01EF},
+    };
+    static const uint32_t kWide[][2] = {
+        {0x1100,0x115F},{0x2329,0x232A},{0x2E80,0x303E},{0x3041,0x33FF},
+        {0x3400,0x4DBF},{0x4E00,0x9FFF},{0xA000,0xA4CF},{0xAC00,0xD7A3},
+        {0xF900,0xFAFF},{0xFE10,0xFE19},{0xFE30,0xFE6F},{0xFF00,0xFF60},
+        {0xFFE0,0xFFE6},{0x1F300,0x1F64F},{0x1F900,0x1F9FF},{0x1FA70,0x1FAFF},
+        {0x20000,0x3FFFD},
+    };
+    if (cp_in_ranges(cp, kZeroWidth, sizeof(kZeroWidth)/sizeof(*kZeroWidth)))
+        return 0;
+    if (cp_in_ranges(cp, kWide, sizeof(kWide)/sizeof(*kWide)))
+        return 2;
+    return 1;
+}
+
 int display_width(const std::string& s) {
-    // Count Unicode codepoints: UTF-8 continuation bytes (10xxxxxx) don't add columns.
+    // Sum terminal column widths so wide (CJK / fullwidth / emoji) and
+    // zero-width / combining characters are accounted for, not just codepoints.
     int w = 0;
-    for (unsigned char c : s)
-        if ((c & 0xC0u) != 0x80u) ++w;
+    for (size_t i = 0; i < s.size(); ) {
+        int len = 1;
+        w += codepoint_width(utf8_decode(s, i, &len));
+        i += len;
+    }
     return w;
 }
 
-// Byte offset just past the first `n` UTF-8 codepoints of s (clamped to
-// s.size()). A codepoint starts on any non-continuation byte (top bits != 10);
-// continuation bytes belong to the current codepoint. Used to truncate on a
-// codepoint boundary instead of mid-byte — display_width counts codepoints, so
-// this keeps the two consistent and never emits invalid UTF-8.
-static size_t utf8_prefix_bytes(const std::string& s, int n) {
-    if (n <= 0) return 0;
+// Byte offset of the longest prefix of s whose display width is <= max_cols.
+// Never splits a codepoint and never includes a wide char that would overflow,
+// so truncation cuts on a terminal-column boundary (consistent with
+// display_width) rather than a raw byte or codepoint count.
+static size_t utf8_prefix_for_width(const std::string& s, int max_cols) {
+    if (max_cols <= 0) return 0;
+    int w = 0;
     size_t i = 0;
-    int cp = 0;
     while (i < s.size()) {
-        if (((unsigned char)s[i] & 0xC0u) != 0x80u) {  // start of a codepoint
-            if (cp == n) break;
-            ++cp;
-        }
-        ++i;
+        int len = 1;
+        int cw = codepoint_width(utf8_decode(s, i, &len));
+        if (w + cw > max_cols) break;
+        w += cw;
+        i += len;
     }
     return i;
 }
@@ -955,10 +1036,11 @@ std::string truncate(const std::string& s, int max_w) {
         }
     }
 
-    // ELLIPSIS is 3 UTF-8 bytes but 1 display column, so we keep (max_w-1)
-    // content codepoints. Cut on a codepoint boundary — a byte-based substr
-    // would split a multibyte codepoint and emit invalid UTF-8.
-    return s.substr(0, utf8_prefix_bytes(s, max_w - 1)) + ELLIPSIS;
+    // ELLIPSIS is 3 UTF-8 bytes but 1 display column, so we keep content up to
+    // (max_w-1) display columns. Cut on a terminal-column boundary — a
+    // byte-based substr would split a multibyte codepoint (invalid UTF-8) and a
+    // codepoint-based one would overshoot the column budget for wide chars.
+    return s.substr(0, utf8_prefix_for_width(s, max_w - 1)) + ELLIPSIS;
 }
 
 // Format a decimal integer string with '_' grouping every three digits

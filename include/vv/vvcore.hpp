@@ -79,7 +79,8 @@ struct Config {
 };
 
 // ── Cell formatting helpers (defined in libvvcore) ───────────────────────────
-// display_width: UTF-8 codepoint count (not byte length).
+// display_width: terminal column width (wcwidth-style: wide CJK/fullwidth/emoji
+// count as 2, combining/zero-width as 0), not byte length or codepoint count.
 // truncate: smart truncation preserving [first, …] form for collections.
 // digits_with_sep: PEP-515 `_` grouping for integers.
 // cell_to_string: raw Arrow value → text. cell_to_display_string adds
