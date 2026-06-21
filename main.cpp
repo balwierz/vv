@@ -3318,6 +3318,81 @@ inline void stream_retain(
     }
 }
 
+// True for a leading-zero integer token like "007" / "00" / "012" — a code or
+// ID where the zeros are meaningful. "0", "10", "0.5" and "" are NOT flagged, so
+// ordinary numeric data is never forced to string. Used to keep such columns as
+// utf8 instead of letting Arrow's CSV inference drop the zeros ("007" -> 7).
+static bool is_leading_zero_int(const std::string& s) {
+    if (s.size() < 2 || s[0] != '0') return false;
+    for (unsigned char c : s) if (!std::isdigit(c)) return false;
+    return true;
+}
+
+// True if `s` is a plain decimal / scientific number token (digits, sign, dot,
+// e/E only) that strtod fully consumes — rejects the word-like / hex forms strtod
+// also accepts (nan, inf, 0x…). Shared by the headerless-CSV heuristic and the
+// leading-zero pre-scan so both agree on whether row 0 is a header.
+static bool looks_like_plain_number(const std::string& s) {
+    if (s.empty()) return false;
+    for (unsigned char c : s)
+        if (!std::isdigit(c) && c != '+' && c != '-' &&
+            c != '.' && c != 'e' && c != 'E')
+            return false;
+    char* ep; std::strtod(s.c_str(), &ep);
+    return *ep == '\0';
+}
+
+// Split one delimited line into fields, honouring Arrow's default CSV quoting: a
+// field that starts with '"' is quoted until the next unescaped '"', a doubled
+// '""' inside is a literal quote, and the delimiter is literal inside quotes.
+// So a quoted field containing the delimiter doesn't shift column positions.
+static void split_delimited_line(const std::string& line, char delim,
+                                 std::vector<std::string>* out) {
+    out->clear();
+    std::string field;
+    size_t i = 0, n = line.size();
+    while (i < n) {
+        field.clear();
+        if (line[i] == '"') {                 // quoted field
+            ++i;
+            while (i < n) {
+                if (line[i] == '"') {
+                    if (i + 1 < n && line[i + 1] == '"') { field += '"'; i += 2; }
+                    else { ++i; break; }       // closing quote
+                } else field += line[i++];
+            }
+            while (i < n && line[i] != delim) ++i;   // skip to delimiter
+        } else {
+            while (i < n && line[i] != delim) field += line[i++];
+        }
+        out->push_back(field);
+        if (i < n && line[i] == delim) {
+            ++i;
+            if (i == n) out->push_back("");   // trailing delimiter → empty field
+        }
+    }
+}
+
+// From a sample of delimited data lines + column names, return the names of
+// columns that contain a leading-zero integer value (so they should be read as
+// utf8, not inferred numeric). Lines are tokenised quote-aware; a column is
+// flagged if any sampled value is is_leading_zero_int().
+static std::vector<std::string>
+leading_zero_columns(const std::vector<std::string>& sample_lines, char delim,
+                     const std::vector<std::string>& col_names) {
+    std::vector<char> flagged(col_names.size(), 0);
+    std::vector<std::string> fields;
+    for (const auto& line : sample_lines) {
+        split_delimited_line(line, delim, &fields);
+        for (size_t c = 0; c < fields.size() && c < flagged.size(); ++c)
+            if (!flagged[c] && is_leading_zero_int(fields[c])) flagged[c] = 1;
+    }
+    std::vector<std::string> out;
+    for (size_t c = 0; c < col_names.size(); ++c)
+        if (flagged[c]) out.push_back(col_names[c]);
+    return out;
+}
+
 class DelimitedSource : public TabularSource {
     std::string                           path_;
     char                                  delimiter_;
@@ -3391,7 +3466,8 @@ class DelimitedSource : public TabularSource {
     // Create a StreamingReader from an already-open stream.
     static arrow::Result<std::shared_ptr<arrow::csv::StreamingReader>>
     make_reader(std::shared_ptr<arrow::io::InputStream> input, char delim,
-                bool autogen_names, const std::vector<std::string>& col_names) {
+                bool autogen_names, const std::vector<std::string>& col_names,
+                const std::vector<std::string>& force_string_cols = {}) {
         auto ropts = arrow::csv::ReadOptions::Defaults();
         // 16 MiB blocks + per-block parsing on the CPU pool. The default
         // (~1 MiB) is too small for multi-GB files; raising it amortises
@@ -3404,9 +3480,52 @@ class DelimitedSource : public TabularSource {
             ropts.autogenerate_column_names = autogen_names;
         auto popts = arrow::csv::ParseOptions::Defaults();
         popts.delimiter = delim;
+        auto copts = arrow::csv::ConvertOptions::Defaults();
+        // Force the detected leading-zero-ID columns to utf8 so inference can't
+        // drop the zeros ("007" -> 7). Keyed by name (Arrow has no by-index
+        // override); a no-op for a column Arrow would have made string anyway.
+        for (const auto& name : force_string_cols)
+            copts.column_types[name] = arrow::utf8();
         return arrow::csv::StreamingReader::Make(
-            arrow::io::default_io_context(), input,
-            ropts, popts, arrow::csv::ConvertOptions::Defaults());
+            arrow::io::default_io_context(), input, ropts, popts, copts);
+    }
+
+    // Re-read a small sample of the file and return the names of columns that
+    // hold a leading-zero integer (so they can be forced to utf8 — Arrow's CSV
+    // inference would otherwise turn "007" into 7). Mirrors the primary reader's
+    // naming so the forced-string names line up: a `#`-header supplies the names
+    // (header_names), otherwise the first non-comment line is the header. The
+    // leading-zero scan reads the data lines after it. Best-effort: {} on any
+    // I/O / open problem; column_types entries that don't match are simply
+    // ignored by Arrow, never an error.
+    static std::vector<std::string>
+    detect_leading_zero_columns(const std::string& path, bool is_gz, char delim,
+                                const std::vector<std::string>& header_names) {
+        std::shared_ptr<arrow::io::ReadableFile> raw;
+        std::shared_ptr<arrow::io::InputStream>  input;
+        if (!open_stream(path, is_gz, &raw, &input).empty()) return {};
+        LineReader lr(input);
+        std::vector<std::string> names = header_names;   // from a `#`-header, if any
+        bool have_names = !names.empty();
+        std::vector<std::string> sample;
+        std::string line;
+        const int kMaxData = 200;
+        for (;;) {
+            bool ok = lr.read_line(&line);
+            if (!ok && line.empty()) break;              // true EOF
+            if (!line.empty() && line[0] != '#') {       // skip blank + comment
+                if (!have_names) {                       // first data line = header
+                    split_delimited_line(line, delim, &names);
+                    have_names = true;
+                } else {
+                    sample.push_back(line);
+                    if ((int)sample.size() >= kMaxData) break;
+                }
+            }
+            if (!ok) break;
+        }
+        if (names.empty()) return {};
+        return leading_zero_columns(sample, delim, names);
     }
 
 public:
@@ -3584,7 +3703,16 @@ private:
 
         bool autogen = (kind == DelimKind::BED) ||
                        (kind == DelimKind::Mpileup);
-        auto r = make_reader(input, self->delimiter_, autogen, col_names);
+        // Leading-zero IDs: a CSV/TSV column like "007" would otherwise be
+        // inferred as int and lose the zeros. Pre-scan a sample (keyed by the
+        // same column names the reader uses) and force those columns to utf8.
+        // Other formats have fixed schemas where this can't arise.
+        std::vector<std::string> force_string;
+        if (kind == DelimKind::CSV || kind == DelimKind::TSV)
+            force_string = detect_leading_zero_columns(path, is_gz,
+                                                       self->delimiter_, col_names);
+        auto r = make_reader(input, self->delimiter_, autogen, col_names,
+                             force_string);
         if (!r.ok()) {
             // A region query whose window overlaps no records leaves the tabix
             // stream empty, and Arrow's CSV reader rejects empty input with
@@ -3620,15 +3748,6 @@ private:
         // scientific token (digits, sign, dot, e/E exponent only) and let
         // strtod confirm it actually parses. (A header of bare numbers like
         // "1,2,3" is genuinely ambiguous and still treated as headerless data.)
-        auto looks_like_plain_number = [](const std::string& s) {
-            if (s.empty()) return false;
-            for (unsigned char c : s)
-                if (!std::isdigit(c) && c != '+' && c != '-' &&
-                    c != '.' && c != 'e' && c != 'E')
-                    return false;
-            char* ep; std::strtod(s.c_str(), &ep);
-            return *ep == '\0';
-        };
         if (kind == DelimKind::CSV || kind == DelimKind::TSV) {
             bool all_numeric = self->schema_->num_fields() > 0;
             for (int i = 0; i < self->schema_->num_fields() && all_numeric; ++i) {
@@ -3639,7 +3758,8 @@ private:
                 std::shared_ptr<arrow::io::ReadableFile>  raw2;
                 std::shared_ptr<arrow::io::InputStream>   input2;
                 if (open_stream(path, is_gz, &raw2, &input2).empty()) {
-                    auto r2 = make_reader(input2, self->delimiter_, /*autogen=*/true, {});
+                    auto r2 = make_reader(input2, self->delimiter_,
+                                          /*autogen=*/true, {}, force_string);
                     if (r2.ok()) {
                         self->reader_ = r2.ValueOrDie();
                         self->schema_ = self->reader_->schema();
@@ -6156,6 +6276,26 @@ csv_buffer_to_table(const std::string& buf) {
     popts.delimiter = ',';
     auto copts = arrow::csv::ConvertOptions::Defaults();
     copts.strings_can_be_null = true;          // empty cell → null
+
+    // Leading-zero IDs: keep a column like "007" as utf8 instead of letting
+    // inference drop the zeros. The buffer is in memory — tokenise the header
+    // (line 0) and a sample of data rows directly, then force those columns.
+    {
+        std::vector<std::string> header, sample;
+        std::string line;
+        size_t i = 0;
+        while (i < buf.size() && sample.size() < 200) {
+            size_t nl = buf.find('\n', i);
+            line.assign(buf, i, (nl == std::string::npos ? buf.size() : nl) - i);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            i = (nl == std::string::npos) ? buf.size() : nl + 1;
+            if (line.empty()) continue;
+            if (header.empty()) split_delimited_line(line, ',', &header);
+            else                sample.push_back(line);
+        }
+        for (const auto& name : leading_zero_columns(sample, ',', header))
+            copts.column_types[name] = arrow::utf8();
+    }
 
     ARROW_ASSIGN_OR_RAISE(auto reader, arrow::csv::TableReader::Make(
         arrow::io::default_io_context(), in_stream, ropts, popts, copts));
