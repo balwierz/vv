@@ -678,6 +678,23 @@ else:
     bvar = pd.DataFrame(index=[f"gene{i}" for i in range(4)])
     ad.AnnData(X=Xb, obs=bobs, var=bvar).write_h5ad(big_path)
 
+    # tiny.uns.h5ad: a populated uns (unstructured) dict — string/int/float
+    # scalars, a string array, and a nested dict — to exercise the uns key/value
+    # tab. Fixed values so the test can assert them (incl. the dotted key from
+    # the nested dict). uns was previously skipped entirely by the reader.
+    uns_path = HERE / "tiny.uns.h5ad"
+    if uns_path.exists():
+        uns_path.unlink()
+    aun = ad.AnnData(X=sparse.csr_matrix(np.eye(3, dtype=np.float64)),
+                     obs=pd.DataFrame(index=[f"cell{i}" for i in range(3)]),
+                     var=pd.DataFrame(index=[f"gene{i}" for i in range(3)]))
+    aun.uns["title"]     = "demo dataset"
+    aun.uns["n_pcs"]     = 50
+    aun.uns["threshold"] = 0.05
+    aun.uns["method"]    = "leiden"
+    aun.uns["X_colors"]  = np.array(["#FF0000", "#00FF00", "#0000FF"])
+    aun.uns["pca"]       = {"variance_ratio": np.array([0.5, 0.3, 0.2])}
+    aun.write_h5ad(uns_path)
     # tiny.csc.h5ad: a CSC-sparse X (encoding-type csc_matrix). The preview must
     # densify identically to CSR — rows × columns — by walking each column's
     # indptr range (indices are row indices). Fixed values so the test can

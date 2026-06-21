@@ -7040,6 +7040,111 @@ build_hierarchy_table(hid_t file_id) {
     return arrow::Table::Make(schema, {a_path, a_kind, a_shape, a_dtype, a_attrs});
 }
 
+// Render a small HDF5 dataset's value(s) as a display string for the uns tab:
+// scalars and short 1-D arrays show their actual values (joined with ", "),
+// anything larger / multi-dimensional shows a "<dtype>  <shape>" descriptor.
+// Mirrors read_1d_dataset_table's type handling but also accepts 0-D (scalar)
+// datasets — which uns is full of (a title string, an int n_pcs, a float
+// threshold) and read_1d_dataset_table rejects.
+static std::string h5_value_to_string(hid_t dset, int max_elems = 10) {
+    hid_t space = H5Dget_space(dset);
+    int nd = H5Sget_simple_extent_ndims(space);
+    hssize_t np = H5Sget_simple_extent_npoints(space);
+    std::vector<hsize_t> dims(nd > 0 ? (size_t)nd : 0);
+    if (nd > 0) H5Sget_simple_extent_dims(space, dims.data(), nullptr);
+    H5Sclose(space);
+    hid_t t = H5Dget_type(dset);
+    H5T_class_t cls = H5Tget_class(t);
+    size_t tsz = H5Tget_size(t);
+    auto descriptor = [&]() {
+        std::string d = dtype_to_string(t);
+        if (nd > 0) d += "  " + shape_to_string(dims);
+        return d;
+    };
+    std::string out;
+    if (np < 0 || np > max_elems || nd > 1) {
+        out = descriptor();
+    } else {
+        size_t n = (size_t)np;
+        if (cls == H5T_INTEGER) {
+            std::vector<int64_t> buf(n);
+            if (n) H5Dread(dset, H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data());
+            for (size_t i = 0; i < n; ++i) { if (i) out += ", "; out += std::to_string(buf[i]); }
+        } else if (cls == H5T_FLOAT) {
+            std::vector<double> buf(n);
+            if (n) H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data());
+            for (size_t i = 0; i < n; ++i) {
+                if (i) out += ", ";
+                char tmp[32]; std::snprintf(tmp, sizeof tmp, "%.6g", buf[i]); out += tmp;
+            }
+        } else if (cls == H5T_STRING && H5Tis_variable_str(t)) {
+            std::vector<char*> ptrs(n, nullptr);
+            hid_t mt = H5Tcopy(H5T_C_S1);
+            H5Tset_size(mt, H5T_VARIABLE); H5Tset_cset(mt, H5T_CSET_UTF8);
+            if (n) H5Dread(dset, mt, H5S_ALL, H5S_ALL, H5P_DEFAULT, ptrs.data());
+            for (size_t i = 0; i < n; ++i) { if (i) out += ", "; out += ptrs[i] ? ptrs[i] : ""; }
+            if (n) { hid_t ms = H5Dget_space(dset);
+                     H5Dvlen_reclaim(mt, ms, H5P_DEFAULT, ptrs.data()); H5Sclose(ms); }
+            H5Tclose(mt);
+        } else if (cls == H5T_STRING) {
+            std::vector<char> buf(n * tsz, '\0');
+            if (n) H5Dread(dset, t, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data());
+            for (size_t i = 0; i < n; ++i) {
+                if (i) out += ", ";
+                size_t len = strnlen(buf.data() + i * tsz, tsz);
+                out.append(buf.data() + i * tsz, len);
+            }
+        } else {
+            out = descriptor();
+        }
+        if (out.empty() && n == 0) out = "(empty)";
+    }
+    H5Tclose(t);
+    return out;
+}
+
+// Walk an AnnData /uns group recursively, collecting (dotted-key, value) rows:
+// scalars / short arrays show their values, plain nested dicts recurse, and an
+// encoded sub-object (dataframe / categorical / sparse …) shows its
+// encoding-type rather than being expanded. Bounded by depth + a row cap.
+static void walk_uns(hid_t group, const std::string& prefix,
+                     std::vector<std::pair<std::string, std::string>>* rows,
+                     int depth) {
+    if (depth > 16 || rows->size() >= 10000) return;
+    for (const auto& name : list_children(group)) {
+        std::string key = prefix.empty() ? name : prefix + "." + name;
+        if (is_group(group, name.c_str())) {
+            hid_t sub = H5Gopen2(group, name.c_str(), H5P_DEFAULT);
+            if (sub < 0) continue;
+            std::string enc = read_string_attr(sub, "encoding-type");
+            if (enc.empty() || enc == "dict")
+                walk_uns(sub, key, rows, depth + 1);    // recurse into plain dicts
+            else
+                rows->push_back({key, enc});            // dataframe / categorical / …
+            H5Gclose(sub);
+        } else {
+            hid_t d = H5Dopen2(group, name.c_str(), H5P_DEFAULT);
+            if (d < 0) continue;
+            std::string v = h5_value_to_string(d);
+            for (char& c : v) if (c == '\n' || c == '\t' || c == '\r') c = ' ';
+            rows->push_back({key, v});
+            H5Dclose(d);
+        }
+    }
+}
+
+static std::shared_ptr<arrow::Table> build_uns_table(hid_t uns_group) {
+    std::vector<std::pair<std::string, std::string>> rows;
+    walk_uns(uns_group, "", &rows, 0);
+    arrow::StringBuilder kb, vb;
+    for (auto& kv : rows) { (void)kb.Append(kv.first); (void)vb.Append(kv.second); }
+    std::shared_ptr<arrow::Array> ka, va;
+    (void)kb.Finish(&ka); (void)vb.Finish(&va);
+    auto sch = arrow::schema({arrow::field("key",   arrow::utf8()),
+                              arrow::field("value", arrow::utf8())});
+    return arrow::Table::Make(sch, {ka, va});
+}
+
 // ── Forward declarations ────────────────────────────────────────────────────
 struct OpenSpec;
 class Hdf5Source;
@@ -7077,7 +7182,7 @@ static void apply_anndata_x_labels(hid_t file_id,
 // this tab should view, and how to render it.
 struct OpenSpec {
     enum class Kind { Hierarchy, DataFrame, Matrix2D, Sparse, Dataset1D,
-                      Dataset2D, Summary };
+                      Dataset2D, Summary, Uns };
     Kind        kind;
     std::string h5_path;     // group / dataset path inside the file
     std::string display;     // tab label
@@ -7190,6 +7295,16 @@ class Hdf5Source : public WorkbookSource {
                     arrow::field("value", arrow::utf8())});
                 *out = arrow::Table::Make(sch, {ka, va});
                 *footer = "Format: AnnData (summary)";
+                return "";
+            }
+            case OpenSpec::Kind::Uns: {
+                hid_t g = H5Gopen2(file_id, spec.h5_path.c_str(), H5P_DEFAULT);
+                if (g < 0) return "Cannot open group " + spec.h5_path;
+                *out = build_uns_table(g);
+                H5Gclose(g);
+                *footer = "Format: AnnData (uns)  |  " +
+                          std::to_string(*out ? (*out)->num_rows() : 0) +
+                          " entries";
                 return "";
             }
             case OpenSpec::Kind::DataFrame: {
@@ -7980,6 +8095,18 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
     add_subgroup_tabs("obsm",   OpenSpec::Kind::Matrix2D, "obsm");
     add_subgroup_tabs("varm",   OpenSpec::Kind::Matrix2D, "varm");
     add_subgroup_tabs("layers", OpenSpec::Kind::Matrix2D, "layer");
+
+    // uns (unstructured): one key/value tab surfacing scalars, strings and
+    // small arrays (nested dicts flattened with dotted keys). Previously skipped.
+    if (link_exists(file_id, "uns") && is_group(file_id, "uns")) {
+        hid_t g = H5Gopen2(file_id, "uns", H5P_DEFAULT);
+        auto names = list_children(g);
+        H5Gclose(g);
+        if (!names.empty()) {
+            specs.push_back({OpenSpec::Kind::Uns, "/uns", "uns", ""});
+            add("uns", std::to_string(names.size()) + " entries");
+        }
+    }
 
     // Prepend the summary tab.
     OpenSpec sum_spec{OpenSpec::Kind::Summary, "/", "summary", summary};
