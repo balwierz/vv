@@ -784,6 +784,26 @@ if [ -f "$DATA/tiny.h5ad" ]; then
     TAB_BAD=$("$VV" --tab nope "$DATA/tiny.h5ad" 2>&1)
     assert_contains "h5ad_tab_unknown"     "$TAB_BAD" "no tab named"
     assert_contains "h5ad_tab_unknown_avail" "$TAB_BAD" "available:"
+    # An AnnData with no populated uns (anndata writes an empty uns group) must
+    # NOT get a uns tab.
+    refute_contains "anndata_empty_uns_no_tab" \
+        "$("$VV" --tab uns "$DATA/tiny.h5ad" 2>&1)" "AnnData (uns)"
+fi
+
+# uns (unstructured) decoding: tiny.uns.h5ad has scalars (string/int/float), a
+# string array, and a nested dict. The uns tab must surface each as a key/value
+# row (nested dicts flattened with dotted keys), and the summary must count it.
+if [ -f "$DATA/tiny.uns.h5ad" ]; then
+    UNS=$("$VV" --no-interactive --color=never --tab uns "$DATA/tiny.uns.h5ad" 2>&1)
+    assert_contains "anndata_uns_string_scalar"  "$UNS" "demo dataset"
+    assert_contains "anndata_uns_int_scalar"     "$UNS" "n_pcs"
+    assert_contains "anndata_uns_float_scalar"   "$UNS" "0.05"
+    assert_contains "anndata_uns_string_array"   "$UNS" "#FF0000, #00FF00, #0000FF"
+    assert_contains "anndata_uns_nested_dotkey"  "$UNS" "pca.variance_ratio"
+    assert_contains "anndata_uns_nested_values"  "$UNS" "0.5, 0.3, 0.2"
+    assert_contains "anndata_uns_footer"         "$UNS" "AnnData (uns)"
+    UNS_SUM=$("$VV" --no-interactive --color=never "$DATA/tiny.uns.h5ad" 2>&1)
+    assert_contains "anndata_uns_in_summary"     "$UNS_SUM" "6 entries"
 fi
 
 # Hostile AnnData: the CSR `X` group's shape attribute claims 100 rows but
