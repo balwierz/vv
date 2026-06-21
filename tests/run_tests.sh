@@ -277,6 +277,33 @@ fi
 # The kept prefix is whole codepoints + ellipsis (5×'é' then '…' at width 6).
 assert_contains "truncate_utf8_keeps_whole_codepoints" "$UTF8_OUT" "ééééé…"
 rm -f "$UTF8TSV"
+# display_width must count terminal columns (wide CJK / Hangul = 2 cols), not
+# codepoints, so a table mixing wide and narrow cells stays aligned. Render one
+# and confirm every box-drawing line has the same display width — computed
+# independently via python's unicodedata.east_asian_width. (pysam not needed.)
+if command -v python3 >/dev/null 2>&1; then
+    CJKTSV="$TMP/cjk.tsv"
+    printf 'name\tval\n日本語\t1\nAB\t2\n한국어\t3\n' > "$CJKTSV"
+    CJK_OUT=$("$VV" --no-interactive --color=never --no-index "$CJKTSV" 2>&1)
+    if printf '%s' "$CJK_OUT" | python3 -c '
+import sys, unicodedata
+def dw(s):
+    w = 0
+    for ch in s:
+        if unicodedata.combining(ch): continue
+        w += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return w
+box = set("╭─┬╮│├┼┤╰┴╯")
+widths = set(dw(l) for l in sys.stdin.read().splitlines()
+             if any(c in box for c in l))
+sys.exit(0 if len(widths) == 1 else 1)
+'; then
+        PASS=$((PASS+1)); echo "  ok    table_aligned_with_wide_chars"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  table_aligned_with_wide_chars (misaligned)"
+    fi
+    rm -f "$CJKTSV"
+fi
 # 2bit — UCSC sequence-index reader.
 if [ -f "$DATA/tiny.2bit" ]; then
     TBT_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.2bit" | wc -l)
