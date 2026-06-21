@@ -358,7 +358,7 @@ be done first: it catches this whole bug class automatically.
 - [ ] `main.cpp:1669` — Region integer parser silently accepts trailing garbage (e.g. 'chr1:-5-10')
 - [ ] `main.cpp:3107` — block_size of 16 MiB causes a hard parse failure when a single delimited line exceeds it
 - [ ] `main.cpp:3937` — Pileup insertion rendering can read past the read's SEQ on inconsistent CIGAR
-- [ ] `main.cpp:5159` — SQLite identifier quoting does not escape embedded double-quotes, breaking on (or mis-parsing) tables/columns containing a " character
+- [x] `main.cpp:5159` — SQLite identifier quoting does not escape embedded double-quotes, breaking on (or mis-parsing) tables/columns containing a " character — fixed on `fix/sqlite-ident-quote` (new sqlite_quote_ident() doubles embedded quotes per SQL; used at all three table-name interpolations — PRAGMA table_info, SELECT *, lazy COUNT(*). A table named a"b previously built the malformed/injectable `"a"b"` and failed to open; now reads. Columns use SELECT * and filter/sort is in-memory, so no column-name injection exists. Fixture tiny.quoteid.sqlite.)
 - [ ] `main.cpp:5371` — Empty Arrow IPC file seeds a zero-row batch that num_chunks() (=num_record_batches_=0) makes unreachable
 - [ ] `main.cpp:7176` — NPY descr quote-stripping mishandles malformed/odd-length quoting
 - [ ] `main.cpp:7658` — decode_pileup: '*' deletion placeholder pollutes mean_qual
