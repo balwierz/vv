@@ -422,6 +422,31 @@ printf '1,2\n3,4\n5,6\n' > "$NUMDATA"
 NUMDATA_SCHEMA=$("$VV" --schema "$NUMDATA" 2>&1)
 assert_contains "headerless_numeric_autogen_f0" "$NUMDATA_SCHEMA" "f0"
 rm -f "$WORDHDR" "$NUMDATA"
+# Type inference must not drop leading zeros: a column of values like 007 is a
+# code/ID, not the integer 7. Such columns are read as utf8 (string); ordinary
+# numeric columns and scientific notation are left numeric.
+IDZ="$TMP/idzeros.csv"
+printf 'id,sample,score\n007,100,0.5\n012,250,0.75\n003,9999,0.1\n' > "$IDZ"
+IDZ_ID=$("$VV" --schema "$IDZ" 2>&1 | awk '/^id[[:space:]]/{print $2; exit}')
+assert_eq_file_inline "leading_zero_id_is_string"  "$IDZ_ID" "string"
+IDZ_SAMPLE=$("$VV" --schema "$IDZ" 2>&1 | awk '/^sample[[:space:]]/{print $2; exit}')
+assert_eq_file_inline "normal_int_col_unchanged"   "$IDZ_SAMPLE" "int64"
+IDZ_TSV=$("$VV" --tsv --no-header "$IDZ" 2>&1)
+assert_contains "leading_zero_value_preserved"     "$IDZ_TSV" "007"
+rm -f "$IDZ"
+# Scientific notation must stay numeric (forcing it to string would corrupt
+# legitimate numeric data — explicitly out of scope).
+SCI="$TMP/sci.csv"
+printf 'p\n1e5\n2e5\n' > "$SCI"
+SCI_TYPE=$("$VV" --schema "$SCI" 2>&1 | awk '/^p[[:space:]]/{print $2; exit}')
+assert_eq_file_inline "scientific_notation_stays_numeric" "$SCI_TYPE" "double"
+rm -f "$SCI"
+# csv_buffer_to_table path (markdown / xlsx / ods / html tables): same fix.
+IDZMD="$TMP/idzeros.md"
+printf '| id | n |\n|----|---|\n| 007 | 1 |\n| 012 | 2 |\n' > "$IDZMD"
+IDZMD_OUT=$("$VV" --color=never "$IDZMD" 2>&1)
+assert_contains "leading_zero_preserved_markdown"  "$IDZMD_OUT" "007"
+rm -f "$IDZMD"
 DESCRIBE_OUT=$("$VV" --describe "$DATA/tiny.lociss")
 assert_contains "describe_has_columns_header" "$DESCRIBE_OUT" "Column"
 assert_contains "describe_has_distinct_for_string" "$DESCRIBE_OUT" "Chromosome"
