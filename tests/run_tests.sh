@@ -107,6 +107,30 @@ else
 fi
 rm -f "$BADFQ"
 
+# htslib pileup mid-stream read error must surface, not be swallowed as a clean
+# EOF. bam_plp_auto() returns nullptr on both EOF and error; the BamPileupSource
+# read callback now records the underlying return code so advance() can tell
+# them apart. tiny.multiblock.bam spans several BGZF blocks; truncating inside
+# its final data block (drop the 28-byte EOF marker + part of the last block)
+# makes most reads decode and then one error — that must exit non-zero, not
+# emit a partial pileup with status 0. (A single-block tiny BAM would fail at
+# open instead, a different path.)
+if [ -f "$DATA/tiny.multiblock.bam" ]; then
+    MBTRUNC="$TMP/mb.trunc.bam"
+    MBSZ=$(wc -c < "$DATA/tiny.multiblock.bam" | tr -d ' ')
+    head -c $((MBSZ - 50)) "$DATA/tiny.multiblock.bam" > "$MBTRUNC"
+    timeout 30 "$VV" --pileup "$MBTRUNC" >/dev/null 2>/dev/null
+    MB_RC=$?
+    if [ "$MB_RC" -eq 124 ]; then
+        FAIL=$((FAIL+1)); echo "  FAIL  pileup_midstream_error_exits_nonzero (hung)"
+    elif [ "$MB_RC" -ne 0 ]; then
+        PASS=$((PASS+1)); echo "  ok    pileup_midstream_error_exits_nonzero"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  pileup_midstream_error_exits_nonzero (silent, exit 0)"
+    fi
+    rm -f "$MBTRUNC"
+fi
+
 # Streaming retention window on a second source family (FastxSource): a FASTQ
 # with >BATCH_SIZE (4096) records spans multiple batches. With the window
 # forced to 1 batch, a sequential export must still emit every record — the

@@ -421,6 +421,28 @@ else:
             bf.write(r)
     pysam.index(str(sp_path))
 
+    # tiny.multiblock.bam: many reads so the BAM spans several BGZF blocks. The
+    # pileup mid-stream-read-error test truncates this inside its final data
+    # block (a single-block tiny BAM fails at open instead, a different path):
+    # htslib must report the read error rather than emit a partial pileup.
+    mb_path = HERE / "tiny.multiblock.bam"
+    if mb_path.exists():
+        mb_path.unlink()
+    mb_header = {"HD": {"VN": "1.6", "SO": "coordinate"},
+                 "SQ": [{"SN": "chr1", "LN": 400000}]}
+    with pysam.AlignmentFile(str(mb_path), "wb", header=mb_header) as bf:
+        for i in range(6000):
+            r = pysam.AlignedSegment(header=bf.header)
+            r.query_name = "r%d" % i
+            r.flag = 0
+            r.reference_id = 0
+            r.reference_start = i * 40
+            r.mapping_quality = 60
+            r.cigarstring = "50M"
+            r.query_sequence = "A" * 50
+            r.query_qualities = pysam.qualitystring_to_array("I" * 50)
+            bf.write(r)
+
 # ── samtools mpileup (single-sample + two-sample fixtures) ──────────────────
 # Real samtools mpileup output. Six columns for single-sample; the
 # two-sample variant has 3 + 3*2 = 9 columns.
