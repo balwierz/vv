@@ -4132,23 +4132,28 @@ class BamPileupSource : public TabularSource {
     mutable bool                             retain_all_  = false;
     mutable bool                             evicted_any_ = false;
     mutable int64_t                          num_rows_total_ = -1;
+    mutable arrow::Status                    read_status_;   // sticky stream error
 
     static constexpr int BATCH_ROWS = 16384;
 
     // Per-pileup-iterator state. We give one of these to bam_plp_init so
-    // the read-callback knows where to pull alignments from.
+    // the read-callback knows where to pull alignments from. last_rc records
+    // the most recent underlying read return: bam_plp_auto() returns nullptr
+    // on both EOF and error, so this is how advance() tells them apart.
     struct PlpData {
         samFile*           fp;
         sam_hdr_t*         hdr;
         hts_itr_multi_t*   iter;     // nullptr → full-file scan
+        int                last_rc = 0;  // >=0 record, -1 EOF, <-1 read error
     };
     PlpData plp_data_;
 
     static int plp_callback(void* data, bam1_t* b) {
         auto* d = static_cast<PlpData*>(data);
-        if (d->iter)
-            return sam_itr_multi_next(d->fp, d->iter, b);
-        return sam_read1(d->fp, d->hdr, b);
+        int rc = d->iter ? sam_itr_multi_next(d->fp, d->iter, b)
+                         : sam_read1(d->fp, d->hdr, b);
+        d->last_rc = rc;
+        return rc;
     }
 
     // Render one position's bases / quals strings from the bam_pileup1_t
@@ -4250,10 +4255,19 @@ class BamPileupSource : public TabularSource {
             ARROW_RETURN_NOT_OK(b_quals.Append(quals_str));
             ++count;
         }
+        // bam_plp_auto() returned nullptr for one of two reasons: clean EOF
+        // (last_rc == -1) or a read error (< -1, e.g. a truncated/corrupt BAM).
+        // Record the latter stickily so the CLI reports a truncated file rather
+        // than silently emitting a partial pileup with exit 0.
+        if (plp_data_.last_rc < -1) {
+            read_status_ = arrow::Status::IOError(
+                "error reading BAM record from ", path_);
+            all_read_ = true;
+        }
         if (count == 0) {
             all_read_ = true;
             num_rows_total_ = rows_so_far_;
-            return arrow::Status::OK();
+            return read_status_;
         }
         std::shared_ptr<arrow::Array> a_chrom, a_pos, a_ref, a_depth, a_bases, a_quals;
         ARROW_RETURN_NOT_OK(b_chrom.Finish(&a_chrom));
@@ -4397,6 +4411,7 @@ public:
         return arrow::Status::OK();
     }
     const std::string& path() const override { return path_; }
+    arrow::Status read_status() const override { return read_status_; }
     std::string footer() const override {
         return "Format: mpileup (from " + fmt_name_ + ")";
     }
@@ -4432,6 +4447,7 @@ class BcfSource : public TabularSource {
     mutable bool                             all_read_ = false;
     mutable bool                             retain_all_  = false;
     mutable bool                             evicted_any_ = false;
+    mutable arrow::Status                    read_status_;   // sticky stream error
 
     static constexpr int BATCH_SIZE = 32768;
 
@@ -4453,7 +4469,9 @@ class BcfSource : public TabularSource {
             while (cur_iter_ < iters_.size()) {
                 int r = bcf_itr_next(fp_, iters_[cur_iter_], rec_);
                 if (r >= 0) return 0;
-                ++cur_iter_;
+                if (r < -1) return r;   // genuine read error — propagate (a
+                                        // truncated/corrupt file, not iter EOF)
+                ++cur_iter_;            // r == -1: this iterator done; next one
             }
             return -1;
         };
@@ -4522,9 +4540,15 @@ class BcfSource : public TabularSource {
         }
         if (s.s) free(s.s);
 
-        if (ret < -1)
-            return arrow::Status::IOError("error reading BCF record from ", path_);
-        if (count == 0) { all_read_ = true; return arrow::Status::OK(); }
+        if (ret < -1) {
+            // Record the error stickily (callers ignore advance()'s return) so
+            // the CLI reports a truncated/corrupt file instead of silently
+            // emitting a partial result with exit 0.
+            read_status_ = arrow::Status::IOError(
+                "error reading BCF record from ", path_);
+            all_read_ = true;
+        }
+        if (count == 0) { all_read_ = true; return read_status_; }
         if (ret < 0) all_read_ = true;
 
         std::vector<std::shared_ptr<arrow::Array>> a;
@@ -4666,6 +4690,7 @@ public:
         return TabularSource::read_first(rows, col_indices, out);
     }
     const std::string& path() const override { return path_; }
+    arrow::Status read_status() const override { return read_status_; }
     std::string footer() const override {
         return "Format: BCF  |  Samples: " + std::to_string(n_samples_);
     }
