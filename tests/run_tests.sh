@@ -487,6 +487,13 @@ else
 fi
 COORDS_BAD=$("$VV" -r chr1:1-2 --coords nonsense "$DATA/tiny.parquet" 2>&1 || true)
 assert_contains "coords_unknown_value_errors" "$COORDS_BAD" "UCSC"
+# A known flag missing its argument gives a targeted error, not "Unknown option".
+MISSING_ARG=$("$VV" --tab 2>&1 || true)
+assert_contains "missing_arg_targeted_error"   "$MISSING_ARG" "requires an argument"
+refute_contains "missing_arg_not_unknown_option" "$MISSING_ARG" "Unknown option"
+# A genuinely unknown flag still reports "Unknown option".
+UNKNOWN_OPT=$("$VV" --bogus-flag "$DATA/tiny.parquet" 2>&1 || true)
+assert_contains "unknown_option_still_reported" "$UNKNOWN_OPT" "Unknown option"
 
 echo
 # --theme: every built-in name parses cleanly; unknown names get a
