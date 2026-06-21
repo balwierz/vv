@@ -97,9 +97,6 @@ user-facing summary).
 - AnnData `uns` (unstructured) decoding — nested groups / scalars /
   free-form arrays. v1 skips. A follow-up could surface scalars and
   string entries using the existing hierarchy-table machinery.
-- AnnData CSC sparse preview — needs per-column indptr walking
-  rather than per-row. v1 only handles CSR; CSC files show a summary
-  but no value preview.
 - Cooler (`.cool`, `.mcool`) Hi-C contact matrices — HDF5 backbone
   but very different layout (bins / pixels / chroms). Worth a
   follow-up dedicated source class on top of the existing HDF5
@@ -107,6 +104,13 @@ user-facing summary).
 - Galaxy `.dat` / Galaxy archive — niche but visible.
 
 ### Done
+- AnnData CSC sparse preview (`feat/anndata-csc-preview`) — `read_sparse_preview`
+  now densifies CSC as well as CSR. The compressed (indptr) axis is rows for CSR
+  and columns for CSC; a single column-major scatter handles both (CSR: m=row,
+  index=column; CSC: m=column, index=row), so the output is rows × columns either
+  way and the obs/var X-labels apply unchanged. scan_anndata emits the preview
+  tab for CSC instead of a "not implemented" note. The untrusted-`shape` extent
+  clamps carry over to the column axis. Fixture tiny.csc.h5ad (fixed 3×4 matrix).
 - AnnData X preview labelled with obs / var identifiers (`feat/anndata-x-labels`)
   — X is (n_obs × n_vars) = cells × genes, so the sparse / dense X preview now
   names its value columns by the var index (gene names) and prepends the obs
