@@ -77,6 +77,22 @@ pq.write_table(pa.table({
                     pa.decimal128(10, 2)),
 }), HERE / "tiny.temporal.parquet")
 
+# tiny.nested.parquet: a 2-leaf struct column sits *before* Start/End, so the
+# Parquet leaf-column index of Start/End is shifted past their Arrow field
+# index. Region pruning reads column statistics by leaf index; using the field
+# index would read the struct's stats as "Start". meta.b is set huge (100000)
+# so that wrong read makes Start.min look >= the query window end and the
+# (only, matching) row group gets pruned — a region query would return 0 rows.
+# With the correct leaf mapping, chr1:150-160 overlaps the row (Start 100, End
+# 200) and returns 1.
+_struct_t = pa.struct([("a", pa.int32()), ("b", pa.int32())])
+pq.write_table(pa.table({
+    "Chr":   pa.array(["chr1"], pa.string()),
+    "meta":  pa.array([{"a": 0, "b": 100000}], _struct_t),
+    "Start": pa.array([100], pa.int64()),
+    "End":   pa.array([200], pa.int64()),
+}), HERE / "tiny.nested.parquet")
+
 # ── Arrow IPC ────────────────────────────────────────────────────────────────
 with pa.OSFile(str(HERE / "tiny.arrow"), "wb") as f:
     with ipc.new_file(f, schema) as w:

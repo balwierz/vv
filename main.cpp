@@ -2682,14 +2682,21 @@ public:
 
         // ── Region pruning (LociSSD-aware, otherwise generic) ────────────────
         if (!cfg.region.empty()) {
+            // Parquet column statistics are indexed by *leaf* column, not Arrow
+            // field: a nested column (e.g. a list) before chrom/start/end
+            // shifts the two apart, so a raw field index would read the wrong
+            // column's min/max and mis-prune row groups. Map field → leaf.
+            auto field_to_leaf = [&](int field_idx) -> int {
+                auto lv = self->arrow_to_leaf_indices({field_idx});
+                return lv.empty() ? -1 : lv[0];
+            };
             // Read a row group's int-column min/max from Parquet statistics.
-            // For flat numeric leaf columns (our use case) the Arrow field
-            // index and the Parquet leaf column index coincide.
             auto col_stats_minmax_int = [&](int rg, int field_idx,
                                             int64_t* lo, int64_t* hi) -> bool {
+                int leaf = field_to_leaf(field_idx);
                 auto md = self->meta_->RowGroup(rg);
-                if (field_idx < 0 || field_idx >= md->num_columns()) return false;
-                auto cc = md->ColumnChunk(field_idx);
+                if (leaf < 0 || leaf >= md->num_columns()) return false;
+                auto cc = md->ColumnChunk(leaf);
                 if (!cc->is_stats_set()) return false;
                 auto stats = cc->statistics();
                 if (!stats || !stats->HasMinMax()) return false;
@@ -2707,9 +2714,10 @@ public:
             // physically as ByteArray statistics.
             auto col_stats_minmax_str = [&](int rg, int field_idx,
                                             std::string* lo, std::string* hi) -> bool {
+                int leaf = field_to_leaf(field_idx);
                 auto md = self->meta_->RowGroup(rg);
-                if (field_idx < 0 || field_idx >= md->num_columns()) return false;
-                auto cc = md->ColumnChunk(field_idx);
+                if (leaf < 0 || leaf >= md->num_columns()) return false;
+                auto cc = md->ColumnChunk(leaf);
                 if (!cc->is_stats_set()) return false;
                 auto stats = cc->statistics();
                 if (!stats || !stats->HasMinMax()) return false;

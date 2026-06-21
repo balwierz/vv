@@ -147,6 +147,15 @@ if [ -f "$DATA/tiny.uint32.parquet" ]; then
     PQ_U32=$("$VV" --tsv --no-header -r chr1:1000-2500 "$DATA/tiny.uint32.parquet" | wc -l)
     assert_eq_file_inline "parquet_region_uint32_coords_two_rows" "$PQ_U32" "2"
 fi
+# Region stats-pruning must index Parquet column statistics by *leaf* column,
+# not Arrow field. tiny.nested.parquet puts a 2-leaf struct before Start/End,
+# shifting their leaf index; with the bug, pruning read the struct's stats as
+# "Start" (set to 100000) and pruned the only — matching — row group, so the
+# query returned 0 rows. chr1:150-160 overlaps the row (Start 100, End 200).
+if [ -f "$DATA/tiny.nested.parquet" ]; then
+    PQ_NEST=$("$VV" --tsv --no-header -r chr1:150-160 "$DATA/tiny.nested.parquet" | wc -l)
+    assert_eq_file_inline "parquet_region_leaf_index_nested_schema" "$PQ_NEST" "1"
+fi
 # Region row count must be exact (post-filter), not the pre-filter slice size:
 # the table-mode "[N rows]" must match the streamed (--tsv) row count. Generic
 # Parquet is the worst case — a slice spans a whole row group — where pre-fix
