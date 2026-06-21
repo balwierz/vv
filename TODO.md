@@ -327,7 +327,7 @@ be done first: it catches this whole bug class automatically.
 - [ ] `gui/kde/vvthumbnail.cpp:15` — Thumbnailer has no time/size budget — opening a huge or slow file blocks the preview worker
 - [ ] `main.cpp:1393` — TabixInputStream allocates and frees a kstring buffer for every record line
 - [ ] `main.cpp:2743` — Region-mode read_chunk re-decodes the same row group once per overlapping window
-- [ ] `main.cpp:5180` — SqliteSource runs an unconditional SELECT COUNT(*) at open, forcing a full table scan even for `-n 10` previews/thumbnails
+- [x] `main.cpp:5180` — SqliteSource runs an unconditional SELECT COUNT(*) at open, forcing a full table scan even for `-n 10` previews/thumbnails — fixed on `perf/sqlite-lazy-count` (the COUNT(*) moved out of open() into total_rows(), run once on first ask and cached; footer() triggers it for the table/TUI views where the total is wanted, while an `-n` preview or thumbnail (read_first, never asks) skips the scan entirely. A small table fully streamed by open()'s first batch reports rows_so_far_ with no COUNT at all. Covered by the existing sqlite footer "Rows: N" tests, now exercising the lazy path.)
 - [ ] `main.cpp:6578` — read_1d_dataset_table reads entire 1-D dataset into RAM (no cap)
 - [ ] `main.cpp:9779` — Sixel emitter is O(palette x width x height): full 240-colour rescan per pixel column
 - [x] `main.cpp:10680` — Per-row dynamic_pointer_cast chain in numeric stats loops (RTTI cost on every value) — addressed on `fix/numeric-temporal-decimal`: the shared array_value_as_double() branches on type_id() with a single static_cast instead of a per-cell dynamic_pointer_cast chain, removing the RTTI cost from the stats / describe / sort / heatmap value loops that now call it.
