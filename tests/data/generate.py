@@ -797,6 +797,21 @@ else:
         # header claims 1e9 float64 elements; body is only 16 bytes
         z.writestr("a.npy", _make_npy("<f8", (1000000000,), b"\x00" * 16))
 
+    # tiny.badsize.npz: a VALID array, but the central-directory
+    # `uncompressed_size` field — which is attacker-controllable and was passed
+    # straight to vector::reserve() — is patched to a bogus ~2 GiB. The body is
+    # still read from the real stored stream, so vv must read the array
+    # correctly without trusting the size hint for allocation.
+    bad_size_npz = HERE / "tiny.badsize.npz"
+    if bad_size_npz.exists():
+        bad_size_npz.unlink()
+    np.savez(bad_size_npz, arr=np.arange(5, dtype=np.int64))
+    raw = bytearray(bad_size_npz.read_bytes())
+    cd = raw.find(b"\x50\x4b\x01\x02")          # central-directory file header
+    if cd >= 0:                                  # uncompressed_size: +24 past sig
+        struct.pack_into("<I", raw, cd + 24, 0x7FFFFFFF)
+        bad_size_npz.write_bytes(raw)
+
 # ── Apache ORC (columnar; pyarrow.orc is built into pyarrow when Arrow was
 # compiled with -DARROW_ORC=ON, which is the wheel default since pyarrow
 # 12.0). Soft-skip otherwise.

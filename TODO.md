@@ -371,7 +371,7 @@ be done first: it catches this whole bug class automatically.
 - [ ] `main.cpp:5277` — read_first() fast-path cap is dead for SqliteSource and FastxSource because open() eagerly reads a full 4096-row batch
 - [ ] `main.cpp:5441` — ORC read_chunk decodes every column of a stripe even when only a few columns are requested
 - [ ] `main.cpp:6016` — csv_append_quoted re-scans and re-emits a repeated ODS cell up to 16384 times
-- [ ] `main.cpp:7356` — unz_file_info.uncompressed_size used directly for reserve() — attacker-controlled allocation hint
+- [x] `main.cpp:7356` — unz_file_info.uncompressed_size used directly for reserve() — attacker-controlled allocation hint — fixed on `fix/npz-alloc-hint` (the NPZ/zip loader passed the central-directory uncompressed_size straight to vector::reserve(), so a tiny crafted entry claiming GBs forced a huge allocation — uncaught bad_alloc on 32-bit / strict-overcommit / memory-limited builds. The reserve is only a pre-sizing hint; the read loop grows the vector anyway, so it's now clamped to min(uncompressed_size, 64 MiB). Fixture tiny.badsize.npz patches the central-dir uncompressed_size to ~2 GiB; vv reads the real 5-element array correctly and exits 0.)
 - [x] `main.cpp:9838` — render_heatmap can buffer up to ~128 MB of doubles with no reserve — fixed on `feat/heatmap` (source caps lowered to 2048×2048 ≈ 32 MiB ceiling; vals reserved; truncation noted on stderr)
 - [ ] `main.cpp:11789` — row_matches_search lowercases the query once per visible row, per redraw
 - [ ] `main.cpp:11965` — Per-redraw integer width refit re-stringifies every visible cell on every keypress
