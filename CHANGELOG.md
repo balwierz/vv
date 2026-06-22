@@ -8,11 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - **High-cardinality categorical obs/var columns now decode** to their string
-  labels instead of integer codes. The category-dictionary cap was 65536, which
-  wrongly showed real columns like CRISPR perturbation guides / targets
-  (hundreds of thousands of categories) as raw codes. The default is now
-  1,000,000 — reading that dictionary is a few MB — and is overridable with
-  `VV_CATEGORY_DICT_CAP` for the rare case beyond it.
+  labels instead of integer codes. The category-dictionary cap was 65536.
 
 ## [1.12.0] - 2026-06-22
 
