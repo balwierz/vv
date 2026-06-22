@@ -7232,6 +7232,10 @@ class Hdf5Source : public WorkbookSource {
     // access (ensure_built). The eager constructor sets built_ = true so its
     // overrides are no-ops; the lazy constructor leaves it false.
     mutable bool built_ = true;
+    // Row cap for DataFrame (obs/var) tabs: the preview cap for the TUI/table
+    // view, or -1 (all) / an explicit -n for a delimited dump — set from cfg in
+    // open_source and inherited by sibling tabs. Matrix / sparse X ignore it.
+    int64_t df_row_cap_ = kDataFrameRowCap;
 
     Hdf5Source(std::shared_ptr<arrow::Table> tbl,
                 std::string path,
@@ -7239,13 +7243,15 @@ class Hdf5Source : public WorkbookSource {
                 H5FilePtr file,
                 OpenSpec spec,
                 std::shared_ptr<std::vector<OpenSpec>> all_specs,
-                std::vector<OpenSpec> siblings)
+                std::vector<OpenSpec> siblings,
+                int64_t df_row_cap = kDataFrameRowCap)
         : WorkbookSource(std::move(tbl), std::move(path), std::move(footer)),
           file_(std::move(file)),
           h5_path_(spec.h5_path),
           spec_(std::move(spec)),
           all_specs_(std::move(all_specs)),
-          siblings_(std::move(siblings)) {}
+          siblings_(std::move(siblings)),
+          df_row_cap_(df_row_cap) {}
 
     // Lazy constructor: no table yet. ensure_built() reads it from `spec` on
     // first access, so opening a multi-component file (e.g. AnnData) doesn't
@@ -7253,13 +7259,15 @@ class Hdf5Source : public WorkbookSource {
     Hdf5Source(std::string path,
                 H5FilePtr file,
                 OpenSpec spec,
-                std::shared_ptr<std::vector<OpenSpec>> all_specs)
+                std::shared_ptr<std::vector<OpenSpec>> all_specs,
+                int64_t df_row_cap = kDataFrameRowCap)
         : WorkbookSource(nullptr, std::move(path), std::string{}),
           file_(std::move(file)),
           h5_path_(spec.h5_path),
           spec_(std::move(spec)),
           all_specs_(std::move(all_specs)),
-          built_(false) {}
+          built_(false),
+          df_row_cap_(df_row_cap) {}
 
     // Build this tab's table from its spec on first access (lazy ctor only).
     void ensure_built() const {
@@ -7268,7 +7276,7 @@ class Hdf5Source : public WorkbookSource {
         auto* self = const_cast<Hdf5Source*>(this);
         std::shared_ptr<arrow::Table> tbl;
         std::string footer;
-        std::string err = build_table(*file_, spec_, &tbl, &footer);
+        std::string err = build_table(*file_, spec_, &tbl, &footer, df_row_cap_);
         if (!err.empty() || !tbl) {
             // Surface the failure as a one-cell table instead of crashing a
             // null-table access (matches the eager path's graceful skip).
@@ -7287,7 +7295,8 @@ class Hdf5Source : public WorkbookSource {
     static std::string build_table(hid_t file_id,
                                     const OpenSpec& spec,
                                     std::shared_ptr<arrow::Table>* out,
-                                    std::string* footer) {
+                                    std::string* footer,
+                                    int64_t df_row_cap = kDataFrameRowCap) {
         switch (spec.kind) {
             case OpenSpec::Kind::Hierarchy: {
                 *out = build_hierarchy_table(file_id);
@@ -7332,7 +7341,11 @@ class Hdf5Source : public WorkbookSource {
                 hid_t g = H5Gopen2(file_id, spec.h5_path.c_str(), H5P_DEFAULT);
                 if (g < 0) return "Cannot open group " + spec.h5_path;
                 int64_t full = 0;
-                auto r = read_anndata_dataframe(g, kDataFrameRowCap, &full);
+                // df_row_cap is the preview cap for the TUI/table view, or -1
+                // (all rows) / an explicit -n in delimited export — see
+                // open_source. Only obs/var (DataFrame) is uncapped on export;
+                // matrix / sparse X stay bounded below.
+                auto r = read_anndata_dataframe(g, df_row_cap, &full);
                 H5Gclose(g);
                 if (!r.ok()) return r.status().ToString();
                 *out = *r;
@@ -7428,10 +7441,11 @@ class Hdf5Source : public WorkbookSource {
                                   OpenSpec spec,
                                   std::shared_ptr<std::vector<OpenSpec>> all,
                                   std::vector<OpenSpec> siblings,
-                                  std::unique_ptr<Hdf5Source>* out) {
+                                  std::unique_ptr<Hdf5Source>* out,
+                                  int64_t df_row_cap = kDataFrameRowCap) {
         std::shared_ptr<arrow::Table> tbl;
         std::string footer;
-        std::string err = build_table(*file, spec, &tbl, &footer);
+        std::string err = build_table(*file, spec, &tbl, &footer, df_row_cap);
         if (!err.empty()) return err;
         if (!tbl)
             return "'" + spec.h5_path + "': decoded to empty table";
@@ -7441,13 +7455,15 @@ class Hdf5Source : public WorkbookSource {
         }
         out->reset(new Hdf5Source(std::move(tbl), path, std::move(footer),
                                     std::move(file), std::move(spec),
-                                    std::move(all), std::move(siblings)));
+                                    std::move(all), std::move(siblings),
+                                    df_row_cap));
         return "";
     }
 
 public:
     static std::string open_first(const std::string& path,
-                                    std::unique_ptr<Hdf5Source>* out);
+                                    std::unique_ptr<Hdf5Source>* out,
+                                    int64_t df_row_cap = kDataFrameRowCap);
 
     // tab_label() reads only the spec — no build, so the tab strip and the
     // --tab selector can list/match components without materialising them.
@@ -7486,7 +7502,7 @@ public:
         // over a slow mount doesn't read every component up-front.
         for (const auto& sp : siblings_)
             result.push_back(std::unique_ptr<TabularSource>(
-                new Hdf5Source(path(), file_, sp, all_specs_)));
+                new Hdf5Source(path(), file_, sp, all_specs_, df_row_cap_)));
         return result;
     }
 };
@@ -7566,8 +7582,29 @@ read_1d_dataset_table(hid_t dset, int64_t row_cap, int64_t* full_rows) {
             }
         }
         (void)b.Finish(&arr);
+    } else if (cls == H5T_ENUM) {
+        // Map enum codes to their member names — h5py stores a bool column as
+        // an int enum {FALSE=0, TRUE=1}, which otherwise hit the "?" fallback.
+        // Member values read into a zeroed int64 are correct for little-endian
+        // base types <= 8 bytes (what numpy / AnnData produce).
+        std::map<int64_t, std::string> names;
+        int nmem = H5Tget_nmembers(t);
+        for (int m = 0; m < nmem; ++m) {
+            int64_t val = 0;
+            H5Tget_member_value(t, (unsigned)m, &val);
+            char* mn = H5Tget_member_name(t, (unsigned)m);
+            if (mn) { names[val] = mn; H5free_memory(mn); }
+        }
+        std::vector<int64_t> buf((size_t)n);
+        hid_t ms = read_first_n(H5T_NATIVE_INT64, buf.data()); H5Sclose(ms);
+        arrow::StringBuilder b;
+        for (auto v : buf) {
+            auto it = names.find(v);
+            (void)b.Append(it != names.end() ? it->second : std::to_string(v));
+        }
+        (void)b.Finish(&arr);
     } else {
-        // Fallback: bytes-as-hex.
+        // Fallback: unsupported type (compound, opaque, …).
         arrow::StringBuilder b;
         for (hsize_t i = 0; i < n; ++i) (void)b.Append("?");
         (void)b.Finish(&arr);
@@ -8148,7 +8185,8 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
 // ── Hdf5Source::open_first ──────────────────────────────────────────────────
 
 std::string Hdf5Source::open_first(const std::string& path,
-                                      std::unique_ptr<Hdf5Source>* out) {
+                                      std::unique_ptr<Hdf5Source>* out,
+                                      int64_t df_row_cap) {
     // Silence HDF5's stderr error spew for missing attrs etc.
     H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
     hid_t fid = H5Fopen(path.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
@@ -8187,7 +8225,7 @@ std::string Hdf5Source::open_first(const std::string& path,
     OpenSpec first = specs.front();
     std::vector<OpenSpec> siblings(specs.begin() + 1, specs.end());
     return build_one(path, std::move(file), std::move(first),
-                       std::move(all), std::move(siblings), out);
+                       std::move(all), std::move(siblings), out, df_row_cap);
 }
 
 }  // namespace h5v
@@ -10718,7 +10756,13 @@ std::string open_source(const std::string& path, const Config& cfg,
     } else if (fends_ci(path, ".h5ad") || fends_ci(path, ".h5") ||
                fends_ci(path, ".hdf5") || fends_ci(path, ".loom")) {
         std::unique_ptr<h5v::Hdf5Source> src;
-        std::string err = h5v::Hdf5Source::open_first(path, &src);
+        // In delimited export (--tsv/--csv) dump obs/var in full (or honour an
+        // explicit -n); the TUI/table view keep the bounded preview. Sparse /
+        // dense X and generic datasets stay capped regardless (see build_table).
+        int64_t df_cap = cfg.delimiter
+            ? (cfg.head_rows_set ? (int64_t)cfg.head_rows : -1)
+            : h5v::kDataFrameRowCap;
+        std::string err = h5v::Hdf5Source::open_first(path, &src, df_cap);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";

@@ -5,16 +5,20 @@
 # -DVV_BUILD_GUI=ON produces both; install whichever you want.
 pkgbase=vv
 pkgname=('vv' 'vv-gui')
-pkgver=1.11.0
+pkgver=1.12.0
 pkgrel=1
 pkgdesc="Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/balwierz/vv"
 license=('MIT')
+# expat + minizip + xlsxio are linked directly (.ods/.xlsx + NPZ/zip); xlsxio is
+# from the AUR. zlib is also linked directly (pulled transitively by arrow /
+# htslib / sqlite, but kept explicit for the build).
 makedepends=('cmake' 'gcc' 'arrow' 'htslib' 'ncurses' 'hdf5' 'sqlite'
+             'expat' 'minizip' 'xlsxio' 'zlib'
              'qt6-base' 'extra-cmake-modules' 'kio' 'kcoreaddons' 'kfilemetadata')
 source=("$pkgbase-$pkgver.tar.gz::https://github.com/balwierz/$pkgbase/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('356257b910c67fd19dd059b5666831a226e07723ab5516372cd7d1e64bd19466')
+sha256sums=('a61737730dd4301d5b32dbe687bfb2084014cf99afccdaf012c628afacc91e2e')
 
 build() {
     cmake -S "$pkgbase-$pkgver" -B build \
@@ -26,7 +30,8 @@ build() {
 
 package_vv() {
     pkgdesc="Universal data/genomic file viewer — CLI + ncurses TUI"
-    depends=('arrow' 'htslib' 'ncurses' 'hdf5' 'sqlite')
+    depends=('arrow' 'htslib' 'ncurses' 'hdf5' 'sqlite'
+             'expat' 'minizip' 'xlsxio')
     cd "$pkgbase-$pkgver"
     install -Dm755 ../build/vv "$pkgdir/usr/bin/vv"
     ln -s vv "$pkgdir/usr/bin/vh"

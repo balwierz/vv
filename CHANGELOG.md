@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - **High-cardinality categorical obs/var columns now decode** to their string
   labels instead of integer codes. The category-dictionary cap was 65536.
+### Added
+- **Full obs/var text dump.** `vv file.h5ad --tab obs --tsv` (and `--tab var`)
+  now exports the *complete* DataFrame instead of the 1000-row interactive
+  preview — previously the dump was silently truncated at 1000 rows. `-n N`
+  limits it; the TUI and plain table view keep the bounded preview. The sparse /
+  dense `X` matrix stays capped (a full text dump of X is intentionally not
+  enabled).
+
+### Fixed
+- **Boolean obs/var columns** (stored as HDF5 enums — e.g. `highly_variable`,
+  `mt`) render their values (`FALSE` / `TRUE`) instead of `?`.
 
 ## [1.12.0] - 2026-06-22
 
