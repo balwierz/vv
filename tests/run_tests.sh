@@ -861,9 +861,7 @@ if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
     assert_eq_file_inline "h5ad_obs_preview_rowcount" "$BIG_ROWS" "1000"
     # Categorical obs columns decode to their string labels, not integer codes.
     # The dictionary cap (VV_CATEGORY_DICT_CAP, default 1,000,000 — raised from
-    # 65536, which wrongly coded real high-cardinality columns like CRISPR
-    # perturbation guides/targets) gates this; forcing it below the category
-    # count falls back to "(codes)". (grp is a 3-category categorical.)
+    # 65536
     CAT_HDR=$("$VV" --tab obs --tsv "$DATA/tiny.bigobs.h5ad" 2>/dev/null | head -1)
     CAT_ROW=$("$VV" --tab obs --tsv "$DATA/tiny.bigobs.h5ad" 2>/dev/null | sed -n '2p')
     refute_contains "h5ad_categorical_decoded"     "$CAT_HDR" "(codes)"
