@@ -6,6 +6,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **High-cardinality categorical obs/var columns now decode** to their string
+  labels instead of integer codes. The category-dictionary cap was 65536.
 ### Added
 - **Full obs/var text dump.** `vv file.h5ad --tab obs --tsv` (and `--tab var`)
   now exports the *complete* DataFrame instead of the 1000-row interactive

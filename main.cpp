@@ -7169,8 +7169,18 @@ static constexpr int64_t kDataFrameRowCap = 1000;   // obs / var DataFrame rows
 // A categorical column whose dictionary exceeds this is shown as integer codes
 // rather than decoded to strings: a per-cell-unique categorical (e.g. a barcode
 // column with millions of categories) would otherwise force reading the whole
-// dictionary — minutes over a slow mount — just to render a preview.
-static constexpr int64_t kCategoryDictCap = 65536;
+// dictionary — minutes over a slow mount — just to render a preview. The default
+// (1,000,000) comfortably covers real high-cardinality categoricals.
+inline int64_t category_dict_cap() {
+    static const int64_t cap = [] {
+        if (const char* e = std::getenv("VV_CATEGORY_DICT_CAP")) {
+            long long v = std::atoll(e);
+            if (v > 0) return (int64_t)v;
+        }
+        return (int64_t)1000000;
+    }();
+    return cap;
+}
 // `row_cap` < 0 means "all rows"; otherwise only the first row_cap rows are
 // read (HDF5 hyperslab). The full pre-cap length is reported via full_rows.
 static arrow::Result<std::shared_ptr<arrow::Table>>
@@ -7724,7 +7734,7 @@ read_anndata_dataframe(hid_t group, int64_t row_cap, int64_t* full_rows) {
                 auto codes_t = read_1d_dataset_table(codes_d, row_cap, &cf);
                 maxfull = std::max(maxfull, cf);
 
-                if (cats_len > kCategoryDictCap) {
+                if (cats_len > category_dict_cap()) {
                     // High-cardinality (e.g. per-cell barcodes): decoding would
                     // require reading the whole multi-million-entry dictionary.
                     // Show the integer codes instead for the preview.
