@@ -859,6 +859,17 @@ if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
     assert_contains "h5ad_obs_preview_note" "$BIG_OBS" "first 1000 of 1500 rows"
     BIG_ROWS=$("$VV" --tab obs --tsv --no-header "$DATA/tiny.bigobs.h5ad" | wc -l)
     assert_eq_file_inline "h5ad_obs_preview_rowcount" "$BIG_ROWS" "1000"
+    # Categorical obs columns decode to their string labels, not integer codes.
+    # The dictionary cap (VV_CATEGORY_DICT_CAP, default 1,000,000 — raised from
+    # 65536, which wrongly coded real high-cardinality columns like CRISPR
+    # perturbation guides/targets) gates this; forcing it below the category
+    # count falls back to "(codes)". (grp is a 3-category categorical.)
+    CAT_HDR=$("$VV" --tab obs --tsv "$DATA/tiny.bigobs.h5ad" 2>/dev/null | head -1)
+    CAT_ROW=$("$VV" --tab obs --tsv "$DATA/tiny.bigobs.h5ad" 2>/dev/null | sed -n '2p')
+    refute_contains "h5ad_categorical_decoded"     "$CAT_HDR" "(codes)"
+    assert_contains "h5ad_categorical_label_value" "$CAT_ROW" "$(printf '\tA\t')"
+    CAT_CAP=$(VV_CATEGORY_DICT_CAP=2 "$VV" --tab obs --tsv "$DATA/tiny.bigobs.h5ad" 2>/dev/null | head -1)
+    assert_contains "h5ad_categorical_cap_codes"   "$CAT_CAP" "grp (codes)"
 fi
 
 # Generic HDF5 (.h5) — first tab is the hierarchy table; siblings are
