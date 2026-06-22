@@ -6,9 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Fixed
-- **High-cardinality categorical obs/var columns now decode** to their string
-  labels instead of integer codes. The category-dictionary cap was 65536.
+## [1.13.0] - 2026-06-22
+
+A focused follow-up that makes AnnData `obs` / `var` actually dumpable as text.
+
 ### Added
 - **Full obs/var text dump.** `vv file.h5ad --tab obs --tsv` (and `--tab var`)
   now exports the *complete* DataFrame instead of the 1000-row interactive
@@ -18,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   enabled).
 
 ### Fixed
+- **High-cardinality categorical obs/var columns now decode** to their string
+  labels instead of integer codes. The category-dictionary cap was 65536, which
+  wrongly showed real columns like CRISPR perturbation guides / targets
+  (hundreds of thousands of categories) as raw codes; the default is now
+  1,000,000, overridable with `VV_CATEGORY_DICT_CAP`.
 - **Boolean obs/var columns** (stored as HDF5 enums — e.g. `highly_variable`,
   `mt`) render their values (`FALSE` / `TRUE`) instead of `?`.
 
