@@ -852,13 +852,27 @@ if [ -f "$DATA/tiny.badsparse.h5ad" ]; then
         "$(printf '%s\n' "$BADOBS" | grep -c .)" "3"
 fi
 
-# Component preview cap: a 1500-row obs must render the first 1000 only (so a
-# multi-million-row component can't stall the reader).
+# AnnData obs/var: the TUI / table view shows a bounded 1000-row preview (so a
+# multi-million-row component can't stall the reader), but a delimited export
+# (--tsv/--csv) dumps the FULL component; -n still bounds the export.
 if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
+    # Table view (non-export): capped preview, with the "first 1000 of 1500" note.
     BIG_OBS=$("$VV" --tab obs --no-interactive --color=never "$DATA/tiny.bigobs.h5ad" 2>&1)
     assert_contains "h5ad_obs_preview_note" "$BIG_OBS" "first 1000 of 1500 rows"
+    # Delimited export: all 1500 rows (the preview cap no longer truncates the dump).
     BIG_ROWS=$("$VV" --tab obs --tsv --no-header "$DATA/tiny.bigobs.h5ad" | wc -l)
-    assert_eq_file_inline "h5ad_obs_preview_rowcount" "$BIG_ROWS" "1000"
+    assert_eq_file_inline "h5ad_obs_export_full_rows" "$(echo $BIG_ROWS)" "1500"
+    # -n still limits the export.
+    BIG_N=$("$VV" --tab obs --tsv --no-header -n 100 "$DATA/tiny.bigobs.h5ad" | wc -l)
+    assert_eq_file_inline "h5ad_obs_export_head_limit" "$(echo $BIG_N)" "100"
+fi
+
+# Boolean obs/var columns are stored as HDF5 enums; they must render their
+# member names, not the old "?" fallback. tiny.h5ad var.mt = [F,F,T,F].
+if [ -f "$DATA/tiny.h5ad" ]; then
+    VAR_MT=$("$VV" --tab var --tsv "$DATA/tiny.h5ad" 2>&1)
+    assert_contains "h5ad_bool_col_rendered"  "$VAR_MT" "TRUE"
+    refute_contains "h5ad_bool_col_not_qmark" "$VAR_MT" "?"
 fi
 
 # Generic HDF5 (.h5) — first tab is the hierarchy table; siblings are
