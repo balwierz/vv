@@ -6,6 +6,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-06-22
+
+AnnData depth (CSC sparse, `uns`, labelled `X`), data-correctness fixes across
+the CSV / display / numeric paths, security hardening, and broad RAM/throughput
+work on the streaming and TUI paths.
+
+### Added
+- **AnnData `uns` decoding** — a new key/value tab surfaces the unstructured
+  annotations: scalars, strings and short arrays show their values, nested dicts
+  flatten with dotted keys (`pca.variance_ratio`), and an encoded sub-object
+  (dataframe / categorical) shows its `encoding-type`. Previously skipped.
+- **AnnData CSC sparse `X` preview** — `csc_matrix` matrices now densify to a
+  rows × columns preview just like CSR (the compressed axis is columns, not
+  rows); they previously showed only a "not implemented" note.
+- **Labelled AnnData `X` preview** — the sparse / dense `X` preview names its
+  value columns by the `var` index (gene names) and prepends the `obs` index
+  (cell barcodes) as a row-label column, instead of generic `col0` / row numbers.
+
+### Fixed
+- **Leading-zero IDs in CSV/TSV** (and spreadsheet / markdown / HTML tables) are
+  preserved — a column of values like `007` is read as text instead of being
+  inferred as the integer `7`. Scientific notation stays numeric.
+- **Wide and combining characters align.** `display_width` now measures terminal
+  columns (CJK / fullwidth / emoji = 2, combining / zero-width = 0) instead of
+  counting codepoints, so tables with such data no longer skew; truncation cuts
+  on a column boundary.
+- **Hostile / malformed files are handled gracefully** — AnnData sparse `shape`
+  and DataFrame column lengths are validated against the real dataset extents
+  (no out-of-bounds read).
+- **Date / timestamp / decimal columns** are read as numeric values, so
+  `--describe` min/max/mean and `--heatmap` work on them; `--describe` now
+  summarises the whole table rather than the first chunk.
+- **Genomic / format correctness** — Parquet region pruning indexes column
+  statistics by Parquet leaf (not Arrow field); pileup honours reference skips
+  (CIGAR `N`) like samtools; mid-stream htslib read errors in pileup / BCF
+  region mode are surfaced instead of silently truncating; region mode reports
+  exact post-filter row counts; CSV headers of `nan` / `inf` / hex are no longer
+  mistaken for headerless numeric data.
+- **TUI / terminal robustness** — the terminal is restored on
+  SIGINT/SIGTERM/SIGHUP via an async-signal-safe handler; markdown rendering
+  strips terminal control bytes; `truncate` never splits a multibyte codepoint;
+  a missing flag argument reports the specific flag instead of "Unknown option".
+
+### Performance
+- **Bounded RAM on streaming sources** — DelimitedSource and the other streaming
+  readers evict old chunks behind a retention window instead of retaining every
+  decoded batch; SQLite computes `COUNT(*)` lazily (not at open); generic HDF5
+  1-D datasets and wide NPZ arrays preview a capped head; delimited preamble
+  stripping is buffered. TUI redraws format each visible cell once and reuse the
+  LRU chunk cache during sorted search.
+
+### Security
+- **SQLite identifier quoting** escapes embedded double quotes, so a table named
+  `a"b` no longer produces malformed / injectable SQL.
+- **NPZ allocation hint** — the zip central-directory `uncompressed_size` (which
+  is attacker-controllable) is no longer passed straight to `reserve()`, so a
+  tiny crafted entry can't force a multi-GB allocation.
+
+### Build / CI
+- KDE plugins stop including `KDEInstallDirs`, silencing the ECM directory
+  warning in the GUI build.
+
 ## [1.11.0] - 2026-06-15
 
 Large-AnnData usability, a Debian package, and build/CI maintenance.
