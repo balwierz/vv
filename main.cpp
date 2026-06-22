@@ -7170,10 +7170,7 @@ static constexpr int64_t kDataFrameRowCap = 1000;   // obs / var DataFrame rows
 // rather than decoded to strings: a per-cell-unique categorical (e.g. a barcode
 // column with millions of categories) would otherwise force reading the whole
 // dictionary — minutes over a slow mount — just to render a preview. The default
-// (1,000,000) comfortably covers real high-cardinality categoricals — CRISPR
-// perturbation guide/target columns run to the hundreds of thousands, and
-// reading that dictionary is a few MB — and only the genuinely pathological
-// per-cell-unique case is shown as codes. Override with VV_CATEGORY_DICT_CAP.
+// (1,000,000) comfortably covers real high-cardinality categoricals.
 inline int64_t category_dict_cap() {
     static const int64_t cap = [] {
         if (const char* e = std::getenv("VV_CATEGORY_DICT_CAP")) {
