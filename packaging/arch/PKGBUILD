@@ -5,7 +5,7 @@
 # -DVV_BUILD_GUI=ON produces both; install whichever you want.
 pkgbase=vv
 pkgname=('vv' 'vv-gui')
-pkgver=1.12.0
+pkgver=1.13.0
 pkgrel=1
 pkgdesc="Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)"
 arch=('x86_64' 'aarch64')
@@ -18,7 +18,7 @@ makedepends=('cmake' 'gcc' 'arrow' 'htslib' 'ncurses' 'hdf5' 'sqlite'
              'expat' 'minizip' 'xlsxio' 'zlib'
              'qt6-base' 'extra-cmake-modules' 'kio' 'kcoreaddons' 'kfilemetadata')
 source=("$pkgbase-$pkgver.tar.gz::https://github.com/balwierz/$pkgbase/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('a61737730dd4301d5b32dbe687bfb2084014cf99afccdaf012c628afacc91e2e')
+sha256sums=('b4a143ad22015c6653f91af7e0c37558cbc8abac7e5f87039e3e10c84403b49f')
 
 build() {
     cmake -S "$pkgbase-$pkgver" -B build \
