@@ -8390,9 +8390,13 @@ static std::string parse_npy_header(const uint8_t* buf, size_t n, NpyHeader* out
     std::string hdr((const char*)(buf + hdr_start), hdr_len);
 
     std::string descr = find_dict_value(hdr, "descr");
-    // strip quotes
+    // Strip the surrounding quotes — but only when both ends are the *same*
+    // quote. A malformed/unterminated value (e.g. "'<f8" with no closing quote)
+    // would otherwise have its real last character chopped by the blind
+    // substr(1, size-2).
     if (descr.size() >= 2 &&
-        (descr.front() == '\'' || descr.front() == '"')) {
+        (descr.front() == '\'' || descr.front() == '"') &&
+        descr.back() == descr.front()) {
         descr = descr.substr(1, descr.size() - 2);
     }
     out->dtype_str = descr;
