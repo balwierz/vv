@@ -384,4 +384,4 @@ be done first: it catches this whole bug class automatically.
 - [ ] `main.cpp:9803` — Auto mode never uses inline-image protocols on iTerm2/WezTerm (falls to half-block)
 - [ ] `main.cpp:12334` — Status bar row range overshoots loaded data on streaming sources
 - [ ] `main.cpp:14683` — Auto-TUI failure falls through silently with no diagnostic unless -i was given
-- [ ] `man/vv.1:375` — No documented exit-status / EXIT STATUS section
+- [x] `man/vv.1:375` — No documented exit-status / EXIT STATUS section — fixed on `fix/audit-batch` (added an EXIT STATUS section — 0 success / 1 runtime+usage error / 2 invalid option argument, verified empirically — plus an ENVIRONMENT section documenting NO_COLOR and VV_CATEGORY_DICT_CAP)

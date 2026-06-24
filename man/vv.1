@@ -600,6 +600,31 @@ The format is extensible; future keys slot in without breaking
 existing files. Writes are atomic (\fI.tmp\fR + rename) and
 preserve any other lines you've added by hand.
 .RE
+.SH ENVIRONMENT
+.TP
+.B NO_COLOR
+When set to any non-empty value, disables coloured output (see
+\fIhttps://no-color.org\fR). An explicit \fB\-\-color=always\fR or
+\fB\-\-color=never\fR overrides it.
+.TP
+.B VV_CATEGORY_DICT_CAP
+Maximum number of categories an AnnData categorical \fIobs\fR/\fIvar\fR column
+may have before it is shown as integer codes rather than decoded labels
+(default \fB1000000\fR).
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+A runtime or usage error: the input could not be opened, was an unsupported or
+malformed format, a read failed, an unknown option was given, or no input file
+was supplied.
+.TP
+.B 2
+An invalid command\-line option argument: a flag was missing its required value,
+or a value was not one of the accepted choices (e.g.
+\fB\-\-image\-mode\fR, \fB\-\-coords\fR).
 .SH SEE ALSO
 .BR samtools (1),
 .BR bcftools (1),
