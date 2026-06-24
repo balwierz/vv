@@ -539,6 +539,12 @@ else
 fi
 COORDS_BAD=$("$VV" -r chr1:1-2 --coords nonsense "$DATA/tiny.parquet" 2>&1 || true)
 assert_contains "coords_unknown_value_errors" "$COORDS_BAD" "UCSC"
+# A malformed region (trailing garbage after the coordinate) is rejected with a
+# clear error, not silently dropped into a whole-file query.
+REGION_BAD=$("$VV" -r chr1:5x --no-interactive "$DATA/tiny.parquet" 2>&1 || true)
+assert_contains "region_trailing_garbage_rejected" "$REGION_BAD" "Invalid region"
+REGION_BAD2=$("$VV" -r chr1:-5-10 --no-interactive "$DATA/tiny.parquet" 2>&1 || true)
+assert_contains "region_double_dash_rejected" "$REGION_BAD2" "Invalid region"
 # A known flag missing its argument gives a targeted error, not "Unknown option".
 MISSING_ARG=$("$VV" --tab 2>&1 || true)
 assert_contains "missing_arg_targeted_error"   "$MISSING_ARG" "requires an argument"

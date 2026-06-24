@@ -355,7 +355,7 @@ be done first: it catches this whole bug class automatically.
 **Bugs**
 - [ ] `gui/kde/thumbrender.cpp:58` — Thumbnail elision uses non-bold QFontMetrics for bold header text
 - [ ] `main.cpp:1150` — emit_cell dims a genuine trailing U+2026 in cell data as if it were a truncation marker
-- [ ] `main.cpp:1669` — Region integer parser silently accepts trailing garbage (e.g. 'chr1:-5-10')
+- [x] `main.cpp:1669` — Region integer parser silently accepts trailing garbage (e.g. 'chr1:-5-10') — fixed on `fix/audit-batch` (region int parser now rejects unconsumed trailing input via stoll's pos out-param, so 'chr1:5x' / 'chr1:-5-10' no longer silently parse; apply_region_modifiers validates -r up front and returns 'Invalid region …' instead of parse_region_list silently dropping the token into a whole-file query)
 - [ ] `main.cpp:3107` — block_size of 16 MiB causes a hard parse failure when a single delimited line exceeds it
 - [ ] `main.cpp:3937` — Pileup insertion rendering can read past the read's SEQ on inconsistent CIGAR
 - [x] `main.cpp:5159` — SQLite identifier quoting does not escape embedded double-quotes, breaking on (or mis-parsing) tables/columns containing a " character — fixed on `fix/sqlite-ident-quote` (new sqlite_quote_ident() doubles embedded quotes per SQL; used at all three table-name interpolations — PRAGMA table_info, SELECT *, lazy COUNT(*). A table named a"b previously built the malformed/injectable `"a"b"` and failed to open; now reads. Columns use SELECT * and filter/sort is in-memory, so no column-name injection exists. Fixture tiny.quoteid.sqlite.)

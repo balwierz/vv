@@ -1791,8 +1791,11 @@ static bool parse_region_one(const std::string& s, Region* out,
     else { a = rest.substr(0, dash); b = rest.substr(dash + 1); }
     auto parse_int = [](const std::string& t, int64_t* v) {
         if (t.empty()) return true;  // open end
-        try { *v = std::stoll(t); return true; }
-        catch (...) { return false; }
+        try {
+            size_t pos = 0;
+            *v = std::stoll(t, &pos);
+            return pos == t.size();   // reject trailing garbage ("5x", "5-10")
+        } catch (...) { return false; }
     };
     int64_t pa = INT64_MIN, pb = INT64_MAX;
     bool have_a = !a.empty();
@@ -2251,6 +2254,26 @@ static std::shared_ptr<arrow::Table> project_to_requested(
 // Declared in vvcore.hpp (external linkage) so GUI frontends can offer region
 // queries; parse_region_list / Region stay internal to this TU.
 std::string apply_region_modifiers(Config& cfg) {
+    // Reject a malformed -r / --region up front. parse_region_list silently
+    // drops a token it can't parse, which would turn an invalid region (e.g.
+    // "chr1:-5-10" or "chr1:5x") into a whole-file query — surface it instead.
+    if (!cfg.region.empty()) {
+        size_t pos = 0;
+        while (pos <= cfg.region.size()) {
+            size_t comma = cfg.region.find(',', pos);
+            std::string tok = cfg.region.substr(
+                pos, comma == std::string::npos ? std::string::npos : comma - pos);
+            if (!tok.empty()) {
+                Region r{};
+                if (!parse_region_one(tok, &r, cfg.coords_one_based))
+                    return "Invalid region '" + tok +
+                           "' (expected chrom[:start[-end]])";
+            }
+            if (comma == std::string::npos) break;
+            pos = comma + 1;
+        }
+    }
+
     // 0) Canonicalise to UCSC (0-based half-open). --coords NCBI applies only
     // to -r / --region inputs; --regions-file entries are always BED (UCSC)
     // per the spec. After this, cfg.region is guaranteed UCSC convention
