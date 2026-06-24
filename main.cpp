@@ -727,13 +727,26 @@ static Config parse_args(int argc, char** argv) {
             cfg.tab = argv[++i];
         } else if (!std::strcmp(argv[i], "--theme") && i + 1 < argc) {
             cfg.theme = argv[++i];
-        } else if (!std::strcmp(argv[i], "--color") ||
-                   !std::strcmp(argv[i], "--color=auto")) {
+        } else if (!std::strcmp(argv[i], "--color=auto")) {
             cfg.color = ColorMode::Auto;
         } else if (!std::strcmp(argv[i], "--color=always")) {
             cfg.color = ColorMode::Always;
         } else if (!std::strcmp(argv[i], "--color=never")) {
             cfg.color = ColorMode::Never;
+        } else if (!std::strcmp(argv[i], "--color")) {
+            // Also accept the space-separated form "--color MODE" (GNU-style);
+            // a bare "--color" with no mode (or a non-mode next token, e.g. a
+            // filename) means auto.
+            if (i + 1 < argc && (!std::strcmp(argv[i + 1], "auto") ||
+                                 !std::strcmp(argv[i + 1], "always") ||
+                                 !std::strcmp(argv[i + 1], "never"))) {
+                const char* m = argv[++i];
+                cfg.color = !std::strcmp(m, "always") ? ColorMode::Always
+                          : !std::strcmp(m, "never")  ? ColorMode::Never
+                                                      : ColorMode::Auto;
+            } else {
+                cfg.color = ColorMode::Auto;
+            }
         } else if (!std::strcmp(argv[i], "--tsv")) {
             cfg.delimiter = '\t';
         } else if (!std::strcmp(argv[i], "--csv")) {
@@ -772,6 +785,24 @@ static Config parse_args(int argc, char** argv) {
         }
     }
     if (cfg.path.empty()) { print_usage(argv[0]); std::exit(1); }
+    // NO_COLOR (https://no-color.org): any non-empty value disables colour,
+    // unless the user explicitly chose --color=always/never (those win, per the
+    // spec). Resolving it into cfg.color here means every downstream consumer
+    // (table, delimited, markdown, heatmap, TUI) honours it from one place.
+    if (cfg.color == ColorMode::Auto) {
+        if (const char* e = std::getenv("NO_COLOR"); e && e[0])
+            cfg.color = ColorMode::Never;
+    }
+    // Validate --image-mode up front so a typo is reported rather than silently
+    // ignored (the heatmap renderer also checks, but only when --heatmap runs).
+    if (!cfg.image_mode.empty() && cfg.image_mode != "auto" &&
+        cfg.image_mode != "kitty" && cfg.image_mode != "sixel" &&
+        cfg.image_mode != "halfblock" && cfg.image_mode != "ascii") {
+        std::fprintf(stderr, "--image-mode: unknown mode '%s' "
+                     "(use auto|kitty|sixel|halfblock|ascii)\n",
+                     cfg.image_mode.c_str());
+        std::exit(2);
+    }
     return cfg;
 }
 

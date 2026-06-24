@@ -547,6 +547,21 @@ refute_contains "missing_arg_not_unknown_option" "$MISSING_ARG" "Unknown option"
 UNKNOWN_OPT=$("$VV" --bogus-flag "$DATA/tiny.parquet" 2>&1 || true)
 assert_contains "unknown_option_still_reported" "$UNKNOWN_OPT" "Unknown option"
 
+# --color accepts the space-separated form ("--color always"), not just
+# "--color=always"; the space form used to be misread as a filename.
+CLR_SPACE=$("$VV" --color always --no-interactive --no-index "$DATA/tiny.parquet" 2>&1)
+assert_contains "color_space_separated_renders" "$CLR_SPACE" "$(printf '\033[')"
+refute_contains "color_space_not_file_error"    "$CLR_SPACE" "Cannot open"
+# NO_COLOR (https://no-color.org): disables colour when the mode is auto…
+NOCOLOR_OUT=$(NO_COLOR=1 "$VV" --no-interactive --no-index "$DATA/tiny.parquet" 2>&1)
+refute_contains "no_color_env_disables_color"   "$NOCOLOR_OUT" "$(printf '\033[')"
+# …but an explicit --color=always still wins over NO_COLOR.
+NOCOLOR_FORCE=$(NO_COLOR=1 "$VV" --color=always --no-interactive --no-index "$DATA/tiny.parquet" 2>&1)
+assert_contains "no_color_overridden_by_always"  "$NOCOLOR_FORCE" "$(printf '\033[')"
+# --image-mode validates its value at parse time (a typo is an error, exit 2).
+IMG_BAD=$("$VV" --image-mode bogus --no-interactive "$DATA/tiny.parquet" 2>&1 || true)
+assert_contains "image_mode_typo_rejected" "$IMG_BAD" "unknown mode"
+
 echo
 # --theme: every built-in name parses cleanly; unknown names get a
 # clear error and exit 2. Color output is exercised via --color=always
