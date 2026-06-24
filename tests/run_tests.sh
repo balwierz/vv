@@ -151,6 +151,35 @@ refute_contains "parquet_no_banner" \
 # The banner is a table-view header only — it must NOT leak into --tsv export.
 refute_contains "lociss_banner_not_in_tsv" \
     "$("$VV" --tsv "$DATA/tiny.lociss" 2>&1)" "elements"
+
+# LociSSD v4 "colblock" — a custom binary format (magic LSB1, sidecar .idx),
+# read via the zone-map index + per-block zstd column chunks. tiny.v4.lociss
+# exercises codecs DELTA(Start)/LENGTH(End)/DICT(Strand)/FRONTCODE(ID)/RAW(Count)
+# /BOOL(Flag) + a null Count + an empty-string ID (distinct from null).
+if [ -f "$DATA/tiny.v4.lociss" ]; then
+    V4=$("$VV" --no-interactive --color=never "$DATA/tiny.v4.lociss" 2>&1)
+    V4HDR=$(printf '%s\n' "$V4" | head -1)
+    assert_contains "lociss_v4_banner_assembly" "$V4HDR" "hg38 (Homo sapiens)"
+    assert_contains "lociss_v4_banner_count"    "$V4HDR" "5 elements"
+    assert_contains "lociss_v4_schema_cols" "$("$VV" --schema "$DATA/tiny.v4.lociss" 2>&1)" "Strand"
+    # Null Count renders as ∅ in the table view (distinct from the empty ID).
+    assert_contains "lociss_v4_null_symbol" "$V4" "$(printf '\xe2\x88\x85')"
+    V4T=$("$VV" --tsv --no-header "$DATA/tiny.v4.lociss" 2>/dev/null)
+    assert_eq_file_inline "lociss_v4_rowcount" "$(printf '%s\n' "$V4T" | grep -c .)" "5"
+    # Row 0: DELTA/LENGTH/DICT/FRONTCODE/RAW/BOOL all decode; Chromosome synthesized.
+    assert_contains "lociss_v4_row0" "$(printf '%s\n' "$V4T" | sed -n 1p)" \
+        "$(printf 'chr1\t100\t101\t+\trs1\t10\ttrue')"
+    # Row 1: empty ID (FRONTCODE "") and null Count both empty in TSV.
+    assert_contains "lociss_v4_null_empty_tsv" "$(printf '%s\n' "$V4T" | sed -n 2p)" \
+        "$(printf 'chr1\t150\t152\t-\t\t\tfalse')"
+    # Region: zone-map block prune + per-row Start<hi & End>lo, across 2 chroms.
+    V4R=$("$VV" --tsv --no-header -r chr2:340-370 "$DATA/tiny.v4.lociss" 2>/dev/null)
+    assert_eq_file_inline "lociss_v4_region_rows" "$(printf '%s\n' "$V4R" | grep -c .)" "1"
+    assert_contains "lociss_v4_region_value" "$V4R" "rs101"
+    V4R2=$("$VV" --tsv --no-header -r chr1:0-160 "$DATA/tiny.v4.lociss" 2>/dev/null)
+    assert_eq_file_inline "lociss_v4_region_rows2" "$(printf '%s\n' "$V4R2" | grep -c .)" "2"
+fi
+
 # Generic Parquet range queries: auto-detected chrom/start/end columns,
 # plus the --region-cols override path.
 PQ_REG=$("$VV" --tsv --no-header -r chr1:1000-2500 "$DATA/tiny.parquet" | wc -l)

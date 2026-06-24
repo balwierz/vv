@@ -493,7 +493,8 @@ static void print_usage(const char* prog) {
         "\nUsage: %s [options] <file>\n"
         "\nSupported formats:\n"
         "  .parquet\n"
-        "  .lociss                     LociSSD sorted-interval Parquet (manifest in KV)\n"
+        "  .lociss                     LociSSD sorted-interval — v3 Parquet (manifest\n"
+        "                              in KV) or v4 \"colblock\" binary; dispatched by magic\n"
         "  .bam  .cram                  binary/compressed sequence alignments (htslib)\n"
         "  .sam                        text sequence alignments\n"
         "  .vcf  .vcf.gz               variant calls\n"
@@ -2608,6 +2609,602 @@ static std::string assembly_to_species(const std::string& assembly) {
     if (has({"bostau9", "bostau8", "ars-ucd1.2"}))        return "Bos taurus";
     if (has({"xentro10", "xentro9"}))                     return "Xenopus tropicalis";
     if (has({"tair10"}))                                  return "Arabidopsis thaliana";
+    return "";
+}
+
+// ── LociSSD v4 "colblock" reader ─────────────────────────────────────────────
+//
+// A custom binary columnar container (NOT Parquet): data file magic "LSB1"
+// (version 4) + a sidecar PATH.idx ("LSI1") with a block zone-map index and
+// per-(block,column) chunk pointers. Each column chunk is
+// zstd(has_nulls byte ‖ [validity bitmap] ‖ codec_payload). Site-level read only
+// — the optional genotype matrix (spec §7) is never addressed (we read the index
+// up to col_clen[] and ignore any trailing mat_* arrays / matrix section).
+// Spec: /home/piotr/Sources/Loci1/docs/lociss_columnar_format_spec.md.
+namespace lociss_v4 {
+
+// Map a v4 schema type string to an Arrow type.
+static std::shared_ptr<arrow::DataType> arrow_type_of(const std::string& t) {
+    if (t == "int8")    return arrow::int8();
+    if (t == "int16")   return arrow::int16();
+    if (t == "int32")   return arrow::int32();
+    if (t == "int64")   return arrow::int64();
+    if (t == "uint8")   return arrow::uint8();
+    if (t == "uint16")  return arrow::uint16();
+    if (t == "uint32")  return arrow::uint32();
+    if (t == "uint64")  return arrow::uint64();
+    if (t == "float32") return arrow::float32();
+    if (t == "float64") return arrow::float64();
+    if (t == "large_utf8") return arrow::large_utf8();
+    if (t == "bool")    return arrow::boolean();
+    return arrow::utf8();   // "utf8" and unknown
+}
+
+// --- minimal JSON helpers for the index meta (a well-formed JSON object) ---
+
+// Parse a JSON string array `"key": ["a","b",...]` into `out`.
+static bool json_string_array(const std::string& json, const char* key,
+                              std::vector<std::string>* out) {
+    std::string needle = std::string("\"") + key + "\"";
+    size_t q = json.find(needle);
+    if (q == std::string::npos) return false;
+    q = json.find('[', q + needle.size());
+    if (q == std::string::npos) return false;
+    ++q; out->clear();
+    while (q < json.size()) {
+        while (q < json.size() &&
+               (std::isspace((unsigned char)json[q]) || json[q] == ',')) ++q;
+        if (q >= json.size() || json[q] == ']') break;
+        if (json[q] != '"') return false;
+        ++q; std::string v;
+        while (q < json.size() && json[q] != '"') {
+            if (json[q] == '\\' && q + 1 < json.size()) { v += json[q + 1]; q += 2; }
+            else v += json[q++];
+        }
+        if (q < json.size()) ++q;
+        out->push_back(std::move(v));
+    }
+    return true;
+}
+
+// Byte span [*beg,*end) of the object value for `"obj_key": { ... }`.
+static bool json_object_span(const std::string& json, const char* obj_key,
+                             size_t* beg, size_t* end) {
+    std::string needle = std::string("\"") + obj_key + "\"";
+    size_t q = json.find(needle);
+    if (q == std::string::npos) return false;
+    q = json.find('{', q + needle.size());
+    if (q == std::string::npos) return false;
+    size_t depth = 0;
+    for (size_t p = q; p < json.size(); ++p) {
+        char c = json[p];
+        if (c == '"') { ++p; while (p < json.size() && json[p] != '"') {
+                              if (json[p] == '\\' && p + 1 < json.size()) ++p; ++p; } }
+        else if (c == '{') ++depth;
+        else if (c == '}') { if (--depth == 0) { *beg = q; *end = p + 1; return true; } }
+    }
+    return false;
+}
+
+// Look up a scalar field inside the JSON object named `obj_key`.
+static bool json_object_value(const std::string& json, const char* obj_key,
+                              const std::string& field, std::string* out) {
+    size_t beg, end;
+    if (!json_object_span(json, obj_key, &beg, &end)) return false;
+    std::string obj = json.substr(beg, end - beg);
+    return lociss_manifest_value(obj, field.c_str(), out);
+}
+
+// Read a little-endian fixed-width int (cw = 4 or 8) and sign-extend to int64.
+static inline int64_t rd_int(const uint8_t* p, int cw) {
+    if (cw == 8) { int64_t v; std::memcpy(&v, p, 8); return v; }
+    int32_t v; std::memcpy(&v, p, 4); return (int64_t)v;
+}
+
+// zstd-decompress a compressed buffer (decompressed size unknown up front) via
+// Arrow's streaming decompressor, reading to end.
+static arrow::Result<std::shared_ptr<arrow::Buffer>>
+zstd_inflate(std::shared_ptr<arrow::Buffer> comp) {
+    ARROW_ASSIGN_OR_RAISE(auto codec,
+        arrow::util::Codec::Create(arrow::Compression::ZSTD));
+    auto reader = std::make_shared<arrow::io::BufferReader>(comp);
+    ARROW_ASSIGN_OR_RAISE(auto cis,
+        arrow::io::CompressedInputStream::Make(codec.get(), reader));
+    arrow::BufferBuilder bb;
+    uint8_t tmp[64 * 1024];
+    for (;;) {
+        ARROW_ASSIGN_OR_RAISE(int64_t got, cis->Read(sizeof tmp, tmp));
+        if (got == 0) break;
+        ARROW_RETURN_NOT_OK(bb.Append(tmp, got));
+    }
+    std::shared_ptr<arrow::Buffer> out;
+    ARROW_RETURN_NOT_OK(bb.Finish(&out));
+    return out;
+}
+
+// Decode one (already zstd-decompressed) column chunk into an Arrow array.
+// `n` = block row count, `cw` = coord width, `start` = decoded Start values for
+// the LENGTH codec (else null). Splits has_nulls + validity bitmap, then decodes
+// by codec_id.
+static arrow::Result<std::shared_ptr<arrow::Array>>
+decode_colblock(const uint8_t* buf, size_t blen, int codec_id,
+                const arrow::DataType& type, int64_t n, int cw,
+                const int64_t* start) {
+    if (blen < 1) return arrow::Status::Invalid("colblock: empty chunk");
+    bool has_nulls = buf[0] != 0;
+    size_t p = 1;
+    std::vector<uint8_t> valid;            // 1 = valid; empty = all valid
+    if (has_nulls) {
+        size_t nb = (size_t)((n + 7) / 8);
+        if (p + nb > blen) return arrow::Status::Invalid("colblock: short bitmap");
+        valid.assign((size_t)n, 0);
+        for (int64_t i = 0; i < n; ++i)
+            valid[(size_t)i] = (buf[p + (size_t)(i >> 3)] >> (i & 7)) & 1u;
+        p += nb;
+    }
+    const uint8_t* pay = buf + p;
+    size_t paylen = blen - p;
+    const uint8_t* vb = valid.empty() ? nullptr : valid.data();
+    std::shared_ptr<arrow::Array> arr;
+
+    auto need = [&](size_t bytes) -> arrow::Status {
+        return paylen >= bytes ? arrow::Status::OK()
+             : arrow::Status::Invalid("colblock: payload too short");
+    };
+
+    // String result (DICT / FRONTCODE / ARENA): build per declared utf8 width.
+    auto build_strings = [&](std::vector<std::string>& vals)
+        -> arrow::Result<std::shared_ptr<arrow::Array>> {
+        std::shared_ptr<arrow::Array> a;
+        if (type.id() == arrow::Type::LARGE_STRING) {
+            arrow::LargeStringBuilder b;
+            ARROW_RETURN_NOT_OK(b.AppendValues(vals, vb));
+            ARROW_RETURN_NOT_OK(b.Finish(&a));
+        } else {
+            arrow::StringBuilder b;
+            ARROW_RETURN_NOT_OK(b.AppendValues(vals, vb));
+            ARROW_RETURN_NOT_OK(b.Finish(&a));
+        }
+        return a;
+    };
+    // Integer-coordinate result (DELTA / LENGTH): build per the column type.
+    auto build_coords = [&](const std::vector<int64_t>& v)
+        -> arrow::Result<std::shared_ptr<arrow::Array>> {
+        std::shared_ptr<arrow::Array> a;
+        if (type.id() == arrow::Type::INT64) {
+            arrow::Int64Builder b;
+            ARROW_RETURN_NOT_OK(b.AppendValues(v.data(), n, vb));
+            ARROW_RETURN_NOT_OK(b.Finish(&a));
+        } else {
+            std::vector<int32_t> w(v.size());
+            for (size_t i = 0; i < v.size(); ++i) w[i] = (int32_t)v[i];
+            arrow::Int32Builder b;
+            ARROW_RETURN_NOT_OK(b.AppendValues(w.data(), n, vb));
+            ARROW_RETURN_NOT_OK(b.Finish(&a));
+        }
+        return a;
+    };
+
+    switch (codec_id) {
+        case 0: {  // RAW — fixed-width numeric, n × itemsize LE
+            #define VV_RAW(BUILDER, CT)                                         \
+                do { ARROW_RETURN_NOT_OK(need((size_t)n * sizeof(CT)));         \
+                     std::vector<CT> v((size_t)n);                              \
+                     std::memcpy(v.data(), pay, (size_t)n * sizeof(CT));        \
+                     BUILDER b; ARROW_RETURN_NOT_OK(b.AppendValues(v.data(), n, vb)); \
+                     ARROW_RETURN_NOT_OK(b.Finish(&arr)); } while (0)
+            switch (type.id()) {
+                case arrow::Type::INT8:   VV_RAW(arrow::Int8Builder,   int8_t);   break;
+                case arrow::Type::INT16:  VV_RAW(arrow::Int16Builder,  int16_t);  break;
+                case arrow::Type::INT32:  VV_RAW(arrow::Int32Builder,  int32_t);  break;
+                case arrow::Type::INT64:  VV_RAW(arrow::Int64Builder,  int64_t);  break;
+                case arrow::Type::UINT8:  VV_RAW(arrow::UInt8Builder,  uint8_t);  break;
+                case arrow::Type::UINT16: VV_RAW(arrow::UInt16Builder, uint16_t); break;
+                case arrow::Type::UINT32: VV_RAW(arrow::UInt32Builder, uint32_t); break;
+                case arrow::Type::UINT64: VV_RAW(arrow::UInt64Builder, uint64_t); break;
+                case arrow::Type::FLOAT:  VV_RAW(arrow::FloatBuilder,  float);    break;
+                case arrow::Type::DOUBLE: VV_RAW(arrow::DoubleBuilder, double);   break;
+                default: return arrow::Status::Invalid("colblock RAW: unsupported type");
+            }
+            #undef VV_RAW
+            return arr;
+        }
+        case 1: {  // DELTA — cumsum (used for Start)
+            ARROW_RETURN_NOT_OK(need((size_t)n * (size_t)cw));
+            std::vector<int64_t> v((size_t)n);
+            int64_t acc = 0;
+            for (int64_t i = 0; i < n; ++i) { acc += rd_int(pay + (size_t)i * cw, cw); v[(size_t)i] = acc; }
+            return build_coords(v);
+        }
+        case 2: {  // LENGTH — Start + len (used for End)
+            ARROW_RETURN_NOT_OK(need((size_t)n * (size_t)cw));
+            if (!start) return arrow::Status::Invalid("colblock LENGTH: Start not decoded");
+            std::vector<int64_t> v((size_t)n);
+            for (int64_t i = 0; i < n; ++i) v[(size_t)i] = start[i] + rd_int(pay + (size_t)i * cw, cw);
+            return build_coords(v);
+        }
+        case 3: {  // DICT
+            ARROW_RETURN_NOT_OK(need(4));
+            uint32_t n_dict; std::memcpy(&n_dict, pay, 4);
+            size_t q = 4;
+            ARROW_RETURN_NOT_OK(need(q + (size_t)(n_dict + 1) * 4));
+            const uint8_t* offp = pay + q; q += (size_t)(n_dict + 1) * 4;
+            uint32_t blob_len; std::memcpy(&blob_len, offp + (size_t)n_dict * 4, 4);
+            ARROW_RETURN_NOT_OK(need(q + blob_len));
+            const char* blob = (const char*)(pay + q); q += blob_len;
+            int code_w = (n_dict <= 256) ? 1 : 2;
+            ARROW_RETURN_NOT_OK(need(q + (size_t)n * code_w));
+            std::vector<std::string> dict((size_t)n_dict);
+            for (uint32_t k = 0; k < n_dict; ++k) {
+                uint32_t o0, o1; std::memcpy(&o0, offp + (size_t)k * 4, 4);
+                std::memcpy(&o1, offp + (size_t)(k + 1) * 4, 4);
+                dict[k].assign(blob + o0, o1 - o0);
+            }
+            std::vector<std::string> vals((size_t)n);
+            for (int64_t i = 0; i < n; ++i) {
+                uint32_t code = (code_w == 1) ? pay[q + (size_t)i]
+                              : (uint32_t)(pay[q + (size_t)i * 2] | (pay[q + (size_t)i * 2 + 1] << 8));
+                if (code < n_dict) vals[(size_t)i] = dict[code];
+            }
+            return build_strings(vals);
+        }
+        case 4: {  // FRONTCODE — sequential lcp + suffix
+            ARROW_RETURN_NOT_OK(need((size_t)n * 8));
+            const uint8_t* lcpp = pay;
+            const uint8_t* slenp = pay + (size_t)n * 4;
+            const uint8_t* sufp = pay + (size_t)n * 8;
+            size_t spos = 0; std::string prev;
+            std::vector<std::string> vals((size_t)n);
+            for (int64_t i = 0; i < n; ++i) {
+                uint32_t lcp, sl;
+                std::memcpy(&lcp, lcpp + (size_t)i * 4, 4);
+                std::memcpy(&sl, slenp + (size_t)i * 4, 4);
+                if (lcp > prev.size()) lcp = (uint32_t)prev.size();
+                ARROW_RETURN_NOT_OK(need((size_t)n * 8 + spos + sl));
+                std::string cur = prev.substr(0, lcp);
+                cur.append((const char*)(sufp + spos), sl);
+                spos += sl;
+                vals[(size_t)i] = cur;
+                prev = std::move(cur);
+            }
+            return build_strings(vals);
+        }
+        case 5: {  // ARENA — off[n+1] + utf8
+            ARROW_RETURN_NOT_OK(need((size_t)(n + 1) * 4));
+            const uint8_t* offp = pay;
+            const char* blob = (const char*)(pay + (size_t)(n + 1) * 4);
+            std::vector<std::string> vals((size_t)n);
+            for (int64_t i = 0; i < n; ++i) {
+                uint32_t o0, o1; std::memcpy(&o0, offp + (size_t)i * 4, 4);
+                std::memcpy(&o1, offp + (size_t)(i + 1) * 4, 4);
+                vals[(size_t)i].assign(blob + o0, o1 - o0);
+            }
+            return build_strings(vals);
+        }
+        case 6: {  // BOOL — bit-packed LSB-first
+            size_t nb = (size_t)((n + 7) / 8);
+            ARROW_RETURN_NOT_OK(need(nb));
+            std::vector<uint8_t> bits((size_t)n);
+            for (int64_t i = 0; i < n; ++i)
+                bits[(size_t)i] = (pay[(size_t)(i >> 3)] >> (i & 7)) & 1u;
+            arrow::BooleanBuilder b;
+            ARROW_RETURN_NOT_OK(b.AppendValues(bits.data(), n, vb));
+            ARROW_RETURN_NOT_OK(b.Finish(&arr));
+            return arr;
+        }
+        default:
+            return arrow::Status::Invalid("colblock: unknown codec id " +
+                                          std::to_string(codec_id));
+    }
+}
+
+// Select the rows of `a` where keep[i] is true (region overlap mask). Uses core
+// Arrow scalars (no arrow_compute dependency); region results are small.
+static arrow::Result<std::shared_ptr<arrow::Array>>
+filter_array(const std::shared_ptr<arrow::Array>& a, const std::vector<bool>& keep) {
+    std::unique_ptr<arrow::ArrayBuilder> bld;
+    ARROW_RETURN_NOT_OK(arrow::MakeBuilder(arrow::default_memory_pool(),
+                                           a->type(), &bld));
+    for (int64_t i = 0; i < a->length(); ++i) {
+        if ((size_t)i < keep.size() && !keep[(size_t)i]) continue;
+        ARROW_ASSIGN_OR_RAISE(auto sc, a->GetScalar(i));
+        ARROW_RETURN_NOT_OK(bld->AppendScalar(*sc));
+    }
+    std::shared_ptr<arrow::Array> out;
+    ARROW_RETURN_NOT_OK(bld->Finish(&out));
+    return out;
+}
+
+}  // namespace lociss_v4
+
+// A LociSSD v4 dataset, presented chunk = block. The sidecar .idx (zone-map +
+// chunk pointers) is parsed at open; column chunks are zstd-decompressed and
+// codec-decoded on demand in read_chunk. Region (-r) queries prune blocks via
+// the index and mask rows per the §5 overlap test.
+class LocissV4Source : public TabularSource {
+    std::string                               path_;
+    std::shared_ptr<arrow::io::ReadableFile>  data_;
+    std::shared_ptr<arrow::Schema>            schema_;
+    int       n_blocks_ = 0, n_cols_ = 0, cw_ = 4;
+    int64_t   row_count_ = 0;
+    std::vector<std::string>  stored_;
+    std::vector<int>          codecs_;
+    std::vector<std::shared_ptr<arrow::DataType>> col_types_;
+    std::vector<int64_t>      cids_, min_start_, max_end_, prefix_max_end_;
+    std::vector<int64_t>      n_rows_, block_first_row_;
+    std::vector<uint64_t>     col_offset_;
+    std::vector<uint32_t>     col_clen_;
+    std::map<int64_t, std::string> rank_to_name_;
+    std::map<std::string, int64_t> name_to_rank_;
+    std::string assembly_, species_;
+    int start_si_ = -1, end_si_ = -1;     // stored indices of Start / End
+
+    bool region_mode_ = false;
+    struct Slice { int block; Region win; };
+    std::vector<Slice>   slices_;
+    std::vector<int64_t> slice_first_row_, slice_count_;
+    int64_t region_total_ = 0;
+    mutable arrow::Status read_status_;
+
+    int stored_index(const std::string& nm) const {
+        for (int i = 0; i < (int)stored_.size(); ++i) if (stored_[i] == nm) return i;
+        return -1;
+    }
+    // Read + decompress + decode stored column `c` of block `b`.
+    arrow::Result<std::shared_ptr<arrow::Array>>
+    decode_col(int b, int c, const int64_t* start) const {
+        size_t rec = (size_t)b * n_cols_ + c;
+        ARROW_ASSIGN_OR_RAISE(auto comp, data_->ReadAt((int64_t)col_offset_[rec],
+                                                       (int64_t)col_clen_[rec]));
+        ARROW_ASSIGN_OR_RAISE(auto raw, lociss_v4::zstd_inflate(comp));
+        return lociss_v4::decode_colblock(raw->data(), (size_t)raw->size(),
+                                          codecs_[(size_t)c], *col_types_[(size_t)c],
+                                          n_rows_[(size_t)b], cw_, start);
+    }
+    // Decode the block's Start column as int64 (needed for End / region mask).
+    arrow::Result<std::vector<int64_t>> decode_start(int b) const {
+        std::vector<int64_t> v;
+        if (start_si_ < 0) return v;
+        ARROW_ASSIGN_OR_RAISE(auto a, decode_col(b, start_si_, nullptr));
+        v.resize((size_t)a->length());
+        if (a->type_id() == arrow::Type::INT64) {
+            auto ia = std::static_pointer_cast<arrow::Int64Array>(a);
+            for (int64_t i = 0; i < a->length(); ++i) v[(size_t)i] = ia->Value(i);
+        } else {
+            auto ia = std::static_pointer_cast<arrow::Int32Array>(a);
+            for (int64_t i = 0; i < a->length(); ++i) v[(size_t)i] = ia->Value(i);
+        }
+        return v;
+    }
+    std::shared_ptr<arrow::Array> chrom_array(int b, int64_t count) const {
+        auto it = rank_to_name_.find(cids_[(size_t)b]);
+        std::string nm = (it != rank_to_name_.end()) ? it->second : "?";
+        arrow::StringBuilder bld;
+        for (int64_t i = 0; i < count; ++i) (void)bld.Append(nm);
+        std::shared_ptr<arrow::Array> a; (void)bld.Finish(&a); return a;
+    }
+    std::string build_region(const Config& cfg);
+
+public:
+    static std::string open(const std::string& path, const Config& cfg,
+                            std::unique_ptr<LocissV4Source>* out);
+
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    int64_t total_rows() const override { return region_mode_ ? region_total_ : row_count_; }
+    int     num_chunks() const override { return region_mode_ ? (int)slices_.size() : n_blocks_; }
+    arrow::Status read_status() const override { return read_status_; }
+    ChunkMeta chunk_meta(int i) const override {
+        if (region_mode_) return {slice_first_row_[(size_t)i], slice_count_[(size_t)i]};
+        return {block_first_row_[(size_t)i], n_rows_[(size_t)i]};
+    }
+    const std::string& path() const override { return path_; }
+    std::string footer() const override {
+        return "Format: LociSSD v4  |  Blocks: " + std::to_string(n_blocks_);
+    }
+    std::string top_banner() const override {
+        std::string s = "LociSSD";
+        if (!assembly_.empty()) {
+            s += "  \xe2\x80\xa2  " + assembly_;
+            if (!species_.empty()) s += " (" + species_ + ")";
+        }
+        s += "  \xe2\x80\xa2  " + digits_with_sep(std::to_string(row_count_)) + " elements";
+        return s;
+    }
+    std::vector<std::string> preamble_above() const override {
+        return {top_banner()};   // banner above the table in non-interactive views
+    }
+
+    arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
+                             std::shared_ptr<arrow::Table>* out) override {
+        int     b = region_mode_ ? slices_[(size_t)i].block : i;
+        int64_t n = n_rows_[(size_t)b];
+
+        // Decode Start when End is requested (LENGTH needs it) or for the mask.
+        bool want_end = false;
+        for (int f : col_indices) if (f == end_si_ + 1) want_end = true;
+        std::vector<int64_t> start;
+        const int64_t* startp = nullptr;
+        if (region_mode_ || want_end) {
+            ARROW_ASSIGN_OR_RAISE(start, decode_start(b));
+            startp = start.empty() ? nullptr : start.data();
+        }
+
+        // Region overlap mask (Start < hi & End > lo); chrom is block-uniform.
+        std::shared_ptr<arrow::Array> end_arr;
+        std::vector<bool> keep;
+        int64_t kept = n;
+        if (region_mode_) {
+            ARROW_ASSIGN_OR_RAISE(end_arr, decode_col(b, end_si_, startp));
+            const Region& w = slices_[(size_t)i].win;
+            bool e64 = (end_arr->type_id() == arrow::Type::INT64);
+            auto e32 = e64 ? nullptr : std::static_pointer_cast<arrow::Int32Array>(end_arr);
+            auto ei64 = e64 ? std::static_pointer_cast<arrow::Int64Array>(end_arr) : nullptr;
+            keep.assign((size_t)n, false); kept = 0;
+            for (int64_t r = 0; r < n; ++r) {
+                int64_t st = start[(size_t)r];
+                int64_t en = e64 ? ei64->Value(r) : e32->Value(r);
+                bool ok = (w.end == INT64_MAX || st < w.end) &&
+                          (w.start == INT64_MIN || en > w.start);
+                keep[(size_t)r] = ok; if (ok) ++kept;
+            }
+        }
+
+        arrow::FieldVector fields;
+        std::vector<std::shared_ptr<arrow::Array>> cols;
+        for (int f : col_indices) {
+            std::shared_ptr<arrow::Array> a;
+            if (f == 0) a = chrom_array(b, n);
+            else if (f - 1 == end_si_ && end_arr) a = end_arr;
+            else { ARROW_ASSIGN_OR_RAISE(a, decode_col(b, f - 1, startp)); }
+            if (region_mode_ && kept != n) {
+                ARROW_ASSIGN_OR_RAISE(a, lociss_v4::filter_array(a, keep));
+            }
+            cols.push_back(a);
+            fields.push_back(schema_->field(f));
+        }
+        *out = arrow::Table::Make(arrow::schema(fields), cols,
+                                  region_mode_ ? kept : n);
+        return arrow::Status::OK();
+    }
+};
+
+std::string LocissV4Source::open(const std::string& path, const Config& cfg,
+                                 std::unique_ptr<LocissV4Source>* out) {
+    auto self = std::make_unique<LocissV4Source>();
+    self->path_ = path;
+
+    // ── Sidecar index ────────────────────────────────────────────────────────
+    std::string ip = path + ".idx";
+    std::ifstream idxf(ip, std::ios::binary);
+    if (!idxf) return "LociSSD v4: missing sidecar index '" + ip + "'";
+    std::string idx((std::istreambuf_iterator<char>(idxf)),
+                    std::istreambuf_iterator<char>());
+    if (idx.size() < 24 || idx.compare(0, 4, "LSI1") != 0)
+        return "LociSSD v4: bad index magic in '" + ip + "'";
+    const uint8_t* ib = (const uint8_t*)idx.data();
+    auto u32 = [&](size_t o) { uint32_t v; std::memcpy(&v, ib + o, 4); return v; };
+    uint32_t n_blocks = u32(8), n_cols = u32(12), flags = u32(16), meta_len = u32(20);
+    if ((size_t)24 + meta_len > idx.size()) return "LociSSD v4: truncated index meta";
+    std::string meta = idx.substr(24, meta_len);
+    self->n_blocks_ = (int)n_blocks; self->n_cols_ = (int)n_cols;
+    bool coords64 = (flags & 1u) != 0;
+    self->cw_ = coords64 ? 8 : 4;
+    int isz = coords64 ? 8 : 4;
+
+    // ── meta JSON ────────────────────────────────────────────────────────────
+    if (!lociss_v4::json_string_array(meta, "stored", &self->stored_) ||
+        (int)self->stored_.size() != (int)n_cols)
+        return "LociSSD v4: missing/mismatched 'stored' in index meta";
+    self->codecs_.resize(n_cols);
+    self->col_types_.resize(n_cols);
+    for (int c = 0; c < (int)n_cols; ++c) {
+        std::string ty, cd;
+        lociss_v4::json_object_value(meta, "schema", self->stored_[(size_t)c], &ty);
+        lociss_v4::json_object_value(meta, "codecs", self->stored_[(size_t)c], &cd);
+        self->col_types_[(size_t)c] = lociss_v4::arrow_type_of(ty);
+        self->codecs_[(size_t)c] = cd.empty() ? 0 : std::atoi(cd.c_str());
+    }
+    self->start_si_ = self->stored_index("Start");
+    self->end_si_   = self->stored_index("End");
+    std::string rc;
+    if (lociss_manifest_value(meta, "row_count", &rc)) self->row_count_ = std::atoll(rc.c_str());
+    lociss_manifest_value(meta, "assembly", &self->assembly_);
+    if (!lociss_manifest_value(meta, "species", &self->species_) && !self->assembly_.empty())
+        self->species_ = assembly_to_species(self->assembly_);
+
+    // ── fixed-stride index arrays ────────────────────────────────────────────
+    size_t p = 24 + meta_len;
+    auto take_coord = [&](std::vector<int64_t>& dst) -> bool {
+        if (p + (size_t)n_blocks * isz > idx.size()) return false;
+        dst.resize(n_blocks);
+        for (uint32_t i = 0; i < n_blocks; ++i)
+            dst[i] = lociss_v4::rd_int(ib + p + (size_t)i * isz, isz);
+        p += (size_t)n_blocks * isz; return true;
+    };
+    if (!take_coord(self->cids_) || !take_coord(self->min_start_) ||
+        !take_coord(self->max_end_))
+        return "LociSSD v4: truncated index (coord arrays)";
+    if (p + (size_t)n_blocks * 4 > idx.size()) return "LociSSD v4: truncated index (n_rows)";
+    self->n_rows_.resize(n_blocks);
+    for (uint32_t i = 0; i < n_blocks; ++i) self->n_rows_[i] = u32(p + (size_t)i * 4);
+    p += (size_t)n_blocks * 4;
+    if (!take_coord(self->prefix_max_end_))
+        return "LociSSD v4: truncated index (prefix_max_end)";
+    size_t npc = (size_t)n_blocks * n_cols;
+    if (p + npc * 8 > idx.size()) return "LociSSD v4: truncated index (col_offset)";
+    self->col_offset_.resize(npc);
+    for (size_t i = 0; i < npc; ++i) std::memcpy(&self->col_offset_[i], ib + p + i * 8, 8);
+    p += npc * 8;
+    if (p + npc * 4 > idx.size()) return "LociSSD v4: truncated index (col_clen)";
+    self->col_clen_.resize(npc);
+    for (size_t i = 0; i < npc; ++i) std::memcpy(&self->col_clen_[i], ib + p + i * 4, 4);
+
+    // block_first_row + chromosome name maps.
+    self->block_first_row_.resize(n_blocks);
+    int64_t acc = 0;
+    for (uint32_t i = 0; i < n_blocks; ++i) { self->block_first_row_[i] = acc; acc += self->n_rows_[i]; }
+    for (uint32_t b = 0; b < n_blocks; ++b) {
+        int64_t cid = self->cids_[b];
+        if (self->rank_to_name_.count(cid)) continue;
+        std::string nm;
+        lociss_v4::json_object_value(meta, "rank_to_name", std::to_string(cid), &nm);
+        if (nm.empty()) nm = std::to_string(cid);
+        self->rank_to_name_[cid] = nm;
+        self->name_to_rank_[nm]  = cid;
+    }
+
+    // ── display schema: Chromosome (synthesized) + stored columns ───────────
+    arrow::FieldVector fields;
+    fields.push_back(arrow::field("Chromosome", arrow::utf8()));
+    for (int c = 0; c < (int)n_cols; ++c)
+        fields.push_back(arrow::field(self->stored_[(size_t)c], self->col_types_[(size_t)c]));
+    self->schema_ = arrow::schema(fields);
+
+    auto df = arrow::io::ReadableFile::Open(path);
+    if (!df.ok()) return "LociSSD v4: cannot open data '" + path + "': " + df.status().ToString();
+    self->data_ = df.ValueOrDie();
+
+    if (!cfg.region.empty()) {
+        std::string err = self->build_region(cfg);
+        if (!err.empty()) return err;
+    }
+    *out = std::move(self);
+    return "";
+}
+
+// Region (-r) — block-prune via the index zone-map (§5), then per-row overlap
+// in read_chunk. Mirrors ParquetSource's region_mode_ exact-count pass.
+std::string LocissV4Source::build_region(const Config& cfg) {
+    region_mode_ = true;
+    auto windows = parse_region_list(cfg.region, cfg.coords_one_based);
+    for (const auto& w : windows) {
+        auto it = name_to_rank_.find(w.chrom);
+        if (it == name_to_rank_.end()) continue;          // chrom not present
+        int64_t cid = it->second;
+        int lo_c = (int)(std::lower_bound(cids_.begin(), cids_.end(), cid) - cids_.begin());
+        int hi_c = (int)(std::upper_bound(cids_.begin(), cids_.end(), cid) - cids_.begin());
+        if (lo_c >= hi_c) continue;
+        int64_t hi = w.end, lo = w.start;
+        int ub = (hi == INT64_MAX) ? hi_c
+            : (int)(std::lower_bound(min_start_.begin() + lo_c,
+                                     min_start_.begin() + hi_c, hi) - min_start_.begin());
+        int lb = (lo == INT64_MIN) ? lo_c
+            : (int)(std::upper_bound(prefix_max_end_.begin() + lo_c,
+                                     prefix_max_end_.begin() + hi_c, lo) - prefix_max_end_.begin());
+        for (int b = lb; b < ub; ++b)
+            if (lo == INT64_MIN || max_end_[(size_t)b] > lo)
+                slices_.push_back({b, w});
+    }
+    slice_first_row_.assign(slices_.size(), 0);
+    slice_count_.assign(slices_.size(), 0);
+    int64_t total = 0;
+    for (size_t i = 0; i < slices_.size(); ++i) {
+        slice_first_row_[i] = total;
+        std::shared_ptr<arrow::Table> t;
+        if (read_chunk((int)i, {1}, &t).ok() && t) slice_count_[i] = t->num_rows();
+        total += slice_count_[i];
+    }
+    region_total_ = total;
     return "";
 }
 
@@ -10996,6 +11593,18 @@ std::string open_source(const std::string& path, const Config& cfg,
             if (!err.empty()) return err;
             *out = std::move(src);
             return "";
+        }
+        // LociSSD v4 "colblock": data magic "LSB1". (v3 .lociss is Parquet → the
+        // PAR1 sniff above; dispatch is by magic, per the spec.)
+        if (buf.ok() && (*buf)->size() >= 4) {
+            const uint8_t* mm = (*buf)->data();
+            if (mm[0]=='L' && mm[1]=='S' && mm[2]=='B' && mm[3]=='1') {
+                std::unique_ptr<LocissV4Source> src;
+                std::string err = LocissV4Source::open(path, cfg, &src);
+                if (!err.empty()) return err;
+                *out = std::move(src);
+                return "";
+            }
         }
         if (!is_parquet) {
             return "'" + path + "': unrecognised file extension. "
