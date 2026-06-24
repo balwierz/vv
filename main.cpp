@@ -6048,7 +6048,12 @@ public:
         return all_read_ ? total_rows_ : -1;
     }
     int     num_chunks()                        const override {
-        return is_feather_ ? (int)batches_.size() : num_record_batches_;
+        if (is_feather_) return (int)batches_.size();
+        // A 0-batch Arrow IPC seeds one zero-row batch (see open) so its schema
+        // still renders; surface that instead of the raw 0, which would make
+        // the seeded batch unreachable and the table view draw nothing.
+        return num_record_batches_ > 0 ? num_record_batches_
+                                       : (int)batches_.size();
     }
     arrow::Status read_status()                 const override { return read_status_; }
     ChunkMeta chunk_meta(int i)                 const override {

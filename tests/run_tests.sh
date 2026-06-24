@@ -53,6 +53,14 @@ run_case fastq_gz_tsv --tsv --no-header "$DATA/tiny.fq.gz"
 run_case tsv_tsv      --tsv --no-header "$DATA/tiny.tsv"
 run_case csv_tsv      --tsv --no-header "$DATA/tiny.csv"
 run_case arrow_tsv    --tsv --no-header "$DATA/tiny.arrow"
+# Empty Arrow IPC (schema, zero record batches): the table view must render the
+# column header + "0 rows" like an empty Parquet, not draw nothing (the seeded
+# zero-row batch was unreachable when num_chunks() reported 0).
+if [ -f "$DATA/tiny.empty.arrow" ]; then
+    EMPTY_IPC=$("$VV" --no-interactive --color=never "$DATA/tiny.empty.arrow" 2>&1)
+    assert_contains "empty_ipc_renders_header" "$EMPTY_IPC" "Chr"
+    assert_contains "empty_ipc_zero_rows"      "$EMPTY_IPC" "0 rows"
+fi
 run_case paf_tsv      --tsv --no-header "$DATA/tiny.paf"
 run_case paf_gz_tsv   --tsv --no-header "$DATA/tiny.paf.gz"
 

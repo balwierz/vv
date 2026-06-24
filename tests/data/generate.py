@@ -100,6 +100,12 @@ with pa.OSFile(str(HERE / "tiny.arrow"), "wb") as f:
         w.write_batch(table.slice(0, 10).to_batches()[0])
         w.write_batch(table.slice(10, 10).to_batches()[0])
 
+# tiny.empty.arrow: a valid Arrow IPC with a schema but zero record batches.
+# The reader seeds a zero-row batch so the schema renders, but num_chunks()
+# used to report 0 (num_record_batches_) and the table view drew nothing.
+with pa.OSFile(str(HERE / "tiny.empty.arrow"), "wb") as f:
+    ipc.new_file(f, schema).close()
+
 # ── BED ──────────────────────────────────────────────────────────────────────
 # Use round() to avoid float32 noise leaking into the text fixture.
 bed = "\n".join(
