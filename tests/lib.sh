@@ -11,9 +11,14 @@ assert_eq_file() {
     # output captured from another (e.g. /home/runner/work/vv/vv/tests/data
     # on GitHub-hosted CI). Strips everything up to and including
     # "/tests/data/" so the line reads "File: tests/data/tiny.parquet".
+    # Also normalise the writer library version in the "Created by:" footer
+    # (e.g. "parquet-cpp-arrow version 24.0.0") — fixtures are regenerated in CI
+    # with whatever pyarrow is installed, so the exact version drifts and isn't
+    # something vv controls or should diff on.
     local _a="/tmp/vv-test.a" _b="/tmp/vv-test.b"
-    sed -E 's@(File: |/)/?[^[:space:]]*tests/data/@\1tests/data/@g' "$2" > "$_a"
-    sed -E 's@(File: |/)/?[^[:space:]]*tests/data/@\1tests/data/@g' "$3" > "$_b"
+    local _norm='s@(File: |/)/?[^[:space:]]*tests/data/@\1tests/data/@g; s@(parquet-cpp-arrow version )[0-9][0-9.]*@\1X@g'
+    sed -E "$_norm" "$2" > "$_a"
+    sed -E "$_norm" "$3" > "$_b"
     if diff -u "$_b" "$_a" > /tmp/vv-test.diff 2>&1; then
         PASS=$((PASS + 1))
         echo "  ok    $1"

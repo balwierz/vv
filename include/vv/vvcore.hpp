@@ -218,6 +218,10 @@ public:
     virtual std::string created_by() const { return ""; }
     // Header lines shown before the table (BED track/browser lines).
     virtual std::vector<std::string> preamble_above() const { return {}; }
+    // One-line banner shown prominently on top (non-interactive: above the
+    // table via preamble_above(); TUI: a reserved top row). Empty = none.
+    // Used for the LociSSD genome assembly / species / element-count summary.
+    virtual std::string top_banner() const { return ""; }
     // Meta header lines shown after the schema (VCF/BAM/SAM/GFF).
     virtual std::vector<std::string> preamble_below() const { return {}; }
     // Post-process a cell value for human-readable display (table view and TUI).

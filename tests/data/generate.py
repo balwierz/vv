@@ -290,6 +290,7 @@ manifest = json.dumps({
     "writer_version": "vv tests/data/generate.py",
     "created_utc":    "2026-05-07T00:00:00+00:00",
     "row_count":      5,
+    "assembly":       "hg38",   # species omitted -> derived (Homo sapiens) in the banner
     "chromosomes": [
         {"name": "chr1", "rows": 3, "row_offset": 0,
          "min_start": 100,  "max_start": 1000, "max_end": 1200},

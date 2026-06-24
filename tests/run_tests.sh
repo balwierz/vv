@@ -140,6 +140,17 @@ if [ -z "$EMPTY" ]; then
 else
     FAIL=$((FAIL + 1)); echo "  FAIL  lociss_region_empty (expected empty output, got: $EMPTY)"
 fi
+# LociSSD top banner: genome assembly (+ species, derived when the manifest omits
+# it) and the total element count, shown above the table. Plain Parquet has none.
+LOC_BANNER=$("$VV" --no-interactive --color=never "$DATA/tiny.lociss" 2>&1 | head -1)
+assert_contains "lociss_banner_assembly" "$LOC_BANNER" "hg38"
+assert_contains "lociss_banner_species"  "$LOC_BANNER" "Homo sapiens"
+assert_contains "lociss_banner_count"    "$LOC_BANNER" "5 elements"
+refute_contains "parquet_no_banner" \
+    "$("$VV" --no-interactive --color=never "$DATA/tiny.parquet" 2>&1)" "LociSSD"
+# The banner is a table-view header only — it must NOT leak into --tsv export.
+refute_contains "lociss_banner_not_in_tsv" \
+    "$("$VV" --tsv "$DATA/tiny.lociss" 2>&1)" "elements"
 # Generic Parquet range queries: auto-detected chrom/start/end columns,
 # plus the --region-cols override path.
 PQ_REG=$("$VV" --tsv --no-header -r chr1:1000-2500 "$DATA/tiny.parquet" | wc -l)
