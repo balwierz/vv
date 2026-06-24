@@ -343,9 +343,9 @@ be done first: it catches this whole bug class automatically.
 - [x] `main.cpp:635` — Missing argument to a known flag reports "Unknown option" and dumps full usage — fixed on `fix/missing-arg-error` (an arg-taking flag in last position fails its `i + 1 < argc` guard and fell through to the generic else; that branch now checks the flag against the set of arg-taking options and prints "Option X requires an argument." (exit 2, no full-usage dump — matching the existing --coords/--delimiter targeted errors) instead of the misleading "Unknown option". A genuinely unknown flag still reports "Unknown option" + usage.) Tests: `vv --tab` → targeted error, not "Unknown option"; `vv --bogus-flag` → still "Unknown option".
 - [x] `main.cpp:712` — --heatmap and --image-mode are implemented but undocumented in every reference (help, man, README, all 3 completions) — fixed on `feat/heatmap` (help + man + README + bash/fish/zsh completions all updated)
 - [x] `main.cpp:3117` — CSV/TSV type inference silently corrupts leading-zero IDs and scientific notation — fixed on `fix/csv-leading-zero-ids` (a column with a leading-zero integer value like "007" is now read as utf8 so the zeros survive, instead of inference making it int and showing 7. A pre-scan of a sample — quote-aware via split_delimited_line — flags columns whose values match ^0[0-9]+$ (is_leading_zero_int); those names are forced to utf8 via ConvertOptions::column_types in both make_reader (DelimitedSource CSV/TSV, incl. the autogen-retry + tabix/region readers) and csv_buffer_to_table (xlsx/ods/markdown/html). The detection mirrors the reader's column naming so the forced names line up. Scientific notation is INTENTIONALLY left numeric — it's ambiguous and forcing it would corrupt real numeric scientific data (e.g. p-values 1.5e-8). Tests: id col → string, sample int col unchanged, 007 preserved in --tsv and markdown, 1e5 stays double.)
-- [ ] `main.cpp:9874` — --image-mode value is never validated; typos silently fall back to Auto
+- [x] `main.cpp:9874` — --image-mode value is never validated; typos silently fall back to Auto — fixed on `fix/audit-batch` (--image-mode is validated at parse time against auto|kitty|sixel|halfblock|ascii, exit 2 on a typo, instead of silently ignoring it when --heatmap isn't run)
 - [ ] `main.cpp:12054` — A single column wider than the terminal renders a completely blank table
-- [ ] `main.cpp:14459` — No NO_COLOR environment-variable support
+- [x] `main.cpp:14459` — No NO_COLOR environment-variable support — fixed on `fix/audit-batch` (NO_COLOR per no-color.org: any non-empty value resolves cfg.color Auto→Never in parse_args, so all output paths honour it; explicit --color=always/never still win)
 - [x] `man/vv.1:1` — Man page version/date stale: shows 1.4.0 / May 2026 while binary is 1.9.0 — bumped to 1.9.1 / June 2026 in the release-prep commit
 - [ ] `man/vv.1:119` — NumPy .npz format missing from man page and from all three shell completions
 - [ ] `tests/run_tests.sh:43` — Several formats have zero smoke-test coverage (.npz, .paf range, .cram, .sam, .gff/.gtf, .loom/generic h5 already partial)
@@ -355,12 +355,12 @@ be done first: it catches this whole bug class automatically.
 **Bugs**
 - [ ] `gui/kde/thumbrender.cpp:58` — Thumbnail elision uses non-bold QFontMetrics for bold header text
 - [ ] `main.cpp:1150` — emit_cell dims a genuine trailing U+2026 in cell data as if it were a truncation marker
-- [ ] `main.cpp:1669` — Region integer parser silently accepts trailing garbage (e.g. 'chr1:-5-10')
+- [x] `main.cpp:1669` — Region integer parser silently accepts trailing garbage (e.g. 'chr1:-5-10') — fixed on `fix/audit-batch` (region int parser now rejects unconsumed trailing input via stoll's pos out-param, so 'chr1:5x' / 'chr1:-5-10' no longer silently parse; apply_region_modifiers validates -r up front and returns 'Invalid region …' instead of parse_region_list silently dropping the token into a whole-file query)
 - [ ] `main.cpp:3107` — block_size of 16 MiB causes a hard parse failure when a single delimited line exceeds it
 - [ ] `main.cpp:3937` — Pileup insertion rendering can read past the read's SEQ on inconsistent CIGAR
 - [x] `main.cpp:5159` — SQLite identifier quoting does not escape embedded double-quotes, breaking on (or mis-parsing) tables/columns containing a " character — fixed on `fix/sqlite-ident-quote` (new sqlite_quote_ident() doubles embedded quotes per SQL; used at all three table-name interpolations — PRAGMA table_info, SELECT *, lazy COUNT(*). A table named a"b previously built the malformed/injectable `"a"b"` and failed to open; now reads. Columns use SELECT * and filter/sort is in-memory, so no column-name injection exists. Fixture tiny.quoteid.sqlite.)
-- [ ] `main.cpp:5371` — Empty Arrow IPC file seeds a zero-row batch that num_chunks() (=num_record_batches_=0) makes unreachable
-- [ ] `main.cpp:7176` — NPY descr quote-stripping mishandles malformed/odd-length quoting
+- [x] `main.cpp:5371` — Empty Arrow IPC file seeds a zero-row batch that num_chunks() (=num_record_batches_=0) makes unreachable — fixed on `fix/audit-batch` (num_chunks() for a 0-batch Arrow IPC now returns batches_.size() (the seeded zero-row batch) instead of num_record_batches_=0, so the table view renders the column header + '0 rows' like an empty Parquet instead of drawing nothing. Fixture tiny.empty.arrow.)
+- [x] `main.cpp:7176` — NPY descr quote-stripping mishandles malformed/odd-length quoting — fixed on `fix/audit-batch` (NPY descr quote-stripping now requires the closing quote to match the opening one before stripping, so a malformed/unterminated value like "'<f8" no longer has its real last char chopped by the blind substr(1,size-2); valid quoted descrs are unchanged)
 - [ ] `main.cpp:7658` — decode_pileup: '*' deletion placeholder pollutes mean_qual
 - [ ] `main.cpp:9137` — HTML <a> with empty/missing href still emits a stray OSC 8 close on the matching close tag
 
@@ -377,11 +377,11 @@ be done first: it catches this whole bug class automatically.
 - [ ] `main.cpp:11965` — Per-redraw integer width refit re-stringifies every visible cell on every keypress
 
 **Usability**
-- [ ] `main.cpp:718` — `--color always` (space-separated) misparsed as a filename → "file not found"
+- [x] `main.cpp:718` — `--color always` (space-separated) misparsed as a filename → "file not found" — fixed on `fix/audit-batch` (--color now accepts the space-separated form `--color always|never|auto`, not just `--color=…`; a bare --color or a non-mode next token stays auto)
 - [ ] `main.cpp:1657` — No chrom-name normalization between query and file ('chr1' vs '1') silently returns zero rows
 - [ ] `main.cpp:1698` — `-r chrom:N` (single coordinate) means a 1-bp window, diverging from the samtools convention users expect
 - [~] `main.cpp:9496` — .fods (Flat ODS) is dispatched in code but documented/completed nowhere — now in the README formats table (`docs/readme-npz-gui`); man page + shell completions still pending
 - [ ] `main.cpp:9803` — Auto mode never uses inline-image protocols on iTerm2/WezTerm (falls to half-block)
 - [ ] `main.cpp:12334` — Status bar row range overshoots loaded data on streaming sources
 - [ ] `main.cpp:14683` — Auto-TUI failure falls through silently with no diagnostic unless -i was given
-- [ ] `man/vv.1:375` — No documented exit-status / EXIT STATUS section
+- [x] `man/vv.1:375` — No documented exit-status / EXIT STATUS section — fixed on `fix/audit-batch` (added an EXIT STATUS section — 0 success / 1 runtime+usage error / 2 invalid option argument, verified empirically — plus an ENVIRONMENT section documenting NO_COLOR and VV_CATEGORY_DICT_CAP)

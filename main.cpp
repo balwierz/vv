@@ -727,13 +727,26 @@ static Config parse_args(int argc, char** argv) {
             cfg.tab = argv[++i];
         } else if (!std::strcmp(argv[i], "--theme") && i + 1 < argc) {
             cfg.theme = argv[++i];
-        } else if (!std::strcmp(argv[i], "--color") ||
-                   !std::strcmp(argv[i], "--color=auto")) {
+        } else if (!std::strcmp(argv[i], "--color=auto")) {
             cfg.color = ColorMode::Auto;
         } else if (!std::strcmp(argv[i], "--color=always")) {
             cfg.color = ColorMode::Always;
         } else if (!std::strcmp(argv[i], "--color=never")) {
             cfg.color = ColorMode::Never;
+        } else if (!std::strcmp(argv[i], "--color")) {
+            // Also accept the space-separated form "--color MODE" (GNU-style);
+            // a bare "--color" with no mode (or a non-mode next token, e.g. a
+            // filename) means auto.
+            if (i + 1 < argc && (!std::strcmp(argv[i + 1], "auto") ||
+                                 !std::strcmp(argv[i + 1], "always") ||
+                                 !std::strcmp(argv[i + 1], "never"))) {
+                const char* m = argv[++i];
+                cfg.color = !std::strcmp(m, "always") ? ColorMode::Always
+                          : !std::strcmp(m, "never")  ? ColorMode::Never
+                                                      : ColorMode::Auto;
+            } else {
+                cfg.color = ColorMode::Auto;
+            }
         } else if (!std::strcmp(argv[i], "--tsv")) {
             cfg.delimiter = '\t';
         } else if (!std::strcmp(argv[i], "--csv")) {
@@ -772,6 +785,24 @@ static Config parse_args(int argc, char** argv) {
         }
     }
     if (cfg.path.empty()) { print_usage(argv[0]); std::exit(1); }
+    // NO_COLOR (https://no-color.org): any non-empty value disables colour,
+    // unless the user explicitly chose --color=always/never (those win, per the
+    // spec). Resolving it into cfg.color here means every downstream consumer
+    // (table, delimited, markdown, heatmap, TUI) honours it from one place.
+    if (cfg.color == ColorMode::Auto) {
+        if (const char* e = std::getenv("NO_COLOR"); e && e[0])
+            cfg.color = ColorMode::Never;
+    }
+    // Validate --image-mode up front so a typo is reported rather than silently
+    // ignored (the heatmap renderer also checks, but only when --heatmap runs).
+    if (!cfg.image_mode.empty() && cfg.image_mode != "auto" &&
+        cfg.image_mode != "kitty" && cfg.image_mode != "sixel" &&
+        cfg.image_mode != "halfblock" && cfg.image_mode != "ascii") {
+        std::fprintf(stderr, "--image-mode: unknown mode '%s' "
+                     "(use auto|kitty|sixel|halfblock|ascii)\n",
+                     cfg.image_mode.c_str());
+        std::exit(2);
+    }
     return cfg;
 }
 
@@ -1760,8 +1791,11 @@ static bool parse_region_one(const std::string& s, Region* out,
     else { a = rest.substr(0, dash); b = rest.substr(dash + 1); }
     auto parse_int = [](const std::string& t, int64_t* v) {
         if (t.empty()) return true;  // open end
-        try { *v = std::stoll(t); return true; }
-        catch (...) { return false; }
+        try {
+            size_t pos = 0;
+            *v = std::stoll(t, &pos);
+            return pos == t.size();   // reject trailing garbage ("5x", "5-10")
+        } catch (...) { return false; }
     };
     int64_t pa = INT64_MIN, pb = INT64_MAX;
     bool have_a = !a.empty();
@@ -2220,6 +2254,26 @@ static std::shared_ptr<arrow::Table> project_to_requested(
 // Declared in vvcore.hpp (external linkage) so GUI frontends can offer region
 // queries; parse_region_list / Region stay internal to this TU.
 std::string apply_region_modifiers(Config& cfg) {
+    // Reject a malformed -r / --region up front. parse_region_list silently
+    // drops a token it can't parse, which would turn an invalid region (e.g.
+    // "chr1:-5-10" or "chr1:5x") into a whole-file query — surface it instead.
+    if (!cfg.region.empty()) {
+        size_t pos = 0;
+        while (pos <= cfg.region.size()) {
+            size_t comma = cfg.region.find(',', pos);
+            std::string tok = cfg.region.substr(
+                pos, comma == std::string::npos ? std::string::npos : comma - pos);
+            if (!tok.empty()) {
+                Region r{};
+                if (!parse_region_one(tok, &r, cfg.coords_one_based))
+                    return "Invalid region '" + tok +
+                           "' (expected chrom[:start[-end]])";
+            }
+            if (comma == std::string::npos) break;
+            pos = comma + 1;
+        }
+    }
+
     // 0) Canonicalise to UCSC (0-based half-open). --coords NCBI applies only
     // to -r / --region inputs; --regions-file entries are always BED (UCSC)
     // per the spec. After this, cfg.region is guaranteed UCSC convention
@@ -5994,7 +6048,12 @@ public:
         return all_read_ ? total_rows_ : -1;
     }
     int     num_chunks()                        const override {
-        return is_feather_ ? (int)batches_.size() : num_record_batches_;
+        if (is_feather_) return (int)batches_.size();
+        // A 0-batch Arrow IPC seeds one zero-row batch (see open) so its schema
+        // still renders; surface that instead of the raw 0, which would make
+        // the seeded batch unreachable and the table view draw nothing.
+        return num_record_batches_ > 0 ? num_record_batches_
+                                       : (int)batches_.size();
     }
     arrow::Status read_status()                 const override { return read_status_; }
     ChunkMeta chunk_meta(int i)                 const override {
@@ -8331,9 +8390,13 @@ static std::string parse_npy_header(const uint8_t* buf, size_t n, NpyHeader* out
     std::string hdr((const char*)(buf + hdr_start), hdr_len);
 
     std::string descr = find_dict_value(hdr, "descr");
-    // strip quotes
+    // Strip the surrounding quotes — but only when both ends are the *same*
+    // quote. A malformed/unterminated value (e.g. "'<f8" with no closing quote)
+    // would otherwise have its real last character chopped by the blind
+    // substr(1, size-2).
     if (descr.size() >= 2 &&
-        (descr.front() == '\'' || descr.front() == '"')) {
+        (descr.front() == '\'' || descr.front() == '"') &&
+        descr.back() == descr.front()) {
         descr = descr.substr(1, descr.size() - 2);
     }
     out->dtype_str = descr;

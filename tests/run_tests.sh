@@ -53,6 +53,14 @@ run_case fastq_gz_tsv --tsv --no-header "$DATA/tiny.fq.gz"
 run_case tsv_tsv      --tsv --no-header "$DATA/tiny.tsv"
 run_case csv_tsv      --tsv --no-header "$DATA/tiny.csv"
 run_case arrow_tsv    --tsv --no-header "$DATA/tiny.arrow"
+# Empty Arrow IPC (schema, zero record batches): the table view must render the
+# column header + "0 rows" like an empty Parquet, not draw nothing (the seeded
+# zero-row batch was unreachable when num_chunks() reported 0).
+if [ -f "$DATA/tiny.empty.arrow" ]; then
+    EMPTY_IPC=$("$VV" --no-interactive --color=never "$DATA/tiny.empty.arrow" 2>&1)
+    assert_contains "empty_ipc_renders_header" "$EMPTY_IPC" "Chr"
+    assert_contains "empty_ipc_zero_rows"      "$EMPTY_IPC" "0 rows"
+fi
 run_case paf_tsv      --tsv --no-header "$DATA/tiny.paf"
 run_case paf_gz_tsv   --tsv --no-header "$DATA/tiny.paf.gz"
 
@@ -539,6 +547,12 @@ else
 fi
 COORDS_BAD=$("$VV" -r chr1:1-2 --coords nonsense "$DATA/tiny.parquet" 2>&1 || true)
 assert_contains "coords_unknown_value_errors" "$COORDS_BAD" "UCSC"
+# A malformed region (trailing garbage after the coordinate) is rejected with a
+# clear error, not silently dropped into a whole-file query.
+REGION_BAD=$("$VV" -r chr1:5x --no-interactive "$DATA/tiny.parquet" 2>&1 || true)
+assert_contains "region_trailing_garbage_rejected" "$REGION_BAD" "Invalid region"
+REGION_BAD2=$("$VV" -r chr1:-5-10 --no-interactive "$DATA/tiny.parquet" 2>&1 || true)
+assert_contains "region_double_dash_rejected" "$REGION_BAD2" "Invalid region"
 # A known flag missing its argument gives a targeted error, not "Unknown option".
 MISSING_ARG=$("$VV" --tab 2>&1 || true)
 assert_contains "missing_arg_targeted_error"   "$MISSING_ARG" "requires an argument"
@@ -546,6 +560,21 @@ refute_contains "missing_arg_not_unknown_option" "$MISSING_ARG" "Unknown option"
 # A genuinely unknown flag still reports "Unknown option".
 UNKNOWN_OPT=$("$VV" --bogus-flag "$DATA/tiny.parquet" 2>&1 || true)
 assert_contains "unknown_option_still_reported" "$UNKNOWN_OPT" "Unknown option"
+
+# --color accepts the space-separated form ("--color always"), not just
+# "--color=always"; the space form used to be misread as a filename.
+CLR_SPACE=$("$VV" --color always --no-interactive --no-index "$DATA/tiny.parquet" 2>&1)
+assert_contains "color_space_separated_renders" "$CLR_SPACE" "$(printf '\033[')"
+refute_contains "color_space_not_file_error"    "$CLR_SPACE" "Cannot open"
+# NO_COLOR (https://no-color.org): disables colour when the mode is auto…
+NOCOLOR_OUT=$(NO_COLOR=1 "$VV" --no-interactive --no-index "$DATA/tiny.parquet" 2>&1)
+refute_contains "no_color_env_disables_color"   "$NOCOLOR_OUT" "$(printf '\033[')"
+# …but an explicit --color=always still wins over NO_COLOR.
+NOCOLOR_FORCE=$(NO_COLOR=1 "$VV" --color=always --no-interactive --no-index "$DATA/tiny.parquet" 2>&1)
+assert_contains "no_color_overridden_by_always"  "$NOCOLOR_FORCE" "$(printf '\033[')"
+# --image-mode validates its value at parse time (a typo is an error, exit 2).
+IMG_BAD=$("$VV" --image-mode bogus --no-interactive "$DATA/tiny.parquet" 2>&1 || true)
+assert_contains "image_mode_typo_rejected" "$IMG_BAD" "unknown mode"
 
 echo
 # --theme: every built-in name parses cleanly; unknown names get a
