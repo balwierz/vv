@@ -1,3 +1,4 @@
+LociSSD  •  hg38 (Homo sapiens)  •  5 elements
 ╭────────────┬───────┬───────┬────────┬───────╮
 │ Chromosome │ Start │ End   │ Name   │ Score │
 ├────────────┼───────┼───────┼────────┼───────┤
@@ -22,4 +23,4 @@ MaxEndSoFar  int32   yes
 
 File: /home/piotr/Sources/ParquetViewer/tests/data/tiny.lociss
 Format: LociSSD  |  Row groups: 3  |  Compressed: 1.7 KiB
-Created by: parquet-cpp-arrow version 24.0.0
+Created by: parquet-cpp-arrow version 22.0.0

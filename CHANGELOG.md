@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **LociSSD top banner.** The viewer shows a banner above the table with the
+  genome assembly and species — derived from the assembly (e.g. `hg38` →
+  *Homo sapiens*) when the manifest's `species` is null — and the total element
+  count, e.g. `LociSSD • hg38 (Homo sapiens) • 633_678 elements`. Appears in both
+  the interactive TUI (a reserved top row) and non-interactive table output.
+
 ## [1.13.0] - 2026-06-22
 
 A focused follow-up that makes AnnData `obs` / `var` actually dumpable as text.

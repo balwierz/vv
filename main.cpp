@@ -2554,6 +2554,63 @@ static bool parse_lociss_chromosomes(const std::string& json,
     return !out->empty();
 }
 
+// Extract a top-level scalar (string or number) for `key` from the LociSSD
+// manifest JSON, as a string. Returns false if the key is absent or null.
+// The manifest's top-level keys (assembly / species / row_count) don't collide
+// with the per-chromosome object keys, so a literal search is safe.
+static bool lociss_manifest_value(const std::string& json, const char* key,
+                                  std::string* out) {
+    std::string needle = std::string("\"") + key + "\"";
+    size_t q = json.find(needle);
+    if (q == std::string::npos) return false;
+    q = json.find(':', q + needle.size());
+    if (q == std::string::npos) return false;
+    ++q;
+    while (q < json.size() && std::isspace((unsigned char)json[q])) ++q;
+    if (q >= json.size()) return false;
+    if (json[q] == '"') {                         // string value
+        ++q; std::string v;
+        while (q < json.size() && json[q] != '"') {
+            if (json[q] == '\\' && q + 1 < json.size()) { v += json[q + 1]; q += 2; }
+            else v += json[q++];
+        }
+        *out = std::move(v);
+        return !out->empty();
+    }
+    if (json.compare(q, 4, "null") == 0) return false;
+    size_t e = q;                                 // number / bare token
+    while (e < json.size() && json[e] != ',' && json[e] != '}' &&
+           json[e] != ']' && !std::isspace((unsigned char)json[e])) ++e;
+    *out = json.substr(q, e - q);
+    return e > q;
+}
+
+// Best-effort species name for a genome assembly, used when the LociSSD
+// manifest leaves `species` null (common). Covers the usual model organisms;
+// matched case-insensitively against the UCSC / Ensembl assembly aliases.
+static std::string assembly_to_species(const std::string& assembly) {
+    std::string a;
+    for (char c : assembly) a += (char)std::tolower((unsigned char)c);
+    auto has = [&](std::initializer_list<const char*> keys) {
+        for (const char* k : keys) if (a == k) return true;
+        return false;
+    };
+    if (has({"hg38", "hg19", "hg18", "grch38", "grch37", "grch36", "t2t-chm13"}))
+        return "Homo sapiens";
+    if (has({"mm39", "mm10", "mm9", "grcm39", "grcm38"})) return "Mus musculus";
+    if (has({"rn7", "rn6", "rn5", "mratbn7.2"}))          return "Rattus norvegicus";
+    if (has({"danrer11", "danrer10", "grcz11", "grcz10"})) return "Danio rerio";
+    if (has({"dm6", "dm3", "bdgp6"}))                     return "Drosophila melanogaster";
+    if (has({"ce11", "ce10", "wbcel235"}))                return "Caenorhabditis elegans";
+    if (has({"saccer3", "saccer2", "r64-1-1"}))           return "Saccharomyces cerevisiae";
+    if (has({"galgal6", "galgal5", "grcg6a"}))            return "Gallus gallus";
+    if (has({"susscr11", "susscr3"}))                     return "Sus scrofa";
+    if (has({"bostau9", "bostau8", "ars-ucd1.2"}))        return "Bos taurus";
+    if (has({"xentro10", "xentro9"}))                     return "Xenopus tropicalis";
+    if (has({"tair10"}))                                  return "Arabidopsis thaliana";
+    return "";
+}
+
 // ── Generic Parquet coordinate-column detection ──────────────────────────────
 //
 // For region queries on plain Parquet (no LociSSD manifest), discover which
@@ -2751,6 +2808,8 @@ class ParquetSource : public TabularSource {
     std::string                                  path_;
     std::vector<int64_t>                         chunk_start_;
     bool                                         is_lociss_ = false;
+    std::string                                  lociss_assembly_;   // e.g. "hg38"
+    std::string                                  lociss_species_;    // e.g. "Homo sapiens"
 
     // ── LociSSD region-query state ───────────────────────────────────────────
     // Populated only when cfg.region is set on a LociSSD file. A "slice" is a
@@ -2824,6 +2883,15 @@ public:
                 auto v = kv->Get("lociSSD_manifest");
                 if (v.ok()) lociss_manifest_json = *v;
             }
+        }
+        if (self->is_lociss_ && !lociss_manifest_json.empty()) {
+            // Genome assembly + species for the header banner (see top_banner()).
+            lociss_manifest_value(lociss_manifest_json, "assembly",
+                                  &self->lociss_assembly_);
+            if (!lociss_manifest_value(lociss_manifest_json, "species",
+                                       &self->lociss_species_) &&
+                !self->lociss_assembly_.empty())
+                self->lociss_species_ = assembly_to_species(self->lociss_assembly_);
         }
 
         int64_t acc = 0;
@@ -3276,6 +3344,26 @@ public:
         s += "Row groups: " + std::to_string(meta_->num_row_groups()) +
              "  |  Compressed: " + fmt_size(sz);
         return s;
+    }
+    // Prominent top banner for LociSSD: genome assembly (+ species) and the
+    // total element count. Empty for plain Parquet.
+    std::string top_banner() const override {
+        if (!is_lociss_) return "";
+        std::string s = "LociSSD";
+        if (!lociss_assembly_.empty()) {
+            s += "  \xe2\x80\xa2  " + lociss_assembly_;
+            if (!lociss_species_.empty()) s += " (" + lociss_species_ + ")";
+        }
+        int64_t n = meta_ ? meta_->num_rows() : -1;
+        if (n >= 0)
+            s += "  \xe2\x80\xa2  " + digits_with_sep(std::to_string(n)) + " elements";
+        return s;
+    }
+    // Render the banner above the table in non-interactive views (the TUI draws
+    // it as a reserved top row).
+    std::vector<std::string> preamble_above() const override {
+        std::string b = top_banner();
+        return b.empty() ? std::vector<std::string>{} : std::vector<std::string>{b};
     }
     std::string created_by() const override { return meta_->created_by(); }
     // Accessors used by --stats to walk per-row-group and per-column metadata
@@ -13028,11 +13116,16 @@ class TableTUI {
 
     static constexpr int HDR_H = 3;   // column-name row + type row + rule
     static constexpr int FTR_H = 1;   // status bar
-    // Tab-bar row above the column header. Present only when more than
-    // one tab is open; recomputed at the top of draw().
+    // Banner row (row 0) + tab-bar row, both above the column header and
+    // recomputed at the top of draw(). The banner is the active source's
+    // top_banner() (LociSSD assembly/species/count); the tab bar appears only
+    // with more than one tab. Vertical layout stacks: banner, tabs, header, data.
+    int                  banner_h_ = 0;
     int                  tabbar_h_ = 0;
-    int data_top_y()    const { return tabbar_h_ + HDR_H; }
-    int data_lines() const { return std::max(0, scr_r_ - HDR_H - tabbar_h_ - FTR_H); }
+    int data_top_y()    const { return banner_h_ + tabbar_h_ + HDR_H; }
+    int data_lines() const {
+        return std::max(0, scr_r_ - HDR_H - tabbar_h_ - banner_h_ - FTR_H);
+    }
 
     // When a sort or filter is active the visible row count is the size of
     // sort_order_, not the underlying source size. Search wrap-around, the
@@ -13487,11 +13580,22 @@ class TableTUI {
     // The active tab is rendered in reverse video so it "pops" out of the
     // bar; inactive tabs are dimmed. If the bar overflows, we scroll so
     // the active tab is always visible and append "›" / "‹" markers.
+    // Row 0: the active source's top banner (LociSSD assembly/species/count),
+    // bold and padded across the width. banner_h_ reserves the row in draw().
+    void draw_banner() {
+        if (banner_h_ == 0) return;
+        std::string b = src_ ? src_->top_banner() : "";
+        if ((int)display_width(b) > scr_c_) b = truncate(b, scr_c_);
+        int pad = scr_c_ - (int)display_width(b);
+        if (pad > 0) b += std::string(pad, ' ');
+        nc_str(0, 0, b, A_BOLD, NCP_HEADER);
+    }
+
     void draw_tabbar() {
         tab_hit_zones_.clear();
         if (tabbar_h_ == 0) return;
 
-        const int row = 0;
+        const int row = banner_h_;   // sits just below the banner row (if any)
         const std::string hint = " [Tab] next  [⇧Tab] prev ";
         const int hint_w = (int)display_width(hint);
 
@@ -13594,9 +13698,9 @@ class TableTUI {
     }
 
     void draw_header(const std::vector<ColVis>& vc) {
-        const int y_names = tabbar_h_;
-        const int y_types = tabbar_h_ + 1;
-        const int y_rule  = tabbar_h_ + 2;
+        const int y_names = banner_h_ + tabbar_h_;
+        const int y_types = banner_h_ + tabbar_h_ + 1;
+        const int y_rule  = banner_h_ + tabbar_h_ + 2;
         if (!no_index_) {
             std::string idx_pad = " " + std::string(idx_w_, ' ') + " ";
             nc_str(y_names, 0, idx_pad, A_BOLD, NCP_INDEX);
@@ -14732,6 +14836,8 @@ private:
         // Reserve one screen row for the browser-style tab bar when more
         // than one tab is open. data_lines() picks this up automatically.
         tabbar_h_ = (sources_.size() > 1) ? 1 : 0;
+        // Reserve row 0 for the active source's top banner (LociSSD only).
+        banner_h_ = (src_ && !src_->top_banner().empty()) ? 1 : 0;
         // Once total is known, clamp top_row_ so the last page stays filled.
         // This handles the case where the user scrolled past EOF while streaming.
         {
@@ -14756,6 +14862,7 @@ private:
             fit_integer_widths_to_visible(virt);
         }
         vc = visible_cols();
+        draw_banner();
         draw_tabbar();
         draw_header(vc);
         int dl = data_lines();
@@ -15086,8 +15193,9 @@ public:
                             }
                         }
                         const int  data_y0   = data_top_y();
-                        const bool in_tabbar = (tabbar_h_ > 0 && me.y == 0);
-                        const bool in_header = (me.y >= tabbar_h_ &&
+                        // Rows stack as: [banner_h_] [tabbar_h_] [header] [data].
+                        const bool in_tabbar = (tabbar_h_ > 0 && me.y == banner_h_);
+                        const bool in_header = (me.y >= banner_h_ + tabbar_h_ &&
                                                 me.y < data_y0);
                         const bool in_data   = (me.y >= data_y0 &&
                                                 me.y < scr_r_ - 1);
