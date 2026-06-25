@@ -21,9 +21,10 @@ Supported formats:
 the \fBlociSSD_manifest\fR key in the Parquet footer; the derived
 \fBMaxEndSoFar\fR column is hidden from human-facing views but kept in
 \fB\-\-tsv\fR / \fB\-\-csv\fR / \fB\-\-parquet\fR output), or a v4 \(lqcolblock\(rq
-custom binary container (magic \fBLSB1\fR + a sidecar \fB.idx\fR zone-map index;
-zstd column chunks). Both are dispatched by magic and support \fB\-r\fR region
-queries
+custom binary container (magic \fBLSB1\fR + a zone-map index of zstd column
+chunks \(en the index is stored inline in a single self-contained file (v4.1,
+default) or in a sidecar \fB.idx\fR (legacy v4)). Both are dispatched by magic and
+support \fB\-r\fR region queries
 .IP \(bu 2
 \fB.bam\fR, \fB.cram\fR, \fB.sam\fR \(en sequence alignments (htslib)
 .IP \(bu 2
