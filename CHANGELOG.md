@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-06-25
+
 ### Added
 - **LociSSD v4.1 single-file layout.** The colblock reader now also reads v4.1
   files, where the `LSI1` index is stored **inline** in one self-contained file
