@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **LociSSD v4 ("colblock") reader.** vv now reads the v4 custom binary columnar
+  container (data magic `LSB1` + a sidecar `.idx` zone-map index; per-block
+  zstd-compressed column chunks with the DELTA / LENGTH / DICT / FRONTCODE /
+  ARENA / RAW / BOOL codecs), alongside the existing v3 Parquet `.lociss` —
+  dispatched by magic. Site-level reading (TUI + non-interactive + `--tsv`/etc.),
+  the assembly/species/element-count banner, and **`-r` region queries** pruned
+  via the index zone-map. The optional genotype matrix is not read (a site-level
+  reader is spec-conformant). Validated byte-for-byte against the Python
+  reference reader.
 - **LociSSD top banner.** The viewer shows a banner above the table with the
   genome assembly and species — derived from the assembly (e.g. `hg38` →
   *Homo sapiens*) when the manifest's `species` is null — and the total element

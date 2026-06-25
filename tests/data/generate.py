@@ -306,6 +306,109 @@ loc = loc.replace_schema_metadata({"lociSSD_manifest": manifest})
 # pruning is actually exercised by region-query tests.
 pq.write_table(loc, HERE / "tiny.lociss", compression="zstd", row_group_size=2)
 
+# ── LociSSD v4 "colblock" (tiny.v4.lociss + .idx) ───────────────────────────
+# A minimal hand-rolled v4 fixture (only pyarrow for the zstd frames). 2
+# chromosomes, block_rows=3 → 2 blocks (a block never spans a chromosome),
+# exercising codecs DELTA(Start)/LENGTH(End)/DICT(Strand)/FRONTCODE(ID)/RAW(Count)
+# /BOOL(Flag), a NULL (Count row 1) and an empty string (ID row 1, distinct from
+# null). Spec: Loci1/docs/lociss_columnar_format_spec.md. Lets the v4 reader be
+# tested without the private `loci` package.
+def _v4_zstd(b):
+    return pa.compress(memoryview(b), codec="zstd", asbytes=True)
+def _v4_chunk(payload, n, valid=None):
+    if valid is None:
+        body = b"\x00" + payload
+    else:
+        bm = bytearray((n + 7) // 8)
+        for i, v in enumerate(valid):
+            if v: bm[i >> 3] |= 1 << (i & 7)
+        body = b"\x01" + bytes(bm) + payload
+    return _v4_zstd(body)
+def _v4_i32(vals):  # RAW int32 (placeholder 0 for null positions)
+    return b"".join(struct.pack("<i", v if v is not None else 0) for v in vals)
+def _v4_delta(vals):
+    out = bytearray(); prev = 0
+    for i, v in enumerate(vals):
+        out += struct.pack("<i", v - (prev if i else 0)); prev = v
+    return bytes(out)
+def _v4_length(starts, ends):
+    return b"".join(struct.pack("<i", e - s) for s, e in zip(starts, ends))
+def _v4_dict(vals):
+    uniq, idx = [], {}
+    for v in vals:
+        if v not in idx: idx[v] = len(uniq); uniq.append(v)
+    blob = b"".join(u.encode() for u in uniq)
+    offs = [0]
+    for u in uniq: offs.append(offs[-1] + len(u.encode()))
+    out = struct.pack("<I", len(uniq)) + b"".join(struct.pack("<I", o) for o in offs) + blob
+    out += b"".join(struct.pack("<B", idx[v]) for v in vals)  # n_dict<=256 -> u8 codes
+    return out
+def _v4_frontcode(vals):
+    lcp, slen, suf, prev = [], [], bytearray(), b""
+    for v in vals:
+        vb = v.encode(); l = 0
+        while l < min(len(prev), len(vb)) and prev[l] == vb[l]: l += 1
+        lcp.append(l); slen.append(len(vb) - l); suf += vb[l:]; prev = vb
+    return (b"".join(struct.pack("<I", x) for x in lcp) +
+            b"".join(struct.pack("<I", x) for x in slen) + bytes(suf))
+def _v4_bool(vals):
+    bm = bytearray((len(vals) + 7) // 8)
+    for i, v in enumerate(vals):
+        if v: bm[i >> 3] |= 1 << (i & 7)
+    return bytes(bm)
+
+_v4_blocks = [
+    (0, {"Start": [100, 150, 200], "End": [101, 152, 201],
+         "Strand": ["+", "-", "+"], "ID": ["rs1", "", "rs10"],
+         "Count": [10, None, 30], "Flag": [True, False, True]}),
+    (1, {"Start": [300, 350], "End": [301, 360],
+         "Strand": ["-", "+"], "ID": ["rs100", "rs101"],
+         "Count": [40, 50], "Flag": [False, True]}),
+]
+_v4_stored = ["Start", "End", "Strand", "ID", "Count", "Flag"]
+_v4_schema = {"Start": "int32", "End": "int32", "Strand": "utf8",
+              "ID": "utf8", "Count": "int32", "Flag": "bool"}
+_v4_codecs = {"Start": 1, "End": 2, "Strand": 3, "ID": 4, "Count": 0, "Flag": 6}
+
+_data = bytearray(b"LSB1" + bytes([4]) + b"\x00\x00\x00")
+_off, _clen, _cids, _mins, _maxs, _nr, _pmax = [], [], [], [], [], [], []
+_run = {}
+for _cid, _rows in _v4_blocks:
+    _n = len(_rows["Start"])
+    _cids.append(_cid); _nr.append(_n)
+    _mins.append(min(_rows["Start"])); _me = max(_rows["End"]); _maxs.append(_me)
+    _run[_cid] = max(_run.get(_cid, -(1 << 62)), _me); _pmax.append(_run[_cid])
+    for _col in _v4_stored:
+        _vals = _rows[_col]
+        _valid = [v is not None for v in _vals] if any(v is None for v in _vals) else None
+        _cc = _v4_codecs[_col]
+        if   _cc == 0: _pay = _v4_i32(_vals)
+        elif _cc == 1: _pay = _v4_delta(_vals)
+        elif _cc == 2: _pay = _v4_length(_rows["Start"], _vals)
+        elif _cc == 3: _pay = _v4_dict([v if v is not None else "" for v in _vals])
+        elif _cc == 4: _pay = _v4_frontcode([v if v is not None else "" for v in _vals])
+        elif _cc == 6: _pay = _v4_bool([bool(v) for v in _vals])
+        _ck = _v4_chunk(_pay, _n, _valid)
+        _off.append(len(_data)); _clen.append(len(_ck)); _data += _ck
+
+_meta = {"format_version": 4, "writer_version": "vv tests/data/generate.py",
+         "stored": _v4_stored, "schema": _v4_schema, "codecs": _v4_codecs,
+         "coord_dtype": "int32", "block_rows": 3, "row_count": sum(_nr),
+         "rank_to_name": {"0": "chr1", "1": "chr2"},
+         "assembly": "hg38", "species": None}
+_mb = json.dumps(_meta).encode()
+_idx = bytearray(b"LSI1" + bytes([1]) + b"\x00\x00\x00")
+_idx += struct.pack("<IIII", len(_v4_blocks), len(_v4_stored), 0, len(_mb)) + _mb
+_idx += b"".join(struct.pack("<i", x) for x in _cids)
+_idx += b"".join(struct.pack("<i", x) for x in _mins)
+_idx += b"".join(struct.pack("<i", x) for x in _maxs)
+_idx += b"".join(struct.pack("<I", x) for x in _nr)
+_idx += b"".join(struct.pack("<i", x) for x in _pmax)
+_idx += b"".join(struct.pack("<Q", x) for x in _off)
+_idx += b"".join(struct.pack("<I", x) for x in _clen)
+(HERE / "tiny.v4.lociss").write_bytes(bytes(_data))
+(HERE / "tiny.v4.lociss.idx").write_bytes(bytes(_idx))
+
 # ── SQLite (two tables: peaks + samples) ────────────────────────────────────
 import sqlite3
 sqlite_path = HERE / "tiny.sqlite"
