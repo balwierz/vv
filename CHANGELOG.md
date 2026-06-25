@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **LociSSD v4.1 single-file layout.** The colblock reader now also reads v4.1
+  files, where the `LSI1` index is stored **inline** in one self-contained file
+  (no sidecar `.idx`), located via a 24-byte `LSIX` trailer at EOF — the writer's
+  new default. Legacy v4 sidecar files still read; detection is by the trailer
+  magic. Verified byte-for-byte against the Python reference reader on a real
+  `write_colblock` file.
 - **LociSSD v4 ("colblock") reader.** vv now reads the v4 custom binary columnar
   container (data magic `LSB1` + a sidecar `.idx` zone-map index; per-block
   zstd-compressed column chunks with the DELTA / LENGTH / DICT / FRONTCODE /

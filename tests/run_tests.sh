@@ -180,6 +180,33 @@ if [ -f "$DATA/tiny.v4.lociss" ]; then
     assert_eq_file_inline "lociss_v4_region_rows2" "$(printf '%s\n' "$V4R2" | grep -c .)" "2"
 fi
 
+# LociSSD v4.1 — single self-contained file: the LSI1 index is stored inline
+# (no sidecar .idx), located by a 24-byte LSIX trailer at EOF. tiny.v41.lociss
+# holds the same content as tiny.v4.lociss; it must decode identically with no
+# sidecar present.
+if [ -f "$DATA/tiny.v41.lociss" ]; then
+    # Sanity: the fixture is genuinely single-file (no sidecar committed).
+    if [ -e "$DATA/tiny.v41.lociss.idx" ]; then
+        FAIL=$((FAIL + 1)); echo "  FAIL  lociss_v41_no_sidecar (unexpected .idx)"
+    else
+        PASS=$((PASS + 1)); echo "  ok    lociss_v41_no_sidecar"
+    fi
+    V41=$("$VV" --no-interactive --color=never "$DATA/tiny.v41.lociss" 2>&1)
+    assert_contains "lociss_v41_banner" "$(printf '%s\n' "$V41" | head -1)" \
+        "hg38 (Homo sapiens)  $(printf '\xe2\x80\xa2')  5 elements"
+    V41T=$("$VV" --tsv --no-header "$DATA/tiny.v41.lociss" 2>/dev/null)
+    assert_eq_file_inline "lociss_v41_rowcount" "$(printf '%s\n' "$V41T" | grep -c .)" "5"
+    # Same decoded content as the sidecar fixture (all codecs + null vs empty).
+    assert_contains "lociss_v41_row0" "$(printf '%s\n' "$V41T" | sed -n 1p)" \
+        "$(printf 'chr1\t100\t101\t+\trs1\t10\ttrue')"
+    assert_contains "lociss_v41_null_empty" "$(printf '%s\n' "$V41T" | sed -n 2p)" \
+        "$(printf 'chr1\t150\t152\t-\t\t\tfalse')"
+    # Region query works against the inline file (absolute chunk offsets).
+    V41R=$("$VV" --tsv --no-header -r chr2:340-370 "$DATA/tiny.v41.lociss" 2>/dev/null)
+    assert_eq_file_inline "lociss_v41_region_rows" "$(printf '%s\n' "$V41R" | grep -c .)" "1"
+    assert_contains "lociss_v41_region_value" "$V41R" "rs101"
+fi
+
 # Generic Parquet range queries: auto-detected chrom/start/end columns,
 # plus the --region-cols override path.
 PQ_REG=$("$VV" --tsv --no-header -r chr1:1000-2500 "$DATA/tiny.parquet" | wc -l)

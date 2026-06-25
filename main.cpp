@@ -3073,14 +3073,54 @@ std::string LocissV4Source::open(const std::string& path, const Config& cfg,
     auto self = std::make_unique<LocissV4Source>();
     self->path_ = path;
 
-    // ── Sidecar index ────────────────────────────────────────────────────────
-    std::string ip = path + ".idx";
-    std::ifstream idxf(ip, std::ios::binary);
-    if (!idxf) return "LociSSD v4: missing sidecar index '" + ip + "'";
-    std::string idx((std::istreambuf_iterator<char>(idxf)),
-                    std::istreambuf_iterator<char>());
+    // Open the data file first — the LSI1 index may live inline (V4.1) or in a
+    // sidecar (legacy V4); the column-chunk pointers are absolute into this file
+    // either way.
+    auto df = arrow::io::ReadableFile::Open(path);
+    if (!df.ok()) return "LociSSD v4: cannot open '" + path + "': " + df.status().ToString();
+    self->data_ = df.ValueOrDie();
+    int64_t fsize = 0;
+    if (auto sz = self->data_->GetSize(); sz.ok()) fsize = *sz;
+
+    // ── Acquire the LSI1 index (V4.1 inline footer or legacy V4 .idx sidecar) ──
+    // A V4.1 file ends in a 24-byte trailer: index_offset u64, index_len u64,
+    // magic "LSIX", minor u8, reserved[3]. The trailer magic is authoritative
+    // (the data header's offset-5 flags bit0 is a redundant fast-path hint).
+    std::string idx;
+    bool inline_idx = false;
+    if (fsize >= 24) {
+        if (auto tb = self->data_->ReadAt(fsize - 24, 24); tb.ok() && (*tb)->size() == 24) {
+            const uint8_t* t = (*tb)->data();
+            uint8_t hdr[8] = {0};
+            if (auto hb = self->data_->ReadAt(0, 8); hb.ok() && (*hb)->size() >= 6)
+                std::memcpy(hdr, (*hb)->data(), 6);
+            bool hdr_flag = hdr[0]=='L' && hdr[1]=='S' && hdr[2]=='B' && hdr[3]=='1' && (hdr[5] & 1u);
+            bool trailer_magic = t[16]=='L' && t[17]=='S' && t[18]=='I' && t[19]=='X';
+            if (hdr_flag || trailer_magic) {
+                if (!trailer_magic) return "LociSSD v4.1: inline-index trailer magic not found";
+                uint64_t ioff, ilen;
+                std::memcpy(&ioff, t, 8); std::memcpy(&ilen, t + 8, 8);
+                if ((int64_t)ioff < 0 || (int64_t)ilen < 0 ||
+                    (int64_t)(ioff + ilen) + 24 > fsize)
+                    return "LociSSD v4.1: inline-index offset/length out of range";
+                auto pb = self->data_->ReadAt((int64_t)ioff, (int64_t)ilen);
+                if (!pb.ok()) return "LociSSD v4.1: cannot read inline index: " + pb.status().ToString();
+                idx.assign((const char*)(*pb)->data(), (size_t)(*pb)->size());
+                inline_idx = true;
+            }
+        }
+    }
+    if (!inline_idx) {
+        std::string ip = path + ".idx";
+        std::ifstream idxf(ip, std::ios::binary);
+        if (!idxf) return "LociSSD: '" + path + "' is not a colblock file — no "
+                          "inline index trailer and no sidecar '" + ip + "'";
+        idx.assign((std::istreambuf_iterator<char>(idxf)),
+                   std::istreambuf_iterator<char>());
+    }
     if (idx.size() < 24 || idx.compare(0, 4, "LSI1") != 0)
-        return "LociSSD v4: bad index magic in '" + ip + "'";
+        return "LociSSD v4: bad index magic"
+               + std::string(inline_idx ? " (inline)" : " in sidecar '" + path + ".idx'");
     const uint8_t* ib = (const uint8_t*)idx.data();
     auto u32 = [&](size_t o) { uint32_t v; std::memcpy(&v, ib + o, 4); return v; };
     uint32_t n_blocks = u32(8), n_cols = u32(12), flags = u32(16), meta_len = u32(20);
@@ -3159,10 +3199,6 @@ std::string LocissV4Source::open(const std::string& path, const Config& cfg,
     for (int c = 0; c < (int)n_cols; ++c)
         fields.push_back(arrow::field(self->stored_[(size_t)c], self->col_types_[(size_t)c]));
     self->schema_ = arrow::schema(fields);
-
-    auto df = arrow::io::ReadableFile::Open(path);
-    if (!df.ok()) return "LociSSD v4: cannot open data '" + path + "': " + df.status().ToString();
-    self->data_ = df.ValueOrDie();
 
     if (!cfg.region.empty()) {
         std::string err = self->build_region(cfg);

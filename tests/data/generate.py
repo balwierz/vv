@@ -409,6 +409,16 @@ _idx += b"".join(struct.pack("<I", x) for x in _clen)
 (HERE / "tiny.v4.lociss").write_bytes(bytes(_data))
 (HERE / "tiny.v4.lociss.idx").write_bytes(bytes(_idx))
 
+# V4.1 single-file variant (tiny.v41.lociss, no sidecar): same chunks + the LSI1
+# index stored INLINE, located by a 24-byte LSIX trailer at EOF. Header offset-5
+# flags byte has bit0 (INLINE_INDEX) set; the chunks keep their offsets (8+), so
+# the index's col_offset pointers stay valid. (Spec §8a.)
+_v41 = bytearray(b"LSB1" + bytes([4, 1, 0, 0])) + bytes(_data[8:])  # version 4, flags bit0=1
+_v41_off = len(_v41)                                                # == len(_data)
+_v41 += _idx
+_v41 += struct.pack("<QQ", _v41_off, len(_idx)) + b"LSIX" + bytes([1, 0, 0, 0])
+(HERE / "tiny.v41.lociss").write_bytes(bytes(_v41))
+
 # ── SQLite (two tables: peaks + samples) ────────────────────────────────────
 import sqlite3
 sqlite_path = HERE / "tiny.sqlite"
