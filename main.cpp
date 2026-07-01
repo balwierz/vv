@@ -2702,9 +2702,10 @@ static inline int64_t rd_int(const uint8_t* p, int cw) {
 }
 
 // zstd-decompress a compressed buffer (decompressed size unknown up front) via
-// Arrow's streaming decompressor, reading to end.
+// Arrow's streaming decompressor, reading to end. `max_out` bounds the output so
+// a tiny compressed chunk can't inflate to gigabytes (decompression bomb).
 static arrow::Result<std::shared_ptr<arrow::Buffer>>
-zstd_inflate(std::shared_ptr<arrow::Buffer> comp) {
+zstd_inflate(std::shared_ptr<arrow::Buffer> comp, int64_t max_out) {
     ARROW_ASSIGN_OR_RAISE(auto codec,
         arrow::util::Codec::Create(arrow::Compression::ZSTD));
     auto reader = std::make_shared<arrow::io::BufferReader>(comp);
@@ -2712,9 +2713,14 @@ zstd_inflate(std::shared_ptr<arrow::Buffer> comp) {
         arrow::io::CompressedInputStream::Make(codec.get(), reader));
     arrow::BufferBuilder bb;
     uint8_t tmp[64 * 1024];
+    int64_t total = 0;
     for (;;) {
         ARROW_ASSIGN_OR_RAISE(int64_t got, cis->Read(sizeof tmp, tmp));
         if (got == 0) break;
+        total += got;
+        if (total > max_out)
+            return arrow::Status::Invalid(
+                "colblock: decompressed chunk exceeds size cap (corrupt or bomb)");
         ARROW_RETURN_NOT_OK(bb.Append(tmp, got));
     }
     std::shared_ptr<arrow::Buffer> out;
@@ -2827,8 +2833,9 @@ decode_colblock(const uint8_t* buf, size_t blen, int codec_id,
             ARROW_RETURN_NOT_OK(need(4));
             uint32_t n_dict; std::memcpy(&n_dict, pay, 4);
             size_t q = 4;
-            ARROW_RETURN_NOT_OK(need(q + (size_t)(n_dict + 1) * 4));
-            const uint8_t* offp = pay + q; q += (size_t)(n_dict + 1) * 4;
+            // Widen before +1 so n_dict==UINT32_MAX can't wrap the length to 0.
+            ARROW_RETURN_NOT_OK(need(q + ((size_t)n_dict + 1) * 4));
+            const uint8_t* offp = pay + q; q += ((size_t)n_dict + 1) * 4;
             uint32_t blob_len; std::memcpy(&blob_len, offp + (size_t)n_dict * 4, 4);
             ARROW_RETURN_NOT_OK(need(q + blob_len));
             const char* blob = (const char*)(pay + q); q += blob_len;
@@ -2837,7 +2844,11 @@ decode_colblock(const uint8_t* buf, size_t blen, int codec_id,
             std::vector<std::string> dict((size_t)n_dict);
             for (uint32_t k = 0; k < n_dict; ++k) {
                 uint32_t o0, o1; std::memcpy(&o0, offp + (size_t)k * 4, 4);
-                std::memcpy(&o1, offp + (size_t)(k + 1) * 4, 4);
+                std::memcpy(&o1, offp + ((size_t)k + 1) * 4, 4);
+                // Offsets are attacker-controlled: reject non-monotone / OOB
+                // (o1<o0 would underflow the length to ~4 GiB).
+                if (o0 > o1 || o1 > blob_len)
+                    return arrow::Status::Invalid("colblock DICT: bad dictionary offset");
                 dict[k].assign(blob + o0, o1 - o0);
             }
             std::vector<std::string> vals((size_t)n);
@@ -2870,13 +2881,18 @@ decode_colblock(const uint8_t* buf, size_t blen, int codec_id,
             return build_strings(vals);
         }
         case 5: {  // ARENA — off[n+1] + utf8
-            ARROW_RETURN_NOT_OK(need((size_t)(n + 1) * 4));
+            size_t hdr = ((size_t)n + 1) * 4;
+            ARROW_RETURN_NOT_OK(need(hdr));
             const uint8_t* offp = pay;
-            const char* blob = (const char*)(pay + (size_t)(n + 1) * 4);
+            const char* blob = (const char*)(pay + hdr);
+            size_t blob_avail = paylen - hdr;
             std::vector<std::string> vals((size_t)n);
             for (int64_t i = 0; i < n; ++i) {
                 uint32_t o0, o1; std::memcpy(&o0, offp + (size_t)i * 4, 4);
-                std::memcpy(&o1, offp + (size_t)(i + 1) * 4, 4);
+                std::memcpy(&o1, offp + ((size_t)i + 1) * 4, 4);
+                // Offsets are attacker-controlled: reject non-monotone / OOB.
+                if (o0 > o1 || o1 > blob_avail)
+                    return arrow::Status::Invalid("colblock ARENA: bad offset");
                 vals[(size_t)i].assign(blob + o0, o1 - o0);
             }
             return build_strings(vals);
@@ -2953,13 +2969,21 @@ class LocissV4Source : public TabularSource {
     // Read + decompress + decode stored column `c` of block `b`.
     arrow::Result<std::shared_ptr<arrow::Array>>
     decode_col(int b, int c, const int64_t* start) const {
-        size_t rec = (size_t)b * n_cols_ + c;
+        if (c < 0 || c >= n_cols_)
+            return arrow::Status::Invalid("colblock: column index out of range");
+        size_t rec = (size_t)b * n_cols_ + (size_t)c;
         ARROW_ASSIGN_OR_RAISE(auto comp, data_->ReadAt((int64_t)col_offset_[rec],
                                                        (int64_t)col_clen_[rec]));
-        ARROW_ASSIGN_OR_RAISE(auto raw, lociss_v4::zstd_inflate(comp));
+        // Decompression-bomb guard: a block's column chunk can't legitimately
+        // exceed a generous per-row bound (64 MiB base covers the dictionary
+        // blob / bitmap; ~4 KiB/row is ample for genomic strings), capped at 2 GiB.
+        int64_t nr = n_rows_[(size_t)b];
+        int64_t max_out = (64LL << 20) + (nr > 0 ? nr * 4096 : 0);
+        if (max_out > (2LL << 30)) max_out = 2LL << 30;
+        ARROW_ASSIGN_OR_RAISE(auto raw, lociss_v4::zstd_inflate(comp, max_out));
         return lociss_v4::decode_colblock(raw->data(), (size_t)raw->size(),
                                           codecs_[(size_t)c], *col_types_[(size_t)c],
-                                          n_rows_[(size_t)b], cw_, start);
+                                          nr, cw_, start);
     }
     // Decode the block's Start column as int64 (needed for End / region mask).
     arrow::Result<std::vector<int64_t>> decode_start(int b) const {
@@ -3016,6 +3040,14 @@ public:
 
     arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
                              std::shared_ptr<arrow::Table>* out) override {
+        // A decode failure (corrupt/hostile chunk) is sticky so the CLI exits
+        // non-zero instead of silently skipping the block.
+        arrow::Status st = read_chunk_impl(i, col_indices, out);
+        if (!st.ok() && read_status_.ok()) read_status_ = st;
+        return st;
+    }
+    arrow::Status read_chunk_impl(int i, const std::vector<int>& col_indices,
+                                  std::shared_ptr<arrow::Table>* out) {
         int     b = region_mode_ ? slices_[(size_t)i].block : i;
         int64_t n = n_rows_[(size_t)b];
 
@@ -3211,6 +3243,10 @@ std::string LocissV4Source::open(const std::string& path, const Config& cfg,
 // Region (-r) — block-prune via the index zone-map (§5), then per-row overlap
 // in read_chunk. Mirrors ParquetSource's region_mode_ exact-count pass.
 std::string LocissV4Source::build_region(const Config& cfg) {
+    // A region query decodes Start/End to mask rows; without both stored columns
+    // the mask/count path would index them out of range.
+    if (start_si_ < 0 || end_si_ < 0)
+        return "LociSSD v4: region query needs Start and End columns";
     region_mode_ = true;
     auto windows = parse_region_list(cfg.region, cfg.coords_one_based);
     for (const auto& w : windows) {

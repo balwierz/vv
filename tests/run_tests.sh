@@ -207,6 +207,22 @@ if [ -f "$DATA/tiny.v41.lociss" ]; then
     assert_contains "lociss_v41_region_value" "$V41R" "rs101"
 fi
 
+# LociSSD v4 memory-safety: crafted-malformed colblock chunks must be rejected
+# cleanly (exit 1) — never crash (>=128) or hang. Covers the DICT/ARENA offset
+# bounds checks, the region-without-Start/End guard, and the zstd
+# decompression-bomb cap. (The systemic follow-up is an ASan/UBSan CI job.)
+for hf in baddict badarena zbomb; do
+    [ -f "$DATA/tiny.v4.$hf.lociss" ] && \
+        assert_exit_code "lociss_v4_reject_$hf" 1 "$VV" --tsv "$DATA/tiny.v4.$hf.lociss"
+done
+if [ -f "$DATA/tiny.v4.nocoord.lociss" ]; then
+    # A file lacking Start/End: -r must error cleanly, but a plain read still works.
+    assert_exit_code "lociss_v4_region_needs_coords" 1 \
+        "$VV" --tsv -r chr1:1-100 "$DATA/tiny.v4.nocoord.lociss"
+    assert_contains "lociss_v4_nocoord_reads" \
+        "$("$VV" --tsv --no-header "$DATA/tiny.v4.nocoord.lociss" 2>/dev/null | head -1)" "chr1"
+fi
+
 # Generic Parquet range queries: auto-detected chrom/start/end columns,
 # plus the --region-cols override path.
 PQ_REG=$("$VV" --tsv --no-header -r chr1:1000-2500 "$DATA/tiny.parquet" | wc -l)
