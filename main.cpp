@@ -2985,12 +2985,10 @@ class LocissV4Source : public TabularSource {
                                           codecs_[(size_t)c], *col_types_[(size_t)c],
                                           nr, cw_, start);
     }
-    // Decode the block's Start column as int64 (needed for End / region mask).
-    arrow::Result<std::vector<int64_t>> decode_start(int b) const {
-        std::vector<int64_t> v;
-        if (start_si_ < 0) return v;
-        ARROW_ASSIGN_OR_RAISE(auto a, decode_col(b, start_si_, nullptr));
-        v.resize((size_t)a->length());
+    // Extract a decoded coordinate array (int32 or int64) as int64 values —
+    // used for the region mask and as the LENGTH codec's Start input.
+    static std::vector<int64_t> array_to_int64(const std::shared_ptr<arrow::Array>& a) {
+        std::vector<int64_t> v((size_t)a->length());
         if (a->type_id() == arrow::Type::INT64) {
             auto ia = std::static_pointer_cast<arrow::Int64Array>(a);
             for (int64_t i = 0; i < a->length(); ++i) v[(size_t)i] = ia->Value(i);
@@ -3051,13 +3049,17 @@ public:
         int     b = region_mode_ ? slices_[(size_t)i].block : i;
         int64_t n = n_rows_[(size_t)b];
 
-        // Decode Start when End is requested (LENGTH needs it) or for the mask.
+        // Decode Start once (as an array) when End is requested (LENGTH needs its
+        // values) or for the region mask; the same array is reused as the Start
+        // output column below instead of decoding it a second time.
         bool want_end = false;
         for (int f : col_indices) if (f == end_si_ + 1) want_end = true;
+        std::shared_ptr<arrow::Array> start_arr;
         std::vector<int64_t> start;
         const int64_t* startp = nullptr;
-        if (region_mode_ || want_end) {
-            ARROW_ASSIGN_OR_RAISE(start, decode_start(b));
+        if ((region_mode_ || want_end) && start_si_ >= 0) {
+            ARROW_ASSIGN_OR_RAISE(start_arr, decode_col(b, start_si_, nullptr));
+            start = array_to_int64(start_arr);
             startp = start.empty() ? nullptr : start.data();
         }
 
@@ -3087,6 +3089,7 @@ public:
             std::shared_ptr<arrow::Array> a;
             if (f == 0) a = chrom_array(b, n);
             else if (f - 1 == end_si_ && end_arr) a = end_arr;
+            else if (f - 1 == start_si_ && start_arr) a = start_arr;   // reuse decode
             else { ARROW_ASSIGN_OR_RAISE(a, decode_col(b, f - 1, startp)); }
             if (region_mode_ && kept != n) {
                 ARROW_ASSIGN_OR_RAISE(a, lociss_v4::filter_array(a, keep));
