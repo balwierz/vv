@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **LociSSD v4 reads faster.** The colblock `read_chunk` decoded the `Start`
+  column twice whenever `End` was also present (once for the LENGTH/mask input,
+  once as an output column) — the universal case for these interval files. Start
+  is now decoded once and the array reused. ~40% less time on both a full
+  `--tsv` scan and a `-r` region query over a 1 M-row file; output byte-identical.
+
 ### Fixed
 - **LociSSD v4 reader hardening (memory safety).** The colblock decoders trusted
   on-disk offsets from the (untrusted) file: the DICT and ARENA string codecs did
