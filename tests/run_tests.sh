@@ -1169,6 +1169,24 @@ if [ -f "$DATA/tiny.bam" ]; then
     DEC_BAM=$("$VV" --tsv --no-header --pileup --decode-pileup \
         --filter 'pos == 105' --select 'A,C,G,T,N,fwd,rev' "$DATA/tiny.bam")
     assert_eq_file_inline "bam_pileup_decoded_chr1_105" "$DEC_BAM" "0	0	3	0	0	2	1"
+
+    # Reference-aware pileup (-f/--fasta): the ref column is filled from the FASTA
+    # and bases matching it render as . / , (like `samtools mpileup -f`).
+    # tiny.pileup.fa's chr1 is all T over 100-119 except pos 105 (T) where every
+    # read's G is a mismatch; pos 110 is lowercase 't' (ref column preserves case).
+    if [ -f "$DATA/tiny.pileup.fa" ]; then
+        PLF=$("$VV" --tsv --no-header --pileup -f "$DATA/tiny.pileup.fa" "$DATA/tiny.bam")
+        assert_contains "bam_pileup_f_match"    "$(printf '%s\n' "$PLF" | sed -n 1p)"  "$(printf 'chr1\t100\tT\t2\t^].^],')"
+        assert_contains "bam_pileup_f_mismatch" "$(printf '%s\n' "$PLF" | sed -n 6p)"  "$(printf 'chr1\t105\tT\t3\tGgG')"
+        assert_contains "bam_pileup_f_refcase"  "$(printf '%s\n' "$PLF" | sed -n 11p)" "$(printf 'chr1\t110\tt\t3\t.,.')"
+        # Byte-for-byte vs samtools mpileup -B -f (vv applies no BAQ), if present.
+        if command -v samtools >/dev/null 2>&1; then
+            assert_eq_file_inline "bam_pileup_f_matches_samtools" \
+                "$PLF" "$(samtools mpileup -B -f "$DATA/tiny.pileup.fa" "$DATA/tiny.bam" 2>/dev/null)"
+        fi
+    fi
+    # -f only applies to --pileup: a clean usage error (exit 2), never silent.
+    assert_exit_code "pileup_f_requires_pileup" 2 "$VV" -f "$DATA/tiny.pileup.fa" "$DATA/tiny.bam"
 fi
 
 # Reference skips (CIGAR N, e.g. RNA-seq introns) and deletions: the whole

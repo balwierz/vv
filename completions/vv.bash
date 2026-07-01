@@ -48,6 +48,10 @@ _vv() {
             _filedir
             return
             ;;
+        -f|--fasta)
+            _filedir 'fa|fasta|fa.gz|fna'
+            return
+            ;;
         --compression)
             COMPREPLY=( $(compgen -W 'zstd snappy gzip lz4 none' -- "$cur") )
             return
@@ -79,6 +83,7 @@ _vv() {
                 --json --ndjson --md --markdown
                 --select --cols --filter
                 --schema --describe --stats --validate --decode-pileup --pileup
+                -f --fasta
                 --tab
                 --unique --sample
                 --vertical

@@ -67,6 +67,7 @@ _vv() {
         '--validate[Check LociSSD invariants and exit]' \
         '--decode-pileup[mpileup: explode bases into per-allele counts]' \
         '--pileup[BAM/CRAM: emit mpileup-style per-base rows]' \
+        '(-f --fasta)'{-f,--fasta}'[--pileup: reference FASTA for ref column + ./, match notation]:fasta:_files' \
         '(--select --cols)'{--select,--cols}'+[Project columns by name]:cols:' \
         '--filter+[Row predicate]:expr:' \
         '--schema[Print schema and exit]' \
