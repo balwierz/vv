@@ -419,6 +419,42 @@ _v41 += _idx
 _v41 += struct.pack("<QQ", _v41_off, len(_idx)) + b"LSIX" + bytes([1, 0, 0, 0])
 (HERE / "tiny.v41.lociss").write_bytes(bytes(_v41))
 
+# ── Hostile / malformed v4 fixtures (memory-safety hardening) ────────────────
+# A single-block v4 sidecar file whose one column carries a hand-crafted chunk
+# body (pre-zstd: has_nulls byte + codec payload). Used to prove the reader
+# rejects corrupt DICT/ARENA offsets and decompression bombs instead of reading
+# out of bounds. `vv` must exit non-zero cleanly (never crash) on these.
+def _v4_hostile(name, colname, type_str, codec_id, n, body):
+    data = bytearray(b"LSB1" + bytes([4, 0, 0, 0]))   # v4 sidecar header, flags=0
+    ck = _v4_zstd(body)
+    off, clen = len(data), len(ck)
+    data += ck
+    meta = {"format_version": 4, "writer_version": "vv test-hostile",
+            "stored": [colname], "schema": {colname: type_str},
+            "codecs": {colname: codec_id}, "coord_dtype": "int32",
+            "block_rows": n, "row_count": n, "rank_to_name": {"0": "chr1"},
+            "assembly": "hg38", "species": None}
+    mb = json.dumps(meta).encode()
+    idx = bytearray(b"LSI1" + bytes([1, 0, 0, 0]))
+    idx += struct.pack("<IIII", 1, 1, 0, len(mb)) + mb
+    idx += struct.pack("<iiiIi", 0, 0, 1, n, 1)       # cid,min_start,max_end,n_rows,pmax
+    idx += struct.pack("<Q", off) + struct.pack("<I", clen)
+    (HERE / name).write_bytes(bytes(data))
+    (HERE / (name + ".idx")).write_bytes(bytes(idx))
+
+# 1) DICT with a non-monotone offset (off[1] < off[0]) → length would underflow.
+_baddict = struct.pack("<I", 1) + struct.pack("<II", 5, 0) + b"\x00\x00"  # n_dict=1, off=[5,0], codes
+_v4_hostile("tiny.v4.baddict.lociss", "Name", "utf8", 3, 2, b"\x00" + _baddict)
+# 2) ARENA with an offset past the blob (o1=100 > 3-byte blob).
+_badarena = struct.pack("<III", 0, 100, 100) + b"abc"                     # off[n+1]=off[3]
+_v4_hostile("tiny.v4.badarena.lociss", "Name", "utf8", 5, 2, b"\x00" + _badarena)
+# 3) Valid single-string column with NO Start/End — a -r query must error, not OOB.
+_okdict = struct.pack("<I", 1) + struct.pack("<II", 0, 3) + b"abc" + b"\x00\x00"
+_v4_hostile("tiny.v4.nocoord.lociss", "Name", "utf8", 3, 2, b"\x00" + _okdict)
+# 4) zstd decompression bomb: a tiny compressed chunk inflating past the ~64 MiB
+#    cap (n=1 → max_out ≈ 64 MiB). Body is 65 MiB of zeros → a few bytes zstd'd.
+_v4_hostile("tiny.v4.zbomb.lociss", "V", "int8", 0, 1, bytes(65 << 20))
+
 # ── SQLite (two tables: peaks + samples) ────────────────────────────────────
 import sqlite3
 sqlite_path = HERE / "tiny.sqlite"

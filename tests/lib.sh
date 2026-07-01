@@ -66,6 +66,20 @@ assert_exit_zero() {
     fi
 }
 
+assert_exit_code() {
+    # $1 = name, $2 = expected exit code, "$@" rest = command.
+    # Use for "clean error" paths — a crash would be >=128 (signal), which fails.
+    local name="$1" want="$2"; shift 2
+    "$@" > /dev/null 2>&1; local rc=$?
+    if [ "$rc" = "$want" ]; then
+        PASS=$((PASS + 1))
+        echo "  ok    $name"
+    else
+        FAIL=$((FAIL + 1))
+        echo "  FAIL  $name (exit $rc, want $want)"
+    fi
+}
+
 assert_eq_file_inline() {
     # $1 = name, $2 = actual, $3 = expected (string equality)
     if [ "$2" = "$3" ]; then

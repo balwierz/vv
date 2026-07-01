@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **LociSSD v4 reader hardening (memory safety).** The colblock decoders trusted
+  on-disk offsets from the (untrusted) file: the DICT and ARENA string codecs did
+  `assign(blob + o0, o1 - o0)` with no `o0 ≤ o1 ≤ blob_len` check (a non-monotone
+  offset underflowed the length to ~4 GiB → out-of-bounds read), `n_dict + 1` was
+  computed in 32-bit (wrap at `UINT32_MAX`), a `-r` region query on a file lacking
+  Start/End indexed columns out of range, and `zstd_inflate` had no output ceiling
+  (a tiny chunk could inflate to gigabytes). All now validate and reject with a
+  clean error (non-zero exit), never an OOB read or OOM. Crafted-input fixtures
+  (`tiny.v4.baddict/badarena/nocoord/zbomb.lociss`) guard each path.
+
 ## [1.14.0] - 2026-06-25
 
 ### Added
