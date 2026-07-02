@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-07-02
+
 ### Fixed
 - **TUI zebra stripe readable on light terminals.** The default theme's
   alternating-row background is a near-black grey that only reads as a subtle
