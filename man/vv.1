@@ -637,6 +637,13 @@ When set to any non-empty value, disables coloured output (see
 Maximum number of categories an AnnData categorical \fIobs\fR/\fIvar\fR column
 may have before it is shown as integer codes rather than decoded labels
 (default \fB1000000\fR).
+.TP
+.B VV_BACKGROUND
+Force the terminal background the TUI assumes for its alternating-row (zebra)
+stripe: \fBlight\fR or \fBdark\fR. By default vv queries the terminal (OSC 11,
+then \fBCOLORFGBG\fR) and assumes dark if that fails. Set \fBlight\fR when the
+zebra stripe is a hard dark band on a light-background terminal (e.g.
+JupyterLab's web terminal) and auto-detection didn't catch it.
 .SH EXIT STATUS
 .TP
 .B 0

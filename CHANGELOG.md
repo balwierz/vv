@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **TUI zebra stripe readable on light terminals.** The default theme's
+  alternating-row background is a near-black grey that only reads as a subtle
+  stripe on a dark terminal; on a light-background terminal (e.g. JupyterLab's
+  web terminal) it became a hard black band that swallowed the default-foreground
+  text. vv now detects the terminal background (OSC 11 query, then `COLORFGBG`,
+  overridable with `VV_BACKGROUND=light|dark`) and, on a light terminal, uses a
+  subtle light-grey stripe instead. Dark terminals are unchanged; detection
+  failure falls back to the previous behaviour.
+
 ### Added
 - **`--arrow` / `--feather` output** — write an Arrow IPC file (Feather v2), the
   zero-copy interchange format for pandas / polars / R `arrow`. Same column
