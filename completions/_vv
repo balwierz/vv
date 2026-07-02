@@ -72,7 +72,8 @@ _vv() {
         '--filter+[Row predicate]:expr:' \
         '--schema[Print schema and exit]' \
         '--tab+[View a named component tab (AnnData obs/var/X, sheet)]:name:' \
-        '--describe[Per-column statistics]' \
+        '--describe[Per-column statistics (add --json/--ndjson for machine-readable)]' \
+        '--count[Print the row count and exit]' \
         '--stats[Parquet metadata dump]' \
         '--unique+[Distinct value counts]:cols:' \
         '--sample+[Reservoir-sample N rows]:n:' \

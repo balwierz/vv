@@ -550,6 +550,28 @@ assert_eq_file_inline "describe_scans_all_rows" "$DESC_COUNT" "20"
 DESC_N=$("$VV" --describe -n 5 "$DATA/tiny.parquet" 2>&1 \
          | awk '/^Chr[[:space:]]/{print $3; exit}')
 assert_eq_file_inline "describe_honors_explicit_head_rows" "$DESC_N" "5"
+
+# --count: row count and exit (metadata-fast; honours -r region and --filter).
+assert_eq_file_inline "count_parquet"        "$("$VV" --count "$DATA/tiny.parquet")" "20"
+assert_eq_file_inline "count_filter"         "$("$VV" --count --filter 'Start >= 1100' "$DATA/tiny.parquet")" "18"
+if [ -f "$DATA/tiny.v4.lociss" ]; then
+    assert_eq_file_inline "count_region"     "$("$VV" --count -r chr1:0-160 "$DATA/tiny.v4.lociss")" "2"
+fi
+
+# --describe --json / --ndjson: machine-readable per-column stats. Validate with
+# python's json parser + spot-check exact numeric min/max (not %.6g-rounded).
+if command -v python3 >/dev/null 2>&1; then
+    DJ=$("$VV" --describe --json "$DATA/tiny.parquet")
+    assert_exit_zero "describe_json_parses" python3 -c "import sys,json; json.loads(sys.argv[1])" "$DJ"
+    # Start is int64 100..11100; JSON must carry exact integers, not 1.11e+04.
+    START_MINMAX=$(printf '%s' "$DJ" | python3 -c "import sys,json; d={c['column']:c for c in json.load(sys.stdin)}; s=d['Start']; print(s['min'],s['max'],s['numeric'])")
+    assert_eq_file_inline "describe_json_exact_ints" "$START_MINMAX" "100 11100 True"
+    # ndjson: every line is its own object; string column reports distinct count.
+    NDJ=$("$VV" --describe --ndjson "$DATA/tiny.parquet")
+    assert_exit_zero "describe_ndjson_parses" python3 -c "import sys; import json; [json.loads(l) for l in sys.stdin if l.strip()]" <<<"$NDJ"
+    CHR_DISTINCT=$(printf '%s' "$NDJ" | python3 -c "import sys,json; rows=[json.loads(l) for l in sys.stdin if l.strip()]; d={c['column']:c for c in rows}; print(d['Chr']['distinct'], d['Chr']['numeric'])")
+    assert_eq_file_inline "describe_ndjson_distinct" "$CHR_DISTINCT" "2 False"
+fi
 # Temporal/decimal columns are numeric: the value extractor must read date /
 # timestamp / decimal (previously skipped → blank stats, blank heatmap).
 if [ -f "$DATA/tiny.temporal.parquet" ]; then

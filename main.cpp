@@ -545,7 +545,10 @@ static void print_usage(const char* prog) {
         "  --tab <name>        view a named component tab (AnnData obs/var/X,\n"
         "                      a workbook sheet, …) instead of the first; e.g.\n"
         "                      `vv cells.h5ad --tab obs -n 20`\n"
-        "  --describe          per-column statistics and exit\n"
+        "  --describe          per-column statistics and exit (add --json /\n"
+        "                      --ndjson for machine-readable stats)\n"
+        "  --count             print the row count and exit (honours -r and\n"
+        "                      --filter)\n"
         "  --stats             print Parquet metadata footer (row groups, codecs,\n"
         "                      per-column sizes) without reading data; exit\n"
         "  --unique <cols>     comma-separated columns: print distinct-value counts\n"
@@ -700,6 +703,8 @@ static Config parse_args(int argc, char** argv) {
             cfg.schema_only = true;
         } else if (!std::strcmp(argv[i], "--describe")) {
             cfg.describe = true;
+        } else if (!std::strcmp(argv[i], "--count")) {
+            cfg.count = true;
         } else if (!std::strcmp(argv[i], "--stats")) {
             cfg.stats_only = true;
         } else if (!std::strcmp(argv[i], "--unique") && i + 1 < argc) {
@@ -13012,6 +13017,52 @@ static std::string print_describe(TabularSource& src, const Config& cfg) {
         rows_left -= take;
     }
 
+    // Machine-readable stats: `--describe --json` emits a JSON array of per-column
+    // objects, `--describe --ndjson` one object per line. Numbers are exact
+    // (integers as integers, floats round-trippable); strings JSON-escaped.
+    if (cfg.json_array || cfg.json_lines) {
+        auto jnum = [](double v) -> std::string {
+            if (!std::isfinite(v)) return "null";
+            char buf[40];
+            if (v == std::floor(v) && std::fabs(v) < 9.2e18)
+                std::snprintf(buf, sizeof buf, "%lld", (long long)v);
+            else
+                std::snprintf(buf, sizeof buf, "%.17g", v);
+            return buf;
+        };
+        if (cfg.json_array) std::putchar('[');
+        for (size_t k = 0; k < stats.size(); ++k) {
+            auto& cs = stats[k];
+            if (cfg.json_array && k) std::putchar(',');
+            std::printf("{\"column\":");        json_emit_string(cs.name);
+            std::printf(",\"type\":");          json_emit_string(cs.type);
+            std::printf(",\"numeric\":%s,\"count\":%lld,\"nulls\":%lld",
+                        cs.is_num ? "true" : "false",
+                        (long long)cs.count, (long long)cs.nulls);
+            if (cs.count == 0) {
+                std::printf(",\"min\":null,\"max\":null");
+                if (cs.is_num) std::printf(",\"mean\":null");
+            } else if (cs.is_num) {
+                std::printf(",\"min\":%s,\"max\":%s,\"mean\":%s",
+                            jnum(cs.d_min).c_str(), jnum(cs.d_max).c_str(),
+                            jnum((double)(cs.sum / (long double)cs.count)).c_str());
+            } else {
+                std::printf(",\"min\":"); json_emit_string(cs.s_min);
+                std::printf(",\"max\":"); json_emit_string(cs.s_max);
+            }
+            if (!cs.is_num) {
+                if (cs.distinct_overflow)
+                    std::printf(",\"distinct\":null,\"distinct_overflow\":true");
+                else
+                    std::printf(",\"distinct\":%zu", cs.distinct.size());
+            }
+            std::putchar('}');
+            if (cfg.json_lines) std::putchar('\n');
+        }
+        if (cfg.json_array) std::printf("]\n");
+        return "";
+    }
+
     // Pretty-print
     auto fmt_num = [](double v) -> std::string {
         char buf[32];
@@ -16916,6 +16967,36 @@ int main(int argc, char** argv) {
     if (cfg.describe) {
         std::string err = print_describe(*src, cfg);
         if (!err.empty()) { report(cfg.path, err); return 1; }
+        return 0;
+    }
+
+    // --count: row count and exit. Reflects any -r region (baked into
+    // total_rows()); with --filter, counts the matching rows via a scan.
+    if (cfg.count) {
+        int64_t total = 0;
+        if (cfg.filter_expr.empty()) {
+            while (src->total_rows() < 0) src->ensure(src->num_chunks());
+            total = src->total_rows();
+        } else {
+            FilterExpr fx; std::string ferr;
+            if (!parse_filter_expr(cfg.filter_expr, *src->schema(), &fx, &ferr)) {
+                report(cfg.path, std::string("--filter: ") + ferr); return 1;
+            }
+            std::vector<int> read_set = union_with_filter({}, fx);
+            for (int c = 0; ; ++c) {
+                src->ensure(c);
+                if (c >= src->num_chunks()) break;
+                std::shared_ptr<arrow::Table> tbl;
+                if (!src->read_chunk(c, read_set, &tbl).ok() || !tbl) continue;
+                tbl = apply_filter(tbl, fx, read_set);
+                if (tbl) total += tbl->num_rows();
+            }
+        }
+        if (!src->read_status().ok()) {
+            report(cfg.path, shorten_reader_error(src->read_status().ToString()));
+            return 1;
+        }
+        std::printf("%lld\n", (long long)total);
         return 0;
     }
 
