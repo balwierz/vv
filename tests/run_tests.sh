@@ -1345,6 +1345,19 @@ else
     echo "  skip  tui_sigint_restores_terminal (python3 not found)"
 fi
 
+# Zebra stripe adapts to the terminal background (VV_BACKGROUND=light → subtle
+# light-grey 254 instead of the near-black 235 that swallows text on light
+# terminals, e.g. JupyterLab's web terminal).
+if command -v python3 >/dev/null 2>&1; then
+    if python3 "$HERE/tui_zebra_check.py" "$VV" "$DATA/tiny.parquet"; then
+        PASS=$((PASS+1)); echo "  ok    tui_zebra_adapts_to_background"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_zebra_adapts_to_background"
+    fi
+else
+    echo "  skip  tui_zebra_adapts_to_background (python3 not found)"
+fi
+
 echo
 echo "── Help / version ────────────────────────────────────────"
 HELP_OUT=$("$VV" --help 2>&1 || true)

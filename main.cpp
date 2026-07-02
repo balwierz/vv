@@ -103,6 +103,8 @@ extern "C" {
 #include <thread>
 #include <string>
 #include <unistd.h>
+#include <termios.h>
+#include <poll.h>
 #include <sys/wait.h>
 #include <signal.h>
 #include <unordered_map>
@@ -279,6 +281,89 @@ static const Theme kThemeSolarizedLight = {
 };
 
 static const Theme* g_theme = &kThemeDefault;
+
+// ── Terminal background detection (for zebra-stripe contrast) ─────────────────
+// The default/dark themes' zebra shade is a near-black grey that only reads as a
+// subtle stripe on a dark terminal; on a light terminal (e.g. JupyterLab's web
+// terminal) it becomes a hard black band that swallows the default-foreground
+// text. Detect the actual background so the stripe can adapt.
+enum class TermBg { Unknown, Dark, Light };
+static TermBg g_term_bg = TermBg::Unknown;
+
+// Classify an OSC 11 "]11;rgb:RRRR/GGGG/BBBB" reply (2- or 4-hex-digit
+// components) by relative luminance. Unknown if it doesn't parse.
+static TermBg classify_osc11_reply(const std::string& s) {
+    size_t p = s.find("rgb:");
+    if (p == std::string::npos) return TermBg::Unknown;
+    p += 4;
+    double comp[3];
+    auto hexv = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        c = (char)std::tolower((unsigned char)c);
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        return -1;
+    };
+    for (int i = 0; i < 3; ++i) {
+        unsigned long v = 0; int ndig = 0;
+        while (p < s.size()) { int h = hexv(s[p]); if (h < 0) break; v = v * 16 + (unsigned)h; ++p; ++ndig; }
+        if (ndig == 0) return TermBg::Unknown;
+        comp[i] = (double)v / (double)((1ul << (4 * ndig)) - 1);
+        if (i < 2) { if (p < s.size() && s[p] == '/') ++p; else return TermBg::Unknown; }
+    }
+    double lum = 0.2126 * comp[0] + 0.7152 * comp[1] + 0.0722 * comp[2];
+    return lum >= 0.5 ? TermBg::Light : TermBg::Dark;
+}
+
+// Best-effort OSC 11 background-colour query on the controlling tty. Short,
+// bounded timeout; restores termios; Unknown on no/garbled reply (so callers
+// fall back to the dark-terminal default with no regression).
+static TermBg query_osc11_bg() {
+    if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) return TermBg::Unknown;
+    struct termios saved;
+    if (tcgetattr(STDIN_FILENO, &saved) != 0) return TermBg::Unknown;
+    struct termios raw = saved;
+    raw.c_lflag &= ~(tcflag_t)(ICANON | ECHO);
+    raw.c_cc[VMIN] = 0; raw.c_cc[VTIME] = 0;
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0) return TermBg::Unknown;
+
+    const char* q = "\033]11;?\033\\";
+    ssize_t wr = ::write(STDOUT_FILENO, q, std::strlen(q)); (void)wr;
+
+    std::string resp;
+    for (int i = 0; i < 4; ++i) {                 // ≤ ~80 ms total
+        struct pollfd pfd; pfd.fd = STDIN_FILENO; pfd.events = POLLIN; pfd.revents = 0;
+        int pr = ::poll(&pfd, 1, 20);
+        if (pr <= 0) { if (!resp.empty()) break; else continue; }
+        char buf[128];
+        ssize_t n = ::read(STDIN_FILENO, buf, sizeof buf);
+        if (n <= 0) continue;
+        resp.append(buf, (size_t)n);
+        if (resp.find('\\') != std::string::npos ||   // ST
+            resp.find('\a') != std::string::npos) break;  // BEL
+    }
+    tcsetattr(STDIN_FILENO, TCSANOW, &saved);
+    return classify_osc11_reply(resp);
+}
+
+// Resolve the terminal background once (before ncurses takes over the tty):
+// explicit VV_BACKGROUND override → OSC 11 query → COLORFGBG hint → Unknown.
+static void detect_term_bg() {
+    if (const char* e = std::getenv("VV_BACKGROUND")) {
+        if (!std::strcmp(e, "light")) { g_term_bg = TermBg::Light; return; }
+        if (!std::strcmp(e, "dark"))  { g_term_bg = TermBg::Dark;  return; }
+    }
+    g_term_bg = query_osc11_bg();
+    if (g_term_bg != TermBg::Unknown) return;
+    if (const char* c = std::getenv("COLORFGBG")) {   // "fg;bg" or "fg;;bg"
+        std::string s(c);
+        size_t pos = s.rfind(';');
+        if (pos != std::string::npos && pos + 1 < s.size()) {
+            std::string bg = s.substr(pos + 1);
+            if (bg == "7" || bg == "15") g_term_bg = TermBg::Light;
+            else if (std::isdigit((unsigned char)bg[0])) g_term_bg = TermBg::Dark;
+        }
+    }
+}
 
 // Full list, in the order the TUI picker presents them.
 static const Theme* const kAllThemes[] = {
@@ -15867,7 +15952,13 @@ private:
         // -1 disables zebra altogether (e.g. for the light theme on bright
         // backgrounds where any tint over the default looks muddy).
         if (c256 && t.nc_bg_zebra >= 0) {
-            const int bg_zebra = t.nc_bg_zebra;
+            int bg_zebra = t.nc_bg_zebra;
+            // A dark near-black stripe (default/dark themes) is unreadable on a
+            // detected light terminal — the default-foreground text goes dark on
+            // dark. Swap it for a subtle light grey (what the light themes use),
+            // so the stripe stays "only a little" off the background.
+            if (g_term_bg == TermBg::Light && bg_zebra < 244)
+                bg_zebra = 254;
             init_pair(NCP_HEADER + ZEBRA_OFFSET, fg_header, bg_zebra);
             init_pair(NCP_INDEX  + ZEBRA_OFFSET, fg_index,  bg_zebra);
             init_pair(NCP_NULL   + ZEBRA_OFFSET, fg_null,   bg_zebra);
@@ -16014,6 +16105,7 @@ public:
     // Returns false if the terminal type is not supported (missing terminfo).
     bool run() {
         setlocale(LC_ALL, "");
+        detect_term_bg();   // before ncurses takes the tty (OSC 11 query)
         SCREEN* scr = newterm(nullptr, stdout, stdin);
         if (!scr) return false;
         set_term(scr);
