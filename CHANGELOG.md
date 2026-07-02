@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`--count`** — print the row count and exit. Instant on formats that carry a
+  count in metadata (Parquet, LociSSD); reflects a `-r` region and, with
+  `--filter`, counts only matching rows. A `wc -l` for any supported format.
+- **`--describe --json` / `--describe --ndjson`** — machine-readable per-column
+  statistics (the same count/nulls/min/max/mean/distinct as the text table) as a
+  JSON array or one object per line, for reproducible QC in pipelines. Integers
+  are exact (not `%.6g`-rounded), floats round-trippable, strings JSON-escaped;
+  numeric columns omit `distinct`, all-null columns report `null` min/max/mean.
 - **Reference-aware pileup — `vv x.bam --pileup -f ref.fa`.** With a reference
   FASTA (needs a `.fai`), the `--pileup` output fills the `ref` column from the
   reference and renders read bases matching it as `.` (forward) / `,` (reverse),

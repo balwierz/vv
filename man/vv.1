@@ -201,7 +201,17 @@ components are shown as a capped preview (the footer notes the full size).
 Per-column statistics: count, nulls, min, max, mean (numeric),
 distinct count (string, capped at 16). Respects \fB\-\-select\fR
 and \fB\-\-filter\fR. Currently scans the data; doesn't yet read
-Parquet's per-row-group statistics.
+Parquet's per-row-group statistics. Add \fB\-\-json\fR (array) or
+\fB\-\-ndjson\fR (one object per line) for machine-readable stats
+(integers exact, floats round-trippable, strings JSON-escaped;
+numeric columns omit \fBdistinct\fR, all-null columns report
+\fBnull\fR min/max/mean).
+.TP
+.B \-\-count
+Print the number of rows and exit. Reflects a \fB\-r\fR region
+(taken from the source's row count, so it is instant on formats
+that carry a count in metadata) and, when \fB\-\-filter\fR is
+given, counts only the matching rows (a scan).
 .TP
 .B \-\-stats
 Print Parquet metadata (row groups, compressed / uncompressed sizes,

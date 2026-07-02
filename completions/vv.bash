@@ -82,7 +82,7 @@ _vv() {
                 --parquet --compression
                 --json --ndjson --md --markdown
                 --select --cols --filter
-                --schema --describe --stats --validate --decode-pileup --pileup
+                --schema --describe --count --stats --validate --decode-pileup --pileup
                 -f --fasta
                 --tab
                 --unique --sample

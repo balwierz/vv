@@ -52,6 +52,7 @@ struct Config {
     bool        schema_only    = false;  // --schema: print schema + footer, exit
     bool        describe       = false;  // --describe: per-column statistics
     bool        stats_only     = false;  // --stats: Parquet metadata dump (no data read)
+    bool        count          = false;  // --count: print row count and exit
     std::string unique_cols;             // --unique COL[,COL,...] : distinct value counts
     int         sample_n       = 0;      // --sample N (reservoir sample of N rows)
     std::string filter_expr;             // --filter "<col> <op> <literal> ..."
