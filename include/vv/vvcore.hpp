@@ -71,6 +71,9 @@ struct Config {
                                          // mpileup-style per-base rows via
                                          // htslib's bam_plp_auto engine
                                          // instead of alignment records
+    std::string pileup_ref;              // -f/--fasta: reference FASTA for
+                                         // --pileup; enables ref column + the
+                                         // ./, match notation (samtools -f)
     bool        heatmap        = false;  // --heatmap: render the numeric matrix
                                          // as a colour heatmap to the terminal
     std::string image_mode;              // --image-mode auto|kitty|sixel|halfblock|ascii

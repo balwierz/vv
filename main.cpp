@@ -28,6 +28,7 @@
 #include <htslib/tbx.h>
 #include <htslib/kseq.h>
 #include <htslib/bgzf.h>
+#include <htslib/faidx.h>
 
 // libBigWig (vendored under vendored/libBigWig/, compiled with -DNOCURL).
 // Wrapped in an extern "C" because it's a C library; ARROW headers above
@@ -553,7 +554,10 @@ static void print_usage(const char* prog) {
         "                      manifest vs. data); exit non-zero on failure\n"
         "  --pileup            BAM/CRAM only: emit mpileup-style per-base rows\n"
         "                      from the alignments via htslib's bam_plp engine\n"
-        "                      (equivalent to `samtools mpileup`, no -f / -B)\n"
+        "                      (equivalent to `samtools mpileup`, no BAQ)\n"
+        "  -f, --fasta <ref>   --pileup: reference FASTA (needs .fai) — fills the\n"
+        "                      ref column and renders matches as . / , like\n"
+        "                      `samtools mpileup -f`\n"
         "  --decode-pileup     mpileup only: replace the packed bases/quals\n"
         "                      columns with typed per-allele counts\n"
         "                      (A, C, G, T, N, del, ins, fwd, rev, mean_qual)\n"
@@ -720,6 +724,9 @@ static Config parse_args(int argc, char** argv) {
             cfg.decode_pileup = true;
         } else if (!std::strcmp(argv[i], "--pileup")) {
             cfg.pileup = true;
+        } else if ((!std::strcmp(argv[i], "-f") ||
+                    !std::strcmp(argv[i], "--fasta")) && i + 1 < argc) {
+            cfg.pileup_ref = argv[++i];
         } else if (!std::strcmp(argv[i], "--heatmap")) {
             cfg.heatmap = true;
         } else if (!std::strcmp(argv[i], "--image-mode") && i + 1 < argc) {
@@ -775,7 +782,7 @@ static Config parse_args(int argc, char** argv) {
                 "--tail", "-@", "--threads", "--decode-threads", "--parquet",
                 "--compression", "--unique", "--sample", "--filter",
                 "--select", "--cols", "--image-mode", "--tab", "--theme",
-                "--delimiter",
+                "--delimiter", "-f", "--fasta",
             };
             if (needs_arg.count(argv[i])) {
                 std::fprintf(stderr, "Option %s requires an argument.\n", argv[i]);
@@ -802,6 +809,11 @@ static Config parse_args(int argc, char** argv) {
         std::fprintf(stderr, "--image-mode: unknown mode '%s' "
                      "(use auto|kitty|sixel|halfblock|ascii)\n",
                      cfg.image_mode.c_str());
+        std::exit(2);
+    }
+    if (!cfg.pileup_ref.empty() && !cfg.pileup) {
+        std::fprintf(stderr, "-f/--fasta only applies to --pileup "
+                     "(reference-aware BAM/CRAM pileup)\n");
         std::exit(2);
     }
     return cfg;
@@ -5147,6 +5159,29 @@ class BamPileupSource : public TabularSource {
     bam_plp_t                                plp_  = nullptr;
     bam1_t*                                  rec_  = nullptr;   // scratch for callback
 
+    // Reference FASTA for -f/--pileup (ref column + ./, match notation). The
+    // current contig's sequence is fetched once and cached (freed on tid change).
+    faidx_t*                                 fai_  = nullptr;
+    mutable char*                            ref_cache_ = nullptr;
+    mutable int                              ref_cache_tid_ = -1;
+    mutable hts_pos_t                        ref_cache_len_ = 0;
+
+    // Reference bases for the current pileup column (nullptr = no -f); `ref_for`
+    // fetches + caches the contig for `tid`, returning the whole-contig sequence.
+    const char* ref_for(int tid) const {
+        if (!fai_) return nullptr;
+        if (tid == ref_cache_tid_) return ref_cache_;
+        if (ref_cache_) { free(ref_cache_); ref_cache_ = nullptr; }
+        ref_cache_tid_ = tid;
+        ref_cache_len_ = 0;
+        const char* name = sam_hdr_tid2name(hdr_, tid);
+        if (!name) return nullptr;
+        hts_pos_t clen = sam_hdr_tid2len(hdr_, tid);
+        if (clen <= 0) return nullptr;
+        ref_cache_ = faidx_fetch_seq64(fai_, name, 0, clen - 1, &ref_cache_len_);
+        return ref_cache_;   // nullptr if the contig is absent from the FASTA
+    }
+
     // Requested regions parsed at open time. bam_plp_auto emits every
     // position covered by the iterator's fetched reads, so a query like
     // `-r chr1:105-105` would otherwise spill the full span of any read
@@ -5189,10 +5224,16 @@ class BamPileupSource : public TabularSource {
     }
 
     // Render one position's bases / quals strings from the bam_pileup1_t
-    // array. Mirrors `samtools mpileup` without -f: no ref, no `.`/`,`,
-    // bases are uppercase forward, lowercase reverse.
+    // array. `ref` is the current contig's sequence (nullptr without -f) and
+    // `pos` the 0-based column: with a reference, a read base matching the ref
+    // becomes `.` (forward) / `,` (reverse) and deleted bases are filled from
+    // the reference — matching `samtools mpileup -f`. Without one, bases are the
+    // literal letters (uppercase forward, lowercase reverse) and there is no
+    // match notation.
     static void format_pileup_row(const bam_pileup1_t* plp, int n,
-                                   std::string& bases, std::string& quals) {
+                                   std::string& bases, std::string& quals,
+                                   const char* ref, hts_pos_t ref_len,
+                                   hts_pos_t pos) {
         bases.clear();
         quals.clear();
         for (int i = 0; i < n; ++i) {
@@ -5215,9 +5256,18 @@ class BamPileupSource : public TabularSource {
                 else               bases += '*';
             } else {
                 uint8_t bnt = bam_seqi(bam_get_seq(p->b), p->qpos);
-                char nt = seq_nt16_str[bnt];
-                if (bam_is_rev(p->b)) nt = (char)std::tolower(nt);
-                bases += nt;
+                char nt = seq_nt16_str[bnt];             // uppercase A/C/G/T/N/=
+                bool rev = bam_is_rev(p->b);
+                if (ref) {
+                    int rb = (pos < ref_len) ? (unsigned char)ref[pos] : 'N';
+                    if (nt == '=' ||
+                        seq_nt16_table[(uint8_t)nt] == seq_nt16_table[(uint8_t)rb])
+                        bases += rev ? ',' : '.';        // matches the reference
+                    else
+                        bases += rev ? (char)std::tolower(nt) : nt;
+                } else {
+                    bases += rev ? (char)std::tolower(nt) : nt;
+                }
             }
             // Quality column: samtools emits the base quality at qpos for every
             // element — including deletions and reference skips — never '*'.
@@ -5245,8 +5295,14 @@ class BamPileupSource : public TabularSource {
                 int n_del = -p->indel;
                 bases += '-';
                 bases += std::to_string(n_del);
-                char fill = bam_is_rev(p->b) ? 'n' : 'N';
-                bases.append((size_t)n_del, fill);
+                bool rev = bam_is_rev(p->b);
+                for (int k = 1; k <= n_del; ++k) {
+                    // Deleted bases come from the reference (or 'N' without -f).
+                    char rc = (ref && pos + k < ref_len)
+                                  ? ref[pos + k] : 'N';
+                    bases += rev ? (char)std::tolower((unsigned char)rc)
+                                 : (char)std::toupper((unsigned char)rc);
+                }
             }
             if (p->is_tail) bases += '$';
         }
@@ -5277,11 +5333,16 @@ class BamPileupSource : public TabularSource {
                 }
                 if (!in_any) continue;
             }
-            format_pileup_row(plp_arr, n_plp, bases_str, quals_str);
+            const char* ref = ref_for(tid);   // nullptr without -f
+            format_pileup_row(plp_arr, n_plp, bases_str, quals_str,
+                              ref, ref_cache_len_, pos);
             const char* chrom = sam_hdr_tid2name(hdr_, tid);
             ARROW_RETURN_NOT_OK(b_chrom.Append(chrom ? chrom : "*"));
             ARROW_RETURN_NOT_OK(b_pos.Append((int64_t)pos + 1));  // 1-based
-            ARROW_RETURN_NOT_OK(b_ref.Append("N"));               // no -f
+            // Ref column: the FASTA base as-is (case preserved, like samtools),
+            // 'N' where there's no reference.
+            char rb = (ref && pos < ref_cache_len_) ? ref[pos] : 'N';
+            ARROW_RETURN_NOT_OK(b_ref.Append(std::string(1, rb)));
             ARROW_RETURN_NOT_OK(b_depth.Append(n_plp));
             ARROW_RETURN_NOT_OK(b_bases.Append(bases_str));
             ARROW_RETURN_NOT_OK(b_quals.Append(quals_str));
@@ -5323,6 +5384,8 @@ public:
         if (idx_)  { hts_idx_destroy(idx_);  idx_  = nullptr; }
         if (hdr_)  { sam_hdr_destroy(hdr_);  hdr_  = nullptr; }
         if (fp_)   { sam_close(fp_);         fp_   = nullptr; }
+        if (ref_cache_) { free(ref_cache_);  ref_cache_ = nullptr; }
+        if (fai_)  { fai_destroy(fai_);      fai_  = nullptr; }
     }
 
     static std::string open(const std::string& path, const Config& cfg,
@@ -5338,6 +5401,15 @@ public:
         self->hdr_ = sam_hdr_read(self->fp_);
         if (!self->hdr_)
             return "Cannot read BAM/SAM header from '" + path + "'";
+
+        // Optional reference FASTA (-f): enables the ref column and the ./,
+        // match notation, matching `samtools mpileup -f`.
+        if (!cfg.pileup_ref.empty()) {
+            self->fai_ = fai_load(cfg.pileup_ref.c_str());
+            if (!self->fai_)
+                return "Cannot load reference FASTA '" + cfg.pileup_ref +
+                       "' (need a .fai index; run `samtools faidx`)";
+        }
 
         // Detect format for the footer string.
         const htsFormat* fmt = hts_get_format(self->fp_);

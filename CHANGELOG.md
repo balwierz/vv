@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Reference-aware pileup — `vv x.bam --pileup -f ref.fa`.** With a reference
+  FASTA (needs a `.fai`), the `--pileup` output fills the `ref` column from the
+  reference and renders read bases matching it as `.` (forward) / `,` (reverse),
+  byte-for-byte like `samtools mpileup -f` (vv applies no BAQ, i.e. `-B`); deleted
+  bases are filled from the reference too. Without `-f` the previous behaviour is
+  unchanged (ref `N`, literal bases). The current contig is fetched once and
+  cached. Verified byte-identical against `samtools mpileup -B -f` (matches,
+  mismatches, deletions, ref-column case). `-f` without `--pileup` is a clean
+  usage error.
+
 ### Changed
 - **LociSSD v4 reads faster.** The colblock `read_chunk` decoded the `Start`
   column twice whenever `End` was also present (once for the LENGTH/mask input,

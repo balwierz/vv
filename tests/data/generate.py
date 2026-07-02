@@ -561,6 +561,23 @@ else:
             bf.write(r)
     pysam.index(str(bam_path))
 
+    # Reference FASTA for reference-aware pileup (`vv --pileup -f`). chr1 is all
+    # T over the covered region 100-119 EXCEPT it keeps T at pos 105 — where the
+    # reads carry a G — so that column shows a mismatch (G/g) while every other
+    # column matches (./,). Pos 110 is lowercase 't' to exercise ref-column
+    # uppercasing + case-insensitive matching. Byte-checked vs `samtools mpileup
+    # -B -f` (vv does no BAQ, hence -B).
+    ref_fa = HERE / "tiny.pileup.fa"
+    win = "T" * 10 + "t" + "T" * 9                 # positions 100..119 (110 = 't')
+    chr1_ref = "A" * 99 + win + "A" * (1000 - 119)  # 1-based; length 1000
+    assert len(chr1_ref) == 1000
+    with open(ref_fa, "w") as f:
+        f.write(">chr1\n" + chr1_ref + "\n")
+        f.write(">chr2\n" + "A" * 1000 + "\n")
+    if (HERE / "tiny.pileup.fa.fai").exists():
+        (HERE / "tiny.pileup.fa.fai").unlink()
+    pysam.faidx(str(ref_fa))
+
     # tiny.splice.bam: reads with a reference skip (CIGAR N, e.g. an RNA-seq
     # intron) and a deletion (CIGAR D), on both strands, so --pileup can be
     # checked byte-for-byte against `samtools mpileup`. Refskips must render as

@@ -96,9 +96,13 @@ files get the same set suffixed per sample. Pass \fB--pileup\fR on
 a BAM/CRAM to walk the alignments through htslib's
 \fBbam_plp_auto\fR engine and emit the same mpileup rows directly,
 without a separate \fBsamtools mpileup\fR step. Range queries
-require an index (\fB.bai\fR / \fB.csi\fR / \fB.crai\fR). No
-reference FASTA support yet — ref is set to \fBN\fR, bases render
-as their literal letter case-by-strand.
+require an index (\fB.bai\fR / \fB.csi\fR / \fB.crai\fR). Pass
+\fB\-f\fR / \fB\-\-fasta\fR \fIref.fa\fR (which needs a \fB.fai\fR
+index) to fill the ref column from the reference and render bases
+matching it as \fB.\fR (forward) / \fB,\fR (reverse), byte-for-byte
+like \fBsamtools mpileup \-f\fR (vv applies no BAQ, i.e. \fB\-B\fR);
+without it ref is \fBN\fR and bases render as their literal letter
+case-by-strand.
 .IP \(bu 2
 \fB.orc\fR \(en Apache ORC (Optimized Row Columnar). Columnar storage
 used by Hadoop / Hive / Spark. One ORC stripe is treated as one chunk
