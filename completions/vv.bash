@@ -44,7 +44,7 @@ _vv() {
             COMPREPLY=( $(compgen -W 'UCSC Kent NCBI GenBank 0-based 1-based bed tabix' -- "$cur") )
             return
             ;;
-        --parquet)
+        --parquet|--arrow|--feather)
             _filedir
             return
             ;;
@@ -79,7 +79,7 @@ _vv() {
                 --color --color=auto --color=always --color=never
                 --theme
                 --tsv --csv --delimiter
-                --parquet --compression
+                --parquet --arrow --feather --compression
                 --json --ndjson --md --markdown
                 --select --cols --filter
                 --schema --describe --count --stats --validate --decode-pileup --pileup

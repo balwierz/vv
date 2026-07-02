@@ -57,6 +57,8 @@ _vv() {
         '--delimiter+[Custom delimiter]:char:' \
         '--no-header[Omit the header row]' \
         '--parquet+[Write a Parquet file]:path:_files' \
+        '--arrow+[Write an Arrow IPC file (Feather v2)]:path:_files' \
+        '--feather+[Write an Arrow IPC file (Feather v2)]:path:_files' \
         '--compression+[Parquet codec]:codec:(zstd snappy gzip lz4 none)' \
         '--heatmap[Render numeric columns as a terminal heatmap]' \
         '--image-mode+[Heatmap backend]:how:(auto kitty sixel halfblock ascii)' \

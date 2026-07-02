@@ -289,9 +289,17 @@ file. Stays streaming for forward-only sources (BAM/FASTQ).
 \fIFILE\fR may be \fB-\fR to write to stdout; the data is spooled to a
 temp file first because Parquet's footer-at-end needs seekable writes.
 .TP
+.BI \-\-arrow " FILE" \fR, \fB\-\-feather\fR " FILE"
+Stream the input into an Arrow IPC file (a.k.a. Feather v2) at
+\fIFILE\fR \(en the zero-copy interchange format for pandas / polars /
+R \fBarrow\fR. Same column / row / filter handling as \fB\-\-parquet\fR;
+\fB\-\-feather\fR is an alias. \fIFILE\fR may be \fB-\fR for stdout.
+.TP
 .BI \-\-compression " CODEC"
 Codec for \fB\-\-parquet\fR output: \fBzstd\fR (default), \fBsnappy\fR,
-\fBgzip\fR, \fBlz4\fR, \fBnone\fR.
+\fBgzip\fR, \fBlz4\fR, \fBnone\fR. For \fB\-\-arrow\fR / \fB\-\-feather\fR,
+only \fBzstd\fR (default), \fBlz4\fR, or \fBnone\fR (Arrow IPC body
+compression).
 .SS Delimited output
 .TP
 .B \-\-tsv

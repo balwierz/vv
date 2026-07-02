@@ -33,6 +33,7 @@ struct Config {
     std::string region_cols;             // --region-cols Chr,Start,End for generic Parquet
     int64_t     slop = 0;                // --slop N: pad each region by N bp
     std::string parquet_out;             // --parquet <file>: write Parquet to this path
+    std::string arrow_out;               // --arrow/--feather <file>: write Arrow IPC (Feather v2)
     std::string compression = "zstd";    // --compression: parquet codec
     int         head_rows      = 10;
     bool        head_rows_set  = false;  // true when -n was given explicitly

@@ -13,6 +13,7 @@
 #include <arrow/io/compressed.h>
 #include <arrow/ipc/feather.h>
 #include <arrow/ipc/reader.h>
+#include <arrow/ipc/writer.h>
 #include <arrow/util/compression.h>
 #include <parquet/arrow/reader.h>
 #include <parquet/arrow/schema.h>
@@ -588,9 +589,13 @@ static void print_usage(const char* prog) {
         "  --delimiter <sep>   write with a custom single-character delimiter\n"
         "  --no-header         omit the header row\n"
         "  (-n defaults to all rows in this mode; -c still applies)\n"
-        "\nParquet output (replaces table view):\n"
+        "\nParquet / Arrow output (replaces table view):\n"
         "  --parquet <file>    write a Parquet file at <file> (or `-` for stdout)\n"
-        "  --compression <c>   codec: zstd (default), snappy, gzip, lz4, none\n"
+        "  --arrow, --feather <file>\n"
+        "                      write an Arrow IPC file (Feather v2) at <file>\n"
+        "                      (or `-` for stdout)\n"
+        "  --compression <c>   Parquet: zstd (default), snappy, gzip, lz4, none;\n"
+        "                      Arrow/Feather: zstd (default), lz4, none\n"
         "\nRange queries:\n"
         "  -r / --region <REGION>   e.g. chr1:1000-2000  (multiple comma-separated)\n"
         "  --window <REGION>        alias of -r for LociSSD readers' muscle memory\n"
@@ -697,6 +702,9 @@ static Config parse_args(int argc, char** argv) {
             cfg.decode_threads = std::max(0, std::atoi(argv[++i]));
         } else if (!std::strcmp(argv[i], "--parquet") && i + 1 < argc) {
             cfg.parquet_out = argv[++i];
+        } else if ((!std::strcmp(argv[i], "--arrow") ||
+                    !std::strcmp(argv[i], "--feather")) && i + 1 < argc) {
+            cfg.arrow_out = argv[++i];
         } else if (!std::strcmp(argv[i], "--compression") && i + 1 < argc) {
             cfg.compression = argv[++i];
         } else if (!std::strcmp(argv[i], "--schema")) {
@@ -785,6 +793,7 @@ static Config parse_args(int argc, char** argv) {
                 "-n", "-w", "-c", "-r", "--region", "--window",
                 "--regions-file", "--region-cols", "--slop", "--coords",
                 "--tail", "-@", "--threads", "--decode-threads", "--parquet",
+                "--arrow", "--feather",
                 "--compression", "--unique", "--sample", "--filter",
                 "--select", "--cols", "--image-mode", "--tab", "--theme",
                 "--delimiter", "-f", "--fasta",
@@ -12485,6 +12494,147 @@ static std::string write_parquet(TabularSource& src, const Config& cfg) {
     return "";
 }
 
+// Stream the source's chunks into an Arrow IPC file (a.k.a. Feather v2) at
+// cfg.arrow_out. Same shape as write_parquet — column projection + --filter, an
+// "[N rows → path]" stderr summary, and a temp-file spool for `-` (stdout).
+static std::string write_arrow(TabularSource& src, const Config& cfg) {
+    // IPC body compression is limited to zstd / lz4 / none (no snappy/gzip).
+    std::shared_ptr<arrow::util::Codec> ipc_codec;
+    const std::string& comp = cfg.compression;
+    if (comp.empty() || comp == "none" || comp == "uncompressed") {
+        // uncompressed
+    } else if (comp == "zstd") {
+        ipc_codec = *arrow::util::Codec::Create(arrow::Compression::ZSTD);
+    } else if (comp == "lz4") {
+        ipc_codec = *arrow::util::Codec::Create(arrow::Compression::LZ4_FRAME);
+    } else {
+        return "Arrow/Feather output supports --compression zstd, lz4, or none "
+               "(not '" + comp + "')";
+    }
+
+    std::vector<std::string> unknown;
+    std::vector<int> requested = select_field_indices(src, cfg, &unknown, true);
+    if (!unknown.empty()) {
+        std::string u;
+        for (auto& n : unknown) { if (!u.empty()) u += ","; u += n; }
+        return "unknown column(s) in --select: " + u;
+    }
+    FilterExpr fx;
+    bool have_filter = false;
+    if (!cfg.filter_expr.empty()) {
+        std::string ferr;
+        if (!parse_filter_expr(cfg.filter_expr, *src.schema(), &fx, &ferr))
+            return "--filter: " + ferr;
+        have_filter = true;
+    }
+    std::vector<int> col_indices = have_filter
+        ? union_with_filter(requested, fx) : requested;
+
+    arrow::FieldVector fields;
+    for (int i : requested) fields.push_back(src.schema()->field(i));
+    auto out_schema = arrow::schema(fields);
+
+    // `--arrow -`: spool to a temp file, then copy to stdout after close (matches
+    // --parquet -). unlink() up front so it disappears on crash.
+    bool to_stdout = (cfg.arrow_out == "-");
+    std::string out_path = cfg.arrow_out;
+    if (to_stdout) {
+        char tmpl[] = "/tmp/vv-arrow-XXXXXX.arrow";
+        int fd = mkstemps(tmpl, 6);   // suffix ".arrow" = 6
+        if (fd < 0)
+            return std::string("Cannot create temp file for --arrow -: ") +
+                   std::strerror(errno);
+        out_path = tmpl;
+        ::close(fd);
+    }
+
+    auto sink_or = arrow::io::FileOutputStream::Open(out_path);
+    if (!sink_or.ok()) {
+        if (to_stdout) ::unlink(out_path.c_str());
+        return "Cannot open '" + out_path + "' for write: " +
+               sink_or.status().ToString();
+    }
+    auto sink = sink_or.ValueOrDie();
+
+    auto wopts = arrow::ipc::IpcWriteOptions::Defaults();
+    if (ipc_codec) wopts.codec = ipc_codec;
+    auto writer_or = arrow::ipc::MakeFileWriter(sink, out_schema, wopts);
+    if (!writer_or.ok()) {
+        if (to_stdout) ::unlink(out_path.c_str());
+        return "Arrow IPC writer init failed: " + writer_or.status().ToString();
+    }
+    auto writer = std::move(writer_or).ValueOrDie();
+
+    int64_t rows_left = (cfg.head_rows <= 0) ? INT64_MAX : (int64_t)cfg.head_rows;
+    int64_t total = 0;
+    for (int c = 0; rows_left > 0; ++c) {
+        src.ensure(c);
+        if (c >= src.num_chunks()) break;
+        std::shared_ptr<arrow::Table> table;
+        auto st = src.read_chunk(c, col_indices, &table);
+        if (!st.ok()) {
+            std::fprintf(stderr, "Warning: error reading chunk %d: %s\n",
+                         c, st.ToString().c_str());
+            continue;
+        }
+        if (have_filter) table = apply_filter(table, fx, col_indices);
+        if (!table || table->num_rows() == 0) continue;
+        int64_t take = std::min(table->num_rows(), rows_left);
+        if (take < table->num_rows()) table = table->Slice(0, take);
+        table = project_to_requested(table, col_indices, requested);
+        st = writer->WriteTable(*table);
+        if (!st.ok()) {
+            if (to_stdout) ::unlink(out_path.c_str());
+            return "WriteTable failed: " + st.ToString();
+        }
+        total += take;
+        rows_left -= take;
+    }
+
+    auto cs = writer->Close();
+    if (!cs.ok()) {
+        if (to_stdout) ::unlink(out_path.c_str());
+        return "Arrow Close failed: " + cs.ToString();
+    }
+    auto fc = sink->Close();
+    if (!fc.ok()) {
+        if (to_stdout) ::unlink(out_path.c_str());
+        return "File close failed: " + fc.ToString();
+    }
+
+    const char* clabel = ipc_codec ? comp.c_str() : "none";
+    if (to_stdout) {
+        FILE* in = std::fopen(out_path.c_str(), "rb");
+        if (!in) {
+            std::string err = std::string("cannot read back temp file: ") +
+                              std::strerror(errno);
+            ::unlink(out_path.c_str());
+            return err;
+        }
+        constexpr size_t BUF = 64 * 1024;
+        std::vector<char> buf(BUF);
+        std::fflush(stdout);
+        while (true) {
+            size_t n = std::fread(buf.data(), 1, BUF, in);
+            if (n == 0) break;
+            if (std::fwrite(buf.data(), 1, n, stdout) != n) {
+                std::fclose(in);
+                ::unlink(out_path.c_str());
+                return std::string("write to stdout failed: ") + std::strerror(errno);
+            }
+        }
+        std::fclose(in);
+        ::unlink(out_path.c_str());
+        std::fprintf(stderr, "%s[%lld rows → stdout, %s]%s\n",
+                     g_color.meta_key, (long long)total, clabel, g_color.reset);
+    } else {
+        std::fprintf(stderr, "%s[%lld rows → %s, %s]%s\n",
+                     g_color.meta_key, (long long)total,
+                     cfg.arrow_out.c_str(), clabel, g_color.reset);
+    }
+    return "";
+}
+
 // ── JSON / JSON-Lines output ─────────────────────────────────────────────────
 
 // Quote a string as a JSON string literal.
@@ -16890,7 +17040,8 @@ int main(int argc, char** argv) {
                           && !cfg.schema_only
                           && !cfg.describe
                           && !cfg.stats_only
-                          && cfg.parquet_out.empty();
+                          && cfg.parquet_out.empty()
+                          && cfg.arrow_out.empty();
         if (want_pager) md::emit_via_pager(emit);
         else            emit();
         return 0;
@@ -17054,7 +17205,7 @@ int main(int argc, char** argv) {
     // Interactive viewer
     {
         bool auto_tui = !cfg.no_interactive && !cfg.delimiter && !cfg.vertical
-                        && cfg.parquet_out.empty()
+                        && cfg.parquet_out.empty() && cfg.arrow_out.empty()
                         && !cfg.head_rows_set
                         && isatty(STDOUT_FILENO) && isatty(STDIN_FILENO);
         if (cfg.interactive || auto_tui) {
@@ -17129,6 +17280,18 @@ int main(int argc, char** argv) {
         Config pcfg = cfg;
         if (!pcfg.head_rows_set) pcfg.head_rows = 0;  // default to "all rows"
         std::string err = write_parquet(*src, pcfg);
+        if (!err.empty()) {
+            report(cfg.path, err);
+            return 1;
+        }
+        return 0;
+    }
+
+    // Arrow IPC / Feather output
+    if (!cfg.arrow_out.empty()) {
+        Config acfg = cfg;
+        if (!acfg.head_rows_set) acfg.head_rows = 0;  // default to "all rows"
+        std::string err = write_arrow(*src, acfg);
         if (!err.empty()) {
             report(cfg.path, err);
             return 1;

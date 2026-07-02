@@ -52,6 +52,8 @@ complete -c vv -c vh -l image-mode -r -a 'auto kitty sixel halfblock ascii' -d '
 
 # Parquet output
 complete -c vv -c vh -l parquet -r -F      -d 'Write a Parquet file at this path'
+complete -c vv -c vh -l arrow   -r -F      -d 'Write an Arrow IPC file (Feather v2) at this path'
+complete -c vv -c vh -l feather -r -F      -d 'Write an Arrow IPC file (Feather v2) at this path'
 complete -c vv -c vh -l compression -r -a 'zstd snappy gzip lz4 none' -d 'Parquet codec'
 
 # JSON output / projection / filter / describe / schema

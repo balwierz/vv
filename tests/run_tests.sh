@@ -484,6 +484,29 @@ else
     FAIL=$((FAIL+1)); echo "  FAIL  parquet_stdout_bit_identical_to_disk"
 fi
 
+# ── Arrow IPC / Feather output ──────────────────────────────────────────────
+# Write an Arrow IPC file (Feather v2), read it back, round-trip via --tsv.
+"$VV" --arrow "$TMP/out.arrow" "$DATA/tiny.tsv" > /dev/null
+assert_contains "arrow_magic" "$(head -c 6 "$TMP/out.arrow")" "ARROW1"
+"$VV" --tsv --no-header "$TMP/out.arrow" > "$TMP/out.arrow.tsv"
+assert_eq_file "arrow_write_roundtrip" "$TMP/out.arrow.tsv" "$GOLDEN/tsv_tsv.expected"
+# --feather is an alias; --compression lz4/none accepted, snappy rejected.
+"$VV" --feather "$TMP/out.feather" --compression none "$DATA/tiny.tsv" > /dev/null
+assert_exit_zero "feather_alias_write" test -s "$TMP/out.feather"
+"$VV" --arrow "$TMP/lz4.arrow" --compression lz4 "$DATA/tiny.tsv" > /dev/null
+assert_exit_zero "arrow_lz4" test -s "$TMP/lz4.arrow"
+ABAD=$("$VV" --arrow "$TMP/x.arrow" --compression snappy "$DATA/tiny.tsv" 2>&1 || true)
+assert_contains "arrow_bad_codec" "$ABAD" "supports --compression zstd, lz4, or none"
+# --arrow - : stdout, and --select projects columns.
+"$VV" --arrow - --select Chr,Start "$DATA/tiny.parquet" > "$TMP/sel.arrow" 2>/dev/null
+assert_eq_file_inline "arrow_stdout_select_cols" \
+    "$("$VV" --schema "$TMP/sel.arrow" 2>&1 | awk 'seen&&!NF{exit} /^---/{seen=1;next} seen{print $1}' | tr '\n' ',')" "Chr,Start,"
+# pyarrow reads what vv wrote (cross-tool interop), if available.
+if command -v python3 >/dev/null 2>&1 && python3 -c "import pyarrow.feather" 2>/dev/null; then
+    PA=$(python3 -c "import pyarrow.feather as f; t=f.read_table('$TMP/out.arrow'); print(t.num_rows)")
+    assert_eq_file_inline "arrow_pyarrow_reads" "$PA" "$("$VV" --count "$DATA/tiny.tsv")"
+fi
+
 echo
 echo '── Stdin (-) ──────────────────────────────────────────'
 "$VV" --tsv --no-header - < "$DATA/tiny.tsv" > "$TMP/stdin_tsv.out"
