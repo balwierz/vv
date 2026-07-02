@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`--arrow` / `--feather` output** — write an Arrow IPC file (Feather v2), the
+  zero-copy interchange format for pandas / polars / R `arrow`. Same column
+  projection / `--filter` / `-` (stdout) handling as `--parquet`; streams
+  chunk-by-chunk. `--compression` accepts `zstd` (default), `lz4`, or `none`
+  (Arrow IPC body compression). Round-trips through vv and is read by pyarrow.
 - **`--count`** — print the row count and exit. Instant on formats that carry a
   count in metadata (Parquet, LociSSD); reflects a `-r` region and, with
   `--filter`, counts only matching rows. A `wc -l` for any supported format.
