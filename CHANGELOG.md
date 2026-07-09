@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **UCSC↔Ensembl chromosome-name aliasing for `-r`.** A `-r chr1:…` query against
+  a file that names the contig `1` (or vice versa) used to silently return zero
+  rows. vv now retries with the alias when the queried name isn't present but its
+  counterpart is, noting the swap on stderr. Limited to **human/mouse** standard
+  chromosomes (autosomes 1–22, X, Y, and the mitochondrion **`chrM`↔`MT`** — never
+  `M`); scaffolds/patches/alt-contigs are never remapped. Applies to tabix
+  (`.vcf.gz`/`.bed.gz`/`.gff.gz`), BCF, BAM `--pileup`, and LociSSD v4. (Generic
+  Parquet and bigWig region paths are a follow-up.)
+
 ## [1.15.0] - 2026-07-02
 
 ### Fixed

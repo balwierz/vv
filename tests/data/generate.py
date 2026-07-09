@@ -131,6 +131,19 @@ if have("bgzip") and have("tabix"):
     with open(HERE / "tiny.bed", "rb") as fin, open(bed_gz, "wb") as fout:
         subprocess.run(["bgzip", "-c"], stdin=fin, stdout=fout, check=True)
     subprocess.run(["tabix", "-f", "-p", "bed", str(bed_gz)], check=True)
+
+    # Ensembl-named tabix BED (contigs `1` and `MT`) to exercise UCSC<->Ensembl
+    # region-chromosome aliasing: a `-r chr1` / `-r chrM` query must find `1` /
+    # `MT`. Sorted; MT sorts after the numeric contig.
+    ens_bed = HERE / "tiny.ens.bed"
+    ens_bed.write_text("1\t100\t200\tp1\n1\t500\t800\tp2\nMT\t10\t20\tmt1\n")
+    ens_gz = HERE / "tiny.ens.bed.gz"
+    if ens_gz.exists():
+        ens_gz.unlink()
+    with open(ens_bed, "rb") as fin, open(ens_gz, "wb") as fout:
+        subprocess.run(["bgzip", "-c"], stdin=fin, stdout=fout, check=True)
+    subprocess.run(["tabix", "-f", "-p", "bed", str(ens_gz)], check=True)
+    ens_bed.unlink()   # keep only the bgzipped + indexed form
 else:
     print("warn: bgzip/tabix not found; skipping tiny.bed.gz", file=sys.stderr)
 

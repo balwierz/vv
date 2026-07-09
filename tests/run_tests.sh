@@ -269,6 +269,32 @@ fi
 printf 'chr1\t100\t900\nchr2\t1400\t1900\n' > "$TMP/multi.bed"
 RF_OUT=$("$VV" --tsv --no-header --regions-file "$TMP/multi.bed" "$DATA/tiny.lociss" | wc -l)
 assert_eq_file_inline "regions_file_collected_three_rows" "$RF_OUT" "3"
+
+# UCSC<->Ensembl chromosome-name aliasing for -r (human/mouse only; chrM<->MT).
+# The tiny.* fixtures are UCSC-named (chr1/chr2), so an Ensembl `1` query must
+# alias to `chr1` and return the same rows.
+assert_eq_file_inline "alias_lociss_v4_1_eq_chr1" \
+    "$("$VV" --count -r 1:0-160 "$DATA/tiny.v4.lociss" 2>/dev/null)" \
+    "$("$VV" --count -r chr1:0-160 "$DATA/tiny.v4.lociss" 2>/dev/null)"
+assert_eq_file_inline "alias_vcf_gz_1_eq_chr1" \
+    "$("$VV" --tsv --no-header -r 1 "$DATA/tiny.vcf.gz" 2>/dev/null | wc -l)" \
+    "$("$VV" --tsv --no-header -r chr1 "$DATA/tiny.vcf.gz" 2>/dev/null | wc -l)"
+if [ -f "$DATA/tiny.bcf" ]; then
+    assert_eq_file_inline "alias_bcf_1_eq_chr1" \
+        "$("$VV" --tsv --no-header -r 1 "$DATA/tiny.bcf" 2>/dev/null | wc -l)" \
+        "$("$VV" --tsv --no-header -r chr1 "$DATA/tiny.bcf" 2>/dev/null | wc -l)"
+fi
+# A non-human/mouse contig name is NEVER remapped (chr99 → no alias → empty).
+assert_eq_file_inline "alias_no_remap_nonstandard" \
+    "$("$VV" --count -r chr99:0-100 "$DATA/tiny.v4.lociss" 2>/dev/null)" "0"
+# Reverse direction + the chrM<->MT special case: tiny.ens.bed.gz is Ensembl-named
+# (1, MT), so a UCSC `chr1` / `chrM` query must alias to `1` / `MT` (never `M`).
+if [ -f "$DATA/tiny.ens.bed.gz" ]; then
+    assert_eq_file_inline "alias_ens_chr1_finds_1" \
+        "$("$VV" --tsv --no-header -r chr1 "$DATA/tiny.ens.bed.gz" 2>/dev/null | wc -l)" "2"
+    assert_eq_file_inline "alias_ens_chrM_finds_MT" \
+        "$("$VV" --tsv --no-header -r chrM "$DATA/tiny.ens.bed.gz" 2>/dev/null | grep -c '^MT')" "1"
+fi
 # BCF range queries (skip if bcftools wasn't available during fixture build).
 if [ -f "$DATA/tiny.bcf.csi" ]; then
     BCF_REGION=$("$VV" --tsv --no-header -r chr1:200-1600 "$DATA/tiny.bcf" | wc -l)

@@ -372,6 +372,14 @@ accepted. Coordinates follow the UCSC convention (0-based, half-open)
 by default; pass \fB\-\-coords NCBI\fR for 1-based inclusive
 (samtools / tabix / VCF style).
 .IP
+If the queried chromosome isn't in the file but its UCSC\(->Ensembl
+counterpart is, vv retries with the alias and notes the swap on stderr
+\(en so \fB\-r chr1\fR works on a file that names the contig \fB1\fR, and
+vice versa. This is limited to \fBhuman and mouse\fR standard chromosomes
+(autosomes \fB1\fR\(en\fB22\fR, \fBX\fR, \fBY\fR, and the mitochondrion
+\fBchrM\fR \(<> \fBMT\fR); scaffolds, patches and alt-contigs are never
+remapped.
+.IP
 Supported on:
 .RS
 .IP \(bu 2

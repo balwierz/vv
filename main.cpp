@@ -1582,6 +1582,51 @@ public:
     }
 };
 
+// ── UCSC <-> Ensembl chromosome-name aliasing for region queries ─────────────
+// A `-r chr1:…` query against a file that names the contig `1` (or vice versa)
+// otherwise silently returns zero rows. The alias applies ONLY to human/mouse
+// standard chromosomes — autosomes 1..22 (covers human 1-22 and mouse 1-19), X,
+// Y, and the mitochondrion — so scaffolds / patches / alt-contigs are never
+// remapped. The mitochondrion is `chrM` <-> `MT` (never `M`).
+static std::string chrom_alias(const std::string& n) {
+    auto std_core = [](const std::string& c) -> bool {   // 1..22, X, Y
+        if (c == "X" || c == "Y") return true;
+        if (c.empty() || c.size() > 2) return false;
+        for (char ch : c) if (ch < '0' || ch > '9') return false;
+        int v = std::atoi(c.c_str());
+        return v >= 1 && v <= 22;
+    };
+    if (n.size() > 3 && n.compare(0, 3, "chr") == 0) {    // UCSC -> Ensembl
+        std::string core = n.substr(3);
+        if (core == "M" || core == "MT") return "MT";      // chrM -> MT
+        if (std_core(core)) return core;                   // chr1 -> 1, chrX -> X
+        return "";
+    }
+    if (n == "MT" || n == "M") return "chrM";              // MT -> chrM
+    if (std_core(n)) return "chr" + n;                     // 1 -> chr1, X -> chrX
+    return "";
+}
+
+// Resolve a queried chromosome to the file's naming: `chrom` if the file has it,
+// else its human/mouse alias if the file has that (noting the swap once), else
+// `chrom` unchanged (so an actually-missing contig still errors/empties as before).
+template <typename HavePred>
+static std::string resolve_chrom(const std::string& chrom, HavePred have,
+                                 const std::string& path, bool& noted) {
+    if (have(chrom)) return chrom;
+    std::string alt = chrom_alias(chrom);
+    if (!alt.empty() && have(alt)) {
+        if (!noted) {
+            std::fprintf(stderr, "vv: %s: region chromosome '%s' not found; using "
+                         "'%s' (UCSC/Ensembl naming)\n",
+                         path.c_str(), chrom.c_str(), alt.c_str());
+            noted = true;
+        }
+        return alt;
+    }
+    return chrom;
+}
+
 // Streams the lines emitted by a tabix iterator (one or more comma-separated
 // regions over a tabix-indexed bgzipped file) as if they were the data portion
 // of the original file. Used to feed Arrow's CSV/TSV reader with only the
@@ -1621,6 +1666,24 @@ public:
             start = comma + 1;
         }
         if (regs.empty()) regs.push_back(region);
+        // UCSC<->Ensembl human/mouse chrom aliasing: if a region's chromosome
+        // isn't among the tabix index's sequence names but its alias is, swap it.
+        {
+            int nseq = 0;
+            const char** seqs = tbx_seqnames(self->tbx_, &nseq);
+            std::set<std::string> have;
+            for (int i = 0; seqs && i < nseq; ++i) have.insert(seqs[i]);
+            free(seqs);
+            bool noted = false;
+            auto havef = [&](const std::string& n){ return have.count(n) > 0; };
+            for (auto& r : regs) {
+                size_t colon = r.find(':');
+                std::string chrom = (colon == std::string::npos) ? r : r.substr(0, colon);
+                std::string res = resolve_chrom(chrom, havef, path, noted);
+                if (res != chrom)
+                    r = res + (colon == std::string::npos ? std::string() : r.substr(colon));
+            }
+        }
         for (const auto& r : regs) {
             hts_itr_t* it = tbx_itr_querys(self->tbx_, r.c_str());
             if (!it) return "Cannot query region '" + r + "' in '" + path + "'";
@@ -1990,6 +2053,15 @@ static std::string regions_to_htslib(const std::string& canonical) {
         acc += region_to_htslib(r);
     }
     return acc;
+}
+
+// Rewrite each region window's chromosome in place via resolve_chrom() (defined
+// earlier, before TabixInputStream, so the string-based tabix path can reuse it).
+template <typename HavePred>
+static void resolve_region_chroms(std::vector<Region>& ws, HavePred have,
+                                  const std::string& path) {
+    bool noted = false;
+    for (auto& w : ws) w.chrom = resolve_chrom(w.chrom, have, path, noted);
 }
 
 // ── Simple value-predicate filter (--filter) ─────────────────────────────────
@@ -3363,6 +3435,8 @@ std::string LocissV4Source::build_region(const Config& cfg) {
         return "LociSSD v4: region query needs Start and End columns";
     region_mode_ = true;
     auto windows = parse_region_list(cfg.region, cfg.coords_one_based);
+    resolve_region_chroms(windows,
+        [&](const std::string& n){ return name_to_rank_.count(n) > 0; }, path_);
     for (const auto& w : windows) {
         auto it = name_to_rank_.find(w.chrom);
         if (it == name_to_rank_.end()) continue;          // chrom not present
@@ -5528,9 +5602,12 @@ public:
             // cfg.region is canonical 0-based half-open; both sam_itr_regarray
             // and the hts_parse_region filter below read region strings as
             // 1-based inclusive, so convert each window at the boundary.
+            std::vector<Region> windows = parse_region_list(cfg.region);
+            resolve_region_chroms(windows,
+                [&](const std::string& n){ return bam_name2id(self->hdr_, n.c_str()) >= 0; },
+                path);
             std::vector<std::string> regs;
-            for (const auto& w : parse_region_list(cfg.region))
-                regs.push_back(region_to_htslib(w));
+            for (const auto& w : windows) regs.push_back(region_to_htslib(w));
             std::vector<const char*> regp;
             regp.reserve(regs.size());
             for (auto& r : regs) regp.push_back(r.c_str());
@@ -5832,7 +5909,11 @@ public:
                        "`bcftools index '" + path + "'`)";
             // cfg.region is canonical 0-based half-open; bcf_itr_querys reads
             // its string argument as 1-based inclusive, so convert per window.
-            for (const auto& r : parse_region_list(cfg.region)) {
+            std::vector<Region> windows = parse_region_list(cfg.region);
+            resolve_region_chroms(windows,
+                [&](const std::string& n){ return bcf_hdr_name2id(self->hdr_, n.c_str()) >= 0; },
+                path);
+            for (const auto& r : windows) {
                 std::string rstr = region_to_htslib(r);
                 hts_itr_t* it =
                     bcf_itr_querys(self->idx_, self->hdr_, rstr.c_str());
