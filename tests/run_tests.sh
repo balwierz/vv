@@ -1061,6 +1061,22 @@ if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
     assert_contains "h5ad_categorical_cap_codes"   "$CAT_CAP" "grp (codes)"
 fi
 
+# anndata >= 0.13 encodes string columns + the DataFrame _index as
+# `nullable-string-array` groups ({values, mask}) rather than plain string
+# datasets. tiny.nullstr.h5ad is hand-written with h5py (version-independent) so
+# this path is always covered, including the mask -> NA case (label 'beta').
+if [ -f "$DATA/tiny.nullstr.h5ad" ]; then
+    NS_OBS=$("$VV" --tsv --no-header --tab obs "$DATA/tiny.nullstr.h5ad" 2>/dev/null)
+    # _index (nullable-string-array) is read: r0/r1/r2 present.
+    assert_contains "nullstr_index_read"   "$NS_OBS" "$(printf 'r0\talpha')"
+    # The masked value (label[1]='beta', mask=True) is NA -> empty, not 'beta'.
+    assert_contains "nullstr_mask_is_null" "$(printf '%s\n' "$NS_OBS" | sed -n 2p)" "$(printf 'r1\t')"
+    refute_contains "nullstr_masked_value_absent" "$NS_OBS" "beta"
+    # var index (nullable-string-array) labels the X-preview columns.
+    NS_X=$("$VV" --tsv --tab X "$DATA/tiny.nullstr.h5ad" 2>/dev/null | head -1)
+    assert_contains "nullstr_var_index_labels_x" "$NS_X" "g0"
+fi
+
 # Boolean obs/var columns are stored as HDF5 enums; they must render their
 # member names, not the old "?" fallback. tiny.h5ad var.mt = [F,F,T,F].
 if [ -f "$DATA/tiny.h5ad" ]; then

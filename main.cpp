@@ -8763,6 +8763,64 @@ read_2d_dataset_table(hid_t dset, int64_t row_cap, int64_t col_cap,
     return arrow::Table::Make(arrow::schema(fields), cols);
 }
 
+// Is the mask true (= NA) at row i? The mask is an HDF5 bool, which vv decodes
+// to its enum member name ("TRUE"/"FALSE") — so accept the string form as well
+// as a genuine Arrow boolean.
+static bool anndata_mask_bit(const arrow::Array& m, int64_t i) {
+    if (i >= m.length() || m.IsNull(i)) return false;
+    if (m.type_id() == arrow::Type::BOOL)
+        return static_cast<const arrow::BooleanArray&>(m).Value(i);
+    std::string s = cell_to_string(m, i);
+    return s == "TRUE" || s == "True" || s == "true" || s == "1";
+}
+
+// Null out `values` where the `mask` is true (anndata's nullable encodings: mask
+// bit set = NA). Returns `values` unchanged when there are no NAs (the common
+// case) or the value array isn't a string array.
+static std::shared_ptr<arrow::Array> anndata_apply_null_mask(
+        const std::shared_ptr<arrow::Array>& values,
+        const std::shared_ptr<arrow::Array>& mask) {
+    if (!mask) return values;
+    bool any = false;
+    for (int64_t i = 0; i < mask->length(); ++i)
+        if (anndata_mask_bit(*mask, i)) { any = true; break; }
+    if (!any) return values;
+    auto vs = std::dynamic_pointer_cast<arrow::StringArray>(values);
+    if (!vs) return values;   // large_utf8 etc. — leave values, skip the mask
+    arrow::StringBuilder b;
+    for (int64_t i = 0; i < vs->length(); ++i) {
+        if (anndata_mask_bit(*mask, i) || vs->IsNull(i)) (void)b.AppendNull();
+        else (void)b.Append(vs->GetString(i));
+    }
+    std::shared_ptr<arrow::Array> out; (void)b.Finish(&out); return out;
+}
+
+// Decode an open `nullable-string-array` group (anndata >= 0.13's on-disk form
+// for string columns / the DataFrame _index): a `values` string dataset plus a
+// boolean `mask` for NA. Returns the resulting string array.
+static arrow::Result<std::shared_ptr<arrow::Array>>
+read_nullable_string_array(hid_t sub, int64_t cap, int64_t* full_rows) {
+    if (!link_exists(sub, "values"))
+        return arrow::Status::Invalid("nullable-string-array: no 'values'");
+    hid_t vd = H5Dopen2(sub, "values", H5P_DEFAULT);
+    if (vd < 0) return arrow::Status::Invalid("nullable-string-array: open 'values'");
+    auto vt = read_1d_dataset_table(vd, cap, full_rows);
+    H5Dclose(vd);
+    if (!vt.ok() || (*vt)->num_columns() == 0)
+        return arrow::Status::Invalid("nullable-string-array: empty 'values'");
+    std::shared_ptr<arrow::Array> arr = (*vt)->column(0)->chunk(0);
+    if (link_exists(sub, "mask")) {
+        hid_t md = H5Dopen2(sub, "mask", H5P_DEFAULT);
+        if (md >= 0) {
+            auto mt = read_1d_dataset_table(md, cap, nullptr);
+            H5Dclose(md);
+            if (mt.ok() && (*mt)->num_columns() > 0)
+                arr = anndata_apply_null_mask(arr, (*mt)->column(0)->chunk(0));
+        }
+    }
+    return arr;
+}
+
 // Read AnnData's obs / var DataFrame layout — one column per non-special
 // child link, categoricals expanded via the codes / categories sub-group.
 static arrow::Result<std::shared_ptr<arrow::Table>>
@@ -8840,6 +8898,18 @@ read_anndata_dataframe(hid_t group, int64_t row_cap, int64_t* full_rows) {
                     (void)b.Finish(&a);
                     cols.push_back(a);
                     fields.push_back(arrow::field(display, arrow::utf8()));
+                }
+                return arrow::Status::OK();
+            }
+            if (enc == "nullable-string-array") {
+                // anndata >= 0.13: a string column is a {values, mask} group.
+                int64_t cf = 0;
+                auto a = read_nullable_string_array(sub, row_cap, &cf);
+                H5Gclose(sub);
+                maxfull = std::max(maxfull, cf);
+                if (a.ok()) {
+                    cols.push_back(*a);
+                    fields.push_back(arrow::field(display, (*a)->type()));
                 }
                 return arrow::Status::OK();
             }
@@ -9042,13 +9112,29 @@ static void read_anndata_index_labels(hid_t file_id, const char* group_path,
     std::string idx = read_string_attr(g, "_index");
     if (idx.empty()) idx = "_index";           // anndata's conventional default
     if (!link_exists(g, idx.c_str())) { H5Gclose(g); return; }
-    hid_t d = H5Dopen2(g, idx.c_str(), H5P_DEFAULT);
-    if (d < 0) { H5Gclose(g); return; }
-    auto t = read_1d_dataset_table(d, cap);
-    H5Dclose(d); H5Gclose(g);
-    if (!t.ok() || (*t)->num_columns() == 0) return;
+    // _index is a string dataset (legacy) or a nullable-string-array group
+    // (anndata >= 0.13).
+    std::shared_ptr<arrow::Array> col;
+    VV_H5O_INFO_T info;
+    if (VV_H5Oget_info_by_name(g, idx.c_str(), &info, H5O_INFO_BASIC, H5P_DEFAULT) >= 0
+        && info.type == H5O_TYPE_GROUP) {
+        hid_t sub = H5Gopen2(g, idx.c_str(), H5P_DEFAULT);
+        if (sub >= 0) {
+            auto a = read_nullable_string_array(sub, cap, nullptr);
+            H5Gclose(sub);
+            if (a.ok()) col = *a;
+        }
+    } else {
+        hid_t d = H5Dopen2(g, idx.c_str(), H5P_DEFAULT);
+        if (d >= 0) {
+            auto t = read_1d_dataset_table(d, cap);
+            H5Dclose(d);
+            if (t.ok() && (*t)->num_columns() > 0) col = (*t)->column(0)->chunk(0);
+        }
+    }
+    H5Gclose(g);
+    if (!col) return;
     if (index_name) *index_name = idx;
-    auto col = (*t)->column(0)->chunk(0);
     for (int64_t i = 0; i < col->length(); ++i)
         out->push_back(cell_to_string(*col, i));
 }
