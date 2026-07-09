@@ -3145,6 +3145,13 @@ class LocissV4Source : public TabularSource {
     int64_t region_total_ = 0;
     mutable arrow::Status read_status_;
 
+    // Region mode only: memoise decoded column arrays per (block, col) so the
+    // open-time count pass and the subsequent display read don't decode the same
+    // candidate blocks twice. Bounded; off for sequential scans (where each block
+    // is read exactly once and a cache would be pure overhead).
+    mutable std::map<int64_t, std::shared_ptr<arrow::Array>> region_col_cache_;
+    static constexpr size_t kRegionCacheCap = 512;
+
     int stored_index(const std::string& nm) const {
         for (int i = 0; i < (int)stored_.size(); ++i) if (stored_[i] == nm) return i;
         return -1;
@@ -3154,6 +3161,11 @@ class LocissV4Source : public TabularSource {
     decode_col(int b, int c, const int64_t* start) const {
         if (c < 0 || c >= n_cols_)
             return arrow::Status::Invalid("colblock: column index out of range");
+        int64_t key = (int64_t)b * n_cols_ + c;
+        if (region_mode_) {
+            auto it = region_col_cache_.find(key);
+            if (it != region_col_cache_.end()) return it->second;
+        }
         size_t rec = (size_t)b * n_cols_ + (size_t)c;
         ARROW_ASSIGN_OR_RAISE(auto comp, data_->ReadAt((int64_t)col_offset_[rec],
                                                        (int64_t)col_clen_[rec]));
@@ -3164,9 +3176,15 @@ class LocissV4Source : public TabularSource {
         int64_t max_out = (64LL << 20) + (nr > 0 ? nr * 4096 : 0);
         if (max_out > (2LL << 30)) max_out = 2LL << 30;
         ARROW_ASSIGN_OR_RAISE(auto raw, lociss_v4::zstd_inflate(comp, max_out));
-        return lociss_v4::decode_colblock(raw->data(), (size_t)raw->size(),
-                                          codecs_[(size_t)c], *col_types_[(size_t)c],
-                                          nr, cw_, start);
+        ARROW_ASSIGN_OR_RAISE(auto arr,
+            lociss_v4::decode_colblock(raw->data(), (size_t)raw->size(),
+                                       codecs_[(size_t)c], *col_types_[(size_t)c],
+                                       nr, cw_, start));
+        if (region_mode_) {
+            if (region_col_cache_.size() >= kRegionCacheCap) region_col_cache_.clear();
+            region_col_cache_[key] = arr;
+        }
+        return arr;
     }
     // Extract a decoded coordinate array (int32 or int64) as int64 values —
     // used for the region mask and as the LENGTH codec's Start input.

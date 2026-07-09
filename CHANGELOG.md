@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **LociSSD v4 region queries faster.** A `-r` query decoded each candidate
+  block's coordinate columns twice — once in the open-time row-count pass, then
+  again when the rows were read for display/export. In region mode vv now
+  memoises decoded column arrays per block, so each is decoded once. ~50% less
+  time on a wide `-r … --tsv` over a 1 M-row file; output byte-identical. The
+  cache is region-mode only, so a sequential full scan is unaffected.
+
 ### Fixed
 - **bigWig/bigBed misaligned read (aarch64 correctness).** libBigWig read each
   interval's `chrom/start/end` via a `(uint32_t*)` cast on a pointer that advances
