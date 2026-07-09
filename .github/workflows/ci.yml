@@ -118,6 +118,34 @@ jobs:
           ./build/vv --version
           ./build/vv --help
 
+      # ── ASan + UBSan sanitizer gate (24.04 only) ─────────────────────────
+      # Rebuild with AddressSanitizer + UndefinedBehaviorSanitizer and re-run the
+      # smoke suite. Catches the memory-safety class (OOB / use-after-free /
+      # misaligned load) the binary-format parsers are prone to — e.g. the
+      # LociSSD v4 DICT/ARENA decoder OOBs. `ARROW_DEFAULT_MEMORY_POOL=system`
+      # routes Arrow buffers through the ASan-instrumented allocator so overflows
+      # inside them are caught (mimalloc is built with MI_OVERRIDE=OFF, so it
+      # doesn't hide redzones). vptr is disabled — it false-positives across the
+      # Arrow shared-library boundary. LeakSanitizer is off (a short-lived CLI
+      # legitimately leaves allocations for the OS to reclaim at exit).
+      - name: Sanitizer build (ASan + UBSan)
+        if: matrix.os == '24.04'
+        run: |
+          FLAGS="-fsanitize=address,undefined -fno-sanitize=vptr -fno-omit-frame-pointer -g -O1"
+          cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_FLAGS="$FLAGS" -DCMAKE_CXX_FLAGS="$FLAGS" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-asan -j$(nproc)
+
+      - name: Sanitizer smoke tests
+        if: matrix.os == '24.04'
+        env:
+          VV: ${{ github.workspace }}/build-asan/vv
+          ASAN_OPTIONS: "detect_leaks=0:abort_on_error=1"
+          UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
+          ARROW_DEFAULT_MEMORY_POOL: system
+        run: tests/run_tests.sh
+
       # ── Qt6/KDE GUI (24.04 only) ─────────────────────────────────────────
       # Reuses the shared Arrow / htslib / hdf5 / sqlite / xlsxio stack
       # installed above. This is where the KF6 plugins (.so) actually link —
