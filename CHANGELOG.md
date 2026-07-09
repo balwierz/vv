@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **AnnData ≥ 0.13 string columns.** anndata 0.13 changed string `obs`/`var`
+  columns and the DataFrame `_index` from a plain `string-array` dataset to a
+  `nullable-string-array` group (`values` + boolean `mask`). vv skipped the group
+  form, so obs/var string columns, the index labels, and the X-preview cell/gene
+  labels came up empty on files written by current anndata. vv now decodes it
+  (applying the `mask` as nulls) while still reading the legacy dataset form.
+  Covered by a version-independent hand-written fixture (`tiny.nullstr.h5ad`).
+
 ### Added
 - **UCSC↔Ensembl chromosome-name aliasing for `-r`.** A `-r chr1:…` query against
   a file that names the contig `1` (or vice versa) used to silently return zero

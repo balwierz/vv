@@ -817,6 +817,41 @@ else:
         obs.create_dataset("idx", data=np.array([0, 1, 2], dtype=np.int64))  # 3
         obs.create_dataset("bad", data=np.array([10, 20], dtype=np.int64))   # 2
 
+    # tiny.nullstr.h5ad: obs/var string columns + the DataFrame _index encoded as
+    # `nullable-string-array` groups ({values, mask}) — anndata >= 0.13's on-disk
+    # form. Hand-written with h5py so this path is covered regardless of the
+    # installed anndata version. `label` has one NA (mask=True) to exercise the
+    # mask → null path (which the anndata-generated fixtures don't).
+    nsa_path = HERE / "tiny.nullstr.h5ad"
+    if nsa_path.exists():
+        nsa_path.unlink()
+    _sdt = h5py.string_dtype(encoding="utf-8")
+    def _nsa(parent, name, values, mask):
+        g = parent.create_group(name)
+        g.attrs["encoding-type"] = "nullable-string-array"
+        g.attrs["encoding-version"] = "0.1.0"
+        g.create_dataset("values", data=np.array(values, dtype=object), dtype=_sdt)
+        g.create_dataset("mask", data=np.array(mask, dtype=bool))
+    with h5py.File(nsa_path, "w") as f:
+        f.attrs["encoding-type"] = "anndata"
+        f.attrs["encoding-version"] = "0.1.0"
+        f.create_dataset("X", data=np.array([[1., 2.], [3., 4.], [5., 6.]],
+                                            dtype=np.float32))
+        obs = f.create_group("obs")
+        obs.attrs["encoding-type"] = "dataframe"
+        obs.attrs["encoding-version"] = "0.2.0"
+        obs.attrs["_index"] = "_index"
+        obs.attrs["column-order"] = np.array(["label"], dtype=object)
+        _nsa(obs, "_index", ["r0", "r1", "r2"], [False, False, False])
+        _nsa(obs, "label",  ["alpha", "beta", "gamma"], [False, True, False])  # beta→NA
+        var = f.create_group("var")
+        var.attrs["encoding-type"] = "dataframe"
+        var.attrs["encoding-version"] = "0.2.0"
+        var.attrs["_index"] = "_index"
+        var.attrs["column-order"] = np.array(["gene_name"], dtype=object)
+        _nsa(var, "_index", ["g0", "g1"], [False, False])
+        _nsa(var, "gene_name", ["GENE0", "GENE1"], [False, False])
+
 try:
     import anndata as ad                                     # type: ignore
     import numpy as np                                       # type: ignore
