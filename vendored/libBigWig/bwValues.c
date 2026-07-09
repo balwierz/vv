@@ -524,9 +524,12 @@ bbOverlappingEntries_t *bbGetOverlappingEntriesCore(bigWigFile_t *fp, bwOverlapB
 
         bufEnd = (char*)buf + tmp;
         while(buf < bufEnd) {
-            entryTid = ((uint32_t*)buf)[0];
-            start = ((uint32_t*)buf)[1];
-            end = ((uint32_t*)buf)[2];
+            /* buf advances by a variable-length string each iteration, so it is
+             * not 4-byte aligned — read via memcpy (portable; misaligned loads
+             * are UB and can fault on aarch64). */
+            memcpy(&entryTid, (char*)buf + 0, 4);
+            memcpy(&start,    (char*)buf + 4, 4);
+            memcpy(&end,      (char*)buf + 8, 4);
             buf = (char*)buf + 12;
             str = (char*)buf;
             slen = strlen(str) + 1;

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **bigWig/bigBed misaligned read (aarch64 correctness).** libBigWig read each
+  interval's `chrom/start/end` via a `(uint32_t*)` cast on a pointer that advances
+  by a variable-length string every iteration — an unaligned load, which is
+  undefined behaviour (harmless on x86 but can fault on aarch64, which vv ships a
+  static binary for). Now read via `memcpy`. Surfaced by the new ASan/UBSan CI
+  gate, which rebuilds vv with AddressSanitizer + UndefinedBehaviorSanitizer and
+  reruns the smoke suite — catching the out-of-bounds / misaligned class the
+  binary-format parsers are prone to (verified to catch a reintroduced LociSSD v4
+  DICT overflow).
 - **AnnData ≥ 0.13 string columns.** anndata 0.13 changed string `obs`/`var`
   columns and the DataFrame `_index` from a plain `string-array` dataset to a
   `nullable-string-array` group (`values` + boolean `mask`). vv skipped the group
