@@ -23,3 +23,7 @@ decode_colblock(const uint8_t* buf, size_t blen, int codec_id,
                 const int64_t* start);
 
 }  // namespace lociss_v4
+
+// Parse an untrusted .npy buffer and build its table (the NPY header parser plus
+// slab_to_arrow / build_1d_table / build_2d_table). Compiled only under VV_FUZZ.
+namespace npz { void npy_fuzz_one(const uint8_t* buf, size_t n); }

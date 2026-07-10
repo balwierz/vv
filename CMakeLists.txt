@@ -486,20 +486,25 @@ endif()
 #     -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
 option(VV_BUILD_FUZZERS "Build libFuzzer harnesses (requires clang)" OFF)
 if(VV_BUILD_FUZZERS)
-  add_executable(fuzz_colblock main.cpp tests/fuzz/fuzz_colblock.cpp)
-  target_compile_definitions(fuzz_colblock PRIVATE
-      VV_CORE_LIB=1
-      $<TARGET_PROPERTY:vv,COMPILE_DEFINITIONS>)
-  target_include_directories(fuzz_colblock
-      PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
-      PRIVATE $<TARGET_PROPERTY:vv,INCLUDE_DIRECTORIES>)
-  target_compile_options(fuzz_colblock PRIVATE
-      -fsanitize=fuzzer-no-link,address,undefined -fno-sanitize=vptr
-      -fno-omit-frame-pointer -g)
-  target_link_options(fuzz_colblock PRIVATE
-      -fsanitize=fuzzer,address,undefined)
-  target_link_libraries(fuzz_colblock PRIVATE ${_vv_link_common})
-  message(STATUS "Fuzzers     : enabled (fuzz_colblock)")
+  # Each harness = the reader core (main.cpp, VV_CORE_LIB + VV_FUZZ, no main/TUI)
+  # plus its entry point, instrumented for libFuzzer + ASan + UBSan, linking vv's
+  # exact reader deps.
+  foreach(_fz colblock npy)
+    add_executable(fuzz_${_fz} main.cpp tests/fuzz/fuzz_${_fz}.cpp)
+    target_compile_definitions(fuzz_${_fz} PRIVATE
+        VV_CORE_LIB=1 VV_FUZZ=1
+        $<TARGET_PROPERTY:vv,COMPILE_DEFINITIONS>)
+    target_include_directories(fuzz_${_fz}
+        PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+        PRIVATE $<TARGET_PROPERTY:vv,INCLUDE_DIRECTORIES>)
+    target_compile_options(fuzz_${_fz} PRIVATE
+        -fsanitize=fuzzer-no-link,address,undefined -fno-sanitize=vptr
+        -fno-omit-frame-pointer -g)
+    target_link_options(fuzz_${_fz} PRIVATE
+        -fsanitize=fuzzer,address,undefined)
+    target_link_libraries(fuzz_${_fz} PRIVATE ${_vv_link_common})
+  endforeach()
+  message(STATUS "Fuzzers     : enabled (fuzz_colblock, fuzz_npy)")
 endif()
 
 # ── Install rules ─────────────────────────────────────────────────────────────
