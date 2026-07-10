@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **LociSSD v4 decoder hardening (found by fuzzing).** A new libFuzzer harness
+  over `decode_colblock` surfaced two undefined-behaviour bugs reachable via a
+  crafted file: an empty block (`n_rows = 0`) passed a null pointer to `memcpy`
+  through Arrow's builder, and the DELTA/LENGTH coordinate cumsum could overflow
+  `int64` on adversarial deltas. Both are fixed (skip the zero-length append;
+  accumulate in unsigned). Legitimate output is unchanged; the decoder now runs
+  clean for tens of millions of fuzz iterations under ASan+UBSan.
 - **A single column wider than the terminal no longer blanks the TUI.** When the
   first (or only) column was wider than the screen, the column-fitting loop broke
   immediately and drew nothing — an empty browser for a perfectly valid file. It

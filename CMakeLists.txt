@@ -478,6 +478,30 @@ if(VV_BUILD_GUI)
   endif()
 endif()
 
+# ── libFuzzer harnesses (opt-in; needs clang) ────────────────────────────────
+# Compile the reader core (main.cpp with VV_CORE_LIB — no main()/TUI) together
+# with a fuzz entry point, instrumented for libFuzzer + ASan + UBSan, reusing
+# vv's exact reader-dep link list. Off by default; enable with clang:
+#   cmake -S . -B build-fuzz -DVV_BUILD_FUZZERS=ON \
+#     -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+option(VV_BUILD_FUZZERS "Build libFuzzer harnesses (requires clang)" OFF)
+if(VV_BUILD_FUZZERS)
+  add_executable(fuzz_colblock main.cpp tests/fuzz/fuzz_colblock.cpp)
+  target_compile_definitions(fuzz_colblock PRIVATE
+      VV_CORE_LIB=1
+      $<TARGET_PROPERTY:vv,COMPILE_DEFINITIONS>)
+  target_include_directories(fuzz_colblock
+      PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+      PRIVATE $<TARGET_PROPERTY:vv,INCLUDE_DIRECTORIES>)
+  target_compile_options(fuzz_colblock PRIVATE
+      -fsanitize=fuzzer-no-link,address,undefined -fno-sanitize=vptr
+      -fno-omit-frame-pointer -g)
+  target_link_options(fuzz_colblock PRIVATE
+      -fsanitize=fuzzer,address,undefined)
+  target_link_libraries(fuzz_colblock PRIVATE ${_vv_link_common})
+  message(STATUS "Fuzzers     : enabled (fuzz_colblock)")
+endif()
+
 # ── Install rules ─────────────────────────────────────────────────────────────
 install(TARGETS vv RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
