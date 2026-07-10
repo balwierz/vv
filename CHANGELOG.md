@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A single column wider than the terminal no longer blanks the TUI.** When the
+  first (or only) column was wider than the screen, the column-fitting loop broke
+  immediately and drew nothing — an empty browser for a perfectly valid file. It
+  now force-renders that column clamped to the available width.
+
 ### Changed
 - **LociSSD v4 region queries faster.** A `-r` query decoded each candidate
   block's coordinate columns twice — once in the open-time row-count pass, then

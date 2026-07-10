@@ -14778,6 +14778,19 @@ class TableTUI {
             v.push_back({c, x, w});
             x += w + 2;
         }
+        // A single column wider than the screen makes the loop break on its first
+        // candidate, leaving `v` empty → a completely blank table. Force-emit that
+        // first column, clamped to the remaining width, so there's always content.
+        if (v.empty()) {
+            for (int c = start; c < num_cols_; ++c) {
+                if (freeze_first_col_ && c == 0) continue;
+                if (!col_is_visible(c)) continue;
+                int avail = scr_c_ - x - 2;
+                if (avail < 1) avail = 1;
+                v.push_back({c, x, std::min(col_widths_[c], avail)});
+                break;
+            }
+        }
         return v;
     }
 

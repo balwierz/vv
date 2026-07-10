@@ -1400,6 +1400,19 @@ else
     echo "  skip  tui_zebra_adapts_to_background (python3 not found)"
 fi
 
+# A single column wider than the terminal must still render (clamped), not a
+# blank table. Drive the TUI at 20 cols on a 40-char-wide column under a pty.
+if command -v python3 >/dev/null 2>&1; then
+    printf 'this_is_a_very_wide_single_column_name12\nvA\nvB\nvC\n' > "$TMP/wide.csv"
+    if python3 "$HERE/tui_wide_column_check.py" "$VV" "$TMP/wide.csv"; then
+        PASS=$((PASS+1)); echo "  ok    tui_wide_column_not_blank"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_wide_column_not_blank"
+    fi
+else
+    echo "  skip  tui_wide_column_not_blank (python3 not found)"
+fi
+
 echo
 echo "── Help / version ────────────────────────────────────────"
 HELP_OUT=$("$VV" --help 2>&1 || true)
