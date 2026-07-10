@@ -215,11 +215,18 @@ user-facing summary).
 ## Quality / signal
 
 ### Open
-- libFuzzer harness for the binary parsers (BAM, Parquet, BCF,
-  FASTA/FASTQ). **[extend to HDF5/NPY/NPZ/2bit/ODS — the parsers the
-  audit found unguarded.]**
+- libFuzzer harness — extend to the other binary parsers (BAM, Parquet, BCF,
+  FASTA/FASTQ, HDF5/NPY/NPZ/2bit/ODS). The LociSSD v4 codec decoder is done (see
+  Done); the rest reuse the same `VV_BUILD_FUZZERS` + `tests/fuzz/` scaffolding.
 - Code coverage badge.
 - Reproducible builds.
+
+### Done
+- libFuzzer harness for the LociSSD v4 "colblock" codec decoder
+  (`tests/fuzz/fuzz_colblock.cpp`, `-DVV_BUILD_FUZZERS=ON` with clang; a 24.04 CI
+  smoke runs it 45 s under ASan+UBSan). Found + fixed two crafted-file UB bugs in
+  `decode_colblock`: an empty-block null `memcpy`, and DELTA/LENGTH cumsum
+  int64 overflow. Clean over 37 M iterations.
 
 ### Done
 - Sanitizer CI job (ASan + UBSan) — the 24.04 job rebuilds vv with

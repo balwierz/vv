@@ -2916,8 +2916,9 @@ zstd_inflate(std::shared_ptr<arrow::Buffer> comp, int64_t max_out) {
 // Decode one (already zstd-decompressed) column chunk into an Arrow array.
 // `n` = block row count, `cw` = coord width, `start` = decoded Start values for
 // the LENGTH codec (else null). Splits has_nulls + validity bitmap, then decodes
-// by codec_id.
-static arrow::Result<std::shared_ptr<arrow::Array>>
+// by codec_id. External linkage (not static) so the libFuzzer harness in
+// tests/fuzz/ can call it directly; see include/vv/vvfuzz.hpp.
+arrow::Result<std::shared_ptr<arrow::Array>>
 decode_colblock(const uint8_t* buf, size_t blen, int codec_id,
                 const arrow::DataType& type, int64_t n, int cw,
                 const int64_t* start) {
@@ -2964,13 +2965,13 @@ decode_colblock(const uint8_t* buf, size_t blen, int codec_id,
         std::shared_ptr<arrow::Array> a;
         if (type.id() == arrow::Type::INT64) {
             arrow::Int64Builder b;
-            ARROW_RETURN_NOT_OK(b.AppendValues(v.data(), n, vb));
+            if (n > 0) ARROW_RETURN_NOT_OK(b.AppendValues(v.data(), n, vb));
             ARROW_RETURN_NOT_OK(b.Finish(&a));
         } else {
             std::vector<int32_t> w(v.size());
             for (size_t i = 0; i < v.size(); ++i) w[i] = (int32_t)v[i];
             arrow::Int32Builder b;
-            ARROW_RETURN_NOT_OK(b.AppendValues(w.data(), n, vb));
+            if (n > 0) ARROW_RETURN_NOT_OK(b.AppendValues(w.data(), n, vb));
             ARROW_RETURN_NOT_OK(b.Finish(&a));
         }
         return a;
@@ -2981,8 +2982,11 @@ decode_colblock(const uint8_t* buf, size_t blen, int codec_id,
             #define VV_RAW(BUILDER, CT)                                         \
                 do { ARROW_RETURN_NOT_OK(need((size_t)n * sizeof(CT)));         \
                      std::vector<CT> v((size_t)n);                              \
-                     std::memcpy(v.data(), pay, (size_t)n * sizeof(CT));        \
-                     BUILDER b; ARROW_RETURN_NOT_OK(b.AppendValues(v.data(), n, vb)); \
+                     BUILDER b;                                                 \
+                     if (n > 0) {                                              \
+                         std::memcpy(v.data(), pay, (size_t)n * sizeof(CT));    \
+                         ARROW_RETURN_NOT_OK(b.AppendValues(v.data(), n, vb));  \
+                     }                                                          \
                      ARROW_RETURN_NOT_OK(b.Finish(&arr)); } while (0)
             switch (type.id()) {
                 case arrow::Type::INT8:   VV_RAW(arrow::Int8Builder,   int8_t);   break;
@@ -3003,15 +3007,23 @@ decode_colblock(const uint8_t* buf, size_t blen, int codec_id,
         case 1: {  // DELTA — cumsum (used for Start)
             ARROW_RETURN_NOT_OK(need((size_t)n * (size_t)cw));
             std::vector<int64_t> v((size_t)n);
-            int64_t acc = 0;
-            for (int64_t i = 0; i < n; ++i) { acc += rd_int(pay + (size_t)i * cw, cw); v[(size_t)i] = acc; }
+            // Accumulate in uint64 — a crafted file's deltas can overflow int64
+            // (signed overflow is UB); unsigned wraps deterministically and the
+            // result is unchanged for legitimate (bounded) coordinates.
+            uint64_t acc = 0;
+            for (int64_t i = 0; i < n; ++i) {
+                acc += (uint64_t)rd_int(pay + (size_t)i * cw, cw);
+                v[(size_t)i] = (int64_t)acc;
+            }
             return build_coords(v);
         }
         case 2: {  // LENGTH — Start + len (used for End)
             ARROW_RETURN_NOT_OK(need((size_t)n * (size_t)cw));
             if (!start) return arrow::Status::Invalid("colblock LENGTH: Start not decoded");
             std::vector<int64_t> v((size_t)n);
-            for (int64_t i = 0; i < n; ++i) v[(size_t)i] = start[i] + rd_int(pay + (size_t)i * cw, cw);
+            for (int64_t i = 0; i < n; ++i)
+                v[(size_t)i] = (int64_t)((uint64_t)start[i] +
+                                         (uint64_t)rd_int(pay + (size_t)i * cw, cw));
             return build_coords(v);
         }
         case 3: {  // DICT
