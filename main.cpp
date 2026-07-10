@@ -1640,6 +1640,10 @@ class TabixInputStream : public arrow::io::InputStream {
     size_t                 pos_     = 0;
     bool                   eof_     = false;
     bool                   closed_  = false;
+    // Reused across records: htslib's line reader (bgzf_getline) resets `l` and
+    // reallocs `s` only when a line outgrows it, so keeping one buffer for the
+    // whole scan avoids a malloc+free per record. Freed once in the destructor.
+    kstring_t              ks_      = {0, 0, nullptr};
 public:
     static std::string open(const std::string& path,
                             const std::string& region,
@@ -1697,6 +1701,7 @@ public:
         for (auto* it : iters_) if (it) tbx_itr_destroy(it);
         if (tbx_) tbx_destroy(tbx_);
         if (fp_)  hts_close(fp_);
+        if (ks_.s) free(ks_.s);
     }
 
     arrow::Status Close() override { closed_ = true; return arrow::Status::OK(); }
@@ -1727,19 +1732,16 @@ public:
     }
 private:
     bool fetch_next_line() {
-        kstring_t s = {0, 0, nullptr};
         while (cur_iter_ < iters_.size()) {
-            int r = tbx_itr_next(fp_, tbx_, iters_[cur_iter_], &s);
+            int r = tbx_itr_next(fp_, tbx_, iters_[cur_iter_], &ks_);
             if (r >= 0) {
-                buf_.assign(s.s, s.l);
+                buf_.assign(ks_.s, ks_.l);
                 buf_ += '\n';
                 pos_ = 0;
-                if (s.s) free(s.s);
                 return true;
             }
             ++cur_iter_;
         }
-        if (s.s) free(s.s);
         eof_ = true;
         return false;
     }
