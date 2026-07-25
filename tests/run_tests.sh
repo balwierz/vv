@@ -732,6 +732,27 @@ assert_exit_code "select_exclusion_never_resurrects" 1 \
     "$VV" --tsv "$DATA/tiny.bed" --select 'Chr,!Chr,!Score'
 RESEED=$("$VV" --tsv "$DATA/tiny.bed" --select 'Chr,!Chr' 2>&1 >/dev/null || true)
 refute_contains "select_exclusion_no_resurrect_output" "$RESEED" "Beg"
+#    The minimal invariant: an exclusion may only ever REMOVE. A two-column
+#    file plus three exclusions must yield nothing — the shape that slipped
+#    through the first round of tests, which only covered a single exclusion.
+TWO="$TMP/two.tsv"
+printf 'a\tb\n1\t2\n' > "$TWO"
+for SPEC in '!a,!b,!a' '!a,!b,!b' '*,!*,!a' '!*,!Chr'; do
+    assert_exit_code "select_exclusion_only_removes_${SPEC}" 1 \
+        "$VV" --tsv "$TWO" --select "$SPEC"
+    GOT=$("$VV" --tsv "$TWO" --select "$SPEC" 2>/dev/null)
+    assert_eq_file_inline "select_exclusion_emits_nothing_${SPEC}" "$GOT" ""
+done
+rm -f "$TWO"
+#    ...and the same through a converter: no file may be written.
+rm -f "$TMP/reseed.parquet"
+"$VV" "$DATA/tiny.lociss" --parquet "$TMP/reseed.parquet" \
+    --select 'Chromosome,!Chromosome,!Name' >/dev/null 2>&1
+if [ -e "$TMP/reseed.parquet" ]; then
+    FAIL=$((FAIL+1)); echo "  FAIL  select_exclusion_reseed_writes_no_file"
+else
+    PASS=$((PASS+1)); echo "  ok    select_exclusion_reseed_writes_no_file"
+fi
 
 # 2. A spec that resolves cleanly to ZERO columns is an error, not an empty
 #    file. --parquet used to announce "[20 rows -> out.parquet]" over a 0x0
