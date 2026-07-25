@@ -1008,6 +1008,17 @@ else:
              mat=np.arange(12, dtype=np.float64).reshape(3, 4),
              cube=np.arange(24, dtype=np.float32).reshape(2, 3, 4))
 
+    # tiny.zerorow.npz: a Fortran-ordered 2-D array with zero rows. The
+    # per-column gather sized its scratch buffer to rows * item_size, so at
+    # zero rows the buffer was empty and its data() null — and the F-order
+    # branch then called memcpy(nullptr, ..., 0), which is undefined even at
+    # zero length. Found by the .npy fuzzer; this fixture pins it so the
+    # ASan/UBSan CI job catches a regression without relying on the fuzzer
+    # reaching the same input again.
+    np.savez(HERE / "tiny.zerorow.npz",
+             empty_f=np.asfortranarray(np.zeros((0, 3), dtype=np.float64)),
+             empty_c=np.zeros((0, 3), dtype=np.float64))
+
     # tiny.wide.npz: a 2-D array wider than the NPZ column cap
     # (kNpzMaxCols = 4096). vv builds one Arrow column per declared column,
     # so a genuinely-wide (or hostile) array would otherwise allocate

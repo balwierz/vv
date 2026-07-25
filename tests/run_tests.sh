@@ -1144,6 +1144,20 @@ if [ -f "$DATA/tiny.wide.npz" ]; then
         "showing first 4096 of 5000 columns"
     refute_contains "npz_wide_no_overflow_col" "$NPZ_WIDE" "c4096"
 fi
+# Zero-row .npz: the per-column gather sized its scratch buffer to
+# rows * item_size, so at zero rows the buffer was empty, its data() null, and
+# the Fortran-order branch called memcpy(nullptr, ..., 0) — undefined even at
+# zero length. Found by the .npy fuzzer. Both orders must open cleanly and
+# report zero rows; under the ASan/UBSan CI job this is the regression test.
+if [ -f "$DATA/tiny.zerorow.npz" ]; then
+    for ZTAB in empty_f empty_c; do
+        assert_exit_code "npz_zerorow_${ZTAB}_opens" 0 \
+            "$VV" --no-interactive --color=never --tab "$ZTAB" \
+            "$DATA/tiny.zerorow.npz"
+        ZROWS=$("$VV" --count --tab "$ZTAB" "$DATA/tiny.zerorow.npz" 2>/dev/null)
+        assert_eq_file_inline "npz_zerorow_${ZTAB}_count" "$ZROWS" "0"
+    done
+fi
 # Malformed .npz: the member's .npy header declares shape (1000000000,) <f8
 # (8 GB) but stores only 16 bytes. The reader derived element counts / byte
 # offsets straight from the shape, driving an out-of-bounds read. vv must now

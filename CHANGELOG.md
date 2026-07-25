@@ -32,6 +32,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     all) got the same misleading message.
 
 ### Fixed
+- **NumPy `.npy` zero-row Fortran-order array (found by fuzzing).** The
+  per-column gather in `build_2d_table` sized its scratch buffer to
+  `rows * item_size`, so an array declaring zero rows left the buffer empty and
+  its `data()` null — and the Fortran-order branch then called
+  `memcpy(nullptr, ..., 0)`. A zero length does not make a null argument legal
+  (both parameters are declared non-null), so this is undefined behaviour, and
+  UBSan traps it. Reachable from a crafted `.npz`, and from a legitimate one:
+  `np.savez(f, a=np.asfortranarray(np.zeros((0, 3))))` is a valid archive.
+  Guarded at `rows > 0`; new fixture `tiny.zerorow.npz` covers both memory
+  orders so the ASan/UBSan CI job catches a regression without depending on the
+  fuzzer reaching the same input again. Clean over 1.48 M fuzz iterations.
 - **Partial full-file results are marked in the TUI.** Forward-only streaming
   sources keep only a bounded window of decoded batches, so a search, sort,
   filter or column-stats pass started after the window had already released
