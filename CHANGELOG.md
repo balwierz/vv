@@ -6,6 +6,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **Failures that used to exit 0 now exit 1.** This is a deliberate
+  compatibility break: several requests vv could not honour were reported on
+  stderr (or not at all) while the process still exited successfully, so a
+  pipeline had no way to tell a typo or a truncated read from a clean run.
+  Specifically:
+  - An unknown `--select` column or an unparseable `--filter` expression now
+    fails in **every** output mode. Previously only `--json`/`--ndjson`
+    surfaced it; `--tsv`, `--csv`, `--delimiter`, `--md`, the ASCII table, the
+    vertical head, `--parquet` and `--arrow` printed the message and exited 0.
+    The message also suggests the intended column now — `unknown column(s) in
+    --select: Scoree (did you mean 'Score'?)`.
+  - A mid-file read error under `--json`/`--ndjson`/`--md`/`--parquet`/
+    `--arrow` is reported instead of silently yielding a truncated result.
+    (`--tsv`/`--csv` and the table view already did this.)
+  - Passing more than one input file to a non-interactive mode is an error.
+    Extra positionals become tabs in the interactive viewer; every other mode
+    read only the first file and dropped the rest without a word, so
+    `vv --count a.bed b.bed` answered about `a.bed` alone.
+  - `--validate` is a LociSSD **v3** (Parquet) check and now says so. It used
+    to run its Parquet reader against any path, so `vv x.bed --validate`
+    reported "Not a valid Parquet file" — and exited 0 — while a v4
+    "colblock" `.lociss` (the writer's current default, and not Parquet at
+    all) got the same misleading message.
+
 ### Fixed
 - **NumPy `.npy` zero-row Fortran-order array (found by fuzzing).** The
   per-column gather in `build_2d_table` sized its scratch buffer to
@@ -18,6 +43,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Guarded at `rows > 0`; new fixture `tiny.zerorow.npz` covers both memory
   orders so the ASan/UBSan CI job catches a regression without depending on the
   fuzzer reaching the same input again. Clean over 1.48 M fuzz iterations.
+- **Partial full-file results are marked in the TUI.** Forward-only streaming
+  sources keep only a bounded window of decoded batches, so a search, sort,
+  filter or column-stats pass started after the window had already released
+  batches could only see part of the file — and presented that answer as if it
+  were complete. `evicted_any()` was added for exactly this case and had no
+  callers anywhere. The status bar now carries `[PARTIAL]` and the column-stats
+  popup gains a `Scope: PARTIAL (batches released)` row once such a pass runs.
+- **`--parquet -` / `--arrow -` honour `$TMPDIR`.** Both spool through a temp
+  file (the formats need seekable writes) and hardcoded `/tmp`, which fails on
+  containers whose `/tmp` is tiny or read-only.
 - **NumPy `.npy` parser hardening (found by fuzzing).** A new libFuzzer harness
   over the `.npy` parse-and-build path surfaced two undefined-behaviour bugs
   reachable via a crafted `.npz`: a dtype with a zero declared item size (e.g.

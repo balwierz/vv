@@ -660,7 +660,14 @@ Success.
 .B 1
 A runtime or usage error: the input could not be opened, was an unsupported or
 malformed format, a read failed, an unknown option was given, or no input file
-was supplied.
+was supplied. Also returned when a request could not be honoured in full \(em
+an unknown
+.B \-\-select
+column, an unparseable
+.B \-\-filter
+expression, a read error that truncated the output, or more than one input
+file in a non\-interactive mode (extra positionals are only meaningful in the
+interactive viewer, which gives each file a tab).
 .TP
 .B 2
 An invalid command\-line option argument: a flag was missing its required value,
