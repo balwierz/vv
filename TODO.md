@@ -215,18 +215,20 @@ user-facing summary).
 ## Quality / signal
 
 ### Open
-- libFuzzer harness — extend to the other binary parsers (BAM, Parquet, BCF,
-  FASTA/FASTQ, HDF5/NPY/NPZ/2bit/ODS). The LociSSD v4 codec decoder is done (see
-  Done); the rest reuse the same `VV_BUILD_FUZZERS` + `tests/fuzz/` scaffolding.
+- libFuzzer harness — extend to the remaining binary parsers (BAM, Parquet, BCF,
+  FASTA/FASTQ, HDF5, 2bit, ODS). The LociSSD v4 codec decoder and the NumPy `.npy`
+  parser are done (see Done); the rest reuse the same `VV_BUILD_FUZZERS` +
+  `tests/fuzz/` scaffolding.
 - Code coverage badge.
 - Reproducible builds.
 
 ### Done
-- libFuzzer harness for the LociSSD v4 "colblock" codec decoder
-  (`tests/fuzz/fuzz_colblock.cpp`, `-DVV_BUILD_FUZZERS=ON` with clang; a 24.04 CI
-  smoke runs it 45 s under ASan+UBSan). Found + fixed two crafted-file UB bugs in
-  `decode_colblock`: an empty-block null `memcpy`, and DELTA/LENGTH cumsum
-  int64 overflow. Clean over 37 M iterations.
+- libFuzzer harnesses for the LociSSD v4 "colblock" codec decoder and the NumPy
+  `.npy` parser (`tests/fuzz/fuzz_{colblock,npy}.cpp`, `-DVV_BUILD_FUZZERS=ON`
+  with clang; a 24.04 CI smoke runs both under ASan+UBSan). Found + fixed four
+  crafted-file UB bugs: v4 empty-block null `memcpy` + DELTA/LENGTH int64 cumsum
+  overflow; npy zero-item-size shape-check bypass (OOB) + unaligned typed slab
+  load (aarch64). Clean over tens of millions of iterations each.
 
 ### Done
 - Sanitizer CI job (ASan + UBSan) — the 24.04 job rebuilds vv with

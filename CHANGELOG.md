@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **NumPy `.npy` parser hardening (found by fuzzing).** A new libFuzzer harness
+  over the `.npy` parse-and-build path surfaced two undefined-behaviour bugs
+  reachable via a crafted `.npz`: a dtype with a zero declared item size (e.g.
+  `|b0`) skipped the shape-fits check and read out of bounds, and the numeric
+  slab reader loaded values via an unaligned typed pointer (harmless on x86 but
+  faults on aarch64). Both fixed — item size is pinned to the Arrow type's real
+  element size for the bounds check, and elements are read with `memcpy`. Clean
+  over 1.4 M fuzz iterations under ASan+UBSan; legitimate `.npz` reads unchanged.
 - **LociSSD v4 decoder hardening (found by fuzzing).** A new libFuzzer harness
   over `decode_colblock` surfaced two undefined-behaviour bugs reachable via a
   crafted file: an empty block (`n_rows = 0`) passed a null pointer to `memcpy`

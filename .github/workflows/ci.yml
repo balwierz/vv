@@ -146,23 +146,25 @@ jobs:
           ARROW_DEFAULT_MEMORY_POOL: system
         run: tests/run_tests.sh
 
-      # ── libFuzzer smoke over the LociSSD v4 codec decoder (24.04 only) ────
-      # decode_colblock() decodes an untrusted binary chunk; fuzz it directly
-      # under ASan+UBSan for a short, bounded time. A regression that reintroduces
-      # an out-of-bounds read / overflow / null-memcpy in a codec path fails here.
-      # Needs clang (libFuzzer). Deterministic seed; a clean tree survives far
-      # more than this budget's iterations, so it is not flaky.
-      - name: Fuzz smoke (decode_colblock)
+      # ── libFuzzer smoke over the binary parsers (24.04 only) ─────────────
+      # Fuzz the LociSSD v4 codec decoder and the NumPy .npy parser + builders
+      # directly under ASan+UBSan for a short, bounded time. A regression that
+      # reintroduces an out-of-bounds read / overflow / misaligned load / null
+      # memcpy fails here. Needs clang (libFuzzer). Deterministic seed; a clean
+      # tree survives far more than this budget's iterations, so it is not flaky.
+      - name: Fuzz smoke (decode_colblock + npy)
         if: matrix.os == '24.04'
+        env:
+          ARROW_DEFAULT_MEMORY_POOL: system
+          ASAN_OPTIONS: "detect_leaks=0:abort_on_error=1"
+          UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
         run: |
           sudo apt-get install -y -V clang
           cmake -S . -B build-fuzz -DVV_BUILD_FUZZERS=ON -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
-          cmake --build build-fuzz -j"$(nproc)" --target fuzz_colblock
-          ARROW_DEFAULT_MEMORY_POOL=system \
-          ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 \
-          UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
-            ./build-fuzz/fuzz_colblock -max_total_time=45 -seed=1
+          cmake --build build-fuzz -j"$(nproc)" --target fuzz_colblock fuzz_npy
+          ./build-fuzz/fuzz_colblock -max_total_time=40 -seed=1
+          ./build-fuzz/fuzz_npy      -max_total_time=40 -seed=1
 
       # ── Qt6/KDE GUI (24.04 only) ─────────────────────────────────────────
       # Reuses the shared Arrow / htslib / hdf5 / sqlite / xlsxio stack

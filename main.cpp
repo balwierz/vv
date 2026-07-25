@@ -9500,6 +9500,21 @@ static std::string find_dict_value(const std::string& hdr, const std::string& ke
     return "";
 }
 
+// Bytes per element that the readers (slab_to_arrow / make_column) actually read
+// for each supported Arrow type — numpy bool is 1 byte, not Arrow's 1 bit. 0 for
+// unsupported ids. Used to bound-check against what is really read, not the
+// header's (attacker-controlled) declared item size.
+static size_t npy_element_bytes(arrow::Type::type id) {
+    switch (id) {
+        case arrow::Type::BOOL:
+        case arrow::Type::INT8:  case arrow::Type::UINT8:                       return 1;
+        case arrow::Type::INT16: case arrow::Type::UINT16:                      return 2;
+        case arrow::Type::INT32: case arrow::Type::UINT32: case arrow::Type::FLOAT:  return 4;
+        case arrow::Type::INT64: case arrow::Type::UINT64: case arrow::Type::DOUBLE: return 8;
+        default: return 0;
+    }
+}
+
 static std::string parse_npy_header(const uint8_t* buf, size_t n, NpyHeader* out) {
     if (n < 10) return "npy: too short";
     if (std::memcmp(buf, "\x93NUMPY", 6) != 0) return "npy: bad magic";
@@ -9570,6 +9585,17 @@ static std::string parse_npy_header(const uint8_t* buf, size_t n, NpyHeader* out
     }
     out->data_offset = hdr_start + hdr_len;
 
+    // The readers read a fixed number of bytes per element from the Arrow type,
+    // not the header's declared item size — so a crafted dtype whose declared
+    // size differs (e.g. "|b0" → item_size 0 for a 1-byte bool) would slip past
+    // the shape-fits check below (item_size 0 skips it) and read out of bounds.
+    // Pin item_size to what is actually read for a supported dtype.
+    if (!out->unsupported && out->dtype_id != arrow::Type::NA) {
+        size_t real = npy_element_bytes(out->dtype_id);
+        if (real == 0) out->unsupported = true;   // supported id with no known size
+        else           out->item_size = real;
+    }
+
     // Validate the declared shape against the data actually present. .npy/.npz
     // input is untrusted (zip members), and the downstream readers derive
     // element counts and byte offsets straight from the shape. Without this, a
@@ -9608,13 +9634,19 @@ static std::string shape_str(const std::vector<int64_t>& s) {
     return r;
 }
 
-// Build an Arrow Column from a contiguous slab of N elements of dtype_id.
+// Build an Arrow Column from a contiguous slab of N elements of dtype_id. The
+// slab starts at the .npy data offset, which is not aligned to CType — read each
+// element via memcpy (a typed load would be a misaligned access: UB, and it
+// faults on aarch64).
 template <typename CType, typename ArrowBuilder>
 static std::shared_ptr<arrow::Array> make_column(const uint8_t* data, int64_t n) {
     ArrowBuilder b;
     (void)b.Reserve(n);
-    const CType* p = reinterpret_cast<const CType*>(data);
-    for (int64_t i = 0; i < n; ++i) (void)b.UnsafeAppend(p[i]);
+    for (int64_t i = 0; i < n; ++i) {
+        CType v;
+        std::memcpy(&v, data + (size_t)i * sizeof(CType), sizeof(CType));
+        (void)b.UnsafeAppend(v);
+    }
     std::shared_ptr<arrow::Array> a; (void)b.Finish(&a);
     return a;
 }
@@ -9782,6 +9814,41 @@ struct OpenSpec {
     std::string entry_name;          // key into archive
     int64_t     slice_idx = 0;
 };
+
+#ifdef VV_FUZZ
+// Fuzz entry (see tests/fuzz/fuzz_npy.cpp): parse an untrusted .npy buffer and
+// build its table, mirroring NpzSource's shape dispatch. parse_npy_header
+// validates the declared shape against the buffer size, so an accepted header
+// never drives the builders out of bounds — the harness fuzzes the real
+// parse + build path (header parsing, slab_to_arrow, build_1d/2d_table).
+void npy_fuzz_one(const uint8_t* buf, size_t n) {
+    NpyHeader h;
+    if (!parse_npy_header(buf, n, &h).empty()) return;
+    if (h.unsupported) return;
+    const uint8_t* data = buf + h.data_offset;
+    std::shared_ptr<arrow::Table> tbl;
+    if (h.shape.empty()) {
+        (void)slab_to_arrow(h.dtype_id, data, 1);
+    } else if (h.shape.size() == 1) {
+        tbl = build_1d_table("x", h.dtype_id, data, h.shape[0]);
+    } else if (h.shape.size() == 2) {
+        int64_t fc = 0;
+        tbl = build_2d_table(h.dtype_id, data, h.shape[0], h.shape[1],
+                             h.item_size, h.fortran_order, &fc);
+    } else {
+        int64_t leading = h.shape[0];
+        if (leading > 0) {
+            int64_t rest = 1;   // product of the trailing dims (bounded: the full
+            for (size_t i = 1; i < h.shape.size(); ++i) rest *= h.shape[i]; // product fit `n`)
+            tbl = build_2d_table(h.dtype_id, data, leading, rest,
+                                 h.item_size, h.fortran_order);
+        } else {
+            tbl = build_2d_table(h.dtype_id, data, 0, 1, h.item_size, h.fortran_order);
+        }
+    }
+    (void)tbl;
+}
+#endif
 
 class NpzSource : public WorkbookSource {
     std::shared_ptr<std::vector<Entry>> archive_;   // shared across siblings
