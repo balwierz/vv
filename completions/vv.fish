@@ -65,7 +65,7 @@ complete -c vv -c vh -l validate           -d 'Check LociSSD invariants and exit
 complete -c vv -c vh -l decode-pileup      -d 'mpileup: explode bases into A/C/G/T/N + ins/del + strand + mean_qual columns'
 complete -c vv -c vh -l pileup             -d 'BAM/CRAM: emit mpileup-style per-base rows via htslib bam_plp'
 complete -c vv -c vh -s f -l fasta -r -F   -d 'reference FASTA (.fai): --pileup ref column + ./, notation, or CRAM decoding'
-complete -c vv -c vh -l select -r          -d 'Project columns by name (comma-separated)'
+complete -c vv -c vh -l select -r          -d 'Project columns: names, globs, N-M ranges, @types, !exclusions'
 complete -c vv -c vh -l cols -r            -d 'Alias of --select'
 complete -c vv -c vh -l filter -r          -d 'Row predicate: <col> <op> <value> [AND/OR ...]'
 complete -c vv -c vh -l schema             -d 'Print schema + metadata and exit'

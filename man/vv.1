@@ -168,10 +168,33 @@ Maximum cell width in the ASCII table (default: 32).
 .BI \-c " COLS"
 Maximum number of columns to display (default: all).
 .TP
-.BI \-\-select " cols"
-Project a subset of columns, comma-separated by name. Example:
-\fB\-\-select Chromosome,Start,Score\fR. Unknown names produce a
-clear error. In display modes the hidden-by-default columns (e.g.
+.BI \-\-select " terms"
+Project a subset of columns. \fIterms\fR is a comma-separated list;
+the output follows the order given, so \fB\-\-select End,Start\fR also
+reorders. Each term is one of:
+.RS
+.IP \(bu 2
+an exact column name \(en \fBChromosome\fR. An exact name always wins over
+pattern interpretation, so a column literally called \fB2\-4\fR or
+\fBlog2\-ratio\fR stays addressable;
+.IP \(bu 2
+a glob \(en \fBchr*\fR, \fB?_pct\fR (\fBfnmatch\fR(3); \fB*\fR and \fB?\fR,
+case-sensitive). Quote it, or the shell expands it first;
+.IP \(bu 2
+a 1-based inclusive index range \(en \fB2\-4\fR, or \fB5\-\fR to the last
+column;
+.IP \(bu 2
+a type class \(en \fB@numeric\fR, \fB@string\fR, \fB@list\fR, \fB@bool\fR,
+\fB@temporal\fR;
+.IP \(bu 2
+an exclusion \(en \fB!TERM\fR removes everything \fITERM\fR matches. A
+leading exclusion starts from the full set for the current mode.
+.RE
+.IP
+Duplicates collapse to their first occurrence. A name that does not exist,
+and a pattern that matches nothing, are both errors (reported differently) \(en
+neither is silently ignored, since an empty match would quietly drop data
+from an export. In display modes the hidden-by-default columns (e.g.
 LociSSD's \fBMaxEndSoFar\fR) stay hidden; in export modes
 (\fB\-\-tsv\fR / \fB\-\-csv\fR / \fB\-\-json\fR / \fB\-\-parquet\fR)
 the explicit list is honoured exactly.

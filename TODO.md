@@ -11,7 +11,14 @@ user-facing summary).
 - `--schema` — print column names, Arrow types, nullability, then exit.
 - `--describe` — pandas-style per-column summary: count, null count,
   min/max, mean (numeric), distinct count.
-- Column projection by name — `--select Chromosome,Start,Score`.
+- Column projection — `--select Chromosome,Start,Score`, plus a pattern
+  language (`feat/select-patterns`): globs, 1-based `N-M` index ranges,
+  `@numeric`/`@string`/`@list`/`@bool`/`@temporal` type classes, `!exclusions`,
+  and reordering (output follows spec order). An exact column name always wins
+  over pattern interpretation, and a file whose own headers are range-shaped
+  (binned matrices) keeps its namespace. A pattern matching nothing, and a spec
+  resolving to zero columns, are both errors — neither silently drops columns
+  from a conversion.
 - `--filter "Score > 0.5"` — value-predicate filter with AND/OR.
 - `--sample N` — reservoir sampling, honours `--filter`.
 - `--unique COL[,COL,...]` — distinct value counts; top-50 per

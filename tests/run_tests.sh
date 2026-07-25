@@ -649,6 +649,129 @@ assert_contains "select_unknown_column_errors" "$BAD_COL" "unknown"
 BAD_FILTER=$("$VV" --tsv --filter 'BogusCol > 0' "$DATA/tiny.lociss" 2>&1 || true)
 assert_contains "filter_unknown_column_errors" "$BAD_FILTER" "unknown"
 
+# ── --select pattern language ────────────────────────────────────────────────
+# tiny.parquet: Chr(string) Start(int64) End(int64) Score(float) Tags(list).
+hdr() { "$VV" --tsv "$DATA/tiny.parquet" --select "$1" 2>/dev/null | head -1; }
+assert_eq_file_inline "select_glob"        "$(hdr 'S*')"        "$(printf 'Start\tScore')"
+assert_eq_file_inline "select_range"       "$(hdr '2-4')"       "$(printf 'Start\tEnd\tScore')"
+assert_eq_file_inline "select_range_open"  "$(hdr '3-')"        "$(printf 'End\tScore\tTags')"
+assert_eq_file_inline "select_exclude"     "$(hdr '!Chr')"      "$(printf 'Start\tEnd\tScore\tTags')"
+assert_eq_file_inline "select_type_class"  "$(hdr '@numeric')"  "$(printf 'Start\tEnd\tScore')"
+assert_eq_file_inline "select_reorder"     "$(hdr 'End,Start')" "$(printf 'End\tStart')"
+assert_eq_file_inline "select_dedupe"      "$(hdr 'Chr,Chr,Start')" "$(printf 'Chr\tStart')"
+assert_eq_file_inline "select_glob_then_exclude" "$(hdr '*,!Tags')" \
+    "$(printf 'Chr\tStart\tEnd\tScore')"
+
+# THE regression that matters: the set a bare `!exclusion` starts from must
+# follow include_hidden. Export paths see every field; human-facing views see
+# only the visible ones. Seeding both from the visible set would silently drop
+# LociSSD's derived MaxEndSoFar from a --parquet/--tsv conversion — data loss
+# in a converter, with no error.
+LOC_EXPORT=$("$VV" --tsv "$DATA/tiny.lociss" --select '!Chromosome' 2>/dev/null | head -1)
+assert_contains "select_exclude_export_keeps_hidden" "$LOC_EXPORT" "MaxEndSoFar"
+# (Scope this to the drawn table: the trailing schema block legitimately lists
+# every field in the file, projection or not.)
+LOC_VIEW=$("$VV" --no-interactive --color=never -n 1 "$DATA/tiny.lociss" \
+    --select '!Chromosome' 2>/dev/null | sed -n '/^│/p')
+refute_contains "select_exclude_view_hides_hidden" "$LOC_VIEW" "MaxEndSoFar"
+assert_contains "select_exclude_view_keeps_rest" "$LOC_VIEW" "Score"
+# ...and the same through the Parquet writer, round-tripped back through vv.
+"$VV" "$DATA/tiny.lociss" --select '!Chromosome' --parquet "$TMP/selhidden.parquet" \
+    >/dev/null 2>&1
+RT=$("$VV" --schema "$TMP/selhidden.parquet" 2>/dev/null)
+assert_contains "select_exclude_parquet_keeps_hidden" "$RT" "MaxEndSoFar"
+refute_contains "select_exclude_parquet_dropped_chrom" "$RT" "Chromosome"
+
+# An exact field name ALWAYS wins over pattern interpretation, so columns whose
+# names collide with the syntax stay addressable. Genomics headers really do
+# contain '-' (log2-ratio, p-value).
+COLLIDE="$TMP/collide.tsv"
+printf 'log2-ratio\tp-value\t2-4\t!flag\t@type\tstar*col\n1\t2\t3\t4\t5\t6\n' > "$COLLIDE"
+for NAME in 'log2-ratio' 'p-value' '2-4' '!flag' '@type' 'star*col'; do
+    GOT=$("$VV" --tsv "$COLLIDE" --select "$NAME" 2>/dev/null | head -1)
+    assert_eq_file_inline "select_exact_name_wins_${NAME}" "$GOT" "$NAME"
+done
+rm -f "$COLLIDE"
+
+# "no such column" and "pattern matched nothing" are different failures and get
+# different wording — a silently-empty `!pct_*` typo is data loss, not a no-op.
+# Both exit non-zero.
+NOMATCH=$("$VV" --tsv "$DATA/tiny.parquet" --select 'zz*' 2>&1 >/dev/null || true)
+assert_contains "select_glob_no_match_msg" "$NOMATCH" "matched no column"
+assert_exit_code "select_glob_no_match_exits_1" 1 \
+    "$VV" --tsv "$DATA/tiny.parquet" --select 'zz*'
+UNKNOWN=$("$VV" --tsv "$DATA/tiny.parquet" --select 'Nope' 2>&1 >/dev/null || true)
+assert_contains "select_unknown_name_msg" "$UNKNOWN" "unknown column"
+# The internal marker used to tell the two apart must never reach the output.
+refute_contains "select_no_marker_byte_leak" "$NOMATCH" "$(printf '\001')"
+
+# Degenerate ranges must fail cleanly — never crash, hang, or read out of range.
+for BAD in '0-5' '5-3' '1-0' '--' '99-200' '99999999999999999999-1'; do
+    assert_exit_code "select_bad_range_${BAD}" 1 \
+        "$VV" --tsv "$DATA/tiny.parquet" --select "$BAD"
+done
+# A huge upper bound clamps to the real width instead of overflowing.
+assert_eq_file_inline "select_range_clamps_high" \
+    "$(hdr '1-99999999999999999999')" "$(printf 'Chr\tStart\tEnd\tScore\tTags')"
+
+# -c interacts with --select exactly as before this change: it clamps the
+# default (empty-spec) column set and does NOT clip an explicit spec.
+assert_eq_file_inline "select_c_clamps_default" \
+    "$("$VV" --tsv -c 2 "$DATA/tiny.parquet" 2>/dev/null | head -1)" \
+    "$(printf 'Chr\tStart')"
+assert_eq_file_inline "select_c_does_not_clip_explicit" \
+    "$("$VV" --tsv -c 2 "$DATA/tiny.parquet" --select 'Chr,Start,End' 2>/dev/null | head -1)" \
+    "$(printf 'Chr\tStart\tEnd')"
+
+# ── Regressions found by adversarial review of the pattern language ──────────
+# 1. `!X` must never be able to ADD X back. Using "the accumulator is empty" as
+#    the proxy for "no positive term yet" re-seeded the full set after an
+#    exclusion had emptied it, so 'Chr,!Chr,!Score' resurrected Chr — into a
+#    --parquet conversion, silently, at exit 0.
+assert_exit_code "select_exclusion_never_resurrects" 1 \
+    "$VV" --tsv "$DATA/tiny.bed" --select 'Chr,!Chr,!Score'
+RESEED=$("$VV" --tsv "$DATA/tiny.bed" --select 'Chr,!Chr' 2>&1 >/dev/null || true)
+refute_contains "select_exclusion_no_resurrect_output" "$RESEED" "Beg"
+
+# 2. A spec that resolves cleanly to ZERO columns is an error, not an empty
+#    file. --parquet used to announce "[20 rows -> out.parquet]" over a 0x0
+#    file and exit 0. (Reachable before this change too, via `--select ','`.)
+assert_exit_code "select_empty_result_errors"      1 "$VV" --tsv "$DATA/tiny.bed" --select 'Chr,!C*'
+assert_exit_code "select_empty_result_comma_errors" 1 "$VV" --tsv "$DATA/tiny.bed" --select ','
+EMPTY_MSG=$("$VV" --tsv "$DATA/tiny.bed" --select '!*' 2>&1 >/dev/null || true)
+assert_contains "select_empty_result_msg" "$EMPTY_MSG" "resolved to no columns"
+rm -f "$TMP/empty.parquet"
+"$VV" "$DATA/tiny.parquet" --parquet "$TMP/empty.parquet" --select 'Chr,!C*' >/dev/null 2>&1
+if [ -e "$TMP/empty.parquet" ]; then
+    FAIL=$((FAIL+1)); echo "  FAIL  select_empty_result_writes_no_file"
+else
+    PASS=$((PASS+1)); echo "  ok    select_empty_result_writes_no_file"
+fi
+
+# 3. A file whose own headers are range-shaped (binned matrices: Hi-C bins,
+#    age/distance bins) must keep its namespace. Otherwise a typo'd bin name
+#    silently resolves to three unrelated columns by position.
+BINS="$TMP/bins.csv"
+printf 'id,0-10,10-20,20-30,30-40,40-50,50-60\ns1,1,2,3,4,5,6\n' > "$BINS"
+assert_eq_file_inline "select_range_name_wins_on_binned_file" \
+    "$("$VV" --tsv "$BINS" --select '10-20' 2>/dev/null | head -1)" "10-20"
+assert_exit_code "select_range_typo_on_binned_file_errors" 1 \
+    "$VV" --tsv "$BINS" --select '5-15'
+# ...while an ordinary file still gets positional ranges.
+assert_eq_file_inline "select_range_still_positional_elsewhere" \
+    "$(hdr '2-4')" "$(printf 'Start\tEnd\tScore')"
+rm -f "$BINS"
+
+# 4. Duplicate field names: Arrow's GetFieldIndex returns -1 when a name is
+#    ambiguous, which dropped the term through to pattern interpretation and
+#    selected something else. An exact name must match every field with it.
+DUP="$TMP/dup.csv"
+printf 'a,2-4,c,2-4,e\n1,2,3,4,5\n' > "$DUP"
+assert_eq_file_inline "select_duplicate_names_exact_match" \
+    "$("$VV" --tsv "$DUP" --select '2-4' 2>/dev/null | head -1)" "$(printf '2-4\t2-4')"
+rm -f "$DUP"
+unset -f hdr
+
 # --stats: per-column rollup on a Parquet file.
 STATS_OUT=$("$VV" --stats "$DATA/tiny.lociss")
 assert_contains "stats_has_row_groups" "$STATS_OUT" "Row groups:"
