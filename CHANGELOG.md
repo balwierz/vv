@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **NumPy shape sub-product overflow (found by fuzzing).** A `.npy` header can
+  declare an empty array — any dimension zero — while its other dimensions are
+  astronomically large. One zero makes the total element count zero, so the
+  declared-size check passes for free and every later overflow guard in that
+  loop becomes vacuous. But the readers still multiply *sub-ranges* of the
+  shape to compute strides and slice sizes: the 3-D+ path collapses the
+  trailing dimensions into one, and `(1, 1, 392361265078550784, 29, 0)` made
+  that product overflow `int64` — undefined behaviour, reachable just by
+  opening a crafted `.npz`, not only through the fuzz harness. The validator
+  now also bounds the product of the non-zero dimensions; every sub-product
+  divides it, so bounding it bounds them all. Legitimate empty arrays
+  (`(0, 3)`) and ordinary 3-D arrays are unaffected. New fixture
+  `tiny.shapeovf.npz`; clean over 1.24 M fuzz iterations seeded with the repro.
+
 ### Added
 - **`--select` gained a pattern language.** Projection was one exact name per
   comma-separated token; on a 380-column AnnData `obs` table or a bigBed with

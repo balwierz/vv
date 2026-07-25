@@ -1032,6 +1032,23 @@ else:
              empty_f=np.asfortranarray(np.zeros((0, 3), dtype=np.float64)),
              empty_c=np.zeros((0, 3), dtype=np.float64))
 
+    # tiny.shapeovf.npz: a shape that declares an EMPTY array (trailing 0) while
+    # its leading dimensions multiply past int64. One zero dim makes the total
+    # element count zero, so the size check passes for free — but the 3-D+
+    # reader collapses the trailing dims into a stride and overflowed doing it.
+    # Found by the .npy fuzzer; reachable just by opening the file. numpy won't
+    # write such a header, so build it by hand.
+    _ovf_hdr = ("{'descr': '|b1', 'fortran_order': False, "
+                "'shape': (1, 1, 392361265078550784, 29, 0), }")
+    _ovf_hdr += " " * ((64 - (10 + len(_ovf_hdr) + 1)) % 64) + "\n"
+    _ovf_npy = (b"\x93NUMPY\x01\x00" + struct.pack("<H", len(_ovf_hdr))
+                + _ovf_hdr.encode())
+    _ovf = HERE / "tiny.shapeovf.npz"
+    if _ovf.exists():
+        _ovf.unlink()
+    with zipfile.ZipFile(_ovf, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("a.npy", _ovf_npy)
+
     # tiny.wide.npz: a 2-D array wider than the NPZ column cap
     # (kNpzMaxCols = 4096). vv builds one Arrow column per declared column,
     # so a genuinely-wide (or hostile) array would otherwise allocate

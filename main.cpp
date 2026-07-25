@@ -9986,12 +9986,27 @@ static std::string parse_npy_header(const uint8_t* buf, size_t n, NpyHeader* out
     // they skip the check.
     if (!out->unsupported && out->item_size > 0) {
         uint64_t elems = 1;
+        // Product of the NON-ZERO dimensions, tracked separately. A single
+        // zero dim makes `elems` zero, after which every later overflow guard
+        // is vacuous and the total-size check passes for free — but the
+        // readers still multiply sub-ranges of the shape to compute strides
+        // and slice sizes, and those products can overflow int64. A crafted
+        // shape like (1, 392361265078550784, 29, 0) declares an empty array,
+        // sails through the size check, then overflows when the 3-D+ path
+        // collapses the trailing dims. Every sub-product divides this one, so
+        // bounding it bounds all of them.
+        uint64_t nz = 1;
         for (int64_t d : out->shape) {
             if (d < 0) return "npy: negative dimension in shape (" + sh + ")";
             uint64_t dd = (uint64_t)d;
             if (dd != 0 && elems > UINT64_MAX / dd)
                 return "npy: shape too large (" + sh + ")";
             elems *= dd;
+            if (dd != 0) {
+                if (nz > (uint64_t)INT64_MAX / dd)
+                    return "npy: shape too large (" + sh + ")";
+                nz *= dd;
+            }
         }
         if (elems > UINT64_MAX / (uint64_t)out->item_size)
             return "npy: shape too large (" + sh + ")";

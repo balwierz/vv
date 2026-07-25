@@ -1288,6 +1288,18 @@ if [ -f "$DATA/tiny.wide.npz" ]; then
         "showing first 4096 of 5000 columns"
     refute_contains "npz_wide_no_overflow_col" "$NPZ_WIDE" "c4096"
 fi
+# Shape whose sub-products overflow int64 while the array itself is empty.
+# A single zero dimension makes the total element count zero, so the
+# declared-size check passed for free — but the 3-D+ reader still collapses
+# the trailing dimensions into a stride, and `392361265078550784 * 29`
+# overflowed int64 doing it. Undefined behaviour, reachable just by opening
+# the file (not only through the fuzz harness). Found by the .npy fuzzer.
+if [ -f "$DATA/tiny.shapeovf.npz" ]; then
+    SOVF=$("$VV" --tab a -n 1 "$DATA/tiny.shapeovf.npz" 2>&1 || true)
+    assert_contains "npz_shape_subproduct_rejected" "$SOVF" "shape too large"
+    assert_exit_code "npz_shape_subproduct_exit" 1 \
+        "$VV" --tab a --count "$DATA/tiny.shapeovf.npz"
+fi
 # Zero-row .npz: the per-column gather sized its scratch buffer to
 # rows * item_size, so at zero rows the buffer was empty, its data() null, and
 # the Fortran-order branch called memcpy(nullptr, ..., 0) — undefined even at
