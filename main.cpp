@@ -3688,6 +3688,53 @@ static std::vector<int> select_field_indices(
     return out;
 }
 
+// Levenshtein distance, capped: we only care whether a name is *close* to a
+// real one, so bail out as soon as the whole row exceeds `max`.
+static int edit_distance(const std::string& a, const std::string& b, int max) {
+    if (std::abs((int)a.size() - (int)b.size()) > max) return max + 1;
+    std::vector<int> prev(b.size() + 1), cur(b.size() + 1);
+    for (size_t j = 0; j <= b.size(); ++j) prev[j] = (int)j;
+    for (size_t i = 1; i <= a.size(); ++i) {
+        cur[0] = (int)i;
+        int row_min = cur[0];
+        for (size_t j = 1; j <= b.size(); ++j) {
+            int cost = (std::tolower((unsigned char)a[i - 1]) ==
+                        std::tolower((unsigned char)b[j - 1])) ? 0 : 1;
+            cur[j] = std::min({ prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost });
+            row_min = std::min(row_min, cur[j]);
+        }
+        if (row_min > max) return max + 1;
+        prev.swap(cur);
+    }
+    return prev[b.size()];
+}
+
+// Format the "unknown column(s) in --select" message, appending a did-you-mean
+// for each name that is close to a real field. Shared by every --select
+// consumer (delimited / markdown / json / parquet / arrow / describe) so the
+// wording is identical wherever a typo is caught.
+static std::string unknown_columns_error(const TabularSource& src,
+                                         const std::vector<std::string>& unknown) {
+    auto schema = src.schema();
+    std::string msg = "unknown column(s) in --select: ";
+    for (size_t k = 0; k < unknown.size(); ++k) {
+        if (k) msg += ", ";
+        msg += unknown[k];
+        // Allow one edit per 4 characters (min 1, max 3) — tight enough that
+        // an unrelated name never gets suggested.
+        int budget = std::min(3, std::max(1, (int)unknown[k].size() / 4));
+        int best = budget + 1;
+        std::string best_name;
+        for (int i = 0; i < schema->num_fields(); ++i) {
+            const std::string& f = schema->field(i)->name();
+            int d = edit_distance(unknown[k], f, budget);
+            if (d < best) { best = d; best_name = f; }
+        }
+        if (!best_name.empty()) msg += " (did you mean '" + best_name + "'?)";
+    }
+    return msg;
+}
+
 // ── Parquet source ────────────────────────────────────────────────────────────
 
 class ParquetSource : public TabularSource {
@@ -12463,28 +12510,24 @@ static std::string render_heatmap(TabularSource& src, const Config& cfg) {
 // ── Delimited output ──────────────────────────────────────────────────────────
 // (write_csv_field is defined above)
 
-static void write_delimited(TabularSource& src, const Config& cfg) {
+// Returns "" on success, an error message otherwise — same contract as
+// write_json / write_parquet, so a bad --select or --filter reaches main()'s
+// report() and exits non-zero instead of printing to stderr and exiting 0.
+static std::string write_delimited(TabularSource& src, const Config& cfg) {
     char sep = cfg.delimiter;
     // In delimiter mode default to all rows; honour -n if explicitly given.
     int64_t rows_left = (cfg.head_rows <= 0) ? INT64_MAX : (int64_t)cfg.head_rows;
 
     std::vector<std::string> unknown;
     std::vector<int> requested = select_field_indices(src, cfg, &unknown, true);
-    if (!unknown.empty()) {
-        std::string u;
-        for (auto& n : unknown) { if (!u.empty()) u += ","; u += n; }
-        std::fprintf(stderr, "unknown column(s) in --select: %s\n", u.c_str());
-        return;
-    }
+    if (!unknown.empty()) return unknown_columns_error(src, unknown);
 
     FilterExpr fx;
     bool have_filter = false;
     if (!cfg.filter_expr.empty()) {
         std::string ferr;
-        if (!parse_filter_expr(cfg.filter_expr, *src.schema(), &fx, &ferr)) {
-            std::fprintf(stderr, "--filter: %s\n", ferr.c_str());
-            return;
-        }
+        if (!parse_filter_expr(cfg.filter_expr, *src.schema(), &fx, &ferr))
+            return "--filter: " + ferr;
         have_filter = true;
     }
     std::vector<int> col_indices = have_filter
@@ -12544,7 +12587,7 @@ static void write_delimited(TabularSource& src, const Config& cfg) {
         std::shared_ptr<arrow::Table> table;
         if (src.read_first(rows_left, col_indices, &table).ok() && table) {
             print_rows(*table, std::min(table->num_rows(), rows_left));
-            return;
+            return "";
         }
         // Fall through to streaming path on error.
     }
@@ -12568,6 +12611,7 @@ static void write_delimited(TabularSource& src, const Config& cfg) {
 
         print_rows(*table, rg_rows);
     }
+    return "";
 }
 
 // ── GitHub-flavored Markdown table output ────────────────────────────────────
@@ -12591,26 +12635,20 @@ static std::string md_escape_cell(const std::string& s) {
     return out;
 }
 
-static void write_markdown(TabularSource& src, const Config& cfg) {
+// Returns "" on success, an error message otherwise (see write_delimited).
+static std::string write_markdown(TabularSource& src, const Config& cfg) {
     int64_t rows_left = (cfg.head_rows <= 0) ? INT64_MAX : (int64_t)cfg.head_rows;
 
     std::vector<std::string> unknown;
     std::vector<int> requested = select_field_indices(src, cfg, &unknown, true);
-    if (!unknown.empty()) {
-        std::string u;
-        for (auto& n : unknown) { if (!u.empty()) u += ","; u += n; }
-        std::fprintf(stderr, "unknown column(s) in --select: %s\n", u.c_str());
-        return;
-    }
+    if (!unknown.empty()) return unknown_columns_error(src, unknown);
 
     FilterExpr fx;
     bool have_filter = false;
     if (!cfg.filter_expr.empty()) {
         std::string ferr;
-        if (!parse_filter_expr(cfg.filter_expr, *src.schema(), &fx, &ferr)) {
-            std::fprintf(stderr, "--filter: %s\n", ferr.c_str());
-            return;
-        }
+        if (!parse_filter_expr(cfg.filter_expr, *src.schema(), &fx, &ferr))
+            return "--filter: " + ferr;
         have_filter = true;
     }
     std::vector<int> col_indices = have_filter
@@ -12663,7 +12701,7 @@ static void write_markdown(TabularSource& src, const Config& cfg) {
         std::shared_ptr<arrow::Table> table;
         if (src.read_first(rows_left, col_indices, &table).ok() && table) {
             print_rows(*table, std::min(table->num_rows(), rows_left));
-            return;
+            return "";
         }
     }
 
@@ -12683,6 +12721,7 @@ static void write_markdown(TabularSource& src, const Config& cfg) {
         rows_left -= take;
         print_rows(*table, take);
     }
+    return "";
 }
 
 // ── Parquet output ───────────────────────────────────────────────────────────
@@ -12700,6 +12739,16 @@ static bool resolve_compression(const std::string& name,
     return true;
 }
 
+// Build an mkstemps() template under $TMPDIR (falling back to /tmp). The
+// `--parquet -` / `--arrow -` spools need a seekable file; hardcoding /tmp
+// breaks containers whose /tmp is tiny or read-only.
+static std::string spool_template(const char* name) {
+    const char* dir = std::getenv("TMPDIR");
+    std::string d = (dir && *dir) ? dir : "/tmp";
+    if (d.back() == '/') d.pop_back();
+    return d + "/" + name;
+}
+
 // Stream the source's chunks into a Parquet file at cfg.parquet_out.
 // Returns "" on success, an error message otherwise. Writes an
 // "[N rows -> path]" summary to stderr on success.
@@ -12711,11 +12760,7 @@ static std::string write_parquet(TabularSource& src, const Config& cfg) {
 
     std::vector<std::string> unknown;
     std::vector<int> requested = select_field_indices(src, cfg, &unknown, true);
-    if (!unknown.empty()) {
-        std::string u;
-        for (auto& n : unknown) { if (!u.empty()) u += ","; u += n; }
-        return "unknown column(s) in --select: " + u;
-    }
+    if (!unknown.empty()) return unknown_columns_error(src, unknown);
     FilterExpr fx;
     bool have_filter = false;
     if (!cfg.filter_expr.empty()) {
@@ -12742,12 +12787,14 @@ static std::string write_parquet(TabularSource& src, const Config& cfg) {
     std::string out_path = cfg.parquet_out;
     int tmp_fd = -1;
     if (to_stdout) {
-        char tmpl[] = "/tmp/vv-parquet-XXXXXX.parquet";
-        tmp_fd = mkstemps(tmpl, 8);  // suffix length = ".parquet" = 8
+        std::string tmpl_s = spool_template("vv-parquet-XXXXXX.parquet");
+        std::vector<char> tmpl(tmpl_s.begin(), tmpl_s.end());
+        tmpl.push_back('\0');
+        tmp_fd = mkstemps(tmpl.data(), 8);  // suffix length = ".parquet" = 8
         if (tmp_fd < 0)
             return std::string("Cannot create temp file for --parquet -: ") +
                    std::strerror(errno);
-        out_path = tmpl;
+        out_path = tmpl.data();
         // Keep fd open (Arrow opens the path by name); we'll clean up below.
         ::close(tmp_fd);
         tmp_fd = -1;
@@ -12865,11 +12912,7 @@ static std::string write_arrow(TabularSource& src, const Config& cfg) {
 
     std::vector<std::string> unknown;
     std::vector<int> requested = select_field_indices(src, cfg, &unknown, true);
-    if (!unknown.empty()) {
-        std::string u;
-        for (auto& n : unknown) { if (!u.empty()) u += ","; u += n; }
-        return "unknown column(s) in --select: " + u;
-    }
+    if (!unknown.empty()) return unknown_columns_error(src, unknown);
     FilterExpr fx;
     bool have_filter = false;
     if (!cfg.filter_expr.empty()) {
@@ -12890,12 +12933,14 @@ static std::string write_arrow(TabularSource& src, const Config& cfg) {
     bool to_stdout = (cfg.arrow_out == "-");
     std::string out_path = cfg.arrow_out;
     if (to_stdout) {
-        char tmpl[] = "/tmp/vv-arrow-XXXXXX.arrow";
-        int fd = mkstemps(tmpl, 6);   // suffix ".arrow" = 6
+        std::string tmpl_s = spool_template("vv-arrow-XXXXXX.arrow");
+        std::vector<char> tmpl(tmpl_s.begin(), tmpl_s.end());
+        tmpl.push_back('\0');
+        int fd = mkstemps(tmpl.data(), 6);   // suffix ".arrow" = 6
         if (fd < 0)
             return std::string("Cannot create temp file for --arrow -: ") +
                    std::strerror(errno);
-        out_path = tmpl;
+        out_path = tmpl.data();
         ::close(fd);
     }
 
@@ -13041,10 +13086,7 @@ static void json_emit_cell(const arrow::Array& arr, int64_t row) {
 static std::string write_json(TabularSource& src, const Config& cfg) {
     std::vector<std::string> unknown;
     std::vector<int> requested = select_field_indices(src, cfg, &unknown, true);
-    if (!unknown.empty()) {
-        std::string u; for (auto& n : unknown) { if (!u.empty()) u += ","; u += n; }
-        return "unknown column(s) in --select: " + u;
-    }
+    if (!unknown.empty()) return unknown_columns_error(src, unknown);
     if (requested.empty()) return "";
 
     FilterExpr fx;
@@ -13430,10 +13472,7 @@ ColStats compute_col_stats(TabularSource& src, int src_col) {
 static std::string print_describe(TabularSource& src, const Config& cfg) {
     std::vector<std::string> unknown;
     std::vector<int> requested = select_field_indices(src, cfg, &unknown);
-    if (!unknown.empty()) {
-        std::string u; for (auto& n : unknown) { if (!u.empty()) u += ","; u += n; }
-        return "unknown column(s) in --select: " + u;
-    }
+    if (!unknown.empty()) return unknown_columns_error(src, unknown);
 
     FilterExpr fx;
     bool have_filter = false;
@@ -14333,6 +14372,10 @@ class TableTUI {
         std::string                     filter_expr_str;
         FilterExpr                      filter_fx;
         int64_t                         filter_total = 0;
+        // Sticky: a full-file pass (search / sort / filter / stats) ran after
+        // the streaming source had already released batches, so its answer
+        // covers only part of the file.
+        bool                            partial_pass = false;
     };
     std::vector<TabState>      tabs_;
 
@@ -14356,6 +14399,9 @@ class TableTUI {
     bool                       filter_active_ = false;
     std::string                filter_err_;          // last compile error, if any
     int64_t                    filter_total_   = 0;  // rows after filter (for status)
+    // See TabState::partial_pass. Set by note_full_pass(), shown in the status
+    // bar and the stats overlay until the tab is closed.
+    bool                       partial_pass_   = false;
 
     // Copy-cell (`y`): transient status shown on the bottom bar after a copy.
     // Cleared automatically on the next non-`y` keypress.
@@ -14454,6 +14500,7 @@ class TableTUI {
         if (search_query_.empty()) return -1;
         src_->set_retain_all(true);  // search re-reads every chunk: keep them
         drain_to_eof();   // search must cover the whole streaming file
+        note_full_pass();
         std::string q = search_query_;
         for (auto& c : q) c = (char)std::tolower((unsigned char)c);
 
@@ -15220,6 +15267,10 @@ class TableTUI {
                 s += std::to_string(hidden);
             }
         }
+        // A search / sort / filter / stats pass ran over a stream that had
+        // already released batches — say so rather than present a partial
+        // answer as complete.
+        if (partial_pass_) s += "  [PARTIAL]";
         // Show search state
         if (search_mode_ == SearchMode::Active && !search_query_.empty()) {
             s += search_dir_forward_ ? "  /" : "  ?";
@@ -15327,6 +15378,7 @@ class TableTUI {
         if (sc < 0) { stats_data_ = std::move(cs); return; }
         src_->set_retain_all(true);  // stats re-read every chunk: keep them
         drain_to_eof();   // stats must cover the whole streaming file
+        note_full_pass();
         auto field = src_->schema()->field(sc);
         cs.name = col_names_[virt_col];
         cs.type = field->type()->ToString();
@@ -15417,6 +15469,10 @@ class TableTUI {
                 ? std::string(">16")
                 : std::to_string(cs.distinct.size()));
         }
+        // These numbers were computed over a stream that had already released
+        // batches — mark them rather than let them read as whole-file stats.
+        if (partial_pass_)
+            rows.emplace_back("Scope", "PARTIAL (batches released)");
 
         int w_l = 8, w_r = 0;
         for (auto& [l, v] : rows) {
@@ -15652,6 +15708,7 @@ class TableTUI {
         t.filter_expr_str = filter_expr_str_;
         t.filter_fx      = filter_fx_;
         t.filter_total   = filter_total_;
+        t.partial_pass   = partial_pass_;
     }
 
     void load_snapshot_into_active() {
@@ -15688,6 +15745,7 @@ class TableTUI {
         filter_expr_str_ = t.filter_expr_str;
         filter_fx_       = t.filter_fx;
         filter_total_    = t.filter_total;
+        partial_pass_    = t.partial_pass;
     }
 
 public:
@@ -15822,6 +15880,17 @@ private:
             src_->ensure(src_->num_chunks());
     }
 
+    // Call at the head of every operation that re-reads the whole file
+    // (search / sort / filter / column stats), right after retention has been
+    // pinned and the source drained. Forward-only streaming sources keep only
+    // a bounded trailing window of decoded batches, so if any batch was
+    // released before we pinned, those rows are gone and the pass cannot see
+    // them. That used to produce a confidently wrong answer with no marker —
+    // evicted_any() existed for exactly this and had no callers.
+    void note_full_pass() {
+        if (src_->evicted_any()) partial_pass_ = true;
+    }
+
     // ── Rebuild display→source mapping (sort + filter) ──────────────────────
     //
     // Combines the two view-of-the-data features into one full-file pass:
@@ -15840,6 +15909,7 @@ private:
         if (sort_col_ < 0 && !filter_active_) return;
         src_->set_retain_all(true);  // sort/filter re-read every row: keep them
         drain_to_eof();   // sort/filter must cover the whole streaming file
+        note_full_pass();
 
         // Resolve sort column (if any).
         bool num = false;
@@ -16904,26 +16974,21 @@ static int detect_terminal_width() {
 // Forward decl: shared by print_table and the stand-alone --schema mode.
 static void print_schema_block(TabularSource& src);
 
-static void print_vertical_table(TabularSource& src, const Config& cfg) {
+// Returns "" on success, an error message otherwise, so a bad --select /
+// --filter exits non-zero instead of printing and exiting 0.
+static std::string print_vertical_table(TabularSource& src, const Config& cfg) {
     auto schema     = src.schema();
     int  n_fields   = schema->num_fields();
     std::vector<std::string> unknown;
     std::vector<int> col_indices = select_field_indices(src, cfg, &unknown);
-    if (!unknown.empty()) {
-        std::string u;
-        for (auto& n : unknown) { if (!u.empty()) u += ","; u += n; }
-        std::fprintf(stderr, "unknown column(s) in --select: %s\n", u.c_str());
-        return;
-    }
+    if (!unknown.empty()) return unknown_columns_error(src, unknown);
     int  show_fields = (int)col_indices.size();
     FilterExpr fx;
     bool have_filter = false;
     if (!cfg.filter_expr.empty()) {
         std::string ferr;
-        if (!parse_filter_expr(cfg.filter_expr, *schema, &fx, &ferr)) {
-            std::fprintf(stderr, "--filter: %s\n", ferr.c_str());
-            return;
-        }
+        if (!parse_filter_expr(cfg.filter_expr, *schema, &fx, &ferr))
+            return "--filter: " + ferr;
         have_filter = true;
     }
     std::vector<int> read_indices = have_filter
@@ -16956,7 +17021,7 @@ static void print_vertical_table(TabularSource& src, const Config& cfg) {
     }
     if (!data || data->num_rows() == 0) {
         std::printf("[0 rows x %d columns]\n", n_fields);
-        return;
+        return "";
     }
     if (read_indices != col_indices)
         data = project_to_requested(data, read_indices, col_indices);
@@ -17077,27 +17142,23 @@ static void print_vertical_table(TabularSource& src, const Config& cfg) {
     std::printf("\n%s[%lld rows x %d columns]%s  vertical: %lld record(s) shown\n",
                 g_color.meta_key, (long long)total, n_fields,
                 g_color.reset, (long long)max_records);
+    return "";
 }
 
-static void print_table(TabularSource& src, const Config& cfg) {
+// Returns "" on success, an error message otherwise, so a bad --select /
+// --filter exits non-zero instead of printing and exiting 0.
+static std::string print_table(TabularSource& src, const Config& cfg) {
     auto schema = src.schema();
     std::vector<std::string> unknown;
     std::vector<int> col_indices = select_field_indices(src, cfg, &unknown);
-    if (!unknown.empty()) {
-        std::string u;
-        for (auto& n : unknown) { if (!u.empty()) u += ","; u += n; }
-        std::fprintf(stderr, "unknown column(s) in --select: %s\n", u.c_str());
-        return;
-    }
+    if (!unknown.empty()) return unknown_columns_error(src, unknown);
     int show_cols = (int)col_indices.size();
     FilterExpr fx;
     bool have_filter = false;
     if (!cfg.filter_expr.empty()) {
         std::string ferr;
-        if (!parse_filter_expr(cfg.filter_expr, *schema, &fx, &ferr)) {
-            std::fprintf(stderr, "--filter: %s\n", ferr.c_str());
-            return;
-        }
+        if (!parse_filter_expr(cfg.filter_expr, *schema, &fx, &ferr))
+            return "--filter: " + ferr;
         have_filter = true;
     }
     std::vector<int> read_indices = have_filter
@@ -17132,7 +17193,7 @@ static void print_table(TabularSource& src, const Config& cfg) {
             }
         }
     }
-    if (!data) return;
+    if (!data) return "";
     // Drop filter-only columns from `data` so the display loop's column
     // indices line up with col_indices (the user-requested set).
     if (read_indices != col_indices)
@@ -17213,6 +17274,7 @@ static void print_table(TabularSource& src, const Config& cfg) {
                 g_color.meta_key, (long long)total, num_cols, g_color.reset);
 
     print_schema_block(src);
+    return "";
 }
 
 // Schema + file-info block. Shared by print_table's footer and the
@@ -17355,10 +17417,55 @@ int main(int argc, char** argv) {
         if (!why.empty()) { report(cfg.path, why); return 1; }
     }
 
+    // Extra positionals are only meaningful in the interactive viewer, which
+    // gives each file its own tab. Every other mode read cfg.path and dropped
+    // the rest without a word — say so instead of answering about one file
+    // when the user asked about several.
+    if (cfg.paths.size() > 1) {
+        bool scripted = cfg.schema_only || cfg.stats_only || cfg.describe ||
+                        cfg.count || cfg.heatmap || !cfg.unique_cols.empty() ||
+                        cfg.json_array || cfg.json_lines || cfg.md ||
+                        cfg.delimiter || !cfg.parquet_out.empty() ||
+                        !cfg.arrow_out.empty() || cfg.vertical || cfg.validate;
+        bool tui = !scripted &&
+                   (cfg.interactive ||
+                    (!cfg.no_interactive && !cfg.head_rows_set &&
+                     isatty(STDOUT_FILENO) && isatty(STDIN_FILENO)));
+        if (!tui) {
+            report(cfg.path,
+                   "multiple input files (" + std::to_string(cfg.paths.size()) +
+                   " given) are only supported in the interactive viewer; "
+                   "this mode reads just the first");
+            return 1;
+        }
+    }
+
     // --validate: LociSSD invariants check. Doesn't go through open_source —
     // we re-open the Parquet file with our own reader so other flags (region,
     // select, filter) don't influence what we scan.
     if (cfg.validate) {
+        // The checker is LociSSD-v3-specific (it walks Parquet row groups), so
+        // anything else got "Not a valid Parquet file" — misleading for a BED,
+        // and outright wrong for a v4 "colblock" .lociss, which is not Parquet
+        // at all. Say which case the user is in.
+        if (!fends_ci(cfg.path, ".lociss")) {
+            report(cfg.path, "--validate checks LociSSD invariants; this is "
+                             "not a LociSSD file (expected a .lociss path)");
+            return 1;
+        }
+        {
+            unsigned char magic[4] = {0, 0, 0, 0};
+            if (std::FILE* f = std::fopen(cfg.path.c_str(), "rb")) {
+                (void)std::fread(magic, 1, 4, f);
+                std::fclose(f);
+            }
+            if (magic[0] == 'L' && magic[1] == 'S' &&
+                magic[2] == 'B' && magic[3] == '1') {
+                report(cfg.path, "--validate supports LociSSD v3 (Parquet) "
+                                 "only; this is a v4 \"colblock\" file");
+                return 1;
+            }
+        }
         std::string err = validate_lociss(cfg.path);
         if (!err.empty()) { std::fprintf(stderr, "%s\n", err.c_str()); return 1; }
         return 0;
@@ -17382,6 +17489,9 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "vv: %s\n", merr.c_str());
             return 1;
         }
+        // First error from any embedded GFM table (a bad --select / --filter);
+        // surfaced after the pager closes so it isn't swallowed by `less`.
+        std::string table_err;
         auto emit = [&]() {
             md::emit_markdown_stdout(doc);
             for (size_t i = 0; i < doc.tables.size(); ++i) {
@@ -17392,13 +17502,15 @@ int main(int argc, char** argv) {
                 MemoryTableSource ts(doc.tables[i],
                                       doc.source_path,
                                       "Format: markdown table");
+                std::string werr;
                 if (cfg.schema_only) {
                     /* schema-only doesn't make sense per-table; skip. */
                 } else if (cfg.delimiter) {
-                    write_delimited(ts, cfg);
+                    werr = write_delimited(ts, cfg);
                 } else {
-                    print_table(ts, cfg);
+                    werr = print_table(ts, cfg);
                 }
+                if (!werr.empty() && table_err.empty()) table_err = werr;
             }
         };
         // Pager when we're plausibly interactive: TTY output, and the
@@ -17415,6 +17527,7 @@ int main(int argc, char** argv) {
                           && cfg.arrow_out.empty();
         if (want_pager) md::emit_via_pager(emit);
         else            emit();
+        if (!table_err.empty()) { report(cfg.path, table_err); return 1; }
         return 0;
     }
 
@@ -17562,6 +17675,12 @@ int main(int argc, char** argv) {
         if (!jcfg.head_rows_set) jcfg.head_rows = 0;
         std::string err = write_json(*src, jcfg);
         if (!err.empty()) { report(cfg.path, err); return 1; }
+        // A streaming source that hit a parse/I/O error mid-file has emitted a
+        // truncated result; report it and exit non-zero so pipelines can tell.
+        if (!src->read_status().ok()) {
+            report(cfg.path, shorten_reader_error(src->read_status().ToString()));
+            return 1;
+        }
         return 0;
     }
 
@@ -17569,7 +17688,12 @@ int main(int argc, char** argv) {
     if (cfg.md) {
         Config mcfg = cfg;
         if (!mcfg.head_rows_set) mcfg.head_rows = 0;
-        write_markdown(*src, mcfg);
+        std::string err = write_markdown(*src, mcfg);
+        if (!err.empty()) { report(cfg.path, err); return 1; }
+        if (!src->read_status().ok()) {
+            report(cfg.path, shorten_reader_error(src->read_status().ToString()));
+            return 1;
+        }
         return 0;
     }
 
@@ -17636,7 +17760,8 @@ int main(int argc, char** argv) {
     if (cfg.delimiter) {
         Config dcfg = cfg;
         if (!dcfg.head_rows_set) dcfg.head_rows = 0;
-        write_delimited(*src, dcfg);
+        std::string werr = write_delimited(*src, dcfg);
+        if (!werr.empty()) { report(cfg.path, werr); return 1; }
         // A streaming source that hit a parse/I/O error mid-file has emitted a
         // truncated result; report it and exit non-zero so pipelines can tell.
         if (!src->read_status().ok()) {
@@ -17655,6 +17780,11 @@ int main(int argc, char** argv) {
             report(cfg.path, err);
             return 1;
         }
+        // Never hand back a silently truncated conversion.
+        if (!src->read_status().ok()) {
+            report(cfg.path, shorten_reader_error(src->read_status().ToString()));
+            return 1;
+        }
         return 0;
     }
 
@@ -17667,12 +17797,19 @@ int main(int argc, char** argv) {
             report(cfg.path, err);
             return 1;
         }
+        if (!src->read_status().ok()) {
+            report(cfg.path, shorten_reader_error(src->read_status().ToString()));
+            return 1;
+        }
         return 0;
     }
 
     // Table display
-    if (cfg.vertical) print_vertical_table(*src, cfg);
-    else              print_table(*src, cfg);
+    {
+        std::string terr = cfg.vertical ? print_vertical_table(*src, cfg)
+                                        : print_table(*src, cfg);
+        if (!terr.empty()) { report(cfg.path, terr); return 1; }
+    }
     if (!src->read_status().ok()) {
         report(cfg.path, shorten_reader_error(src->read_status().ToString()));
         return 1;

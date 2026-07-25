@@ -771,10 +771,15 @@ fi
 rm -rf "$TMP_XDG"
 
 echo
-# Multi-file CLI: extra positionals become TUI tabs. In non-interactive
-# mode only the first file is processed; verify nothing crashes.
-MULTI=$("$VV" --no-interactive --no-index --color=never -n 1 "$DATA/tiny.parquet" "$DATA/tiny.bed" 2>&1)
-assert_contains "multifile_cli_accepts_extra_paths" "$MULTI" "Chr"
+# Multi-file CLI: extra positionals become TUI tabs. Every non-interactive
+# mode reads only the first file, so it must say so and exit non-zero rather
+# than silently answering about one file when several were named.
+MULTI=$("$VV" --no-interactive --no-index --color=never -n 1 "$DATA/tiny.parquet" "$DATA/tiny.bed" 2>&1 || true)
+assert_contains "multifile_cli_rejects_extra_paths" "$MULTI" "only supported in the interactive viewer"
+assert_exit_code "multifile_cli_extra_paths_exit" 1 \
+    "$VV" --no-interactive --no-index --color=never -n 1 "$DATA/tiny.parquet" "$DATA/tiny.bed"
+# --count is the case that silently reported the first file's row count.
+assert_exit_code "multifile_count_exit" 1 "$VV" --count "$DATA/tiny.bed" "$DATA/tiny.csv"
 # An unopenable second positional must still error out cleanly.
 MULTI_BAD=$("$VV" -i "$DATA/tiny.parquet" /no/such/file 2>&1 || true)
 assert_contains "multifile_bad_second_path_errors" "$MULTI_BAD" "not found"
@@ -1412,6 +1417,80 @@ if command -v python3 >/dev/null 2>&1; then
 else
     echo "  skip  tui_wide_column_not_blank (python3 not found)"
 fi
+
+# A full-file pass (sort / filter / search / stats) that runs after a
+# forward-only stream has released batches can only see part of the file. It
+# used to report that partial answer as if it were complete — evicted_any()
+# existed for exactly this and had no callers. FASTQ batches every 4096
+# records, so 20k records span several batches without a >16 MiB fixture.
+if command -v python3 >/dev/null 2>&1; then
+    awk 'BEGIN{for(i=1;i<=20000;i++)printf "@r%d\nACGTACGT\n+\nIIIIIIII\n",i}' \
+        > "$TMP/partial.fq"
+    if python3 "$HERE/tui_partial_pass_check.py" "$VV" "$TMP/partial.fq"; then
+        PASS=$((PASS+1)); echo "  ok    tui_marks_partial_full_pass"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_marks_partial_full_pass"
+    fi
+    rm -f "$TMP/partial.fq"
+else
+    echo "  skip  tui_marks_partial_full_pass (python3 not found)"
+fi
+
+echo
+echo "── Truthful exits ────────────────────────────────────────"
+# A bad --select used to print an error and exit 0 in every mode except
+# --json, so a pipeline could not tell a typo from a successful run. All the
+# output modes must now agree: message on stderr, exit 1, nothing on stdout.
+for MODE_NAME in tsv csv md json ndjson table vertical parquet arrow; do
+    case "$MODE_NAME" in
+        tsv)      set -- --tsv ;;
+        csv)      set -- --csv ;;
+        md)       set -- --md ;;
+        json)     set -- --json ;;
+        ndjson)   set -- --ndjson ;;
+        table)    set -- --no-interactive -n 2 ;;
+        vertical) set -- --vertical ;;
+        parquet)  set -- --parquet "$TMP/sel.parquet" ;;
+        arrow)    set -- --arrow "$TMP/sel.arrow" ;;
+    esac
+    assert_exit_code "bad_select_exits_1_$MODE_NAME" 1 \
+        "$VV" --color=never "$DATA/tiny.parquet" --select Chr,Scoree "$@"
+done
+# The typo message suggests the real column rather than only naming the typo.
+SEL_ERR=$("$VV" --color=never "$DATA/tiny.parquet" --select Chr,Scoree --tsv 2>&1 >/dev/null || true)
+assert_contains "bad_select_suggests_column" "$SEL_ERR" "did you mean 'Score'"
+# A bad --filter must be an error in the delimited/markdown/table paths too.
+assert_exit_code "bad_filter_exits_1_tsv"   1 "$VV" "$DATA/tiny.parquet" --filter 'Nope > 1' --tsv
+assert_exit_code "bad_filter_exits_1_md"    1 "$VV" "$DATA/tiny.parquet" --filter 'Nope > 1' --md
+assert_exit_code "bad_filter_exits_1_table" 1 \
+    "$VV" --no-interactive "$DATA/tiny.parquet" --filter 'Nope > 1' -n 2
+# A valid --select still succeeds everywhere (the exit-code change must not
+# leak into the happy path).
+assert_exit_code "good_select_exits_0_tsv"  0 "$VV" "$DATA/tiny.parquet" --select Chr,Score --tsv
+assert_exit_code "good_select_exits_0_md"   0 "$VV" "$DATA/tiny.parquet" --select Chr,Score --md
+# --validate is a LociSSD-v3 check; it used to run its Parquet reader against
+# any path, so a BED reported "Not a valid Parquet file" and exited 0, and a
+# v4 "colblock" .lociss (not Parquet at all) reported the same.
+assert_exit_code "validate_rejects_bed" 1 "$VV" "$DATA/tiny.bed" --validate
+VAL_BED=$("$VV" --color=never "$DATA/tiny.bed" --validate 2>&1 || true)
+refute_contains "validate_bed_no_parquet_noise" "$VAL_BED" "Not a valid Parquet file"
+if [ -f "$DATA/tiny.v4.lociss" ]; then
+    VAL_V4=$("$VV" --color=never "$DATA/tiny.v4.lociss" --validate 2>&1 || true)
+    assert_contains "validate_v4_says_colblock" "$VAL_V4" "colblock"
+    assert_exit_code "validate_v4_exits_1" 1 "$VV" "$DATA/tiny.v4.lociss" --validate
+fi
+# `--parquet -` / `--arrow -` spool through a temp file; honour $TMPDIR so a
+# container with a tiny or read-only /tmp still converts.
+SPOOL_TMP="$TMP/spool"
+mkdir -p "$SPOOL_TMP"
+TMPDIR="$SPOOL_TMP" "$VV" "$DATA/tiny.parquet" --parquet - > "$TMP/spooled.parquet" 2>/dev/null
+TMPDIR="$SPOOL_TMP" "$VV" "$DATA/tiny.parquet" --arrow   - > "$TMP/spooled.arrow"   2>/dev/null
+SPOOL_ROWS=$("$VV" --count "$TMP/spooled.parquet" 2>/dev/null)
+assert_eq_file_inline "spool_tmpdir_parquet_roundtrip" "$SPOOL_ROWS" "20"
+SPOOL_ROWS_A=$("$VV" --count "$TMP/spooled.arrow" 2>/dev/null)
+assert_eq_file_inline "spool_tmpdir_arrow_roundtrip" "$SPOOL_ROWS_A" "20"
+LEFTOVER=$(ls /tmp/vv-parquet-* /tmp/vv-arrow-* 2>/dev/null | wc -l | tr -d ' ')
+assert_eq_file_inline "spool_tmpdir_leaves_tmp_alone" "$LEFTOVER" "0"
 
 echo
 echo "── Help / version ────────────────────────────────────────"
