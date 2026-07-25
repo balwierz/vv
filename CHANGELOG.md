@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **NumPy `.npy` zero-row Fortran-order array (found by fuzzing).** The
+  per-column gather in `build_2d_table` sized its scratch buffer to
+  `rows * item_size`, so an array declaring zero rows left the buffer empty and
+  its `data()` null — and the Fortran-order branch then called
+  `memcpy(nullptr, ..., 0)`. A zero length does not make a null argument legal
+  (both parameters are declared non-null), so this is undefined behaviour, and
+  UBSan traps it. Reachable from a crafted `.npz`, and from a legitimate one:
+  `np.savez(f, a=np.asfortranarray(np.zeros((0, 3))))` is a valid archive.
+  Guarded at `rows > 0`; new fixture `tiny.zerorow.npz` covers both memory
+  orders so the ASan/UBSan CI job catches a regression without depending on the
+  fuzzer reaching the same input again. Clean over 1.48 M fuzz iterations.
 - **NumPy `.npy` parser hardening (found by fuzzing).** A new libFuzzer harness
   over the `.npy` parse-and-build path surfaced two undefined-behaviour bugs
   reachable via a crafted `.npz`: a dtype with a zero declared item size (e.g.

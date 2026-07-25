@@ -9717,14 +9717,21 @@ build_2d_table(arrow::Type::type id, const uint8_t* data,
         // (the declared width, even when capped). F-order: column is contiguous
         // (stride = item_size).
         tmp.assign(rows * item_size, 0);
-        if (fortran_order) {
-            std::memcpy(tmp.data(), data + c * rows * item_size,
-                        rows * item_size);
-        } else {
-            for (int64_t r = 0; r < rows; ++r) {
-                std::memcpy(tmp.data() + r * item_size,
-                            data + (r * full_cols + c) * item_size,
-                            item_size);
+        // rows == 0 leaves tmp empty, so tmp.data() is null and the F-order
+        // gather would call memcpy(nullptr, …, 0) — a zero length does not
+        // make a null argument legal (the parameters are declared
+        // non-null), and UBSan traps it. The C-order loop below is already a
+        // no-op at rows == 0; guard both so the intent is explicit.
+        if (rows > 0) {
+            if (fortran_order) {
+                std::memcpy(tmp.data(), data + c * rows * item_size,
+                            rows * item_size);
+            } else {
+                for (int64_t r = 0; r < rows; ++r) {
+                    std::memcpy(tmp.data() + r * item_size,
+                                data + (r * full_cols + c) * item_size,
+                                item_size);
+                }
             }
         }
         auto a = slab_to_arrow(id, tmp.data(), rows);
