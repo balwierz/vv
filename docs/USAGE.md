@@ -285,13 +285,41 @@ $ vv --no-interactive --select Chromosome,Start,Score tests/data/tiny.lociss
 ...
 ```
 
-* Unknown names produce a clear error.
+Beyond plain names, each comma-separated term can be a pattern:
+
+| Term | Meaning |
+|---|---|
+| `Chromosome` | an exact column name — **always wins** over pattern interpretation, so a column literally called `2-4` or `log2-ratio` stays addressable |
+| `chr*`, `?_pct` | a glob (`fnmatch(3)`; `*` and `?`, case-sensitive) |
+| `2-4`, `5-` | a 1-based inclusive index range (`5-` runs to the last column) |
+| `@numeric` | a type class: `@numeric`, `@string`, `@list`, `@bool`, `@temporal` |
+| `!TERM` | exclusion — remove everything `TERM` matches |
+
+```sh
+# every column except the percentage ones, numeric columns only, reordered
+$ vv --tsv --select '*,!*_pct'   data.parquet
+$ vv --tsv --select '@numeric'   data.parquet
+$ vv --tsv --select 'End,Start'  data.parquet     # output follows spec order
+```
+
+Quote patterns — otherwise the shell expands `*` against your filenames
+before vv sees it.
+
+* Output follows the order given, so `--select` doubles as a reorder.
+  Duplicates collapse to their first occurrence.
+* Unknown names produce a clear error, with a did-you-mean suggestion. A
+  **pattern that matches nothing** is also an error, reported separately:
+  a silently-empty `!pct_*` typo would otherwise quietly drop data from a
+  conversion.
 * In display modes (table, vh, TUI) the format's hidden columns
-  (e.g. LociSSD's `MaxEndSoFar`) stay hidden.
+  (e.g. LociSSD's `MaxEndSoFar`) stay hidden — and a bare `!exclusion`
+  starts from that same visible set.
 * In export modes (`--tsv` / `--csv` / `--json` / `--parquet`) the
   user's explicit list is honoured exactly — conversions round-trip
-  the user's choice.
-* Numeric count form `-c 5` (first 5 columns) still works.
+  the user's choice, and a bare `!exclusion` starts from **all** fields,
+  so `--select '!Chromosome' --parquet out.parquet` keeps `MaxEndSoFar`.
+* Numeric count form `-c 5` (first 5 columns) still works; it clamps the
+  default column set and does not clip an explicit `--select`.
 
 # Row filtering (`--filter`)
 

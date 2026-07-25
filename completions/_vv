@@ -70,7 +70,7 @@ _vv() {
         '--decode-pileup[mpileup: explode bases into per-allele counts]' \
         '--pileup[BAM/CRAM: emit mpileup-style per-base rows]' \
         '(-f --fasta)'{-f,--fasta}'[reference FASTA: --pileup ref column + ./, notation, or CRAM decoding]:fasta:_files' \
-        '(--select --cols)'{--select,--cols}'+[Project columns by name]:cols:' \
+        '(--select --cols)'{--select,--cols}'+[Project columns: names, globs, N-M ranges, @types, !exclusions]:terms:' \
         '--filter+[Row predicate]:expr:' \
         '--schema[Print schema and exit]' \
         '--tab+[View a named component tab (AnnData obs/var/X, sheet)]:name:' \

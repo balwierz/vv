@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`--select` gained a pattern language.** Projection was one exact name per
+  comma-separated token; on a 380-column AnnData `obs` table or a bigBed with
+  autoSql extras that is a typing exercise, and there was no way to say
+  "everything except". Each term can now be:
+
+  | Term | Meaning |
+  |---|---|
+  | `Chromosome` | an exact column name — **always wins** over pattern interpretation |
+  | `chr*`, `?_pct` | a glob (`fnmatch(3)`; `*` and `?`) |
+  | `2-4`, `5-` | a 1-based inclusive index range |
+  | `@numeric` | a type class: `@numeric`, `@string`, `@list`, `@bool`, `@temporal` |
+  | `!TERM` | exclusion — remove everything `TERM` matches |
+
+  Output follows the order given, so `--select End,Start` also reorders;
+  duplicates collapse to their first occurrence. All six consumers inherit it,
+  including `--parquet` and `--arrow`, so it is a converter feature and not
+  just a viewer one. Two rules keep it from surprising anyone: an exact column
+  name always wins (so `log2-ratio`, `2-4` and `!flag` stay addressable), and
+  on a file whose own headers are range-shaped — binned matrices, Hi-C bins —
+  a bare `N-M` is *not* reinterpreted positionally. A pattern that matches
+  nothing is an error, reported separately from an unknown name: a
+  silently-empty `!pct_*` typo would otherwise quietly drop columns from a
+  conversion.
+
 - **`-r` / `--region` on BAM and CRAM.** A region query used to be a silent
   no-op on alignment files: `vv reads.bam -r chr1:1000-2000` ignored the flag,
   printed the whole file and exited 0 — even when the requested contig wasn't
@@ -31,6 +55,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   reports whether the source actually restricted its scan.
 
 ### Fixed
+- **A `--select` that resolves to no columns is an error.** Every output path
+  used to write an empty, zero-column result and exit 0 — `--parquet` even
+  announced `[20 rows → out.parquet]` over a 0×0 file. Reachable before this
+  release via `--select ','`; the pattern syntax makes it easy to hit by
+  accident (`--select 'Chr,!C*'`), so it now fails and writes nothing.
 - **BAM/CRAM read errors are no longer swallowed.** `BamSource` had no
   `read_status()` override, so the `ret < -1` check in its read loop was
   discarded by `ensure()` — a truncated or corrupt file produced a partial

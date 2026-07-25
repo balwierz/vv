@@ -348,9 +348,14 @@ $ vv --heatmap --image-mode ascii embedding.npy > grid.txt
   supported. `--regions-file foo.bed` for batch queries. `--slop N`
   pads each window. `--coords UCSC` (0-based half-open, default) or
   `--coords NCBI` (1-based inclusive, tabix / VCF / samtools style).
-- **Column projection by name** — `--select Chromosome,Start,Score`.
-  Unknown names produce a clear error. Works across every view and
-  export mode.
+- **Column projection** — `--select Chromosome,Start,Score`, and a small
+  pattern language: globs (`--select 'chr*'`), 1-based index ranges
+  (`2-4`, `5-`), type classes (`@numeric`, `@string`, `@list`, `@bool`,
+  `@temporal`) and exclusions (`--select '*,!*_pct'`). Output follows the
+  order given, so `--select End,Start` also reorders. An exact column name
+  always wins over pattern interpretation, so `log2-ratio` and `2-4` stay
+  addressable by name. Unknown names — and patterns that match nothing —
+  are errors, never silent no-ops. Works across every view and export mode.
 - **Value filter** — `--filter 'Chromosome == "chr1" AND Score > 0.5'`.
   Grammar: `<col> <op> <literal>` joined by `AND` / `OR`; ops
   `== != < <= > >=`. Same grammar drives the TUI live-filter (`&`).
