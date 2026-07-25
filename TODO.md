@@ -24,6 +24,16 @@ user-facing summary).
   when the window is much smaller than a row group.
 
 ### Done
+- `-r` on **BAM / CRAM** (`feat/bam-region`) — `BamSource` loads the index
+  and walks htslib's multi-region iterator, so several windows are covered
+  in one pass. Previously `-r` was a silent no-op on alignment files: the
+  whole file came back with exit 0, even for a contig the file lacks.
+  Byte-checked against `samtools view` at the window boundaries and under
+  `--coords ncbi`. A missing index is a clean error, not a full scan; a
+  plain `.sam` (no index) is rejected. CRAM decoding takes its reference
+  from `-f/--fasta` (fixture `tiny.cram`). Formats with no region index
+  now warn on stderr via the new `TabularSource::region_applied()` instead
+  of silently returning an unfiltered result.
 - `--regions-file foo.bed` — batch many windows from a BED's first
   three columns.
 - `--slop N` — pad each window by N bp.

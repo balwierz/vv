@@ -6,6 +6,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`-r` / `--region` on BAM and CRAM.** A region query used to be a silent
+  no-op on alignment files: `vv reads.bam -r chr1:1000-2000` ignored the flag,
+  printed the whole file and exited 0 — even when the requested contig wasn't
+  in the file at all. `BamSource` now loads the index and walks htslib's
+  multi-region iterator, so several comma-separated windows are covered in one
+  pass, and `chr1`/`1` aliasing applies as it already did elsewhere. Verified
+  byte-for-byte against `samtools view` at the window boundaries (a read
+  starting on the last base is in; one ending before the first is out) and
+  under `--coords ncbi`. Without an index vv now fails cleanly instead of
+  quietly falling back to a full scan, and a plain `.sam` — which has no index
+  — is rejected with a pointer to `samtools view -b`.
+- **CRAM reference resolution via `-f` / `--fasta`.** CRAM stores bases as
+  differences from a reference, so decoding needs one; htslib otherwise falls
+  back to `$REF_PATH` / `$REF_CACHE`, which may be unset or a network fetch.
+  `-f` now applies to a CRAM input as well as to `--pileup`. (It still errors
+  on a plain BAM without `--pileup`, where it would mean nothing.) New fixture
+  `tiny.cram`, encoded against the committed `tiny.pileup.fa`.
+- **A warning wherever `-r` cannot be honoured.** Formats with no region index
+  (Arrow IPC, ORC, FASTA, SQLite, spreadsheets, ...) print a note to stderr and
+  show the whole file, instead of returning an unfiltered result that looks
+  like a region query. Backed by a new `TabularSource::region_applied()`, which
+  reports whether the source actually restricted its scan.
+
+### Fixed
+- **BAM/CRAM read errors are no longer swallowed.** `BamSource` had no
+  `read_status()` override, so the `ret < -1` check in its read loop was
+  discarded by `ensure()` — a truncated or corrupt file produced a partial
+  result with exit 0. The status is now sticky and surfaces to the CLI.
+
 ### Changed
 - **Failures that used to exit 0 now exit 1.** This is a deliberate
   compatibility break: several requests vv could not honour were reported on
