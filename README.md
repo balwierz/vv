@@ -357,8 +357,13 @@ $ vv --heatmap --image-mode ascii embedding.npy > grid.txt
   addressable by name. Unknown names — and patterns that match nothing —
   are errors, never silent no-ops. Works across every view and export mode.
 - **Value filter** — `--filter 'Chromosome == "chr1" AND Score > 0.5'`.
-  Grammar: `<col> <op> <literal>` joined by `AND` / `OR`; ops
-  `== != < <= > >=`. Same grammar drives the TUI live-filter (`&`).
+  Grammar: `<col> <op> <value>` joined by `AND` / `OR`. Operators:
+  `== != < <= > >=`, regex `~` / `!~`, `contains` / `startswith` /
+  `endswith`, `in (a, b, c)` / `not in (…)`, and `is null` / `is not null`
+  — the rows `--describe` counts but nothing could previously select.
+  The word operators are operators only in operator position, so a column
+  genuinely named `in` or `is` stays filterable. The same grammar drives
+  the TUI live-filter (`&`) and the Qt filter box.
 - **`--sample N`** — reservoir sample uniformly; honours `--filter`.
 - **`--unique COL[,COL,...]`** — distinct-value counts per column.
 - **`--tail N`** — last N rows instead of head-N.

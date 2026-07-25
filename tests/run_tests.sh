@@ -649,6 +649,106 @@ assert_contains "select_unknown_column_errors" "$BAD_COL" "unknown"
 BAD_FILTER=$("$VV" --tsv --filter 'BogusCol > 0' "$DATA/tiny.lociss" 2>&1 || true)
 assert_contains "filter_unknown_column_errors" "$BAD_FILTER" "unknown"
 
+# ── --filter grammar: regex, substring, set membership, null tests ───────────
+# The grammar was six ordering operators over one literal. --describe already
+# reported per-column null counts but no mode could SELECT those rows.
+fcount() { "$VV" --count --filter "$1" "$2" 2>/dev/null; }
+# tiny.parquet: 20 rows, Chr is chr1 (12) / chr2 (8).
+assert_eq_file_inline "filter_contains"    "$(fcount 'Chr contains "hr1"'   "$DATA/tiny.parquet")" "12"
+assert_eq_file_inline "filter_startswith"  "$(fcount 'Chr startswith "chr"' "$DATA/tiny.parquet")" "20"
+assert_eq_file_inline "filter_endswith"    "$(fcount 'Chr endswith "2"'     "$DATA/tiny.parquet")" "8"
+assert_eq_file_inline "filter_in_set"      "$(fcount 'Chr in ("chr1","chr2")' "$DATA/tiny.parquet")" "20"
+assert_eq_file_inline "filter_not_in_set"  "$(fcount 'Chr not in ("chr1")'  "$DATA/tiny.parquet")" "8"
+assert_eq_file_inline "filter_regex"       "$(fcount 'Chr ~ "^chr[12]$"'    "$DATA/tiny.parquet")" "20"
+assert_eq_file_inline "filter_regex_not"   "$(fcount 'Chr !~ "1$"'          "$DATA/tiny.parquet")" "8"
+# `in` on a numeric column compares numerically, so the literals need no quotes.
+# Two rows share Start=100; cross-checked against the existing `Start == 100`.
+assert_eq_file_inline "filter_in_numeric"  "$(fcount 'Start in (100)'       "$DATA/tiny.parquet")" "2"
+assert_eq_file_inline "filter_in_numeric_matches_eq" \
+    "$(fcount 'Start in (100)' "$DATA/tiny.parquet")" \
+    "$(fcount 'Start == 100'   "$DATA/tiny.parquet")"
+# Composes with AND / OR and with the existing ordering operators. NB 4, not 3:
+# Score is float32, so the stored value nearest 0.4 is 0.40000000596..., which
+# really is > 0.4. An awk cross-check on the PRINTED value says 3 — awk is the
+# approximation here, not vv. Pinned against the same expression using the
+# pre-existing `==` operator so the two can never drift apart.
+assert_eq_file_inline "filter_regex_and_cmp" \
+    "$(fcount 'Chr ~ "chr1" AND Score > 0.4' "$DATA/tiny.parquet")" "4"
+assert_eq_file_inline "filter_regex_matches_eq" \
+    "$(fcount 'Chr ~ "^chr1$" AND Score > 0.4' "$DATA/tiny.parquet")" \
+    "$(fcount 'Chr == "chr1"  AND Score > 0.4' "$DATA/tiny.parquet")"
+
+# THE in-tree oracle for the null tests: `is null` must agree with the null
+# count --describe already reports for the same column. No external tool.
+if [ -f "$DATA/tiny.nullstr.h5ad" ]; then
+    DESC_NULLS=$("$VV" --tab obs --describe "$DATA/tiny.nullstr.h5ad" 2>/dev/null \
+                 | awk '$1=="label"{print $4}')
+    DESC_COUNT=$("$VV" --tab obs --describe "$DATA/tiny.nullstr.h5ad" 2>/dev/null \
+                 | awk '$1=="label"{print $3}')
+    GOT_NULL=$("$VV" --tab obs --count --filter 'label is null' \
+               "$DATA/tiny.nullstr.h5ad" 2>/dev/null)
+    GOT_NOTNULL=$("$VV" --tab obs --count --filter 'label is not null' \
+                  "$DATA/tiny.nullstr.h5ad" 2>/dev/null)
+    assert_eq_file_inline "filter_is_null_matches_describe"     "$GOT_NULL"    "$DESC_NULLS"
+    assert_eq_file_inline "filter_is_not_null_matches_describe" "$GOT_NOTNULL" "$DESC_COUNT"
+fi
+
+# Word operators are operators only in OPERATOR position, so a column whose
+# name happens to be `in` / `is` / `contains` / `not` stays filterable.
+KW="$TMP/kw.tsv"
+printf 'in\tis\tcontains\tnot\n5\tx\ty\tz\n7\tp\tq\tr\n' > "$KW"
+assert_eq_file_inline "filter_col_named_in"       "$(fcount 'in == 5'          "$KW")" "1"
+assert_eq_file_inline "filter_col_named_in_cmp"   "$(fcount 'in > 6'           "$KW")" "1"
+assert_eq_file_inline "filter_col_named_is"       "$(fcount 'is contains "x"'  "$KW")" "1"
+assert_eq_file_inline "filter_col_named_contains" "$(fcount 'contains == "y"'  "$KW")" "1"
+rm -f "$KW"
+
+# Malformed expressions are parse errors with a specific message — never a
+# silent degrade to "matches nothing" (worse in a CLI than in the TUI).
+BADRE=$("$VV" --tsv --filter 'Chr ~ "["' "$DATA/tiny.parquet" 2>&1 || true)
+assert_contains "filter_bad_regex_errors" "$BADRE" "bad regex"
+assert_exit_code "filter_bad_regex_exit" 1 "$VV" --tsv --filter 'Chr ~ "["' "$DATA/tiny.parquet"
+BADIN=$("$VV" --tsv --filter 'Chr in ("a"' "$DATA/tiny.parquet" 2>&1 || true)
+assert_contains "filter_unterminated_in" "$BADIN" "unterminated"
+BADIN2=$("$VV" --tsv --filter 'Chr in ()' "$DATA/tiny.parquet" 2>&1 || true)
+assert_contains "filter_empty_in" "$BADIN2" "at least one value"
+BADIS=$("$VV" --tsv --filter 'Chr is bogus' "$DATA/tiny.parquet" 2>&1 || true)
+assert_contains "filter_bad_is" "$BADIS" "is null"
+
+# The same grammar drives the TUI `&` bar and the Qt filter box, so a parse
+# regression would hit three frontends. The existing --filter goldens above
+# cover the shared parser; this pins that the OLD grammar is untouched.
+assert_eq_file_inline "filter_legacy_grammar_unchanged" \
+    "$(fcount 'Score > 0.4' "$DATA/tiny.lociss")" "3"
+# eval_atom runs per row, so the compiled regex must be cached — recompiling
+# the pattern for every cell would dominate the scan. Guard it, but loosely:
+# a shared CI runner is noisy, and the point is to catch the cache DISAPPEARING
+# (which costs 10-40x, one compile per row), not to police a few percent.
+# Measured locally at ~3.4x, which is just regex matching being slower than
+# string compare.
+if command -v python3 >/dev/null 2>&1; then
+    PERF_TSV="$TMP/filterperf.tsv"
+    python3 -c "
+import sys
+w = open('$PERF_TSV','w').write
+w('name\tval\n')
+for i in range(200000):
+    w('sample_%d\t%d\n' % (i%9973, i))
+"
+    T0=$(date +%s%N); "$VV" --count --filter 'name == \"sample_42\"'  "$PERF_TSV" >/dev/null 2>&1; T1=$(date +%s%N)
+    T2=$(date +%s%N); "$VV" --count --filter 'name ~ \"^sample_42$\"' "$PERF_TSV" >/dev/null 2>&1; T3=$(date +%s%N)
+    EQ_MS=$(( (T1-T0)/1000000 )); RE_MS=$(( (T3-T2)/1000000 ))
+    [ "$EQ_MS" -lt 1 ] && EQ_MS=1
+    if [ "$RE_MS" -lt $(( EQ_MS * 20 )) ]; then
+        PASS=$((PASS+1)); echo "  ok    filter_regex_is_cached (${RE_MS}ms vs ${EQ_MS}ms)"
+    else
+        FAIL=$((FAIL+1))
+        echo "  FAIL  filter_regex_is_cached (${RE_MS}ms vs ${EQ_MS}ms — regex recompiled per row?)"
+    fi
+    rm -f "$PERF_TSV"
+fi
+unset -f fcount
+
 # ── --select pattern language ────────────────────────────────────────────────
 # tiny.parquet: Chr(string) Start(int64) End(int64) Score(float) Tags(list).
 hdr() { "$VV" --tsv "$DATA/tiny.parquet" --select "$1" 2>/dev/null | head -1; }

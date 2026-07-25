@@ -329,9 +329,29 @@ Value-predicate filter. Grammar:
 <column> <op> <literal>  joined by AND / OR
 ```
 
-* Operators: `==`, `!=`, `<`, `<=`, `>`, `>=`.
+| Operator | Meaning |
+|---|---|
+| `==` `!=` `<` `<=` `>` `>=` | compare (numeric or lexicographic) |
+| `~` `!~` | ECMAScript regex, **unanchored** — use `^` / `$` to anchor |
+| `contains` `startswith` `endswith` | substring tests |
+| `in (a, b, c)`, `not in (…)` | set membership; numeric columns compare numerically |
+| `is null`, `is not null` | the column's actual nulls |
+
 * Literals: integer, float, single- or double-quoted string.
 * `AND` / `OR` case-insensitive.
+* The word operators are operators only in *operator position*, so a
+  column genuinely named `in`, `is` or `contains` stays filterable:
+  `--filter 'is contains "x"'` works.
+* A malformed regex is a parse error, not a silently-empty result — in a
+  CLI a silent degrade is worse than a hard failure.
+* `is null` selects exactly the rows `--describe` reports as null for that
+  column; nothing else in vv could select them before.
+
+```sh
+$ vv variants.vcf --filter 'FILTER is null OR Gene ~ "^BRCA"'
+$ vv peaks.bed    --filter 'Chr in (chr1, chrX) AND Score > 100'
+$ vv obs.parquet  --filter 'cell_type contains "T "'
+```
 
 ```sh
 $ vv --tsv --no-header --filter 'Score > 0.4' tests/data/tiny.lociss
