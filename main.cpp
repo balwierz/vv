@@ -644,9 +644,12 @@ static void print_usage(const char* prog) {
         "  --pileup            BAM/CRAM only: emit mpileup-style per-base rows\n"
         "                      from the alignments via htslib's bam_plp engine\n"
         "                      (equivalent to `samtools mpileup`, no BAQ)\n"
-        "  -f, --fasta <ref>   --pileup: reference FASTA (needs .fai) — fills the\n"
-        "                      ref column and renders matches as . / , like\n"
-        "                      `samtools mpileup -f`\n"
+        "  -f, --fasta <ref>   reference FASTA (needs .fai). With --pileup it\n"
+        "                      fills the ref column and renders matches as\n"
+        "                      . / , like `samtools mpileup -f`; on a CRAM\n"
+        "                      input it supplies the reference needed to\n"
+        "                      decode the reads (otherwise htslib falls back\n"
+        "                      to $REF_PATH / $REF_CACHE)\n"
         "  --decode-pileup     mpileup only: replace the packed bases/quals\n"
         "                      columns with typed per-allele counts\n"
         "                      (A, C, G, T, N, del, ins, fwd, rev, mean_qual)\n"
@@ -695,11 +698,13 @@ static void print_usage(const char* prog) {
         "                           (default; 0-based half-open, as in BED)\n"
         "                           or NCBI (1-based inclusive, as in GenBank,\n"
         "                           VCF, GFF, and the samtools/tabix CLI)\n"
-        "  Supported on tabix-indexed VCF/BED/GFF/TSV, indexed BCF\n"
-        "  (.csi/.tbi), LociSSD Parquet (.lociss), plain sorted Parquet\n"
-        "  with chrom/start/end columns, and bigBed/bigWig. Coordinates\n"
-        "  follow the UCSC convention (0-based half-open) by default;\n"
-        "  pass --coords NCBI for 1-based inclusive (samtools/tabix style).\n"
+        "  Supported on indexed BAM/CRAM (.bai/.csi/.crai), tabix-indexed\n"
+        "  VCF/BED/GFF/TSV, indexed BCF (.csi/.tbi), LociSSD (.lociss),\n"
+        "  plain sorted Parquet with chrom/start/end columns, and\n"
+        "  bigBed/bigWig. Formats with no region index warn on stderr and\n"
+        "  show the whole file. Coordinates follow the UCSC convention\n"
+        "  (0-based half-open) by default; pass --coords NCBI for 1-based\n"
+        "  inclusive (samtools/tabix style).\n"
         "\nPerformance:\n"
         "  -@ / --threads <N>  worker threads for I/O and decode (0 = auto)\n"
         "  --decode-threads <N>  Arrow CPU thread pool size for Parquet /\n"
@@ -709,6 +714,9 @@ static void print_usage(const char* prog) {
         "  -V / --version      print version and exit\n",
         prog);
 }
+
+// Case-insensitive suffix test; defined with the other path helpers below.
+static bool fends_ci(const std::string& s, const std::string& sfx);
 
 static Config parse_args(int argc, char** argv) {
     Config cfg;
@@ -910,9 +918,15 @@ static Config parse_args(int argc, char** argv) {
                      cfg.image_mode.c_str());
         std::exit(2);
     }
-    if (!cfg.pileup_ref.empty() && !cfg.pileup) {
-        std::fprintf(stderr, "-f/--fasta only applies to --pileup "
-                     "(reference-aware BAM/CRAM pileup)\n");
+    // -f/--fasta feeds two things: the reference-aware pileup, and CRAM
+    // reference resolution (CRAM stores bases as differences from a
+    // reference, so decoding one without $REF_PATH / $REF_CACHE needs it).
+    // It adds nothing to a plain BAM read without --pileup, so that stays a
+    // usage error rather than a silently ignored flag.
+    if (!cfg.pileup_ref.empty() && !cfg.pileup && !fends_ci(cfg.path, ".cram")) {
+        std::fprintf(stderr, "-f/--fasta applies to --pileup "
+                     "(reference-aware pileup) or to a CRAM input "
+                     "(reference resolution)\n");
         std::exit(2);
     }
     return cfg;
@@ -3230,6 +3244,7 @@ public:
     int64_t total_rows() const override { return region_mode_ ? region_total_ : row_count_; }
     int     num_chunks() const override { return region_mode_ ? (int)slices_.size() : n_blocks_; }
     arrow::Status read_status() const override { return read_status_; }
+    bool region_applied() const override { return region_mode_; }
     ChunkMeta chunk_meta(int i) const override {
         if (region_mode_) return {slice_first_row_[(size_t)i], slice_count_[(size_t)i]};
         return {block_first_row_[(size_t)i], n_rows_[(size_t)i]};
@@ -4025,6 +4040,7 @@ public:
     }
 
     std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    bool region_applied() const override { return region_mode_; }
     int64_t total_rows() const override {
         // Region mode: the exact post-filter total (computed at open by running
         // the overlap predicate once per slice), so it matches the rows
@@ -4491,6 +4507,8 @@ class DelimitedSource : public TabularSource {
     mutable bool                          all_read_    = false;
     mutable bool                          retain_all_  = false; // pinned by full-pass ops
     mutable bool                          evicted_any_ = false; // any batch freed?
+    // True when the data stream was replaced by a tabix iterator for -r.
+    bool                                  region_applied_ = false;
     mutable arrow::Status                 read_status_;   // sticky stream error
 
     // Append a freshly-decoded batch via the shared bounded-window helper.
@@ -4777,6 +4795,7 @@ private:
             if (kind == DelimKind::GFF) ti = std::make_shared<TruncateFieldsStream>(ti, 9);
             if (kind == DelimKind::SAM) ti = std::make_shared<TruncateFieldsStream>(ti, 11);
             input = ti;
+            self->region_applied_ = true;
         }
 
         bool autogen = (kind == DelimKind::BED) ||
@@ -4967,6 +4986,7 @@ private:
     int64_t total_rows() const override { return all_read_ ? rows_so_far_ : -1; }
     int     num_chunks() const override { return (int)batches_.size(); }
     arrow::Status read_status() const override { return read_status_; }
+    bool region_applied() const override { return region_applied_; }
     ChunkMeta chunk_meta(int i) const override {
         // num_rows is read from retained metadata, not the batch, so it stays
         // valid after the batch's data is evicted from the trailing window.
@@ -5122,6 +5142,10 @@ class BamSource : public TabularSource {
     mutable htsFile*   hts_ = nullptr;
     mutable sam_hdr_t* hdr_ = nullptr;
     mutable bam1_t*    rec_ = nullptr;   // reused across advance() calls
+    // -r: index + multi-region iterator. When iter_ is set, advance() walks
+    // only the records overlapping the requested windows.
+    mutable hts_idx_t* idx_  = nullptr;
+    mutable hts_itr_t* iter_ = nullptr;
 
     mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
     mutable std::vector<int64_t>          batch_first_row_;
@@ -5130,6 +5154,7 @@ class BamSource : public TabularSource {
     mutable bool                          all_read_    = false;
     mutable bool                          retain_all_  = false;
     mutable bool                          evicted_any_ = false;
+    mutable arrow::Status                 read_status_;      // sticky stream error
 
     static constexpr int BATCH_SIZE = 32768;
 
@@ -5144,7 +5169,13 @@ class BamSource : public TabularSource {
 
         int cap = (row_cap > 0 && row_cap < BATCH_SIZE) ? (int)row_cap : BATCH_SIZE;
         int count = 0, ret = 0;
-        while (count < cap && (ret = sam_read1(hts_, hdr_, rec_)) >= 0) {
+        // In region mode the multi-region iterator yields only the records
+        // overlapping the requested windows; otherwise walk the whole file.
+        auto next_record = [&]() {
+            return iter_ ? sam_itr_multi_next(hts_, iter_, rec_)
+                         : sam_read1(hts_, hdr_, rec_);
+        };
+        while (count < cap && (ret = next_record()) >= 0) {
             ARROW_RETURN_NOT_OK(qname_b.Append(bam_get_qname(rec_)));
             ARROW_RETURN_NOT_OK(flag_b.Append((int32_t)rec_->core.flag));
 
@@ -5226,8 +5257,16 @@ class BamSource : public TabularSource {
             ++count;
         }
 
-        if (ret < -1)
-            return arrow::Status::IOError("Error reading BAM record from ", path_);
+        // A read error (ret < -1) is distinct from EOF (-1). ensure() discards
+        // advance()'s return, so record it stickily too or a truncated /
+        // corrupt file yields a partial result with exit 0.
+        if (ret < -1) {
+            all_read_ = true;
+            if (read_status_.ok())
+                read_status_ = arrow::Status::IOError(
+                    "Error reading ", fmt_name_, " record from ", path_);
+            return read_status_;
+        }
         if (count == 0) { all_read_ = true; return arrow::Status::OK(); }
         if (ret < 0) all_read_ = true;   // EOF hit during this batch
 
@@ -5253,6 +5292,10 @@ class BamSource : public TabularSource {
 
 public:
     ~BamSource() {
+        // sam_itr_regarray() builds a MULTI iterator — it must be freed with
+        // hts_itr_multi_destroy, not hts_itr_destroy.
+        if (iter_) { hts_itr_multi_destroy(iter_); iter_ = nullptr; }
+        if (idx_)  { hts_idx_destroy(idx_);  idx_  = nullptr; }
         if (rec_) { bam_destroy1(rec_); rec_ = nullptr; }
         if (hdr_) { sam_hdr_destroy(hdr_); hdr_ = nullptr; }
         if (hts_) { hts_close(hts_); hts_ = nullptr; }
@@ -5270,6 +5313,17 @@ public:
         // Multi-threaded BGZF / CRAM slice decompression.
         int n = effective_threads(cfg);
         if (n > 1) hts_set_threads(self->hts_, n);
+
+        // CRAM stores bases as differences from a reference, so decoding needs
+        // one. htslib otherwise falls back to $REF_PATH / $REF_CACHE (often a
+        // network fetch, or nothing at all). -f/--fasta points it at a local
+        // FASTA. Must be set before the header read triggers any decode.
+        if (!cfg.pileup_ref.empty()) {
+            if (hts_set_fai_filename(self->hts_, cfg.pileup_ref.c_str()) < 0)
+                return "Cannot use reference '" + cfg.pileup_ref +
+                       "' for '" + path + "' (need a .fai index; run "
+                       "`samtools faidx`)";
+        }
 
         self->hdr_ = sam_hdr_read(self->hts_);
         if (!self->hdr_)
@@ -5321,6 +5375,39 @@ public:
             arrow::field("QUAL",  arrow::utf8()),
         });
 
+        // -r: restrict the scan to the requested windows. Needs a
+        // coordinate-sorted file with an index (.bai / .csi / .crai). Without
+        // this the flag was silently ignored and vv answered with the whole
+        // file — including for a contig the file doesn't even have.
+        if (!cfg.region.empty()) {
+            if (self->fmt_name_ == "SAM")
+                return "'" + path + "': -r needs an indexed BAM/CRAM; plain "
+                       "SAM has no index (convert with `samtools view -b`)";
+            self->idx_ = sam_index_load(self->hts_, path.c_str());
+            if (!self->idx_)
+                return "'" + path + "': -r needs an index (.bai/.csi/.crai); "
+                       "build one with `samtools index`";
+            // cfg.region is canonical 0-based half-open; sam_itr_regarray reads
+            // region strings as 1-based inclusive, so convert at the boundary.
+            std::vector<Region> windows = parse_region_list(cfg.region);
+            resolve_region_chroms(windows,
+                [&](const std::string& nm) {
+                    return bam_name2id(self->hdr_, nm.c_str()) >= 0;
+                }, path);
+            std::vector<std::string> regs;
+            regs.reserve(windows.size());
+            for (const auto& w : windows) regs.push_back(region_to_htslib(w));
+            std::vector<const char*> regp;
+            regp.reserve(regs.size());
+            for (auto& r : regs) regp.push_back(r.c_str());
+            self->iter_ = sam_itr_regarray(self->idx_, self->hdr_,
+                                            const_cast<char**>(regp.data()),
+                                            (unsigned)regp.size());
+            if (!self->iter_)
+                return "'" + path + "': cannot build iterator for region '" +
+                       cfg.region + "'";
+        }
+
         auto st = self->advance();
         if (!st.ok()) return "Error reading '" + path + "': " + st.ToString();
 
@@ -5336,9 +5423,15 @@ public:
     }
     void set_retain_all(bool b) override { retain_all_ = b; }
     bool evicted_any() const override { return evicted_any_; }
+    bool region_applied() const override { return iter_ != nullptr; }
+    arrow::Status read_status() const override { return read_status_; }
     void ensure(int i) override {
-        while (!all_read_ && (int)batches_.size() <= i)
-            (void)advance();
+        // advance()'s error used to be discarded here, so a truncated or
+        // corrupt file produced a partial result with exit 0. Keep it.
+        while (!all_read_ && (int)batches_.size() <= i) {
+            auto st = advance();
+            if (!st.ok()) { if (read_status_.ok()) read_status_ = st; break; }
+        }
     }
     arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
                               std::shared_ptr<arrow::Table>* out) override {
@@ -5754,6 +5847,7 @@ public:
     }
     void set_retain_all(bool b) override { retain_all_ = b; }
     bool evicted_any() const override { return evicted_any_; }
+    bool region_applied() const override { return iter_ != nullptr; }
     void ensure(int i) override {
         while (!all_read_ && (int)batches_.size() <= i)
             (void)advance();
@@ -6031,6 +6125,7 @@ public:
     }
     void set_retain_all(bool b) override { retain_all_ = b; }
     bool evicted_any() const override { return evicted_any_; }
+    bool region_applied() const override { return region_mode_; }
     void ensure(int i) override {
         while (!all_read_ && (int)batches_.size() <= i)
             (void)advance();
@@ -6343,6 +6438,7 @@ public:
     }
     void set_retain_all(bool b) override { retain_all_ = b; }
     bool evicted_any() const override { return evicted_any_; }
+    bool region_applied() const override { return region_mode_; }
     void ensure(int i) override {
         while (!all_read_ && (int)batches_.size() <= i)
             (void)advance();
@@ -17553,6 +17649,16 @@ int main(int argc, char** argv) {
         report(cfg.path, shorten_reader_error(std::move(detail)));
         return 1;
     }
+
+    // -r asked for a window this format cannot provide. vv used to ignore the
+    // flag and hand back the whole file with exit 0 — the answer looks like a
+    // region query and isn't one. Warn rather than fail: the output is still
+    // valid, it is just not what was asked for.
+    if (!cfg.region.empty() && !src->region_applied())
+        std::fprintf(stderr,
+                     "%svv:%s %s%s%s: warning: this format has no region index; "
+                     "-r was not applied and the whole file is shown\n",
+                     C_BOLD, C_RST, C_DIM, cfg.path.c_str(), C_RST);
 
     // --tab NAME: view a named component tab (AnnData obs/var/X, a workbook
     // sheet, …) instead of the first one. Lets the CLI reach the data tabs that

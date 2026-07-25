@@ -383,6 +383,10 @@ remapped.
 Supported on:
 .RS
 .IP \(bu 2
+indexed \fB.bam\fR / \fB.cram\fR (needs \fB.bai\fR, \fB.csi\fR or
+\fB.crai\fR from \fBsamtools index\fR); a plain \fB.sam\fR has no
+index and is rejected;
+.IP \(bu 2
 tabix-indexed \fB.vcf.gz\fR, \fB.bed.gz\fR, \fB.gff.gz\fR, and
 \fB.tsv.gz\fR (via htslib's tabix iterator);
 .IP \(bu 2
@@ -393,6 +397,10 @@ columns, then a per-row predicate inside surviving row groups).
 .IP
 Plain \fB.parquet\fR with chrom/start/end columns works without a
 LociSSD manifest (see \fB\-\-region\-cols\fR for column-name overrides).
+.IP
+A format with no region index (Arrow IPC, ORC, FASTA, SQLite, spreadsheets,
+\&...) prints a warning to standard error and shows the whole file, rather
+than silently presenting an unfiltered result as a region query.
 .TP
 .BI \-\-window " REGION"
 Alias of \fB\-r\fR / \fB\-\-region\fR \(en the name LociSSD readers often

@@ -1291,9 +1291,79 @@ if [ -f "$DATA/tiny.bam" ]; then
                 "$PLF" "$(samtools mpileup -B -f "$DATA/tiny.pileup.fa" "$DATA/tiny.bam" 2>/dev/null)"
         fi
     fi
-    # -f only applies to --pileup: a clean usage error (exit 2), never silent.
+    # -f adds nothing to a plain BAM read without --pileup: a clean usage
+    # error (exit 2), never a silently ignored flag. (On a CRAM it IS
+    # meaningful — reference resolution — and is accepted; see below.)
     assert_exit_code "pileup_f_requires_pileup" 2 "$VV" -f "$DATA/tiny.pileup.fa" "$DATA/tiny.bam"
+
+    # ── -r on BAM/CRAM ───────────────────────────────────────────────────────
+    # A region query used to be a silent no-op here: vv ignored -r, returned
+    # the whole file, and exited 0 — even for a contig the file doesn't have.
+    # tiny.bam holds r1/r2 at 1-based POS 100 (20 bp) and r3 at 102 (17 bp).
+    # vv's -r is UCSC 0-based half-open, samtools' is 1-based inclusive.
+    BAM_ALL=$("$VV" --count "$DATA/tiny.bam")
+    assert_eq_file_inline "bam_region_all_rows" "$BAM_ALL" "3"
+    BAM_R=$("$VV" --tsv --no-header -r chr1:99-100 "$DATA/tiny.bam" | cut -f1 | tr '\n' ' ')
+    assert_eq_file_inline "bam_region_window" "$BAM_R" "r1 r2 "
+    # A window past every read must return nothing — the proof the filter runs.
+    BAM_EMPTY=$("$VV" --count -r chr1:500-600 "$DATA/tiny.bam")
+    assert_eq_file_inline "bam_region_empty_window" "$BAM_EMPTY" "0"
+    # chr1 <-> 1 aliasing comes free from resolve_region_chroms.
+    BAM_ALIAS=$("$VV" --count -r 1:99-105 "$DATA/tiny.bam" 2>/dev/null)
+    assert_eq_file_inline "bam_region_chrom_alias" "$BAM_ALIAS" "3"
+    # An unindexed BAM must fail cleanly, never fall back to a full scan.
+    cp "$DATA/tiny.bam" "$TMP/noidx.bam"
+    assert_exit_code "bam_region_needs_index" 1 "$VV" --count -r chr1:99-105 "$TMP/noidx.bam"
+    rm -f "$TMP/noidx.bam"
+    # Boundary parity with samtools: a read starting on the window's last base
+    # is IN, one ending before its first base is OUT. This is also the
+    # regression test for region_to_htslib's 0-based -> 1-based conversion.
+    if command -v samtools >/dev/null 2>&1; then
+        for W in 99-105 99-100 101-105 100-101; do
+            S0=${W%-*}; S1=${W#*-}
+            VVW=$("$VV" --tsv --no-header -r "chr1:$W" "$DATA/tiny.bam" | cut -f1)
+            SAMW=$(samtools view "$DATA/tiny.bam" "chr1:$((S0+1))-$S1" | cut -f1)
+            assert_eq_file_inline "bam_region_matches_samtools_$W" "$VVW" "$SAMW"
+        done
+        # --coords ncbi takes the samtools convention verbatim.
+        VVN=$("$VV" --tsv --no-header --coords ncbi -r chr1:100-105 "$DATA/tiny.bam" | cut -f1)
+        SAMN=$(samtools view "$DATA/tiny.bam" chr1:100-105 | cut -f1)
+        assert_eq_file_inline "bam_region_coords_ncbi" "$VVN" "$SAMN"
+    fi
 fi
+
+# CRAM: bases are stored as differences from a reference, so decoding needs
+# one. -f/--fasta supplies it (htslib otherwise falls back to $REF_PATH /
+# $REF_CACHE, often a network fetch). tiny.cram is the same three reads as
+# tiny.bam, encoded against the committed tiny.pileup.fa.
+if [ -f "$DATA/tiny.cram" ] && [ -f "$DATA/tiny.pileup.fa" ]; then
+    CRAM_N=$("$VV" --count -f "$DATA/tiny.pileup.fa" "$DATA/tiny.cram")
+    assert_eq_file_inline "cram_reads_with_reference" "$CRAM_N" "3"
+    CRAM_SEQ=$("$VV" --tsv --no-header -f "$DATA/tiny.pileup.fa" \
+        --select QNAME,SEQ "$DATA/tiny.cram" | head -1)
+    assert_eq_file_inline "cram_seq_decoded" "$CRAM_SEQ" \
+        "$(printf 'r1\tTTTTTGTTTTTTTTTTTTTT')"
+    CRAM_R=$("$VV" --tsv --no-header -f "$DATA/tiny.pileup.fa" \
+        -r chr1:99-100 "$DATA/tiny.cram" | cut -f1 | tr '\n' ' ')
+    assert_eq_file_inline "cram_region_window" "$CRAM_R" "r1 r2 "
+    if command -v samtools >/dev/null 2>&1; then
+        CVV=$("$VV" --tsv --no-header -f "$DATA/tiny.pileup.fa" \
+            -r chr1:99-105 "$DATA/tiny.cram" | cut -f1)
+        CSAM=$(samtools view -T "$DATA/tiny.pileup.fa" "$DATA/tiny.cram" \
+            chr1:100-105 | cut -f1)
+        assert_eq_file_inline "cram_region_matches_samtools" "$CVV" "$CSAM"
+    fi
+fi
+
+# -r on a format with no region index: warn and show the whole file, rather
+# than silently pretending the filter was applied.
+NOREG=$("$VV" --color=never --count -r chr1:1-2 "$DATA/tiny.arrow" 2>&1 >/dev/null || true)
+assert_contains "region_unsupported_warns" "$NOREG" "no region index"
+assert_exit_code "region_unsupported_still_succeeds" 0 \
+    "$VV" --count -r chr1:1-2 "$DATA/tiny.arrow"
+# ...but a format that DOES support it must not emit the warning.
+REGOK=$("$VV" --color=never --count -r chr1:1-2 "$DATA/tiny.bed.gz" 2>&1 >/dev/null || true)
+refute_contains "region_supported_no_warn" "$REGOK" "no region index"
 
 # Reference skips (CIGAR N, e.g. RNA-seq introns) and deletions: the whole
 # pileup must match samtools mpileup byte-for-byte — refskips render as '>'/'<'

@@ -591,6 +591,19 @@ else:
         (HERE / "tiny.pileup.fa.fai").unlink()
     pysam.faidx(str(ref_fa))
 
+    # tiny.cram: the same three reads as tiny.bam, CRAM-encoded against
+    # tiny.pileup.fa (which was just written above, so no network reference
+    # lookup is needed). Exercises `-r` on CRAM and `-f/--fasta` as the
+    # reference for CRAM decoding — CRAM stores bases as differences from a
+    # reference, so without one htslib falls back to $REF_PATH / $REF_CACHE.
+    cram_path = HERE / "tiny.cram"
+    for stale in (cram_path, HERE / "tiny.cram.crai"):
+        if stale.exists():
+            stale.unlink()
+    pysam.view("-C", "-T", str(ref_fa), "-o", str(cram_path), str(bam_path),
+               catch_stdout=False)
+    pysam.index(str(cram_path))
+
     # tiny.splice.bam: reads with a reference skip (CIGAR N, e.g. an RNA-seq
     # intron) and a deletion (CIGAR D), on both strands, so --pileup can be
     # checked byte-for-byte against `samtools mpileup`. Refskips must render as

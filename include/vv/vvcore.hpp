@@ -197,6 +197,14 @@ public:
     // window — i.e. a full-pass result may be incomplete for the freed range.
     // Default: false (nothing is ever evicted).
     virtual bool evicted_any() const { return false; }
+    // True when this source actually restricted its scan to Config::region.
+    // Only some formats carry an index vv can query (tabix'd text, indexed
+    // BAM/CRAM/BCF, bigBed/bigWig, LociSSD, sorted Parquet with chrom/start/
+    // end columns); the rest used to ignore `-r` silently and hand back the
+    // whole file. A frontend that offers region queries checks this after
+    // open_source() and tells the user when the filter was not applied.
+    // Default: false (this format has no region index).
+    virtual bool region_applied() const { return false; }
     // Sticky status of the underlying streaming read. A source that hits an
     // I/O or parse error mid-stream records it here so callers can tell a
     // complete result apart from a silently truncated one (and exit non-zero).

@@ -337,10 +337,13 @@ $ vv --heatmap --image-mode ascii embedding.npy > grid.txt
 
 ## Features
 
-- **Range queries** — `-r chr1:1000-2000` on tabix-indexed
+- **Range queries** — `-r chr1:1000-2000` on indexed `.bam` / `.cram`
+  (`.bai` / `.csi` / `.crai`), tabix-indexed
   `.vcf.gz` / `.bed.gz` / `.gff.gz` / `.tsv.gz`, indexed BCF
   (`.csi` / `.tbi`), LociSSD Parquet, plain Parquet with chrom/start/end
   columns (auto-detected, or via `--region-cols`), and bigBed / bigWig.
+  A format with no region index warns on stderr and shows the whole file
+  instead of silently ignoring `-r`.
   Multiple windows comma-separated; open-ended (`chr1:`, `chr1:78-`)
   supported. `--regions-file foo.bed` for batch queries. `--slop N`
   pads each window. `--coords UCSC` (0-based half-open, default) or

@@ -330,6 +330,12 @@ $ vv -r chr1:78-99 file.lociss
 
 Supported sources:
 
+* **BAM / CRAM**: requires an index (`.bai` / `.csi` / `.crai`) from
+  `samtools index`. vv uses htslib's multi-region iterator, so several
+  comma-separated windows are walked in one pass. A plain `.sam` has no
+  index and is rejected rather than silently scanned. CRAM decoding needs
+  a reference: pass `-f ref.fa`, or let htslib fall back to `$REF_PATH` /
+  `$REF_CACHE`;
 * **tabix-indexed text**: `.vcf.gz`, `.bed.gz`, `.gff.gz`, `.tsv.gz`
   (requires a `.tbi`);
 * **BCF**: requires `.csi` / `.tbi` from `bcftools index`;
