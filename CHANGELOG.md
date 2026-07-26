@@ -22,6 +22,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `tiny.shapeovf.npz`; clean over 1.24 M fuzz iterations seeded with the repro.
 
 ### Added
+- **`--filter` gained regex, substring, set and null operators.** The grammar
+  was six ordering comparisons over one literal, so `--describe` could report
+  a column's null count but no mode in vv could *select* those rows, and
+  `FILTER != PASS` was expressible while `Chr in (chr1, chrX)` was not. Added:
+
+  | Operator | Meaning |
+  |---|---|
+  | `~` `!~` | ECMAScript regex, unanchored |
+  | `contains` `startswith` `endswith` | substring tests |
+  | `in (a, b, c)`, `not in (…)` | set membership; numeric columns compare numerically |
+  | `is null`, `is not null` | the column's actual nulls |
+
+  One parser edit reaches all three frontends — the CLI, the TUI `&` bar and
+  the Qt filter box. The word operators are operators only in *operator
+  position*, so a column genuinely named `in`, `is` or `contains` stays
+  filterable. A malformed regex is a parse error rather than a silently-empty
+  result: in a CLI a silent degrade is worse than a hard failure. Compiled
+  patterns are cached (evaluation runs per row), and `is null` is verified
+  against `--describe`'s own null count as an in-tree oracle.
+
 - **`--select` gained a pattern language.** Projection was one exact name per
   comma-separated token; on a 380-column AnnData `obs` table or a bigBed with
   autoSql extras that is a typing exercise, and there was no way to say

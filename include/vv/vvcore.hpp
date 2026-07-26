@@ -102,11 +102,18 @@ std::string cell_to_display_string(const arrow::Array& arr, int64_t row);
 // GUI's filter bar.
 struct FilterAtom {
     int      col_idx = -1;
-    enum Op { Eq, Ne, Lt, Le, Gt, Ge } op = Eq;
-    enum Kind { K_Int, K_Double, K_String } kind = K_String;
+    // Eq..Ge are the ordering comparisons. The rest are string / set / null
+    // predicates: Match/NotMatch take an ECMAScript regex, Contains/StartsWith/
+    // EndsWith a substring, In/NotIn a set, IsNull/NotNull no literal at all.
+    enum Op { Eq, Ne, Lt, Le, Gt, Ge,
+              Match, NotMatch, Contains, NotContains,
+              StartsWith, EndsWith, In, NotIn, IsNull, NotNull } op = Eq;
+    // K_None: the operator takes no literal (IsNull / NotNull).
+    enum Kind { K_Int, K_Double, K_String, K_None } kind = K_String;
     int64_t  i_lit = 0;
     double   f_lit = 0.0;
-    std::string s_lit;
+    std::string s_lit;                    // literal, substring, or regex source
+    std::vector<std::string> set_lits;    // In / NotIn members
 };
 struct FilterExpr {
     // OR of AND clauses; row matches iff some clause's atoms all match.

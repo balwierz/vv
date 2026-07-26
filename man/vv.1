@@ -201,8 +201,26 @@ the explicit list is honoured exactly.
 .TP
 .BI \-\-filter " expr"
 Keep only rows matching \fIexpr\fR. Grammar:
-\fB<column> <op> <value>\fR joined by \fBAND\fR / \fBOR\fR. Ops:
-\fB==\fR, \fB!=\fR, \fB<\fR, \fB<=\fR, \fB>\fR, \fB>=\fR.
+\fB<column> <op> <value>\fR joined by \fBAND\fR / \fBOR\fR. Operators:
+.RS
+.IP \(bu 2
+\fB==\fR, \fB!=\fR, \fB<\fR, \fB<=\fR, \fB>\fR, \fB>=\fR \(en compare;
+.IP \(bu 2
+\fB~\fR, \fB!~\fR \(en ECMAScript regular expression, unanchored (use
+\fB^\fR / \fB$\fR to anchor). A malformed pattern is a parse error, not a
+silently-empty result;
+.IP \(bu 2
+\fBcontains\fR, \fBstartswith\fR, \fBendswith\fR \(en substring tests;
+.IP \(bu 2
+\fBin (\fIa\fB, \fIb\fB, \fIc\fB)\fR and \fBnot in (\...)\fR \(en set
+membership. On a numeric column the members are compared numerically;
+.IP \(bu 2
+\fBis null\fR and \fBis not null\fR \(en match the column's actual nulls,
+the rows \fB\-\-describe\fR counts but nothing could previously select.
+.RE
+.IP
+The word operators are operators only in operator position, so a column
+genuinely named \fBin\fR, \fBis\fR or \fBcontains\fR stays filterable.
 Values: integer, float, single- or double-quoted string. Example:
 \fB\-\-filter 'Chromosome == "chr1" AND Score > 0.5'\fR. Evaluated
 per row after the source's own pruning (tabix region, LociSSD

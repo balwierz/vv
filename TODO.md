@@ -19,7 +19,12 @@ user-facing summary).
   (binned matrices) keeps its namespace. A pattern matching nothing, and a spec
   resolving to zero columns, are both errors — neither silently drops columns
   from a conversion.
-- `--filter "Score > 0.5"` — value-predicate filter with AND/OR.
+- `--filter "Score > 0.5"` — value-predicate filter with AND/OR, plus
+  (`feat/filter-grammar`) regex `~`/`!~`, `contains`/`startswith`/`endswith`,
+  `in (…)`/`not in (…)` and `is null`/`is not null`. One parser edit reaches
+  the CLI, the TUI `&` bar and the Qt filter box; word operators are
+  operators only in operator position, so a column named `in` stays
+  filterable.
 - `--sample N` — reservoir sampling, honours `--filter`.
 - `--unique COL[,COL,...]` — distinct value counts; top-50 per
   column with overflow indicator.

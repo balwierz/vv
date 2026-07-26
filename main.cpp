@@ -635,8 +635,15 @@ static void print_usage(const char* prog) {
         "                        !TERM      exclude everything TERM matches\n"
         "                      e.g. --select 'chr*,!*_pct'  (quote it — the\n"
         "                      shell would otherwise expand * itself)\n"
-        "  --filter <expr>     keep rows matching: <col> <op> <literal> joined by AND/OR\n"
-        "                      ops: == != < <= > >=  e.g. --filter 'Score > 0.5'\n"
+        "  --filter <expr>     keep rows matching: <col> <op> <value>, joined by\n"
+        "                      AND / OR. Operators:\n"
+        "                        == != < <= > >=   compare\n"
+        "                        ~  !~             regex (ECMAScript), unanchored\n"
+        "                        contains startswith endswith\n"
+        "                        in (a, b, c)      set membership; `not in` too\n"
+        "                        is null / is not null\n"
+        "                      e.g. --filter 'Score > 0.5'\n"
+        "                           --filter 'FILTER is null OR Gene ~ \"^BRCA\"'\n"
         "  --schema            print schema + file metadata and exit\n"
         "  --tab <name>        view a named component tab (AnnData obs/var/X,\n"
         "                      a workbook sheet, …) instead of the first; e.g.\n"
@@ -2120,18 +2127,28 @@ static std::vector<std::string> filter_tokenize(const std::string& s) {
             toks.push_back(lit);
             continue;
         }
-        // Operator characters as a chunk: == != < <= > >=
-        if (s[i]=='='||s[i]=='!'||s[i]=='<'||s[i]=='>') {
+        // `in (...)` punctuation, each its own token.
+        if (s[i]=='(' || s[i]==')' || s[i]==',') {
+            toks.push_back(std::string(1, s[i++]));
+            continue;
+        }
+        // Operator characters as a chunk: == != < <= > >= ~ !~
+        if (s[i]=='='||s[i]=='!'||s[i]=='<'||s[i]=='>'||s[i]=='~') {
             std::string op(1, s[i++]);
-            if (i < s.size() && s[i]=='=') op += s[i++];
+            // '!' pairs with '=' (!=) and with '~' (!~); the others only '='.
+            if (i < s.size() && (s[i]=='=' || (op=="!" && s[i]=='~')))
+                op += s[i++];
             toks.push_back(op);
             continue;
         }
-        // Bare word: identifier or numeric literal
+        // Bare word: identifier or numeric literal. The terminator set must
+        // include the new punctuation, or `Gene~"BRCA"` lexes as one word
+        // `Gene~` and `in("A","B")` as a single token.
         std::string w;
         while (i < s.size() && !std::isspace((unsigned char)s[i])
                && s[i]!='"' && s[i]!='\''
-               && s[i]!='=' && s[i]!='!' && s[i]!='<' && s[i]!='>')
+               && s[i]!='=' && s[i]!='!' && s[i]!='<' && s[i]!='>'
+               && s[i]!='~' && s[i]!='(' && s[i]!=')' && s[i]!=',')
             w += s[i++];
         if (!w.empty()) toks.push_back(w);
     }
@@ -2145,7 +2162,26 @@ static bool filter_parse_op(const std::string& t, FilterAtom::Op* op) {
     if (t == "<=") { *op = FilterAtom::Le; return true; }
     if (t == ">")  { *op = FilterAtom::Gt; return true; }
     if (t == ">=") { *op = FilterAtom::Ge; return true; }
+    if (t == "~")  { *op = FilterAtom::Match;    return true; }
+    if (t == "!~") { *op = FilterAtom::NotMatch; return true; }
     return false;
+}
+
+// Case-insensitive token compare, used for the word operators and AND / OR.
+static bool filter_tok_is(const std::string& a, const char* b) {
+    if (a.size() != std::strlen(b)) return false;
+    for (size_t k = 0; k < a.size(); ++k)
+        if (std::tolower((unsigned char)a[k]) != std::tolower((unsigned char)b[k]))
+            return false;
+    return true;
+}
+
+// Strip surrounding quotes from a literal token, if present.
+static std::string filter_unquote(const std::string& lit) {
+    if (lit.size() >= 2 && (lit.front() == '"' || lit.front() == '\'')
+        && lit.front() == lit.back())
+        return lit.substr(1, lit.size() - 2);
+    return lit;
 }
 
 // Parse the user's `--filter` expression. Returns true on success and
@@ -2166,7 +2202,7 @@ bool parse_filter_expr(const std::string& expr,
     out->groups.emplace_back();
     size_t i = 0;
     while (i < toks.size()) {
-        if (i + 3 > toks.size()) {
+        if (i + 2 > toks.size()) {
             *err = "expected '<column> <op> <value>' near token '" + toks[i] + "'";
             return false;
         }
@@ -2176,33 +2212,130 @@ bool parse_filter_expr(const std::string& expr,
             *err = "unknown column '" + toks[i] + "' in filter";
             return false;
         }
-        if (!filter_parse_op(toks[i+1], &a.op)) {
-            *err = "expected an operator (== != < <= > >=), got '" + toks[i+1] + "'";
+        // Word operators are operators only in operator position, so a column
+        // genuinely named `in`, `is` or `contains` stays filterable.
+        const std::string& opt = toks[i + 1];
+        size_t next = 0;                       // index just past this atom
+
+        auto need_literal = [&](size_t at, std::string* dst) {
+            if (at >= toks.size()) {
+                *err = "expected a value after '" + opt + "'";
+                return false;
+            }
+            *dst = filter_unquote(toks[at]);
+            return true;
+        };
+
+        if (filter_tok_is(opt, "is")) {
+            // is null | is not null
+            if (i + 2 < toks.size() && filter_tok_is(toks[i+2], "null")) {
+                a.op = FilterAtom::IsNull; a.kind = FilterAtom::K_None;
+                next = i + 3;
+            } else if (i + 3 < toks.size() && filter_tok_is(toks[i+2], "not")
+                       && filter_tok_is(toks[i+3], "null")) {
+                a.op = FilterAtom::NotNull; a.kind = FilterAtom::K_None;
+                next = i + 4;
+            } else {
+                *err = "expected 'is null' or 'is not null'";
+                return false;
+            }
+        } else if (filter_tok_is(opt, "in") ||
+                   (filter_tok_is(opt, "not") && i + 2 < toks.size() &&
+                    filter_tok_is(toks[i+2], "in"))) {
+            // in (a, b, c) | not in (a, b, c)
+            bool negate = filter_tok_is(opt, "not");
+            size_t p = i + (negate ? 3 : 2);
+            a.op   = negate ? FilterAtom::NotIn : FilterAtom::In;
+            a.kind = FilterAtom::K_String;
+            if (p >= toks.size() || toks[p] != "(") {
+                *err = "expected '(' after 'in'";
+                return false;
+            }
+            ++p;
+            while (p < toks.size() && toks[p] != ")") {
+                if (toks[p] == ",") { ++p; continue; }
+                a.set_lits.push_back(filter_unquote(toks[p]));
+                ++p;
+            }
+            if (p >= toks.size()) { *err = "unterminated 'in (' list"; return false; }
+            if (a.set_lits.empty()) { *err = "'in ()' needs at least one value"; return false; }
+            next = p + 1;                      // past ')'
+        } else if (filter_tok_is(opt, "contains") ||
+                   filter_tok_is(opt, "startswith") ||
+                   filter_tok_is(opt, "endswith")) {
+            a.op = filter_tok_is(opt, "contains")   ? FilterAtom::Contains
+                 : filter_tok_is(opt, "startswith") ? FilterAtom::StartsWith
+                                                    : FilterAtom::EndsWith;
+            a.kind = FilterAtom::K_String;
+            if (!need_literal(i + 2, &a.s_lit)) return false;
+            next = i + 3;
+        } else if (filter_parse_op(opt, &a.op)) {
+            if (i + 2 >= toks.size()) {
+                *err = "expected a value after '" + opt + "'";
+                return false;
+            }
+            const std::string& lit = toks[i+2];
+            if (a.op == FilterAtom::Match || a.op == FilterAtom::NotMatch) {
+                // The pattern is always text, never a number.
+                a.kind  = FilterAtom::K_String;
+                a.s_lit = filter_unquote(lit);
+                try { std::regex probe(a.s_lit, std::regex::ECMAScript); (void)probe; }
+                catch (const std::regex_error& e) {
+                    *err = "bad regex '" + a.s_lit + "': " + e.what();
+                    return false;
+                }
+            } else if (lit.size() >= 2 &&
+                       (lit.front() == '"' || lit.front() == '\'') &&
+                       lit.front() == lit.back()) {
+                a.kind  = FilterAtom::K_String;
+                a.s_lit = lit.substr(1, lit.size() - 2);
+            } else if (lit.find_first_of(".eE") != std::string::npos) {
+                try { a.f_lit = std::stod(lit); }
+                catch (...) { *err = "bad number '" + lit + "'"; return false; }
+                a.kind = FilterAtom::K_Double;
+            } else {
+                try { a.i_lit = std::stoll(lit); }
+                catch (...) { *err = "bad integer '" + lit + "'"; return false; }
+                a.kind = FilterAtom::K_Int;
+            }
+            next = i + 3;
+        } else {
+            *err = "expected an operator (== != < <= > >= ~ !~ contains "
+                   "startswith endswith in 'is null'), got '" + opt + "'";
             return false;
         }
-        const std::string& lit = toks[i+2];
-        if (lit.size() >= 2 && (lit.front() == '"' || lit.front() == '\'')
-            && lit.front() == lit.back()) {
-            a.kind  = FilterAtom::K_String;
-            a.s_lit = lit.substr(1, lit.size() - 2);
-        } else if (lit.find_first_of(".eE") != std::string::npos) {
-            try { a.f_lit = std::stod(lit); }
-            catch (...) { *err = "bad number '" + lit + "'"; return false; }
-            a.kind = FilterAtom::K_Double;
-        } else {
-            try { a.i_lit = std::stoll(lit); }
-            catch (...) { *err = "bad integer '" + lit + "'"; return false; }
-            a.kind = FilterAtom::K_Int;
-        }
+
         out->groups.back().push_back(std::move(a));
-        i += 3;
-        if (i == toks.size()) break;
+        i = next;
+        if (i >= toks.size()) break;
         if (eq_ci(toks[i], "and")) { ++i; continue; }
         if (eq_ci(toks[i], "or"))  { ++i; out->groups.emplace_back(); continue; }
         *err = "expected AND / OR, got '" + toks[i] + "'";
         return false;
     }
     return true;
+}
+
+// Walk a ChunkedArray to the array holding `row`, returning it plus the
+// offset inside it. One copy of the loop that cell_as_int / cell_as_double /
+// cell_as_string / cell_is_null all used to carry separately.
+static const arrow::Array* locate_cell(const arrow::Table& tbl, int col,
+                                       int64_t row, int64_t* off) {
+    auto chunked = tbl.column(col);
+    int64_t r = row;
+    for (const auto& ch : chunked->chunks()) {
+        if (r < ch->length()) { *off = r; return ch.get(); }
+        r -= ch->length();
+    }
+    return nullptr;
+}
+
+// True when the cell exists and holds a null. Distinct from "could not read
+// it": `is null` must match an actual null, not an unsupported type.
+static bool cell_is_null(const arrow::Table& tbl, int col, int64_t row) {
+    int64_t off = 0;
+    const arrow::Array* a = locate_cell(tbl, col, row, &off);
+    return a && a->IsNull(off);
 }
 
 // Get the int64 / double / string value of cell (col_idx, row) in `tbl`.
@@ -2303,10 +2436,89 @@ static int filter_col_in_table(const FilterAtom& a,
     return -1;
 }
 
+// Compile-once cache for `~` / `!~`. eval_atom runs per row — recompiling the
+// pattern for every cell would dominate the scan. thread_local because the Qt
+// frontend evaluates filters on a worker thread.
+static const std::regex* filter_regex_for(const std::string& pat) {
+    thread_local std::map<std::string, std::regex> cache;
+    auto it = cache.find(pat);
+    if (it == cache.end()) {
+        try {
+            it = cache.emplace(pat, std::regex(pat, std::regex::ECMAScript)).first;
+        } catch (const std::regex_error&) {
+            return nullptr;   // rejected at parse time; belt and braces
+        }
+    }
+    return &it->second;
+}
+
 static bool eval_atom(const arrow::Table& tbl, int64_t row, const FilterAtom& a,
                        const std::vector<int>& read_indices) {
     int tcol = filter_col_in_table(a, read_indices);
     if (tcol < 0) return false;
+
+    // Null predicates come first: every other branch treats a null as "no
+    // match", which is right for them and wrong here.
+    if (a.op == FilterAtom::IsNull)  return  cell_is_null(tbl, tcol, row);
+    if (a.op == FilterAtom::NotNull) {
+        int64_t off = 0;
+        const arrow::Array* arr = locate_cell(tbl, tcol, row, &off);
+        return arr && !arr->IsNull(off);
+    }
+
+    // String / set predicates read the cell as text whatever the literal
+    // looked like, so `Chr in (1,2)` works on a string chrom column.
+    switch (a.op) {
+        case FilterAtom::Match:
+        case FilterAtom::NotMatch: {
+            std::string s;
+            if (!cell_as_string(tbl, tcol, row, &s)) return false;
+            const std::regex* re = filter_regex_for(a.s_lit);
+            if (!re) return false;
+            bool hit = std::regex_search(s, *re);
+            return a.op == FilterAtom::Match ? hit : !hit;
+        }
+        case FilterAtom::Contains:
+        case FilterAtom::NotContains: {
+            std::string s;
+            if (!cell_as_string(tbl, tcol, row, &s)) return false;
+            bool hit = s.find(a.s_lit) != std::string::npos;
+            return a.op == FilterAtom::Contains ? hit : !hit;
+        }
+        case FilterAtom::StartsWith: {
+            std::string s;
+            if (!cell_as_string(tbl, tcol, row, &s)) return false;
+            return s.rfind(a.s_lit, 0) == 0;
+        }
+        case FilterAtom::EndsWith: {
+            std::string s;
+            if (!cell_as_string(tbl, tcol, row, &s)) return false;
+            return s.size() >= a.s_lit.size() &&
+                   s.compare(s.size() - a.s_lit.size(), a.s_lit.size(),
+                             a.s_lit) == 0;
+        }
+        case FilterAtom::In:
+        case FilterAtom::NotIn: {
+            std::string s;
+            if (!cell_as_string(tbl, tcol, row, &s)) {
+                // Numeric column: compare the rendered value instead, so
+                // `Start in (100, 200)` behaves as written.
+                double d;
+                if (!cell_as_double(tbl, tcol, row, &d)) return false;
+                for (const auto& m : a.set_lits) {
+                    try { if (std::stod(m) == d)
+                              return a.op == FilterAtom::In; }
+                    catch (...) {}
+                }
+                return a.op == FilterAtom::NotIn;
+            }
+            for (const auto& m : a.set_lits)
+                if (m == s) return a.op == FilterAtom::In;
+            return a.op == FilterAtom::NotIn;
+        }
+        default: break;   // fall through to the ordering comparisons
+    }
+
     if (a.kind == FilterAtom::K_String) {
         std::string s;
         if (!cell_as_string(tbl, tcol, row, &s)) return false;
@@ -2318,6 +2530,7 @@ static bool eval_atom(const arrow::Table& tbl, int64_t row, const FilterAtom& a,
             case FilterAtom::Le: return c <= 0;
             case FilterAtom::Gt: return c >  0;
             case FilterAtom::Ge: return c >= 0;
+            default: break;   // string/set/null ops handled above
         }
     } else if (a.kind == FilterAtom::K_Int) {
         int64_t v;
@@ -2329,6 +2542,7 @@ static bool eval_atom(const arrow::Table& tbl, int64_t row, const FilterAtom& a,
                 case FilterAtom::Le: return v <= a.i_lit;
                 case FilterAtom::Gt: return v >  a.i_lit;
                 case FilterAtom::Ge: return v >= a.i_lit;
+                default: break;   // handled above
             }
         }
         // Fall back to double if the column isn't integral.
@@ -2342,6 +2556,7 @@ static bool eval_atom(const arrow::Table& tbl, int64_t row, const FilterAtom& a,
             case FilterAtom::Le: return d <= L;
             case FilterAtom::Gt: return d >  L;
             case FilterAtom::Ge: return d >= L;
+            default: break;   // handled above
         }
     } else {
         double d;
@@ -2353,6 +2568,7 @@ static bool eval_atom(const arrow::Table& tbl, int64_t row, const FilterAtom& a,
             case FilterAtom::Le: return d <= a.f_lit;
             case FilterAtom::Gt: return d >  a.f_lit;
             case FilterAtom::Ge: return d >= a.f_lit;
+            default: break;   // handled above
         }
     }
     return false;
