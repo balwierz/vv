@@ -160,21 +160,21 @@ picker. Key bindings (also visible in-app via `H` / `F1`):
 
 | Key            | Action                                                  |
 |----------------|---------------------------------------------------------|
-| arrows / hjkl  | scroll one row / column                                 |
+| arrows / hjkl  | move the cell cursor one row / column (view follows)    |
 | Space / PgDn / b / PgUp | scroll one page                                |
 | g / G          | top / bottom of file                                    |
-| Enter          | row-detail pane (every field, untruncated)              |
+| Enter          | detail pane for the cursor's row (every field, untruncated) |
 | `/` / `?`      | search forward / backward (case-insensitive regex)      |
 | n / N          | next / previous match (direction-aware)                 |
-| `,` / `.`      | narrow / widen the leftmost visible column              |
+| `,` / `.`      | narrow / widen the column under the cursor              |
 | z              | freeze first column                                     |
 | S              | column-stats popup (count / nulls / min / max / mean / distinct) |
-| s              | sort by leftmost visible column (toggle asc/desc; `u` clears) |
+| s              | sort by the cursor's column (toggle asc/desc; `u` clears) |
 | `&`            | live filter — same grammar as `--filter`                |
 | c              | show / hide columns overlay                             |
-| y              | copy current cell to the clipboard via OSC52            |
+| y              | copy the cell under the cursor via OSC52                |
 | mouse wheel    | scroll rows                                             |
-| mouse click    | column header → sort; data row → scroll to top          |
+| mouse click    | column header → sort; data cell → put the cursor there  |
 | mouse 2-click  | data row → open detail pane (= Enter)                   |
 | Shift + drag   | select text for the OS clipboard (terminal-side)        |
 | T              | pick a color theme (overlay; saved to `~/.config/vv/config`) |

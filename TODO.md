@@ -74,6 +74,12 @@ user-facing summary).
 - Marks & recall — vim-style `m{a-z}` / `'{a-z}`.
 
 ### Done
+- Cell cursor (`feat/tui-cursor`) — `hjkl`/arrows move a highlighted cell and
+  the viewport follows, with a vim-style `scrolloff` (config key). Every
+  per-cell action (`S`, `s`, `y`, `Enter`, `,`/`.`) now acts on the cursor
+  instead of the top-left corner; a mouse click positions it. Per-tab, so it
+  survives `Tab`. Unlocks the corner-relative items above (scoped search,
+  column reordering, freeze-through-cursor).
 - Stats popup (`S`) — count/nulls/min/max/mean/distinct for the
   active column.
 - Sort by column (`s` toggles asc/desc; `u` clears).

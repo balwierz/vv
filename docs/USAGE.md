@@ -132,16 +132,16 @@ $ vv tests/data/tiny.lociss        # default when stdout is a terminal
 
 | Key            | Action                                                  |
 |----------------|---------------------------------------------------------|
-| `h j k l` / ←↓↑→ | scroll one column / row                              |
+| `h j k l` / ←↓↑→ | move the cell cursor (the viewport follows it)      |
 | `Space` / `PgDn` / `b` / `PgUp` | scroll one page                       |
 | `g` / `G`      | top / bottom of file                                    |
-| `Enter`        | open detail pane for the top-visible row                |
+| `Enter`        | open the detail pane for the cursor's row               |
 | `/` / `?`      | search forward / backward (case-insensitive ECMAScript regex with literal fallback) |
 | `n` / `N`      | next / previous match (direction-aware)                 |
-| `,` / `.`      | narrow / widen the leftmost visible column              |
+| `,` / `.`      | narrow / widen the column under the cursor              |
 | `z`            | toggle frozen first column                              |
 | `S`            | per-column stats popup (count, nulls, min, max, mean, distinct) |
-| `s`            | sort by the leftmost visible column (toggle asc / desc) |
+| `s`            | sort by the cursor's column (toggle asc / desc)         |
 | `u`            | undo / clear the active sort                            |
 | `&`            | live filter: hide non-matching rows (empty input clears)|
 | `c`            | open the show/hide columns picker                       |
@@ -159,8 +159,8 @@ All visible matches are highlighted; the n/N target gets reverse video.
 **`S` (stats popup).** Computes count, null count, min, max, mean (numeric
 columns), and distinct-value count (strings, capped at 16) for the active
 column. Triggers a full-file scan with a progress line in the status bar.
-Any key dismisses the overlay. The active column is the leftmost visible
-column — the same column that `,` and `.` resize.
+Any key dismisses the overlay. The active column is the one under the cell
+cursor — the same column that `,` and `.` resize.
 
 **`s` (sort).** Builds an in-memory permutation of the source rows ordered
 by the active column. Numeric types sort by raw value, others by string

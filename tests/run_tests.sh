@@ -1758,6 +1758,22 @@ else
     echo "  skip  tui_wide_column_not_blank (python3 not found)"
 fi
 
+# The TUI has a cell cursor: j/k/h/l move a highlighted cell and the per-cell
+# actions act on it, rather than every one of them reading the top-left corner.
+# The discriminating check is that moving the cursor no longer drags the
+# viewport (verified by running this harness against a pre-cursor build, where
+# it fails with "moving the cursor scrolled the viewport: Col 4-5/5").
+if command -v python3 >/dev/null 2>&1; then
+    if timeout 120 python3 "$HERE/tui_cursor_check.py" "$VV" \
+            "$DATA/tiny.parquet" "$DATA/tiny.bed"; then
+        PASS=$((PASS+1)); echo "  ok    tui_cell_cursor"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_cell_cursor"
+    fi
+else
+    echo "  skip  tui_cell_cursor (python3 not found)"
+fi
+
 # A full-file pass (sort / filter / search / stats) that runs after a
 # forward-only stream has released batches can only see part of the file. It
 # used to report that partial answer as if it were complete — evicted_any()

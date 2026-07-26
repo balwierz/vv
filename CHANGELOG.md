@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **A cell cursor in the TUI.** There wasn't one. `top_row_`/`left_col_` were
+  the whole story, so every per-cell action read the top-left corner: the
+  stats popup (`S`), sort (`s`), yank (`y`), the detail pane (`Enter`) and the
+  width keys (`,`/`.`) all operated on whatever happened to be in that corner,
+  and the help text had to say "the leftmost visible column". `h j k l` /
+  arrows now move a highlighted cell and the viewport follows it, with a
+  vim-style `scrolloff` (3 rows by default, settable in
+  `~/.config/vv/config`). A mouse click puts the cursor on the clicked cell
+  instead of scrolling that row to the top — the old behaviour shipped as a
+  comment describing itself as a workaround. The cursor is per-tab, so it
+  survives `Tab` switching.
+
 ### Fixed
 - **NumPy shape sub-product overflow (found by fuzzing).** A `.npy` header can
   declare an empty array — any dimension zero — while its other dimensions are
