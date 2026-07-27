@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`--formats`: one authoritative list of what vv reads.** The same
+  information was restated in seven places — `--help`, README, `docs/USAGE.md`,
+  the man page, three shell completions and four KDE manifests — and they had
+  drifted. `vv --formats` prints a table with capability columns (gz variants,
+  region queries, component tabs, streaming vs random access); `--formats
+  --json` is the machine-readable form, and `tests/run_tests.sh` now diffs the
+  completions against it, so the next divergence fails CI instead of shipping.
+  A second check asserts every extension the registry claims actually has a
+  dispatch branch.
+- **`--schema --json` and `--count --json`.** Both flags were parsed and then
+  silently ignored: `--schema` printed the human table and `--count` a bare
+  number. The only structured shape was `--describe --json`, which scans every
+  row — so automation reached for the most expensive mode just to learn the
+  column names. `rows` is **null** when the source has not been fully scanned;
+  draining a stream to produce a number would defeat the point of a cheap
+  metadata mode, and `--count` is there when the number is what you want.
+  Hidden columns (LociSSD's derived `MaxEndSoFar`) are reported and flagged.
+- **`--list-columns` and `--list-tabs`.** One name per line, for completions
+  and pipelines. `--list-tabs` is the enumerator the `--tab` error already
+  printed, promoted from an error path to a success path.
+- **`.npy` files open.** README has documented `.npy` since the NumPy viewer
+  landed, but no dispatch branch ever existed — `vv x.npy` answered
+  "unrecognised file extension". Building the registry surfaced it. A bare
+  `.npy` is now wrapped as a one-entry archive and read through the same
+  (fuzz-hardened) parser as an in-archive member.
+
+### Fixed
+- **`--help` listed neither `.arrow` nor `.feather`** — two first-class
+  formats, dispatched since they were added and documented everywhere else.
+  Also adds the missing `.fods`, `.ffn` and `.frn`.
+- **The completions were missing `.npz` and `.fods`** in all three shells;
+  they had been copy-pasted once and frozen at a pre-`.npz` revision.
+- **The KDE desktop entry claimed `.xls`.** vv has never supported the legacy
+  binary Excel format — the man page says so explicitly — so Dolphin was
+  offering `vvg` for files it cannot open. Claim removed.
+
+
+### Added
 - **A cell cursor in the TUI.** There wasn't one. `top_row_`/`left_col_` were
   the whole story, so every per-cell action read the top-left corner: the
   stats popup (`S`), sort (`s`), yank (`y`), the detail pane (`Enter`) and the

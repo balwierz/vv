@@ -583,12 +583,163 @@ static int effective_decode_threads(const Config& cfg) {
 
 static constexpr const char* kVersion = "1.15.0";
 
+// ── Format registry ──────────────────────────────────────────────────────────
+//
+// One authoritative list of what vv reads. Before this table the same
+// information was restated in seven places — print_usage(), README.md,
+// docs/USAGE.md, man/vv.1, three shell completions and four KDE manifests —
+// and they had already drifted apart: `.npz` was missing from all three
+// completions, `.arrow`/`.feather` from --help entirely, `.fods` and
+// `.ffn`/`.frn` from most of them, while README documented `.npy` and the
+// KDE .desktop claimed `.xls` — neither of which vv can open.
+//
+// `--formats [--json]` prints this table, and tests/run_tests.sh diffs the
+// completions against it so the next drift fails CI instead of shipping.
+//
+// exts: canonical spelling, space-separated. Matching is case-insensitive
+// (fends_ci), so `.bigBed` also matches `.bigbed` — but shell globs are
+// case-sensitive, which is why the completion generator emits both.
+struct FormatInfo {
+    const char* name;      // human label
+    const char* exts;      // space-separated, leading dot, canonical case
+    const char* reader;    // the source class it dispatches to
+    bool gz;               // .gz variants dispatched too
+    bool region;           // -r honoured (see `region_note` for the condition)
+    bool tabs;             // expands into component tabs (--tab / TUI tabs)
+    bool streaming;        // forward-only reader (vs random access)
+    bool magic;            // also detected by magic bytes on an unknown ext
+    const char* region_note;
+};
+
+static const FormatInfo kFormats[] = {
+  {"Apache Parquet", ".parquet", "ParquetSource",
+   false, true,  false, false, true,  "needs chrom/start/end columns (--region-cols)"},
+  {"LociSSD", ".lociss", "LocissV4Source / ParquetSource",
+   false, true,  false, false, true,  "v3 via row-group stats, v4 via the zone map"},
+  {"Arrow IPC", ".arrow", "IpcSource",
+   false, false, false, false, true,  ""},
+  {"Feather", ".feather", "IpcSource",
+   false, false, false, false, true,  ""},
+  {"Apache ORC", ".orc", "OrcSource",
+   false, false, false, false, false, ""},
+  {"BAM / CRAM alignments", ".bam .cram", "BamSource / BamPileupSource",
+   false, true,  false, true,  false, "needs a .bai/.csi/.crai index"},
+  {"SAM alignments (text)", ".sam", "DelimitedSource",
+   false, false, false, true,  false, "no index; convert with `samtools view -b`"},
+  {"BCF", ".bcf", "BcfSource",
+   false, true,  false, true,  false, "needs a .csi/.tbi index"},
+  {"VCF", ".vcf", "DelimitedSource",
+   true,  true,  false, true,  false, "bgzip + tabix"},
+  {"GFF / GFF3 / GTF", ".gff .gff3 .gtf", "DelimitedSource",
+   true,  true,  false, true,  false, "bgzip + tabix"},
+  {"BED", ".bed", "DelimitedSource",
+   true,  true,  false, true,  false, "bgzip + tabix"},
+  {"ENCODE peak / signal", ".narrowPeak .broadPeak .gappedPeak .bedGraph .bg .tagAlign",
+   "DelimitedSource", true, true, false, true, false, "bgzip + tabix"},
+  {"Delimited text", ".tsv .csv", "DelimitedSource",
+   true,  true,  false, true,  false, "bgzip + tabix"},
+  {"samtools mpileup", ".pileup .mpileup .pile", "DelimitedSource",
+   true,  true,  false, true,  false, "bgzip + tabix"},
+  {"PAF (minimap2)", ".paf", "DelimitedSource",
+   true,  false, false, true,  false, ""},
+  {"FASTA", ".fa .fasta .fna .faa .ffn .frn", "FastxSource",
+   true,  false, false, true,  false, ""},
+  {"FASTQ", ".fq .fastq", "FastxSource",
+   true,  false, false, true,  false, ""},
+  {"UCSC bigBed / bigWig", ".bb .bigBed .bw .bigWig", "BigSource",
+   false, true,  false, true,  false, "native block-level overlap; no sidecar index"},
+  {"UCSC 2bit", ".2bit", "TwoBitSource",
+   false, false, false, false, false, ""},
+  {"SQLite", ".sqlite .sqlite3 .db", "SqliteSource",
+   false, false, true,  true,  false, ""},
+  {"Excel workbook", ".xlsx .xlsm", "XlsxSource",
+   false, false, true,  false, false, ""},
+  {"OpenDocument spreadsheet", ".ods .fods", "OdsSource",
+   false, false, true,  false, false, ""},
+  {"HDF5 / AnnData / Loom", ".h5ad .h5 .hdf5 .loom", "Hdf5Source",
+   false, false, true,  false, false, ""},
+  {"NumPy archive", ".npz", "NpzSource",
+   false, false, true,  false, false, ""},
+  {"NumPy array", ".npy", "NpzSource",
+   false, false, false, false, false, ""},
+  {"Markdown", ".md .markdown .mdown .mkd", "md4c renderer",
+   false, false, false, false, false, ""},
+};
+static constexpr size_t kNumFormats = sizeof(kFormats) / sizeof(kFormats[0]);
+
+// Split a FormatInfo::exts blob into individual extensions.
+static std::vector<std::string> format_ext_list(const FormatInfo& f) {
+    std::vector<std::string> out;
+    std::string cur;
+    for (const char* p = f.exts; ; ++p) {
+        if (*p == ' ' || *p == '\0') {
+            if (!cur.empty()) out.push_back(cur);
+            cur.clear();
+            if (*p == '\0') break;
+        } else {
+            cur += *p;
+        }
+    }
+    return out;
+}
+
+// Defined with the other JSON helpers further down.
+static void json_emit_string(const std::string& v);
+
+// `--formats` / `--formats --json`: print the registry. The JSON form is what
+// the CI drift check and the completion generator consume.
+static void print_formats(bool as_json) {
+    if (as_json) {
+        std::printf("[");
+        for (size_t i = 0; i < kNumFormats; ++i) {
+            const FormatInfo& f = kFormats[i];
+            if (i) std::printf(", ");
+            std::printf("{\"name\": ");
+            json_emit_string(f.name);
+            std::printf(", \"reader\": ");
+            json_emit_string(f.reader);
+            std::printf(", \"extensions\": [");
+            auto exts = format_ext_list(f);
+            for (size_t k = 0; k < exts.size(); ++k) {
+                if (k) std::printf(", ");
+                json_emit_string(exts[k]);
+            }
+            std::printf("], \"gz\": %s", f.gz ? "true" : "false");
+            std::printf(", \"region\": %s", f.region ? "true" : "false");
+            std::printf(", \"tabs\": %s", f.tabs ? "true" : "false");
+            std::printf(", \"streaming\": %s", f.streaming ? "true" : "false");
+            std::printf(", \"magic\": %s", f.magic ? "true" : "false");
+            if (*f.region_note) {
+                std::printf(", \"region_note\": ");
+                json_emit_string(f.region_note);
+            }
+            std::printf("}");
+        }
+        std::printf("]\n");
+        return;
+    }
+    size_t w = 4;
+    for (const auto& f : kFormats) w = std::max(w, std::strlen(f.name));
+    std::printf("%-*s  %-8s %-6s %-4s %-9s %s\n",
+                (int)w, "Format", "gz", "region", "tabs", "streaming", "extensions");
+    for (const auto& f : kFormats) {
+        std::printf("%-*s  %-8s %-6s %-4s %-9s %s\n",
+                    (int)w, f.name,
+                    f.gz     ? "yes" : "-",
+                    f.region ? "yes" : "-",
+                    f.tabs   ? "yes" : "-",
+                    f.streaming ? "stream" : "random",
+                    f.exts);
+    }
+}
+
 static void print_usage(const char* prog) {
     std::fprintf(stderr,
         "vv -- universal genomic file viewer\n"
         "\nUsage: %s [options] <file>\n"
         "\nSupported formats:\n"
         "  .parquet\n"
+        "  .arrow  .feather          Arrow IPC / Feather (v1 and v2)\n"
         "  .lociss                     LociSSD sorted-interval — v3 Parquet (manifest\n"
         "                              in KV) or v4 \"colblock\" binary; dispatched by magic\n"
         "  .bam  .cram                  binary/compressed sequence alignments (htslib)\n"
@@ -604,19 +755,24 @@ static void print_usage(const char* prog) {
         "  .2bit                       UCSC 2bit (sequence index: name/length/blocks)\n"
         "  .sqlite  .sqlite3  .db      SQLite database (each table → one TUI tab)\n"
         "  .xlsx  .xlsm                Excel spreadsheet (each sheet → one TUI tab)\n"
-        "  .ods                        OpenDocument spreadsheet (each sheet → one TUI tab)\n"
+        "  .ods  .fods                OpenDocument spreadsheet (each sheet → one\n"
+        "                              TUI tab; .fods is the flat XML form)\n"
         "  .h5ad                       AnnData (single-cell) — obs / var / X / obsm tabs\n"
         "  .h5  .hdf5  .loom           generic HDF5 — hierarchy tab + per-dataset tabs\n"
         "  .npz                        NumPy archive — summary tab + per-array tabs (3-D+ scrubs via [/])\n"
+        "  .npy                        NumPy single array\n"
         "  .orc                        Apache ORC (columnar; one stripe → one chunk)\n"
         "  .md  .markdown  .mdown  .mkd\n"
         "                              CommonMark + GFM markdown (renders as ANSI;\n"
         "                              GFM tables routed through the table renderer)\n"
-        "  .fa  .fasta  .fna  .faa     sequences (FASTA, plus .gz)\n"
+        "  .fa  .fasta  .fna  .faa  .ffn  .frn\n"
+        "                              sequences (FASTA, plus .gz)\n"
         "  .fq  .fastq                 sequencing reads (FASTQ, plus .gz)\n"
         "  .bcf                        binary VCF (htslib)\n"
         "  .paf  .paf.gz               minimap2 pairwise alignments\n"
         "  -                           read text format from stdin (auto-gunzip)\n"
+        "  (`vv --formats` prints this table with capability columns;\n"
+        "   add --json for the machine-readable form)\n"
         "  (unknown extensions: sniffed by magic bytes / delimiter)\n"
         "\nInteractive viewer (default when stdout is a terminal):\n"
         "  -i / --interactive  open the ncurses row browser\n"
@@ -653,6 +809,11 @@ static void print_usage(const char* prog) {
         "                      e.g. --filter 'Score > 0.5'\n"
         "                           --filter 'FILTER is null OR Gene ~ \"^BRCA\"'\n"
         "  --schema            print schema + file metadata and exit\n"
+        "                      (with --json: machine-readable; `rows` is null\n"
+        "                      when the file has not been fully scanned)\n"
+        "  --list-columns      column names, one per line\n"
+        "  --list-tabs         component tab labels, one per line\n"
+        "  --formats           the supported-format table (add --json)\n"
         "  --tab <name>        view a named component tab (AnnData obs/var/X,\n"
         "                      a workbook sheet, …) instead of the first; e.g.\n"
         "                      `vv cells.h5ad --tab obs -n 20`\n"
@@ -825,6 +986,12 @@ static Config parse_args(int argc, char** argv) {
             cfg.arrow_out = argv[++i];
         } else if (!std::strcmp(argv[i], "--compression") && i + 1 < argc) {
             cfg.compression = argv[++i];
+        } else if (!std::strcmp(argv[i], "--list-columns")) {
+            cfg.list_columns = true;
+        } else if (!std::strcmp(argv[i], "--list-tabs")) {
+            cfg.list_tabs = true;
+        } else if (!std::strcmp(argv[i], "--formats")) {
+            cfg.list_formats = true;
         } else if (!std::strcmp(argv[i], "--schema")) {
             cfg.schema_only = true;
         } else if (!std::strcmp(argv[i], "--describe")) {
@@ -924,6 +1091,8 @@ static Config parse_args(int argc, char** argv) {
             print_usage(argv[0]); std::exit(1);
         }
     }
+    // --formats describes vv itself, so it takes no input file.
+    if (cfg.list_formats) return cfg;
     if (cfg.path.empty()) { print_usage(argv[0]); std::exit(1); }
     // NO_COLOR (https://no-color.org): any non-empty value disables colour,
     // unless the user explicitly chose --color=always/never (those win, per the
@@ -10437,6 +10606,9 @@ static std::string load_archive(const std::string& path,
 // Spec for one tab: either the summary or one named array. Slice index
 // applies only to 3-D+ arrays; otherwise -1.
 struct OpenSpec {
+    // A bare .npy has no container, so its footer says NPY rather than NPZ
+    // and it has no summary tab.
+    bool        bare_npy   = false;
     bool        is_summary = false;
     std::string entry_name;          // key into archive
     int64_t     slice_idx = 0;
@@ -10552,7 +10724,8 @@ class NpzSource : public WorkbookSource {
             if (!col) return "NPZ: dtype not supported for '" + e->name + "'";
             auto schema = arrow::schema({arrow::field(e->name, arrow_dt(h.dtype_id))});
             *tbl = arrow::Table::Make(schema, {col}, 1);
-            *footer = "Format: NumPy NPZ  |  Array: " + e->name +
+            *footer = std::string("Format: NumPy ") + (spec.bare_npy ? "NPY" : "NPZ") +
+                      "  |  Array: " + e->name +
                       "  |  scalar  |  dtype: " + h.dtype_str;
             return "";
         }
@@ -10560,7 +10733,8 @@ class NpzSource : public WorkbookSource {
         if (h.shape.size() == 1) {
             *tbl = build_1d_table(e->name, h.dtype_id, data, h.shape[0]);
             if (!*tbl) return "NPZ: dtype not supported for '" + e->name + "'";
-            *footer = "Format: NumPy NPZ  |  Array: " + e->name +
+            *footer = std::string("Format: NumPy ") + (spec.bare_npy ? "NPY" : "NPZ") +
+                      "  |  Array: " + e->name +
                       "  |  " + shape_str(h.shape) +
                       "  |  dtype: " + h.dtype_str;
             return "";
@@ -10571,7 +10745,8 @@ class NpzSource : public WorkbookSource {
             *tbl = build_2d_table(h.dtype_id, data, h.shape[0], h.shape[1],
                                    h.item_size, h.fortran_order, &full_c);
             if (!*tbl) return "NPZ: dtype not supported for '" + e->name + "'";
-            *footer = "Format: NumPy NPZ  |  Array: " + e->name +
+            *footer = std::string("Format: NumPy ") + (spec.bare_npy ? "NPY" : "NPZ") +
+                      "  |  Array: " + e->name +
                       "  |  " + shape_str(h.shape) +
                       "  |  dtype: " + h.dtype_str;
             if ((*tbl)->num_columns() < full_c)
@@ -10589,7 +10764,8 @@ class NpzSource : public WorkbookSource {
             *tbl = build_2d_table(h.dtype_id, data, /*rows=*/0, /*cols=*/1,
                                    h.item_size, h.fortran_order);
             if (!*tbl) return "NPZ: dtype not supported for '" + e->name + "'";
-            *footer = "Format: NumPy NPZ  |  Array: " + e->name +
+            *footer = std::string("Format: NumPy ") + (spec.bare_npy ? "NPY" : "NPZ") +
+                      "  |  Array: " + e->name +
                       "  |  " + shape_str(h.shape) +
                       "  |  dtype: " + h.dtype_str + "  |  empty";
             return "";
@@ -10614,7 +10790,8 @@ class NpzSource : public WorkbookSource {
         std::string slice_desc = "[" + std::to_string(idx) + ", :, :";
         for (size_t i = 3; i < h.shape.size(); ++i) slice_desc += ", :";
         slice_desc += "]";
-        *footer = "Format: NumPy NPZ  |  Array: " + e->name +
+        *footer = std::string("Format: NumPy ") + (spec.bare_npy ? "NPY" : "NPZ") +
+                      "  |  Array: " + e->name +
                   "  |  " + shape_str(h.shape) +
                   "  |  dtype: " + h.dtype_str +
                   "  |  slice " + slice_desc +
@@ -10646,6 +10823,48 @@ class NpzSource : public WorkbookSource {
     }
 
 public:
+    // A bare .npy is a single array with no container around it. Wrap it as a
+    // one-entry archive and reuse the whole NPZ path — same parser, same
+    // hardening, no second implementation to keep in step.
+    //
+    // README has documented `.npy` since the NumPy viewer landed, but no
+    // dispatch branch ever existed, so `vv x.npy` answered "unrecognised file
+    // extension". Building the format registry is what surfaced that.
+    static std::string open_npy(const std::string& path,
+                                 std::unique_ptr<NpzSource>* out) {
+        std::ifstream f(path, std::ios::binary);
+        if (!f) return "Cannot open '" + path + "'";
+        auto bytes = std::make_shared<std::vector<uint8_t>>(
+            std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+        if (bytes->empty()) return "'" + path + "': empty file";
+
+        Entry e;
+        // Tab label: the basename without the .npy suffix, mirroring how an
+        // in-archive member is named.
+        {
+            std::string base = path;
+            auto slash = base.find_last_of('/');
+            if (slash != std::string::npos) base.erase(0, slash + 1);
+            if (base.size() > 4 &&
+                fends_ci(base, ".npy")) base.erase(base.size() - 4);
+            e.name = base.empty() ? std::string("array") : base;
+        }
+        e.bytes = bytes;
+        std::string err = parse_npy_header(bytes->data(), bytes->size(),
+                                            &e.header);
+        if (!err.empty()) return "'" + path + "': " + err;
+        if (e.header.unsupported)
+            return "'" + path + "': unsupported dtype '" + e.header.dtype_str +
+                   "' (object / structured arrays are not displayed)";
+
+        auto archive = std::make_shared<std::vector<Entry>>();
+        archive->push_back(std::move(e));
+        OpenSpec spec;
+        spec.bare_npy   = true;
+        spec.entry_name = (*archive)[0].name;
+        return build_one(path, std::move(archive), std::move(spec), {}, out);
+    }
+
     static std::string open_first(const std::string& path,
                                     std::unique_ptr<NpzSource>* out) {
         auto archive = std::make_shared<std::vector<Entry>>();
@@ -10656,10 +10875,10 @@ public:
         // Tab order: summary, then one tab per non-object array in the
         // order they appear in the archive.
         std::vector<OpenSpec> specs;
-        specs.push_back({/*is_summary=*/true, "", 0});
+        specs.push_back({/*bare_npy=*/false, /*is_summary=*/true, "", 0});
         for (const auto& e : *archive) {
             if (!e.header.unsupported)
-                specs.push_back({false, e.name, 0});
+                specs.push_back({false, false, e.name, 0});
         }
 
         OpenSpec first = specs.front();
@@ -12656,6 +12875,12 @@ std::string open_source(const std::string& path, const Config& cfg,
     } else if (fends_ci(path, ".npz")) {
         std::unique_ptr<npz::NpzSource> src;
         std::string err = npz::NpzSource::open_first(path, &src);
+        if (!err.empty()) return err;
+        *out = std::move(src);
+        return "";
+    } else if (fends_ci(path, ".npy")) {
+        std::unique_ptr<npz::NpzSource> src;
+        std::string err = npz::NpzSource::open_npy(path, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
@@ -18002,6 +18227,63 @@ static void print_schema_block(TabularSource& src) {
     }
 }
 
+// Machine-readable counterpart of print_schema_block. The only structured
+// shape vv had was `--describe --json`, which runs compute_col_stats over
+// every row — on a BAM that is the whole file, so automation reached for the
+// most expensive mode just to learn the column names.
+//
+// `rows` is null when the source hasn't been fully scanned. Deliberately: the
+// point of this mode is to be cheap, and draining a streaming source to
+// produce a number would defeat it. `--count` is there when the number is
+// what you want.
+// Every source's footer() starts "Format: <name>  |  <details>". Pull the
+// name back out rather than adding a virtual that fifteen classes would have
+// to implement identically.
+static std::string format_label_of(TabularSource& src) {
+    const std::string f = src.footer();
+    const std::string key = "Format: ";
+    auto p = f.find(key);
+    if (p == std::string::npos) return "";
+    std::string rest = f.substr(p + key.size());
+    auto bar = rest.find("  |");
+    if (bar != std::string::npos) rest.erase(bar);
+    while (!rest.empty() && std::isspace((unsigned char)rest.back())) rest.pop_back();
+    return rest;
+}
+
+static void emit_schema_json(TabularSource& src, const std::string& fmt_name) {
+    auto schema = src.schema();
+    std::printf("{");
+    std::printf("\"path\": ");   json_emit_string(src.path());
+    std::printf(", \"format\": "); json_emit_string(fmt_name);
+    int64_t tr = src.total_rows();
+    if (tr >= 0) std::printf(", \"rows\": %lld", (long long)tr);
+    else         std::printf(", \"rows\": null");
+    std::printf(", \"region_applied\": %s", src.region_applied() ? "true" : "false");
+    if (!src.created_by().empty()) {
+        std::printf(", \"created_by\": ");
+        json_emit_string(src.created_by());
+    }
+    // Columns hidden from human-facing views (e.g. LociSSD's derived
+    // MaxEndSoFar) are reported, flagged — an exporter needs to know they
+    // exist, a UI needs to know not to show them by default.
+    std::set<std::string> hidden;
+    for (const auto& h : src.hidden_for_display()) hidden.insert(h);
+    std::printf(", \"columns\": [");
+    for (int i = 0; i < schema->num_fields(); ++i) {
+        if (i) std::printf(", ");
+        auto f = schema->field(i);
+        std::printf("{\"name\": ");
+        json_emit_string(f->name());
+        std::printf(", \"type\": ");
+        json_emit_string(f->type()->ToString());
+        std::printf(", \"nullable\": %s", f->nullable() ? "true" : "false");
+        std::printf(", \"hidden\": %s", hidden.count(f->name()) ? "true" : "false");
+        std::printf("}");
+    }
+    std::printf("]}\n");
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 // Friendly, short message for common filesystem problems; returns "" if the
@@ -18049,6 +18331,12 @@ static std::string shorten_reader_error(std::string msg) {
 #ifndef VV_CORE_LIB   // CLI entry point — excluded from libvvcore
 int main(int argc, char** argv) {
     Config cfg = parse_args(argc, argv);
+
+    // --formats: the registry, no input file needed.
+    if (cfg.list_formats) {
+        print_formats(cfg.json_array || cfg.json_lines);
+        return 0;
+    }
 
     // Size Arrow's CPU thread pool so use_threads=true on the CSV / Parquet
     // readers actually has workers available.
@@ -18273,9 +18561,40 @@ int main(int argc, char** argv) {
         }
     }
 
-    // --schema: just print schema + footer, then exit.
+    // --list-columns: one name per line — the shape a shell completion or an
+    // xargs pipeline wants, without parsing the schema table.
+    if (cfg.list_columns) {
+        auto sch = src->schema();
+        std::set<std::string> hidden;
+        for (const auto& h : src->hidden_for_display()) hidden.insert(h);
+        for (int i = 0; i < sch->num_fields(); ++i) {
+            const std::string& n = sch->field(i)->name();
+            // Honour the same hidden semantics the views use; --schema still
+            // shows everything.
+            if (hidden.count(n)) continue;
+            std::printf("%s\n", n.c_str());
+        }
+        return 0;
+    }
+
+    // --list-tabs: the component tabs of a multi-tab container. This is the
+    // enumerator from the --tab error path, promoted to a success path.
+    // NB it calls expand_tabs(), which CONSTRUCTS the sibling sources — on an
+    // .h5ad that is real work, not a metadata peek.
+    if (cfg.list_tabs) {
+        std::printf("%s\n", src->tab_label().c_str());
+        for (auto& sib : src->expand_tabs())
+            std::printf("%s\n", sib->tab_label().c_str());
+        return 0;
+    }
+
+    // --schema: print schema + footer, then exit. With --json/--ndjson emit
+    // the machine-readable form instead — both were silently ignored here.
     if (cfg.schema_only) {
-        print_schema_block(*src);
+        if (cfg.json_array || cfg.json_lines)
+            emit_schema_json(*src, format_label_of(*src));
+        else
+            print_schema_block(*src);
         return 0;
     }
 
@@ -18319,7 +18638,10 @@ int main(int argc, char** argv) {
             report(cfg.path, shorten_reader_error(src->read_status().ToString()));
             return 1;
         }
-        std::printf("%lld\n", (long long)total);
+        if (cfg.json_array || cfg.json_lines)
+            std::printf("{\"rows\": %lld}\n", (long long)total);
+        else
+            std::printf("%lld\n", (long long)total);
         return 0;
     }
 
