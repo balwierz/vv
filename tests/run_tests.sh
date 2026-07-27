@@ -649,6 +649,142 @@ assert_contains "select_unknown_column_errors" "$BAD_COL" "unknown"
 BAD_FILTER=$("$VV" --tsv --filter 'BogusCol > 0' "$DATA/tiny.lociss" 2>&1 || true)
 assert_contains "filter_unknown_column_errors" "$BAD_FILTER" "unknown"
 
+# ── Format registry (--formats) and drift ────────────────────────────────────
+# kFormats[] is the one authoritative list of what vv reads. Before it, the
+# same information was restated in seven places and had already drifted:
+# .npz was missing from all three completions, .arrow/.feather from --help
+# entirely, .fods and .ffn/.frn from most of them. This check fails CI on the
+# next divergence instead of letting it ship.
+if command -v python3 >/dev/null 2>&1; then
+    "$VV" --formats --json > "$TMP/formats.json" 2>/dev/null
+    python3 - "$TMP/formats.json" completions/vv.bash completions/vv.fish \
+             completions/_vv <<'PYEOF'
+import json, sys, re
+formats = json.load(open(sys.argv[1]))
+want = {e.lower() for f in formats for e in f['extensions']}
+# .gz variants are dispatched for the families that set the gz bit; the
+# completions spell each pair out literally, so accept them either way.
+for f in formats:
+    if f['gz']:
+        want |= {e.lower() + '.gz' for e in f['extensions']}
+bad = []
+for path in sys.argv[2:]:
+    text = open(path).read().lower()
+    missing = sorted(e for e in want
+                     if not re.search(r'(?<![a-z0-9])' + re.escape(e[1:]) + r'(?![a-z0-9])',
+                                      text))
+    if missing:
+        bad.append('%s missing: %s' % (path, ' '.join(missing)))
+if bad:
+    print('\n'.join(bad)); sys.exit(1)
+PYEOF
+    if [ $? -eq 0 ]; then
+        PASS=$((PASS+1)); echo "  ok    formats_completions_no_drift"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  formats_completions_no_drift"
+    fi
+
+    # Every extension the registry claims must actually be reachable: assert
+    # each one appears in the open_source() dispatch ladder in main.cpp.
+    python3 - "$TMP/formats.json" main.cpp <<'PYEOF'
+import json, sys
+formats = json.load(open(sys.argv[1]))
+src = open(sys.argv[2]).read()
+missing = [e for f in formats for e in f['extensions']
+           if ('"%s"' % e) not in src]
+if missing:
+    print('registry claims extensions with no dispatch branch:', ' '.join(missing))
+    sys.exit(1)
+PYEOF
+    if [ $? -eq 0 ]; then
+        PASS=$((PASS+1)); echo "  ok    formats_all_dispatched"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  formats_all_dispatched"
+    fi
+fi
+# --formats needs no input file, and the human form is a table.
+assert_exit_code "formats_needs_no_file" 0 "$VV" --formats
+FMT_OUT=$("$VV" --formats 2>/dev/null)
+assert_contains "formats_lists_parquet" "$FMT_OUT" ".parquet"
+assert_contains "formats_lists_npz"     "$FMT_OUT" ".npz"
+assert_contains "formats_lists_arrow"   "$FMT_OUT" ".arrow"
+
+# ── Machine-readable metadata ────────────────────────────────────────────────
+# --schema --json and --count --json were parsed and then silently ignored:
+# --schema printed the human ASCII table and --count a bare number. The only
+# structured shape was --describe --json, which scans every row — so automation
+# reached for the most expensive mode just to learn the column names.
+if command -v python3 >/dev/null 2>&1; then
+    SJ=$("$VV" --schema --json "$DATA/tiny.parquet" 2>/dev/null)
+    echo "$SJ" | python3 -c "
+import json,sys
+d = json.load(sys.stdin)
+assert d['rows'] == 20, d['rows']
+assert [c['name'] for c in d['columns']] == ['Chr','Start','End','Score','Tags'], d
+assert all(c['nullable'] for c in d['columns'])
+assert not any(c['hidden'] for c in d['columns'])
+assert d['region_applied'] is False
+" && { PASS=$((PASS+1)); echo "  ok    schema_json_shape"; } \
+      || { FAIL=$((FAIL+1)); echo "  FAIL  schema_json_shape"; }
+
+    # Hidden columns are reported, flagged — an exporter needs to know they
+    # exist, a UI needs to know not to show them by default.
+    "$VV" --schema --json "$DATA/tiny.lociss" 2>/dev/null | python3 -c "
+import json,sys
+d = json.load(sys.stdin)
+h = [c['name'] for c in d['columns'] if c['hidden']]
+assert h == ['MaxEndSoFar'], h
+" && { PASS=$((PASS+1)); echo "  ok    schema_json_marks_hidden"; } \
+      || { FAIL=$((FAIL+1)); echo "  FAIL  schema_json_marks_hidden"; }
+
+    # THE design point: rows is null when the source has not been fully
+    # scanned. Draining a streaming source to produce a number would defeat
+    # the purpose of a cheap metadata mode — --count is there for the number.
+    BIGFQ="$TMP/schemajson.fq"
+    awk 'BEGIN{for(i=1;i<=20000;i++)printf "@r%d\nACGTACGT\n+\nIIIIIIII\n",i}' > "$BIGFQ"
+    "$VV" --schema --json "$BIGFQ" 2>/dev/null | python3 -c "
+import json,sys
+d = json.load(sys.stdin)
+assert d['rows'] is None, 'streaming source was drained: rows=%r' % d['rows']
+assert d['format'] == 'FASTQ', d['format']
+" && { PASS=$((PASS+1)); echo "  ok    schema_json_rows_null_when_streaming"; } \
+      || { FAIL=$((FAIL+1)); echo "  FAIL  schema_json_rows_null_when_streaming"; }
+    # ...and --count on the same file still reports the real number.
+    assert_eq_file_inline "count_json_after_null_rows" \
+        "$("$VV" --count --json "$BIGFQ" 2>/dev/null)" '{"rows": 20000}'
+    rm -f "$BIGFQ"
+fi
+assert_eq_file_inline "count_json_shape" \
+    "$("$VV" --count --json "$DATA/tiny.parquet" 2>/dev/null)" '{"rows": 20}'
+# --count without --json is unchanged.
+assert_eq_file_inline "count_plain_unchanged" \
+    "$("$VV" --count "$DATA/tiny.parquet" 2>/dev/null)" "20"
+
+# --list-columns: one name per line; honours the hidden-column semantics the
+# human views use (--schema still shows everything).
+assert_eq_file_inline "list_columns_parquet" \
+    "$("$VV" --list-columns "$DATA/tiny.parquet" 2>/dev/null | paste -sd, -)" \
+    "Chr,Start,End,Score,Tags"
+LC_LOC=$("$VV" --list-columns "$DATA/tiny.lociss" 2>/dev/null | paste -sd, -)
+refute_contains "list_columns_hides_derived" "$LC_LOC" "MaxEndSoFar"
+SCHEMA_LOC=$("$VV" --schema "$DATA/tiny.lociss" 2>/dev/null)
+assert_contains "schema_still_shows_derived" "$SCHEMA_LOC" "MaxEndSoFar"
+
+# --list-tabs: the enumerator the --tab error message already printed,
+# promoted from an error path to a success path.
+if [ -f "$DATA/tiny.h5ad" ]; then
+    LT=$("$VV" --list-tabs "$DATA/tiny.h5ad" 2>/dev/null | paste -sd, -)
+    assert_contains "list_tabs_h5ad_obs" "$LT" "obs"
+    assert_contains "list_tabs_h5ad_var" "$LT" "var"
+    # The labels must match what --tab's error offers, or the two drift.
+    TABERR=$("$VV" --tab __nope__ "$DATA/tiny.h5ad" 2>&1 || true)
+    for L in $("$VV" --list-tabs "$DATA/tiny.h5ad" 2>/dev/null | head -3); do
+        assert_contains "list_tabs_matches_tab_error_$L" "$TABERR" "$L"
+    done
+fi
+assert_eq_file_inline "list_tabs_single_tab" \
+    "$("$VV" --list-tabs "$DATA/tiny.parquet" 2>/dev/null | wc -l | tr -d ' ')" "1"
+
 # ── --filter grammar: regex, substring, set membership, null tests ───────────
 # The grammar was six ordering operators over one literal. --describe already
 # reported per-column null counts but no mode could SELECT those rows.
@@ -1400,6 +1536,27 @@ if [ -f "$DATA/tiny.shapeovf.npz" ]; then
     assert_exit_code "npz_shape_subproduct_exit" 1 \
         "$VV" --tab a --count "$DATA/tiny.shapeovf.npz"
 fi
+# A bare .npy. README has documented it since the NumPy viewer landed, but no
+# dispatch branch existed — `vv x.npy` answered "unrecognised file extension".
+# Building the format registry surfaced the gap; a .npy is now opened as a
+# one-entry archive through the same (fuzz-hardened) parser as .npz members.
+if [ -f "$DATA/tiny.npz" ] && command -v python3 >/dev/null 2>&1; then
+    python3 -c "
+import zipfile, sys
+z = zipfile.ZipFile('$DATA/tiny.npz')
+n = [m for m in z.namelist() if m.startswith('vec')][0]
+open('$TMP/bare.npy','wb').write(z.read(n))
+"
+    assert_exit_code "npy_bare_opens" 0 "$VV" --no-interactive "$TMP/bare.npy"
+    NPY_OUT=$("$VV" --no-interactive --color=never "$TMP/bare.npy" 2>&1)
+    assert_contains "npy_bare_footer" "$NPY_OUT" "Format: NumPy NPY"
+    # Same values as the member inside the archive it came from.
+    assert_eq_file_inline "npy_bare_matches_member" \
+        "$("$VV" --tsv --no-header "$TMP/bare.npy" 2>/dev/null | paste -sd, -)" \
+        "$("$VV" --tsv --no-header --tab vec "$DATA/tiny.npz" 2>/dev/null | paste -sd, -)"
+    rm -f "$TMP/bare.npy"
+fi
+
 # Zero-row .npz: the per-column gather sized its scratch buffer to
 # rows * item_size, so at zero rows the buffer was empty, its data() null, and
 # the Fortran-order branch called memcpy(nullptr, ..., 0) — undefined even at

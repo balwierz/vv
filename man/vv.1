@@ -701,6 +701,14 @@ stripe: \fBlight\fR or \fBdark\fR. By default vv queries the terminal (OSC 11,
 then \fBCOLORFGBG\fR) and assumes dark if that fails. Set \fBlight\fR when the
 zebra stripe is a hard dark band on a light-background terminal (e.g.
 JupyterLab's web terminal) and auto-detection didn't catch it.
+.SH FORMATS
+.B vv \-\-formats
+prints the authoritative table of supported formats with their capability
+columns (gz variants, region queries, component tabs, streaming vs random
+access);
+.B vv \-\-formats \-\-json
+emits the same table as JSON. The shell completions are checked against it in
+CI, so the two cannot drift.
 .SH EXIT STATUS
 .TP
 .B 0

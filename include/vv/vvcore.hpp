@@ -83,6 +83,9 @@ struct Config {
     bool        heatmap        = false;  // --heatmap: render the numeric matrix
                                          // as a colour heatmap to the terminal
     std::string image_mode;              // --image-mode auto|kitty|sixel|halfblock|ascii
+    bool        list_columns = false;    // --list-columns: names, one per line
+    bool        list_tabs    = false;    // --list-tabs: component tab labels
+    bool        list_formats = false;    // --formats: the supported-format table
     std::string tab;                     // --tab NAME: view a named component
                                          // tab (AnnData obs/var/X, sheet, …)
 };
