@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.16.0] - 2026-07-27
+
 ### Added
 - **`--formats`: one authoritative list of what vv reads.** The same
   information was restated in seven places — `--help`, README, `docs/USAGE.md`,
@@ -32,19 +34,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   "unrecognised file extension". Building the registry surfaced it. A bare
   `.npy` is now wrapped as a one-entry archive and read through the same
   (fuzz-hardened) parser as an in-archive member.
-
-### Fixed
-- **`--help` listed neither `.arrow` nor `.feather`** — two first-class
-  formats, dispatched since they were added and documented everywhere else.
-  Also adds the missing `.fods`, `.ffn` and `.frn`.
-- **The completions were missing `.npz` and `.fods`** in all three shells;
-  they had been copy-pasted once and frozen at a pre-`.npz` revision.
-- **The KDE desktop entry claimed `.xls`.** vv has never supported the legacy
-  binary Excel format — the man page says so explicitly — so Dolphin was
-  offering `vvg` for files it cannot open. Claim removed.
-
-
-### Added
 - **A cell cursor in the TUI.** There wasn't one. `top_row_`/`left_col_` were
   the whole story, so every per-cell action read the top-left corner: the
   stats popup (`S`), sort (`s`), yank (`y`), the detail pane (`Enter`) and the
@@ -56,23 +45,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   instead of scrolling that row to the top — the old behaviour shipped as a
   comment describing itself as a workaround. The cursor is per-tab, so it
   survives `Tab` switching.
-
-### Fixed
-- **NumPy shape sub-product overflow (found by fuzzing).** A `.npy` header can
-  declare an empty array — any dimension zero — while its other dimensions are
-  astronomically large. One zero makes the total element count zero, so the
-  declared-size check passes for free and every later overflow guard in that
-  loop becomes vacuous. But the readers still multiply *sub-ranges* of the
-  shape to compute strides and slice sizes: the 3-D+ path collapses the
-  trailing dimensions into one, and `(1, 1, 392361265078550784, 29, 0)` made
-  that product overflow `int64` — undefined behaviour, reachable just by
-  opening a crafted `.npz`, not only through the fuzz harness. The validator
-  now also bounds the product of the non-zero dimensions; every sub-product
-  divides it, so bounding it bounds them all. Legitimate empty arrays
-  (`(0, 3)`) and ordinary 3-D arrays are unaffected. New fixture
-  `tiny.shapeovf.npz`; clean over 1.24 M fuzz iterations seeded with the repro.
-
-### Added
 - **`--filter` gained regex, substring, set and null operators.** The grammar
   was six ordering comparisons over one literal, so `--describe` could report
   a column's null count but no mode in vv could *select* those rows, and
@@ -92,7 +64,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   result: in a CLI a silent degrade is worse than a hard failure. Compiled
   patterns are cached (evaluation runs per row), and `is null` is verified
   against `--describe`'s own null count as an in-tree oracle.
-
 - **`--select` gained a pattern language.** Projection was one exact name per
   comma-separated token; on a 380-column AnnData `obs` table or a bigBed with
   autoSql extras that is a typing exercise, and there was no way to say
@@ -116,7 +87,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   nothing is an error, reported separately from an unknown name: a
   silently-empty `!pct_*` typo would otherwise quietly drop columns from a
   conversion.
-
 - **`-r` / `--region` on BAM and CRAM.** A region query used to be a silent
   no-op on alignment files: `vv reads.bam -r chr1:1000-2000` ignored the flag,
   printed the whole file and exited 0 — even when the requested contig wasn't
@@ -139,17 +109,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   show the whole file, instead of returning an unfiltered result that looks
   like a region query. Backed by a new `TabularSource::region_applied()`, which
   reports whether the source actually restricted its scan.
-
-### Fixed
-- **A `--select` that resolves to no columns is an error.** Every output path
-  used to write an empty, zero-column result and exit 0 — `--parquet` even
-  announced `[20 rows → out.parquet]` over a 0×0 file. Reachable before this
-  release via `--select ','`; the pattern syntax makes it easy to hit by
-  accident (`--select 'Chr,!C*'`), so it now fails and writes nothing.
-- **BAM/CRAM read errors are no longer swallowed.** `BamSource` had no
-  `read_status()` override, so the `ret < -1` check in its read loop was
-  discarded by `ensure()` — a truncated or corrupt file produced a partial
-  result with exit 0. The status is now sticky and surfaces to the CLI.
+- **UCSC↔Ensembl chromosome-name aliasing for `-r`.** A `-r chr1:…` query against
+  a file that names the contig `1` (or vice versa) used to silently return zero
+  rows. vv now retries with the alias when the queried name isn't present but its
+  counterpart is, noting the swap on stderr. Limited to **human/mouse** standard
+  chromosomes (autosomes 1–22, X, Y, and the mitochondrion **`chrM`↔`MT`** — never
+  `M`); scaffolds/patches/alt-contigs are never remapped. Applies to tabix
+  (`.vcf.gz`/`.bed.gz`/`.gff.gz`), BCF, BAM `--pileup`, and LociSSD v4. (Generic
+  Parquet and bigWig region paths are a follow-up.)
 
 ### Changed
 - **Failures that used to exit 0 now exit 1.** This is a deliberate
@@ -175,8 +142,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     reported "Not a valid Parquet file" — and exited 0 — while a v4
     "colblock" `.lociss` (the writer's current default, and not Parquet at
     all) got the same misleading message.
+- **LociSSD v4 region queries faster.** A `-r` query decoded each candidate
+  block's coordinate columns twice — once in the open-time row-count pass, then
+  again when the rows were read for display/export. In region mode vv now
+  memoises decoded column arrays per block, so each is decoded once. ~50% less
+  time on a wide `-r … --tsv` over a 1 M-row file; output byte-identical. The
+  cache is region-mode only, so a sequential full scan is unaffected.
+- **Tabix range queries reuse the line buffer.** `TabixInputStream` allocated and
+  freed an htslib `kstring` per record; it now keeps one buffer for the whole
+  scan (htslib reallocs only when a line outgrows it). Output unchanged.
 
 ### Fixed
+- **`--help` listed neither `.arrow` nor `.feather`** — two first-class
+  formats, dispatched since they were added and documented everywhere else.
+  Also adds the missing `.fods`, `.ffn` and `.frn`.
+- **The completions were missing `.npz` and `.fods`** in all three shells;
+  they had been copy-pasted once and frozen at a pre-`.npz` revision.
+- **The KDE desktop entry claimed `.xls`.** vv has never supported the legacy
+  binary Excel format — the man page says so explicitly — so Dolphin was
+  offering `vvg` for files it cannot open. Claim removed.
+- **NumPy shape sub-product overflow (found by fuzzing).** A `.npy` header can
+  declare an empty array — any dimension zero — while its other dimensions are
+  astronomically large. One zero makes the total element count zero, so the
+  declared-size check passes for free and every later overflow guard in that
+  loop becomes vacuous. But the readers still multiply *sub-ranges* of the
+  shape to compute strides and slice sizes: the 3-D+ path collapses the
+  trailing dimensions into one, and `(1, 1, 392361265078550784, 29, 0)` made
+  that product overflow `int64` — undefined behaviour, reachable just by
+  opening a crafted `.npz`, not only through the fuzz harness. The validator
+  now also bounds the product of the non-zero dimensions; every sub-product
+  divides it, so bounding it bounds them all. Legitimate empty arrays
+  (`(0, 3)`) and ordinary 3-D arrays are unaffected. New fixture
+  `tiny.shapeovf.npz`; clean over 1.24 M fuzz iterations seeded with the repro.
+- **A `--select` that resolves to no columns is an error.** Every output path
+  used to write an empty, zero-column result and exit 0 — `--parquet` even
+  announced `[20 rows → out.parquet]` over a 0×0 file. Reachable before this
+  release via `--select ','`; the pattern syntax makes it easy to hit by
+  accident (`--select 'Chr,!C*'`), so it now fails and writes nothing.
+- **BAM/CRAM read errors are no longer swallowed.** `BamSource` had no
+  `read_status()` override, so the `ret < -1` check in its read loop was
+  discarded by `ensure()` — a truncated or corrupt file produced a partial
+  result with exit 0. The status is now sticky and surfaces to the CLI.
 - **NumPy `.npy` zero-row Fortran-order array (found by fuzzing).** The
   per-column gather in `build_2d_table` sized its scratch buffer to
   `rows * item_size`, so an array declaring zero rows left the buffer empty and
@@ -217,19 +223,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   first (or only) column was wider than the screen, the column-fitting loop broke
   immediately and drew nothing — an empty browser for a perfectly valid file. It
   now force-renders that column clamped to the available width.
-
-### Changed
-- **LociSSD v4 region queries faster.** A `-r` query decoded each candidate
-  block's coordinate columns twice — once in the open-time row-count pass, then
-  again when the rows were read for display/export. In region mode vv now
-  memoises decoded column arrays per block, so each is decoded once. ~50% less
-  time on a wide `-r … --tsv` over a 1 M-row file; output byte-identical. The
-  cache is region-mode only, so a sequential full scan is unaffected.
-- **Tabix range queries reuse the line buffer.** `TabixInputStream` allocated and
-  freed an htslib `kstring` per record; it now keeps one buffer for the whole
-  scan (htslib reallocs only when a line outgrows it). Output unchanged.
-
-### Fixed
 - **bigWig/bigBed misaligned read (aarch64 correctness).** libBigWig read each
   interval's `chrom/start/end` via a `(uint32_t*)` cast on a pointer that advances
   by a variable-length string every iteration — an unaligned load, which is
@@ -246,16 +239,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   labels came up empty on files written by current anndata. vv now decodes it
   (applying the `mask` as nulls) while still reading the legacy dataset form.
   Covered by a version-independent hand-written fixture (`tiny.nullstr.h5ad`).
-
-### Added
-- **UCSC↔Ensembl chromosome-name aliasing for `-r`.** A `-r chr1:…` query against
-  a file that names the contig `1` (or vice versa) used to silently return zero
-  rows. vv now retries with the alias when the queried name isn't present but its
-  counterpart is, noting the swap on stderr. Limited to **human/mouse** standard
-  chromosomes (autosomes 1–22, X, Y, and the mitochondrion **`chrM`↔`MT`** — never
-  `M`); scaffolds/patches/alt-contigs are never remapped. Applies to tabix
-  (`.vcf.gz`/`.bed.gz`/`.gff.gz`), BCF, BAM `--pileup`, and LociSSD v4. (Generic
-  Parquet and bigWig region paths are a follow-up.)
 
 ## [1.15.0] - 2026-07-02
 

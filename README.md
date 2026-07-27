@@ -232,7 +232,7 @@ fewer than 256 colors, each theme falls back to a 16-color twin.
 Settings are persisted to `$XDG_CONFIG_HOME/vv/config` (default
 `~/.config/vv/config`) in plain INI-style `key = value` format —
 the same idiom every other modern Linux app uses (KDE,
-gnome-terminal, vlc, …). Today only the `theme` key is read, but
+gnome-terminal, vlc, …). Today the `theme` and `scrolloff` keys are read, but
 the format is forward-compatible: future preferences slot in
 without breaking existing files. Edits are atomic (`.tmp` + rename)
 and preserve hand-added comments.
@@ -240,6 +240,7 @@ and preserve hand-added comments.
 ```ini
 # ~/.config/vv/config
 theme = solarized-dark
+scrolloff = 3     # rows kept between the cell cursor and the viewport edge
 ```
 
 Resolution order, highest priority first: `--theme NAME` on the CLI →
@@ -262,6 +263,47 @@ Tags    list<element: string>  yes
 File: huge.parquet
 Row groups: 4  |  Compressed: 2.1 KiB
 Created by: parquet-cpp-arrow version 24.0.0
+```
+
+Add `--json` for the machine-readable form. `rows` is `null` when the file
+hasn't been fully scanned — this mode is meant to be cheap, so it never drains
+a streaming source to produce a number (`--count` is there for that):
+
+```
+$ vv --schema --json reads.bam | jq '{format, rows, cols: (.columns|length)}'
+{ "format": "BAM", "rows": null, "cols": 11 }
+
+$ vv --count --json reads.bam
+{"rows": 3}
+```
+
+`--list-columns` and `--list-tabs` print one name per line, for shell
+completions and pipelines:
+
+```
+$ vv --list-columns cells.h5ad
+$ vv --list-tabs cells.h5ad
+summary
+X (preview)
+obs
+var
+obsm[X_umap]
+```
+
+### Supported formats — `--formats`
+
+The authoritative table of what vv reads, with capability columns. The shell
+completions are checked against it in CI, so the two can't drift:
+
+```
+$ vv --formats
+Format                    gz       region tabs streaming extensions
+Apache Parquet            -        yes    -    random    .parquet
+BAM / CRAM alignments     -        yes    -    stream    .bam .cram
+SQLite                    -        -      yes  stream    .sqlite .sqlite3 .db
+...
+
+$ vv --formats --json | jq -r '.[] | select(.region) | .name'
 ```
 
 ### Per-column statistics — `--describe`
