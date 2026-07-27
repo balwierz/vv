@@ -543,6 +543,14 @@ static void load_user_config(Config& cfg) {
         strip_ws_inplace(key);
         strip_ws_inplace(val);
         if (key == "theme" && cfg.theme.empty()) cfg.theme = val;
+        else if (key == "scrolloff") {
+            // Rows kept between the cell cursor and the viewport edge.
+            // Clamped again at use against the window height.
+            try {
+                int v = std::stoi(val);
+                if (v >= 0 && v <= 1000) cfg.scrolloff = v;
+            } catch (...) { /* ignore a malformed value */ }
+        }
     }
 }
 
@@ -613,7 +621,7 @@ static void print_usage(const char* prog) {
         "\nInteractive viewer (default when stdout is a terminal):\n"
         "  -i / --interactive  open the ncurses row browser\n"
         "  --no-interactive    force plain table output even on a terminal\n"
-        "  Keys: arrows/hjkl navigate, PgUp/PgDn, g/G top/bot, /:search,\n"
+        "  Keys: arrows/hjkl move the cell cursor, PgUp/PgDn, g/G, /:search,\n"
         "        S:column-stats, s:sort by current column (u clears),\n"
         "        &:live filter, c:show/hide columns, y:copy cell (OSC52),\n"
         "        T:pick a theme (saved to ~/.config/vv/config),\n"
@@ -14870,11 +14878,21 @@ class TableTUI {
 
     int64_t top_row_  = 0;
     int     left_col_ = 0;
+    // Cell cursor. top_row_/left_col_ are the viewport; these are where the
+    // user is. Every per-cell action (S, s, y, Enter, , / .) used to read the
+    // top-left corner instead, which is why the help text had to say "the
+    // leftmost visible column". cur_row_ is a DISPLAY row (like top_row_, so
+    // it survives sort/filter); cur_col_ is a VIRTUAL column (like left_col_).
+    int64_t cur_row_  = 0;
+    int     cur_col_  = 0;
+    // Rows to keep between the cursor and the top/bottom edge while scrolling,
+    // à la vim's 'scrolloff'. Overridable from the config file.
+    int     scrolloff_ = 3;
     int     scr_r_ = 24, scr_c_ = 80;
     bool    freeze_first_col_ = false;   // toggle with `z` — keep col 0 pinned left
     bool    help_open_        = false;   // overlay shown via `?` / F1 / H
 
-    // ── Stats popup (`S` over the leftmost visible column) ───────────────────
+    // ── Stats popup (`S` over the column under the cursor) ───────────────────
     struct TuiColStat {
         std::string name;
         std::string type;
@@ -14925,6 +14943,8 @@ class TableTUI {
         // View state
         int64_t                         top_row = 0;
         int                             left_col = 0;
+        int64_t                         cur_row = 0;    // cell cursor
+        int                             cur_col = 0;
         bool                            freeze_first_col = false;
         // Chunk LRU cache
         std::map<int, CachedRG>         cache;
@@ -15494,6 +15514,60 @@ class TableTUI {
         return v;
     }
 
+    // Nearest column at or after `c` that the user hasn't hidden; falls back
+    // to searching backwards, then to c itself.
+    int next_visible_col(int c, int dir) const {
+        if (num_cols_ <= 0) return 0;
+        for (int i = c; i >= 0 && i < num_cols_; i += dir)
+            if (col_is_visible(i)) return i;
+        for (int i = c; i >= 0 && i < num_cols_; i -= dir)
+            if (col_is_visible(i)) return i;
+        return c;
+    }
+
+    // Move the viewport so the cursor is on screen. Called from draw() AFTER
+    // top_row_ has been clamped and BEFORE the first visible_cols(), so the
+    // frame that gets painted already reflects the cursor.
+    void ensure_cursor_visible() {
+        // ── Rows ────────────────────────────────────────────────────────────
+        int64_t tr = total_rows();
+        if (cur_row_ < 0) cur_row_ = 0;
+        if (tr >= 0 && cur_row_ > tr - 1) cur_row_ = std::max<int64_t>(0, tr - 1);
+        int dl = data_lines();
+        if (dl > 0) {
+            // Clamp scrolloff so it can't exceed half the viewport (otherwise
+            // the two bounds cross and the row oscillates).
+            int so = std::min(scrolloff_, (dl - 1) / 2);
+            if (so < 0) so = 0;
+            if (cur_row_ < top_row_ + so)          top_row_ = cur_row_ - so;
+            if (cur_row_ > top_row_ + dl - 1 - so) top_row_ = cur_row_ - dl + 1 + so;
+            if (top_row_ < 0) top_row_ = 0;
+            if (tr >= 0) {
+                int64_t mt = std::max<int64_t>(0, tr - dl);
+                if (top_row_ > mt) top_row_ = mt;
+            }
+        }
+
+        // ── Columns ─────────────────────────────────────────────────────────
+        if (num_cols_ <= 0) return;
+        if (cur_col_ < 0) cur_col_ = 0;
+        if (cur_col_ >= num_cols_) cur_col_ = num_cols_ - 1;
+        if (!col_is_visible(cur_col_)) cur_col_ = next_visible_col(cur_col_, +1);
+        if (cur_col_ < left_col_) left_col_ = cur_col_;
+        // Scroll right until the cursor column is in the rendered set. The
+        // bound is what makes this safe: visible_cols() special-cases the
+        // frozen column and can force-emit a single clamped column when
+        // nothing fits, so "is it visible yet?" is not guaranteed monotonic —
+        // without the counter this loop could spin forever and hang the TUI.
+        for (int guard = 0; guard <= num_cols_; ++guard) {
+            bool on_screen = false;
+            for (const auto& cv : visible_cols())
+                if (cv.col == cur_col_) { on_screen = true; break; }
+            if (on_screen || left_col_ >= cur_col_) break;
+            ++left_col_;
+        }
+    }
+
     static std::string fit(const std::string& val, int w, bool ra) {
         int dw = display_width(val);
         if (ra) {
@@ -15706,7 +15780,13 @@ class TableTUI {
 
         std::unordered_map<std::string, std::string> parsed;
         int parsed_row = -1;
+        const bool cursor_row = (row == cur_row_);
         for (auto& col : vc) {
+            // Plain A_REVERSE on the cursor cell: no new colour pair, so it
+            // needs no entry in any of the five Theme structs, and it layers
+            // under the search-focused row's A_BOLD|A_REVERSE below.
+            const attr_t cur_attr =
+                (cursor_row && col.col == cur_col_) ? A_REVERSE : A_NORMAL;
             // Reuse the string the width-fitting pass already formatted for
             // this cell (integer columns); otherwise format it now. Keyed by
             // source row, so it hits in the common unsorted case and falls
@@ -15722,7 +15802,8 @@ class TableTUI {
                 // focused row gets reverse video so it stands out among the
                 // other visible matches.
                 nc_str(sy, col.x, " " + fit(val, col.w, right_align_[col.col]) + " ",
-                       is_focused ? (attr_t)(A_BOLD | A_REVERSE) : A_BOLD,
+                       is_focused ? (attr_t)(A_BOLD | A_REVERSE)
+                                  : (attr_t)(A_BOLD | cur_attr),
                        NCP_SEARCH);
                 continue;
             }
@@ -15732,10 +15813,10 @@ class TableTUI {
                 int pair = (val != NULL_SYMBOL && parse_rgb(val, &r, &gv, &bv))
                            ? get_rgb_pair(r, gv, bv) : 0;
                 if (pair > 0)
-                    nc_str(sy, col.x, " " + std::string(col.w, ' ') + " ", A_NORMAL, pair);
+                    nc_str(sy, col.x, " " + std::string(col.w, ' ') + " ", cur_attr, pair);
                 else
                     nc_str(sy, col.x, " " + fit(val, col.w, false) + " ",
-                           val == NULL_SYMBOL ? A_DIM : A_NORMAL,
+                           (attr_t)((val == NULL_SYMBOL ? A_DIM : A_NORMAL) | cur_attr),
                            zpair(val == NULL_SYMBOL ? NCP_NULL : 0));
                 continue;
             }
@@ -15745,7 +15826,7 @@ class TableTUI {
             else if (is_bool_[col.col])     { cp = (val=="true")?NCP_BOOL_T:NCP_BOOL_F; }
             else if (right_align_[col.col]) { cp = NCP_NUMBER; }
             nc_str(sy, col.x, " " + fit(val, col.w, right_align_[col.col]) + " ",
-                   extra, zpair(cp));
+                   (attr_t)(extra | cur_attr), zpair(cp));
         }
     }
 
@@ -16280,6 +16361,8 @@ class TableTUI {
         t.filter_expr_str = filter_expr_str_;
         t.filter_fx      = filter_fx_;
         t.filter_total   = filter_total_;
+        t.cur_row        = cur_row_;
+        t.cur_col        = cur_col_;
         t.partial_pass   = partial_pass_;
     }
 
@@ -16317,6 +16400,8 @@ class TableTUI {
         filter_expr_str_ = t.filter_expr_str;
         filter_fx_       = t.filter_fx;
         filter_total_    = t.filter_total;
+        cur_row_         = t.cur_row;
+        cur_col_         = t.cur_col;
         partial_pass_    = t.partial_pass;
     }
 
@@ -16348,6 +16433,7 @@ private:
             setup_for_active_source();   // lazy init the column metadata
             // Default view state: top, no filter, no sort.
             top_row_ = 0; left_col_ = 0; freeze_first_col_ = false;
+            cur_row_ = 0; cur_col_ = 0;
             cache_.clear(); lru_.clear();
             sort_col_ = -1; sort_desc_ = false; sort_order_.clear();
             filter_active_ = false; filter_expr_str_.clear(); filter_total_ = 0;
@@ -16372,6 +16458,7 @@ private:
         sort_order_.clear(); sort_col_ = -1; sort_desc_ = false;
         filter_active_ = false; filter_expr_str_.clear(); filter_total_ = 0;
         top_row_ = 0; left_col_ = 0;
+        cur_row_ = 0; cur_col_ = 0;
         search_row_ = -1;
         setup_for_active_source();
         return true;
@@ -16627,16 +16714,16 @@ private:
         struct Row { const char* keys; const char* desc; };
         static const Row rows[] = {
             {"q  Esc",       "quit  (Esc clears search / closes overlays)"},
-            {"↑↓  j k",      "scroll one row"},
+            {"↑↓  j k",      "move the cell cursor one row"},
             {"PgUp PgDn  ␣ b","scroll one page"},
-            {"g  G  Home End","top / bottom of file"},
-            {"←→  h l",      "scroll one column"},
-            {",  .",          "narrow / widen the leftmost visible column"},
+            {"g  G  Home End","first / last row"},
+            {"←→  h l",      "move the cell cursor one column"},
+            {",  .",          "narrow / widen the cursor's column"},
             {"z",            "toggle frozen first column"},
             {"/  ?",          "search forward / backward (regex, icase)"},
             {"n  N",          "next / previous match (direction-aware)"},
             {"S",             "per-column stats (count/min/max/mean/distinct)"},
-            {"s",             "sort by the leftmost visible column (toggle asc/desc; u to clear)"},
+            {"s",             "sort by the cursor's column (toggle asc/desc; u to clear)"},
             {"&",             "live filter: hide non-matching rows; empty input clears"},
             {"c",             "show / hide columns (overlay)"},
             {"y",             "copy the top-left visible cell to the clipboard (OSC52)"},
@@ -16811,6 +16898,10 @@ private:
                 if (top_row_ > mt) top_row_ = mt;
             }
         }
+        // Scroll the viewport to the cursor before anything measures the
+        // window — the width-fit pass and both visible_cols() calls below
+        // must see the columns we are about to paint.
+        ensure_cursor_visible();
         auto vc = visible_cols();
         // Prefetch just the source columns that are on screen right now,
         // then fit integer column widths to the rows currently visible.
@@ -16901,6 +16992,7 @@ public:
           no_index_(cfg.no_index),
           max_cols_cfg_(cfg.max_cols)
     {
+        if (cfg.scrolloff >= 0) scrolloff_ = cfg.scrolloff;
         // Build per-tab snapshot slots up front. We materialise the active
         // tab's column metadata now; other tabs init lazily on first switch.
         tabs_.resize(sources_.size());
@@ -17200,16 +17292,15 @@ public:
                             top_row_    = 0;
                             search_row_ = -1;
                         } else if (in_data) {
-                            // Single click on a data row: scroll it to the
-                            // top and make its column the active one for
-                            // follow-up S / y / s actions.
+                            // Single click puts the cursor on the clicked cell.
+                            // (It used to scroll that row to the top and set
+                            // left_col_, because there was no cursor to move —
+                            // the comment here shipped as the workaround.)
                             int64_t r = top_row_ + (me.y - data_y0);
                             int64_t tr = total_rows();
                             if (tr < 0 || r < tr) {
-                                int64_t mt = (tr >= 0)
-                                    ? std::max<int64_t>(0, tr - dl) : r;
-                                top_row_ = std::min(r, mt);
-                                if (hit_col >= 0) left_col_ = hit_col;
+                                cur_row_ = r;
+                                if (hit_col >= 0) cur_col_ = hit_col;
                                 copy_status_.clear();
                             }
                         }
@@ -17342,7 +17433,7 @@ public:
             switch (ch) {
                 case 'q': case 'Q': quit = true; break;
                 case '\n': case '\r': case KEY_ENTER:  // Open detail pane for top-visible row
-                    detail_row_    = top_row_;
+                    detail_row_    = cur_row_;
                     detail_scroll_ = 0;
                     break;
                 case 27:  // Esc: clear search/filter if active, else quit
@@ -17364,14 +17455,19 @@ public:
                     }
                     break;
                 case KEY_DOWN: case 'j':
-                    if (tr < 0 || top_row_ + dl < tr) ++top_row_; break;
+                    // Moving the cursor past the last loaded row is what pulls
+                    // more of a streaming source in, so allow it while tr < 0.
+                    if (tr < 0 || cur_row_ + 1 < tr) ++cur_row_; break;
                 case KEY_UP: case 'k':
-                    if (top_row_ > 0) --top_row_; break;
+                    if (cur_row_ > 0) --cur_row_; break;
                 case KEY_NPAGE: case ' ':
-                    top_row_ = std::min(top_row_ + dl, max_top); break;
+                    cur_row_ = (tr >= 0) ? std::min(cur_row_ + dl, tr - 1)
+                                         : cur_row_ + dl;
+                    if (cur_row_ < 0) cur_row_ = 0;
+                    break;
                 case KEY_PPAGE: case 'b':
-                    top_row_ = std::max<int64_t>(0, top_row_ - dl); break;
-                case 'g': case KEY_HOME: top_row_ = 0; break;
+                    cur_row_ = std::max<int64_t>(0, cur_row_ - dl); break;
+                case 'g': case KEY_HOME: cur_row_ = 0; top_row_ = 0; break;
                 case 'G': case KEY_END:
                     // For streaming sources we must read to EOF before we know
                     // the last row.
@@ -17379,20 +17475,29 @@ public:
                         drain_to_eof();
                         tr = total_rows();
                     }
+                    cur_row_ = std::max<int64_t>(0, tr - 1);
                     top_row_ = std::max<int64_t>(0, tr - dl);
                     break;
                 case KEY_RIGHT: case 'l':
-                    if (left_col_ + 1 < num_cols_) ++left_col_; break;
+                    if (cur_col_ + 1 < num_cols_) {
+                        int n = next_visible_col(cur_col_ + 1, +1);
+                        if (n > cur_col_) cur_col_ = n;
+                    }
+                    break;
                 case KEY_LEFT: case 'h':
-                    if (left_col_ > 0) --left_col_; break;
+                    if (cur_col_ > 0) {
+                        int n = next_visible_col(cur_col_ - 1, -1);
+                        if (n < cur_col_) cur_col_ = n;
+                    }
+                    break;
                 case 'z':
                     freeze_first_col_ = !freeze_first_col_; break;
                 case 'H': case KEY_F(1):
                     help_open_ = true; break;
                 case 'S':
-                    // Compute stats for the leftmost visible (= "active") column,
+                    // Compute stats for the column under the cursor,
                     // then open the overlay.
-                    stats_col_ = left_col_;
+                    stats_col_ = cur_col_;
                     compute_stats_for(stats_col_);
                     stats_open_ = true;
                     break;
@@ -17400,17 +17505,18 @@ public:
                     // Sort by the active column. Re-pressing on the same column
                     // toggles ascending → descending. Switching columns starts
                     // ascending again.
-                    int sc = (left_col_ >= 0 && left_col_ < (int)virt_src_col_.size())
-                              ? virt_src_col_[left_col_] : -1;
+                    int sc = (cur_col_ >= 0 && cur_col_ < (int)virt_src_col_.size())
+                              ? virt_src_col_[cur_col_] : -1;
                     if (sc < 0) break;
-                    if (sort_col_ == left_col_ && !sort_order_.empty()) {
+                    if (sort_col_ == cur_col_ && !sort_order_.empty()) {
                         sort_desc_ = !sort_desc_;
                     } else {
-                        sort_col_ = left_col_;
+                        sort_col_ = cur_col_;
                         sort_desc_ = false;
                     }
                     rebuild_display_order();
                     top_row_ = 0;
+                    cur_row_ = 0;
                     search_row_ = -1;   // search anchor is now stale
                     break;
                 }
@@ -17424,7 +17530,7 @@ public:
                     break;
                 case 'c':
                     col_picker_open_   = true;
-                    col_picker_cursor_ = left_col_;
+                    col_picker_cursor_ = cur_col_;
                     break;
                 case 'T':
                     // Open the theme picker. Position the cursor on the
@@ -17471,9 +17577,9 @@ public:
                     // OSC52. The user picks the cell by scrolling: h/l/,/.
                     // for the column, j/k/PgUp/PgDn for the row, then `y`.
                     if (left_col_ < 0 || left_col_ >= num_cols_) break;
-                    auto vals = load_full_row(top_row_);
-                    if (left_col_ >= (int)vals.size()) break;
-                    const std::string& v = vals[left_col_];
+                    auto vals = load_full_row(cur_row_);
+                    if (cur_col_ >= (int)vals.size()) break;
+                    const std::string& v = vals[cur_col_];
                     if (v.empty()) break;
                     osc52_copy(v);
                     std::string preview = v;
@@ -17485,10 +17591,10 @@ public:
                     break;
                 }
                 case '.':
-                    col_widths_[left_col_] = std::min(256, col_widths_[left_col_] + 4);
+                    col_widths_[cur_col_] = std::min(256, col_widths_[cur_col_] + 4);
                     break;
                 case ',':
-                    col_widths_[left_col_] = std::max(1, col_widths_[left_col_] - 4);
+                    col_widths_[cur_col_] = std::max(1, col_widths_[cur_col_] - 4);
                     break;
                 case '/':
                     search_mode_  = SearchMode::Input;

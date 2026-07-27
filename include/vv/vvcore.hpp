@@ -64,6 +64,10 @@ struct Config {
     bool        validate       = false;  // --validate (LociSSD invariants check)
     bool        coords_one_based = false; // --coords NCBI (1-based inclusive)
     std::string theme;                    // --theme NAME (empty = "use config-file value or default")
+    int         scrolloff  = -1;         // TUI: rows kept between the cell
+                                         // cursor and the top/bottom edge.
+                                         // -1 = unset (use the built-in
+                                         // default); config-file key only.
     int         tail_rows      = 0;      // --tail N
     bool        tail_rows_set  = false;
     bool        decode_pileup  = false;  // --decode-pileup: explode mpileup's
