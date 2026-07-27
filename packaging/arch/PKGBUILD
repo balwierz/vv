@@ -18,7 +18,7 @@ makedepends=('cmake' 'gcc' 'arrow' 'htslib' 'ncurses' 'hdf5' 'sqlite'
              'expat' 'minizip' 'xlsxio' 'zlib'
              'qt6-base' 'extra-cmake-modules' 'kio' 'kcoreaddons' 'kfilemetadata')
 source=("$pkgbase-$pkgver.tar.gz::https://github.com/balwierz/$pkgbase/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('b4a143ad22015c6653f91af7e0c37558cbc8abac7e5f87039e3e10c84403b49f')
+sha256sums=('e4cd73c0b890a7856a1aa251a188ddd1d3c2c5fd9a8b810b6749c91ffd5f81f5')
 
 build() {
     cmake -S "$pkgbase-$pkgver" -B build \

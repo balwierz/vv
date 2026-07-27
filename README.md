@@ -2,7 +2,6 @@
 
 [![CI](https://github.com/balwierz/vv/actions/workflows/ci.yml/badge.svg)](https://github.com/balwierz/vv/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Bioconda](https://img.shields.io/conda/dn/bioconda/vv.svg?label=Bioconda)](https://anaconda.org/bioconda/vv)
 [![Latest release](https://img.shields.io/github/v/release/balwierz/vv)](https://github.com/balwierz/vv/releases)
 
 A fast, self-contained command-line viewer for tabular and bioinformatics
@@ -27,25 +26,63 @@ $ vv variants.vcf
 [4 rows x 8 columns]
 ```
 
-## Quick install
+## Install
+
+Every release publishes static Linux binaries and Debian packages for x86_64
+and aarch64, with a `SHA256SUMS` manifest. Replace `1.16.0` below with the
+[latest release](https://github.com/balwierz/vv/releases/latest) if newer.
+
+### Debian / Ubuntu
 
 ```sh
-# Bioconda
-conda install -c bioconda vv
-
-# Homebrew (macOS / Linuxbrew)
-brew install balwierz/tap/vv
-
-# Static Linux binary (glibc ≥ 2.28). x86_64 and aarch64 published on
-# every release; swap `x86_64 → aarch64` for ARM (AWS Graviton, RPi 5, …).
-ver=$(curl -fsSL https://api.github.com/repos/balwierz/vv/releases/latest \
-        | grep -oP '"tag_name":\s*"\K[^"]+')
-curl -L "https://github.com/balwierz/vv/releases/${ver}/download/vv-${ver#v}-linux-x86_64.tar.gz" | tar -xz
-sudo install vv-*-linux-x86_64/vv /usr/local/bin/
+curl -LO https://github.com/balwierz/vv/releases/download/v1.16.0/vv_1.16.0-1_amd64.deb
+sudo apt install ./vv_1.16.0-1_amd64.deb
 ```
 
-See [INSTALL.md](INSTALL.md) for source builds, AUR, and the static AlmaLinux
-8 Docker build.
+Use `arm64` in place of `amd64` on ARM.
+
+### Static binary — any Linux, glibc ≥ 2.28
+
+Self-contained: Arrow, Parquet, htslib, HDF5 and the compression stack are
+linked in, so there are no runtime dependencies. Use `aarch64` in place of
+`x86_64` on ARM (AWS Graviton, Raspberry Pi 5, …).
+
+```sh
+base=https://github.com/balwierz/vv/releases/download/v1.16.0
+curl -LO $base/vv-1.16.0-linux-x86_64.tar.gz
+curl -LO $base/SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+
+tar -xzf vv-1.16.0-linux-x86_64.tar.gz
+sudo install vv-1.16.0-linux-x86_64/vv /usr/local/bin/
+```
+
+### Arch Linux
+
+A split PKGBUILD ships in the repository — `vv` (the CLI/TUI) and `vv-gui`
+(the Qt6 desktop viewer plus the Dolphin thumbnailer and metadata plugins).
+Not in the AUR; build it from the checkout:
+
+```sh
+git clone https://github.com/balwierz/vv.git
+cd vv/packaging/arch
+makepkg -si
+```
+
+### From source
+
+Needs a C++20 compiler, CMake, and Arrow/Parquet, htslib, ncurses, HDF5 and
+SQLite. See [INSTALL.md](INSTALL.md) for the full dependency list, the
+optional Qt6/KDE build, and the static AlmaLinux 8 Docker build.
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+```
+
+**macOS** builds from source and is compiled on every commit in CI, but the
+test suite runs only on Linux and no macOS binaries are published — treat it
+as supported-but-unverified.
 
 ## Supported formats
 
