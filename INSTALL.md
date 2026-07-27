@@ -4,45 +4,61 @@ Prebuilt packages cover most users; build-from-source is below.
 
 ## Prebuilt binaries
 
-### Bioconda (recommended for bioinformatics environments)
+Every tagged release publishes, for **x86_64** and **aarch64**:
+
+| Asset | What it is |
+|---|---|
+| `vv-<ver>-linux-<arch>.tar.gz` | static binary, no runtime dependencies |
+| `vv_<ver>-1_<deb-arch>.deb` | Debian package (same static binary) |
+| `SHA256SUMS` | checksums for everything above |
+
+Replace `1.16.0` below with the
+[latest release](https://github.com/balwierz/vv/releases/latest) if newer.
+
+### Debian / Ubuntu
 
 ```sh
-conda install -c bioconda vv
-# or via mamba
-mamba install -c bioconda vv
+curl -LO https://github.com/balwierz/vv/releases/download/v1.16.0/vv_1.16.0-1_amd64.deb
+sudo apt install ./vv_1.16.0-1_amd64.deb        # use arm64 on ARM
 ```
 
-A matching Docker / Apptainer image is available at `quay.io/biocontainers/vv`.
-
-### Homebrew (macOS / Linuxbrew)
-
-```sh
-brew install balwierz/tap/vv
-```
+The package installs `/usr/bin/vv`, the man page and the shell completions.
 
 ### Static binary (any modern Linux)
 
 ```sh
-# x86_64 (Intel / AMD)
-arch=x86_64    # use aarch64 on ARM (e.g. AWS Graviton, Apple Silicon
-               # under Linux, Raspberry Pi 5)
-ver=$(curl -fsSL https://api.github.com/repos/balwierz/vv/releases/latest \
-        | grep -oP '"tag_name":\s*"\K[^"]+')
-curl -L "https://github.com/balwierz/vv/releases/${ver}/download/vv-${ver#v}-linux-${arch}.tar.gz" \
-  | tar -xz
-sudo install vv-*-linux-${arch}/vv /usr/local/bin/
+base=https://github.com/balwierz/vv/releases/download/v1.16.0
+arch=x86_64    # aarch64 on ARM (AWS Graviton, Raspberry Pi 5, …)
+
+curl -LO $base/vv-1.16.0-linux-$arch.tar.gz
+curl -LO $base/SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+
+tar -xzf vv-1.16.0-linux-$arch.tar.gz
+sudo install vv-1.16.0-linux-$arch/vv /usr/local/bin/
 ```
 
-The static binary requires glibc ≥ 2.28 (RHEL/CentOS/Rocky/AlmaLinux 8+,
-Debian 10+, Ubuntu 18.04+). All other dependencies are linked statically.
-Both **x86_64** and **aarch64 (ARM64)** builds are published with every
-release; verify the tarball against `SHA256SUMS` in the release assets.
+Requires glibc ≥ 2.28 (RHEL/Rocky/AlmaLinux 8+, Debian 10+, Ubuntu 18.04+).
+Arrow, Parquet, htslib, HDF5, SQLite, ncurses and the compression stack are
+all linked statically.
 
-### Arch Linux (AUR)
+### Arch Linux
+
+A split PKGBUILD ships in the repository — `vv` (CLI/TUI) and `vv-gui` (the
+Qt6 desktop viewer plus the Dolphin thumbnailer and metadata plugins). It is
+**not** in the AUR; build it from the checkout:
 
 ```sh
-paru -S vv      # or: yay -S vv
+git clone https://github.com/balwierz/vv.git
+cd vv/packaging/arch
+makepkg -si            # both packages; or -si vv to install just the CLI
 ```
+
+### Not currently published
+
+`packaging/` also carries Bioconda, Homebrew and RPM recipes, but **no
+package exists on those channels yet** — they are prepared, not published.
+Use the `.deb`, the static tarball, or a source build.
 
 ## Build from source
 
@@ -70,8 +86,19 @@ sudo pacman -S cmake gcc arrow htslib ncurses
 ### macOS
 
 ```sh
-brew install cmake apache-arrow htslib ncurses
+brew install cmake apache-arrow htslib ncurses xlsxio expat minizip hdf5
 ```
+
+Homebrew installs `apache-arrow` under its own prefix, so point CMake at it:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH="$(brew --prefix apache-arrow);$(brew --prefix htslib)"
+```
+
+macOS is compiled on every commit in CI and sanity-checked, but the test
+suite runs only on Linux and no macOS binaries are published — treat it as
+supported-but-unverified.
 
 ### Build
 
