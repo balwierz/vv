@@ -32,8 +32,14 @@ jobs:
             python3 python3-venv python3-pip \
             python3-pysam tabix bcftools ca-certificates lsb-release wget
 
-          # Phase 2 — Apache Arrow apt repo.
-          wget https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+          # Phase 2 — Apache Arrow apt repo. Bound the retries: wget defaults
+          # to --tries=20, so an outage at Apache's artifact host burns ~45
+          # minutes before the job goes red (seen 2026-07-27, when
+          # apache.jfrog.io timed out on all three of its IPs). Failing in
+          # ~2 minutes says the same thing and frees the runner. Matches the
+          # `curl --retry 3` already used for xlsxio below.
+          wget --tries=3 --timeout=20 --waitretry=10 \
+            https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
           sudo apt-get install -y -V ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
           sudo apt-get update
 
