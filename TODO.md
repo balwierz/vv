@@ -109,11 +109,6 @@ user-facing summary).
   ~500 LOC vendored (stb_image.h + sixel encoder).
 - Markdown image fetch over HTTP (badges, hosted screenshots).
   Currently any `https://…` URL falls through to the alt-text stub.
-- `vv x.bam --pileup -f ref.fa` — reference-aware pileup. The
-  current `--pileup` walker matches `samtools mpileup` without `-f`
-  (ref always `N`, no `.`/`,` match notation). Plumbing a FASTA in
-  via htslib's `faidx_fetch_seq` is mechanical; main cost is
-  threading the FASTA path through the Config.
 - `.xls` (legacy binary, OLE2 compound document) — needs libxls or a
   hand-rolled OLE2 parser; biology data is overwhelmingly `.xlsx`
   today, so deferred until somebody asks.
@@ -132,6 +127,10 @@ user-facing summary).
 - Galaxy `.dat` / Galaxy archive — niche but visible.
 
 ### Done
+- `vv x.bam --pileup -f ref.fa` — reference-aware pileup (shipped 1.15.0,
+  #73). Fills the `ref` column from an indexed FASTA and renders matches as
+  `.` / `,`, byte-identical to `samtools mpileup -B -f`. Extended in 1.16.0
+  (#88) so `-f` also supplies the reference a CRAM needs to decode.
 - AnnData CSC sparse preview (`feat/anndata-csc-preview`) — `read_sparse_preview`
   now densifies CSC as well as CSR. The compressed (indptr) axis is rows for CSR
   and columns for CSC; a single column-major scatter handles both (CSR: m=row,
@@ -276,6 +275,140 @@ user-facing summary).
   `MI_OVERRIDE=OFF` so it doesn't hide them). Verified it catches a reintroduced
   LociSSD v4 DICT overflow; it also surfaced + fixed a real bigWig misaligned
   read (aarch64 UB).
+
+## Feature roadmap (2026-07-25 analysis)
+
+Six independent lenses proposed features; every survivor was verified against
+the source, and every "today" claim below was reproduced against a build. Tier 1
+shipped in **1.16.0** (#86, #88, #89, #91, #92, #93). What follows is what was
+left, plus — equally important — what was deliberately ruled out, so it doesn't
+get re-proposed.
+
+### Tier 2 — ranked
+
+- **`--expand INFO` / `--expand attributes`** (L) — packed `k=v` blobs become
+  real columns. `vv variants.vcf --tsv` emits INFO as the literal `AF=0.5`, so
+  no `AF` column exists and `--filter` / `--select` / `--parquet` / the Qt GUI
+  cannot see the payload. GFF/GTF `attributes` is expanded *nowhere*, not even
+  in the TUI. The helpers (`parse_kv_list`, `looks_like_kv_list`,
+  `parse_vcf_info_headers`) already exist but sit **below** the
+  `#ifndef VV_CORE_LIB` guard, invisible to every export path and to libvvcore
+  — hoisting them is step one. Needs an `ExpandedSource` decorator forwarding
+  ~20 virtuals; column-index translation between the widened outer schema and
+  the inner one is the whole risk surface. `Number=A/R/G/.` keys (AD, PL) must
+  become utf8, not Int64. Document loudly that a `-n 10` preview and a full
+  scan can disagree on the GTF schema — GFF declares no key list, so the union
+  comes from whatever was read.
+- **`--contigs` + assembly fingerprinting + `--check`** (M) — the most
+  expensive silent error in genomics is an hg19 BED analysed against an hg38
+  BAM: everything runs, nothing errors, answers are quietly wrong. vv already
+  parses both sequence dictionaries and normalises `chr1`/`1`. Listing is not
+  checking: `--check` compares two positionals and exits non-zero. Shares the
+  helper hoist with `--expand`, so land that first.
+- **`--tags NM,MD,CB,UB`** (M) — BAM/CRAM auxiliary tags as columns.
+  `bam_aux_get` appears **zero times** in main.cpp, yet every modern BAM's
+  payload is in the tags (10x barcodes, methylation calls, edit distance).
+  Composes with 1.16.0's BAM regions: `-r … --tags CB --unique CB`. `auto`
+  must not be the default and must be defined as "union over the first batch".
+- **`--on-bad-row skip|null|stop` + `--bad-rows`** (M) — one short row in a
+  4 GB GTF currently fails the whole file with zero rows shown, which makes vv
+  less useful than `head` on exactly the files you most need a viewer for. Use
+  Arrow's `csv::ParseOptions::invalid_row_handler`. Line numbers must be
+  counted **before** the preamble strippers shift the stream, or the reported
+  line points at the wrong place. Lenient to look at, strict to convert.
+- **`--compute 'len=End-Start'`** (M) — row-wise derived columns. Every shaping
+  verb vv has *subsets*; nothing produces a value the file lacks. Row-wise
+  only — no aggregates, no windows, no joins; that boundary is what keeps it a
+  viewer. Do **not** reach for `arrow::compute` (its kernels are GC'd by
+  `--gc-sections` in the static build — see the note at `main.cpp` ~2338);
+  `array_value_as_double` plus typed builders is the house path. Same decorator
+  shape as `--expand`, so it becomes a much smaller patch afterwards.
+- **Accessibility** (S) — `--box unicode|ascii|none` (`auto` picks ascii when
+  `nl_langinfo(CODESET)` is not UTF-8; `LC_ALL=C vv tiny.bed` currently emits
+  UTF-8 box characters, i.e. mojibake in a C-locale terminal or a CI log), plus
+  `--theme colorblind` (Okabe–Ito + viridis ramp) and `--theme mono`.
+  **Prerequisite worth its own PR:** `tests/run_tests.sh` does not isolate
+  `XDG_CONFIG_HOME` globally, so a developer with a saved theme gets spurious
+  golden failures — a latent test-hermeticity bug, not a feature.
+- **TUI `:region chr17:7,676,040`** (M) — re-query a locus without quitting.
+  **The trap:** `apply_region_modifiers` already ran in `main()` and is *not
+  idempotent* — re-running re-appends every `--regions-file` window and
+  re-applies `--slop`. Store the original Config. Build the new source first
+  and swap only on success, or a failed reopen leaves a null `src_`. Sibling
+  tabs (xlsx sheets, sqlite tables, h5ad components) are not 1:1 with
+  `cfg.paths` and must be refused rather than multiplied.
+
+### Tier 3 — worthwhile but larger or more speculative
+
+- **Multi-file input** (L) — globs, directories, `--concat`, Hive partition
+  columns. `vv part-*.parquet --count`; `vv data/dt=2026-07-01/`. Builds on
+  1.16.0's multi-positional honesty. No new dependency (`std::filesystem`).
+- **TUI vim ergonomics pack** (L) — count prefixes (`12j`), `50%`, `Ctrl-D`,
+  `</>` to move a column, `Z` to freeze through the cursor, `*` to search the
+  cursor's column, `J`/`K` to step records in the detail pane. Unlocked by the
+  1.16.0 cell cursor.
+- **FASTA `.fai` region retrieval** (M) — `vv hg38.fa -r chr7:55,019,000-…`,
+  and stop plain `vv hg38.fa` trying to fit a chromosome in one cell.
+- **`--bins N` for bigWig** (M) — binned means from the file's own zoom levels
+  instead of ten million intervals; `bwStats` already compiles in.
+- **Provenance stamping + `--fingerprint`** (M) — Parquet/Arrow KV keys for
+  version, argv, source path/size, region and filter; carry a source's own
+  `@PG` / `##source` forward instead of dropping it. Needs `--no-provenance`
+  for reproducible builds.
+
+### Deliberately not doing — do not re-propose without new information
+
+- **`--group-by` / `--agg`** — where vv stops being a viewer and becomes a
+  query engine. `duckdb -c "select … from 'f.parquet'"` is one command away,
+  and `vv in.bam --tags CB --parquet - | duckdb` reaches the only real
+  differentiator without owning an aggregation mini-language forever (users
+  will immediately want median/percentile/stddev/first/last). Also needs an
+  unbounded hash map.
+- **`--join` / `--intersect` / `--annotate` / `--per-region`** — an interval and
+  relational join engine inside a single-file program. `bedtools` is installed
+  wherever these files live. It dies in the long tail: `--nearest`
+  tie-breaking, strandedness, upstream/downstream sign, `-d` vs `-D`, and a
+  multi-overlap policy every user re-litigates.
+- **Remote input URLs (`https://`, `s3://`, `gs://`)** — incompatible with the
+  flagship artifact. The AlmaLinux 8 static build deliberately configures
+  htslib `--disable-libcurl --disable-gcs --disable-s3` and Arrow
+  `-DARROW_S3=OFF -DARROW_GCS=OFF`; vendored libBigWig is built `-DNOCURL`.
+  The dev box's libhts has no curl either, so "the support is already linked
+  in" is false on both.
+- **`--tview` / an IGV-style locus panel** — the most tempting item on the list
+  and still a different product: read stacking, CIGAR-aware base rendering, a
+  reference track, zoom/pan, a second layout engine. `samtools tview` and IGV
+  exist. The adjacent scope was already declined (2bit bases are deliberately
+  not decoded).
+- **A Python binding over libvvcore** — XL for a marginal audience; pyarrow,
+  pysam and anndata already cover most of what vv reads. The blocker is not
+  pybind11, it is two Arrow runtimes in one process: the release configuration
+  is static and `--whole-archive`'d and cannot produce a PIC `.so` — the same
+  reason the KF6 plugins are skipped in that configuration.
+- **vv writing index or cache sidecars** (`--index` building `.tbi`/`.bai`, a
+  `.vvi` row index, a `~/.cache/vv` metadata cache) — turns a read-only viewer
+  into a file producer, duplicates tabix/samtools, and the failure users
+  actually hit (plain gzip instead of bgzip) is not fixable by indexing without
+  rewriting a multi-GB file.
+- **A background prefetch thread in the TUI** — no `TabularSource` subclass is
+  thread-safe: streaming sources mutate `batches_`/`rows_so_far_` under
+  `mutable` with no lock, and htslib, HDF5 and sqlite handles are
+  single-threaded per handle. A permanent class of heisenbugs, not a speedup.
+- **`--sorting-columns`** and the Parquet writer-tuning flag family —
+  `parquet/properties.h` warns that a sorting hint can be inconsistent with the
+  data, and a lying hint makes downstream engines prune *correct* rows: a
+  silent wrong-results bug in someone else's pipeline, caused by a viewer.
+- **h5ad / HDF5 integrity validation** — investigated 2026-07-26 and rejected
+  on evidence. Truncation is already caught by `h5ls`, `h5stat`, `anndata` and
+  vv itself; corruption *inside* a dataset is caught by **none** of them,
+  including a full `h5dump` and a complete `anndata.read_h5ad` (verified by
+  corrupting bytes inside `X/data` — the array sum went to `nan` and every tool
+  exited 0). HDF5 stores raw data with no checksum unless the writer enabled
+  Fletcher32, which anndata does not. Nothing vv could add would change that.
+  A narrow *semantic* check (obs/var lengths vs X dims, indptr monotonicity,
+  category codes in range) is the only real gap, and vv already computes
+  several of those and silently clamps them — worth doing only if someone asks,
+  and it must not be advertised as an integrity check.
 
 ## Audit findings (2026-06-10)
 
