@@ -649,6 +649,129 @@ assert_contains "select_unknown_column_errors" "$BAD_COL" "unknown"
 BAD_FILTER=$("$VV" --tsv --filter 'BogusCol > 0' "$DATA/tiny.lociss" 2>&1 || true)
 assert_contains "filter_unknown_column_errors" "$BAD_FILTER" "unknown"
 
+# ── --expand: packed key=value columns become real columns ───────────────────
+# VCF INFO and GFF/GTF attributes carry the actual payload of those formats as
+# one opaque string. The TUI had a display-only expansion; every export path,
+# libvvcore and the Qt GUI saw only the blob.
+#
+# VCF: keys and types come from the ##INFO=<...> declarations, which is
+# authoritative and needs no data scan.
+EXP_HDR=$("$VV" --tsv --expand INFO "$DATA/tiny.vcf" 2>/dev/null | head -1)
+assert_contains "expand_vcf_adds_key_column" "$EXP_HDR" "AF"
+# The raw blob is KEPT and column indices are unchanged, so anything that
+# worked before still works.
+assert_contains "expand_vcf_keeps_raw_column" "$EXP_HDR" "INFO"
+assert_eq_file_inline "expand_vcf_select_key" \
+    "$("$VV" --tsv --no-header --expand INFO --select AF "$DATA/tiny.vcf" 2>/dev/null | paste -sd, -)" \
+    "0.5,0.1,0.3,0.2"
+# The point of the whole feature: the key reaches --filter.
+assert_eq_file_inline "expand_vcf_filter_on_key" \
+    "$("$VV" --count --expand INFO --filter 'AF > 0.2' "$DATA/tiny.vcf" 2>/dev/null)" "2"
+# Typing comes from the header: Type=Float -> double, not string.
+"$VV" --schema --json --expand INFO "$DATA/tiny.vcf" 2>/dev/null | python3 -c "
+import json,sys
+cols = {c['name']: c['type'] for c in json.load(sys.stdin)['columns']}
+assert cols['AF'] == 'double', cols['AF']
+" 2>/dev/null && { PASS=$((PASS+1)); echo "  ok    expand_vcf_types_from_header"; } \
+   || { FAIL=$((FAIL+1)); echo "  FAIL  expand_vcf_types_from_header"; }
+
+# GTF: nothing is declared, so keys come from the first chunk in first-seen
+# order. gencode repeats `tag`; the first occurrence wins and it yields ONE
+# column, not two.
+if [ -f "$DATA/tiny.gtf" ]; then
+    GTF_COLS=$("$VV" --list-columns --expand attributes "$DATA/tiny.gtf" 2>/dev/null | paste -sd, -)
+    assert_contains "expand_gtf_gene_name"     "$GTF_COLS" "gene_name"
+    assert_contains "expand_gtf_transcript_id" "$GTF_COLS" "transcript_id"
+    assert_eq_file_inline "expand_gtf_repeated_key_once" \
+        "$("$VV" --list-columns --expand attributes "$DATA/tiny.gtf" 2>/dev/null | grep -cx tag)" "1"
+    assert_eq_file_inline "expand_gtf_values" \
+        "$("$VV" --tsv --no-header --expand attributes --select feature,gene_name \
+             "$DATA/tiny.gtf" 2>/dev/null | head -1)" \
+        "$(printf 'gene\tDDX11L1')"
+    # A key absent from a row is null, not the empty string mistaken for data.
+    assert_eq_file_inline "expand_gtf_absent_key_is_null" \
+        "$("$VV" --count --expand attributes --filter 'transcript_id is null' \
+             "$DATA/tiny.gtf" 2>/dev/null)" "1"
+fi
+
+# A column that is not a key=value list must be REFUSED. parse_kv_list treats a
+# bare token as a flag, so without a shape gate `--expand Name` on a BED would
+# manufacture one column per distinct value.
+assert_exit_code "expand_refuses_plain_text_column" 1 \
+    "$VV" --tsv --expand Name "$DATA/tiny.bed"
+EXP_ERR=$("$VV" --tsv --expand Name "$DATA/tiny.bed" 2>&1 >/dev/null || true)
+assert_contains "expand_refuses_plain_text_msg" "$EXP_ERR" "does not look"
+# Unknown column, and a non-text column, are distinct clean errors.
+assert_exit_code "expand_unknown_column"  1 "$VV" --tsv --expand NOPE "$DATA/tiny.vcf"
+assert_exit_code "expand_non_text_column" 1 "$VV" --tsv --expand POS  "$DATA/tiny.vcf"
+assert_exit_code "expand_missing_arg"     2 "$VV" --tsv --expand
+
+# External oracle: an --expand + --filter predicate on an INFO key must select
+# the same records bcftools does. Gated on availability, as the other bcftools
+# cases are.
+if command -v bcftools >/dev/null 2>&1; then
+    for T in 'AF>0.2' 'AF>=0.3' 'AF<0.2'; do
+        assert_eq_file_inline "expand_matches_bcftools_$T" \
+            "$("$VV" --count --expand INFO --filter "AF ${T#AF}" "$DATA/tiny.vcf" 2>/dev/null)" \
+            "$(bcftools view -i "$T" "$DATA/tiny.vcf" 2>/dev/null | grep -vc '^#')"
+    done
+fi
+
+# ── Decorator contract ───────────────────────────────────────────────────────
+# ExpandedSource wraps another source and must forward every virtual. These are
+# the assertions that catch a forwarding mistake, and they are cheap: re-run
+# things that already work and require the SAME answer through the decorator.
+if [ -f "$DATA/tiny.vcf.gz" ]; then
+    for R in chr1:99-600 chr1:1400-1600 chr2:0-1000; do
+        assert_eq_file_inline "expand_preserves_region_$R" \
+            "$("$VV" --count -r "$R" --expand INFO "$DATA/tiny.vcf.gz" 2>/dev/null)" \
+            "$("$VV" --count -r "$R"                "$DATA/tiny.vcf.gz" 2>/dev/null)"
+    done
+fi
+# Forced eviction through the decorator: chunk boundaries are forwarded, so a
+# sequential export is still complete.
+EXPVCF="$TMP/expand_evict.vcf"
+{ printf '##INFO=<ID=DP,Number=1,Type=Integer,Description="d">\n';
+  printf '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n';
+  awk 'BEGIN{for(i=1;i<=20000;i++) printf "chr1\t%d\t.\tA\tG\t30\tPASS\tDP=%d\n", i*10, i}'; } > "$EXPVCF"
+assert_eq_file_inline "expand_survives_forced_eviction" \
+    "$(VV_STREAM_BATCH_CAP=1 "$VV" --tsv --no-header --expand INFO "$EXPVCF" 2>/dev/null | wc -l | tr -d ' ')" \
+    "20000"
+# ...and the expanded values are right at the far end of that stream, not just
+# the row count.
+assert_eq_file_inline "expand_last_row_value" \
+    "$(VV_STREAM_BATCH_CAP=1 "$VV" --tsv --no-header --expand INFO --select DP "$EXPVCF" 2>/dev/null | tail -1)" \
+    "20000"
+rm -f "$EXPVCF"
+# Round-trips through the Parquet writer with the type intact.
+"$VV" --expand INFO --parquet "$TMP/expand.parquet" "$DATA/tiny.vcf" >/dev/null 2>&1
+"$VV" --schema --json "$TMP/expand.parquet" 2>/dev/null | python3 -c "
+import json,sys
+cols = {c['name']: c['type'] for c in json.load(sys.stdin)['columns']}
+assert cols.get('AF') == 'double', cols
+" 2>/dev/null && { PASS=$((PASS+1)); echo "  ok    expand_parquet_roundtrip"; } \
+   || { FAIL=$((FAIL+1)); echo "  FAIL  expand_parquet_roundtrip"; }
+rm -f "$TMP/expand.parquet"
+
+# The TUI must stand down when the source is already expanded, or every key
+# appears twice (verified against a build with the stand-down removed: the
+# header read "AF AF" instead of "INFO AF").
+if command -v python3 >/dev/null 2>&1 && command -v tmux >/dev/null 2>&1; then
+    tmux kill-session -t vvexp 2>/dev/null
+    tmux new-session -d -s vvexp -x 160 -y 8 \
+        "TERM=xterm-256color $VV -i --expand INFO $DATA/tiny.vcf"
+    sleep 2
+    TUI_HDR=$(tmux capture-pane -p -t vvexp | sed -n 1p)
+    tmux kill-session -t vvexp 2>/dev/null
+    NAF=$(printf '%s' "$TUI_HDR" | grep -o '\bAF\b' | wc -l | tr -d ' ')
+    if [ "$NAF" = "1" ]; then
+        PASS=$((PASS+1)); echo "  ok    expand_tui_does_not_double_expand"
+    else
+        FAIL=$((FAIL+1))
+        echo "  FAIL  expand_tui_does_not_double_expand (AF x$NAF in: $TUI_HDR)"
+    fi
+fi
+
 # ── Format registry (--formats) and drift ────────────────────────────────────
 # kFormats[] is the one authoritative list of what vv reads. Before it, the
 # same information was restated in seven places and had already drifted:

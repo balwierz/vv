@@ -526,6 +526,31 @@ cur.executemany('INSERT INTO "a""b" VALUES(?,?)', [(1, "hello"), (2, "world")])
 con.commit()
 con.close()
 
+# ── GTF (gencode-shaped, for --expand attributes) ────────────────────────────
+# No .gff/.gtf fixture existed. Shaped like real gencode: GTF-style
+# `key "value";` attributes, a repeated `tag` key (gencode repeats it), and a
+# key that appears only on LATER rows (`exon_number`) so the documented
+# "-n preview and a full scan can disagree on the schema" case is testable.
+with open(HERE / "tiny.gtf", "w") as f:
+    f.write("##description: evidence-based test fixture\n")
+    f.write("##provider: GENCODE\n")
+    rows = [
+        ("gene",       11869, 14409,
+         'gene_id "ENSG00000223972.5"; gene_type "pseudogene"; '
+         'gene_name "DDX11L1"; level 2; tag "basic"; tag "Ensembl_canonical";'),
+        ("transcript", 11869, 14409,
+         'gene_id "ENSG00000223972.5"; transcript_id "ENST00000456328.2"; '
+         'gene_name "DDX11L1"; transcript_support_level "1"; tag "basic";'),
+        ("exon",       11869, 12227,
+         'gene_id "ENSG00000223972.5"; transcript_id "ENST00000456328.2"; '
+         'exon_number 1; gene_name "DDX11L1";'),
+        ("exon",       12613, 12721,
+         'gene_id "ENSG00000223972.5"; transcript_id "ENST00000456328.2"; '
+         'exon_number 2; gene_name "DDX11L1";'),
+    ]
+    for feat, beg, end, attrs in rows:
+        f.write("chr1\tHAVANA\t%s\t%d\t%d\t.\t+\t.\t%s\n" % (feat, beg, end, attrs))
+
 # ── BAM (for --pileup tests; needs pysam) ────────────────────────────────────
 # Generate a sorted + indexed BAM with three reads on chr1:100 covering
 # positions 100–119, so the pileup engine emits 20 rows when invoked.

@@ -811,6 +811,16 @@ static void print_usage(const char* prog) {
         "  --schema            print schema + file metadata and exit\n"
         "                      (with --json: machine-readable; `rows` is null\n"
         "                      when the file has not been fully scanned)\n"
+        "  --expand <col>      unpack a packed key=value column into real\n"
+        "                      columns, appended to the schema — VCF INFO,\n"
+        "                      GFF/GTF attributes. The keys then work with\n"
+        "                      --select / --filter / --parquet like any other\n"
+        "                      column, e.g.\n"
+        "                        vv v.vcf --expand INFO --filter \'AF > 0.05\'\n"
+        "                      VCF types come from the ##INFO declarations.\n"
+        "                      GFF/GTF declares nothing, so keys are taken\n"
+        "                      from the first chunk: a -n preview and a full\n"
+        "                      scan CAN disagree on the column set.\n"
         "  --list-columns      column names, one per line\n"
         "  --list-tabs         component tab labels, one per line\n"
         "  --formats           the supported-format table (add --json)\n"
@@ -986,6 +996,8 @@ static Config parse_args(int argc, char** argv) {
             cfg.arrow_out = argv[++i];
         } else if (!std::strcmp(argv[i], "--compression") && i + 1 < argc) {
             cfg.compression = argv[++i];
+        } else if (!std::strcmp(argv[i], "--expand") && i + 1 < argc) {
+            cfg.expand_col = argv[++i];
         } else if (!std::strcmp(argv[i], "--list-columns")) {
             cfg.list_columns = true;
         } else if (!std::strcmp(argv[i], "--list-tabs")) {
@@ -1081,6 +1093,7 @@ static Config parse_args(int argc, char** argv) {
                 "--arrow", "--feather",
                 "--compression", "--unique", "--sample", "--filter",
                 "--select", "--cols", "--image-mode", "--tab", "--theme",
+                "--expand",
                 "--delimiter", "-f", "--fasta",
             };
             if (needs_arg.count(argv[i])) {
@@ -12707,7 +12720,366 @@ static void emit_markdown_stdout(const MarkdownDoc& doc) {
 
 }  // namespace md
 
-std::string open_source(const std::string& path, const Config& cfg,
+// ── Packed key=value columns (VCF INFO, GFF/GTF attributes) ─────────────────
+// These live ABOVE the VV_CORE_LIB guard on purpose. They used to sit inside
+// the ncurses frontend, which meant the TUI could show INFO as virtual columns
+// while every export path (--tsv/--json/--parquet/--arrow), libvvcore and the
+// Qt GUI saw only the raw blob. ExpandedSource below needs them too.
+
+// Parse a VCF-INFO / GFF-attributes style key=value list. Handles "k=v;k=v"
+// (VCF/GFF3) and 'k "v"; k "v";' (GTF). Bare tokens become flags with empty value.
+static std::vector<std::pair<std::string,std::string>>
+parse_kv_list(const std::string& s) {
+    std::vector<std::pair<std::string,std::string>> out;
+    auto is_sp = [](char c){ return c == ' ' || c == '\t'; };
+    size_t i = 0;
+    while (i < s.size()) {
+        while (i < s.size() && (is_sp(s[i]) || s[i] == ';')) ++i;
+        if (i >= s.size()) break;
+        size_t ks = i;
+        while (i < s.size() && s[i] != '=' && s[i] != ';' && !is_sp(s[i])) ++i;
+        std::string key = s.substr(ks, i - ks);
+        if (key.empty()) { ++i; continue; }
+        while (i < s.size() && (s[i] == '=' || is_sp(s[i]))) ++i;
+        std::string value;
+        if (i < s.size() && s[i] == '"') {
+            ++i;
+            size_t vs = i;
+            while (i < s.size() && s[i] != '"') ++i;
+            value = s.substr(vs, i - vs);
+            if (i < s.size()) ++i;
+        } else if (i < s.size() && s[i] != ';') {
+            size_t vs = i;
+            while (i < s.size() && s[i] != ';') ++i;
+            value = s.substr(vs, i - vs);
+            while (!value.empty() && is_sp(value.back())) value.pop_back();
+        }
+        out.emplace_back(std::move(key), std::move(value));
+    }
+    return out;
+}
+
+// Heuristic: does this cell look like a k=v;k=v list worth expanding?
+static bool looks_like_kv_list(const std::string& s) {
+    return s.find(';') != std::string::npos &&
+           (s.find('=') != std::string::npos || s.find('"') != std::string::npos);
+}
+
+// Parse VCF ##INFO=<ID=X,Number=...,Type=T,Description="..."> header lines.
+// Returns (ID, Arrow type) pairs in file order. Type maps VCF types to Arrow:
+//   Integer → INT64, Float → DOUBLE, Flag → BOOL, everything else → STRING.
+static std::vector<std::pair<std::string, arrow::Type::type>>
+parse_vcf_info_headers(const std::vector<std::string>& preamble) {
+    std::vector<std::pair<std::string, arrow::Type::type>> out;
+    const std::string prefix = "##INFO=<";
+    for (auto& line : preamble) {
+        if (line.rfind(prefix, 0) != 0 || line.empty() || line.back() != '>') continue;
+        std::string body = line.substr(prefix.size(), line.size() - prefix.size() - 1);
+        std::string id, type, number;
+        size_t i = 0, n = body.size();
+        while (i < n) {
+            size_t ke = body.find('=', i);
+            if (ke == std::string::npos) break;
+            std::string k = body.substr(i, ke - i);
+            size_t vs = ke + 1, ve;
+            std::string v;
+            if (vs < n && body[vs] == '"') {
+                ve = body.find('"', vs + 1);
+                if (ve == std::string::npos) break;
+                v = body.substr(vs + 1, ve - vs - 1);
+                i = (ve + 1 < n) ? ve + 2 : n;  // skip closing quote + comma
+            } else {
+                ve = body.find(',', vs);
+                if (ve == std::string::npos) ve = n;
+                v = body.substr(vs, ve - vs);
+                i = (ve < n) ? ve + 1 : n;
+            }
+            if (k == "ID")     id = v;
+            if (k == "Type")   type = v;
+            if (k == "Number") number = v;
+        }
+        if (id.empty()) continue;
+        // Number is load-bearing: A / R / G / . mean "one value per allele /
+        // per genotype / variable", so a declared Integer like AD or PL holds
+        // "12,4" per record. Typing that INT64 makes every value null. Only
+        // Number=1 (or a Flag, which has none) gets a scalar Arrow type.
+        const bool scalar = (number == "1" || number.empty());
+        arrow::Type::type t = arrow::Type::STRING;
+        if      (type == "Flag")               t = arrow::Type::BOOL;
+        else if (!scalar)                      t = arrow::Type::STRING;
+        else if (type == "Integer")            t = arrow::Type::INT64;
+        else if (type == "Float")              t = arrow::Type::DOUBLE;
+        out.emplace_back(std::move(id), t);
+    }
+    return out;
+}
+// ── ExpandedSource: packed key=value column → real columns ───────────────────
+//
+// A decorator over another source. VCF INFO and GFF/GTF attributes carry the
+// actual payload of those formats as one opaque string, so `--filter`,
+// `--select`, `--parquet`, `--unique` and the Qt GUI could not see any of it.
+// The TUI had its own display-only expansion; this replaces that with a real
+// schema-level one that every consumer inherits.
+//
+// The expanded columns are APPENDED, so existing column indices are unchanged
+// and the raw blob is still there — a projection or a region-column
+// auto-detection that worked before keeps working.
+class ExpandedSource : public TabularSource {
+    std::unique_ptr<TabularSource>  inner_;
+    int                             src_col_ = -1;   // the packed column
+    std::vector<std::string>        keys_;           // appended, in order
+    std::vector<arrow::Type::type>  types_;
+    std::shared_ptr<arrow::Schema>  schema_;
+    int                             n_inner_ = 0;
+
+    // Build one expanded column's array from the packed strings of a chunk.
+    arrow::Status build_key_array(const arrow::ChunkedArray& packed,
+                                   size_t ki,
+                                   std::shared_ptr<arrow::Array>* out) const {
+        const std::string& key = keys_[ki];
+        const arrow::Type::type t = types_[ki];
+        arrow::StringBuilder sb;
+        arrow::Int64Builder  ib;
+        arrow::DoubleBuilder db;
+        arrow::BooleanBuilder bb;
+        for (const auto& chunk : packed.chunks()) {
+            for (int64_t r = 0; r < chunk->length(); ++r) {
+                bool found = false;
+                std::string val;
+                if (!chunk->IsNull(r)) {
+                    const std::string raw = cell_to_string(*chunk, r);
+                    if (raw != NULL_SYMBOL) {
+                        for (auto& kv : parse_kv_list(raw)) {
+                            if (kv.first == key) { found = true; val = kv.second; break; }
+                        }
+                    }
+                }
+                switch (t) {
+                    case arrow::Type::BOOL:
+                        // A VCF Flag is present-or-absent, never null.
+                        ARROW_RETURN_NOT_OK(bb.Append(found));
+                        break;
+                    case arrow::Type::INT64:
+                        if (!found || val.empty()) ARROW_RETURN_NOT_OK(ib.AppendNull());
+                        else {
+                            try { ARROW_RETURN_NOT_OK(ib.Append(std::stoll(val))); }
+                            catch (...) { ARROW_RETURN_NOT_OK(ib.AppendNull()); }
+                        }
+                        break;
+                    case arrow::Type::DOUBLE:
+                        if (!found || val.empty()) ARROW_RETURN_NOT_OK(db.AppendNull());
+                        else {
+                            try { ARROW_RETURN_NOT_OK(db.Append(std::stod(val))); }
+                            catch (...) { ARROW_RETURN_NOT_OK(db.AppendNull()); }
+                        }
+                        break;
+                    default:
+                        // A key that is absent is null; a bare flag-like key
+                        // that is present with no value is an empty string.
+                        if (!found) ARROW_RETURN_NOT_OK(sb.AppendNull());
+                        else        ARROW_RETURN_NOT_OK(sb.Append(val));
+                }
+            }
+        }
+        switch (t) {
+            case arrow::Type::BOOL:   return bb.Finish(out);
+            case arrow::Type::INT64:  return ib.Finish(out);
+            case arrow::Type::DOUBLE: return db.Finish(out);
+            default:                  return sb.Finish(out);
+        }
+    }
+
+public:
+    // Column names that would collide with an inner field get a suffix rather
+    // than silently shadowing it.
+    static std::string open(std::unique_ptr<TabularSource> inner,
+                             const std::string& col_name,
+                             std::unique_ptr<TabularSource>* out) {
+        auto in_schema = inner->schema();
+        int idx = in_schema->GetFieldIndex(col_name);
+        if (idx < 0)
+            return "--expand: no column named '" + col_name + "'";
+        auto t = in_schema->field(idx)->type()->id();
+        if (t != arrow::Type::STRING && t != arrow::Type::LARGE_STRING)
+            return "--expand: column '" + col_name + "' is " +
+                   in_schema->field(idx)->type()->ToString() +
+                   ", not text — nothing to unpack";
+
+        auto self = std::unique_ptr<ExpandedSource>(new ExpandedSource());
+        self->src_col_ = idx;
+        self->n_inner_ = in_schema->num_fields();
+
+        // Key discovery. A VCF declares its INFO keys and their types in the
+        // header, which is authoritative and cheap. GFF/GTF declares nothing,
+        // so the keys come from the first chunk — see the caveat in --help:
+        // a `-n 10` preview and a full scan CAN disagree on the schema.
+        std::vector<std::pair<std::string, arrow::Type::type>> decl =
+            parse_vcf_info_headers(inner->preamble_below());
+        if (decl.empty())
+            decl = parse_vcf_info_headers(inner->preamble_above());
+
+        if (!decl.empty()) {
+            for (auto& [k, ty] : decl) { self->keys_.push_back(k); self->types_.push_back(ty); }
+        } else {
+            inner->ensure(0);
+            std::shared_ptr<arrow::Table> first;
+            if (inner->num_chunks() > 0 &&
+                inner->read_chunk(0, {idx}, &first).ok() && first &&
+                first->num_columns() == 1) {
+                std::set<std::string> seen;
+                auto col = first->column(0);
+                // Gate first. parse_kv_list() treats a bare token as a flag,
+                // so without this a plain text column (BED's Name, say) would
+                // manufacture one column per distinct value — 20 junk columns
+                // from `--expand Name`. Require that most non-null cells
+                // actually carry `=` or `;`.
+                int64_t sampled = 0, kv_like = 0;
+                for (const auto& chunk : col->chunks()) {
+                    for (int64_t r = 0; r < chunk->length(); ++r) {
+                        if (chunk->IsNull(r)) continue;
+                        const std::string raw = cell_to_string(*chunk, r);
+                        if (raw == NULL_SYMBOL) continue;
+                        ++sampled;
+                        if (raw.find('=') != std::string::npos ||
+                            raw.find(';') != std::string::npos) ++kv_like;
+                    }
+                }
+                if (sampled > 0 && kv_like * 2 < sampled)
+                    return "--expand: column '" + col_name + "' does not look "
+                           "like a key=value list (no '=' or ';' in most "
+                           "values) — nothing to unpack";
+                for (const auto& chunk : col->chunks()) {
+                    for (int64_t r = 0; r < chunk->length(); ++r) {
+                        if (chunk->IsNull(r)) continue;
+                        const std::string raw = cell_to_string(*chunk, r);
+                        if (raw == NULL_SYMBOL) continue;
+                        for (auto& kv : parse_kv_list(raw)) {
+                            // parse_kv_list returns duplicates (gencode repeats
+                            // `tag=`); first occurrence wins, order is stable.
+                            if (seen.insert(kv.first).second &&
+                                (int)self->keys_.size() < kMaxExpandKeys) {
+                                self->keys_.push_back(kv.first);
+                                self->types_.push_back(arrow::Type::STRING);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (self->keys_.empty())
+            return "--expand: found no key=value pairs in column '" + col_name + "'";
+
+        arrow::FieldVector fields;
+        for (int i = 0; i < in_schema->num_fields(); ++i)
+            fields.push_back(in_schema->field(i));
+        for (size_t k = 0; k < self->keys_.size(); ++k) {
+            std::string nm = self->keys_[k];
+            if (in_schema->GetFieldIndex(nm) >= 0) nm += "_" + col_name;
+            fields.push_back(arrow::field(nm, arrow_type_for_id(self->types_[k])));
+        }
+        self->schema_ = arrow::schema(fields);
+        self->inner_  = std::move(inner);
+        *out = std::move(self);
+        return "";
+    }
+
+    static constexpr int kMaxExpandKeys = 256;
+
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+
+    arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
+                              std::shared_ptr<arrow::Table>* out) override {
+        // Split the request. Any expanded column also needs the packed source
+        // column read, even when the caller did not ask for it.
+        std::vector<int> inner_req;
+        bool want_expanded = false;
+        for (int c : col_indices) {
+            if (c < n_inner_) inner_req.push_back(c);
+            else              want_expanded = true;
+        }
+        if (want_expanded &&
+            std::find(inner_req.begin(), inner_req.end(), src_col_) == inner_req.end())
+            inner_req.push_back(src_col_);
+
+        std::shared_ptr<arrow::Table> in_tbl;
+        ARROW_RETURN_NOT_OK(inner_->read_chunk(i, inner_req, &in_tbl));
+        if (!in_tbl) { *out = nullptr; return arrow::Status::OK(); }
+
+        auto pos_of = [&](int inner_idx) {
+            for (size_t k = 0; k < inner_req.size(); ++k)
+                if (inner_req[k] == inner_idx) return (int)k;
+            return -1;
+        };
+
+        // Assemble in the caller's requested order — write_delimited and
+        // friends index the result by position within col_indices.
+        arrow::FieldVector fields;
+        std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
+        for (int c : col_indices) {
+            if (c < n_inner_) {
+                int p = pos_of(c);
+                if (p < 0) return arrow::Status::Invalid("expand: lost inner column");
+                fields.push_back(schema_->field(c));
+                cols.push_back(in_tbl->column(p));
+            } else {
+                int p = pos_of(src_col_);
+                if (p < 0) return arrow::Status::Invalid("expand: missing packed column");
+                std::shared_ptr<arrow::Array> arr;
+                ARROW_RETURN_NOT_OK(build_key_array(*in_tbl->column(p),
+                                                     (size_t)(c - n_inner_), &arr));
+                fields.push_back(schema_->field(c));
+                cols.push_back(std::make_shared<arrow::ChunkedArray>(arr));
+            }
+        }
+        *out = arrow::Table::Make(arrow::schema(fields), cols, in_tbl->num_rows());
+        return arrow::Status::OK();
+    }
+
+    // ── Everything else forwards. chunk boundaries are preserved, so the
+    //    streaming-eviction contract, chunk_meta() and the exact region
+    //    row-count contract all survive unchanged.
+    int64_t total_rows()      const override { return inner_->total_rows(); }
+    int     num_chunks()      const override { return inner_->num_chunks(); }
+    ChunkMeta chunk_meta(int i) const override { return inner_->chunk_meta(i); }
+    void    ensure(int i)           override { inner_->ensure(i); }
+    void    set_retain_all(bool b)  override { inner_->set_retain_all(b); }
+    bool    evicted_any()     const override { return inner_->evicted_any(); }
+    arrow::Status read_status() const override { return inner_->read_status(); }
+    bool    region_applied()  const override { return inner_->region_applied(); }
+    bool    change_slice(int d, bool abs, int64_t t) override {
+        return inner_->change_slice(d, abs, t);
+    }
+    const std::string& path() const override { return inner_->path(); }
+    std::string tab_label()   const override { return inner_->tab_label(); }
+    std::string created_by()  const override { return inner_->created_by(); }
+    std::string top_banner()  const override { return inner_->top_banner(); }
+    std::vector<std::string> preamble_above() const override {
+        return inner_->preamble_above();
+    }
+    std::vector<std::string> preamble_below() const override {
+        return inner_->preamble_below();
+    }
+    std::vector<std::string> hidden_for_display() const override {
+        return inner_->hidden_for_display();
+    }
+    std::string format_cell(int col_idx, std::string val) const override {
+        return (col_idx < n_inner_) ? inner_->format_cell(col_idx, std::move(val))
+                                     : val;
+    }
+    int min_col_width(int col_idx) const override {
+        return (col_idx < n_inner_) ? inner_->min_col_width(col_idx) : 4;
+    }
+    std::string footer() const override {
+        return inner_->footer() + "  |  expanded " +
+               schema_->field(src_col_)->name() + " → " +
+               std::to_string(keys_.size()) + " columns";
+    }
+};
+
+// The dispatch ladder. open_source() wraps this so a decorator (--expand)
+// applies to every one of its ~25 success paths at once, including the
+// multi-file TUI loop, instead of each `*out = std::move(src)` needing a patch.
+static std::string open_source_dispatch(const std::string& path, const Config& cfg,
                                 std::unique_ptr<TabularSource>* out) {
     // ── Determine file kind ──────────────────────────────────────────────────
     bool        is_parquet = false;
@@ -13014,6 +13386,21 @@ std::string open_source(const std::string& path, const Config& cfg,
         return "";
     }
     *out = std::move(src);
+    return "";
+}
+
+// The public entry point: dispatch, then apply --expand once. Doing it here
+// rather than at each `*out = std::move(src)` means every format and every
+// caller (CLI, multi-file TUI loop, Qt GUI, KDE plugins) gets it, and no
+// future dispatch branch can forget to.
+std::string open_source(const std::string& path, const Config& cfg,
+                         std::unique_ptr<TabularSource>* out) {
+    std::string err = open_source_dispatch(path, cfg, out);
+    if (!err.empty() || cfg.expand_col.empty() || !*out) return err;
+    std::unique_ptr<TabularSource> wrapped;
+    err = ExpandedSource::open(std::move(*out), cfg.expand_col, &wrapped);
+    if (!err.empty()) return err;
+    *out = std::move(wrapped);
     return "";
 }
 
@@ -14955,87 +15342,6 @@ struct CachedRG {
     std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
     bool ok = false;  // false if read_chunk failed
 };
-
-// Parse a VCF-INFO / GFF-attributes style key=value list. Handles "k=v;k=v"
-// (VCF/GFF3) and 'k "v"; k "v";' (GTF). Bare tokens become flags with empty value.
-static std::vector<std::pair<std::string,std::string>>
-parse_kv_list(const std::string& s) {
-    std::vector<std::pair<std::string,std::string>> out;
-    auto is_sp = [](char c){ return c == ' ' || c == '\t'; };
-    size_t i = 0;
-    while (i < s.size()) {
-        while (i < s.size() && (is_sp(s[i]) || s[i] == ';')) ++i;
-        if (i >= s.size()) break;
-        size_t ks = i;
-        while (i < s.size() && s[i] != '=' && s[i] != ';' && !is_sp(s[i])) ++i;
-        std::string key = s.substr(ks, i - ks);
-        if (key.empty()) { ++i; continue; }
-        while (i < s.size() && (s[i] == '=' || is_sp(s[i]))) ++i;
-        std::string value;
-        if (i < s.size() && s[i] == '"') {
-            ++i;
-            size_t vs = i;
-            while (i < s.size() && s[i] != '"') ++i;
-            value = s.substr(vs, i - vs);
-            if (i < s.size()) ++i;
-        } else if (i < s.size() && s[i] != ';') {
-            size_t vs = i;
-            while (i < s.size() && s[i] != ';') ++i;
-            value = s.substr(vs, i - vs);
-            while (!value.empty() && is_sp(value.back())) value.pop_back();
-        }
-        out.emplace_back(std::move(key), std::move(value));
-    }
-    return out;
-}
-
-// Heuristic: does this cell look like a k=v;k=v list worth expanding?
-static bool looks_like_kv_list(const std::string& s) {
-    return s.find(';') != std::string::npos &&
-           (s.find('=') != std::string::npos || s.find('"') != std::string::npos);
-}
-
-// Parse VCF ##INFO=<ID=X,Number=...,Type=T,Description="..."> header lines.
-// Returns (ID, Arrow type) pairs in file order. Type maps VCF types to Arrow:
-//   Integer → INT64, Float → DOUBLE, Flag → BOOL, everything else → STRING.
-static std::vector<std::pair<std::string, arrow::Type::type>>
-parse_vcf_info_headers(const std::vector<std::string>& preamble) {
-    std::vector<std::pair<std::string, arrow::Type::type>> out;
-    const std::string prefix = "##INFO=<";
-    for (auto& line : preamble) {
-        if (line.rfind(prefix, 0) != 0 || line.empty() || line.back() != '>') continue;
-        std::string body = line.substr(prefix.size(), line.size() - prefix.size() - 1);
-        std::string id, type;
-        size_t i = 0, n = body.size();
-        while (i < n) {
-            size_t ke = body.find('=', i);
-            if (ke == std::string::npos) break;
-            std::string k = body.substr(i, ke - i);
-            size_t vs = ke + 1, ve;
-            std::string v;
-            if (vs < n && body[vs] == '"') {
-                ve = body.find('"', vs + 1);
-                if (ve == std::string::npos) break;
-                v = body.substr(vs + 1, ve - vs - 1);
-                i = (ve + 1 < n) ? ve + 2 : n;  // skip closing quote + comma
-            } else {
-                ve = body.find(',', vs);
-                if (ve == std::string::npos) ve = n;
-                v = body.substr(vs, ve - vs);
-                i = (ve < n) ? ve + 1 : n;
-            }
-            if (k == "ID")   id = v;
-            if (k == "Type") type = v;
-        }
-        if (id.empty()) continue;
-        arrow::Type::type t = arrow::Type::STRING;
-        if      (type == "Integer") t = arrow::Type::INT64;
-        else if (type == "Float")   t = arrow::Type::DOUBLE;
-        else if (type == "Flag")    t = arrow::Type::BOOL;
-        out.emplace_back(std::move(id), t);
-    }
-    return out;
-}
 
 class TableTUI {
     // Multiple files become tabs. `src_` always points at the currently
@@ -17248,9 +17554,17 @@ public:
 
         // Detect VCF INFO expansion: need both an INFO source column and
         // ##INFO=<...> declarations in the preamble.
+        //
+        // Stand down entirely when the source is already an ExpandedSource:
+        // --expand did this at the schema level, so the keys are real columns
+        // now and building display-only virtual ones on top would show every
+        // key twice.
+        const bool pre_expanded = dynamic_cast<const ExpandedSource*>(&src) != nullptr;
         int info_col_idx = -1;
-        for (int ci = 0; ci < src_num_cols_; ++ci)
-            if (src.schema()->field(ci)->name() == "INFO") { info_col_idx = ci; break; }
+        if (!pre_expanded) {
+            for (int ci = 0; ci < src_num_cols_; ++ci)
+                if (src.schema()->field(ci)->name() == "INFO") { info_col_idx = ci; break; }
+        }
         std::vector<std::pair<std::string, arrow::Type::type>> info_fields;
         if (info_col_idx >= 0)
             info_fields = parse_vcf_info_headers(src.preamble_below());

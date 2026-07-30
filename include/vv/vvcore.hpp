@@ -86,6 +86,10 @@ struct Config {
     bool        list_columns = false;    // --list-columns: names, one per line
     bool        list_tabs    = false;    // --list-tabs: component tab labels
     bool        list_formats = false;    // --formats: the supported-format table
+    std::string expand_col;              // --expand COL: unpack a packed
+                                         // key=value column (VCF INFO,
+                                         // GFF/GTF attributes) into real
+                                         // columns appended to the schema
     std::string tab;                     // --tab NAME: view a named component
                                          // tab (AnnData obs/var/X, sheet, …)
 };
