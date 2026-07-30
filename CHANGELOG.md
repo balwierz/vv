@@ -6,6 +6,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`--expand COL`: packed `key=value` columns become real columns.** VCF
+  `INFO` and GFF/GTF `attributes` carry the actual payload of those formats as
+  one opaque string, so `vv variants.vcf --tsv` emitted `AF=0.5` and there was
+  no `AF` column for `--filter`, `--select`, `--unique`, `--parquet` or the Qt
+  GUI to see. GFF/GTF `attributes` was expanded nowhere at all — not even in
+  the TUI.
+
+  ```sh
+  vv variants.vcf --expand INFO --filter 'AF > 0.05' --select CHROM,POS,AF
+  vv gencode.gtf  --expand attributes --select feature,gene_name,gene_type
+  ```
+
+  Implemented as an `ExpandedSource` decorator, so every format and every
+  consumer inherits it — the wrap happens once in `open_source()` rather than
+  at each of its ~25 success paths. The expanded columns are appended and the
+  raw column is kept, so existing column indices don't move.
+
+  For VCF the keys and types come from the `##INFO=<...>` declarations, with
+  no data scan. `Number=A/R/G/.` keys (`AD`, `PL`, …) hold one value per allele
+  or genotype and deliberately stay text — typing them numeric would make
+  every value null. GFF/GTF declares nothing, so keys come from the first
+  chunk in first-seen order, capped at 256, with a repeated key (gencode
+  repeats `tag`) yielding one column: consequently a `-n` preview and a full
+  scan can legitimately disagree on the column set for the same GTF, which is
+  documented rather than papered over.
+
+  A column that does not look like a key=value list is refused, instead of
+  manufacturing one column per distinct value — `parse_kv_list` treats a bare
+  token as a flag, so `--expand Name` on a BED would otherwise have produced
+  twenty junk columns.
+
+  The three parsing helpers moved above the `VV_CORE_LIB` guard, where they
+  belonged: they had been trapped inside the ncurses frontend, which is why
+  the TUI could show INFO while nothing else could. The TUI's display-only
+  expansion now stands down when the source is already expanded, so keys are
+  not shown twice.
+
+
 ## [1.16.0] - 2026-07-27
 
 ### Added

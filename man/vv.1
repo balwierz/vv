@@ -199,6 +199,34 @@ LociSSD's \fBMaxEndSoFar\fR) stay hidden; in export modes
 (\fB\-\-tsv\fR / \fB\-\-csv\fR / \fB\-\-json\fR / \fB\-\-parquet\fR)
 the explicit list is honoured exactly.
 .TP
+.BI \-\-expand " col"
+Unpack a packed \fBkey=value\fR column into real columns, appended to the
+schema. Written for VCF \fBINFO\fR and GFF/GTF \fBattributes\fR, which carry
+the payload of those formats as a single opaque string \(en once expanded the
+keys behave like any other column, so
+.B \-\-select ,
+.B \-\-filter ,
+.B \-\-unique
+and the Parquet / Arrow writers all see them.
+.IP
+For VCF the key set and their types come from the \fB##INFO=<...>\fR
+declarations, which needs no data scan. A key declared
+\fBNumber=A\fR/\fBR\fR/\fBG\fR/\fB.\fR (\fBAD\fR, \fBPL\fR, …) holds one
+value per allele or genotype, so it stays text rather than being typed numeric
+and coming back null.
+.IP
+GFF/GTF declares nothing, so the keys are taken from the first chunk in
+first-seen order, capped at 256. A repeated key (gencode repeats \fBtag\fR)
+yields one column, from its first occurrence. Consequently a
+.B \-n
+preview and a full scan can legitimately report different column sets for the
+same GTF.
+.IP
+The original column is kept and existing column indices do not move, so a
+projection or region-column auto-detection that worked before is unaffected. A
+column that does not look like a key=value list is refused rather than
+expanded into one column per distinct value.
+.TP
 .BI \-\-filter " expr"
 Keep only rows matching \fIexpr\fR. Grammar:
 \fB<column> <op> <value>\fR joined by \fBAND\fR / \fBOR\fR. Operators:

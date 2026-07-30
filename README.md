@@ -567,6 +567,22 @@ $ vv --heatmap --image-mode ascii embedding.npy > grid.txt
   The word operators are operators only in operator position, so a column
   genuinely named `in` or `is` stays filterable. The same grammar drives
   the TUI live-filter (`&`) and the Qt filter box.
+- **`--expand COL`** — unpack a packed `key=value` column into real columns.
+  VCF `INFO` and GFF/GTF `attributes` carry the actual payload of those
+  formats as one opaque string; expanded, the keys work everywhere a column
+  works:
+
+  ```sh
+  $ vv variants.vcf --expand INFO --filter 'AF > 0.05' --select CHROM,POS,AF
+  $ vv gencode.gtf  --expand attributes --select feature,gene_name,gene_type
+  ```
+
+  Types come from the `##INFO` declarations for VCF (`Number=A/R/G/.` keys such
+  as `AD` and `PL` stay text, since they hold one value per allele). GFF/GTF
+  declares nothing, so keys come from the first chunk — meaning a `-n` preview
+  and a full scan can legitimately disagree on the column set. The raw column
+  is kept and existing column indices don't move, so anything that worked
+  before still works.
 - **`--sample N`** — reservoir sample uniformly; honours `--filter`.
 - **`--unique COL[,COL,...]`** — distinct-value counts per column.
 - **`--tail N`** — last N rows instead of head-N.
