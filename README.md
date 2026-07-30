@@ -354,6 +354,18 @@ vvg data.parquet            # or any supported file
 vvg a.bam b.vcf.gz c.h5ad   # multiple files → one tab each
 ```
 
+![vvg showing an ATAC peak Parquet](docs/img/vvg-parquet.png)
+
+*An 18 k-row Parquet: two-line name + type headers, a filter bar using the
+same grammar as `--filter`, a regex find bar, the row-detail dock, and the
+Parquet metadata in the status bar.*
+
+![vvg showing an AnnData .h5ad](docs/img/vvg-anndata.png)
+
+*The same window on a 4823 × 2000 AnnData `.h5ad` — each component is a tab
+(summary, `X` preview, `obs`, `var`, each `obsm` embedding), and the status
+bar states plainly that this is a preview of the first 1000 of 4823 rows.*
+
 - **Application shell** — menu bar, **File ▸ Open** (multiple files → tabs),
   drag-and-drop, a recent-files list, and error dialogs. The **multi-tab**
   strip also expands multi-sheet / multi-dataset files (xlsx & ods sheets,
