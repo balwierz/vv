@@ -4,13 +4,14 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Latest release](https://img.shields.io/github/v/release/balwierz/vv)](https://github.com/balwierz/vv/releases)
 
-A fast, self-contained command-line viewer for tabular and bioinformatics
-file formats. One binary covers Parquet, Arrow IPC / Feather, LociSSD,
-BAM/CRAM/SAM, VCF/BCF, GFF/GTF, BED, FASTA/FASTQ, PAF, UCSC bigBed /
-bigWig / 2bit, and plain TSV/CSV — with gzip / bgzip on the fly,
-range queries, a full ncurses browser, and an optional Qt6 / KDE desktop
-app (`vvg`). On a terminal it opens an interactive viewer; elsewhere it
-prints to stdout.
+**One binary that opens 25 file formats and shows you the data.**
+
+Parquet, Arrow, AnnData/HDF5, BAM/CRAM, VCF/BCF, GFF/GTF, BED, bigWig,
+bigBed, 2bit, FASTA/FASTQ, SQLite, Excel, NumPy, ORC — gzip and bgzip on the
+fly, tabix range queries, an ncurses browser, and an optional Qt6 / KDE
+desktop app (`vvg`). No environment to activate, no import, no runtime
+dependencies. On a terminal it opens the interactive viewer; in a pipe it
+prints plain text.
 
 ```
 $ vv variants.vcf
@@ -25,6 +26,118 @@ $ vv variants.vcf
 
 [4 rows x 8 columns]
 ```
+
+## What it looks like
+
+Every format opens the same way, with the same keys. These are real frames,
+captured from a terminal.
+
+**A 18 k-row Parquet of ATAC peaks.** Integer columns are grouped with
+PEP-515 underscores and sized to the rows actually on screen, so genomic
+coordinates stay readable:
+
+```
+         chrom             start        end  name             score  strand        signalValue
+         string            int32      int32  string           float  string             double
+ ──────  ────────────  ─────────  ─────────  ────────────  ────────  ────────────  ───────────
+      0  chr1             62_274     63_771  peak_07507       153.1  +                   1.793
+      1  chr1            120_524    121_318  peak_13246       368.5  -                   5.513
+      2  chr1            136_006    136_622  peak_03715       427.1  +                   6.025
+      3  chr1            339_667    340_812  peak_16646       100.8  -                  14.885
+      4  chr1            426_162    428_423  peak_17644       210.8  -                   7.245
+      5  chr1            658_014    660_354  peak_16846        49.1  +                  16.262
+      6  chr1            820_985    821_557  peak_10088       457.8  +                   0.917
+      7  chr1          1_041_694  1_042_140  peak_04998       105.5  -                   3.748
+      8  chr1          1_105_813  1_106_035  peak_01455        73.5  +                  11.507
+      9  chr1          1_122_016  1_123_163  peak_09087        82.6  +                  16.709
+     10  chr1          1_220_080  1_221_217  peak_00820       132.4  +                   4.458
+     11  chr1          1_276_623  1_278_715  peak_03655       243.1  +                   3.941
+     12  chr1          1_364_166  1_366_290  peak_07353        55.5  -                   5.082
+     13  chr1          1_502_316  1_504_546  peak_03245       214.9  -                  16.634
+     14  chr1          1_578_062  1_578_519  peak_02492       266.4  +                   6.914
+     15  chr1          1_801_872  1_803_378  peak_05952       115.7  -                   1.633
+     16  chr1          1_887_613  1_888_031  peak_13338       169.2  -                   1.188
+     17  chr1          1_946_645  1_947_584  peak_04982       226.7  -                   5.097
+ Row 1-18/18_432  Col 1-7/8  [h/l]:←→col  [,/.]:narrow/widen  [j/k]:rows  /:search  &:filter
+```
+
+**An AnnData `.h5ad`** — each component becomes a tab: the summary, an `X`
+preview, `obs`, `var`, and each `obsm` embedding. `Tab` cycles them, and each
+keeps its own sort, filter, search and scroll position:
+
+```
+ summary │ X (preview) │ obs │ var │ obsm[X_umap]               [Tab] next  [⇧Tab] prev
+      _index        gene_ids      highly_variable     means
+      string        string        string             double
+ ───  ────────────  ────────────  ───────────────  ────────
+   0  MT-CO1        ENSG6632814…  FALSE              0.3894
+   1  MT-CO2        ENSG8678203…  FALSE              1.7176
+   2  ACTB          ENSG7720197…  FALSE              0.0735
+   3  GAPDH         ENSG1765451…  FALSE              1.3115
+   4  CD3D          ENSG1528194…  FALSE              0.4305
+   5  CD8A          ENSG6436184…  FALSE              1.1685
+   6  MS4A1         ENSG1125706…  TRUE               0.7452
+   7  NKG7          ENSG6568058…  TRUE               0.2164
+   8  LYZ           ENSG3072197…  FALSE              0.5872
+   9  FCGR3A        ENSG7372033…  TRUE               1.2654
+  10  PPBP          ENSG9886571…  FALSE              0.3075
+ Row 1-11/1_000  Col 1-4/4  tab 4/5  [j/k]:rows  /:search  &:filter  ::cmd  Enter:detail
+```
+
+**Per-column statistics without leaving the viewer.** `S` computes count,
+nulls, min, max, mean and distinct values over the whole file for the column
+under the cursor:
+
+```
+         chrom             start        end  name             score  strand
+         string            int32      int32  string           float  string
+ ──────  ────────────  ─────────  ─────────  ────────────  ────────  ────────────
+      0  chr1             62_274     63_771  peak_07507       153.1  +
+      1  chr1            120_524    121_318  peak_13246       368.5  -
+      2  chr1            136_006 ╭── column stats ───╮5       427.1  +
+      3  chr1            339_667 │ Column    score   │6       100.8  -
+      4  chr1            426_162 │ Type      float   │4       210.8  -
+      5  chr1            658_014 │ Count     18_432  │6        49.1  +
+      6  chr1            820_985 │ Nulls     0       │8       457.8  +
+      7  chr1          1_041_694 │ Min       1.3     │8       105.5  -
+      8  chr1          1_105_813 │ Max       1195    │5        73.5  +
+      9  chr1          1_122_016 │ Mean      197…    │7        82.6  +
+     10  chr1          1_220_080 │                   │0       132.4  +
+     11  chr1          1_276_623 ╰───────────────────╯5       243.1  +
+     12  chr1          1_364_166  1_366_290  peak_07353        55.5  -
+     13  chr1          1_502_316  1_504_546  peak_03245       214.9  -
+     14  chr1          1_578_062  1_578_519  peak_02492       266.4  +
+     15  chr1          1_801_872  1_803_378  peak_05952       115.7  -
+ Row 1-16/18_432  Col 1-6/8  [h/l]:←→col  [,/.]:narrow/widen  [j/k]:rows  /:search
+```
+
+**`Enter` opens the full record**, every field untruncated — the answer to a
+narrow terminal:
+
+```
+ summary │ X (preview) │ obs │ var │ obsm[X_umap]               [Tab] next  [⇧Tab] prev
+      _index        cell_type     n_genes  pct_mito  sample        total_counts
+      string        string          int64    double  string               int64
+ ───  ────────────  ────────────  ───────  ────────  ────────────  ────────────
+   0  ACCGCACAGGC…  B cell╭── Row 2 ─────────────────────────╮r3          2_361
+   1  ACCCTAGGTAG…  Monocy│ _index      : CCTCGCCATCCCTAGA-1 │r3          4_374
+   2  CCTCGCCATCC…  Monocy│ cell_type   : Monocyte           │r2          4_390
+   3  AGTTTTTACTA…  CD4 T │ n_genes     : 2_011              │r1          1_916
+   4  TCCCTAGTAGT…  CD8 T │ pct_mito    : 7.47               │r3          5_032
+   5  ACTCATTGGGC…  Monocy│ sample      : PBMC_donor2        │r3          2_508
+   6  AGGTAGCCCTC…  CD4 T │ total_counts: 4_390              │r1          1_452
+   7  TTCCCAGTGGC…  Monocy│  [j/k]:scroll  [Esc/Enter]:close │r3          3_343
+   8  CGGAGCATTTT…  Monocy╰──────────────────────────────────╯r1          3_965
+   9  TATAGGCATAG…  CD8 T cell      2_907      0.77  PBMC_donor1          6_549
+  10  TCTTGAATTAG…  CD8 T cell      1_504     10.65  PBMC_donor1          3_537
+  11  ATCGTGTGGTA…  CD4 T cell        823     13.49  PBMC_donor3          8_426
+  12  GCATCATGGCG…  CD4 T cell      1_188      4.63  PBMC_donor1          8_298
+ Row 1-13/1_000  Col 1-6/6  tab 3/5  [j/k]:rows  /:search  &:filter  ::cmd  Enter:detail
+```
+
+`hjkl` moves the cursor, `/` searches, `&` filters live, `s` sorts, `y` copies
+a cell over OSC52 (works through ssh and tmux). `H` lists every binding in-app
+— or see [the table below](#interactive-tui).
 
 ## Install
 
@@ -86,6 +199,14 @@ as supported-but-unverified.
 
 ## Supported formats
 
+25 families, dispatched by extension or magic bytes. `vv --formats` prints the
+authoritative table with capability columns (gz variants, region queries,
+component tabs, streaming vs random access) — the shell completions are checked
+against it in CI, so this list cannot drift from the code.
+
+<details>
+<summary><b>Full table</b> — click to expand</summary>
+
 | Family            | Extensions                                                 |
 |-------------------|------------------------------------------------------------|
 | Apache Parquet    | `.parquet`                                                 |
@@ -110,6 +231,9 @@ as supported-but-unverified.
 | Sequencing reads  | `.fq`, `.fastq` (plus `.gz`)                               |
 | Delimited text    | `.tsv`, `.csv` (plus `.gz`)                                |
 | Stdin             | `vv -` reads any text format from stdin (auto-gunzip)      |
+
+
+</details>
 
 Unknown extensions are auto-detected by magic bytes (Parquet, Arrow IPC,
 Feather, BAM/BCF) or delimiter heuristic (TSV vs. CSV).
