@@ -86,6 +86,8 @@ struct Config {
     bool        list_columns = false;    // --list-columns: names, one per line
     bool        list_tabs    = false;    // --list-tabs: component tab labels
     bool        list_formats = false;    // --formats: the supported-format table
+    bool        force_text   = false;    // --text: read as plain text whatever
+                                         // the extension says
     std::string expand_col;              // --expand COL: unpack a packed
                                          // key=value column (VCF INFO,
                                          // GFF/GTF attributes) into real
@@ -228,6 +230,10 @@ public:
     // complete result apart from a silently truncated one (and exit non-zero).
     // Default: always OK.
     virtual arrow::Status read_status() const { return arrow::Status::OK(); }
+    // True for a plain-text source: one utf8 column of lines, to be rendered
+    // as a document (no header row, no truncation, chop-and-scroll) rather
+    // than as a table. Default: false.
+    virtual bool is_text() const { return false; }
     // Step the slice axis for 3-D+ array sources (NPZ today). Default no-op.
     // Returns true if the source rebuilt its table and the TUI should
     // drop cached chunks + reset the viewport.

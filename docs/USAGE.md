@@ -74,6 +74,7 @@ would need horizontal scrolling.
 | NumPy             | `.npz` (archive → a summary tab plus one tab per array), `.npy` (a single array). 1-D renders as a column, 2-D as a table, 3-D+ as 2-D slices stepped with `[` / `]`. |
 | Apache ORC        | `.orc`; columnar Hadoop/Hive/Spark format. Each ORC stripe is treated as one chunk for lazy loading. Read via Arrow's ORC adapter — Arrow must be built with `-DARROW_ORC=ON` (the default in the Apache Arrow apt repo, Homebrew `apache-arrow`, and the conda-forge wheel). The AlmaLinux 8 static binary currently ships without ORC support; rebuild from source against a system Arrow with ORC for that platform. |
 | Markdown          | `.md`, `.markdown`, `.mdown`, `.mkd` — CommonMark + GFM (tables, strikethrough, task lists, autolinks) via the vendored [md4c](https://github.com/mity/md4c) parser. Renders the prose body as ANSI on stdout — headings get `g_color.header` styling, bold/italic/strike map to SGR codes, links show as `text (url)` (or via OSC 8 hyperlinks on terminals that advertise them), block quotes get a `▌` lead glyph, lists get `•` / `1.` markers. GFM `\|` tables are pulled out of the prose stream and rendered separately through vv's normal table renderer, complete with column-type inference (so a benchmark column of `121.7` / `1240.3` becomes `double`). Local PNG/JPEG/GIF images render inline on kitty / iTerm2 / WezTerm terminals via their respective graphics protocols; remote URLs, SVGs, and other terminals fall back to a `🖼 [alt-text]` stub. Pipe to `less -R` to scroll. |
+| Plain text        | `.txt`, `.text`, `.log` (plus `.gz`) — and **the fallback for any file no other format claims**: if a file's extension matches nothing and its magic bytes identify nothing, the first 8 KiB are sniffed and, if they look like text, the file is shown as text (with a one-line note on stderr saying so, unless the file has no extension at all — a bare `README` should not nag). The extension list is deliberately short: `.py`, `.c`, `.conf`, `.toml`, `.rst` all reach the same reader through the sniff, and claiming them in `--formats` would advertise vv as a code viewer with no highlighting. Modelled internally as one `utf8` column named `line`, which is why `--filter 'line contains "ERROR"'` is grep and `--count` is `wc -l`. |
 | Sequences (FASTA) | `.fa`, `.fasta`, `.fna`, `.faa`, `.ffn`, `.frn` (plus `.gz`)|
 | Sequencing reads  | `.fq`, `.fastq` (plus `.gz`)                                |
 | Delimited text    | `.tsv`, `.csv` (plus `.gz`)                                 |
@@ -194,6 +195,90 @@ normal mode also clears an active filter (before quitting).
 Live filter composes with sort: build a filter, then press `s` on a
 column to sort the visible rows. The combined view is rebuilt in
 one pass through the file. Search (`/`) follows the filtered view.
+
+## Plain text (`.txt`, `.log`, and the sniffed fallback)
+
+`vv notes.txt` opens the file in the TUI as a document, not as a table:
+
+```
+  1 2026-07-25 09:14:02 INFO  starting run, 4 threads
+  2 2026-07-25 09:14:03 WARN  index older than data, rebuilding
+  3 2026-07-25 09:14:19 ERROR chr7:1_240_000 out of range
+ Line 1-3/3  [h/l]:←→scroll  [0]:home  [j/k]:lines  /:search  &:filter  …
+```
+
+There is no column header and no truncation: a long line is **chopped** at the
+screen edge and `h` / `l` scroll sideways by half a screen (`0` returns to
+column 0). That is `less -SN`. Wrapping is deliberately not offered — the whole
+TUI is built on one screen row per data row, and the line-number gutter, the
+scroll clamping and the status bar's row range all depend on it.
+
+Everything else the TUI does still works, because a text file is modelled
+internally as a table of exactly one `utf8` column named `line`:
+
+| | |
+|---|---|
+| `/pattern` | search, `n` / `N` to step |
+| `&line contains "ERROR"` | live filter — grep, with the row numbers kept |
+| `Tab` | next file, when several are open (the tab bar hides for one file) |
+| `y`, `Enter`, `T`, `:` | copy the line, detail pane, theme, command line |
+
+`s` (sort), `S` (stats), `c` (column picker) and `z` (freeze) say so on the
+status bar rather than doing nothing — there is only one column.
+
+### In a pipe it is written back verbatim
+
+```console
+$ vv server.log > copy && cmp server.log copy && echo identical
+identical
+```
+
+No index gutter, no box, no schema block, no ANSI. Line endings, a missing
+final newline and CRLF all survive. On **screen** the line is sanitised
+instead: SGR colour is honoured, so a coloured log looks like one, but every
+other escape sequence (cursor moves, OSC window-title sets) is dropped whole
+— neither executed nor shown as literal `]0;…` garbage.
+
+### Which files count as text
+
+1. `.txt`, `.text`, `.log` — plus `.gz` on any of them.
+2. Otherwise, whatever the extension and magic bytes say (a `.tsv` of prose is
+   still a table; a `foo.dat` starting with `PAR1` is still Parquet).
+3. Otherwise the first 8 KiB are sniffed. Text is shown, with a note on stderr
+   when the file had an unrecognised extension — `results.dat` used to be an
+   error telling you to rename it, so it should not silently become a text
+   dump. Extension-less files (`README`, `Makefile`) get no note.
+
+gzip is detected by magic rather than by suffix, so `syslog.1.gz` works as
+well as `notes.txt.gz`.
+
+**Binary is refused**, deliberately unlike `less`:
+
+```console
+$ vv /bin/ls
+vv: /bin/ls: binary file, not shown. vv views text and the formats
+listed by `vv --formats`; it has no hex view.
+$ echo $?
+1
+```
+
+stdout stays empty — a partial dump of control bytes can leave a terminal
+unusable. The same rule applies to `cat foo.bin | vv -`. UTF-16/32 gets its
+own message naming `iconv` rather than the generic one, because a NUL-heavy
+Windows export is not what "binary file" means to the person who exported it.
+
+### Flags
+
+`-n N` (`0` = all), `--tail N`, `--count` (= `wc -l`), `--filter`,
+`--list-columns` and `-r` (which warns, per `--region`'s usual rule) all work.
+The column-shaped flags — `--schema`, `--describe`, `--stats`, `--unique`,
+`--sample`, `--select`, `--tsv`/`--csv`, `--json`, `--parquet`, `--arrow`,
+`--heatmap`, `--tab`, `--expand` — exit 1 with a message, rather than
+answering a question that has no meaning over one column of prose.
+
+`--text` forces text mode whatever the extension says: `vv --text notes.md`
+shows the markdown source, `vv --text data.csv` shows the raw lines. The
+content is still sniffed, so `vv --text foo.bam` is refused.
 
 ## Delimited output (`--tsv`, `--csv`, `--delimiter`)
 

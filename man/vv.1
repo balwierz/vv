@@ -113,6 +113,19 @@ all have by default. The AlmaLinux 8 static binary currently does
 \fBnot\fR include ORC; \fBvv\fR reports "compiled without ORC support"
 when invoked on an .orc file there.
 .IP \(bu 2
+\fB.txt\fR, \fB.text\fR, \fB.log\fR (plus \fB.gz\fR) \(en plain text.
+Also the fallback for any file no other format claims: an unknown
+extension whose content sniffs as text is shown as text, with a note
+on stderr saying so. Viewed in the interactive TUI like \fBless -SN\fR
+\(em a line-number gutter, long lines chopped at the screen edge with
+\fBh\fR / \fBl\fR scrolling sideways and \fB0\fR returning to column 0,
+\fB/\fR search and \fB&\fR filter over the \fBline\fR column, and one tab
+per file. Written back verbatim when stdout is not a terminal, so
+\fBvv f.log > copy\fR round-trips byte for byte; on screen, SGR colour
+is honoured but every other escape sequence is dropped whole.
+Binary input is refused rather than dumped \(em \fBvv\fR has no hex
+view. See \fB--text\fR.
+.IP \(bu 2
 \fB.md\fR, \fB.markdown\fR, \fB.mdown\fR, \fB.mkd\fR \(en CommonMark
 + GFM markdown rendered as ANSI to stdout. Headings, bold / italic /
 strike / code, lists, block quotes, fenced code blocks, horizontal
@@ -299,6 +312,13 @@ sample is the row set; combine with \fB\-\-tsv\fR, \fB\-\-parquet\fR,
 or any view mode for output. Honours \fB\-\-filter\fR (filter first,
 then sample). Reads the whole file; document upstream if you only want
 sample-from-the-first-M-rows.
+.TP
+.B \-\-text
+Read the file as plain text whatever its extension says. The escape
+hatch for a textual-but-tabular file: \fBvv --text notes.md\fR shows
+the markdown source instead of rendering it, \fBvv --text data.csv\fR
+shows the raw lines instead of a table. The content is still sniffed,
+so \fBvv --text foo.bam\fR is refused rather than dumped.
 .TP
 .B \-\-validate
 Check LociSSD invariants: required columns present with correct

@@ -5,7 +5,7 @@ _vv() {
     local cur prev words cword
     _init_completion || return
 
-    local file_exts='parquet arrow feather lociss bam cram sam vcf vcf.gz bcf gff gff.gz gff3 gff3.gz gtf gtf.gz bed bed.gz narrowPeak narrowPeak.gz broadPeak broadPeak.gz gappedPeak gappedPeak.gz bedGraph bedGraph.gz bg bg.gz tagAlign tagAlign.gz tsv tsv.gz csv csv.gz fa fa.gz fasta fasta.gz fna fna.gz faa faa.gz ffn ffn.gz frn frn.gz fq fq.gz fastq fastq.gz paf paf.gz bb bigBed bigbed bw bigWig bigwig 2bit sqlite sqlite3 db xlsx xlsm ods fods orc npz npy pileup pileup.gz mpileup mpileup.gz pile pile.gz md markdown mdown mkd h5 h5ad hdf5 loom'
+    local file_exts='parquet arrow feather lociss bam cram sam vcf vcf.gz bcf gff gff.gz gff3 gff3.gz gtf gtf.gz bed bed.gz narrowPeak narrowPeak.gz broadPeak broadPeak.gz gappedPeak gappedPeak.gz bedGraph bedGraph.gz bg bg.gz tagAlign tagAlign.gz tsv tsv.gz csv csv.gz fa fa.gz fasta fasta.gz fna fna.gz faa faa.gz ffn ffn.gz frn frn.gz fq fq.gz fastq fastq.gz paf paf.gz bb bigBed bigbed bw bigWig bigwig 2bit sqlite sqlite3 db xlsx xlsm ods fods orc npz npy pileup pileup.gz mpileup mpileup.gz pile pile.gz md markdown mdown mkd h5 h5ad hdf5 loom txt txt.gz text text.gz log log.gz'
 
     case "$prev" in
         -n|-w|-c|-@|--threads|--decode-threads)
@@ -82,7 +82,7 @@ _vv() {
                 --parquet --arrow --feather --compression
                 --json --ndjson --md --markdown
                 --select --cols --filter
-                --schema --describe --count --stats --validate --decode-pileup --pileup
+                --schema --describe --count --stats --validate --decode-pileup --pileup --text
                 -f --fasta
                 --tab
                 --unique --sample

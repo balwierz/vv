@@ -6,32 +6,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Changed
-- **Markdown now rejects the flags it used to ignore.** A markdown file returns
-  early in `main()`, before the tabular pipeline, so `--count`, `--schema`,
-  `--describe`, `--stats`, `--list-tabs`, `--heatmap`, `--unique`, `--sample`,
-  `--tail`, `--tab`, `--expand`, `--parquet`, `--arrow`, `--json` and
-  `--pileup` never applied — but they were **silently ignored**:
-  `vv --count foo.md` rendered the document and exited 0. Each is now a clean
-  error with an explanatory message, matching the exit-code work in 1.16.0.
-  `--tsv` / `--csv` / `--select` / `--filter` deliberately keep working, since
-  a markdown file can embed GFM tables and those flags genuinely drive them.
-  A `--vertical` typed by the user is rejected; the one `vh` implies from
-  `argv[0]` is not.
-
-### Fixed
-- **`vv a.md b.md` no longer shows only the first file.** On a terminal the
-  multi-positional guard let markdown through to its early return, which reads
-  `cfg.path` alone — so the second file was dropped silently, exit 0. It now
-  reports the same "only supported in the interactive viewer" error every other
-  non-interactive mode gives.
-- **`vv x.md --tsv` no longer writes the rendered document into a scripted
-  stream.** It emitted the prose and a caption ahead of the embedded table's
-  TSV, so `--tsv > out.tsv` produced an unparseable file. In a delimited mode
-  only the table data is written now.
-
-
 ### Added
+- **Plain-text viewing.** `vv notes.txt`, `vv server.log`, `vv README` — and
+  any file no other format claims whose content sniffs as text. Previously all
+  of these were the same error at exit 1 ("unrecognised file extension"), which
+  made a `.txt`, a shell script, an extension-less `README` and 4 KiB of
+  `/dev/urandom` indistinguishable to the user; the error's own advice
+  (`cat foo.txt | vv -`) rendered prose as a one-column table with line 1
+  promoted to a column header.
+  - In the TUI it reads like `less -SN`: a line-number gutter, long lines
+    **chopped** at the screen edge with `h`/`l` scrolling sideways and `0`
+    returning home, no column header, no 32-character truncation. `/` search,
+    `&` filter, `y`, `Enter`, themes and multi-file tabs all work, because a
+    text file is modelled internally as one `utf8` column named `line`. The tab
+    bar hides itself when only one file is open. `s`/`S`/`c`/`z` say why they
+    do not apply instead of doing nothing.
+  - In a pipe it is written back **verbatim**: `vv f.log > copy` is byte-for-byte
+    identical, CRLF and a missing final newline included. On screen the line is
+    sanitised instead — SGR colour is honoured, so a coloured log looks like
+    one, but every other escape (cursor moves, OSC window-title sets) is
+    dropped whole rather than executed or shown as literal `]0;…` garbage.
+  - `-n N` (`0` = all), `--tail N`, `--count`, `--filter 'line contains "ERROR"'`
+    and `--list-columns` work naturally; `--tail` streams through a bounded ring
+    rather than slurping, so `vv --tail 100 /var/log/syslog` stays cheap. The
+    column-shaped flags exit 1 with a message.
+  - gzip is detected by magic, not suffix, so `syslog.1.gz` works as well as
+    `notes.txt.gz`.
+- **`--text`** forces text mode whatever the extension says — the escape hatch
+  for reading a `.md` source or a `.csv` raw. The content is still sniffed.
 - **`--expand COL`: packed `key=value` columns become real columns.** VCF
   `INFO` and GFF/GTF `attributes` carry the actual payload of those formats as
   one opaque string, so `vv variants.vcf --tsv` emitted `AF=0.5` and there was
@@ -68,6 +70,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the TUI could show INFO while nothing else could. The TUI's display-only
   expansion now stands down when the source is already expanded, so keys are
   not shown twice.
+
+
+### Changed
+- **Binary files are refused rather than dumped.** `vv /bin/ls` and
+  `cat foo.bin | vv -` both exit 1 with an explanation and an empty stdout.
+  Piped binary used to reach Arrow's CSV reader, which echoed the raw bytes
+  back inside a parse error — control characters and all, straight at the
+  terminal. Deliberately unlike `less`, which offers to show it anyway; a hex
+  view is out of scope. UTF-16/32 gets its own message naming `iconv`, since a
+  NUL-heavy Windows export is not what "binary file" means to whoever made it.
+- **Markdown now rejects the flags it used to ignore.** A markdown file returns
+  early in `main()`, before the tabular pipeline, so `--count`, `--schema`,
+  `--describe`, `--stats`, `--list-tabs`, `--heatmap`, `--unique`, `--sample`,
+  `--tail`, `--tab`, `--expand`, `--parquet`, `--arrow`, `--json` and
+  `--pileup` never applied — but they were **silently ignored**:
+  `vv --count foo.md` rendered the document and exited 0. Each is now a clean
+  error, matching the exit-code work in 1.16.0. `--tsv` / `--csv` / `--select` /
+  `--filter` deliberately keep working, since a markdown file can embed GFM
+  tables and those flags genuinely drive them. A `--vertical` typed by the user
+  is rejected; the one `vh` implies from `argv[0]` is not.
+
+### Fixed
+- **`vv a.md b.md` no longer shows only the first file.** On a terminal the
+  multi-positional guard let markdown through to its early return, which reads
+  `cfg.path` alone — so the second file was dropped silently, exit 0.
+- **`vv x.md --tsv` no longer writes the rendered document into a scripted
+  stream.** It emitted the prose and a caption ahead of the embedded table's
+  TSV, so `--tsv > out.tsv` produced an unparseable file.
 
 
 ## [1.16.0] - 2026-07-27

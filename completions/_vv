@@ -29,6 +29,7 @@ _vv() {
         '*.orc' '*.npz' '*.npy'
         '*.pileup' '*.pileup.gz' '*.mpileup' '*.mpileup.gz' '*.pile' '*.pile.gz'
         '*.md' '*.markdown' '*.mdown' '*.mkd'
+        '*.txt' '*.txt.gz' '*.text' '*.text.gz' '*.log' '*.log.gz'
         '*.h5' '*.h5ad' '*.hdf5' '*.loom'
     )
 
@@ -67,6 +68,7 @@ _vv() {
         '--md[Write a GitHub-flavored markdown table]' \
         '--markdown[Alias of --md]' \
         '--validate[Check LociSSD invariants and exit]' \
+        '--text[Read the file as plain text whatever its extension]' \
         '--decode-pileup[mpileup: explode bases into per-allele counts]' \
         '--pileup[BAM/CRAM: emit mpileup-style per-base rows]' \
         '(-f --fasta)'{-f,--fasta}'[reference FASTA: --pileup ref column + ./, notation, or CRAM decoding]:fasta:_files' \
