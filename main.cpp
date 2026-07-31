@@ -7742,9 +7742,28 @@ static arrow::Type::type sqlite_type_to_arrow(const std::string& declared) {
      || u.find("DOUB") != std::string::npos) return arrow::Type::DOUBLE;
     return arrow::Type::STRING;   // NUMERIC affinity — preserve verbatim
 }
+// Type id -> Arrow type, for the three places that carry a type id around
+// instead of a DataType: the SQLite column mapper, the NumPy dtype mapper and
+// ExpandedSource's declared-key schema.
+//
+// This MUST cover every id its callers can produce. It used to handle only
+// INT64/DOUBLE/BINARY and fall through to utf8(), which meant the schema said
+// `string` while the chunk carried the real array — an inconsistency Arrow does
+// not check on the write path. `--parquet` failed loudly, but `--arrow` exited
+// 0 and wrote an IPC file nothing could read back ("buffer_index out of
+// range"), for 7 of the 9 NumPy dtypes and for every VCF Flag INFO key.
 static std::shared_ptr<arrow::DataType> arrow_type_for_id(arrow::Type::type t) {
     switch (t) {
+        case arrow::Type::BOOL:   return arrow::boolean();
+        case arrow::Type::INT8:   return arrow::int8();
+        case arrow::Type::INT16:  return arrow::int16();
+        case arrow::Type::INT32:  return arrow::int32();
         case arrow::Type::INT64:  return arrow::int64();
+        case arrow::Type::UINT8:  return arrow::uint8();
+        case arrow::Type::UINT16: return arrow::uint16();
+        case arrow::Type::UINT32: return arrow::uint32();
+        case arrow::Type::UINT64: return arrow::uint64();
+        case arrow::Type::FLOAT:  return arrow::float32();
         case arrow::Type::DOUBLE: return arrow::float64();
         case arrow::Type::BINARY: return arrow::binary();
         default:                  return arrow::utf8();
@@ -13183,7 +13202,19 @@ public:
         if (decl.empty())
             decl = parse_vcf_info_headers(inner->preamble_above());
 
-        if (!decl.empty()) {
+        // The ##INFO declarations describe the VCF INFO column and nothing
+        // else, so only that column may use them. Taking this branch for any
+        // column of any VCF meant `--expand REF` / `--expand FILTER` skipped
+        // the shape gate below and appended every declared key as an all-null
+        // (all-false, for Flag) column, exit 0, no diagnostic — while
+        // man/vv.1 promises such a column is refused. Anything else falls
+        // through to discovery, which gates properly.
+        const bool decl_applies =
+            !decl.empty() && col_name.size() == 4 &&
+            (col_name[0]=='I'||col_name[0]=='i') && (col_name[1]=='N'||col_name[1]=='n') &&
+            (col_name[2]=='F'||col_name[2]=='f') && (col_name[3]=='O'||col_name[3]=='o');
+
+        if (decl_applies) {
             for (auto& [k, ty] : decl) { self->keys_.push_back(k); self->types_.push_back(ty); }
         } else {
             inner->ensure(0);
@@ -13433,6 +13464,8 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
     // hatch for a textual-but-tabular file — `vv --text notes.md` shows the
     // markdown source, `vv --text data.csv` shows the raw lines. Still
     // sniffed, so `vv --text foo.bam` is refused rather than dumped.
+    // (stdin is handled inside the `-` branch below: it has no path to
+    // sniff and its stream is already open.)
     if (cfg.force_text && path != "-") return open_text(path, cfg, out);
 
     // ── Stdin (`-`): text formats only ───────────────────────────────────────
@@ -13496,6 +13529,21 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
             if (tr != TextSniffResult::Text)
                 return text_binary_error("stdin", tr);
             input = std::make_shared<PrependInputStream>(std::move(head), input);
+        }
+
+        // --text on stdin: `cat server.log | vv --text -` must behave like
+        // `vv server.log`. Without this the flag was a silent no-op and the
+        // stream went to the CSV reader, which promotes line 1 to a column
+        // header and drops it from the data — the exact lossy rendering the
+        // plain-text feature exists to remove. TextSource reads any
+        // InputStream, so the already-sniffed, already-gunzipped stream goes
+        // straight in.
+        if (cfg.force_text) {
+            std::unique_ptr<TextSource> tsrc;
+            std::string terr = TextSource::open_stream("-", std::move(input), &tsrc);
+            if (!terr.empty()) return terr;
+            *out = std::move(tsrc);
+            return "";
         }
 
         // Choose CSV/TSV from the user-provided flag (none → assume TSV; the
@@ -19279,6 +19327,8 @@ static std::string document_flag_error(const Config& cfg, DocKind kind) {
         {cfg.tail_rows_set,            MD,   "--tail",      "it has no rows"},
         {cfg.delimiter != 0,           TX,   "--tsv/--csv/--delimiter",
                                              "it has no fields to separate; it is already plain text"},
+        {cfg.md,                       TX,   "--md/--markdown",
+                                             "it has no fields; a one-column `line` table is not a table"},
         {cfg.vertical && !g_vertical_from_argv0,
                                        BOTH, "--vertical",  md ? "it has no columns to transpose"
                                                                : "its only column is `line`"},
@@ -19491,8 +19541,9 @@ int main(int argc, char** argv) {
         // A document (markdown today) never reaches the multi-file TUI loop —
         // it returns early below, rendering only cfg.path. Without this it
         // silently showed the first file and exited 0.
-        const bool doc = fends_ci(cfg.path, ".md")    || fends_ci(cfg.path, ".markdown") ||
-                         fends_ci(cfg.path, ".mdown") || fends_ci(cfg.path, ".mkd");
+        const bool doc = !cfg.force_text &&
+                        (fends_ci(cfg.path, ".md")    || fends_ci(cfg.path, ".markdown") ||
+                         fends_ci(cfg.path, ".mdown") || fends_ci(cfg.path, ".mkd"));
         bool scripted = doc || cfg.schema_only || cfg.stats_only || cfg.describe ||
                         cfg.count || cfg.heatmap || !cfg.unique_cols.empty() ||
                         cfg.json_array || cfg.json_lines || cfg.md ||
@@ -19550,8 +19601,13 @@ int main(int argc, char** argv) {
     // the whole stream through `less -R` for scroll / search — that's
     // the "interactive" experience for markdown until a proper
     // ncurses tab kind lands in TableTUI (TODO).
-    if (fends_ci(cfg.path, ".md")        || fends_ci(cfg.path, ".markdown") ||
-        fends_ci(cfg.path, ".mdown")     || fends_ci(cfg.path, ".mkd")) {
+    // --text asks for the SOURCE, so it has to be tested before the renderer
+    // claims the file. `vv --text notes.md` is the documented example in
+    // man/vv.1, docs/USAGE.md and the README; without this guard the branch
+    // below swallowed the file first and the flag was a silent no-op.
+    if (!cfg.force_text &&
+        (fends_ci(cfg.path, ".md")        || fends_ci(cfg.path, ".markdown") ||
+         fends_ci(cfg.path, ".mdown")     || fends_ci(cfg.path, ".mkd"))) {
         if (std::string fe = document_flag_error(cfg, DocKind::Markdown); !fe.empty()) {
             report(cfg.path, fe);
             return 1;
@@ -19571,7 +19627,10 @@ int main(int argc, char** argv) {
         // rendered document: emit only the embedded tables, without the prose
         // or the captions. `vv x.md --tsv > out.tsv` used to write the whole
         // rendered README ahead of the TSV.
-        const bool scripted_out = cfg.delimiter != 0;
+        // --md is a scripted output mode too: `vv README.md --md > tables.md`
+        // wants the embedded tables, not the rendered prose. It used to be
+        // ignored here, so it returned the ANSI document.
+        const bool scripted_out = cfg.delimiter != 0 || cfg.md;
         auto emit = [&]() {
             if (!scripted_out) md::emit_markdown_stdout(doc);
             for (size_t i = 0; i < doc.tables.size(); ++i) {
@@ -19586,6 +19645,8 @@ int main(int argc, char** argv) {
                 std::string werr;
                 if (cfg.schema_only) {
                     /* schema-only doesn't make sense per-table; skip. */
+                } else if (cfg.md) {
+                    werr = write_markdown(ts, cfg);
                 } else if (cfg.delimiter) {
                     werr = write_delimited(ts, cfg);
                 } else {
@@ -19599,6 +19660,7 @@ int main(int argc, char** argv) {
         // -n, --no-interactive).
         bool want_pager = isatty(STDOUT_FILENO)
                           && !cfg.no_interactive
+                          && !cfg.md
                           && !cfg.delimiter
                           && !cfg.head_rows_set
                           && !cfg.schema_only

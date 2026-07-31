@@ -2448,4 +2448,117 @@ else
     echo "  skip  text_tui_document_view (python3 not found)"
 fi
 
+# ── Type-id -> Arrow type must cover every id its callers produce ────────────
+# arrow_type_for_id() handled only INT64/DOUBLE/BINARY and fell through to
+# utf8(), so the declared schema said `string` while the chunk carried the real
+# array. Arrow does not check that on the write path: --parquet failed loudly,
+# but --arrow exited 0 and wrote an IPC file nothing could read back
+# ("buffer_index out of range") — for 7 of the 9 NumPy dtypes and for every VCF
+# Flag INFO key. Exit 0 plus an unreadable file is the worst failure mode there
+# is, so each dtype is round-tripped rather than merely schema-checked.
+DT="$DATA/tiny.dtypes.npz"
+for T in i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 b; do
+    assert_exit_code "npy_dtype_${T}_arrow_writes"  0 "$VV" --tab "$T" --arrow   "$TMP/dt.arrow"   "$DT"
+    # The load-bearing half: the file must be READABLE, not merely written.
+    "$VV" --tab "$T" --arrow "$TMP/dt.arrow" "$DT" >/dev/null 2>&1
+    assert_exit_code "npy_dtype_${T}_arrow_reads_back" 0 "$VV" -n 3 "$TMP/dt.arrow"
+    assert_exit_code "npy_dtype_${T}_parquet" 0 "$VV" --tab "$T" --parquet "$TMP/dt.parquet" "$DT"
+done
+# ...and the values survive, not just the file structure.
+"$VV" --tab i32 --arrow "$TMP/dt.arrow" "$DT" >/dev/null 2>&1
+assert_eq_file_inline "npy_dtype_i32_values_roundtrip" \
+    "$("$VV" --tsv --no-header -n 3 "$TMP/dt.arrow" 2>/dev/null | paste -sd, -)" "-32,0,32"
+"$VV" --tab b --arrow "$TMP/dt.arrow" "$DT" >/dev/null 2>&1
+assert_eq_file_inline "npy_dtype_bool_values_roundtrip" \
+    "$("$VV" --tsv --no-header -n 3 "$TMP/dt.arrow" 2>/dev/null | paste -sd, -)" "true,false,true"
+# The declared type must be the real one, not utf8.
+assert_contains "npy_dtype_i32_schema_is_int32" \
+    "$("$VV" --tab i32 --schema "$DT" 2>/dev/null)" "int32"
+assert_contains "npy_dtype_bool_schema_is_bool" \
+    "$("$VV" --tab b --schema "$DT" 2>/dev/null)" "bool"
+
+# A VCF Flag INFO key is the same bug reached through --expand. DB/SOMATIC/
+# IMPRECISE/VALIDATED are Flag in essentially every real callset.
+FLAGVCF="$TMP/flag.vcf"
+{
+  printf '##fileformat=VCFv4.2\n'
+  printf '##INFO=<ID=AF,Number=1,Type=Float,Description="Allele frequency">\n'
+  printf '##INFO=<ID=DB,Number=0,Type=Flag,Description="dbSNP membership">\n'
+  printf '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n'
+  printf 'chr1\t100\trs1\tA\tG\t30\tPASS\tAF=0.5;DB\n'
+  printf 'chr1\t500\t.\tC\tT\t40\tPASS\tAF=0.1\n'
+} > "$FLAGVCF"
+assert_contains "expand_vcf_flag_schema_is_bool" \
+    "$("$VV" --expand INFO --schema "$FLAGVCF" 2>/dev/null)" "bool"
+assert_exit_code "expand_vcf_flag_parquet" 0 "$VV" --expand INFO --parquet "$TMP/f.parquet" "$FLAGVCF"
+assert_exit_code "expand_vcf_flag_arrow"   0 "$VV" --expand INFO --arrow   "$TMP/f.arrow"   "$FLAGVCF"
+assert_exit_code "expand_vcf_flag_arrow_reads_back" 0 "$VV" -n 2 "$TMP/f.arrow"
+assert_eq_file_inline "expand_vcf_flag_values" \
+    "$("$VV" --expand INFO --select DB --tsv --no-header "$FLAGVCF" 2>/dev/null | paste -sd, -)" \
+    "true,false"
+
+# ── --expand refuses a column that is not a key=value list, on VCF too ───────
+# The shape gate lived only in the discovery branch. A VCF has ##INFO
+# declarations, so the declared-keys branch was taken for ANY named column —
+# `--expand REF` appended every declared key as an all-null column at exit 0,
+# while man/vv.1 promises such a column is refused.
+assert_exit_code "expand_vcf_refuses_ref"    1 "$VV" --expand REF    "$FLAGVCF"
+assert_exit_code "expand_vcf_refuses_filter" 1 "$VV" --expand FILTER "$FLAGVCF"
+EXP_REF_ERR=$("$VV" --expand REF "$FLAGVCF" 2>&1 >/dev/null || true)
+assert_contains "expand_vcf_refuses_ref_says_why" "$EXP_REF_ERR" "does not look like a key=value list"
+# ...and the column it IS for still works.
+assert_contains "expand_vcf_info_still_works" \
+    "$("$VV" --expand INFO --tsv "$FLAGVCF" 2>/dev/null | head -1)" "DB"
+
+# ── --text reaches the files the docs promise it reaches ─────────────────────
+# `vv --text notes.md` is the literal example in man/vv.1, docs/USAGE.md and
+# the README. main() intercepted markdown before open_source() ever saw the
+# flag, so it was a silent no-op: byte-identical output, exit 0, no warning.
+"$VV" --text "$DATA/tiny.md" > "$TMP/mdsrc.out" 2>/dev/null
+if cmp -s "$TMP/mdsrc.out" "$DATA/tiny.md"; then
+    PASS=$((PASS+1)); echo "  ok    text_flag_shows_markdown_source"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  text_flag_shows_markdown_source"
+fi
+# ...and without it markdown still renders.
+assert_contains "markdown_still_renders_without_text_flag" \
+    "$("$VV" --no-interactive "$DATA/tiny.md" 2>/dev/null)" "•"
+
+# stdin: `cat foo.log | vv --text -` must match `vv foo.log`. The flag was
+# excluded from the `-` path, so piped prose still went to the CSV reader,
+# which promotes line 1 to a header and drops it from the data.
+printf 'first line\nsecond\n\nfourth\n' > "$TMP/pipe.txt"
+"$VV" --text - < "$TMP/pipe.txt" > "$TMP/pipe.out" 2>/dev/null
+if cmp -s "$TMP/pipe.out" "$TMP/pipe.txt"; then
+    PASS=$((PASS+1)); echo "  ok    text_flag_stdin_verbatim"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  text_flag_stdin_verbatim"
+fi
+gzip -c "$TMP/pipe.txt" > "$TMP/pipe.txt.gz"
+"$VV" --text - < "$TMP/pipe.txt.gz" > "$TMP/pipegz.out" 2>/dev/null
+if cmp -s "$TMP/pipegz.out" "$TMP/pipe.txt"; then
+    PASS=$((PASS+1)); echo "  ok    text_flag_stdin_gz_verbatim"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  text_flag_stdin_gz_verbatim"
+fi
+# --text must not disable the binary refusal on stdin either.
+head -c 2048 /dev/urandom > "$TMP/pipe.bin"
+"$VV" --text - < "$TMP/pipe.bin" >/dev/null 2>&1
+assert_eq_file_inline "text_flag_stdin_still_refuses_binary" "$?" "1"
+# Without --text, stdin still reaches the CSV reader — deliberately unchanged.
+assert_contains "stdin_without_text_flag_unchanged" \
+    "$(printf 'a\tb\n1\t2\n' | "$VV" - -n 3 2>/dev/null)" "│"
+
+# ── --md is an output mode, and obeys the same rules as --tsv ────────────────
+# It had no entry in document_flag_error()'s table, so it escaped the gate in
+# both document modes: on a text file it produced the one-column `line` table
+# the feature exists to remove, and on markdown it was ignored entirely, so
+# `vv README.md --md > tables.md` returned the rendered prose.
+assert_exit_code "text_rejects_md" 1 "$VV" --md "$TXT"
+MD_TXT_ERR=$("$VV" --md "$TXT" 2>&1 >/dev/null || true)
+assert_contains "text_rejects_md_says_why" "$MD_TXT_ERR" "does not apply to a text file"
+MD_TBL=$("$VV" --md "$DATA/tiny.md" 2>/dev/null)
+assert_contains  "markdown_md_emits_table"      "$MD_TBL" "| --- |"
+refute_contains  "markdown_md_omits_prose"      "$MD_TBL" "Hand-crafted fixture"
+
 summarize

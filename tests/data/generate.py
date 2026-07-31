@@ -1046,6 +1046,25 @@ else:
              mat=np.arange(12, dtype=np.float64).reshape(3, 4),
              cube=np.arange(24, dtype=np.float32).reshape(2, 3, 4))
 
+    # tiny.dtypes.npz: one 1-D array per NumPy dtype vv's slab_to_arrow()
+    # can build. arrow_type_for_id() used to map only INT64/DOUBLE/BINARY and
+    # fall through to utf8() for the rest, so the declared schema said `string`
+    # while the chunk carried the real array. Arrow does not check that on the
+    # write path: `--parquet` failed loudly but `--arrow` exited 0 and wrote an
+    # IPC file nothing could read back, for 7 of these 9 dtypes.
+    np.savez(HERE / "tiny.dtypes.npz",
+             i8=np.array([-8, 0, 8], dtype=np.int8),
+             i16=np.array([-16, 0, 16], dtype=np.int16),
+             i32=np.array([-32, 0, 32], dtype=np.int32),
+             i64=np.array([-64, 0, 64], dtype=np.int64),
+             u8=np.array([0, 8, 255], dtype=np.uint8),
+             u16=np.array([0, 16, 65535], dtype=np.uint16),
+             u32=np.array([0, 32, 4294967295], dtype=np.uint32),
+             u64=np.array([0, 64, 18446744073709551615], dtype=np.uint64),
+             f32=np.array([-1.5, 0.0, 1.5], dtype=np.float32),
+             f64=np.array([-2.5, 0.0, 2.5], dtype=np.float64),
+             b=np.array([True, False, True], dtype=bool))
+
     # tiny.zerorow.npz: a Fortran-ordered 2-D array with zero rows. The
     # per-column gather sized its scratch buffer to rows * item_size, so at
     # zero rows the buffer was empty and its data() null — and the F-order
