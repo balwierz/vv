@@ -6,6 +6,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **Markdown now rejects the flags it used to ignore.** A markdown file returns
+  early in `main()`, before the tabular pipeline, so `--count`, `--schema`,
+  `--describe`, `--stats`, `--list-tabs`, `--heatmap`, `--unique`, `--sample`,
+  `--tail`, `--tab`, `--expand`, `--parquet`, `--arrow`, `--json` and
+  `--pileup` never applied — but they were **silently ignored**:
+  `vv --count foo.md` rendered the document and exited 0. Each is now a clean
+  error with an explanatory message, matching the exit-code work in 1.16.0.
+  `--tsv` / `--csv` / `--select` / `--filter` deliberately keep working, since
+  a markdown file can embed GFM tables and those flags genuinely drive them.
+  A `--vertical` typed by the user is rejected; the one `vh` implies from
+  `argv[0]` is not.
+
+### Fixed
+- **`vv a.md b.md` no longer shows only the first file.** On a terminal the
+  multi-positional guard let markdown through to its early return, which reads
+  `cfg.path` alone — so the second file was dropped silently, exit 0. It now
+  reports the same "only supported in the interactive viewer" error every other
+  non-interactive mode gives.
+- **`vv x.md --tsv` no longer writes the rendered document into a scripted
+  stream.** It emitted the prose and a caption ahead of the embedded table's
+  TSV, so `--tsv > out.tsv` produced an unparseable file. In a delimited mode
+  only the table data is written now.
+
+
 ### Added
 - **`--expand COL`: packed `key=value` columns become real columns.** VCF
   `INFO` and GFF/GTF `attributes` carry the actual payload of those formats as

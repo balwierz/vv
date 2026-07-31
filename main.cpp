@@ -914,6 +914,11 @@ static void print_usage(const char* prog) {
 // Case-insensitive suffix test; defined with the other path helpers below.
 static bool fends_ci(const std::string& s, const std::string& sfx);
 
+// True when --vertical came from being invoked as `vh`, not from the user
+// typing it. Document modes (markdown, plain text) reject a TYPED --vertical
+// but must not fail `vh notes.md` on a flag nobody asked for.
+static bool g_vertical_from_argv0 = false;
+
 static Config parse_args(int argc, char** argv) {
     Config cfg;
     // If invoked as `vh` (a symlink/copy of vv), default to vertical-head mode:
@@ -925,6 +930,7 @@ static Config parse_args(int argc, char** argv) {
         if (std::strcmp(base, "vh") == 0) {
             cfg.vertical       = true;
             cfg.no_interactive = true;
+            g_vertical_from_argv0 = true;
         }
     }
     int positional = 0;
@@ -18598,6 +18604,57 @@ static void emit_schema_json(TabularSource& src, const std::string& fmt_name) {
     std::printf("]}\n");
 }
 
+// ── Document modes (markdown today; plain text next) ─────────────────────────
+//
+// A "document" is a file vv renders rather than tabulates. It returns early in
+// main(), before the TabularSource pipeline, so most of the tabular flag
+// surface simply does not apply.
+//
+// Markdown used to IGNORE those flags: `vv --count foo.md` rendered the
+// document and exited 0, and so did --schema / --describe / --stats /
+// --list-tabs. PR #86 removed exactly that class of silent no-op everywhere
+// else; this is the same fix for the one path that was missed.
+//
+// Markdown deliberately KEEPS --tsv / --csv / --select / --filter: a markdown
+// file can embed GFM tables, and those flags genuinely drive them.
+enum class DocKind { Markdown };
+
+static std::string document_flag_error(const Config& cfg, DocKind kind) {
+    auto no = [&](bool set, const char* flag, const char* why) -> std::string {
+        if (!set) return "";
+        return std::string(flag) + " does not apply to " +
+               (kind == DocKind::Markdown ? "a markdown file" : "a text file") +
+               " — " + why;
+    };
+    struct Rule { bool set; const char* flag; const char* why; };
+    const Rule rules[] = {
+        {cfg.schema_only,              "--schema",    "it has no columns"},
+        {cfg.describe,                 "--describe",  "it has no columns"},
+        {cfg.stats_only,               "--stats",     "it has no Parquet metadata"},
+        {cfg.count,                    "--count",     "it has no rows"},
+        {!cfg.unique_cols.empty(),     "--unique",    "it has no columns"},
+        {cfg.sample_n > 0,             "--sample",    "it has no rows"},
+        {cfg.heatmap,                  "--heatmap",   "it has no numeric columns"},
+        {cfg.list_columns,             "--list-columns", "it has no columns"},
+        {cfg.list_tabs,                "--list-tabs", "it has no component tabs"},
+        {!cfg.tab.empty(),             "--tab",       "it has no component tabs"},
+        {!cfg.expand_col.empty(),      "--expand",    "it has no columns"},
+        {!cfg.parquet_out.empty(),     "--parquet",   "it is not tabular"},
+        {!cfg.arrow_out.empty(),       "--arrow",     "it is not tabular"},
+        {cfg.json_array || cfg.json_lines, "--json",  "it is not tabular"},
+        {cfg.pileup,                   "--pileup",    "it is not an alignment file"},
+        {cfg.decode_pileup,            "--decode-pileup", "it is not an mpileup file"},
+        {cfg.tail_rows_set,            "--tail",      "it has no rows"},
+        {cfg.vertical && !g_vertical_from_argv0,
+                                       "--vertical",  "it has no columns to transpose"},
+    };
+    for (const auto& r : rules) {
+        std::string e = no(r.set, r.flag, r.why);
+        if (!e.empty()) return e;
+    }
+    return "";
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 // Friendly, short message for common filesystem problems; returns "" if the
@@ -18702,7 +18759,12 @@ int main(int argc, char** argv) {
     // the rest without a word — say so instead of answering about one file
     // when the user asked about several.
     if (cfg.paths.size() > 1) {
-        bool scripted = cfg.schema_only || cfg.stats_only || cfg.describe ||
+        // A document (markdown today) never reaches the multi-file TUI loop —
+        // it returns early below, rendering only cfg.path. Without this it
+        // silently showed the first file and exited 0.
+        const bool doc = fends_ci(cfg.path, ".md")    || fends_ci(cfg.path, ".markdown") ||
+                         fends_ci(cfg.path, ".mdown") || fends_ci(cfg.path, ".mkd");
+        bool scripted = doc || cfg.schema_only || cfg.stats_only || cfg.describe ||
                         cfg.count || cfg.heatmap || !cfg.unique_cols.empty() ||
                         cfg.json_array || cfg.json_lines || cfg.md ||
                         cfg.delimiter || !cfg.parquet_out.empty() ||
@@ -18761,6 +18823,10 @@ int main(int argc, char** argv) {
     // ncurses tab kind lands in TableTUI (TODO).
     if (fends_ci(cfg.path, ".md")        || fends_ci(cfg.path, ".markdown") ||
         fends_ci(cfg.path, ".mdown")     || fends_ci(cfg.path, ".mkd")) {
+        if (std::string fe = document_flag_error(cfg, DocKind::Markdown); !fe.empty()) {
+            report(cfg.path, fe);
+            return 1;
+        }
         int term_w = detect_terminal_width();
         if (term_w <= 0) term_w = 80;
         md::MarkdownDoc doc;
@@ -18772,13 +18838,19 @@ int main(int argc, char** argv) {
         // First error from any embedded GFM table (a bad --select / --filter);
         // surfaced after the pager closes so it isn't swallowed by `less`.
         std::string table_err;
+        // In a delimited mode the caller wants parseable data, not a
+        // rendered document: emit only the embedded tables, without the prose
+        // or the captions. `vv x.md --tsv > out.tsv` used to write the whole
+        // rendered README ahead of the TSV.
+        const bool scripted_out = cfg.delimiter != 0;
         auto emit = [&]() {
-            md::emit_markdown_stdout(doc);
+            if (!scripted_out) md::emit_markdown_stdout(doc);
             for (size_t i = 0; i < doc.tables.size(); ++i) {
-                std::fprintf(stdout, "\n%s%s%s\n",
-                              g_color.header,
-                              doc.table_captions[i].c_str(),
-                              g_color.reset);
+                if (!scripted_out)
+                    std::fprintf(stdout, "\n%s%s%s\n",
+                                  g_color.header,
+                                  doc.table_captions[i].c_str(),
+                                  g_color.reset);
                 MemoryTableSource ts(doc.tables[i],
                                       doc.source_path,
                                       "Format: markdown table");

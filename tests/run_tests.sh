@@ -1921,6 +1921,68 @@ if [ -f "$DATA/tiny.splice.bam" ]; then
     fi
 fi
 
+# ── Markdown is a document, not a table ──────────────────────────────────────
+# It returns early in main(), before the TabularSource pipeline, so the tabular
+# flags do not apply. They used to be SILENTLY IGNORED: `vv --count foo.md`
+# rendered the document and exited 0. PR #86 removed that class of silent
+# no-op everywhere else; this path was missed.
+MDDOC="$TMP/doc.md"
+printf '# Title\n\nsome prose\n' > "$MDDOC"
+for F in --count --schema --describe --stats --list-columns --list-tabs \
+         --heatmap --pileup --decode-pileup; do
+    assert_exit_code "md_rejects_${F#--}" 1 "$VV" "$F" "$MDDOC"
+done
+# Flags that take a value, named individually so each assertion is distinct.
+assert_exit_code "md_rejects_unique" 1 "$VV" --unique X "$MDDOC"
+assert_exit_code "md_rejects_tab"    1 "$VV" --tab    X "$MDDOC"
+assert_exit_code "md_rejects_expand" 1 "$VV" --expand X "$MDDOC"
+assert_exit_code "md_rejects_sample"  1 "$VV" --sample 3 "$MDDOC"
+assert_exit_code "md_rejects_tail"    1 "$VV" --tail 3   "$MDDOC"
+assert_exit_code "md_rejects_parquet" 1 "$VV" --parquet "$TMP/x.parquet" "$MDDOC"
+assert_exit_code "md_rejects_arrow"   1 "$VV" --arrow   "$TMP/x.arrow"   "$MDDOC"
+assert_exit_code "md_rejects_json"    1 "$VV" --json "$MDDOC"
+MD_ERR=$("$VV" --count "$MDDOC" 2>&1 >/dev/null || true)
+assert_contains "md_reject_message" "$MD_ERR" "does not apply to a markdown file"
+# ...and rejecting means printing NOTHING, not printing the document first.
+MD_OUT=$("$VV" --count "$MDDOC" 2>/dev/null || true)
+assert_eq_file_inline "md_reject_stdout_empty" "$MD_OUT" ""
+
+# But --tsv / --csv / --select / --filter must KEEP working: a markdown file can
+# embed GFM tables and those flags genuinely drive them.
+MDTBL="$TMP/tbl.md"
+printf '# T\n\n| a | b |\n|---|---|\n| 1 | 2 |\n' > "$MDTBL"
+assert_eq_file_inline "md_still_honours_tsv" \
+    "$("$VV" --tsv "$MDTBL" 2>/dev/null | paste -sd, -)" "a	b,1	2"
+# The scripted stream must contain ONLY the table — it used to carry the
+# rendered prose and the caption ahead of the TSV, so `--tsv > out.tsv` was
+# unparseable.
+MDTSV=$("$VV" --tsv "$MDTBL" 2>/dev/null)
+refute_contains "md_tsv_no_prose"   "$MDTSV" "# T"
+refute_contains "md_tsv_no_caption" "$MDTSV" "table 1"
+# Rendering without a delimited mode is unchanged.
+assert_contains "md_render_still_has_prose" \
+    "$("$VV" --no-interactive "$MDTBL" 2>/dev/null)" "# T"
+
+# `vh` sets --vertical from argv[0], so a document must not fail on a flag the
+# user never typed — only a TYPED --vertical is an error.
+assert_exit_code "md_typed_vertical_rejected" 1 "$VV" --vertical "$MDDOC"
+# ...but `vh` implies --vertical from argv[0], and must not fail on a flag the
+# user never typed.
+cp "$VV" "$TMP/vh"
+assert_exit_code "md_vh_argv0_vertical_allowed" 0 "$TMP/vh" "$MDDOC"
+rm -f "$TMP/vh"
+
+# Multiple positionals: markdown returns early and renders only cfg.path, so on
+# a TTY it silently showed the first file and exited 0.
+if command -v script >/dev/null 2>&1; then
+    printf '# B\n\nsecond body\n' > "$TMP/doc2.md"
+    MDMULTI=$(script -qec "env PATH=/usr/bin:/bin $VV $MDDOC $TMP/doc2.md" /dev/null 2>&1 || true)
+    assert_contains "md_multifile_rejected" "$MDMULTI" "only supported in the interactive viewer"
+    refute_contains "md_multifile_no_silent_render" "$MDMULTI" "some prose"
+    rm -f "$TMP/doc2.md"
+fi
+rm -f "$MDDOC" "$MDTBL"
+
 # Markdown viewer — prose + GFM tables routed through the existing
 # table renderer. The fixture tiny.md has two tables (one numeric,
 # one string) and one of each block type.
