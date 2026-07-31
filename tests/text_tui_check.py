@@ -109,16 +109,35 @@ def main():
     vv, tmp = sys.argv[1], sys.argv[2]
     rc = 0
 
-    def fail(msg):
+    def fail(msg, screen=None):
         nonlocal rc
         sys.stderr.write("text_tui: " + msg + "\n")
+        # A pty failure is unreproducible from a CI log without the screen
+        # that produced it. Dump a bounded excerpt so the next one is
+        # diagnosable in a single cycle rather than by guesswork.
+        if screen is not None:
+            sys.stderr.write("text_tui:   screen was: %r\n" % (screen[-600:],))
         rc = 1
 
-    # A line far wider than the 60-column terminal, with a marker at column 90
-    # that only becomes visible after scrolling right.
+    # A line far wider than the 60-column terminal, with two markers: one at
+    # column 45 (past max_col_w_'s 32, but on screen without scrolling) and
+    # one at column 90 (only reachable by scrolling right).
+    #
+    # The filler is deliberately VARIED, never a run of one character, and
+    # the assertions below look for multi-character markers rather than for
+    # a run length. An earlier version used "A"*88 and asserted on the
+    # longest surviving run of A: it passed locally (57 A's reached the
+    # stream) and failed on both CI runners, which found no run of 20. What
+    # a terminal library emits for 88 identical characters is its business —
+    # xterm-256color advertises terminfo's `rep`, and any of several output
+    # optimisations can turn that run into something a byte-level regex will
+    # not recognise. A marker string cannot be compressed that way.
+    filler = "".join("abcdefghij0123456789"[i % 20] for i in range(200))
+    line1 = ("LINE1START" + filler[:35] + "COL45_MARK"
+             + filler[45:80] + "MARKER_AT_90" + filler[:40])
     wide = os.path.join(tmp, "wide.txt")
     with open(wide, "w") as f:
-        f.write("A" * 88 + "MARKER_AT_90" + "B" * 40 + "\n")
+        f.write(line1 + "\n")
         for i in range(2, 12):
             f.write("line %d\n" % i)
     small = os.path.join(tmp, "small.txt")
@@ -132,30 +151,30 @@ def main():
         fail("hung opening a text file")
     else:
         if re.search(r"\bline\b\s+\bstring\b", txt):
-            fail("a `line` column header is being drawn over a text file")
+            fail("a `line` column header is being drawn over a text file", txt)
         if "string" in txt:
             fail("a `string` type row is being drawn over a text file")
 
         # 2. THE discriminating check: the long line is chopped at the screen
-        #    edge, not ellipsised at max_col_w_ (32). A truncating renderer
-        #    emits the … and stops around 32 columns.
+        #    edge, not ellipsised at max_col_w_ (32). cell_at() truncates every
+        #    string cell at 32 before the renderer sees it, so a text viewer
+        #    built on the table path shows neither marker.
         if "…" in txt:
-            fail("the long line was ellipsised; a text line must be chopped")
-        runs = re.findall(r"A{20,}", txt)
-        if not runs:
-            fail("no long run of A found on screen at all")
-        elif max(len(r) for r in runs) < 45:
-            fail("longest visible A-run is %d columns; the line was truncated "
-                 "before reaching the screen edge" % max(len(r) for r in runs))
+            fail("the long line was ellipsised; a text line must be chopped", txt)
+        if "COL45_MARK" not in txt:
+            fail("text at column 45 is missing: the line was truncated before "
+                 "reaching the screen edge (max_col_w_ is 32)", txt)
+        if "MARKER_AT_90" in txt:
+            fail("text at column 90 is on a 60-column screen without scrolling")
 
         # 3. Line numbers are 1-based, like less -N / grep -n, and match the
         #    status bar's own "Line 1-..." range. NB the scrape has had its
         #    cursor-positioning stripped, so rows run together — anchor on the
         #    distinctive "1 AAAA…" rather than on a line start.
-        if not re.search(r"1 A{40,}", txt):
-            fail("no 1-based line number in the gutter")
+        if not re.search(r"1 LINE1START", txt):
+            fail("no 1-based line number in the gutter", txt)
         if not re.search(r"Line 1-", txt):
-            fail("status bar does not show a Line range")
+            fail("status bar does not show a Line range", txt)
 
     # 4. `l` scrolls sideways: a marker past the right edge becomes visible.
     txt, _last, _, hung = run(vv, [wide], [b"l", b"l", b"l"])
@@ -163,14 +182,14 @@ def main():
         fail("hung after l")
     elif "MARKER_AT_90" not in txt:
         fail("l did not scroll the line sideways (marker at column 90 never "
-             "appeared)")
+             "appeared)", txt)
 
     # ...and `0` goes back home.
     _txt, last, _, hung = run(vv, [wide], [b"l", b"l", b"l", b"0"])
     if hung:
         fail("hung after l0")
     elif "MARKER_AT_90" in last:
-        fail("0 did not return the line to column 0")
+        fail("0 did not return the line to column 0", last)
 
     # 5. Two text files open as tabs; one file shows no tab bar.
     txt, _last, _, hung = run(vv, [wide, small], [])
@@ -178,7 +197,7 @@ def main():
         fail("hung with two text files")
     else:
         if "wide.txt" not in txt or "small.txt" not in txt:
-            fail("both tab labels should appear on the tab bar; got neither")
+            fail("both tab labels should appear on the tab bar; got neither", txt)
         if "[Tab] next" not in txt:
             fail("no tab bar with two files open")
     txt, _last, _, hung = run(vv, [small], [])
@@ -192,7 +211,7 @@ def main():
     if hung:
         fail("hung after s")
     elif "not available for a text file" not in txt:
-        fail("s should report why sorting does not apply to a text file")
+        fail("s should report why sorting does not apply to a text file", txt)
 
     # 7. An OSC title escape in the file must not reach the terminal, and its
     #    tail must not show up as literal garbage either. Mirrors
