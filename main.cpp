@@ -664,6 +664,12 @@ static const FormatInfo kFormats[] = {
    false, false, false, false, false, ""},
   {"Markdown", ".md .markdown .mdown .mkd", "md4c renderer",
    false, false, false, false, false, ""},
+  // Plain text is last on purpose: it is the fallback, and any file no other
+  // row claims is content-sniffed into it. The extension list is short by
+  // design — .py / .c / .conf / .toml reach the same reader through the
+  // sniff, and claiming them here would advertise vv as a code viewer.
+  {"Plain text", ".txt .text .log", "TextSource",
+   true,  false, false, true,  true,  ""},
 };
 static constexpr size_t kNumFormats = sizeof(kFormats) / sizeof(kFormats[0]);
 
@@ -770,13 +776,17 @@ static void print_usage(const char* prog) {
         "  .fq  .fastq                 sequencing reads (FASTQ, plus .gz)\n"
         "  .bcf                        binary VCF (htslib)\n"
         "  .paf  .paf.gz               minimap2 pairwise alignments\n"
+        "  .txt  .text  .log           plain text (also .gz; viewed like less -SN,\n"
+        "                              not tabulated). The fallback for any file\n"
+        "                              no other format claims.\n"
         "  -                           read text format from stdin (auto-gunzip)\n"
         "  (`vv --formats` prints this table with capability columns;\n"
         "   add --json for the machine-readable form)\n"
-        "  (unknown extensions: sniffed by magic bytes / delimiter)\n"
+        "  (unknown extensions: identified by magic bytes, else sniffed as text;\n"
+        "   binary files are refused — vv has no hex view)\n"
         "\nInteractive viewer (default when stdout is a terminal):\n"
         "  -i / --interactive  open the ncurses row browser\n"
-        "  --no-interactive    force plain table output even on a terminal\n"
+        "  --no-interactive    force plain table output even on a terminal\n"        "  --text              read the file as plain text whatever its extension\n"
         "  Keys: arrows/hjkl move the cell cursor, PgUp/PgDn, g/G, /:search,\n"
         "        S:column-stats, s:sort by current column (u clears),\n"
         "        &:live filter, c:show/hide columns, y:copy cell (OSC52),\n"
@@ -1034,6 +1044,8 @@ static Config parse_args(int argc, char** argv) {
         } else if (!std::strcmp(argv[i], "--md") ||
                    !std::strcmp(argv[i], "--markdown")) {
             cfg.md = true;
+        } else if (!std::strcmp(argv[i], "--text")) {
+            cfg.force_text = true;
         } else if (!std::strcmp(argv[i], "--validate")) {
             cfg.validate = true;
         } else if (!std::strcmp(argv[i], "--decode-pileup")) {
@@ -1348,6 +1360,28 @@ int display_width(const std::string& s) {
         i += len;
     }
     return w;
+}
+
+// ── Text-line rendering helpers ──────────────────────────────────────────────
+
+// The slice of `s` occupying display columns [start, start+width). Used to
+// scroll a text line sideways. Wide characters are kept whole: one straddling
+// either edge is dropped rather than half-painted, so the result never
+// desynchronises the terminal's column count.
+static std::string sub_display(const std::string& s, int start, int width) {
+    if (width <= 0) return "";
+    std::string out;
+    int col = 0;
+    for (size_t i = 0; i < s.size(); ) {
+        int len = 1;
+        int cw = codepoint_width(utf8_decode(s, i, &len));
+        if (col >= start + width) break;
+        if (col >= start && col + cw <= start + width)
+            out.append(s, i, (size_t)len);
+        col += cw;
+        i += (size_t)len;
+    }
+    return out;
 }
 
 // Byte offset of the longest prefix of s whose display width is <= max_cols.
@@ -7264,6 +7298,223 @@ public:
     }
 };
 
+// ── Plain-text source ────────────────────────────────────────────────────────
+//
+// A text file is modelled as one utf8 column named `line`, one row per line.
+// That is what buys tabs, `/` search, `&` filter, themes, per-tab state, the
+// status bar and the multi-file loop for free: every one of those walks Arrow
+// columns through cell_to_string(), which works unchanged over a single string
+// column. The TUI then renders a text tab without the header row and without
+// truncation (see TableTUI::text_view_).
+//
+// Streaming and forward-only, like DelimitedSource — logs are the point, so
+// slurping (md::slurp_file, which has no size cap) is not an option.
+//
+// Deliberately NOT LineReader: that strips '\r' anywhere in a line, so a CRLF
+// file would not round-trip. This splits on '\n' only and keeps every other
+// byte, including a trailing '\r'.
+//
+// Line terminators are dropped from the stored value and re-added on output,
+// so `vv f.txt > copy` is byte-identical to f.txt. A file whose last line has
+// no trailing newline is remembered (final_newline_ = false) and printed
+// without one.
+
+// Result of the binary heuristic.
+enum class TextSniffResult { Text, Binary, Utf16, Utf32 };
+
+// Decide whether a buffer (the first ~8 KiB of a file) is plain text.
+//
+// Order matters. A UTF-16 file is full of NUL bytes, so the BOM test has to
+// come before the NUL test or every Windows-exported file gets the generic
+// "binary" message instead of one naming iconv.
+static TextSniffResult sniff_text(const char* p, size_t n) {
+    const unsigned char* d = (const unsigned char*)p;
+    if (n == 0) return TextSniffResult::Text;          // empty file is text
+    // 1. Byte-order marks, longest first (UTF-32LE starts with the UTF-16LE
+    //    BOM, so testing UTF-16 first would misreport it).
+    if (n >= 4 && d[0]==0xFF && d[1]==0xFE && d[2]==0x00 && d[3]==0x00)
+        return TextSniffResult::Utf32;
+    if (n >= 4 && d[0]==0x00 && d[1]==0x00 && d[2]==0xFE && d[3]==0xFF)
+        return TextSniffResult::Utf32;
+    if (n >= 3 && d[0]==0xEF && d[1]==0xBB && d[2]==0xBF)
+        return TextSniffResult::Text;                  // UTF-8 BOM
+    if (n >= 2 && ((d[0]==0xFF && d[1]==0xFE) || (d[0]==0xFE && d[1]==0xFF)))
+        return TextSniffResult::Utf16;
+    // 2. Any NUL → binary.
+    if (std::memchr(p, 0, n) != nullptr) return TextSniffResult::Binary;
+    // 3. Too many C0 control bytes → binary. \t \n \r \f and ESC are all
+    //    normal in text; excluding ESC matters or an ANSI-coloured log gets
+    //    refused. DEL (0x7F) counts as a control byte.
+    size_t ctrl = 0;
+    for (size_t i = 0; i < n; ++i) {
+        unsigned char c = d[i];
+        if (c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == 0x1b)
+            continue;
+        if (c < 0x20 || c == 0x7f) ++ctrl;
+    }
+    return (ctrl * 20 > n) ? TextSniffResult::Binary   // > 5%
+                           : TextSniffResult::Text;
+}
+
+// The error text for a file the sniffer refused. Split out so stdin and the
+// path ladder word it identically. The caller already prefixes "vv: <path>: ",
+// so `what` appears only inside the suggested command line.
+static std::string text_binary_error(const std::string& what,
+                                     TextSniffResult r) {
+    if (r == TextSniffResult::Utf16 || r == TextSniffResult::Utf32) {
+        const char* enc = (r == TextSniffResult::Utf16) ? "UTF-16" : "UTF-32";
+        return std::string(enc) + " text is not supported. Convert it first: "
+               "`iconv -f " + enc + " -t UTF-8 " + what + " | vv -`.";
+    }
+    return "binary file, not shown. vv views text and the formats listed by "
+           "`vv --formats`; it has no hex view.";
+}
+
+class TextSource : public TabularSource {
+    std::string                            path_;
+    std::shared_ptr<arrow::Schema>         schema_;
+    std::shared_ptr<arrow::io::InputStream> in_;
+
+    mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
+    mutable std::vector<int64_t>           batch_first_row_;
+    mutable std::vector<int64_t>           batch_num_rows_;
+    mutable int64_t                        rows_so_far_   = 0;
+    mutable bool                           all_read_      = false;
+    mutable bool                           retain_all_    = false;
+    mutable bool                           evicted_any_   = false;
+    mutable bool                           final_newline_ = true;
+    mutable std::string                    pending_;      // partial last line
+    mutable arrow::Status                  read_status_;
+    bool                                   gz_ = false;
+
+    static constexpr int    BATCH_SIZE = 4096;
+    static constexpr size_t READ_SIZE  = 64 * 1024;
+
+    arrow::Status advance() const {
+        if (all_read_) return arrow::Status::OK();
+        arrow::StringBuilder b;
+        int count = 0;
+        std::string buf;
+        buf.resize(READ_SIZE);
+        while (count < BATCH_SIZE) {
+            // Emit every complete line already buffered.
+            size_t start = 0;
+            for (;;) {
+                size_t nl = pending_.find('\n', start);
+                if (nl == std::string::npos) break;
+                ARROW_RETURN_NOT_OK(b.Append(pending_.data() + start,
+                                             (int32_t)(nl - start)));
+                start = nl + 1;
+                if (++count >= BATCH_SIZE) break;
+            }
+            if (start) pending_.erase(0, start);
+            if (count >= BATCH_SIZE) break;
+
+            auto got = in_->Read((int64_t)READ_SIZE, buf.data());
+            if (!got.ok()) {
+                read_status_ = got.status();
+                all_read_ = true;
+                break;
+            }
+            if (*got == 0) {
+                // EOF. A non-empty remainder is a final line with no newline.
+                if (!pending_.empty()) {
+                    ARROW_RETURN_NOT_OK(b.Append(pending_.data(),
+                                                 (int32_t)pending_.size()));
+                    ++count;
+                    pending_.clear();
+                    final_newline_ = false;
+                }
+                all_read_ = true;
+                break;
+            }
+            pending_.append(buf.data(), (size_t)*got);
+        }
+        if (count == 0) { all_read_ = true; return read_status_; }
+
+        std::shared_ptr<arrow::Array> arr;
+        ARROW_RETURN_NOT_OK(b.Finish(&arr));
+        auto batch = arrow::RecordBatch::Make(schema_, count, {arr});
+        stream_retain(batches_, batch_first_row_, batch_num_rows_, rows_so_far_,
+                      retain_all_, evicted_any_, std::move(batch));
+        return arrow::Status::OK();
+    }
+
+public:
+    static std::string open(const std::string& path, bool gz,
+                            const Config& /*cfg*/,
+                            std::unique_ptr<TextSource>* out) {
+        auto self = std::make_unique<TextSource>();
+        self->path_ = path;
+        self->gz_   = gz;
+        self->schema_ = arrow::schema({arrow::field("line", arrow::utf8())});
+
+        auto rf = arrow::io::ReadableFile::Open(path);
+        if (!rf.ok())
+            return "Cannot open '" + path + "': " + rf.status().ToString();
+        std::shared_ptr<arrow::io::InputStream> in = rf.ValueOrDie();
+        if (gz) {
+            auto codec = arrow::util::Codec::Create(arrow::Compression::GZIP);
+            if (!codec.ok()) return codec.status().ToString();
+            auto ci = arrow::io::CompressedInputStream::Make(codec->get(), in);
+            if (!ci.ok()) return ci.status().ToString();
+            in = ci.ValueOrDie();
+        }
+        self->in_ = std::move(in);
+
+        auto st = self->advance();
+        if (!st.ok()) return "Error reading '" + path + "': " + st.ToString();
+        *out = std::move(self);
+        return "";
+    }
+
+    // Same, over an already-open stream (stdin).
+    static std::string open_stream(const std::string& label,
+                                   std::shared_ptr<arrow::io::InputStream> in,
+                                   std::unique_ptr<TextSource>* out) {
+        auto self = std::make_unique<TextSource>();
+        self->path_   = label;
+        self->in_     = std::move(in);
+        self->schema_ = arrow::schema({arrow::field("line", arrow::utf8())});
+        auto st = self->advance();
+        if (!st.ok()) return "Error reading '" + label + "': " + st.ToString();
+        *out = std::move(self);
+        return "";
+    }
+
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    int64_t total_rows() const override { return all_read_ ? rows_so_far_ : -1; }
+    int     num_chunks() const override { return (int)batches_.size(); }
+    ChunkMeta chunk_meta(int i) const override {
+        return {batch_first_row_[i], batch_num_rows_[i]};
+    }
+    void set_retain_all(bool b) override { retain_all_ = b; }
+    bool evicted_any() const override { return evicted_any_; }
+    void ensure(int i) override {
+        while (!all_read_ && (int)batches_.size() <= i) (void)advance();
+    }
+    arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
+                              std::shared_ptr<arrow::Table>* out) override {
+        ensure(i);
+        if (i >= (int)batches_.size())
+            return arrow::Status::IndexError("chunk ", i, " out of range");
+        if (!batches_[i])
+            return arrow::Status::CapacityError(
+                "chunk ", i, " was released by the streaming window");
+        *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
+        return arrow::Status::OK();
+    }
+    arrow::Status read_status() const override { return read_status_; }
+    const std::string& path() const override { return path_; }
+    std::string footer() const override {
+        return std::string("Format: text") + (gz_ ? " (gzip)" : "");
+    }
+    // True when the file's last line carries no terminator, so a verbatim
+    // dump can reproduce that.
+    bool final_newline() const { return final_newline_; }
+    bool is_text() const override { return true; }
+};
+
 // ── 2bit (UCSC) source ────────────────────────────────────────────────────────
 //
 // 2bit is the UCSC binary container for genome-scale DNA sequences
@@ -8081,7 +8332,15 @@ protected:
     std::string                       label_;
     std::string                       footer_str_;
     std::vector<std::string>          hidden_;
+    bool                              is_text_ = false;
 
+public:
+    // Set when this table was derived from a plain-text source (--tail on a
+    // .log), so the frontends keep rendering it as text rather than as a
+    // one-column table.
+    void mark_text() { is_text_ = true; }
+    bool is_text() const override { return is_text_; }
+protected:
     // For slice navigation: swap the underlying table without
     // re-creating the source (preserves identity for the TUI).
     void replace_table(std::shared_ptr<arrow::Table> t, std::string footer) {
@@ -13085,11 +13344,96 @@ public:
 // The dispatch ladder. open_source() wraps this so a decorator (--expand)
 // applies to every one of its ~25 success paths at once, including the
 // multi-file TUI loop, instead of each `*out = std::move(src)` needing a patch.
+// ── Plain-text entry points ──────────────────────────────────────────────────
+//
+// The extension list is deliberately SHORT. `.py`, `.c`, `.conf`, `.toml`,
+// `.rst` need no entry: the content sniff at the bottom of the ladder routes
+// them to text identically, and claiming them in `--formats` would advertise
+// vv as a code viewer with no highlighting. `.json` is left out on purpose so
+// a real JSON reader stays possible later.
+static const char* kTextExts[] = { ".txt", ".text", ".log" };
+
+static bool text_ext(const std::string& p) {
+    for (const char* e : kTextExts) {
+        if (fends_ci(p, e)) return true;
+        if (fends_ci(p, std::string(e) + ".gz")) return true;
+    }
+    return false;
+}
+
+// True when `path` has no extension at all (a bare `README`, `Makefile`,
+// `CHANGELOG`). Such files get no "sniffed as text" note — a note on every
+// README would be nagging. A dotfile (`.bashrc`) counts as extension-less.
+static bool has_no_extension(const std::string& path) {
+    size_t slash = path.find_last_of('/');
+    std::string base = (slash == std::string::npos) ? path
+                                                    : path.substr(slash + 1);
+    size_t dot = base.find_last_of('.');
+    return dot == std::string::npos || dot == 0;
+}
+
+// Sniff `path` and, if it is text, open it as a TextSource. Returns an error
+// string otherwise. `note` asks for the one-line stderr note that says text
+// mode was reached by content-sniffing rather than by extension.
+static std::string open_text(const std::string& path, const Config& cfg,
+                             std::unique_ptr<TabularSource>* out,
+                             bool note = false) {
+    auto rf = arrow::io::ReadableFile::Open(path);
+    if (!rf.ok())
+        return "Cannot open '" + path + "': " + rf.status().ToString();
+    std::shared_ptr<arrow::io::InputStream> in = rf.ValueOrDie();
+
+    // gzip is detected by magic, not by suffix, so `syslog.1.gz` and a bare
+    // `dump.gz` work as well as `notes.txt.gz`.
+    bool gz = false;
+    {
+        auto head = in->Read(2);
+        if (head.ok() && (*head)->size() >= 2) {
+            const uint8_t* m = (*head)->data();
+            gz = (m[0] == 0x1f && m[1] == 0x8b);
+        }
+        auto st = rf.ValueOrDie()->Seek(0);
+        if (!st.ok()) return "Cannot rewind '" + path + "': " + st.ToString();
+    }
+    if (gz) {
+        auto codec = arrow::util::Codec::Create(arrow::Compression::GZIP);
+        if (!codec.ok()) return codec.status().ToString();
+        auto ci = arrow::io::CompressedInputStream::Make(codec->get(), in);
+        if (!ci.ok()) return ci.status().ToString();
+        in = ci.ValueOrDie();
+    }
+
+    std::string buf(8192, '\0');
+    auto got = in->Read(8192, buf.data());
+    if (!got.ok()) return "Cannot read '" + path + "': " + got.status().ToString();
+    (void)rf.ValueOrDie()->Close();
+
+    TextSniffResult r = sniff_text(buf.data(), (size_t)*got);
+    if (r != TextSniffResult::Text) return text_binary_error(path, r);
+
+    if (note)
+        std::fprintf(stderr,
+                     "vv: %s: no known format claims this extension; "
+                     "shown as plain text\n", path.c_str());
+
+    std::unique_ptr<TextSource> src;
+    std::string err = TextSource::open(path, gz, cfg, &src);
+    if (!err.empty()) return err;
+    *out = std::move(src);
+    return "";
+}
+
 static std::string open_source_dispatch(const std::string& path, const Config& cfg,
                                 std::unique_ptr<TabularSource>* out) {
     // ── Determine file kind ──────────────────────────────────────────────────
     bool        is_parquet = false;
     DelimKind   dk         = DelimKind::TSV;
+
+    // --text: read it as plain text whatever the extension says. The escape
+    // hatch for a textual-but-tabular file — `vv --text notes.md` shows the
+    // markdown source, `vv --text data.csv` shows the raw lines. Still
+    // sniffed, so `vv --text foo.bam` is refused rather than dumped.
+    if (cfg.force_text && path != "-") return open_text(path, cfg, out);
 
     // ── Stdin (`-`): text formats only ───────────────────────────────────────
     if (path == "-") {
@@ -13136,6 +13480,22 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
             auto ci = arrow::io::CompressedInputStream::Make(codec->get(), input);
             if (!ci.ok()) return ci.status().ToString();
             input = ci.ValueOrDie();
+        }
+
+        // Binary refusal, at the second entry point. Piped binary used to
+        // reach Arrow's CSV reader, which echoed the raw bytes back inside a
+        // parse error ("Expected 2 columns, got 1: Mu\xef\xbf\xbdm…") —
+        // control characters and all, straight at the user's terminal.
+        // Sniffing here rather than on the raw fd covers gzip'd input too.
+        {
+            std::string head(8192, '\0');
+            auto got = input->Read(8192, head.data());
+            if (!got.ok()) return got.status().ToString();
+            head.resize((size_t)*got);
+            TextSniffResult tr = sniff_text(head.data(), head.size());
+            if (tr != TextSniffResult::Text)
+                return text_binary_error("stdin", tr);
+            input = std::make_shared<PrependInputStream>(std::move(head), input);
         }
 
         // Choose CSV/TSV from the user-provided flag (none → assume TSV; the
@@ -13306,6 +13666,11 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         dk = DelimKind::TSV;
     } else if (fends_ci(path, ".csv")   || fends_ci(path, ".csv.gz")) {
         dk = DelimKind::CSV;
+    } else if (text_ext(path)) {
+        // Known text extension. Still sniffed: a `.log` holding a core dump
+        // is binary whatever it is called, and the sniff is what keeps the
+        // "vv never dumps binary to your terminal" promise true.
+        return open_text(path, cfg, out);
     } else {
         // Unknown extension: only accept it if the magic bytes positively
         // identify a known binary format. The previous fallback ran a
@@ -13349,9 +13714,10 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
             }
         }
         if (!is_parquet) {
-            return "'" + path + "': unrecognised file extension. "
-                   "Rename to one of the supported suffixes (see `vv --help`), "
-                   "or pipe the file via stdin: `cat \"" + path + "\" | vv -`.";
+            // No known format claims it. Before giving up, look at the
+            // content: if it is text, show it as text. Binary is refused —
+            // deliberately unlike less, which offers to dump it anyway.
+            return open_text(path, cfg, out, !has_no_extension(path));
         }
     }
 
@@ -15294,6 +15660,129 @@ static std::string build_tail(std::unique_ptr<TabularSource>& src,
 // frontend; excluded from libvvcore (the headless reader core).
 #ifndef VV_CORE_LIB
 
+// One run of a text line that shares a single attribute + colour.
+struct AnsiRun {
+    std::string text;
+    attr_t      attr = A_NORMAL;
+    int         fg   = -1;   // 256-colour index, -1 = terminal default
+    int         bg   = -1;
+    int         col0 = 0;    // display column where this run starts
+    int         width = 0;   // display columns it occupies
+};
+
+// Split a line of a text file into paintable runs, interpreting SGR colour
+// and dropping everything else.
+//
+// The pipe path is verbatim — `vv f.log > copy` round-trips byte for byte —
+// but the screen path must not be. A .log can carry an OSC title sequence, a
+// cursor-move, or a raw BEL, and ncurses would hand all of those straight to
+// the terminal (same reasoning as md_no_osc_title_injection). Stripping only
+// the ESC byte is not enough either: the tail of the sequence would show up
+// as literal "]0;PWNED" / "[31m" garbage the user cannot tell from content.
+// So a non-SGR escape is dropped WHOLE, and SGR becomes a real attribute —
+// which is `less -R` behaviour, minus the parts that can drive the terminal.
+//
+// Tabs expand to the next 8-column stop, like less.
+static std::vector<AnsiRun> ansi_runs(const std::string& in) {
+    std::vector<AnsiRun> out;
+    AnsiRun cur;
+    int col = 0;
+    auto flush = [&]() {
+        if (!cur.text.empty()) { out.push_back(cur); cur.text.clear(); }
+        cur.col0 = col; cur.width = 0;
+    };
+    auto set_style = [&](attr_t a, int fg, int bg) {
+        if (a == cur.attr && fg == cur.fg && bg == cur.bg) return;
+        flush();
+        cur.attr = a; cur.fg = fg; cur.bg = bg;
+    };
+    attr_t attr = A_NORMAL;
+    int fg = -1, bg = -1;
+
+    for (size_t i = 0; i < in.size(); ) {
+        unsigned char c = (unsigned char)in[i];
+        if (c == 0x1b) {
+            // CSI: ESC [ params final. Only 'm' (SGR) is honoured; every
+            // other final byte (cursor moves, erases, scroll regions) is
+            // dropped along with its parameters.
+            if (i + 1 < in.size() && in[i+1] == '[') {
+                size_t j = i + 2;
+                while (j < in.size() &&
+                       ((unsigned char)in[j] < 0x40 || (unsigned char)in[j] > 0x7e))
+                    ++j;
+                if (j < in.size() && in[j] == 'm') {
+                    // Parse the SGR parameter list.
+                    std::vector<int> ps;
+                    int v = 0; bool any = false;
+                    for (size_t k = i + 2; k < j; ++k) {
+                        if (in[k] >= '0' && in[k] <= '9') { v = v*10 + (in[k]-'0'); any = true; }
+                        else { ps.push_back(any ? v : 0); v = 0; any = false; }
+                    }
+                    ps.push_back(any ? v : 0);
+                    for (size_t k = 0; k < ps.size(); ++k) {
+                        int q = ps[k];
+                        if (q == 0)                  { attr = A_NORMAL; fg = bg = -1; }
+                        else if (q == 1)             attr |= A_BOLD;
+                        else if (q == 2)             attr |= A_DIM;
+                        else if (q == 4)             attr |= A_UNDERLINE;
+                        else if (q == 7)             attr |= A_REVERSE;
+                        else if (q == 22)            attr &= ~(attr_t)(A_BOLD | A_DIM);
+                        else if (q == 24)            attr &= ~(attr_t)A_UNDERLINE;
+                        else if (q == 27)            attr &= ~(attr_t)A_REVERSE;
+                        else if (q >= 30 && q <= 37) fg = q - 30;
+                        else if (q == 39)            fg = -1;
+                        else if (q >= 40 && q <= 47) bg = q - 40;
+                        else if (q == 49)            bg = -1;
+                        else if (q >= 90 && q <= 97) fg = q - 90 + 8;
+                        else if (q >= 100 && q <= 107) bg = q - 100 + 8;
+                        else if (q == 38 || q == 48) {
+                            int* slot = (q == 38) ? &fg : &bg;
+                            if (k + 2 < ps.size() && ps[k+1] == 5) {
+                                *slot = ps[k+2]; k += 2;
+                            } else if (k + 4 < ps.size() && ps[k+1] == 2) {
+                                *slot = nearest_256(ps[k+2], ps[k+3], ps[k+4]);
+                                k += 4;
+                            }
+                        }
+                    }
+                    set_style(attr, fg, bg);
+                }
+                i = (j < in.size()) ? j + 1 : in.size();
+                continue;
+            }
+            // OSC: ESC ] ... terminated by BEL or ST (ESC \). This is the
+            // window-title injection vector; drop the whole thing.
+            if (i + 1 < in.size() && in[i+1] == ']') {
+                size_t j = i + 2;
+                while (j < in.size() && (unsigned char)in[j] != 0x07 &&
+                       !(in[j] == 0x1b && j + 1 < in.size() && in[j+1] == '\\'))
+                    ++j;
+                if (j < in.size() && in[j] == 0x1b) ++j;
+                i = (j < in.size()) ? j + 1 : in.size();
+                continue;
+            }
+            // Any other two-byte escape (charset select, ESC 7/8, …).
+            i += (i + 1 < in.size()) ? 2 : 1;
+            continue;
+        }
+        if (c == '\t') {
+            int n = 8 - (col % 8);
+            cur.text.append((size_t)n, ' ');
+            cur.width += n; col += n; ++i;
+            continue;
+        }
+        if (c < 0x20 || c == 0x7f) { ++i; continue; }   // BEL, DEL, stray C0
+        int len = 1;
+        int cw = codepoint_width(utf8_decode(in, i, &len));
+        cur.text.append(in, i, (size_t)len);
+        cur.width += cw; col += cw;
+        i += (size_t)len;
+    }
+    if (!cur.text.empty()) out.push_back(cur);
+    return out;
+}
+
+
 // Terminal restoration on fatal signals. While the TUI owns the terminal
 // (raw/no-echo/alt-screen), a SIGINT (Ctrl-C), SIGTERM or SIGHUP would kill the
 // process before endwin() runs, leaving the user's shell unusable. The handler
@@ -15388,6 +15877,23 @@ class TableTUI {
     int                         next_rgb_pair_ = NCP_PLAIN + 1;
     bool                        zebra_enabled_ = false;
 
+    // Colour pairs for SGR-coloured text lines. Distinct from get_rgb_pair(),
+    // which allocates BACKGROUND swatches for RGB columns; this one sets the
+    // foreground (and optionally the background) the way a coloured log means
+    // it. Bounded by COLOR_PAIRS, and shared with the RGB allocator's counter
+    // so the two cannot collide.
+    std::map<int, int> fg_pair_;
+    int get_fg_pair(int fg, int bg) {
+        if (next_rgb_pair_ >= COLOR_PAIRS) return 0;
+        int key = ((fg + 1) << 9) | (bg + 1);
+        auto it = fg_pair_.find(key);
+        if (it != fg_pair_.end()) return it->second;
+        int pair = next_rgb_pair_++;
+        init_pair(pair, (short)fg, (short)bg);
+        fg_pair_[key] = pair;
+        return pair;
+    }
+
     int get_rgb_pair(int r, int g, int b) {
         if (COLORS < 256 || next_rgb_pair_ >= COLOR_PAIRS) return 0;
         int key = (r << 16) | (g << 8) | b;
@@ -15420,6 +15926,12 @@ class TableTUI {
     // top-left corner instead, which is why the help text had to say "the
     // leftmost visible column". cur_row_ is a DISPLAY row (like top_row_, so
     // it survives sort/filter); cur_col_ is a VIRTUAL column (like left_col_).
+    // Plain text: the active source is one utf8 column of lines, rendered as
+    // a document — no header row, no truncation, chopped at the screen edge
+    // with h/l scrolling sideways (less -S). Per-tab, so a text file and a
+    // Parquet file can sit side by side in the same tab strip.
+    bool    text_view_ = false;
+    int     hscroll_   = 0;    // first displayed column of the line, text only
     int64_t cur_row_  = 0;
     int     cur_col_  = 0;
     // Rows to keep between the cursor and the top/bottom edge while scrolling,
@@ -15597,6 +16109,13 @@ class TableTUI {
     int64_t     detail_row_   = -1;  // -1 = pane closed
     int         detail_scroll_ = 0;  // vertical scroll offset within the pane
 
+    // Column-oriented keys that a text tab has nothing to do with. Answering
+    // on the status bar rather than silently ignoring the press is the same
+    // rule as #86's exit codes: never let a key look like it worked.
+    static std::string TEXT_NA(const char* key) {
+        return std::string(key) + ": not available for a text file "
+               "(it has one column of lines)";
+    }
     static constexpr int HDR_H = 3;   // column-name row + type row + rule
     static constexpr int FTR_H = 1;   // status bar
     // Banner row (row 0) + tab-bar row, both above the column header and
@@ -15605,9 +16124,19 @@ class TableTUI {
     // with more than one tab. Vertical layout stacks: banner, tabs, header, data.
     int                  banner_h_ = 0;
     int                  tabbar_h_ = 0;
-    int data_top_y()    const { return banner_h_ + tabbar_h_ + HDR_H; }
+    // A text tab has no column-name / type / rule rows: `line / string` is
+    // meaningless furniture over a document, and the three rows are three
+    // fewer lines of the file.
+    int hdr_h()         const { return text_view_ ? 0 : HDR_H; }
+    // Horizontal scroll step for a text tab: half the text area, so `l` moves
+    // by a useful amount on a 200-column log line without overshooting.
+    int text_hstep()    const {
+        int avail = scr_c_ - (no_index_ ? 0 : idx_w_ + 2);
+        return std::max(1, avail / 2);
+    }
+    int data_top_y()    const { return banner_h_ + tabbar_h_ + hdr_h(); }
     int data_lines() const {
-        return std::max(0, scr_r_ - HDR_H - tabbar_h_ - banner_h_ - FTR_H);
+        return std::max(0, scr_r_ - hdr_h() - tabbar_h_ - banner_h_ - FTR_H);
     }
 
     // When a sort or filter is active the visible row count is the size of
@@ -16272,6 +16801,58 @@ class TableTUI {
         }
     }
 
+    // Paint one line of a text tab. `hscroll_` is a horizontal offset in
+    // DISPLAY COLUMNS, not bytes, so a line of CJK scrolls by what the user
+    // sees; sub_display() does the UTF-8 walk.
+    //
+    // Control bytes are stripped rather than passed through: a .log can carry
+    // an OSC title sequence or a raw ESC, and ncurses would hand those to the
+    // terminal. The pipe path (emit_text_stream) is verbatim; the screen path
+    // is sanitised. Tabs expand to the next multiple of 8, like less.
+    void draw_text_row(int sy, const CachedRG& cr, int64_t local,
+                       bool is_match, bool is_focused, bool cursor_row, int zo) {
+        std::string line;
+        auto arr = (!cr.cols.empty()) ? cr.cols[0] : nullptr;
+        if (arr) {
+            int64_t off = local;
+            for (auto& chunk : arr->chunks()) {
+                if (off < chunk->length()) { line = cell_to_string(*chunk, off); break; }
+                off -= chunk->length();
+            }
+        }
+        int x0 = no_index_ ? 0 : idx_w_ + 2;
+        int avail = scr_c_ - x0;
+        if (avail <= 0) return;
+
+        // A highlighted row (search hit / cursor) overrides the line's own
+        // colours: the highlight has to stay legible over whatever the log
+        // asked for, and a half-honoured highlight reads as a rendering bug.
+        attr_t row_attr = A_NORMAL; int row_cp = zo ? NCP_PLAIN + zo : 0;
+        bool   override_style = false;
+        if (is_match) {
+            row_attr = is_focused ? (attr_t)(A_BOLD | A_REVERSE) : A_BOLD;
+            row_cp = NCP_SEARCH; override_style = true;
+        } else if (cursor_row) {
+            row_attr = A_REVERSE; override_style = true;
+        }
+
+        for (const AnsiRun& r : ansi_runs(line)) {
+            // Intersect [r.col0, r.col0+r.width) with the visible window.
+            int vis_start = std::max(r.col0, hscroll_);
+            int vis_end   = std::min(r.col0 + r.width, hscroll_ + avail);
+            if (vis_end <= vis_start) continue;
+            std::string piece =
+                sub_display(r.text, vis_start - r.col0, vis_end - vis_start);
+            if (piece.empty()) continue;
+            attr_t at = override_style ? row_attr : (attr_t)(r.attr);
+            int    cp = override_style ? row_cp
+                                       : ((r.fg >= 0 || r.bg >= 0)
+                                          ? get_fg_pair(r.fg, r.bg)
+                                          : (zo ? NCP_PLAIN + zo : 0));
+            nc_str(sy, x0 + (vis_start - hscroll_), piece, at, cp);
+        }
+    }
+
     void draw_data_row(int sy, int64_t row, const std::vector<ColVis>& vc) {
         int64_t tr = total_rows();
         if (tr >= 0 && row >= tr) return;
@@ -16298,7 +16879,12 @@ class TableTUI {
         if (!no_index_) {
             // Show the source-row number, not the display position — it's the
             // identifier the user knows from --tsv / --parquet round-trips.
-            std::string idx_s = " " + fit(digits_with_sep(std::to_string(srow)), idx_w_, true) + " ";
+            // Text files are numbered from 1, like less -N / grep -n / every
+            // editor — and like the "Line 1-19/29" the status bar already
+            // shows. Tables keep vv's 0-based row index, which is the
+            // identifier --tsv / --parquet round-trips use.
+            int64_t shown = text_view_ ? srow + 1 : srow;
+            std::string idx_s = " " + fit(digits_with_sep(std::to_string(shown)), idx_w_, true) + " ";
             if (is_match) nc_str(sy, 0, idx_s,
                                  is_focused ? (attr_t)(A_BOLD | A_REVERSE) : A_NORMAL,
                                  NCP_SEARCH);
@@ -16314,6 +16900,16 @@ class TableTUI {
         // Guard: row may be beyond the loaded portion of the last chunk
         // (happens while streaming and the user scrolled ahead of loaded data).
         if (local < 0 || local >= it->second.num_rows) return;
+
+        // Text: one line, painted across the whole width from hscroll_ and
+        // chopped at the screen edge. Deliberately bypasses cell_at() (which
+        // truncates at max_col_w_, 32 by default) and fit() (which ellipsises
+        // to the column width) — a document is not a cell.
+        if (text_view_) {
+            draw_text_row(sy, it->second, local, is_match, is_focused,
+                          row == cur_row_, zo);
+            return;
+        }
 
         std::unordered_map<std::string, std::string> parsed;
         int parsed_row = -1;
@@ -16406,12 +17002,17 @@ class TableTUI {
         int64_t bot = top_row_ + (int64_t)data_lines();
         if (tr >= 0) bot = std::min(bot, tr);
 
-        std::string s = " Row ";
+        std::string s = text_view_ ? " Line " : " Row ";
         s += digits_with_sep(std::to_string(top_row_ + 1)) + "-"
            + digits_with_sep(std::to_string(bot)) + "/";
         s += (tr >= 0) ? digits_with_sep(std::to_string(tr)) : "?";
 
-        if (!vc.empty()) {
+        if (text_view_) {
+            // "Col 1-5/5" is meaningless over one column. Report the
+            // horizontal scroll offset instead, and only once it is non-zero
+            // so the common case stays uncluttered.
+            if (hscroll_ > 0) s += "  +" + std::to_string(hscroll_) + "c";
+        } else if (!vc.empty()) {
             s += "  Col ";
             s += std::to_string(vc.front().col+1) + "-";
             s += std::to_string(vc.back().col+1)  + "/";
@@ -16473,9 +17074,17 @@ class TableTUI {
         } else if (!copy_status_.empty()) {
             s += "  " + copy_status_;
         } else {
+            if (text_view_) {
+                // No column keys to advertise: h/l scroll the line, and
+                // sort / column-picker / stats do not apply to one column
+                // of prose.
+                s += "  [h/l]:←→scroll  [0]:home  [j/k]:lines  /:search  "
+                     "&:filter  ::cmd  Enter:detail  y:copy  T:theme  H:help  q:quit";
+            } else {
             bool need_lr = left_col_ > 0 || (!vc.empty() && vc.back().col < num_cols_-1);
             if (need_lr) s += "  [h/l]:←→col  [,/.]:narrow/widen";
             s += "  [j/k]:rows  /:search  &:filter  ::cmd  Enter:detail  S:stats  s:sort  c:cols  y:copy  T:theme  H:help  q:quit";
+            }
         }
         if ((int)s.size() < scr_c_) s += std::string(scr_c_ - (int)s.size(), ' ');
         attron(A_REVERSE);
@@ -16966,6 +17575,8 @@ private:
 
         active_tab_ = (active_tab_ + delta + (int)tabs_.size()) % (int)tabs_.size();
         src_ = sources_[active_tab_].get();
+        text_view_ = src_->is_text();
+        hscroll_ = 0;
         if (!tabs_[active_tab_].initialised) {
             setup_for_active_source();   // lazy init the column metadata
             // Default view state: top, no filter, no sort.
@@ -17455,7 +18066,7 @@ private:
         vc = visible_cols();
         draw_banner();
         draw_tabbar();
-        draw_header(vc);
+        if (!text_view_) draw_header(vc);
         int dl = data_lines();
         for (int y = 0; y < dl; ++y)
             draw_data_row(data_top_y() + y, top_row_ + y, vc);
@@ -17545,6 +18156,7 @@ public:
     // a tab that hasn't been visited yet.
     void setup_for_active_source() {
         auto& src = *src_;
+        text_view_ = src.is_text();
         num_cols_ = (max_cols_cfg_ > 0)
                     ? std::min(max_cols_cfg_, src.schema()->num_fields())
                     : src.schema()->num_fields();
@@ -18024,22 +18636,35 @@ public:
                     top_row_ = std::max<int64_t>(0, tr - dl);
                     break;
                 case KEY_RIGHT: case 'l':
+                    // Text: there is one column, so h/l scroll the line
+                    // sideways instead (less -S). Half a screen per press,
+                    // which is what makes a wide log navigable at all.
+                    if (text_view_) { hscroll_ += std::max(1, text_hstep()); break; }
                     if (cur_col_ + 1 < num_cols_) {
                         int n = next_visible_col(cur_col_ + 1, +1);
                         if (n > cur_col_) cur_col_ = n;
                     }
                     break;
                 case KEY_LEFT: case 'h':
+                    if (text_view_) {
+                        hscroll_ = std::max(0, hscroll_ - std::max(1, text_hstep()));
+                        break;
+                    }
                     if (cur_col_ > 0) {
                         int n = next_visible_col(cur_col_ - 1, -1);
                         if (n < cur_col_) cur_col_ = n;
                     }
                     break;
+                case '0':
+                    if (text_view_) hscroll_ = 0;
+                    break;
                 case 'z':
+                    if (text_view_) { copy_status_ = TEXT_NA("z"); break; }
                     freeze_first_col_ = !freeze_first_col_; break;
                 case 'H': case KEY_F(1):
                     help_open_ = true; break;
                 case 'S':
+                    if (text_view_) { copy_status_ = TEXT_NA("S"); break; }
                     // Compute stats for the column under the cursor,
                     // then open the overlay.
                     stats_col_ = cur_col_;
@@ -18047,6 +18672,7 @@ public:
                     stats_open_ = true;
                     break;
                 case 's': {
+                    if (text_view_) { copy_status_ = TEXT_NA("s"); break; }
                     // Sort by the active column. Re-pressing on the same column
                     // toggles ascending → descending. Switching columns starts
                     // ascending again.
@@ -18074,6 +18700,7 @@ public:
                     search_row_ = -1;
                     break;
                 case 'c':
+                    if (text_view_) { copy_status_ = TEXT_NA("c"); break; }
                     col_picker_open_   = true;
                     col_picker_cursor_ = cur_col_;
                     break;
@@ -18617,42 +19244,144 @@ static void emit_schema_json(TabularSource& src, const std::string& fmt_name) {
 //
 // Markdown deliberately KEEPS --tsv / --csv / --select / --filter: a markdown
 // file can embed GFM tables, and those flags genuinely drive them.
-enum class DocKind { Markdown };
+// Plain text differs from markdown in both directions. It IS a real
+// TabularSource (one utf8 column, `line`), so --count / --tail / --filter /
+// --list-columns / -n work naturally and are allowed. But --tsv / --csv /
+// --select on a file with no fields produce output that fails downstream
+// parsers for no stated reason, so those are errors here and not for markdown.
+enum class DocKind { Markdown = 1, Text = 2 };
 
 static std::string document_flag_error(const Config& cfg, DocKind kind) {
-    auto no = [&](bool set, const char* flag, const char* why) -> std::string {
-        if (!set) return "";
-        return std::string(flag) + " does not apply to " +
-               (kind == DocKind::Markdown ? "a markdown file" : "a text file") +
-               " — " + why;
-    };
-    struct Rule { bool set; const char* flag; const char* why; };
+    const int k = (int)kind;
+    const bool md = (kind == DocKind::Markdown);
+    const char* what = md ? "a markdown file" : "a text file";
+    // `both` = rejected by markdown and by text; MD / TX = one kind only.
+    const int BOTH = 3, MD = 1, TX = 2;
+    struct Rule { bool set; int kinds; const char* flag; const char* why; };
     const Rule rules[] = {
-        {cfg.schema_only,              "--schema",    "it has no columns"},
-        {cfg.describe,                 "--describe",  "it has no columns"},
-        {cfg.stats_only,               "--stats",     "it has no Parquet metadata"},
-        {cfg.count,                    "--count",     "it has no rows"},
-        {!cfg.unique_cols.empty(),     "--unique",    "it has no columns"},
-        {cfg.sample_n > 0,             "--sample",    "it has no rows"},
-        {cfg.heatmap,                  "--heatmap",   "it has no numeric columns"},
-        {cfg.list_columns,             "--list-columns", "it has no columns"},
-        {cfg.list_tabs,                "--list-tabs", "it has no component tabs"},
-        {!cfg.tab.empty(),             "--tab",       "it has no component tabs"},
-        {!cfg.expand_col.empty(),      "--expand",    "it has no columns"},
-        {!cfg.parquet_out.empty(),     "--parquet",   "it is not tabular"},
-        {!cfg.arrow_out.empty(),       "--arrow",     "it is not tabular"},
-        {cfg.json_array || cfg.json_lines, "--json",  "it is not tabular"},
-        {cfg.pileup,                   "--pileup",    "it is not an alignment file"},
-        {cfg.decode_pileup,            "--decode-pileup", "it is not an mpileup file"},
-        {cfg.tail_rows_set,            "--tail",      "it has no rows"},
+        {cfg.schema_only,              BOTH, "--schema",    md ? "it has no columns" : "its only column is `line`"},
+        {cfg.describe,                 BOTH, "--describe",  md ? "it has no columns" : "its only column is `line`"},
+        {cfg.stats_only,               BOTH, "--stats",     "it has no Parquet metadata"},
+        {cfg.count,                    MD,   "--count",     "it has no rows"},
+        {!cfg.unique_cols.empty(),     BOTH, "--unique",    md ? "it has no columns" : "its only column is `line`"},
+        {cfg.sample_n > 0,             BOTH, "--sample",    "it has no rows"},
+        {cfg.heatmap,                  BOTH, "--heatmap",   "it has no numeric columns"},
+        {cfg.list_columns,             MD,   "--list-columns", "it has no columns"},
+        {cfg.list_tabs,                BOTH, "--list-tabs", "it has no component tabs"},
+        {!cfg.tab.empty(),             BOTH, "--tab",       "it has no component tabs"},
+        {!cfg.expand_col.empty(),      BOTH, "--expand",    md ? "it has no columns" : "its only column is `line`"},
+        {!cfg.select_cols.empty(),     TX,   "--select",    "its only column is `line`"},
+        {!cfg.parquet_out.empty(),     BOTH, "--parquet",   "it is not tabular"},
+        {!cfg.arrow_out.empty(),       BOTH, "--arrow",     "it is not tabular"},
+        {cfg.json_array || cfg.json_lines, BOTH, "--json",  "it is not tabular"},
+        {cfg.pileup,                   BOTH, "--pileup",    "it is not an alignment file"},
+        {cfg.decode_pileup,            BOTH, "--decode-pileup", "it is not an mpileup file"},
+        {cfg.tail_rows_set,            MD,   "--tail",      "it has no rows"},
+        {cfg.delimiter != 0,           TX,   "--tsv/--csv/--delimiter",
+                                             "it has no fields to separate; it is already plain text"},
         {cfg.vertical && !g_vertical_from_argv0,
-                                       "--vertical",  "it has no columns to transpose"},
+                                       BOTH, "--vertical",  md ? "it has no columns to transpose"
+                                                               : "its only column is `line`"},
     };
     for (const auto& r : rules) {
-        std::string e = no(r.set, r.flag, r.why);
-        if (!e.empty()) return e;
+        if (!r.set || !(r.kinds & k)) continue;
+        return std::string(r.flag) + " does not apply to " + what + " — " + r.why;
     }
     return "";
+}
+
+static std::string shorten_reader_error(std::string msg);
+
+// Will the interactive viewer take over? The single source of truth for that
+// question — main() asks it twice (once to decide whether --tail may stream,
+// once to actually launch), and the two must not drift.
+static bool tui_wanted(const Config& cfg) {
+    bool auto_tui = !cfg.no_interactive && !cfg.delimiter && !cfg.vertical
+                    && cfg.parquet_out.empty() && cfg.arrow_out.empty()
+                    && !cfg.head_rows_set
+                    && isatty(STDOUT_FILENO) && isatty(STDIN_FILENO);
+    return cfg.interactive || auto_tui;
+}
+
+// Stream a text source to stdout verbatim: the bytes that came in, with the
+// line terminators put back. `vv f.log > copy` must be byte-identical to
+// f.log, so this deliberately does NOT go through the table renderer, the
+// index gutter, truncation, or the colouriser.
+//
+// Honours -n N (0 = all), --tail N and --filter 'line contains "..."'.
+static int emit_text_stream(TabularSource& src, const Config& cfg) {
+    const std::vector<int> col = {0};
+    FilterExpr fx;
+    const bool have_filter = !cfg.filter_expr.empty();
+    if (have_filter) {
+        std::string ferr;
+        if (!parse_filter_expr(cfg.filter_expr, *src.schema(), &fx, &ferr)) {
+            std::fprintf(stderr, "vv: %s: --filter: %s\n",
+                         cfg.path.c_str(), ferr.c_str());
+            return 1;
+        }
+    }
+    // A trailing line with no terminator must stay that way. Only TextSource
+    // knows; anything else (stdin) is treated as newline-terminated.
+    auto* ts = dynamic_cast<TextSource*>(&src);
+
+    // --tail keeps a bounded ring of the last N lines; everything else
+    // streams straight out.
+    const bool tail = cfg.tail_rows_set && cfg.tail_rows > 0;
+    std::vector<std::string> ring;
+    int64_t limit = (cfg.head_rows_set && cfg.head_rows > 0)
+                    ? (int64_t)cfg.head_rows : INT64_MAX;
+    if (cfg.head_rows_set && cfg.head_rows == 0) limit = INT64_MAX;  // -n 0 = all
+    int64_t emitted = 0;
+    bool truncated = false;   // stopped early, so the last line printed is not
+                              // the file's last line
+    if (tail) src.set_retain_all(false);
+
+    for (int c = 0; !truncated; ++c) {
+        src.ensure(c);
+        if (c >= src.num_chunks()) break;
+        std::shared_ptr<arrow::Table> tbl;
+        if (!src.read_chunk(c, col, &tbl).ok() || !tbl) continue;
+        if (have_filter) {
+            tbl = apply_filter(tbl, fx, col);
+            if (!tbl) continue;
+        }
+        for (int ch = 0; ch < tbl->column(0)->num_chunks(); ++ch) {
+            auto arr = std::static_pointer_cast<arrow::StringArray>(
+                           tbl->column(0)->chunk(ch));
+            for (int64_t i = 0; i < arr->length(); ++i) {
+                std::string_view v =
+                    arr->IsNull(i) ? std::string_view() : std::string_view(arr->GetView(i));
+                if (tail) {
+                    ring.emplace_back(v.data(), v.size());
+                    if ((int64_t)ring.size() > (int64_t)cfg.tail_rows)
+                        ring.erase(ring.begin());
+                    continue;
+                }
+                if (emitted > 0) std::fputc('\n', stdout);
+                std::fwrite(v.data(), 1, v.size(), stdout);
+                if (++emitted >= limit) { truncated = true; break; }
+            }
+            if (truncated) break;
+        }
+    }
+    if (tail) {
+        for (size_t i = 0; i < ring.size(); ++i) {
+            std::fwrite(ring[i].data(), 1, ring[i].size(), stdout);
+            if (i + 1 < ring.size()) std::fputc('\n', stdout);
+        }
+        if (!ring.empty() && (!ts || ts->final_newline())) std::fputc('\n', stdout);
+    } else if (emitted > 0) {
+        // The newline after the final line: present unless the file itself
+        // ended without one AND we printed all the way to the end.
+        if (truncated || !ts || ts->final_newline()) std::fputc('\n', stdout);
+    }
+    if (!src.read_status().ok()) {
+        std::fprintf(stderr, "vv: %s: %s\n", cfg.path.c_str(),
+                     shorten_reader_error(src.read_status().ToString()).c_str());
+        return 1;
+    }
+    return 0;
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -18909,6 +19638,15 @@ int main(int argc, char** argv) {
                      "-r was not applied and the whole file is shown\n",
                      C_BOLD, C_RST, C_DIM, cfg.path.c_str(), C_RST);
 
+    // A plain-text source is a document, not a table. Most of the tabular
+    // flag surface has no meaning over one utf8 column of lines; reject those
+    // rather than answering with a number nobody asked for. --count / --tail /
+    // --filter / --list-columns / -n do mean something and are allowed.
+    if (src->is_text()) {
+        std::string fe = document_flag_error(cfg, DocKind::Text);
+        if (!fe.empty()) { report(cfg.path, fe); return 1; }
+    }
+
     // --tab NAME: view a named component tab (AnnData obs/var/X, a workbook
     // sheet, …) instead of the first one. Lets the CLI reach the data tabs that
     // are otherwise only navigable in the interactive TUI. Matching is
@@ -19058,9 +19796,19 @@ int main(int argc, char** argv) {
     // --tail N: keep only the last N rows. Like --sample, this fully
     // materialises the result as a MemoryTableSource so every downstream
     // view / export mode renders it identically.
-    if (cfg.tail_rows > 0) {
+    // Plain text is the exception: build_tail() concatenates every chunk to
+    // slice off the last N rows, and `vv --tail 100 /var/log/syslog` is
+    // exactly the command where slurping the file is worst. emit_text_stream()
+    // keeps a bounded ring instead, so the pipe path skips this. The TUI still
+    // materialises (it needs random access), and mark_text() keeps the result
+    // rendering as text.
+    const bool text_tail_streams = src->is_text() && !tui_wanted(cfg);
+    if (cfg.tail_rows > 0 && !text_tail_streams) {
+        bool was_text = src->is_text();
         std::string err = build_tail(src, cfg);
         if (!err.empty()) { report(cfg.path, err); return 1; }
+        if (was_text)
+            if (auto* m = dynamic_cast<MemoryTableSource*>(src.get())) m->mark_text();
         cfg.filter_expr.clear();
         cfg.head_rows = 0; cfg.head_rows_set = false;
     }
@@ -19095,11 +19843,7 @@ int main(int argc, char** argv) {
 
     // Interactive viewer
     {
-        bool auto_tui = !cfg.no_interactive && !cfg.delimiter && !cfg.vertical
-                        && cfg.parquet_out.empty() && cfg.arrow_out.empty()
-                        && !cfg.head_rows_set
-                        && isatty(STDOUT_FILENO) && isatty(STDIN_FILENO);
-        if (cfg.interactive || auto_tui) {
+        if (tui_wanted(cfg)) {
             // Build tabs: file #0 is the source we already opened; any
             // additional positionals get opened here. Open errors abort
             // start-up so the user sees them before the TUI takes over.
@@ -19151,6 +19895,13 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "error: cannot initialize terminal (missing terminfo?)\n");
         }
     }
+
+    // Plain text with no TUI (a pipe, -n N, --no-interactive, or a terminal
+    // vv could not initialise): dump the file verbatim. Reached only after
+    // the interactive block above declined, so "is the TUI running?" is
+    // decided in exactly one place. --count / --list-columns / --filter have
+    // already had their say further up.
+    if (src->is_text()) return emit_text_stream(*src, cfg);
 
     // Delimited output
     if (cfg.delimiter) {

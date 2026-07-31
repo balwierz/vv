@@ -5,7 +5,7 @@
 complete -c vv -c vh -F
 
 # ── File arguments ───────────────────────────────────────────────────────────
-for ext in parquet arrow feather lociss bam cram sam vcf vcf.gz bcf gff gff.gz gff3 gff3.gz gtf gtf.gz bed bed.gz narrowPeak narrowPeak.gz broadPeak broadPeak.gz gappedPeak gappedPeak.gz bedGraph bedGraph.gz bg bg.gz tagAlign tagAlign.gz tsv tsv.gz csv csv.gz fa fa.gz fasta fasta.gz fna fna.gz faa faa.gz ffn ffn.gz frn frn.gz fq fq.gz fastq fastq.gz paf paf.gz bb bigBed bigbed bw bigWig bigwig 2bit sqlite sqlite3 db xlsx xlsm ods fods orc npz npy pileup pileup.gz mpileup mpileup.gz pile pile.gz md markdown mdown mkd h5 h5ad hdf5 loom
+for ext in parquet arrow feather lociss bam cram sam vcf vcf.gz bcf gff gff.gz gff3 gff3.gz gtf gtf.gz bed bed.gz narrowPeak narrowPeak.gz broadPeak broadPeak.gz gappedPeak gappedPeak.gz bedGraph bedGraph.gz bg bg.gz tagAlign tagAlign.gz tsv tsv.gz csv csv.gz fa fa.gz fasta fasta.gz fna fna.gz faa faa.gz ffn ffn.gz frn frn.gz fq fq.gz fastq fastq.gz paf paf.gz bb bigBed bigbed bw bigWig bigwig 2bit sqlite sqlite3 db xlsx xlsm ods fods orc npz npy pileup pileup.gz mpileup mpileup.gz pile pile.gz md markdown mdown mkd h5 h5ad hdf5 loom txt txt.gz text text.gz log log.gz
     complete -c vv -c vh -F -a "*.$ext"
 end
 
@@ -59,6 +59,7 @@ complete -c vv -c vh -l compression -r -a 'zstd snappy gzip lz4 none' -d 'Parque
 # JSON output / projection / filter / describe / schema
 complete -c vv -c vh -l json               -d 'Write JSON array of row objects'
 complete -c vv -c vh -l ndjson             -d 'Write one JSON object per line'
+complete -c vv -c vh -l text               -d 'Read the file as plain text whatever its extension'
 complete -c vv -c vh -l md                 -d 'Write GitHub-flavored markdown table'
 complete -c vv -c vh -l markdown           -d 'Alias of --md'
 complete -c vv -c vh -l validate           -d 'Check LociSSD invariants and exit'

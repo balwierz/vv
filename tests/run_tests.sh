@@ -824,6 +824,37 @@ PYEOF
     else
         FAIL=$((FAIL+1)); echo "  FAIL  formats_all_dispatched"
     fi
+
+    # ...and the converse. formats_all_dispatched above only tests
+    # registry -> main.cpp, which a format can satisfy vacuously (.lociss has
+    # no ladder branch at all — it dispatches on magic — yet passes because
+    # the literal appears in --validate). Assert the other direction too:
+    # every extension the ladder tests must be a format the registry knows
+    # about. Without this, a format added to the ladder but forgotten in the
+    # registry silently falls through to the plain-text fallback.
+    python3 - "$TMP/formats.json" main.cpp <<'PYEOF'
+import json, re, sys
+formats = json.load(open(sys.argv[1]))
+known = {e.lower() for f in formats for e in f['extensions']}
+known |= {e.lower() + '.gz' for f in formats if f['gz'] for e in f['extensions']}
+src = open(sys.argv[2]).read()
+# Extensions the ladder branches on but that are NOT format extensions:
+# sidecar index files, output suffixes, and the compression suffix itself.
+allow = {'.gz', '.bai', '.csi', '.crai', '.tbi', '.fai', '.gzi', '.idx', '.bgz'}
+seen = re.findall(r'fends_ci\([^,]+,\s*"([^"]+)"', src)
+bad = sorted({e for e in seen
+              if e.lower().startswith('.')
+              and e.lower() not in known and e.lower() not in allow})
+if bad:
+    print('ladder tests extensions the registry does not list:', ' '.join(bad))
+    print('add them to kFormats[] (or to the allowlist in this check)')
+    sys.exit(1)
+PYEOF
+    if [ $? -eq 0 ]; then
+        PASS=$((PASS+1)); echo "  ok    formats_ladder_in_registry"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  formats_ladder_in_registry"
+    fi
 fi
 # --formats needs no input file, and the human form is a table.
 assert_exit_code "formats_needs_no_file" 0 "$VV" --formats
@@ -2198,5 +2229,223 @@ assert_contains "help_has_threads" "$HELP_OUT" "--threads"
 assert_contains "help_has_region"  "$HELP_OUT" "--region"
 VERSION_OUT=$("$VV" --version 2>&1 || true)
 assert_contains "version_starts_with_vv" "$VERSION_OUT" "vv "
+
+# ── Plain text ───────────────────────────────────────────────────────────────
+# Every one of these cases used to be the same error at exit 1 ("unrecognised
+# file extension"): a .txt, a shell script, an extension-less README and 4 KiB
+# of /dev/urandom were indistinguishable to the user, and the error's own
+# advice (`cat foo.txt | vv -`) rendered prose as a 1-column table with line 1
+# promoted to a header.
+TXT="$TMP/notes.txt"
+printf 'first line\nsecond\n\nfourth after a blank\n' > "$TXT"
+
+# THE assertion. Byte-identical output catches line-ending mangling, a stray
+# index column, a doubled or missing trailing newline and ANSI leakage in one
+# check — and it is what makes `vv f.log > copy` a safe thing to type.
+"$VV" "$TXT" > "$TMP/txt.out" 2>/dev/null
+if cmp -s "$TMP/txt.out" "$TXT"; then
+    PASS=$((PASS+1)); echo "  ok    text_bytes_exact"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  text_bytes_exact"
+    cmp "$TMP/txt.out" "$TXT" 2>&1 | sed 's/^/       /' | head -3
+fi
+
+# A file whose last line has no terminator must not gain one — the classic
+# off-by-one, and the difference between a round-trip and a corruption.
+printf 'alpha\nomega' > "$TMP/nonl.txt"
+"$VV" "$TMP/nonl.txt" > "$TMP/nonl.out" 2>/dev/null
+if cmp -s "$TMP/nonl.out" "$TMP/nonl.txt"; then
+    PASS=$((PASS+1)); echo "  ok    text_no_trailing_newline_preserved"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  text_no_trailing_newline_preserved"
+fi
+# ...and --count must not miscount it either.
+assert_eq_file_inline "text_count_no_trailing_newline" \
+    "$("$VV" --count "$TMP/nonl.txt" 2>/dev/null)" "2"
+
+# CRLF survives. LineReader (used by the preamble strippers) drops '\r'
+# ANYWHERE in a line, which is why TextSource splits on '\n' only.
+printf 'dos\r\nlines\r\n' > "$TMP/crlf.txt"
+"$VV" "$TMP/crlf.txt" > "$TMP/crlf.out" 2>/dev/null
+if cmp -s "$TMP/crlf.out" "$TMP/crlf.txt"; then
+    PASS=$((PASS+1)); echo "  ok    text_crlf_roundtrip"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  text_crlf_roundtrip"
+fi
+
+# UTF-8 and Latin-1 are both text. Neither may be mistaken for binary.
+printf 'ol\xc3\xa9 \xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e \xf0\x9f\xa7\xac\n' > "$TMP/u8.txt"
+"$VV" "$TMP/u8.txt" > "$TMP/u8.out" 2>/dev/null
+if cmp -s "$TMP/u8.out" "$TMP/u8.txt"; then
+    PASS=$((PASS+1)); echo "  ok    text_utf8_roundtrip"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  text_utf8_roundtrip"
+fi
+printf 'caf\xe9 na\xefve\n' > "$TMP/l1.txt"
+assert_exit_code "text_latin1_accepted" 0 "$VV" "$TMP/l1.txt"
+
+# ── Binary is refused, at both entry points ─────────────────────────────────
+# Deliberately unlike less, which offers to dump it anyway. stdout must be
+# EMPTY, not merely "not the file" — a partial dump of control bytes can leave
+# a terminal in a broken state.
+head -c 4096 /dev/urandom > "$TMP/rand.bin"
+assert_exit_code "text_binary_refused" 1 "$VV" "$TMP/rand.bin"
+BIN_OUT=$("$VV" "$TMP/rand.bin" 2>/dev/null | wc -c)
+assert_eq_file_inline "text_binary_stdout_empty" "$BIN_OUT" "0"
+BIN_ERR=$("$VV" "$TMP/rand.bin" 2>&1 >/dev/null || true)
+assert_contains "text_binary_says_why" "$BIN_ERR" "binary file, not shown"
+refute_contains "text_binary_no_rename_advice" "$BIN_ERR" "Rename to one of"
+
+# A NUL anywhere in the first 8 KiB is binary, however much text surrounds it.
+printf 'looks like text for a while\n\000\nand more text\n' > "$TMP/nul.bin"
+assert_exit_code "text_nul_byte_refused" 1 "$VV" "$TMP/nul.bin"
+
+# stdin is the second entry point. Piped binary used to reach Arrow's CSV
+# reader, which echoed the raw bytes back inside a parse error.
+cat "$TMP/rand.bin" | "$VV" - >/dev/null 2>&1
+assert_eq_file_inline "text_binary_stdin_refused" "$?" "1"
+STDIN_BIN=$(cat "$TMP/rand.bin" | "$VV" - 2>/dev/null | wc -c)
+assert_eq_file_inline "text_binary_stdin_stdout_empty" "$STDIN_BIN" "0"
+# ...and piped text still reaches the CSV reader, unchanged.
+STDIN_TSV=$(printf 'a\tb\n1\t2\n' | "$VV" - -n 5 2>/dev/null)
+assert_contains "text_stdin_tsv_unchanged" "$STDIN_TSV" "│"
+
+# UTF-16 gets its own message naming iconv. Without the BOM test ordering,
+# every Windows-exported file would hit the generic "binary" error instead.
+printf '\xff\xfeh\x00e\x00l\x00l\x00o\x00\n\x00' > "$TMP/u16.txt"
+assert_exit_code "text_utf16_refused" 1 "$VV" "$TMP/u16.txt"
+U16_ERR=$("$VV" "$TMP/u16.txt" 2>&1 >/dev/null || true)
+assert_contains "text_utf16_names_iconv" "$U16_ERR" "iconv -f UTF-16"
+printf '\xff\xfe\x00\x00h\x00\x00\x00' > "$TMP/u32.txt"
+U32_ERR=$("$VV" "$TMP/u32.txt" 2>&1 >/dev/null || true)
+assert_contains "text_utf32_names_iconv" "$U32_ERR" "iconv -f UTF-32"
+# A UTF-8 BOM is text, and must be tested before the NUL rule fires.
+printf '\xef\xbb\xbfbom then text\n' > "$TMP/bom.txt"
+assert_exit_code "text_utf8_bom_accepted" 0 "$VV" "$TMP/bom.txt"
+# An ANSI-coloured log is text: ESC is excluded from the control-byte count.
+printf '\033[31mred line\033[0m\nplain line\n' > "$TMP/ansi.log"
+assert_exit_code "text_ansi_log_accepted" 0 "$VV" "$TMP/ansi.log"
+
+# ── Detection order ─────────────────────────────────────────────────────────
+# Text is the FALLBACK. A known format extension must still win, in both
+# directions, or adding text mode would have silently changed what vv does
+# with files it already handled.
+printf 'Chr\tStart\tEnd\nchr1\t1\t2\n' > "$TMP/prose.tsv"
+TSV_STILL=$("$VV" -n 5 "$TMP/prose.tsv" 2>/dev/null)
+assert_contains "text_still_prefers_tsv_reader" "$TSV_STILL" "│"
+cp "$TMP/../$(basename "$TMP")/notes.txt" /dev/null 2>/dev/null || true
+cp tests/data/tiny.parquet "$TMP/mystery.dat"
+DAT_PQ=$("$VV" -n 2 "$TMP/mystery.dat" 2>/dev/null)
+assert_contains "text_magic_still_wins_over_sniff" "$DAT_PQ" "Chr"
+
+# An unknown extension that IS text now renders, with a note on stderr saying
+# why — a results.dat holding a TSV used to be an error telling you to rename
+# it, and silently becoming a text dump would be the regression in spirit.
+cp "$TXT" "$TMP/results.dat"
+assert_exit_code "text_unknown_ext_sniffed" 0 "$VV" "$TMP/results.dat"
+DAT_ERR=$("$VV" "$TMP/results.dat" 2>&1 >/dev/null || true)
+assert_contains "text_unknown_ext_notes_sniff" "$DAT_ERR" "shown as plain text"
+# ...but an extension-less file gets no note, or every README nags.
+cp "$TXT" "$TMP/README"
+README_ERR=$("$VV" "$TMP/README" 2>&1 >/dev/null || true)
+assert_eq_file_inline "text_extensionless_no_note" "$README_ERR" ""
+assert_exit_code "text_extensionless_renders" 0 "$VV" "$TMP/README"
+
+# --text forces text mode whatever the extension says: the escape hatch for
+# reading a .md source or a .csv raw.
+printf 'a,b\n1,2\n' > "$TMP/d.csv"
+CSV_RAW=$("$VV" --text "$TMP/d.csv" 2>/dev/null)
+assert_eq_file_inline "text_force_flag_bypasses_reader" "$CSV_RAW" "$(printf 'a,b\n1,2')"
+refute_contains "text_force_flag_no_table" "$CSV_RAW" "│"
+# ...but --text does not disable the binary refusal.
+assert_exit_code "text_force_flag_still_refuses_binary" 1 "$VV" --text "$TMP/rand.bin"
+
+# gzip is detected by magic, not by suffix, so a rotated log works too.
+gzip -c "$TXT" > "$TMP/notes.txt.gz"
+"$VV" "$TMP/notes.txt.gz" > "$TMP/gz.out" 2>/dev/null
+if cmp -s "$TMP/gz.out" "$TXT"; then
+    PASS=$((PASS+1)); echo "  ok    text_gz_roundtrip"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  text_gz_roundtrip"
+fi
+gzip -c "$TXT" > "$TMP/syslog.1.gz"      # no suffix list can catch this one
+"$VV" "$TMP/syslog.1.gz" > "$TMP/gz2.out" 2>/dev/null
+if cmp -s "$TMP/gz2.out" "$TXT"; then
+    PASS=$((PASS+1)); echo "  ok    text_rotated_gz_roundtrip"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  text_rotated_gz_roundtrip"
+fi
+
+# An empty file is text, and renders as nothing at exit 0. NB this flips
+# `vv empty.dat` from 1 to 0 — pinned deliberately.
+: > "$TMP/empty.txt"
+assert_exit_code "text_empty_file_ok" 0 "$VV" "$TMP/empty.txt"
+EMPTY_OUT=$("$VV" "$TMP/empty.txt" 2>/dev/null | wc -c)
+assert_eq_file_inline "text_empty_file_no_output" "$EMPTY_OUT" "0"
+
+# ── Row-selection flags work naturally over one column of lines ─────────────
+assert_eq_file_inline "text_count" "$("$VV" --count "$TXT" 2>/dev/null)" "4"
+assert_eq_file_inline "text_head" \
+    "$("$VV" -n 2 "$TXT" 2>/dev/null)" "$(printf 'first line\nsecond')"
+# -n 0 means all rows everywhere else in vv; it must not mean "none" here.
+"$VV" -n 0 "$TXT" > "$TMP/n0.out" 2>/dev/null
+if cmp -s "$TMP/n0.out" "$TXT"; then
+    PASS=$((PASS+1)); echo "  ok    text_head_zero_is_all"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  text_head_zero_is_all"
+fi
+assert_eq_file_inline "text_tail" \
+    "$("$VV" --tail 2 "$TXT" 2>/dev/null)" "$(printf '\nfourth after a blank')"
+# --filter over the `line` column is grep, and the column name is documented.
+assert_eq_file_inline "text_filter_greps" \
+    "$("$VV" --filter 'line contains "line"' "$TXT" 2>/dev/null)" "first line"
+assert_eq_file_inline "text_filter_count" \
+    "$("$VV" --filter 'line contains "line"' --count "$TXT" 2>/dev/null)" "1"
+assert_eq_file_inline "text_list_columns" \
+    "$("$VV" --list-columns "$TXT" 2>/dev/null)" "line"
+
+# ── Flags that do NOT apply are errors, not silent no-ops ───────────────────
+# This loop is the anti-rot mechanism: a flag added to the tabular surface
+# without a decision here shows up as a failure.
+for F in --schema --describe --stats --list-tabs --heatmap --pileup \
+         --decode-pileup --tsv --csv --json --vertical; do
+    assert_exit_code "text_rejects_${F#--}" 1 "$VV" "$F" "$TXT"
+done
+assert_exit_code "text_rejects_unique"  1 "$VV" --unique line "$TXT"
+assert_exit_code "text_rejects_select"  1 "$VV" --select line "$TXT"
+assert_exit_code "text_rejects_sample"  1 "$VV" --sample 2    "$TXT"
+assert_exit_code "text_rejects_tab"     1 "$VV" --tab X       "$TXT"
+assert_exit_code "text_rejects_expand"  1 "$VV" --expand line "$TXT"
+assert_exit_code "text_rejects_parquet" 1 "$VV" --parquet "$TMP/t.parquet" "$TXT"
+assert_exit_code "text_rejects_arrow"   1 "$VV" --arrow   "$TMP/t.arrow"   "$TXT"
+# Rejection prints NOTHING on stdout — not the file first, then the error.
+TXT_REJ=$("$VV" --schema "$TXT" 2>/dev/null | wc -c)
+assert_eq_file_inline "text_reject_stdout_empty" "$TXT_REJ" "0"
+TXT_REJ_ERR=$("$VV" --tsv "$TXT" 2>&1 >/dev/null || true)
+assert_contains "text_reject_says_why" "$TXT_REJ_ERR" "does not apply to a text file"
+# `vh` implies --vertical from argv[0]; it must not fail on a flag nobody typed.
+cp "$VV" "$TMP/vh"
+assert_exit_code "text_vh_argv0_vertical_allowed" 0 "$TMP/vh" "$TXT"
+rm -f "$TMP/vh"
+# -r has an explicit warn-don't-error precedent (#88) and keeps it here.
+assert_exit_code "text_region_warns_not_errors" 0 "$VV" -r chr1 "$TXT"
+TXT_REG=$("$VV" -r chr1 "$TXT" 2>&1 >/dev/null || true)
+assert_contains "text_region_warning_shown" "$TXT_REG" "no region index"
+
+# The TUI side, under a pty. The load-bearing checks are that a long line is
+# CHOPPED at the screen edge rather than ellipsised at max_col_w_ (32), and
+# that there is no `line / string` column header — a naive "let TextSource
+# fall through to the table renderer" implementation fails both. Verified by
+# running this harness against a build with the text branch removed from
+# draw_data_row: it reports 8 distinct failures.
+if command -v python3 >/dev/null 2>&1; then
+    if timeout 180 python3 "$HERE/text_tui_check.py" "$VV" "$TMP"; then
+        PASS=$((PASS+1)); echo "  ok    text_tui_document_view"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  text_tui_document_view"
+    fi
+else
+    echo "  skip  text_tui_document_view (python3 not found)"
+fi
 
 summarize

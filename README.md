@@ -230,6 +230,7 @@ against it in CI, so this list cannot drift from the code.
 | Sequences (FASTA) | `.fa`, `.fasta`, `.fna`, `.faa`, `.ffn`, `.frn` (plus `.gz`) |
 | Sequencing reads  | `.fq`, `.fastq` (plus `.gz`)                               |
 | Delimited text    | `.tsv`, `.csv` (plus `.gz`)                                |
+| Plain text        | `.txt`, `.text`, `.log` (plus `.gz`) — and **any file no other format claims**, if its content sniffs as text. Viewed in the TUI like `less -SN`: line-number gutter, long lines chopped with `h`/`l` scrolling sideways, `/` search, `&` filter, tabs across several files. In a pipe it is written back verbatim, so `vv f.log > copy` round-trips byte for byte. Binary is **refused**, not dumped — vv has no hex view. `--text` forces text mode whatever the extension. |
 | Stdin             | `vv -` reads any text format from stdin (auto-gunzip)      |
 
 
