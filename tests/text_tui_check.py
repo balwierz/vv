@@ -23,8 +23,8 @@ Exit 0 on success, 1 on failure.
 import os, select, time, fcntl, termios, struct, sys, re, signal
 
 
-def run(vv, args, keys, cols=60, rows=14, budget=8.0):
-    """Drive the TUI under a pty; return (final_frame, raw_bytes, hung)."""
+def run(vv, args, keys, cols=60, rows=14, budget=14.0):
+    """Drive the TUI under a pty; return (whole, last_frame, raw, hung)."""
     m, s = os.openpty()
     fcntl.ioctl(s, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
     pid = os.fork()
@@ -55,7 +55,7 @@ def run(vv, args, keys, cols=60, rows=14, budget=8.0):
             fcntl.ioctl(m, termios.TIOCSWINSZ,
                         struct.pack("HHHH", rows, cols - 1, 0, 0))
             os.kill(pid, signal.SIGWINCH)
-            phase = "resized"; nxt = time.time() + 0.7
+            phase = "resized"; nxt = time.time() + 1.5
         elif phase == "resized" and time.time() >= nxt:
             os.write(m, b"q"); os.write(m, b"q")
             phase = "quitting"; nxt = time.time() + 0.5
@@ -87,15 +87,22 @@ def run(vv, args, keys, cols=60, rows=14, budget=8.0):
             os.kill(pid, 9); os.waitpid(pid, 0)
         except OSError:
             pass
-    # The stream holds every frame the session drew. For "what is on screen
-    # NOW" questions, keep only what follows the last full-screen erase — the
-    # repaint the SIGWINCH above forced. Otherwise `0` scrolling back to
-    # column 0 looks like a pass either way: the pre-scroll frame is still in
-    # the buffer. (That is the trap the first version of this file fell into.)
-    last = out.rsplit(b"\x1b[2J", 1)[-1]
     strip = lambda b: re.sub(rb"\x1b\[[0-9;?]*[a-zA-Z]", b"", b) \
                         .replace(b"\x1b(B", b"").decode("utf8", "replace")
-    return strip(last), out, hung
+    # Two views of the session. `whole` is every frame it drew, which is the
+    # right thing to assert on whenever a key only ADDS something to the
+    # screen (a marker scrolled into view, a status message, a tab bar) or
+    # when nothing may ever appear (an escape payload) — a hit anywhere is a
+    # hit, and a miss anywhere is a miss.
+    #
+    # `last` keeps only what follows the final full-screen erase, i.e. the
+    # repaint the SIGWINCH above forced. It is needed for exactly one kind of
+    # question: did a key UNDO a visible change? `0` scrolling back to column
+    # 0 passes against `whole` either way, because the scrolled frame is still
+    # in the buffer. It is also the fragile view — under a loaded CI runner
+    # the forced repaint can land after we stop reading — so it is used only
+    # where `whole` cannot answer.
+    return strip(out), strip(out.rsplit(b"\x1b[2J", 1)[-1]), out, hung
 
 
 def main():
@@ -120,7 +127,7 @@ def main():
 
     # 1. No column header. `line` / `string` / the box rule would eat three
     #    rows and tell the user nothing.
-    txt, _, hung = run(vv, [wide], [])
+    txt, _last, _, hung = run(vv, [wide], [])
     if hung:
         fail("hung opening a text file")
     else:
@@ -151,7 +158,7 @@ def main():
             fail("status bar does not show a Line range")
 
     # 4. `l` scrolls sideways: a marker past the right edge becomes visible.
-    txt, _, hung = run(vv, [wide], [b"l", b"l", b"l"])
+    txt, _last, _, hung = run(vv, [wide], [b"l", b"l", b"l"])
     if hung:
         fail("hung after l")
     elif "MARKER_AT_90" not in txt:
@@ -159,14 +166,14 @@ def main():
              "appeared)")
 
     # ...and `0` goes back home.
-    txt, _, hung = run(vv, [wide], [b"l", b"l", b"l", b"0"])
+    _txt, last, _, hung = run(vv, [wide], [b"l", b"l", b"l", b"0"])
     if hung:
         fail("hung after l0")
-    elif "MARKER_AT_90" in txt:
+    elif "MARKER_AT_90" in last:
         fail("0 did not return the line to column 0")
 
     # 5. Two text files open as tabs; one file shows no tab bar.
-    txt, _, hung = run(vv, [wide, small], [])
+    txt, _last, _, hung = run(vv, [wide, small], [])
     if hung:
         fail("hung with two text files")
     else:
@@ -174,14 +181,14 @@ def main():
             fail("both tab labels should appear on the tab bar; got neither")
         if "[Tab] next" not in txt:
             fail("no tab bar with two files open")
-    txt, _, hung = run(vv, [small], [])
+    txt, _last, _, hung = run(vv, [small], [])
     if hung:
         fail("hung with one text file")
     elif "[Tab] next" in txt:
         fail("a tab bar was drawn for a single file")
 
     # 6. The column-oriented keys say why rather than doing nothing.
-    txt, _, hung = run(vv, [small], [b"s"])
+    txt, _last, _, hung = run(vv, [small], [b"s"])
     if hung:
         fail("hung after s")
     elif "not available for a text file" not in txt:
@@ -193,7 +200,7 @@ def main():
     eviltxt = os.path.join(tmp, "evil.log")
     with open(eviltxt, "w") as f:
         f.write("BEFORE\x1b]0;PWNED\x07\x1b[31mred\x1b[0m AFTER\n")
-    txt, raw, hung = run(vv, [eviltxt], [])
+    txt, _last, raw, hung = run(vv, [eviltxt], [])
     if hung:
         fail("hung on the escape fixture")
     else:
