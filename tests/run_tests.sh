@@ -840,7 +840,11 @@ known |= {e.lower() + '.gz' for f in formats if f['gz'] for e in f['extensions']
 src = open(sys.argv[2]).read()
 # Extensions the ladder branches on but that are NOT format extensions:
 # sidecar index files, output suffixes, and the compression suffix itself.
-allow = {'.gz', '.bai', '.csi', '.crai', '.tbi', '.fai', '.gzi', '.idx', '.bgz'}
+allow = {'.gz', '.bai', '.csi', '.crai', '.tbi', '.fai', '.gzi', '.idx', '.bgz',
+         # Recognised ONLY to produce a better error than the generic one.
+         # Deliberately absent from the registry: advertising a format vv
+         # cannot open is the thing this check exists to prevent.
+         '.fods'}
 seen = re.findall(r'fends_ci\([^,]+,\s*"([^"]+)"', src)
 bad = sorted({e for e in seen
               if e.lower().startswith('.')
@@ -854,6 +858,59 @@ PYEOF
         PASS=$((PASS+1)); echo "  ok    formats_ladder_in_registry"
     else
         FAIL=$((FAIL+1)); echo "  FAIL  formats_ladder_in_registry"
+    fi
+
+    # Every extension the registry lists must also appear in `--help`. The
+    # drift checks above compare the registry against main.cpp and against the
+    # completions, but nothing compared it against the help text — which is
+    # how `.bg` stayed listed by --formats and missing from --help since
+    # ENCODE support was added.
+    "$VV" --help > "$TMP/help.txt" 2>&1
+    python3 - "$TMP/formats.json" "$TMP/help.txt" <<'PYEOF'
+import json, re, sys
+formats = json.load(open(sys.argv[1]))
+help_txt = open(sys.argv[2]).read().lower()
+missing = sorted({e for f in formats for e in f['extensions']
+                  if not re.search(re.escape(e.lower()) + r'(?![a-z0-9])', help_txt)})
+if missing:
+    print('registry extensions absent from --help:', ' '.join(missing))
+    sys.exit(1)
+PYEOF
+    if [ $? -eq 0 ]; then
+        PASS=$((PASS+1)); echo "  ok    formats_in_help_text"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  formats_in_help_text"
+    fi
+
+    # ...and every long flag `--help` documents must be offered by all three
+    # completions. `--expand`, `--formats`, `--list-columns` and `--list-tabs`
+    # were all missing from all three; the extension drift check could not see
+    # it because it only ever compared extensions.
+    python3 - "$TMP/help.txt" completions/vv.bash completions/vv.fish completions/_vv <<'PYEOF'
+import re, sys
+help_txt = open(sys.argv[1]).read()
+flags = set(re.findall(r'(?m)^\s{2,}(--[a-z][a-z0-9-]+)', help_txt))
+# Flags a completion has no business offering, or that are positional-ish.
+skip = {'--help', '--version'}
+flags -= skip
+bad = []
+for path in sys.argv[2:]:
+    text = open(path).read()
+    def present(f):
+        # fish spells long options `-l name`; bash/zsh use the literal `--name`.
+        if re.search(re.escape(f) + r'(?![a-z0-9-])', text):
+            return True
+        return bool(re.search(r'-l\s+' + re.escape(f[2:]) + r'(?![a-z0-9-])', text))
+    absent = sorted(f for f in flags if not present(f))
+    if absent:
+        bad.append('%s missing: %s' % (path, ' '.join(absent)))
+if bad:
+    print('\n'.join(bad)); sys.exit(1)
+PYEOF
+    if [ $? -eq 0 ]; then
+        PASS=$((PASS+1)); echo "  ok    flags_completions_no_drift"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  flags_completions_no_drift"
     fi
 fi
 # --formats needs no input file, and the human form is a table.

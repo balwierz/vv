@@ -80,6 +80,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   terminal. Deliberately unlike `less`, which offers to show it anyway; a hex
   view is out of scope. UTF-16/32 gets its own message naming `iconv`, since a
   NUL-heavy Windows export is not what "binary file" means to whoever made it.
+- **Install documentation now matches reality.** `README.md` and `INSTALL.md`
+  advertised Bioconda, Homebrew and AUR channels that vv has never been
+  published to, and the from-source dependency lists could not configure:
+  Debian's line named the removed `libncursesw5-dev` and omitted five hard
+  dependencies, Fedora's named `arrow-devel` / `parquet-devel` which exist in
+  no Fedora or EPEL repository, and neither mentioned that `libxlsxio` is not
+  packaged by any distribution. Arrow and Parquet need Apache's own apt
+  repository on every current Debian stable and Ubuntu LTS. The Arch section
+  now says `htslib` and `xlsxio` are AUR-only — `makepkg -s` resolves with
+  `pacman`, which never looks at the AUR — and the Docker section says that
+  `docker-sources/` is gitignored, so a fresh clone must run
+  `scripts/fetch-docker-sources.sh` first.
+- **Flat OpenDocument (`.fods`) is no longer advertised.** It is a single XML
+  document, not a zipped `.ods`, so the reader could never open it — the
+  registry, `--help` and the README claimed it anyway and the failure was an
+  unhelpful "Cannot open as ODS (zip)". It now names the conversion command.
 - **Markdown now rejects the flags it used to ignore.** A markdown file returns
   early in `main()`, before the tabular pipeline, so `--count`, `--schema`,
   `--describe`, `--stats`, `--list-tabs`, `--heatmap`, `--unique`, `--sample`,
@@ -1091,14 +1107,13 @@ ccache static builds; and ARM64 release artifacts.
   column (`CHROM`, `Name`, ...) should stay visible.
 - TUI: **mouse-wheel scrolling** — scroll three rows per wheel notch.
 - **LociSSD support** — Parquet files carrying a `lociSSD_manifest` key
-  in their footer (see [FORMAT_SPEC.md][lociss-spec]) are detected
+  in their footer (see the LociSSD format specification) are detected
   automatically. The derived `MaxEndSoFar` technical column is hidden
   from the ASCII table, the vertical-head view, and the interactive TUI;
   it remains intact in `--tsv`, `--csv`, and `--parquet` output so the
   data round-trips losslessly. New virtual `hidden_for_display()` hook
   on `TabularSource` provides the mechanism.
 
-[lociss-spec]: https://github.com/balwierz/LociSSD/blob/main/FORMAT_SPEC.md
 
 ## [1.5.0] - 2026-05-05
 

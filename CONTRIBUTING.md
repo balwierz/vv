@@ -64,17 +64,39 @@ python3 tests/data/generate.py
 
 ## Releasing (maintainers)
 
-1. Verify `tests/run_tests.sh` passes locally.
-2. Bump `kVersion` in `main.cpp` and the version field in `CITATION.cff`.
-3. Move "Unreleased" CHANGELOG entries to a new versioned section with
-   today's date.
-4. Commit: `chore: release vX.Y.Z`.
+1. Verify `tests/run_tests.sh` passes locally, and under an ASan+UBSan build.
+2. Bump the version in **every** place that hard-codes it. There is no single
+   source of truth, and each of these has been missed by at least one past
+   release:
+
+   | File | What |
+   |---|---|
+   | `main.cpp` | `kVersion` — feeds `--version` *and* the Parquet writer's `created_by` |
+   | `CMakeLists.txt` | `project(... VERSION ...)` |
+   | `CITATION.cff` | `version:` **and** `date-released:` (GitHub's "Cite this repository" box) |
+   | `man/vv.1` | the `.TH` line — both the version and the month |
+   | `docs/USAGE.md` | the `date:` field in the YAML front matter |
+   | `README.md`, `INSTALL.md` | the hard-coded version in every install command |
+   | `packaging/arch/PKGBUILD` | `pkgver`, then run `updpkgsums` (from `pacman-contrib`) |
+
+   `packaging/debian/build-deb.sh` derives its version from `vv --version`, and
+   `release.yml` derives every artifact name from the tag, so neither needs an
+   edit — but both are wrong if `kVersion` is.
+
+3. Move "Unreleased" CHANGELOG entries to a new versioned section with the
+   release date. `release.yml` extracts that section verbatim as the GitHub
+   Release body, so it is the release notes — write it for readers.
+4. Commit: `release: X.Y.Z`.
 5. Tag: `git tag -a vX.Y.Z -m "vX.Y.Z"; git push --tags`.
-6. The `release.yml` workflow builds the static binary, attaches it
-   plus checksums to the GitHub Release, and publishes the page.
-7. Update the Bioconda recipe (`packaging/bioconda/meta.yaml`) and open
-   a PR against `bioconda/bioconda-recipes`.
-8. Bump the Homebrew formula in `balwierz/homebrew-tap`.
+6. The `release.yml` workflow builds the static binary for x86_64 and aarch64,
+   attaches the tarballs, `.deb`s and `SHA256SUMS` to the GitHub Release, and
+   publishes the page.
+7. Check `vv --version` in a downloaded artifact matches the tag.
+
+`packaging/bioconda/meta.yaml` and `packaging/homebrew/vv.rb` are **unpublished
+drafts** — vv is not on Bioconda and there is no Homebrew tap, so there is
+nothing to update there. Do not treat their stale version fields as a release
+step; if you publish those channels, add the steps back.
 
 ## Code of conduct
 

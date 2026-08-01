@@ -61,8 +61,28 @@ jobs:
           stem="vv-${version}-linux-${{ matrix.arch }}"
           mkdir -p "$stem"
           cp dist/vv "$stem/"
-          cp LICENSE README.md CHANGELOG.md "$stem/"
+          cp LICENSE CHANGELOG.md "$stem/"
           cp man/vv.1 "$stem/" 2>/dev/null || true
+          cp INSTALL.md docs/USAGE.md "$stem/" 2>/dev/null || true
+          # The repo README is written for GitHub: it links to files the
+          # tarball does not carry and embeds screenshots from docs/img/,
+          # which would render as broken images offline. Ship a short one
+          # that points at the canonical copies instead.
+          {
+            echo "# vv ${version}"
+            echo
+            echo "Universal genomic file viewer — a single static binary."
+            echo
+            echo '```sh'
+            echo "sudo install ${stem}/vv /usr/local/bin/"
+            echo "vv --help"
+            echo '```'
+            echo
+            echo "Also in this archive: \`vv.1\` (man page), \`INSTALL.md\`,"
+            echo "\`USAGE.md\` (full manual), \`CHANGELOG.md\`, \`LICENSE\`."
+            echo
+            echo "Homepage and issue tracker: https://github.com/balwierz/vv"
+          } > "$stem/README.md"
           tar -czf "$stem.tar.gz" "$stem"
           # Also wrap the same static binary in a .deb (the runner is Debian-
           # based, so dpkg-deb + the right `dpkg --print-architecture` are on

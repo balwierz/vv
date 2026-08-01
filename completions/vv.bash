@@ -40,6 +40,10 @@ _vv() {
             # Numeric argument — no completion
             return
             ;;
+        --expand)
+            # Column name — no completion (it depends on the file)
+            return
+            ;;
         --coords)
             COMPREPLY=( $(compgen -W 'UCSC Kent NCBI GenBank 0-based 1-based bed tabix' -- "$cur") )
             return
@@ -83,6 +87,7 @@ _vv() {
                 --json --ndjson --md --markdown
                 --select --cols --filter
                 --schema --describe --count --stats --validate --decode-pileup --pileup --text
+                --expand --formats --list-columns --list-tabs
                 -f --fasta
                 --tab
                 --unique --sample

@@ -654,7 +654,7 @@ static const FormatInfo kFormats[] = {
    false, false, true,  true,  false, ""},
   {"Excel workbook", ".xlsx .xlsm", "XlsxSource",
    false, false, true,  false, false, ""},
-  {"OpenDocument spreadsheet", ".ods .fods", "OdsSource",
+  {"OpenDocument spreadsheet", ".ods", "OdsSource",
    false, false, true,  false, false, ""},
   {"HDF5 / AnnData / Loom", ".h5ad .h5 .hdf5 .loom", "Hdf5Source",
    false, false, true,  false, false, ""},
@@ -754,15 +754,15 @@ static void print_usage(const char* prog) {
         "  .gff  .gff3  .gtf           and .gz variants  genome annotations\n"
         "  .bed  .tsv  .csv            and .gz variants\n"
         "  .pileup  .mpileup  .pile        samtools mpileup output (single- or multi-sample)\n"
-        "  .narrowPeak  .broadPeak  .gappedPeak  .bedGraph  .tagAlign\n"
+        "  .narrowPeak  .broadPeak  .gappedPeak  .bedGraph  .bg  .tagAlign\n"
         "                              ENCODE peak / signal formats (BED+typed cols)\n"
         "  .bb  .bigBed                UCSC bigBed (libBigWig; autoSql columns)\n"
         "  .bw  .bigWig                UCSC bigWig (libBigWig)\n"
         "  .2bit                       UCSC 2bit (sequence index: name/length/blocks)\n"
         "  .sqlite  .sqlite3  .db      SQLite database (each table → one TUI tab)\n"
         "  .xlsx  .xlsm                Excel spreadsheet (each sheet → one TUI tab)\n"
-        "  .ods  .fods                OpenDocument spreadsheet (each sheet → one\n"
-        "                              TUI tab; .fods is the flat XML form)\n"
+        "  .ods                OpenDocument spreadsheet (each sheet → one\n"
+        "                              TUI tab)\n"
         "  .h5ad                       AnnData (single-cell) — obs / var / X / obsm tabs\n"
         "  .h5  .hdf5  .loom           generic HDF5 — hierarchy tab + per-dataset tabs\n"
         "  .npz                        NumPy archive — summary tab + per-array tabs (3-D+ scrubs via [/])\n"
@@ -13591,7 +13591,15 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
-    } else if (fends_ci(path, ".ods") || fends_ci(path, ".fods")) {
+    } else if (fends_ci(path, ".fods")) {
+        // Flat ODF is a single uncompressed XML document, not a zip container,
+        // so OdsSource (minizip -> content.xml -> expat) can never read it.
+        // It was advertised in the registry and in --help regardless, and the
+        // failure was the unhelpful "Cannot open as ODS (zip)".
+        return "'" + path + "': flat OpenDocument (.fods) is a single XML "
+               "document, not a zipped .ods, and is not supported. Convert it: "
+               "`libreoffice --headless --convert-to ods \"" + path + "\"`.";
+    } else if (fends_ci(path, ".ods")) {
         std::unique_ptr<OdsSource> src;
         std::string err = OdsSource::open_first(path, &src);
         if (!err.empty()) return err;
