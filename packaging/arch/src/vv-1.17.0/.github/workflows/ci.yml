@@ -1,0 +1,288 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-linux:
+    name: Build & test (Ubuntu ${{ matrix.os }})
+    runs-on: ubuntu-${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ["24.04", "22.04"]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          # Phase 1 — install everything except libarrow-dev / libparquet-dev.
+          # libhts-dev hard-Depends on libcurl4-gnutls-dev; runners come
+          # with the openssl variant preinstalled. Remove openssl-dev
+          # first so gnutls-dev (and libhts-dev) install cleanly.
+          sudo apt-get remove -y libcurl4-openssl-dev || true
+          sudo apt-get install -y -V \
+            cmake g++ libcurl4-gnutls-dev \
+            libhts-dev libncursesw5-dev libsqlite3-dev \
+            libexpat1-dev libminizip-dev libhdf5-dev pkg-config \
+            python3 python3-venv python3-pip \
+            python3-pysam tabix bcftools ca-certificates lsb-release wget
+
+          # Phase 2 — Apache Arrow apt repo. Bound the retries: wget defaults
+          # to --tries=20, so an outage at Apache's artifact host burns ~45
+          # minutes before the job goes red (seen 2026-07-27, when
+          # apache.jfrog.io timed out on all three of its IPs). Failing in
+          # ~2 minutes says the same thing and frees the runner. Matches the
+          # `curl --retry 3` already used for xlsxio below.
+          wget --tries=3 --timeout=20 --waitretry=10 \
+            https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+          sudo apt-get install -y -V ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+          sudo apt-get update
+
+          # Phase 3 — Arrow's libarrow-dev / libparquet-dev hard-Depend
+          # on libcurl4-openssl-dev. There's no alternative apt will
+          # take when openssl-dev conflicts with libhts-dev's
+          # libcurl4-gnutls-dev. Runtime libs (libarrowNNN /
+          # libparquetNNN) only depend on libcurl4 itself, not the
+          # -dev package, so they install cleanly. Patch the bogus
+          # build-only libcurl4-openssl-dev dep out of the -dev .debs
+          # before installing those.
+          ARROW_RT=$(apt-cache pkgnames libarrow | grep -E '^libarrow[0-9]+$' | sort -V | tail -1)
+          PARQ_RT=$(apt-cache pkgnames libparquet | grep -E '^libparquet[0-9]+$' | sort -V | tail -1)
+          echo "Runtime libs: $ARROW_RT / $PARQ_RT"
+          sudo apt-get install -y -V "$ARROW_RT" "$PARQ_RT"
+
+          mkdir -p /tmp/arrow-debs && cd /tmp/arrow-debs
+          apt-get download libarrow-dev libparquet-dev
+          patched=()
+          for deb in libarrow-dev_*.deb libparquet-dev_*.deb; do
+            mkdir -p extract
+            dpkg-deb -R "$deb" extract
+            # Drop the libcurl4-openssl-dev token (and its leading
+            # ", " if any) from the Depends line.
+            sed -i -E 's/(, *)?libcurl4-openssl-dev( *\([^)]*\))?//g' extract/DEBIAN/control
+            out="/tmp/arrow-debs/$(basename "$deb" .deb).patched.deb"
+            dpkg-deb -b extract "$out"
+            patched+=("$out")
+            rm -rf extract
+          done
+          # apt-get install on local .debs resolves the rest of the
+          # transitive deps (libabsl-dev, libsnappy-dev, libthrift-dev, …)
+          # from configured repos.
+          sudo apt-get install -y -V --no-install-recommends "${patched[@]}"
+          cd -
+
+      - name: Build libxlsxio from source
+        # libxlsxio isn't packaged on Ubuntu. It's small (~1500 LOC C);
+        # build a shared lib against libexpat / libminizip and install to
+        # /usr/local. The version here matches the AlmaLinux 8 Docker
+        # build (scripts/fetch-docker-sources.sh).
+        run: |
+          cd /tmp
+          curl -fsSL --retry 3 -o xlsxio.tar.gz \
+            https://github.com/brechtsanders/xlsxio/archive/refs/tags/0.2.36.tar.gz
+          tar xf xlsxio.tar.gz
+          cmake -S xlsxio-* -B xlsxio-bld \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DBUILD_SHARED=ON -DBUILD_STATIC=OFF \
+            -DBUILD_TOOLS=OFF -DBUILD_EXAMPLES=OFF \
+            -DBUILD_DOCUMENTATION=OFF \
+            -DWITH_LIBZIP=OFF -DWITH_MINIZIP=ON
+          cmake --build xlsxio-bld -j$(nproc)
+          sudo cmake --install xlsxio-bld
+          sudo ldconfig
+
+      - name: Install pyarrow (venv)
+        run: |
+          python3 -m venv /tmp/vvpy
+          /tmp/vvpy/bin/pip install --upgrade pip
+          /tmp/vvpy/bin/pip install pyarrow openpyxl odfpy anndata h5py scipy
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Generate test fixtures
+        run: /tmp/vvpy/bin/python tests/data/generate.py
+        if: hashFiles('tests/data/generate.py') != ''
+
+      - name: Smoke tests
+        env:
+          VV: ${{ github.workspace }}/build/vv
+        run: tests/run_tests.sh
+        if: hashFiles('tests/run_tests.sh') != ''
+
+      - name: Sanity check
+        run: |
+          ./build/vv --version
+          ./build/vv --help
+
+      # ── ASan + UBSan sanitizer gate (24.04 only) ─────────────────────────
+      # Rebuild with AddressSanitizer + UndefinedBehaviorSanitizer and re-run the
+      # smoke suite. Catches the memory-safety class (OOB / use-after-free /
+      # misaligned load) the binary-format parsers are prone to — e.g. the
+      # LociSSD v4 DICT/ARENA decoder OOBs. `ARROW_DEFAULT_MEMORY_POOL=system`
+      # routes Arrow buffers through the ASan-instrumented allocator so overflows
+      # inside them are caught (mimalloc is built with MI_OVERRIDE=OFF, so it
+      # doesn't hide redzones). vptr is disabled — it false-positives across the
+      # Arrow shared-library boundary. LeakSanitizer is off (a short-lived CLI
+      # legitimately leaves allocations for the OS to reclaim at exit).
+      - name: Sanitizer build (ASan + UBSan)
+        if: matrix.os == '24.04'
+        run: |
+          FLAGS="-fsanitize=address,undefined -fno-sanitize=vptr -fno-omit-frame-pointer -g -O1"
+          cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_FLAGS="$FLAGS" -DCMAKE_CXX_FLAGS="$FLAGS" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-asan -j$(nproc)
+
+      - name: Sanitizer smoke tests
+        if: matrix.os == '24.04'
+        env:
+          VV: ${{ github.workspace }}/build-asan/vv
+          ASAN_OPTIONS: "detect_leaks=0:abort_on_error=1"
+          UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
+          ARROW_DEFAULT_MEMORY_POOL: system
+        run: tests/run_tests.sh
+
+      # ── libFuzzer smoke over the binary parsers (24.04 only) ─────────────
+      # Fuzz the LociSSD v4 codec decoder and the NumPy .npy parser + builders
+      # directly under ASan+UBSan for a short, bounded time. A regression that
+      # reintroduces an out-of-bounds read / overflow / misaligned load / null
+      # memcpy fails here. Needs clang (libFuzzer). Deterministic seed; a clean
+      # tree survives far more than this budget's iterations, so it is not flaky.
+      - name: Fuzz smoke (decode_colblock + npy)
+        if: matrix.os == '24.04'
+        env:
+          ARROW_DEFAULT_MEMORY_POOL: system
+          ASAN_OPTIONS: "detect_leaks=0:abort_on_error=1"
+          UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
+        run: |
+          sudo apt-get install -y -V clang
+          cmake -S . -B build-fuzz -DVV_BUILD_FUZZERS=ON -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          cmake --build build-fuzz -j"$(nproc)" --target fuzz_colblock fuzz_npy
+          ./build-fuzz/fuzz_colblock -max_total_time=40 -seed=1
+          ./build-fuzz/fuzz_npy      -max_total_time=40 -seed=1
+
+      # ── Qt6/KDE GUI (24.04 only) ─────────────────────────────────────────
+      # Reuses the shared Arrow / htslib / hdf5 / sqlite / xlsxio stack
+      # installed above. This is where the KF6 plugins (.so) actually link —
+      # the static-libs CLI build can't (its archives aren't PIC), so the GUI
+      # build is validated here on shared deps.
+      - name: Install GUI dependencies (Qt6; KF6 if available)
+        if: matrix.os == '24.04'
+        id: gui_deps
+        run: |
+          # Qt6 + ECM are all the Qt GUI (vvg) and the KF6-free plugin cores
+          # (vvkde_core / vvkdetest) need, and are always in the 24.04 archive.
+          sudo apt-get install -y -V qt6-base-dev extra-cmake-modules
+          # The KF6 dev packages (KIO / CoreAddons / FileMetaData) are NOT in
+          # the Ubuntu 24.04 archive — they first appear in 24.10. CMake builds
+          # the Dolphin thumbnailer / KFileMetaData .so plugins only when KF6
+          # is found (find_package(... QUIET)) and otherwise skips them, so
+          # install KF6 best-effort and record whether it succeeded.
+          if sudo apt-get install -y -V \
+               libkf6kio-dev libkf6coreaddons-dev libkf6filemetadata-dev; then
+            echo "kf6=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "kf6=no" >> "$GITHUB_OUTPUT"
+            echo "::notice::KF6 dev packages unavailable on this runner; building the Qt GUI without the Dolphin/KFileMetaData plugins."
+          fi
+
+      - name: Build GUI (+ KDE plugins when KF6 present)
+        if: matrix.os == '24.04'
+        run: |
+          cmake -S . -B build-gui -DCMAKE_BUILD_TYPE=Release -DVV_BUILD_GUI=ON
+          cmake --build build-gui -j$(nproc)
+
+      - name: Verify GUI artifacts
+        if: matrix.os == '24.04'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -e
+          # vvg and the headless plugin-core harness build with just Qt6 — they
+          # exercise libvvcore end to end and need no KF6.
+          test -x build-gui/gui/vvg
+          # Headless payload check: render a thumbnail + probe metadata.
+          ./build-gui/gui/kde/vvkdetest tests/data/tiny.parquet
+          # Crash-safety: a malformed file must be handled gracefully (empty
+          # result, exit 0) rather than aborting the Dolphin/Baloo worker.
+          ./build-gui/gui/kde/vvkdetest --allow-empty tests/data/tiny.malformed.npz
+          # Model path end-to-end through libvvcore.
+          VVG_SELFTEST=1 ./build-gui/gui/vvg tests/data/tiny.parquet
+          # App-shell path: build the QMainWindow offscreen and open a file via
+          # the same addSourceTab/loadSources path the menus and drag-drop use.
+          test "$(VVG_WINTEST=1 ./build-gui/gui/vvg tests/data/tiny.parquet)" = "win_tabs=1"
+          # Region re-open (tabix): chr1:1099-1200 overlaps exactly one BED row.
+          VVG_WINTEST=1 VVG_REGION=chr1:1099-1200 ./build-gui/gui/vvg tests/data/tiny.bed.gz \
+            | grep -q 'rows=1'
+          # Region re-open (generic Parquet): the rowCount must be the exact
+          # post-filter count (3), not the pre-filter slice size — i.e. no
+          # phantom trailing blank rows in the GUI.
+          VVG_WINTEST=1 VVG_REGION=chr1:0-3000 ./build-gui/gui/vvg tests/data/tiny.parquet \
+            | grep -q 'rows=3'
+          # Background (off-UI-thread) filter returns the same rows as the CLI.
+          VVG_WINTEST=1 VVG_AFILTER='Score > 0.2' ./build-gui/gui/vvg tests/data/tiny.parquet \
+            | grep -q 'afilter .* rows=16'
+          # Background (off-UI-thread) find returns the same match count as a
+          # full per-cell scan ("chr1" matches 12 displayed cells; the Arrow
+          # match_substring prefilter must not drop any).
+          VVG_WINTEST=1 VVG_AFIND='chr1' ./build-gui/gui/vvg tests/data/tiny.parquet \
+            | grep -q 'afind .* matches=12'
+          # A dense AnnData X wider than the preview cap must materialise as a
+          # 200-column preview (not the full 250), so a huge dense matrix can't
+          # OOM the reader. The sibling X tab is only materialised by the GUI.
+          # cols=201 = the 200 capped gene (var) columns + the prepended obs
+          # (cell) row-label column; the footer still reports the 200-of-250
+          # value-column cap.
+          if [ -f tests/data/tiny.dense.h5ad ]; then
+            VVG_WINTEST=1 VVG_TABDIMS=1 ./build-gui/gui/vvg tests/data/tiny.dense.h5ad \
+              | grep -qE "tab 'X' rows=3 cols=201 .*first 200 of 250 cols"
+          fi
+          if [ "${{ steps.gui_deps.outputs.kf6 }}" = "yes" ]; then
+            # KF6 present: the Dolphin thumbnailer + KFileMetaData .so plugins
+            # must have linked against libvvcore.
+            test -f build-gui/gui/kde/vvthumbnail.so
+            test -f build-gui/gui/kde/vvextractor.so
+          else
+            echo "Skipping KF6 .so plugin checks (KF6 not installed)."
+          fi
+
+  build-macos:
+    name: Build (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install dependencies
+        run: brew install cmake apache-arrow htslib ncurses xlsxio expat minizip hdf5
+      - name: Configure
+        # Homebrew's `apache-arrow` formula installs to its own prefix
+        # (`$(brew --prefix apache-arrow)` — typically /opt/homebrew/opt/…
+        # on Apple Silicon, /usr/local/opt/… on Intel). CMake's
+        # `find_package(Arrow)` doesn't pick this up automatically;
+        # CMAKE_PREFIX_PATH points it at the right place.
+        run: |
+          ARROW_PREFIX="$(brew --prefix apache-arrow)"
+          HTSLIB_PREFIX="$(brew --prefix htslib)"
+          NCURSES_PREFIX="$(brew --prefix ncurses)"
+          XLSXIO_PREFIX="$(brew --prefix xlsxio)"
+          EXPAT_PREFIX="$(brew --prefix expat)"
+          MINIZIP_PREFIX="$(brew --prefix minizip)"
+          HDF5_PREFIX="$(brew --prefix hdf5)"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$ARROW_PREFIX;$HTSLIB_PREFIX;$NCURSES_PREFIX;$XLSXIO_PREFIX;$EXPAT_PREFIX;$MINIZIP_PREFIX;$HDF5_PREFIX"
+      - name: Build
+        run: cmake --build build -j$(sysctl -n hw.ncpu)
+      - name: Sanity check
+        run: |
+          ./build/vv --version
+          ./build/vv --help

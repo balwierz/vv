@@ -1,0 +1,461 @@
+# syntax=docker/dockerfile:1.4
+# Builds vv against glibc 2.28 (AlmaLinux 8) for portability.
+# All sources are bundled in docker-sources/ — no internet needed inside Docker.
+#
+# Build the image (first time ~60-90 min):
+#   docker build --network=host -f Dockerfile.almalinux8 -t vv_build .
+#
+# Extract the binary:
+#   mkdir -p dist && docker run --rm -v "$PWD/dist:/out" vv_build
+#   # binary at ./dist/vv (runs on Linux with glibc >= 2.28)
+#
+# Speed-up notes:
+# - Repeated builds reuse a BuildKit ccache mount (id=vv-ccache). Wipe
+#   it with: docker builder prune --filter type=exec.cachemount
+# - The `# syntax=…` line at the top enables BuildKit cache mounts;
+#   any Docker ≥ 23 already enables BuildKit by default.
+
+FROM almalinux:8 AS base
+
+RUN dnf install -y dnf-plugins-core && \
+    dnf config-manager --set-enabled powertools && \
+    dnf install -y epel-release && \
+    dnf install -y \
+        gcc-toolset-12 gcc-toolset-12-gcc-c++ \
+        cmake make ninja-build pkg-config \
+        autoconf automake libtool python3 \
+        patch bzip2 \
+        ccache \
+    && dnf clean all
+
+# Prepend ccache's compiler-symlink directory ahead of gcc-toolset-12 so
+# every `gcc` / `g++` invocation gets wrapped. ccache resolves the real
+# compiler via its own PATH walk (skipping its own dir), so we still end
+# up with gcc-toolset-12's gcc under the hood.
+ENV PATH="/usr/lib64/ccache:/opt/rh/gcc-toolset-12/root/usr/bin:${PATH}"
+ENV CC=gcc CXX=g++
+ENV CCACHE_DIR=/root/.ccache
+# Tell ccache to look at the real compiler path, not just its name —
+# otherwise it can't tell the system gcc apart from the toolset one.
+ENV CCACHE_COMPILERCHECK=content
+ENV PKG_CONFIG_PATH=/build/static-libs/lib/pkgconfig
+
+# LTO (link-time optimisation) across every static dep AND vv itself.
+# Lets the final link delete unused code across library boundaries
+# instead of only within each .a. Expected ~30-50% text-segment
+# reduction on the static binary. gcc-ar / gcc-ranlib are LTO-aware
+# wrappers that preserve LTO IR in archives; without them, the IR is
+# stripped at archive time and LTO does nothing.
+ENV AR=gcc-ar
+ENV RANLIB=gcc-ranlib
+ENV NM=gcc-nm
+# CFLAGS / CXXFLAGS picked up automatically by autotools / make stages
+# (xz, ncurses, htslib, bzip2). CMake stages set CMAKE_C_FLAGS /
+# CMAKE_CXX_FLAGS explicitly — those are patched below to also include
+# -flto=auto. CMAKE_INTERPROCEDURAL_OPTIMIZATION env var nudges any
+# nested FetchContent / find_package dep to opt in too.
+ENV CFLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections"
+ENV CXXFLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections"
+ENV LDFLAGS="-flto=auto"
+ENV CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
+
+WORKDIR /build
+COPY docker-sources/ /build/src/
+
+# Install Boost 1.90 + RapidJSON + xsimd headers (bundled from host)
+RUN tar xf /build/src/boost-headers.tar.gz -C /usr/include/ && \
+    tar xf /build/src/rapidjson-headers.tar.gz -C /usr/include/ && \
+    tar xf /build/src/xsimd.tar.gz -C /usr/include/ && \
+    mkdir -p /usr/share/cmake/xsimd && \
+    mv /usr/include/xsimd/xsimd*.cmake /usr/share/cmake/xsimd/
+
+# ── zlib ──────────────────────────────────────────────────────────────────────
+FROM base AS build-zlib
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/zlib.tar.gz && mv zlib-* zlib-src && \
+    cmake -S zlib-src -B zlib-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_C_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
+        -DZLIB_BUILD_EXAMPLES=OFF && \
+    cmake --build zlib-bld -j$(nproc) && cmake --install zlib-bld && \
+    rm -f /build/static-libs/lib/libz.so*
+
+# ── zstd ──────────────────────────────────────────────────────────────────────
+FROM base AS build-zstd
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/zstd.tar.gz && mv zstd-* zstd-src && \
+    cmake -S zstd-src/build/cmake -B zstd-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_C_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
+        -DZSTD_BUILD_SHARED=OFF -DZSTD_BUILD_STATIC=ON \
+        -DZSTD_BUILD_PROGRAMS=OFF -DZSTD_BUILD_TESTS=OFF && \
+    cmake --build zstd-bld -j$(nproc) && cmake --install zstd-bld
+
+# ── lz4 ───────────────────────────────────────────────────────────────────────
+FROM base AS build-lz4
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/lz4.tar.gz && mv lz4-* lz4-src && \
+    cmake -S lz4-src/build/cmake -B lz4-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_C_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
+        -DBUILD_SHARED_LIBS=OFF && \
+    cmake --build lz4-bld -j$(nproc) && cmake --install lz4-bld
+
+# ── bzip2 ─────────────────────────────────────────────────────────────────────
+FROM base AS build-bzip2
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/bzip2.tar.gz && mv bzip2-* bzip2-src && \
+    mkdir -p /build/static-libs/lib /build/static-libs/include && \
+    make -C bzip2-src -j$(nproc) \
+        CFLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" libbz2.a && \
+    cp bzip2-src/libbz2.a /build/static-libs/lib/ && \
+    cp bzip2-src/bzlib.h  /build/static-libs/include/
+
+# ── xz / lzma ─────────────────────────────────────────────────────────────────
+FROM base AS build-xz
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/xz.tar.gz && mv xz-* xz-src && \
+    mkdir xz-bld && cd xz-bld && \
+    CFLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
+    ../xz-src/configure --prefix=/build/static-libs \
+        --disable-shared --enable-static \
+        --disable-xz --disable-xzdec --disable-lzmadec \
+        --disable-lzmainfo --disable-scripts && \
+    make -j$(nproc) && make install
+
+# ── libdeflate ────────────────────────────────────────────────────────────────
+FROM base AS build-deflate
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/deflate.tar.gz && mv libdeflate-* deflate-src && \
+    cmake -S deflate-src -B deflate-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_C_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
+        -DLIBDEFLATE_BUILD_SHARED_LIB=OFF && \
+    cmake --build deflate-bld -j$(nproc) && cmake --install deflate-bld
+
+# ── brotli ────────────────────────────────────────────────────────────────────
+FROM base AS build-brotli
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/brotli.tar.gz && mv brotli-* brotli-src && \
+    cmake -S brotli-src -B brotli-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_C_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
+        -DBUILD_SHARED_LIBS=OFF && \
+    cmake --build brotli-bld -j$(nproc) && cmake --install brotli-bld
+
+# ── snappy ────────────────────────────────────────────────────────────────────
+FROM base AS build-snappy
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/snappy.tar.gz && mv snappy-* snappy-src && \
+    cmake -S snappy-src -B snappy-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_CXX_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DSNAPPY_BUILD_TESTS=OFF -DSNAPPY_BUILD_BENCHMARKS=OFF && \
+    cmake --build snappy-bld -j$(nproc) && cmake --install snappy-bld
+
+# ── sqlite (single-file amalgamation; just compile sqlite3.c) ─────────────────
+FROM base AS build-sqlite
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/sqlite.tar.gz && mv sqlite-autoconf-* sqlite-src && \
+    cd sqlite-src && \
+    $CC -O2 -flto=auto -ffunction-sections -fdata-sections \
+        -DSQLITE_OMIT_LOAD_EXTENSION \
+        -DSQLITE_THREADSAFE=1 \
+        -c sqlite3.c -o sqlite3.o && \
+    gcc-ar rcs libsqlite3.a sqlite3.o && \
+    mkdir -p /build/static-libs/lib /build/static-libs/include && \
+    cp libsqlite3.a /build/static-libs/lib/ && \
+    cp sqlite3.h sqlite3ext.h /build/static-libs/include/
+
+# ── HDF5 (.h5 / .h5ad / .loom viewer) ─────────────────────────────────────────
+# Build a static libhdf5.a stripped of the heavy bits we don't use:
+# Fortran / C++ / Java bindings, the tools (h5dump etc.), high-level
+# API, tests, and szip support. Links against our vendored static
+# zlib for the deflate filter.
+FROM base AS build-hdf5
+COPY --from=build-zlib /build/static-libs /build/static-libs
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/hdf5.tar.gz && mv hdf5-* hdf5-src && \
+    cd hdf5-src && \
+    CFLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections -fPIC" \
+        ./configure \
+        --prefix=/build/static-libs \
+        --enable-static --disable-shared \
+        --disable-cxx --disable-fortran --disable-java \
+        --disable-tools --disable-tests --disable-hl \
+        --with-zlib=/build/static-libs --without-szlib \
+    && make -j$(nproc) install
+# Note: deprecated symbols are kept enabled — main.cpp uses
+# H5Dvlen_reclaim for variable-length string cleanup; its 1.12+
+# replacement (H5Treclaim) doesn't exist on Ubuntu 22.04's libhdf5
+# 1.10, so the portable choice is to depend on the old name and
+# leave it compiled in.
+
+# ── expat (XML parser; xlsxio dependency) ─────────────────────────────────────
+FROM base AS build-expat
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/expat.tar.gz && mv expat-* expat-src && \
+    cmake -S expat-src -B expat-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_C_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
+        -DEXPAT_BUILD_TESTS=OFF -DEXPAT_BUILD_EXAMPLES=OFF \
+        -DEXPAT_BUILD_TOOLS=OFF -DEXPAT_BUILD_DOCS=OFF \
+        -DEXPAT_SHARED_LIBS=OFF && \
+    cmake --build expat-bld -j$(nproc) && cmake --install expat-bld
+
+# ── minizip-ng (ZIP reader; xlsxio dependency) ────────────────────────────────
+# We disable everything except the in-memory and file-system unzip path that
+# xlsxio uses, and force it to link against our vendored zlib (already at
+# /build/static-libs/lib/libz.a).
+FROM base AS build-minizip
+COPY --from=build-zlib /build/static-libs /build/static-libs
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/minizip-ng.tar.gz && mv minizip-ng-* minizip-src && \
+    cmake -S minizip-src -B minizip-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_PREFIX_PATH=/build/static-libs \
+        -DCMAKE_C_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DMZ_OPENSSL=OFF -DMZ_LIBBSD=OFF -DMZ_BZIP2=OFF -DMZ_LZMA=OFF \
+        -DMZ_ZSTD=OFF -DMZ_PKCRYPT=OFF -DMZ_WZAES=OFF -DMZ_SIGNING=OFF \
+        -DMZ_FETCH_LIBS=OFF -DMZ_FORCE_FETCH_LIBS=OFF \
+        -DMZ_COMPAT=ON && \
+    cmake --build minizip-bld -j$(nproc) && cmake --install minizip-bld && \
+    # minizip-ng's MZ_COMPAT=ON drops compat headers at
+    # <prefix>/include/minizip/{unzip,zip,ioapi,...}.h. xlsxio with
+    # WITH_MINIZIP_NG=ON includes them as <minizip-ng/unzip.h> — symlink
+    # the dir so both spellings resolve to the same files.
+    ln -sfn minizip /build/static-libs/include/minizip-ng
+
+# ── xlsxio (reads .xlsx / .xlsm) ──────────────────────────────────────────────
+# Build the read-only library against our vendored expat + minizip-ng.
+# We patch a tiny CMake quirk: xlsxio looks for libminizip-ng's headers in
+# `minizip-ng/`, while minizip-ng's CMake install drops them at
+# `<prefix>/include/minizip-ng/`. CMAKE_PREFIX_PATH handles it.
+FROM base AS build-xlsxio
+COPY --from=build-expat   /build/static-libs /build/static-libs
+COPY --from=build-minizip /build/static-libs /build/static-libs
+COPY --from=build-zlib    /build/static-libs /build/static-libs
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/xlsxio.tar.gz && mv xlsxio-* xlsxio-src && \
+    cmake -S xlsxio-src -B xlsxio-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_PREFIX_PATH=/build/static-libs \
+        -DCMAKE_C_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
+        -DBUILD_STATIC=ON -DBUILD_SHARED=OFF \
+        -DBUILD_TOOLS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_DOCUMENTATION=OFF \
+        -DWITH_LIBZIP=OFF -DWITH_MINIZIP_NG=ON && \
+    cmake --build xlsxio-bld -j$(nproc) && cmake --install xlsxio-bld
+
+# ── utf8proc ──────────────────────────────────────────────────────────────────
+FROM base AS build-utf8proc
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/utf8proc.tar.gz && mv utf8proc-* utf8proc-src && \
+    cmake -S utf8proc-src -B utf8proc-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_C_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
+        -DBUILD_SHARED_LIBS=OFF && \
+    cmake --build utf8proc-bld -j$(nproc) && cmake --install utf8proc-bld
+
+# ── abseil-cpp ────────────────────────────────────────────────────────────────
+FROM base AS build-absl
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/absl.tar.gz && mv abseil-cpp-* absl-src && \
+    cmake -S absl-src -B absl-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_CXX_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
+        -DCMAKE_CXX_STANDARD=17 \
+        -DABSL_BUILD_TESTING=OFF && \
+    cmake --build absl-bld -j$(nproc) && cmake --install absl-bld
+
+# ── re2 (needs abseil) ────────────────────────────────────────────────────────
+FROM base AS build-re2
+COPY --from=build-absl /build/static-libs /build/static-libs
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/re2.tar.gz && mv re2-* re2-src && \
+    cmake -S re2-src -B re2-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_PREFIX_PATH=/build/static-libs \
+        -DCMAKE_CXX_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
+        -DBUILD_SHARED_LIBS=OFF -DRE2_BUILD_TESTING=OFF && \
+    cmake --build re2-bld -j$(nproc) && cmake --install re2-bld
+
+# ── thrift ────────────────────────────────────────────────────────────────────
+FROM base AS build-thrift
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/thrift.tar.gz && mv thrift-* thrift-src && \
+    cmake -S thrift-src -B thrift-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_CXX_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DBUILD_COMPILER=OFF -DBUILD_TESTING=OFF \
+        -DBUILD_TUTORIALS=OFF -DBUILD_EXAMPLES=OFF \
+        -DWITH_LIBEVENT=OFF -DWITH_ZLIB=OFF -DWITH_OPENSSL=OFF \
+        -DWITH_JAVASCRIPT=OFF -DWITH_NODEJS=OFF \
+        -DWITH_PYTHON=OFF -DWITH_JAVA=OFF -DWITH_ERLANG=OFF \
+        -DWITH_GO=OFF -DWITH_HASKELL=OFF -DWITH_PERL=OFF \
+        -DWITH_PHP=OFF -DWITH_RUBY=OFF -DWITH_SWIFT=OFF && \
+    cmake --build thrift-bld -j$(nproc) && cmake --install thrift-bld
+
+# ── ncurses ───────────────────────────────────────────────────────────────────
+FROM base AS build-ncurses
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/ncurses.tar.gz && mv ncurses-* ncurses-src && \
+    mkdir ncurses-bld && cd ncurses-bld && \
+    CFLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
+    ../ncurses-src/configure --prefix=/build/static-libs \
+        --disable-shared --enable-static --with-termlib \
+        --enable-widec --without-ada --without-cxx-binding \
+        --without-manpages --without-progs --without-tests \
+        --with-fallbacks=xterm-256color,xterm,vt100,ansi && \
+    make -j$(nproc) && make install
+
+# ── htslib (static, no network backends) ─────────────────────────────────────
+FROM base AS build-htslib
+COPY --from=build-zlib  /build/static-libs /build/static-libs
+COPY --from=build-bzip2 /build/static-libs /build/static-libs
+COPY --from=build-xz    /build/static-libs /build/static-libs
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/htslib.tar.bz2 && mv htslib-* htslib-src && \
+    cd htslib-src && \
+    CFLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
+    CPPFLAGS="-I/build/static-libs/include" \
+    LDFLAGS="-L/build/static-libs/lib -flto=auto" \
+    ./configure --prefix=/build/static-libs \
+        --disable-libcurl --disable-gcs --disable-s3 \
+        --disable-plugins && \
+    make -j$(nproc) libhts.a && \
+    mkdir -p /build/static-libs/lib/pkgconfig /build/static-libs/include/htslib && \
+    cp libhts.a /build/static-libs/lib/ && \
+    cp htslib/*.h /build/static-libs/include/htslib/ && \
+    printf 'prefix=/build/static-libs\nexec_prefix=${prefix}\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\nName: htslib\nVersion: 1.21\nDescription: HTS library\nCflags: -I${includedir}\nLibs: ${libdir}/libhts.a -lz -lbz2 -llzma -lpthread -lm\n' \
+      > /build/static-libs/lib/pkgconfig/htslib.pc
+
+# ── Merge all static-libs ─────────────────────────────────────────────────────
+FROM base AS static-libs
+COPY --from=build-zlib     /build/static-libs /build/static-libs
+COPY --from=build-zstd     /build/static-libs /build/static-libs
+COPY --from=build-lz4      /build/static-libs /build/static-libs
+COPY --from=build-bzip2    /build/static-libs /build/static-libs
+COPY --from=build-xz       /build/static-libs /build/static-libs
+COPY --from=build-deflate  /build/static-libs /build/static-libs
+COPY --from=build-brotli   /build/static-libs /build/static-libs
+COPY --from=build-snappy   /build/static-libs /build/static-libs
+COPY --from=build-utf8proc /build/static-libs /build/static-libs
+COPY --from=build-absl     /build/static-libs /build/static-libs
+COPY --from=build-re2      /build/static-libs /build/static-libs
+COPY --from=build-thrift   /build/static-libs /build/static-libs
+COPY --from=build-ncurses  /build/static-libs /build/static-libs
+COPY --from=build-htslib   /build/static-libs /build/static-libs
+COPY --from=build-sqlite   /build/static-libs /build/static-libs
+COPY --from=build-expat    /build/static-libs /build/static-libs
+COPY --from=build-minizip  /build/static-libs /build/static-libs
+COPY --from=build-xlsxio   /build/static-libs /build/static-libs
+COPY --from=build-hdf5     /build/static-libs /build/static-libs
+
+# ── Arrow 23.0.1 ──────────────────────────────────────────────────────────────
+FROM static-libs AS build-arrow
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/arrow.tar.gz && mv arrow-* arrow-src && \
+    cmake -S arrow-src/cpp -B arrow-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/arrow-install \
+        -DCMAKE_C_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
+        -DCMAKE_CXX_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
+        -DCMAKE_PREFIX_PATH=/build/static-libs \
+        -DARROW_BUILD_SHARED=OFF \
+        -DARROW_BUILD_STATIC=ON \
+        -DARROW_PARQUET=ON \
+        -DARROW_CSV=ON \
+        -DARROW_IPC=ON \
+        -DARROW_S3=OFF \
+        -DARROW_GCS=OFF \
+        -DARROW_FLIGHT=OFF \
+        -DARROW_GANDIVA=OFF \
+        # ARROW_ORC=ON would pull in liborc + libprotobuf as static deps
+        # for the AlmaLinux build, which would need two new build stages
+        # (~200 lines of Dockerfile). Apt / Brew binaries on the other
+        # CI legs already ship ORC, so the static binary is the only one
+        # without; `vv` reports "compiled without ORC support" if invoked
+        # on a .orc file. TODO: build protobuf + liborc stages and
+        # re-enable here.
+        -DARROW_ORC=OFF \
+        -DARROW_DATASET=OFF \
+        -DARROW_COMPUTE=ON \
+        -DARROW_WITH_SNAPPY=ON \
+        -DARROW_WITH_ZSTD=ON \
+        -DARROW_WITH_LZ4=ON \
+        -DARROW_WITH_BROTLI=ON \
+        -DARROW_WITH_BZ2=ON \
+        -DARROW_WITH_ZLIB=ON \
+        -DARROW_WITH_UTF8PROC=ON \
+        -DARROW_WITH_RE2=ON \
+        -DARROW_DEPENDENCY_SOURCE=SYSTEM \
+        -DARROW_ENABLE_TIMING_TESTS=OFF \
+        -Dutf8proc_LIB=/build/static-libs/lib/libutf8proc.a \
+        -Dutf8proc_INCLUDE_DIR=/build/static-libs/include \
+        -DRE2_ROOT=/build/static-libs \
+        -DThrift_ROOT=/build/static-libs \
+        -DSnappy_ROOT=/build/static-libs \
+        -DZSTD_ROOT=/build/static-libs \
+        -DLZ4_ROOT=/build/static-libs \
+        -DBrotli_ROOT=/build/static-libs \
+        -DZLIB_ROOT=/build/static-libs && \
+    cmake --build arrow-bld -j16 && cmake --install arrow-bld
+
+# ── vv ────────────────────────────────────────────────────────────
+FROM build-arrow AS build-app
+
+# Provide mimalloc source for FetchContent (no internet in build containers)
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/mimalloc.tar.gz && mv mimalloc-* /build/mimalloc-src
+
+# AlmaLinux 8 cmake installs to lib64/; symlink everything into lib/ so that
+# CMakeLists.txt's find_library(PATHS .../static-libs/lib NO_DEFAULT_PATH) works.
+RUN for f in /build/static-libs/lib64/*.a; do \
+        b=$(basename "$f"); \
+        [ ! -f "/build/static-libs/lib/$b" ] && ln -sf "../lib64/$b" "/build/static-libs/lib/$b"; \
+    done; true
+
+# Arrow's installed cmake records ARROW_UTF8PROC_USE_SHARED=ON (shared search),
+# but we only have the static .a — patch it to search for the static library.
+RUN sed -i \
+    's/set(ARROW_UTF8PROC_USE_SHARED "ON")/set(ARROW_UTF8PROC_USE_SHARED "OFF")/' \
+    /build/arrow-install/lib64/cmake/Arrow/ArrowOptions.cmake
+
+COPY . /build/ParquetViewer
+
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    cmake -S /build/ParquetViewer -B /build/app-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DSTATIC_RUNTIME=ON \
+        -DCMAKE_AR=$(command -v gcc-ar) \
+        -DCMAKE_RANLIB=$(command -v gcc-ranlib) \
+        -DCMAKE_NM=$(command -v gcc-nm) \
+        -DCMAKE_CXX_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
+        -DCMAKE_EXE_LINKER_FLAGS="-flto=auto" \
+        -DCMAKE_PREFIX_PATH="/build/arrow-install;/build/static-libs" \
+        -DArrow_DIR=/build/arrow-install/lib64/cmake/Arrow \
+        -DParquet_DIR=/build/arrow-install/lib64/cmake/Parquet \
+        -DCURSES_INCLUDE_PATH=/build/static-libs/include/ncursesw \
+        -DCURSES_LIBRARY=/build/static-libs/lib/libncursesw.a \
+        -DCMAKE_LIBRARY_PATH="/opt/rh/gcc-toolset-12/root/usr/lib/gcc/x86_64-redhat-linux/12;/build/static-libs/lib" \
+        -DFETCHCONTENT_SOURCE_DIR_MIMALLOC=/build/mimalloc-src && \
+    cmake --build /build/app-bld -j$(nproc) && \
+    ccache -s | head -30
+
+CMD ["sh", "-c", "cp /build/app-bld/vv /out/vv && ln -sf vv /out/vh && echo 'Done: /out/vv (and vh symlink)'"]

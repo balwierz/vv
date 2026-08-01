@@ -1,0 +1,13 @@
+{
+    "Name": "vv data table extractor",
+    "Id": "org.vv.extractor",
+    "MimeTypes": {
+        "application/vnd.apache.parquet": { "Version": "1.0" },
+        "application/vnd.apache.arrow.file": { "Version": "1.0" },
+        "application/x-hdf5": { "Version": "1.0" },
+        "application/x-npz": { "Version": "1.0" },
+        "application/vnd.sqlite3": { "Version": "1.0" },
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": { "Version": "1.0" },
+        "application/vnd.oasis.opendocument.spreadsheet": { "Version": "1.0" }
+    }
+}

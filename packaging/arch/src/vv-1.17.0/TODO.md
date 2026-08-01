@@ -1,0 +1,574 @@
+# TODO — feature backlog
+
+Features users are likely to ask for, grouped by category. Each
+section lists **Open** items first; completed work is kept under
+**Done** for institutional memory (see CHANGELOG for the
+user-facing summary).
+
+## Data exploration
+
+### Done
+- `--schema` — print column names, Arrow types, nullability, then exit.
+- `--describe` — pandas-style per-column summary: count, null count,
+  min/max, mean (numeric), distinct count.
+- Column projection — `--select Chromosome,Start,Score`, plus a pattern
+  language (`feat/select-patterns`): globs, 1-based `N-M` index ranges,
+  `@numeric`/`@string`/`@list`/`@bool`/`@temporal` type classes, `!exclusions`,
+  and reordering (output follows spec order). An exact column name always wins
+  over pattern interpretation, and a file whose own headers are range-shaped
+  (binned matrices) keeps its namespace. A pattern matching nothing, and a spec
+  resolving to zero columns, are both errors — neither silently drops columns
+  from a conversion.
+- `--filter "Score > 0.5"` — value-predicate filter with AND/OR, plus
+  (`feat/filter-grammar`) regex `~`/`!~`, `contains`/`startswith`/`endswith`,
+  `in (…)`/`not in (…)` and `is null`/`is not null`. One parser edit reaches
+  the CLI, the TUI `&` bar and the Qt filter box; word operators are
+  operators only in operator position, so a column named `in` stays
+  filterable.
+- `--sample N` — reservoir sampling, honours `--filter`.
+- `--unique COL[,COL,...]` — distinct value counts; top-50 per
+  column with overflow indicator.
+
+## Range / region (genomics core)
+
+### Open
+- LociSSD `lociSSD_interval_index` consumption (spec §6.5) — helps
+  when the window is much smaller than a row group.
+
+### Done
+- `-r` on **BAM / CRAM** (`feat/bam-region`) — `BamSource` loads the index
+  and walks htslib's multi-region iterator, so several windows are covered
+  in one pass. Previously `-r` was a silent no-op on alignment files: the
+  whole file came back with exit 0, even for a contig the file lacks.
+  Byte-checked against `samtools view` at the window boundaries and under
+  `--coords ncbi`. A missing index is a clean error, not a full scan; a
+  plain `.sam` (no index) is rejected. CRAM decoding takes its reference
+  from `-f/--fasta` (fixture `tiny.cram`). Formats with no region index
+  now warn on stderr via the new `TabularSource::region_applied()` instead
+  of silently returning an unfiltered result.
+- `--regions-file foo.bed` — batch many windows from a BED's first
+  three columns.
+- `--slop N` — pad each window by N bp.
+- BCF range queries via `bcf_itr_querys` (requires `.csi`/`.tbi`).
+- Generic Parquet range queries — auto-detect Chromosome / Start /
+  End or override with `--region-cols`. Pruning via Parquet
+  statistics; dict-encoded chroms handled.
+- Region-mode exact row counts (`fix/region-rowcount`) — `total_rows()` /
+  `chunk_meta()` for generic-Parquet / LociSSD regions now report the
+  post-filter count (computed by running the overlap predicate once per slice
+  at open), instead of the pre-filter slice size. Fixes the phantom trailing
+  rows in the table view and the trailing blank row in the Qt GUI.
+
+## Output / pipelines
+
+### Done
+- JSON / NDJSON output (`--json` array, `--ndjson` per-row).
+- Markdown output (`--md` / `--markdown`).
+- `--stats` — Parquet metadata footer dump without reading data.
+- `--validate` — LociSSD invariants check.
+- Parquet to stdout (`--parquet -`, temp-file spool).
+
+## TUI
+
+### Open
+- Marks & recall — vim-style `m{a-z}` / `'{a-z}`.
+
+### Done
+- Cell cursor (`feat/tui-cursor`) — `hjkl`/arrows move a highlighted cell and
+  the viewport follows, with a vim-style `scrolloff` (config key). Every
+  per-cell action (`S`, `s`, `y`, `Enter`, `,`/`.`) now acts on the cursor
+  instead of the top-left corner; a mouse click positions it. Per-tab, so it
+  survives `Tab`. Unlocks the corner-relative items above (scoped search,
+  column reordering, freeze-through-cursor).
+- Stats popup (`S`) — count/nulls/min/max/mean/distinct for the
+  active column.
+- Sort by column (`s` toggles asc/desc; `u` clears).
+- Column show/hide picker (`c`).
+- Live filter (`&`) — same grammar as `--filter`; hides
+  non-matching rows; status bar shows kept/total; composes with
+  sort via the same `source_row(display)` indirection.
+- Copy cell (`y`, OSC52) — copies the top-left visible cell to
+  the system clipboard via an OSC52 escape; works over SSH /
+  tmux 3.3+ without external clipboard helpers.
+- Multi-file tabs — `vv a.vcf b.bed …`, `Tab`/`Shift+Tab` cycle;
+  each tab keeps its own sort/filter/scroll/cache.
+- Command line (`:` key) — `:N` jumps to row, `:q` quits,
+  `:theme NAME` switches theme. Extensible verb list.
+
+## Format gaps
+
+### Open
+- Markdown TUI mode — current `vv README.md` emits ANSI to stdout
+  (great for `vv README.md | less -R`). A proper scrollable
+  ncurses-based TUI integrated into `TableTUI` as a new `TabKind`
+  would let prose + GFM tables share a single multi-tab session and
+  pick up the existing `/`-search infrastructure. ~200 LOC of glue
+  on top of the renderer + TabState already in place.
+- Sixel image protocol (xterm / mlterm / WezTerm-no-iterm) for the
+  markdown viewer. Needs PNG → RGB decode + palette quantisation;
+  ~500 LOC vendored (stb_image.h + sixel encoder).
+- Markdown image fetch over HTTP (badges, hosted screenshots).
+  Currently any `https://…` URL falls through to the alt-text stub.
+- `.xls` (legacy binary, OLE2 compound document) — needs libxls or a
+  hand-rolled OLE2 parser; biology data is overwhelmingly `.xlsx`
+  today, so deferred until somebody asks.
+- Apache ORC in the AlmaLinux 8 static binary — needs new
+  `build-protobuf` and `build-orc` Docker stages plus
+  `-DARROW_ORC=ON` in `build-arrow`. Apt / Brew / Conda Arrow already
+  ship ORC, so the static-only release is the only platform where
+  `vv file.orc` reports "compiled without ORC support".
+- AnnData `uns` (unstructured) decoding — nested groups / scalars /
+  free-form arrays. v1 skips. A follow-up could surface scalars and
+  string entries using the existing hierarchy-table machinery.
+- Cooler (`.cool`, `.mcool`) Hi-C contact matrices — HDF5 backbone
+  but very different layout (bins / pixels / chroms). Worth a
+  follow-up dedicated source class on top of the existing HDF5
+  plumbing.
+- Galaxy `.dat` / Galaxy archive — niche but visible.
+
+### Done
+- `vv x.bam --pileup -f ref.fa` — reference-aware pileup (shipped 1.15.0,
+  #73). Fills the `ref` column from an indexed FASTA and renders matches as
+  `.` / `,`, byte-identical to `samtools mpileup -B -f`. Extended in 1.16.0
+  (#88) so `-f` also supplies the reference a CRAM needs to decode.
+- AnnData CSC sparse preview (`feat/anndata-csc-preview`) — `read_sparse_preview`
+  now densifies CSC as well as CSR. The compressed (indptr) axis is rows for CSR
+  and columns for CSC; a single column-major scatter handles both (CSR: m=row,
+  index=column; CSC: m=column, index=row), so the output is rows × columns either
+  way and the obs/var X-labels apply unchanged. scan_anndata emits the preview
+  tab for CSC instead of a "not implemented" note. The untrusted-`shape` extent
+  clamps carry over to the column axis. Fixture tiny.csc.h5ad (fixed 3×4 matrix).
+- AnnData X preview labelled with obs / var identifiers (`feat/anndata-x-labels`)
+  — X is (n_obs × n_vars) = cells × genes, so the sparse / dense X preview now
+  names its value columns by the var index (gene names) and prepends the obs
+  index (cell barcodes) as a row-label column, instead of generic col0/col1
+  and bare row numbers. `apply_anndata_x_labels` reads the sibling /var and
+  /obs `_index` datasets; no-op for non-AnnData HDF5 (Dataset2D untouched).
+- samtools mpileup (`.pileup` / `.mpileup` / `.pile`, plus `.gz`) —
+  routed through `DelimKind::Mpileup`. Tab-count on the first row
+  infers single- vs multi-sample; columns get named `chrom` / `pos`
+  / `ref` / `depth[_i]` / `bases[_i]` / `quals[_i]`. Range queries
+  via the existing TabixInputStream path.
+- `--decode-pileup` — typed per-allele view (A/C/G/T/N + ins/del +
+  fwd/rev + mean_qual) replaces the packed `bases` / `quals`
+  columns. Hand-rolled state machine for the pileup bases language
+  (matches against ref, mismatches against literal base, indel
+  markers, deletion placeholders, mapq-after-`^`).
+- `vv x.bam --pileup` — BAM/CRAM-to-mpileup on the fly via htslib's
+  `bam_plp_auto`. Byte-identical to `samtools mpileup x.bam` (no
+  `-f`). Region queries trim emitted positions to the requested
+  span just like samtools.
+- OpenDocument Spreadsheet (`.ods`) — hand-rolled reader on minizip +
+  expat (already in the tree for xlsxio's deps). Reuses the
+  WorkbookSource framework introduced for Excel and the shared
+  `csv_buffer_to_table` helper.
+- Apache ORC (`.orc`) — opens via Arrow's ORC adapter. One stripe is
+  one chunk; OrcSource mirrors IpcSource's lazy-load pattern. CMake
+  detects the adapter header at configure time and gates the source
+  with `VV_HAVE_ORC`.
+- Excel (`.xlsx`, `.xlsm`) — opens via libxlsxio; each sheet becomes
+  a TUI tab through the new WorkbookSource abstraction (extends
+  MemoryTableSource). Cell text streams through Arrow's CSV reader
+  for type inference. `.xls` deferred.
+- bigBed / bigWig — vendored libBigWig (`-DNOCURL`, no libcurl
+  dep); autoSql parsed into typed Arrow columns; range queries
+  via libBigWig overlap APIs.
+- 2bit — UCSC sequence container; hand-rolled parser reads only
+  the per-sequence index (name / length / n_blocks /
+  mask_blocks). DNA bases are not decoded — chromosome-scale
+  references would blow up RAM; `twoBitToFa` is the right tool
+  for that.
+- ENCODE peak / signal text formats — `.narrowPeak`, `.broadPeak`,
+  `.gappedPeak`, `.bedGraph` / `.bg`, `.tagAlign` (plus `.gz`)
+  routed through DelimKind::BED with variant-aware column naming
+  (signalValue / pValue / qValue / peak / value / sequence).
+- SQLite (`.sqlite` / `.sqlite3` / `.db`) — read-only; each user
+  table becomes a TUI tab. SqliteSource shares the sqlite3 handle
+  across sibling sources via shared_ptr. Type affinity drives the
+  Arrow schema.
+
+## Performance / build
+
+### Done
+- ARM64 static binary in the release workflow — the release CI
+  matrices over `ubuntu-latest` (x86_64) and `ubuntu-22.04-arm`
+  (aarch64); both arches are published with every tag as
+  `vv-<ver>-linux-<arch>.tar.gz`.
+- LTO build — every static dep + vv built with `-flto=auto` via
+  CMake `CMAKE_C_FLAGS`/`CMAKE_CXX_FLAGS`; gcc-ar / gcc-ranlib
+  preserve LTO IR in archives. Significant text-segment shrink
+  vs the previous non-LTO 15 MB static binary.
+- Parquet decompressor thread-pool tunable — `--decode-threads N`
+  separately sizes Arrow's CPU thread pool (Parquet column decode
+  / CSV parallel parsing) without touching htslib's thread count.
+  Defaults to `--threads`; bounded at `2 × hardware_concurrency()`.
+- `ccache` in the AlmaLinux 8 Dockerfile — installed via EPEL,
+  symlinks added to PATH so every `gcc` / `g++` invocation gets
+  wrapped; BuildKit cache mount (`id=vv-ccache`) persists the
+  cache across docker builds.
+
+## Convenience
+
+### Open
+- Multi-line nested rendering — wrap long `list`/`map` cells across
+  multiple screen rows. Punted as "medium-sized": the current TUI
+  bakes row-height=1 into chunk caching, search highlighting, sort
+  indirection, and scroll math. Inline expansion (this iteration)
+  takes the easy win.
+- User-defined themes in `~/.config/vv/config` — would let the user
+  override individual palette entries (e.g. `border = 38;5;238`)
+  rather than picking from the five built-ins. The XDG config
+  plumbing is already in; this is just a palette-override loader.
+  Deferred until someone asks.
+
+### Done
+- Color themes — `--theme NAME` selects from `default`, `dark`,
+  `light`, `solarized-dark`, `solarized-light` (built-in palettes
+  covering both the ASCII table and the TUI; 256-color with 16-color
+  fallback).
+- Smarter inline list/map truncation — `truncate()` walks every
+  top-level comma and picks the largest leading-element prefix
+  that fits the column, instead of always dropping to
+  `[first, …]` after the first comma.
+- TUI theme picker (`T`) — overlay; saves to
+  `$XDG_CONFIG_HOME/vv/config` (default `~/.config/vv/config`).
+  Future runs pick up the saved theme automatically.
+
+### Done
+- `--tail N` — last-N rows; reuses the `MemoryTableSource` adapter.
+- `--coords UCSC|NCBI` — UCSC (0-based half-open) vs NCBI (1-based
+  inclusive); conversion happens once in `apply_region_modifiers`.
+
+## Quality / signal
+
+### Open
+- libFuzzer harness — extend to the remaining binary parsers (BAM, Parquet, BCF,
+  FASTA/FASTQ, HDF5, 2bit, ODS). The LociSSD v4 codec decoder and the NumPy `.npy`
+  parser are done (see Done); the rest reuse the same `VV_BUILD_FUZZERS` +
+  `tests/fuzz/` scaffolding.
+- Code coverage badge.
+- Reproducible builds.
+
+### Done
+- Truthful exit codes (`fix/truthful-exits`) — an unknown `--select` column or a
+  bad `--filter` now fails in every output mode (previously only `--json` did;
+  the rest printed and exited 0), with a did-you-mean suggestion; a mid-file
+  read error is surfaced under `--json`/`--md`/`--parquet`/`--arrow`; more than
+  one positional in a non-interactive mode is an error instead of silently
+  answering about the first file; `--validate` refuses non-`.lociss` paths and
+  v4 "colblock" files instead of reporting "Not a valid Parquet file" with
+  exit 0. The TUI marks a search / sort / filter / stats pass `[PARTIAL]` when
+  the stream had already released batches (`evicted_any()`, previously
+  implemented by seven sources and called by none). `--parquet -` / `--arrow -`
+  honour `$TMPDIR`.
+- libFuzzer harnesses for the LociSSD v4 "colblock" codec decoder and the NumPy
+  `.npy` parser (`tests/fuzz/fuzz_{colblock,npy}.cpp`, `-DVV_BUILD_FUZZERS=ON`
+  with clang; a 24.04 CI smoke runs both under ASan+UBSan). Found + fixed four
+  crafted-file UB bugs: v4 empty-block null `memcpy` + DELTA/LENGTH int64 cumsum
+  overflow; npy zero-item-size shape-check bypass (OOB) + unaligned typed slab
+  load (aarch64). Clean over tens of millions of iterations each.
+
+### Done
+- Sanitizer CI job (ASan + UBSan) — the 24.04 job rebuilds vv with
+  `-fsanitize=address,undefined` and reruns the smoke suite
+  (`ARROW_DEFAULT_MEMORY_POOL=system` so Arrow buffers get redzones; mimalloc is
+  `MI_OVERRIDE=OFF` so it doesn't hide them). Verified it catches a reintroduced
+  LociSSD v4 DICT overflow; it also surfaced + fixed a real bigWig misaligned
+  read (aarch64 UB).
+
+## Feature roadmap (2026-07-25 analysis)
+
+Six independent lenses proposed features; every survivor was verified against
+the source, and every "today" claim below was reproduced against a build. Tier 1
+shipped in **1.16.0** (#86, #88, #89, #91, #92, #93). What follows is what was
+left, plus — equally important — what was deliberately ruled out, so it doesn't
+get re-proposed.
+
+### Tier 2 — ranked
+
+- **`--expand INFO` / `--expand attributes`** (L) — packed `k=v` blobs become
+  real columns. `vv variants.vcf --tsv` emits INFO as the literal `AF=0.5`, so
+  no `AF` column exists and `--filter` / `--select` / `--parquet` / the Qt GUI
+  cannot see the payload. GFF/GTF `attributes` is expanded *nowhere*, not even
+  in the TUI. The helpers (`parse_kv_list`, `looks_like_kv_list`,
+  `parse_vcf_info_headers`) already exist but sit **below** the
+  `#ifndef VV_CORE_LIB` guard, invisible to every export path and to libvvcore
+  — hoisting them is step one. Needs an `ExpandedSource` decorator forwarding
+  ~20 virtuals; column-index translation between the widened outer schema and
+  the inner one is the whole risk surface. `Number=A/R/G/.` keys (AD, PL) must
+  become utf8, not Int64. Document loudly that a `-n 10` preview and a full
+  scan can disagree on the GTF schema — GFF declares no key list, so the union
+  comes from whatever was read.
+- **`--contigs` + assembly fingerprinting + `--check`** (M) — the most
+  expensive silent error in genomics is an hg19 BED analysed against an hg38
+  BAM: everything runs, nothing errors, answers are quietly wrong. vv already
+  parses both sequence dictionaries and normalises `chr1`/`1`. Listing is not
+  checking: `--check` compares two positionals and exits non-zero. Shares the
+  helper hoist with `--expand`, so land that first.
+- **`--tags NM,MD,CB,UB`** (M) — BAM/CRAM auxiliary tags as columns.
+  `bam_aux_get` appears **zero times** in main.cpp, yet every modern BAM's
+  payload is in the tags (10x barcodes, methylation calls, edit distance).
+  Composes with 1.16.0's BAM regions: `-r … --tags CB --unique CB`. `auto`
+  must not be the default and must be defined as "union over the first batch".
+- **`--on-bad-row skip|null|stop` + `--bad-rows`** (M) — one short row in a
+  4 GB GTF currently fails the whole file with zero rows shown, which makes vv
+  less useful than `head` on exactly the files you most need a viewer for. Use
+  Arrow's `csv::ParseOptions::invalid_row_handler`. Line numbers must be
+  counted **before** the preamble strippers shift the stream, or the reported
+  line points at the wrong place. Lenient to look at, strict to convert.
+- **`--compute 'len=End-Start'`** (M) — row-wise derived columns. Every shaping
+  verb vv has *subsets*; nothing produces a value the file lacks. Row-wise
+  only — no aggregates, no windows, no joins; that boundary is what keeps it a
+  viewer. Do **not** reach for `arrow::compute` (its kernels are GC'd by
+  `--gc-sections` in the static build — see the note at `main.cpp` ~2338);
+  `array_value_as_double` plus typed builders is the house path. Same decorator
+  shape as `--expand`, so it becomes a much smaller patch afterwards.
+- **Accessibility** (S) — `--box unicode|ascii|none` (`auto` picks ascii when
+  `nl_langinfo(CODESET)` is not UTF-8; `LC_ALL=C vv tiny.bed` currently emits
+  UTF-8 box characters, i.e. mojibake in a C-locale terminal or a CI log), plus
+  `--theme colorblind` (Okabe–Ito + viridis ramp) and `--theme mono`.
+  **Prerequisite worth its own PR:** `tests/run_tests.sh` does not isolate
+  `XDG_CONFIG_HOME` globally, so a developer with a saved theme gets spurious
+  golden failures — a latent test-hermeticity bug, not a feature.
+- **TUI `:region chr17:7,676,040`** (M) — re-query a locus without quitting.
+  **The trap:** `apply_region_modifiers` already ran in `main()` and is *not
+  idempotent* — re-running re-appends every `--regions-file` window and
+  re-applies `--slop`. Store the original Config. Build the new source first
+  and swap only on success, or a failed reopen leaves a null `src_`. Sibling
+  tabs (xlsx sheets, sqlite tables, h5ad components) are not 1:1 with
+  `cfg.paths` and must be refused rather than multiplied.
+
+### Tier 3 — worthwhile but larger or more speculative
+
+- **Multi-file input** (L) — globs, directories, `--concat`, Hive partition
+  columns. `vv part-*.parquet --count`; `vv data/dt=2026-07-01/`. Builds on
+  1.16.0's multi-positional honesty. No new dependency (`std::filesystem`).
+- **TUI vim ergonomics pack** (L) — count prefixes (`12j`), `50%`, `Ctrl-D`,
+  `</>` to move a column, `Z` to freeze through the cursor, `*` to search the
+  cursor's column, `J`/`K` to step records in the detail pane. Unlocked by the
+  1.16.0 cell cursor.
+- **FASTA `.fai` region retrieval** (M) — `vv hg38.fa -r chr7:55,019,000-…`,
+  and stop plain `vv hg38.fa` trying to fit a chromosome in one cell.
+- **`--bins N` for bigWig** (M) — binned means from the file's own zoom levels
+  instead of ten million intervals; `bwStats` already compiles in.
+- **Provenance stamping + `--fingerprint`** (M) — Parquet/Arrow KV keys for
+  version, argv, source path/size, region and filter; carry a source's own
+  `@PG` / `##source` forward instead of dropping it. Needs `--no-provenance`
+  for reproducible builds.
+
+### Deliberately not doing — do not re-propose without new information
+
+- **`--group-by` / `--agg`** — where vv stops being a viewer and becomes a
+  query engine. `duckdb -c "select … from 'f.parquet'"` is one command away,
+  and `vv in.bam --tags CB --parquet - | duckdb` reaches the only real
+  differentiator without owning an aggregation mini-language forever (users
+  will immediately want median/percentile/stddev/first/last). Also needs an
+  unbounded hash map.
+- **`--join` / `--intersect` / `--annotate` / `--per-region`** — an interval and
+  relational join engine inside a single-file program. `bedtools` is installed
+  wherever these files live. It dies in the long tail: `--nearest`
+  tie-breaking, strandedness, upstream/downstream sign, `-d` vs `-D`, and a
+  multi-overlap policy every user re-litigates.
+- **Remote input URLs (`https://`, `s3://`, `gs://`)** — incompatible with the
+  flagship artifact. The AlmaLinux 8 static build deliberately configures
+  htslib `--disable-libcurl --disable-gcs --disable-s3` and Arrow
+  `-DARROW_S3=OFF -DARROW_GCS=OFF`; vendored libBigWig is built `-DNOCURL`.
+  The dev box's libhts has no curl either, so "the support is already linked
+  in" is false on both.
+- **`--tview` / an IGV-style locus panel** — the most tempting item on the list
+  and still a different product: read stacking, CIGAR-aware base rendering, a
+  reference track, zoom/pan, a second layout engine. `samtools tview` and IGV
+  exist. The adjacent scope was already declined (2bit bases are deliberately
+  not decoded).
+- **A Python binding over libvvcore** — XL for a marginal audience; pyarrow,
+  pysam and anndata already cover most of what vv reads. The blocker is not
+  pybind11, it is two Arrow runtimes in one process: the release configuration
+  is static and `--whole-archive`'d and cannot produce a PIC `.so` — the same
+  reason the KF6 plugins are skipped in that configuration.
+- **vv writing index or cache sidecars** (`--index` building `.tbi`/`.bai`, a
+  `.vvi` row index, a `~/.cache/vv` metadata cache) — turns a read-only viewer
+  into a file producer, duplicates tabix/samtools, and the failure users
+  actually hit (plain gzip instead of bgzip) is not fixable by indexing without
+  rewriting a multi-GB file.
+- **A background prefetch thread in the TUI** — no `TabularSource` subclass is
+  thread-safe: streaming sources mutate `batches_`/`rows_so_far_` under
+  `mutable` with no lock, and htslib, HDF5 and sqlite handles are
+  single-threaded per handle. A permanent class of heisenbugs, not a speedup.
+- **`--sorting-columns`** and the Parquet writer-tuning flag family —
+  `parquet/properties.h` warns that a sorting hint can be inconsistent with the
+  data, and a lying hint makes downstream engines prune *correct* rows: a
+  silent wrong-results bug in someone else's pipeline, caused by a viewer.
+- **h5ad / HDF5 integrity validation** — investigated 2026-07-26 and rejected
+  on evidence. Truncation is already caught by `h5ls`, `h5stat`, `anndata` and
+  vv itself; corruption *inside* a dataset is caught by **none** of them,
+  including a full `h5dump` and a complete `anndata.read_h5ad` (verified by
+  corrupting bytes inside `X/data` — the array sum went to `nan` and every tool
+  exited 0). HDF5 stores raw data with no checksum unless the writer enabled
+  Fletcher32, which anndata does not. Nothing vv could add would change that.
+  A narrow *semantic* check (obs/var lengths vs X dims, indptr monotonicity,
+  category codes in range) is the only real gap, and vv already computes
+  several of those and silently clamps them — worth doing only if someone asks,
+  and it must not be advertised as an integrity check.
+
+## Audit findings (2026-06-10)
+
+Multi-agent code audit of the reader core, TUI, GUI, and KDE plugins
+(96 issues, adversarially verified). Severity: **critical** = crash /
+memory-safety / data-corruption on plausible input; **high** = wrong
+results or a major perf cliff; **medium** = noticeable; **low** = minor.
+Locations are line numbers as of the audit; re-grep before editing.
+The systemic prerequisite — ASan/UBSan CI + a libFuzzer harness over the
+parsers — is already tracked under **Quality / signal → Open** and should
+be done first: it catches this whole bug class automatically.
+
+### Critical (5) — fix before next release
+
+- [x] `main.cpp:3286` — Region coordinates are 0-based when handed to htslib's 1-based region parser (off-by-one start on every tabix/BAM/BCF range query) — fixed on `fix/region-coord-offbyone`
+  - Fix: Pick one convention and convert at the boundary. Since cfg.region is canonicalised to 0-based half-open, convert back to 1-based inclusive (start+1, end unchanged) when building the region STRING handed to any…
+- [x] `main.cpp:6202` — Buffer overflow in read_string_attr for array-valued string attributes — fixed on `fix/hdf5-attr-overflow`
+  - Fix: Query H5Aget_space + H5Sget_simple_extent_npoints and bail out (return "") if npoints != 1, or size the destination buffer to npoints.
+- [x] `main.cpp:6789` — Stack/heap buffer overflow reading HDF5 'shape' attribute into a fixed 2-element buffer — fixed on `fix/hdf5-attr-overflow`
+  - Fix: Before reading, query the attribute's dataspace size: open the space with H5Aget_space, get H5Sget_simple_extent_npoints, and only read into a 2-slot buffer when the count is exactly 2 (or read into a…
+- [x] `main.cpp:7216` — NPY shape parsing accepts negative dimensions -> size_t wrap and huge allocation/OOB — fixed on `fix/npz-shape-validation`
+  - Fix: Reject any shape component < 0 (and treat the whole header as invalid). Validate each dimension is in [0, sane_max] before storing.
+- [x] `main.cpp:7457` — NPZ/NPY: no bounds check that declared shape fits the array body — out-of-bounds read on malformed input — fixed on `fix/npz-shape-validation`
+  - Fix: After parsing the header, compute the required element count with overflow-checked multiplication and verify `data_offset + total_elems*item_size <= bytes->size()`.
+
+### High (24)
+
+**Correctness bugs**
+- [~] `gui/kde/thumbrender.cpp:25` — KDE plugins call libvvcore (which uses .ValueOrDie()) with no exception/abort guard — malformed file can crash the worker — `gui/improvements` wraps both cores in function-try-blocks (catches C++ exceptions; .ValueOrDie() aborts remain, but the source readers now validate untrusted input up front)
+  - Fix: Wrap the body of vv_render_thumbnail and vv_probe_meta in try/catch(...) returning an empty QImage / unset VvMeta on any exception.
+- [x] `main.cpp:2897` — Region queries on Parquet return empty/wrong results when Start/End are not Int32/Int64 — fixed on `fix/parquet-region-int-types` (cell_int handles all integer widths + dictionary-of-int)
+  - Fix: Handle the remaining integer Arrow types (Int8/16, UInt8/16/32/64) and dictionary-encoded indices, or use arrow's scalar visitor;
+- [x] `main.cpp:3448` — Malformed delimited row past the first block silently truncates output with exit code 0 — fixed on `fix/delimited-silent-truncation` (sticky read_status + non-zero exit; also closes the latent ensure() hang)
+  - Fix: Store a sticky arrow::Status member set by advance() on error (and set all_read_=true to stop the loop), then surface it from read_chunk()/total_rows() and from ensure() callers so the CLI prints the CSV parse…
+- [x] `main.cpp:3920` — Pileup engine does not handle is_refskip (wrong output for spliced/RNA-seq reads) — fixed on `fix/pileup-refskip` (refskips render as '>'/'<' by strand, not '*'; the quality column now carries the real base quality at qpos for del/refskip too, matching samtools). Regression fixture tiny.splice.bam + byte-for-byte samtools-equivalence test.
+  - Fix: Add `else if (p->is_refskip) { bases += bam_is_rev(p->b) ? '>' : '<'; quals += (char)('!'); }` before the base-call branch, matching samtools mpileup.
+- [x] `main.cpp:4224` — BcfSource drops the FORMAT field from FORMAT_SAMPLES (data loss) — fixed on `fix/bcf-format-field`
+  - Fix: After the loop, `start` already points at the FORMAT field. Set `f[8] = line.substr(start);` (the entire remainder from FORMAT onward) for the fi==8 case, and drop the misnamed `info_end` re-scan entirely.
+- [x] `main.cpp:4346` — Region coordinate-convention mismatch: BCF/BamPileup pass 0-based half-open coords to 1-based-inclusive htslib parsers — fixed on `fix/region-coord-offbyone`
+  - Fix: When rebuilding the region string for a 1-based-inclusive htslib parser from canonical 0-based half-open coords, convert: start_1based = start0 + 1, end stays (inclusive end == half-open end).
+- [x] `main.cpp:4906` — Unbounded reserve(seq_count) on attacker-controlled 2bit header field aborts the process (OOM/bad_alloc DoS) — fixed on `fix/twobit-bounds` (validate seq_count against file size + cap the reserve)
+  - Fix: Validate seq_count against the file size before reserving (each index entry needs at least 1+1+4 bytes), or cap the reserve (e.g.
+- [x] `main.cpp:5044` — SQLite columns with NUMERIC/DATE/DATETIME/BOOLEAN/unknown affinity are silently coerced to double, corrupting dates and losing 64-bit integer precision — fixed on `fix/sqlite-type-affinity` (NUMERIC affinity → string, lossless)
+  - Fix: Default the unknown/NUMERIC/DATE branch to STRING (or decide per-value via sqlite3_column_type at read time, mapping SQLITE_INTEGER->int64, SQLITE_FLOAT->double, SQLITE_TEXT->string), so dates and…
+- [x] `main.cpp:5398` — ensure() infinite-loops (hangs) when a streaming source's advance() returns an error without setting all_read_ — fixed on `fix/streaming-ensure-hang` (IpcSource/FastxSource/SqliteSource set sticky read_status_ + all_read_ on error; surfaced via [[main.cpp:3448]]'s read_status())
+  - Fix: Make ensure() break out on any error: have load_next_ipc()/advance() set all_read_=true (or a separate failed_ flag) before returning a non-OK status, and/or have ensure() capture the returned Status and break…
+- [x] `main.cpp:5684` — Workbook rows wider than the first row cause the whole sheet to fail (XLSX & ODS) — fixed on `fix/workbook-ragged-rows` (shared assemble_ragged_csv pads every buffered row to the widest; the header's overflow columns get synthetic colN names; both xlsx_sheet_to_table and the ODS parser refactored to buffer rows first; fixtures tiny.ragged.xlsx/.ods + 6 assertions)
+  - Fix: Compute the maximum column count across all buffered rows (XLSX: track max col; ODS: track max emitted) and pad every row to that width before invoking Arrow, instead of locking the width to the first row.
+- [x] `main.cpp:5928` — ODS table:number-rows-repeated on non-empty rows silently drops data — fixed on `fix/ods-rows-repeated` (ods_start parses number-rows-repeated; row close pushes the assembled non-empty row N times, capped at 16384; empty repeated rows still collapse via the trailing-empty trim; fixture tiny.rowrep.ods + 2 assertions)
+  - Fix: Parse table:number-rows-repeated in ods_start (with a sane cap), and at row close emit the assembled row line N times (skip when the row is entirely empty so trailing blank runs still collapse).
+- [x] `main.cpp:6472` — Dense AnnData/HDF5 2-D matrix is fully densified into RAM with no row or column cap (OOM) — fixed on `fix/anndata-dense-oom` (read_2d_dataset_table now reads only the first 1000 rows × 200 cols corner hyperslab; the true dimensions are reported in the footer as a "preview: first N of M" note; regression fixture tiny.dense.h5ad + GUI CI assertion)
+  - Fix: Pass a sane row_cap for Matrix2D/Dataset2D (mirroring the sparse 1000-row preview, or honoring cfg.head_rows), and cap n_cols for dense matrices the way scan_generic already caps Dataset2D at dims[1]<=32 and…
+- [x] `main.cpp:7295` — build_2d_table builds one Arrow column per declared cols — unbounded column count is an OOM/DoS — fixed on `fix/npz-column-cap` (build_2d_table caps rendered columns at kNpzMaxCols=4096 while keeping the full declared width as the C-order row stride; the 2-D and 3-D-slice call sites append a "showing first N of M columns" footer note via a new full_cols_out out-param; mirrors the dense-HDF5 [[main.cpp:6472]] col cap; fixture tiny.wide.npz (5000 cols) + footer/overflow assertions)
+  - Fix: Clamp the number of rendered columns to a sane maximum (e.g. a few thousand) and surface a 'array too wide to display, showing first N columns' footer, mirroring how other wide sources are handled.
+- [x] `main.cpp:7499` — Integer overflow in element/byte-count multiplications for NPY arrays — fixed on `fix/npz-shape-validation` (product is overflow-checked and bounded to the buffer)
+  - Fix: Use checked multiplication (e.g. __builtin_mul_overflow or compare against (SIZE_MAX/item_size)) when computing every element-count and byte-offset;
+- [x] `main.cpp:9852` — Inf values in a float column poison heatmap normalization (NaN -> lround UB, blank plot) — fixed on `feat/heatmap` (non-finite cells treated as gaps: excluded from min/max and from lround; all-non-finite matrix errors gracefully)
+  - Fix: Treat non-finite values like missing: in the scan use `if (!ok || !std::isfinite(d)) d = std::nan("");` (only update lo/hi for finite d), and in the pixel loop test `if (!std::isfinite(d))` instead of just…
+- [x] `main.cpp:13038` — TUI sort / filter / stats / search silently operate on only the loaded prefix of a streaming source — fixed on `fix/tui-streaming-prefix` (shared drain_to_eof() helper, mirroring the `G` handler, called at the head of rebuild_display_order / compute_stats_for / find_next; the `G` handler now reuses it). Verified with a 3-block CSV: at op time only 2 of 3 chunks were loaded; the drain pulls in the third so the op covers the whole file.
+  - Fix: Before these full-file passes, drain streaming sources to EOF (the same `while (src_->total_rows() < 0) src_->ensure(src_->num_chunks());` loop used by the `G` handler, with a 'Loading…' status), then re-read…
+- [x] `main.cpp:14579` — --heatmap emits raw terminal escape sequences with no isatty guard (corrupts pipes/files) — fixed on `feat/heatmap` (a new `ascii` mode is auto-selected when stdout is not a TTY and the backend is `auto`; emits a plain intensity grid)
+  - Fix: When stdout is not a TTY and image_mode is empty/auto, either error out ("--heatmap requires a terminal; pick --image-mode explicitly") or downgrade to a plain ASCII intensity grid.
+
+**Performance**
+- [x] `gui/arrowtablemodel.cpp:78` — chunkForRow() is O(num_chunks) per cell — quadratic-ish scan on every cell access/repaint — fixed on `gui/improvements` (cumulative first-row offset table + std::upper_bound, O(log chunks))
+  - Fix: Maintain a sorted vector of cumulative chunk first_row offsets and binary-search it (std::upper_bound) to map row->chunk in O(log chunks). Rebuild/extend it lazily as chunks are discovered.
+- [~] `gui/arrowtablemodel.cpp:196` — Sorting/filtering loads the entire file column(s) into RAM and drains streaming sources — responsiveness fixed on `gui/threaded-filter-sort` (compute moved to a worker thread with progress + cancel; UI no longer freezes); the full-column/whole-source drain itself remains (inherent to a global sort/filter — a separate memory optimization)
+  - Fix: For sort, read only the sort column once and keep it as a ChunkedArray without forcing total materialization where avoidable;
+- [x] `gui/arrowtablemodel.cpp:284` — findNext() is a full O(rows*cols) linear scan that decodes every cell on the GUI thread — fixed on `gui/threaded-find` (scan moved to a worker thread with progress + cancel; string columns vectorized with Arrow match_substring as a candidate prefilter, Qt regex remains the source of truth; navigation is now O(log matches) over a precomputed, sorted match list)
+  - Fix: Search column-by-column over already-loaded chunks using Arrow compute (e.g. match_substring/MatchSubstringRegex) to vectorize, or scan in a background thread with a cancellable progress indicator.
+- [x] `main.cpp:1463` — Preamble strippers read one byte at a time, allocating an Arrow Buffer per byte — fixed on `perf/preamble-strippers` (all four strippers now read through the buffered LineReader and hand the first data line + look-ahead back via put_back/PrependInputStream instead of Seeking; the seekable/non-seekable paths are unified, read_stream_line is gone). ~110× faster on a 4.7 MB VCF header (2.67s → 0.024s); format goldens unchanged.
+  - Fix: Use the existing buffered LineReader for the non-seekable case, or read in chunks into a local buffer. For the seekable case, capture Tell() at the start of each line and Seek() back to the first data line as…
+- [x] `main.cpp:11697` — Sorted TUI search re-decodes a whole Parquet row group on nearly every row — fixed on `perf/tui-sorted-search` (the sorted find scan now routes each row through the shared LRU chunk cache via ensure_cols / cache_ instead of a single last_chunk slot, so a sort that bounces between a handful of row groups decodes each at most once per eviction rather than once per row; factored a shared cached_row_matches helper reused by the highlight check, and throttled the now-cheap progress repaint to every 8192 rows)
+  - Fix: Reuse the TableTUI chunk cache (ensure_cols / cache_) inside the sorted find path instead of a single last_chunk slot, and/or add a small decoded-row-group LRU inside ParquetSource::read_chunk keyed by…
+- [x] `main.cpp:13336` — Every visible cell is formatted at least twice per redraw — fixed on `perf/tui-cell-cache` (the width-fitting pass now formats each visible integer cell through the same cell_at path the renderer uses, memoizes it in a per-frame frame_cells_ map keyed by frame_key(source_row, virt_col), and draw_data_row reuses it instead of re-formatting — so integer columns, the common Start/End genomic case, format once per redraw instead of twice; the memo is cleared each draw() and bounded by the visible cell count. Also fixed a latent bug where the fit pass treated display rows as source rows under an active sort (now uses source_row()), and the integer width now matches what's painted because it runs through format_cell too. Verified byte-identical TUI frames vs main across static/sort/scroll/col-scroll/goto-bottom/filter on parquet/vcf/bed/lociss.) Cross-frame caching was considered but deferred: it requires invalidating on max_col_w_/theme/sort/filter/column-hide/VCF-expansion changes, and the per-frame single-format already removes the redundant work in the scroll hot path.
+  - Fix: Memoize formatted cell strings per (chunk,row,virt_col) in the cache (invalidated on max_col_w_ / format changes), or compute integer column widths from the fitting pass and reuse those same strings when…
+- [x] `main.cpp:13865` — Pressing G (or scrolling deep) on a huge streaming file loads the entire file into RAM with no eviction — all seven forward-only streaming sources now keep a bounded trailing window of decoded batches (DelimitedSource on `perf/streaming-batch-eviction`; BamSource, BamPileupSource, BcfSource, BigSource, FastxSource, SqliteSource on `perf/streaming-eviction-rest` via the shared `stream_retain` helper). Default window 64 batches, env VV_STREAM_BATCH_CAP; per-batch first_row/num_rows metadata is retained forever so total_rows()/chunk_meta()/num_chunks() stay exact; read_chunk() of an evicted batch returns CapacityError → the TUI renders those rows blank. Sequential single-pass consumers — export/--tsv/--csv/--json/--md, --unique, table view, and the TUI forward-browse + G — stay correct AND become bounded. Full-pass consumers that drain-then-reread (find_next search, compute_col_stats, filter_rows, rebuild_display_order sort/filter) call set_retain_all(true) first, so they keep their current behaviour (correct; same RAM as before — no regression). Forced-eviction (VV_STREAM_BATCH_CAP=1) export/unique-completeness regression tests on TSV and FASTQ. The forward-only nature means search/sort/back-scroll over a fully-browsed huge stream is limited to retained data — the accepted tradeoff of the RAM-ring approach (no temp files / no re-open).
+  - Optional follow-up: IpcSource/OrcSource are random-access files (re-read on miss via ReadRecordBatch(i)/load_stripe(i)) yet still retain every decoded batch — they could bound with zero correctness cost (transparent re-read instead of blank) as a separate, strictly-better variant.
+  - Fix: Give streaming sources a bounded ring of retained batches (evict batches outside a window, mirroring the chunk cache) so deep scrolling and `G` don't grow without bound;
+- [x] `main.cpp` — `--describe` / `print_describe` reported stats over only the first ~10 rows (Config::head_rows defaults to 10, the table-preview size, and describe was called with the raw cfg — unlike --json/--md/--parquet which reset it to 0 when -n wasn't given) — fixed on `fix/describe-full-scan` (rows_left now defaults to INT64_MAX unless cfg.head_rows_set, so --describe summarises the whole table and `--describe -n N` still caps the scan; describe reads sequentially so it stays bounded on streaming sources). Regression tests describe_scans_all_rows (tiny.parquet → Count 20) and describe_honors_explicit_head_rows (-n 5 → Count 5).
+
+### Medium (39)
+
+**Bugs**
+- [ ] `gui/arrowtablemodel.cpp:117` — sourceTotal()/viewRows() truncate to 32-bit int via rowCount() clamp, but vertical-header and footer report from the clamp boundary
+- [x] `main.cpp:865` — display_width() counts codepoints, not terminal columns — wide/combining/zero-width chars misalign the table — fixed on `fix/display-width-wcwidth` (new utf8_decode() + wcwidth-style codepoint_width() with sorted East-Asian-Wide/Fullwidth/emoji (width 2) and combining/zero-width (width 0) range tables; display_width() now sums column widths. truncate() cuts on a column boundary via utf8_prefix_for_width() — never splitting a codepoint nor over/undershooting a wide char. ASCII + box-drawing are all width 1, so existing goldens are unchanged; verified a CJK/Hangul table renders aligned via an independent python east_asian_width check.)
+- [x] `main.cpp:912` — truncate() byte-based fallback splits a multibyte UTF-8 codepoint, emitting invalid UTF-8 — fixed on `fix/truncate-utf8` (new utf8_prefix_bytes() helper cuts the fallback on a codepoint boundary, keeping max_w-1 whole codepoints + ellipsis; consistent with display_width's codepoint count. The collection branch already cut at ASCII comma boundaries. Tests: iconv round-trip + ééééé… prefix). Note: [[main.cpp:865]] (display_width counts codepoints, not terminal columns — wide/combining chars) is still open; truncate now matches display_width's codepoint semantics, so they stay consistent.
+- [x] `main.cpp:2628` — Generic Parquet region pruning uses Arrow field index as a Parquet leaf index — fixed on `fix/parquet-region-leaf-index` (the col_stats_minmax_int/str lambdas now map the chrom/start/end Arrow field index to its Parquet leaf column index via arrow_to_leaf_indices() before reading RowGroup column statistics; a nested column — e.g. a 2-leaf struct — before Start/End previously shifted the indices apart, so pruning read the wrong column's min/max and could drop overlapping row groups). Fixture tiny.nested.parquet (struct before Start/End, struct stat = 100000) + test: pre-fix the matching row group is pruned → 0 rows; fixed → 1.
+- [~] `main.cpp:3070` — advance() error is swallowed at every call site, so I/O/parse errors never reach the user — partly addressed by [[main.cpp:3448]] (a `read_status()` accessor now surfaces it on the delimited + table output paths) and extended on `fix/truthful-exits` to `--json`/`--ndjson`/`--md`/`--parquet`/`--arrow`; `--describe`/`--unique` still don't check it (both are single forward passes, so the window is narrower there)
+- [x] `main.cpp:3306` — Header detection misclassifies real headers named like numbers (nan, inf, 1e5, hex) — fixed on `fix/header-numeric-detection` (the "all column names numeric → headerless" CSV/TSV heuristic used raw strtod, which also accepts nan / inf / infinity / 0x… hex floats, so a header literally named those was dropped and the names lost. Now requires a plain decimal/scientific token — digits, sign, dot, e/E only — then lets strtod confirm it parses; nan/inf/hex headers are kept. A header of bare decimals like "1,2,3" remains genuinely ambiguous and is still treated as headerless data, by design.) Tests: nan/inf header kept as names; headerless numeric still auto-named f0/f1.
+- [x] `main.cpp:3963` — Pileup treats mid-stream read errors as clean EOF — fixed on `fix/htslib-region-read-errors` (bam_plp_auto() returns nullptr on both EOF and a read error and BamPileupSource had no read_status_ at all, so a truncated/corrupt BAM silently emitted a partial pileup with exit 0. The pileup read callback now records the underlying sam_read1/sam_itr_multi_next return code; advance() checks it after the loop and, on < -1, sets a sticky read_status_ the CLI surfaces (non-zero exit). Verified locally with a before/after binary diff on a multi-block BAM whose last data block's magic is corrupted: pre-fix --pileup exits 0 (silent partial), post-fix exits 1. No committed regression test — htslib's classification of a corrupt BGZF block as error vs EOF varies across versions (CI's libhts treated the corruption as a benign EOF), so a portable corrupt-fixture test is unreliable.)
+- [x] `main.cpp:4185` — BCF region-mode silently swallows read errors (truncated/corrupt file -> partial output) — fixed on `fix/htslib-region-read-errors` (next_record()'s region branch treated any bcf_itr_next() return < 0 as iterator-EOF and advanced, swallowing genuine read errors (< -1); it now propagates < -1, and BcfSource gained a sticky read_status_ + read_status() override so the error reaches the CLI. Defense-in-depth: in practice htslib's record decode (bcf_unpack/vcf_format) already errors on most truncations, but an iterator-level seek/decompress error before any record decode was previously lost.)
+- [x] `main.cpp:4949` — 2bit N-block table skip computes n_block_count*8 in 32-bit arithmetic, overflowing and seeking to the wrong offset — fixed on `fix/twobit-bounds` (compute the skip in 64-bit)
+- [x] `main.cpp:6778` — AnnData DataFrame builds tables from columns of unequal length without validation — fixed on `fix/anndata-validation` (read_anndata_dataframe normalises every column to the longest length — pads short ones with trailing nulls via MakeArrayOfNull+Concatenate, slices over-long ones — and passes the explicit row count to Table::Make, so a malformed file can't produce an invalid table / OOB paging)
+- [x] `main.cpp:6818` — Sparse preview trusts the 'shape' attribute for n_rows without validating against indptr length — fixed on `fix/anndata-validation` (read_sparse_preview clamps n_rows to the real indptr extent (h5_len_1d), clamps the nnz read window to the actual indices/data extents, and bounds-checks the per-row scatter offsets so a non-monotonic / lying indptr can't read out of range; shape values are floored at 0). Shared hostile fixture tiny.badsparse.h5ad (shape claims 100 rows, indptr has 2; unequal obs columns) + no-crash/clamp/normalise tests.
+- [ ] `main.cpp:7410` — NPZ entry names assumed unique; duplicate .npy members silently shadowed and a wrong array can be displayed
+- [ ] `main.cpp:8090` — wrap_runs never hard-cuts over-long words — they overflow the wrap width (contradicting its own doc comment)
+- [ ] `main.cpp:8396` — role is a single value, not a stack — nested spans that both set a role lose the outer role on inner close
+- [ ] `main.cpp:8758` — Unbalanced inline HTML style tags leak style/role into the rest of the document
+- [x] `main.cpp:8803` — Link/image hrefs and raw source bytes are emitted to the terminal without escape-sanitisation (terminal injection) — fixed on `fix/md-terminal-injection` (new sanitize_terminal() drops C0 control bytes + DEL; applied to every non-verbatim run at the emit_line_ansi chokepoint (body text, alt text, " (url)" stubs, code) and inline to the URL embedded in both OSC 8 escape sites (markdown + inline-HTML <a>). The image-protocol payload run is now flagged verbatim so the sanitiser leaves its base64 escape intact. Tests plant ESC/CSI/OSC-title/BEL in body + a link URL and confirm none survive while link text still renders.) Note: generic table-cell values (any format) emitted via print_table are a separate, broader surface not covered here.
+- [x] `main.cpp:9831` — DECIMAL/TIMESTAMP/DATE/TIME/DURATION columns counted as numeric but rendered as missing — fixed on `fix/numeric-temporal-decimal` (new array_value_as_double() switches on type_id() and handles every is_numeric_type type — all signed/unsigned int widths, float/double, date32/64, time32/64, timestamp, duration, decimal128/256 with scale; temporal types yield their epoch/elapsed count so they sort chronologically and scale in heatmaps). cell_as_double() and the four duplicated inline cast-chains (compute_col_stats, print_describe, the TUI stats popup, and the TUI numeric sort) now all route through it, so heatmap/--describe/stats/sort agree. Fixture tiny.temporal.parquet + tests (decimal min/max 0.01/99.99 scaled, date extracts, heatmap accepts them). Known nicety: temporal min/max display as raw epoch counts, not formatted dates.
+- [ ] `main.cpp:11665` — Forward search is bounded by already-loaded chunks even for indexed Parquet vs streaming inconsistency
+- [x] `main.cpp:13536` — No SIGINT/SIGTERM handler: Ctrl-C in the TUI leaves the terminal broken (no endwin()) — fixed on `fix/tui-signal-restore` (run() installs SIGINT/SIGTERM/SIGHUP handlers for the lifetime of the TUI that endwin() then re-raise with the default disposition, so the terminal is restored and the exit status still reflects the signal (130 for SIGINT); previous handlers are restored on normal exit. Pty regression test tests/tui_sigint_check.py asserts the alt-screen-exit sequence is emitted and the process dies via SIGINT). Hardened on `fix/tui-signal-async-safe`: the original handler called endwin() (allocates) directly, which aborted (SIGABRT) when the signal landed mid-malloc during draw() — flaky on Ubuntu 22.04 CI. The signals are now blocked except around the blocking getch(), so endwin() only runs from a safe context (parked in read(), never mid-allocation).
+
+**Performance**
+- [ ] `gui/arrowtablemodel.cpp:132` — data() decodes each cell twice when search is active (DisplayRole + BackgroundRole)
+- [ ] `gui/kde/vvthumbnail.cpp:15` — Thumbnailer has no time/size budget — opening a huge or slow file blocks the preview worker
+- [ ] `main.cpp:1393` — TabixInputStream allocates and frees a kstring buffer for every record line
+- [ ] `main.cpp:2743` — Region-mode read_chunk re-decodes the same row group once per overlapping window
+- [x] `main.cpp:5180` — SqliteSource runs an unconditional SELECT COUNT(*) at open, forcing a full table scan even for `-n 10` previews/thumbnails — fixed on `perf/sqlite-lazy-count` (the COUNT(*) moved out of open() into total_rows(), run once on first ask and cached; footer() triggers it for the table/TUI views where the total is wanted, while an `-n` preview or thumbnail (read_first, never asks) skips the scan entirely. A small table fully streamed by open()'s first batch reports rows_so_far_ with no COUNT at all. Covered by the existing sqlite footer "Rows: N" tests, now exercising the lazy path.)
+- [x] `main.cpp:6578` — read_1d_dataset_table reads entire 1-D dataset into RAM (no cap) — fixed on `perf/hdf5-1d-preview-cap` (the generic-HDF5 Dataset1D tab read the whole 1-D dataset; now capped to kDense2DRowCap=1000 with a "preview: first 1000 of N rows" footer, mirroring the Dataset2D/DataFrame previews. read_1d_dataset_table already supported row_cap + full_rows — only the Dataset1D call site passed no cap. The other uncapped caller (categorical categories) is already gated by kCategoryDictCap. Fixture tiny.big1d.h5 = 1500-element 1-D dataset; small datasets still report full Rows.)
+- [ ] `main.cpp:9779` — Sixel emitter is O(palette x width x height): full 240-colour rescan per pixel column
+- [x] `main.cpp:10680` — Per-row dynamic_pointer_cast chain in numeric stats loops (RTTI cost on every value) — addressed on `fix/numeric-temporal-decimal`: the shared array_value_as_double() branches on type_id() with a single static_cast instead of a per-cell dynamic_pointer_cast chain, removing the RTTI cost from the stats / describe / sort / heatmap value loops that now call it.
+- [ ] `main.cpp:11075` — value_counts uses std::map (red-black tree) keyed by string for every cell
+- [ ] `main.cpp:11686` — Searching a sorted view re-decodes a full chunk per row in the worst case
+
+**Usability**
+- [x] `main.cpp:490` — --heatmap and --image-mode are undocumented in print_usage (undiscoverable flags) — fixed on `feat/heatmap` (new "Visualization" section in --help)
+- [x] `main.cpp:635` — Missing argument to a known flag reports "Unknown option" and dumps full usage — fixed on `fix/missing-arg-error` (an arg-taking flag in last position fails its `i + 1 < argc` guard and fell through to the generic else; that branch now checks the flag against the set of arg-taking options and prints "Option X requires an argument." (exit 2, no full-usage dump — matching the existing --coords/--delimiter targeted errors) instead of the misleading "Unknown option". A genuinely unknown flag still reports "Unknown option" + usage.) Tests: `vv --tab` → targeted error, not "Unknown option"; `vv --bogus-flag` → still "Unknown option".
+- [x] `main.cpp:712` — --heatmap and --image-mode are implemented but undocumented in every reference (help, man, README, all 3 completions) — fixed on `feat/heatmap` (help + man + README + bash/fish/zsh completions all updated)
+- [x] `main.cpp:3117` — CSV/TSV type inference silently corrupts leading-zero IDs and scientific notation — fixed on `fix/csv-leading-zero-ids` (a column with a leading-zero integer value like "007" is now read as utf8 so the zeros survive, instead of inference making it int and showing 7. A pre-scan of a sample — quote-aware via split_delimited_line — flags columns whose values match ^0[0-9]+$ (is_leading_zero_int); those names are forced to utf8 via ConvertOptions::column_types in both make_reader (DelimitedSource CSV/TSV, incl. the autogen-retry + tabix/region readers) and csv_buffer_to_table (xlsx/ods/markdown/html). The detection mirrors the reader's column naming so the forced names line up. Scientific notation is INTENTIONALLY left numeric — it's ambiguous and forcing it would corrupt real numeric scientific data (e.g. p-values 1.5e-8). Tests: id col → string, sample int col unchanged, 007 preserved in --tsv and markdown, 1e5 stays double.)
+- [x] `main.cpp:9874` — --image-mode value is never validated; typos silently fall back to Auto — fixed on `fix/audit-batch` (--image-mode is validated at parse time against auto|kitty|sixel|halfblock|ascii, exit 2 on a typo, instead of silently ignoring it when --heatmap isn't run)
+- [x] `main.cpp:12054` — A single column wider than the terminal renders a completely blank table — fixed on `fix/wide-column-blank-table` (visible_cols force-emits the first column clamped to the width when nothing else fits; pty regression test tui_wide_column_check.py at 20 cols)
+- [x] `main.cpp:14459` — No NO_COLOR environment-variable support — fixed on `fix/audit-batch` (NO_COLOR per no-color.org: any non-empty value resolves cfg.color Auto→Never in parse_args, so all output paths honour it; explicit --color=always/never still win)
+- [x] `man/vv.1:1` — Man page version/date stale: shows 1.4.0 / May 2026 while binary is 1.9.0 — bumped to 1.9.1 / June 2026 in the release-prep commit
+- [ ] `man/vv.1:119` — NumPy .npz format missing from man page and from all three shell completions
+- [ ] `tests/run_tests.sh:43` — Several formats have zero smoke-test coverage (.npz, .paf range, .cram, .sam, .gff/.gtf, .loom/generic h5 already partial)
+
+### Low (28)
+
+**Bugs**
+- [ ] `gui/kde/thumbrender.cpp:58` — Thumbnail elision uses non-bold QFontMetrics for bold header text
+- [ ] `main.cpp:1150` — emit_cell dims a genuine trailing U+2026 in cell data as if it were a truncation marker
+- [x] `main.cpp:1669` — Region integer parser silently accepts trailing garbage (e.g. 'chr1:-5-10') — fixed on `fix/audit-batch` (region int parser now rejects unconsumed trailing input via stoll's pos out-param, so 'chr1:5x' / 'chr1:-5-10' no longer silently parse; apply_region_modifiers validates -r up front and returns 'Invalid region …' instead of parse_region_list silently dropping the token into a whole-file query)
+- [ ] `main.cpp:3107` — block_size of 16 MiB causes a hard parse failure when a single delimited line exceeds it
+- [ ] `main.cpp:3937` — Pileup insertion rendering can read past the read's SEQ on inconsistent CIGAR
+- [x] `main.cpp:5159` — SQLite identifier quoting does not escape embedded double-quotes, breaking on (or mis-parsing) tables/columns containing a " character — fixed on `fix/sqlite-ident-quote` (new sqlite_quote_ident() doubles embedded quotes per SQL; used at all three table-name interpolations — PRAGMA table_info, SELECT *, lazy COUNT(*). A table named a"b previously built the malformed/injectable `"a"b"` and failed to open; now reads. Columns use SELECT * and filter/sort is in-memory, so no column-name injection exists. Fixture tiny.quoteid.sqlite.)
+- [x] `main.cpp:5371` — Empty Arrow IPC file seeds a zero-row batch that num_chunks() (=num_record_batches_=0) makes unreachable — fixed on `fix/audit-batch` (num_chunks() for a 0-batch Arrow IPC now returns batches_.size() (the seeded zero-row batch) instead of num_record_batches_=0, so the table view renders the column header + '0 rows' like an empty Parquet instead of drawing nothing. Fixture tiny.empty.arrow.)
+- [x] `main.cpp:7176` — NPY descr quote-stripping mishandles malformed/odd-length quoting — fixed on `fix/audit-batch` (NPY descr quote-stripping now requires the closing quote to match the opening one before stripping, so a malformed/unterminated value like "'<f8" no longer has its real last char chopped by the blind substr(1,size-2); valid quoted descrs are unchanged)
+- [ ] `main.cpp:7658` — decode_pileup: '*' deletion placeholder pollutes mean_qual
+- [ ] `main.cpp:9137` — HTML <a> with empty/missing href still emits a stray OSC 8 close on the matching close tag
+
+**Performance**
+- [ ] `gui/main.cpp:243` — Detail dock rebuilds all rows and allocates fresh QTableWidgetItems on every selection change
+- [ ] `main.cpp:898` — truncate() is O(n^2) on wide collection cells, re-run per visible cell per redraw
+- [x] `main.cpp:4338` — BcfSource builds and immediately destroys a throwaway region iterator per window — fixed on `fix/region-coord-offbyone`
+- [ ] `main.cpp:5277` — read_first() fast-path cap is dead for SqliteSource and FastxSource because open() eagerly reads a full 4096-row batch
+- [ ] `main.cpp:5441` — ORC read_chunk decodes every column of a stripe even when only a few columns are requested
+- [ ] `main.cpp:6016` — csv_append_quoted re-scans and re-emits a repeated ODS cell up to 16384 times
+- [x] `main.cpp:7356` — unz_file_info.uncompressed_size used directly for reserve() — attacker-controlled allocation hint — fixed on `fix/npz-alloc-hint` (the NPZ/zip loader passed the central-directory uncompressed_size straight to vector::reserve(), so a tiny crafted entry claiming GBs forced a huge allocation — uncaught bad_alloc on 32-bit / strict-overcommit / memory-limited builds. The reserve is only a pre-sizing hint; the read loop grows the vector anyway, so it's now clamped to min(uncompressed_size, 64 MiB). Fixture tiny.badsize.npz patches the central-dir uncompressed_size to ~2 GiB; vv reads the real 5-element array correctly and exits 0.)
+- [x] `main.cpp:9838` — render_heatmap can buffer up to ~128 MB of doubles with no reserve — fixed on `feat/heatmap` (source caps lowered to 2048×2048 ≈ 32 MiB ceiling; vals reserved; truncation noted on stderr)
+- [ ] `main.cpp:11789` — row_matches_search lowercases the query once per visible row, per redraw
+- [ ] `main.cpp:11965` — Per-redraw integer width refit re-stringifies every visible cell on every keypress
+
+**Usability**
+- [x] `main.cpp:718` — `--color always` (space-separated) misparsed as a filename → "file not found" — fixed on `fix/audit-batch` (--color now accepts the space-separated form `--color always|never|auto`, not just `--color=…`; a bare --color or a non-mode next token stays auto)
+- [ ] `main.cpp:1657` — No chrom-name normalization between query and file ('chr1' vs '1') silently returns zero rows
+- [ ] `main.cpp:1698` — `-r chrom:N` (single coordinate) means a 1-bp window, diverging from the samtools convention users expect
+- [~] `main.cpp:9496` — .fods (Flat ODS) is dispatched in code but documented/completed nowhere — now in the README formats table (`docs/readme-npz-gui`); man page + shell completions still pending
+- [ ] `main.cpp:9803` — Auto mode never uses inline-image protocols on iTerm2/WezTerm (falls to half-block)
+- [ ] `main.cpp:12334` — Status bar row range overshoots loaded data on streaming sources
+- [ ] `main.cpp:14683` — Auto-TUI failure falls through silently with no diagnostic unless -i was given
+- [x] `man/vv.1:375` — No documented exit-status / EXIT STATUS section — fixed on `fix/audit-batch` (added an EXIT STATUS section — 0 success / 1 runtime+usage error / 2 invalid option argument, verified empirically — plus an ENVIRONMENT section documenting NO_COLOR and VV_CATEGORY_DICT_CAP)

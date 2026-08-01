@@ -1,0 +1,54 @@
+{% set name = "vv" %}
+{% set version = "1.4.0" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  url: https://github.com/balwierz/{{ name }}/archive/refs/tags/v{{ version }}.tar.gz
+  # Replace with the sha256 of the release tarball:
+  sha256: 0000000000000000000000000000000000000000000000000000000000000000
+
+build:
+  number: 0
+  skip: True  # [win]
+
+requirements:
+  build:
+    - {{ compiler('cxx') }}
+    - cmake >=3.16
+    - make
+    - pkg-config
+  host:
+    - libarrow >=14
+    - libparquet >=14
+    - htslib >=1.17
+    - ncurses
+  run:
+    - libarrow >=14
+    - libparquet >=14
+    - htslib >=1.17
+    - ncurses
+
+test:
+  commands:
+    - vv --version
+    - vv --help
+
+about:
+  home: https://github.com/balwierz/vv
+  summary: "Universal genomic file viewer (Parquet, BAM, VCF, BED, GFF, FASTA, FASTQ, ...)"
+  description: |
+    vv is a fast command-line viewer for tabular and bioinformatics file
+    formats. It prints the first N rows as an ASCII table, supports
+    tabix-indexed range queries, and provides an interactive ncurses
+    row browser. Reads Parquet, Arrow IPC, Feather, BAM, CRAM, SAM, VCF,
+    BED, GFF, GTF, FASTA, FASTQ, TSV, and CSV (plus .gz variants).
+  license: MIT
+  license_file: LICENSE
+  doc_url: https://github.com/balwierz/vv
+
+extra:
+  recipe-maintainers:
+    - balwierz

@@ -12930,13 +12930,6 @@ static int g_pager_pid = -1;
 static void emit_via_pager(const std::function<void()>& emit_fn) {
     int pfd[2];
     if (pipe(pfd) != 0) { emit_fn(); return; }
-    // Set this BEFORE forking. setenv() takes a libc lock and is not
-    // async-signal-safe, so calling it in the child of a fork() from a
-    // multithreaded process (Arrow's CPU pool is live by now) can deadlock on
-    // a lock another thread held at fork time. Doing it in the parent is
-    // harmless: the value only matters to the exec'd `less`, and setenv(...,0)
-    // still leaves a user-provided LESSANSIENDCHARS alone.
-    setenv("LESSANSIENDCHARS", "mK", 0);
     pid_t pid = fork();
     if (pid < 0) {
         close(pfd[0]); close(pfd[1]);
@@ -12950,6 +12943,9 @@ static void emit_via_pager(const std::function<void()>& emit_fn) {
         close(pfd[1]);
         if (dup2(pfd[0], STDIN_FILENO) < 0) _exit(126);
         close(pfd[0]);
+        // Set LESS for sensible defaults; user's env LESS takes
+        // precedence via setenv(... 0) — only set if not present.
+        setenv("LESSANSIENDCHARS", "mK", 0);
         execlp("less", "less", "-R", "-F", "-X", "--tabs=4", (char*)nullptr);
         // exec failed (less not installed) — cat stdin → stdout.
         char buf[8192]; ssize_t n;
