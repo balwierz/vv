@@ -11,6 +11,16 @@ GOLDEN=$HERE/golden
 
 source "$HERE/lib.sh"
 
+# `timeout(1)` is GNU coreutils and is absent on macOS, where Homebrew installs
+# it as `gtimeout`. Resolve once; the few cases that use it degrade to running
+# unbounded rather than being skipped, so a hang still shows up as a stuck CI
+# job rather than a silent pass.
+TIMEOUT=$(command -v timeout || command -v gtimeout || true)
+run_with_timeout() {  # $1 = seconds, rest = command
+    local secs="$1"; shift
+    if [ -n "$TIMEOUT" ]; then "$TIMEOUT" "$secs" "$@"; else "$@"; fi
+}
+
 if [ ! -x "$VV" ]; then
     echo "vv binary not found at $VV — set VV=/path/to/vv" >&2
     exit 1
@@ -104,7 +114,7 @@ rm -f "$WINTSV"
 BADFQ="$TMP/bigbad.fq"
 awk 'BEGIN{for(i=1;i<=4200;i++)printf "@r%d\nACGT\n+\nIIII\n",i;
           printf "@bad\nACGTACGT\n+\nII\n"}' > "$BADFQ"
-timeout 30 "$VV" --tsv --no-header "$BADFQ" >/dev/null 2>/dev/null
+run_with_timeout 30 "$VV" --tsv --no-header "$BADFQ" >/dev/null 2>/dev/null
 FQ_RC=$?
 if [ "$FQ_RC" -eq 124 ]; then
     FAIL=$((FAIL+1)); echo "  FAIL  fastx_midstream_error_no_hang (timed out / hung)"
@@ -225,9 +235,9 @@ fi
 
 # Generic Parquet range queries: auto-detected chrom/start/end columns,
 # plus the --region-cols override path.
-PQ_REG=$("$VV" --tsv --no-header -r chr1:1000-2500 "$DATA/tiny.parquet" | wc -l)
+PQ_REG=$("$VV" --tsv --no-header -r chr1:1000-2500 "$DATA/tiny.parquet" | wc -l | tr -d ' ')
 assert_eq_file_inline "parquet_region_autodetect_two_rows" "$PQ_REG" "2"
-PQ_REG_OV=$("$VV" --tsv --no-header -r chr1:1000-2500 --region-cols Chr,Start,End "$DATA/tiny.parquet" | wc -l)
+PQ_REG_OV=$("$VV" --tsv --no-header -r chr1:1000-2500 --region-cols Chr,Start,End "$DATA/tiny.parquet" | wc -l | tr -d ' ')
 assert_eq_file_inline "parquet_region_cols_override_two_rows" "$PQ_REG_OV" "2"
 PQ_REG_BAD=$("$VV" -r chr1:0-100 --region-cols NoSuch,Start,End "$DATA/tiny.parquet" 2>&1 || true)
 assert_contains "parquet_region_cols_unknown_errors" "$PQ_REG_BAD" "not found"
@@ -235,7 +245,7 @@ assert_contains "parquet_region_cols_unknown_errors" "$PQ_REG_BAD" "not found"
 # Int32/Int64. tiny.uint32.parquet stores Start/End as UInt32; chr1:1000-2500
 # overlaps two rows. Pre-fix the predicate read 0 for UInt32 and returned none.
 if [ -f "$DATA/tiny.uint32.parquet" ]; then
-    PQ_U32=$("$VV" --tsv --no-header -r chr1:1000-2500 "$DATA/tiny.uint32.parquet" | wc -l)
+    PQ_U32=$("$VV" --tsv --no-header -r chr1:1000-2500 "$DATA/tiny.uint32.parquet" | wc -l | tr -d ' ')
     assert_eq_file_inline "parquet_region_uint32_coords_two_rows" "$PQ_U32" "2"
 fi
 # Region stats-pruning must index Parquet column statistics by *leaf* column,
@@ -244,7 +254,7 @@ fi
 # "Start" (set to 100000) and pruned the only — matching — row group, so the
 # query returned 0 rows. chr1:150-160 overlaps the row (Start 100, End 200).
 if [ -f "$DATA/tiny.nested.parquet" ]; then
-    PQ_NEST=$("$VV" --tsv --no-header -r chr1:150-160 "$DATA/tiny.nested.parquet" | wc -l)
+    PQ_NEST=$("$VV" --tsv --no-header -r chr1:150-160 "$DATA/tiny.nested.parquet" | wc -l | tr -d ' ')
     assert_eq_file_inline "parquet_region_leaf_index_nested_schema" "$PQ_NEST" "1"
 fi
 # Region row count must be exact (post-filter), not the pre-filter slice size:
@@ -252,14 +262,14 @@ fi
 # Parquet is the worst case — a slice spans a whole row group — where pre-fix
 # this reported the row-group size with phantom trailing rows.
 for f in tiny.parquet tiny.lociss; do
-    REG_TSV=$("$VV" --tsv --no-header -r chr1:0-3000 "$DATA/$f" 2>/dev/null | wc -l)
+    REG_TSV=$("$VV" --tsv --no-header -r chr1:0-3000 "$DATA/$f" 2>/dev/null | wc -l | tr -d ' ')
     REG_TBL=$("$VV" -r chr1:0-3000 --no-interactive --color=never "$DATA/$f" 2>/dev/null \
         | grep -oE '\[[0-9]+ rows' | grep -oE '[0-9]+')
     assert_eq_file_inline "region_count_exact_${f#tiny.}" "$REG_TBL" "$REG_TSV"
 done
 
 # --slop on tabix BED.
-SLOP_OUT=$("$VV" --tsv --no-header -r chr1:1500-1500 --slop 4000 "$DATA/tiny.bed.gz" | wc -l)
+SLOP_OUT=$("$VV" --tsv --no-header -r chr1:1500-1500 --slop 4000 "$DATA/tiny.bed.gz" | wc -l | tr -d ' ')
 if [ "$SLOP_OUT" -gt 0 ]; then
     PASS=$((PASS+1)); echo "  ok    slop_tabix_bed"
 else
@@ -267,7 +277,7 @@ else
 fi
 # --regions-file (TSV-formatted BED).
 printf 'chr1\t100\t900\nchr2\t1400\t1900\n' > "$TMP/multi.bed"
-RF_OUT=$("$VV" --tsv --no-header --regions-file "$TMP/multi.bed" "$DATA/tiny.lociss" | wc -l)
+RF_OUT=$("$VV" --tsv --no-header --regions-file "$TMP/multi.bed" "$DATA/tiny.lociss" | wc -l | tr -d ' ')
 assert_eq_file_inline "regions_file_collected_three_rows" "$RF_OUT" "3"
 
 # UCSC<->Ensembl chromosome-name aliasing for -r (human/mouse only; chrM<->MT).
@@ -277,12 +287,12 @@ assert_eq_file_inline "alias_lociss_v4_1_eq_chr1" \
     "$("$VV" --count -r 1:0-160 "$DATA/tiny.v4.lociss" 2>/dev/null)" \
     "$("$VV" --count -r chr1:0-160 "$DATA/tiny.v4.lociss" 2>/dev/null)"
 assert_eq_file_inline "alias_vcf_gz_1_eq_chr1" \
-    "$("$VV" --tsv --no-header -r 1 "$DATA/tiny.vcf.gz" 2>/dev/null | wc -l)" \
-    "$("$VV" --tsv --no-header -r chr1 "$DATA/tiny.vcf.gz" 2>/dev/null | wc -l)"
+    "$("$VV" --tsv --no-header -r 1 "$DATA/tiny.vcf.gz" 2>/dev/null | wc -l | tr -d ' ')" \
+    "$("$VV" --tsv --no-header -r chr1 "$DATA/tiny.vcf.gz" 2>/dev/null | wc -l | tr -d ' ')"
 if [ -f "$DATA/tiny.bcf" ]; then
     assert_eq_file_inline "alias_bcf_1_eq_chr1" \
-        "$("$VV" --tsv --no-header -r 1 "$DATA/tiny.bcf" 2>/dev/null | wc -l)" \
-        "$("$VV" --tsv --no-header -r chr1 "$DATA/tiny.bcf" 2>/dev/null | wc -l)"
+        "$("$VV" --tsv --no-header -r 1 "$DATA/tiny.bcf" 2>/dev/null | wc -l | tr -d ' ')" \
+        "$("$VV" --tsv --no-header -r chr1 "$DATA/tiny.bcf" 2>/dev/null | wc -l | tr -d ' ')"
 fi
 # A non-human/mouse contig name is NEVER remapped (chr99 → no alias → empty).
 assert_eq_file_inline "alias_no_remap_nonstandard" \
@@ -291,13 +301,13 @@ assert_eq_file_inline "alias_no_remap_nonstandard" \
 # (1, MT), so a UCSC `chr1` / `chrM` query must alias to `1` / `MT` (never `M`).
 if [ -f "$DATA/tiny.ens.bed.gz" ]; then
     assert_eq_file_inline "alias_ens_chr1_finds_1" \
-        "$("$VV" --tsv --no-header -r chr1 "$DATA/tiny.ens.bed.gz" 2>/dev/null | wc -l)" "2"
+        "$("$VV" --tsv --no-header -r chr1 "$DATA/tiny.ens.bed.gz" 2>/dev/null | wc -l | tr -d ' ')" "2"
     assert_eq_file_inline "alias_ens_chrM_finds_MT" \
         "$("$VV" --tsv --no-header -r chrM "$DATA/tiny.ens.bed.gz" 2>/dev/null | grep -c '^MT')" "1"
 fi
 # BCF range queries (skip if bcftools wasn't available during fixture build).
 if [ -f "$DATA/tiny.bcf.csi" ]; then
-    BCF_REGION=$("$VV" --tsv --no-header -r chr1:200-1600 "$DATA/tiny.bcf" | wc -l)
+    BCF_REGION=$("$VV" --tsv --no-header -r chr1:200-1600 "$DATA/tiny.bcf" | wc -l | tr -d ' ')
     assert_eq_file_inline "bcf_region_returns_two_rows" "$BCF_REGION" "2"
 fi
 
@@ -323,7 +333,7 @@ assert_eq_file_inline "region_tabix_bed_interior_matches_peak" "$BED_INTERIOR" "
 # [500, 1600) must EXCLUDE it and return only POS 1500 (one row). The old
 # off-by-one (htslib read "500-1600" as 1-based inclusive) returned two.
 if [ -f "$DATA/tiny.bcf.csi" ]; then
-    BCF_BOUNDARY=$("$VV" --tsv --no-header -r chr1:500-1600 "$DATA/tiny.bcf" | wc -l)
+    BCF_BOUNDARY=$("$VV" --tsv --no-header -r chr1:500-1600 "$DATA/tiny.bcf" | wc -l | tr -d ' ')
     assert_eq_file_inline "bcf_region_boundary_excludes_start_variant" "$BCF_BOUNDARY" "1"
 fi
 
@@ -353,20 +363,20 @@ fi
 
 # bigBed / bigWig — autoSql expansion + range queries.
 if [ -f "$DATA/tiny.bb" ]; then
-    BB_TSV=$("$VV" --tsv --no-header "$DATA/tiny.bb" | wc -l)
+    BB_TSV=$("$VV" --tsv --no-header "$DATA/tiny.bb" | wc -l | tr -d ' ')
     assert_eq_file_inline "bigbed_tsv_returns_five_rows" "$BB_TSV" "5"
     BB_SCHEMA=$("$VV" --schema "$DATA/tiny.bb")
     assert_contains "bigbed_autosql_expanded_signalValue" "$BB_SCHEMA" "signalValue"
     assert_contains "bigbed_autosql_expanded_pValue"      "$BB_SCHEMA" "pValue"
-    BB_REGION=$("$VV" --tsv --no-header -r chr1:300-1100 "$DATA/tiny.bb" | wc -l)
+    BB_REGION=$("$VV" --tsv --no-header -r chr1:300-1100 "$DATA/tiny.bb" | wc -l | tr -d ' ')
     assert_eq_file_inline "bigbed_region_returns_two_rows" "$BB_REGION" "2"
-    BB_FILTER=$("$VV" --tsv --no-header --filter 'signalValue > 10' "$DATA/tiny.bb" | wc -l)
+    BB_FILTER=$("$VV" --tsv --no-header --filter 'signalValue > 10' "$DATA/tiny.bb" | wc -l | tr -d ' ')
     assert_eq_file_inline "bigbed_filter_by_signalValue" "$BB_FILTER" "2"
 fi
 if [ -f "$DATA/tiny.bw" ]; then
-    BW_TSV=$("$VV" --tsv --no-header "$DATA/tiny.bw" | wc -l)
+    BW_TSV=$("$VV" --tsv --no-header "$DATA/tiny.bw" | wc -l | tr -d ' ')
     assert_eq_file_inline "bigwig_tsv_returns_five_rows" "$BW_TSV" "5"
-    BW_REGION=$("$VV" --tsv --no-header -r chr1:300-1100 "$DATA/tiny.bw" | wc -l)
+    BW_REGION=$("$VV" --tsv --no-header -r chr1:300-1100 "$DATA/tiny.bw" | wc -l | tr -d ' ')
     assert_eq_file_inline "bigwig_region_returns_two_rows" "$BW_REGION" "2"
 fi
 
@@ -423,7 +433,7 @@ sys.exit(0 if len(widths) == 1 else 1)
 fi
 # 2bit — UCSC sequence-index reader.
 if [ -f "$DATA/tiny.2bit" ]; then
-    TBT_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.2bit" | wc -l)
+    TBT_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.2bit" | wc -l | tr -d ' ')
     assert_eq_file_inline "twobit_returns_three_sequences" "$TBT_ROWS" "3"
     TBT_LEN=$("$VV" --tsv --no-header --select length "$DATA/tiny.2bit" | paste -sd, -)
     assert_eq_file_inline "twobit_lengths_match"             "$TBT_LEN" "20,27,12"
@@ -639,7 +649,7 @@ SELECT_OUT=$("$VV" --tsv --no-header --select Chromosome,Score "$DATA/tiny.locis
              | head -1)
 assert_eq_file_inline "select_two_cols" "$SELECT_OUT" "chr1	0.5"
 FILTER_OUT=$("$VV" --tsv --no-header --filter 'Score > 0.4' "$DATA/tiny.lociss" \
-             | wc -l)
+             | wc -l | tr -d ' ')
 assert_eq_file_inline "filter_keeps_3_rows" "$FILTER_OUT" "3"
 JSON_OUT=$("$VV" --ndjson --select Chromosome,Start "$DATA/tiny.lociss" \
            | head -1)
@@ -1253,9 +1263,9 @@ BAD_UNIQ=$("$VV" --unique BogusCol "$DATA/tiny.lociss" 2>&1 || true)
 assert_contains "unique_unknown_column_errors" "$BAD_UNIQ" "unknown"
 
 # --sample: pulls a subset and preserves the hidden-column convention.
-SAMPLE_OUT=$("$VV" --tsv --no-header --sample 2 "$DATA/tiny.lociss" | wc -l)
+SAMPLE_OUT=$("$VV" --tsv --no-header --sample 2 "$DATA/tiny.lociss" | wc -l | tr -d ' ')
 assert_eq_file_inline "sample_returns_two_rows" "$SAMPLE_OUT" "2"
-SAMPLE_BIG=$("$VV" --tsv --no-header --sample 100 "$DATA/tiny.lociss" | wc -l)
+SAMPLE_BIG=$("$VV" --tsv --no-header --sample 100 "$DATA/tiny.lociss" | wc -l | tr -d ' ')
 assert_eq_file_inline "sample_more_than_total_returns_all" "$SAMPLE_BIG" "5"
 
 
@@ -1266,11 +1276,11 @@ assert_contains "md_has_separator_row"    "$MD_OUT" "| --- |"
 assert_contains "md_has_data_row_chr1"    "$MD_OUT" "| chr1 |"
 
 # --tail: last-N rows. tiny.parquet has 20 rows.
-TAIL_OUT=$("$VV" --tail 3 --tsv --no-header "$DATA/tiny.parquet" | wc -l)
+TAIL_OUT=$("$VV" --tail 3 --tsv --no-header "$DATA/tiny.parquet" | wc -l | tr -d ' ')
 assert_eq_file_inline "tail_returns_three_rows" "$TAIL_OUT" "3"
 TAIL_LAST=$("$VV" --tail 1 --tsv --no-header "$DATA/tiny.parquet")
 assert_contains "tail_picks_last_row" "$TAIL_LAST" "7100"  # last row Start
-TAIL_BIG=$("$VV" --tail 100 --tsv --no-header "$DATA/tiny.parquet" | wc -l)
+TAIL_BIG=$("$VV" --tail 100 --tsv --no-header "$DATA/tiny.parquet" | wc -l | tr -d ' ')
 assert_eq_file_inline "tail_larger_than_total_returns_all" "$TAIL_BIG" "20"
 
 # --coords: NCBI (1-based inclusive) input converts to UCSC (0-based
@@ -1377,7 +1387,7 @@ assert_contains "multifile_bad_second_path_errors" "$MULTI_BAD" "not found"
 
 # ENCODE peak / signal family — extension dispatch + typed-column naming.
 if [ -f "$DATA/tiny.narrowPeak" ]; then
-    NP_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.narrowPeak" | wc -l)
+    NP_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.narrowPeak" | wc -l | tr -d ' ')
     assert_eq_file_inline "narrowPeak_returns_three_rows" "$NP_ROWS" "3"
     NP_SCH=$("$VV" --schema "$DATA/tiny.narrowPeak" 2>&1)
     assert_contains "narrowPeak_has_signalValue"    "$NP_SCH" "signalValue"
@@ -1404,7 +1414,7 @@ fi
 
 # SQLite: each table becomes a tab; --tsv on the file dumps the first table.
 if [ -f "$DATA/tiny.sqlite" ]; then
-    SQL_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.sqlite" | wc -l)
+    SQL_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.sqlite" | wc -l | tr -d ' ')
     assert_eq_file_inline "sqlite_first_table_rows" "$SQL_ROWS" "3"
     SQL_SCH=$("$VV" --schema "$DATA/tiny.sqlite" 2>&1)
     assert_contains "sqlite_footer_format"          "$SQL_SCH" "Format: SQLite"
@@ -1416,7 +1426,7 @@ if [ -f "$DATA/tiny.sqlite" ]; then
     assert_contains "sqlite_type_int"               "$SQL_SCH" "int64"
     assert_contains "sqlite_type_real"              "$SQL_SCH" "double"
     # --filter works on declared-typed columns (SQLite REAL → Arrow double).
-    SQL_FLT=$("$VV" --tsv --no-header --filter 'score > 5.0' "$DATA/tiny.sqlite" | wc -l)
+    SQL_FLT=$("$VV" --tsv --no-header --filter 'score > 5.0' "$DATA/tiny.sqlite" | wc -l | tr -d ' ')
     assert_eq_file_inline "sqlite_filter_by_real"   "$SQL_FLT" "2"
 fi
 
@@ -1448,7 +1458,7 @@ fi
 # and skip these tests if vv was built without it.
 if [ -f "$DATA/tiny.orc" ] && \
    ! "$VV" --schema "$DATA/tiny.orc" 2>&1 | grep -q "without Apache ORC"; then
-    ORC_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.orc" | wc -l)
+    ORC_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.orc" | wc -l | tr -d ' ')
     assert_eq_file_inline "orc_rows"                "$ORC_ROWS" "3"
     ORC_SCH=$("$VV" --schema "$DATA/tiny.orc" 2>&1)
     assert_contains "orc_footer_format"             "$ORC_SCH" "Format: ORC"
@@ -1457,7 +1467,7 @@ if [ -f "$DATA/tiny.orc" ] && \
     assert_contains "orc_type_int"                  "$ORC_SCH" "int64"
     assert_contains "orc_type_real"                 "$ORC_SCH" "double"
     # --filter on the typed double column works as expected.
-    ORC_FLT=$("$VV" --tsv --no-header --filter 'score > 5.0' "$DATA/tiny.orc" | wc -l)
+    ORC_FLT=$("$VV" --tsv --no-header --filter 'score > 5.0' "$DATA/tiny.orc" | wc -l | tr -d ' ')
     assert_eq_file_inline "orc_filter_by_real"      "$ORC_FLT" "2"
 fi
 
@@ -1465,7 +1475,7 @@ fi
 # sibling count, type inference catches the int / double / string mix from
 # the cell contents.
 if [ -f "$DATA/tiny.xlsx" ]; then
-    XL_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.xlsx" | wc -l)
+    XL_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.xlsx" | wc -l | tr -d ' ')
     assert_eq_file_inline "xlsx_first_sheet_rows"   "$XL_ROWS" "3"
     XL_SCH=$("$VV" --schema "$DATA/tiny.xlsx" 2>&1)
     assert_contains "xlsx_footer_format"            "$XL_SCH" "Format: Excel"
@@ -1476,14 +1486,14 @@ if [ -f "$DATA/tiny.xlsx" ]; then
     assert_contains "xlsx_type_int"                 "$XL_SCH" "int64"
     assert_contains "xlsx_type_real"                "$XL_SCH" "double"
     # --filter against the inferred double column.
-    XL_FLT=$("$VV" --tsv --no-header --filter 'score > 5.0' "$DATA/tiny.xlsx" | wc -l)
+    XL_FLT=$("$VV" --tsv --no-header --filter 'score > 5.0' "$DATA/tiny.xlsx" | wc -l | tr -d ' ')
     assert_eq_file_inline "xlsx_filter_by_real"     "$XL_FLT" "2"
 fi
 
 # OpenDocument Spreadsheet (.ods): two sheets; first ("peaks") dumps via
 # --tsv, schema shows sibling count, types inferred from cell contents.
 if [ -f "$DATA/tiny.ods" ]; then
-    OD_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.ods" | wc -l)
+    OD_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.ods" | wc -l | tr -d ' ')
     assert_eq_file_inline "ods_first_sheet_rows"    "$OD_ROWS" "3"
     OD_SCH=$("$VV" --schema "$DATA/tiny.ods" 2>&1)
     assert_contains "ods_footer_format"             "$OD_SCH" "Format: ODS"
@@ -1492,7 +1502,7 @@ if [ -f "$DATA/tiny.ods" ]; then
     assert_contains "ods_type_text"                 "$OD_SCH" "string"
     assert_contains "ods_type_int"                  "$OD_SCH" "int64"
     assert_contains "ods_type_real"                 "$OD_SCH" "double"
-    OD_FLT=$("$VV" --tsv --no-header --filter 'score > 5.0' "$DATA/tiny.ods" | wc -l)
+    OD_FLT=$("$VV" --tsv --no-header --filter 'score > 5.0' "$DATA/tiny.ods" | wc -l | tr -d ' ')
     assert_eq_file_inline "ods_filter_by_real"      "$OD_FLT" "2"
 fi
 
@@ -1500,7 +1510,7 @@ fi
 # parse in full (a wider row used to make Arrow reject the whole sheet) with the
 # overflow column named "col4" and the extra value preserved.
 if [ -f "$DATA/tiny.ragged.xlsx" ]; then
-    RG_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.ragged.xlsx" | wc -l)
+    RG_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.ragged.xlsx" | wc -l | tr -d ' ')
     assert_eq_file_inline "xlsx_ragged_rows"        "$RG_ROWS" "3"
     RG_OUT=$("$VV" --schema "$DATA/tiny.ragged.xlsx" 2>&1)
     assert_contains "xlsx_ragged_overflow_col"      "$RG_OUT" "col4"
@@ -1508,7 +1518,7 @@ if [ -f "$DATA/tiny.ragged.xlsx" ]; then
     assert_contains "xlsx_ragged_wide_value"        "$RG_TSV" "EXTRA"
 fi
 if [ -f "$DATA/tiny.ragged.ods" ]; then
-    RGO_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.ragged.ods" | wc -l)
+    RGO_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.ragged.ods" | wc -l | tr -d ' ')
     assert_eq_file_inline "ods_ragged_rows"         "$RGO_ROWS" "3"
     RGO_OUT=$("$VV" --schema "$DATA/tiny.ragged.ods" 2>&1)
     assert_contains "ods_ragged_overflow_col"       "$RGO_OUT" "col4"
@@ -1520,7 +1530,7 @@ fi
 # must expand to 3 rows, so the sheet has 5 data rows (a + dup×3 + z) instead of
 # the 3 it dropped to before the fix.
 if [ -f "$DATA/tiny.rowrep.ods" ]; then
-    RR_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.rowrep.ods" | wc -l)
+    RR_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.rowrep.ods" | wc -l | tr -d ' ')
     assert_eq_file_inline "ods_rowrep_expands"      "$RR_ROWS" "5"
     RR_DUP=$("$VV" --tsv --no-header "$DATA/tiny.rowrep.ods" | grep -c '^dup')
     assert_eq_file_inline "ods_rowrep_dup_count"    "$RR_DUP" "3"
@@ -1639,10 +1649,10 @@ if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
     BIG_OBS=$("$VV" --tab obs --no-interactive --color=never "$DATA/tiny.bigobs.h5ad" 2>&1)
     assert_contains "h5ad_obs_preview_note" "$BIG_OBS" "first 1000 of 1500 rows"
     # Delimited export: all 1500 rows (the preview cap no longer truncates the dump).
-    BIG_ROWS=$("$VV" --tab obs --tsv --no-header "$DATA/tiny.bigobs.h5ad" | wc -l)
+    BIG_ROWS=$("$VV" --tab obs --tsv --no-header "$DATA/tiny.bigobs.h5ad" | wc -l | tr -d ' ')
     assert_eq_file_inline "h5ad_obs_export_full_rows" "$(echo $BIG_ROWS)" "1500"
     # -n still limits the export.
-    BIG_N=$("$VV" --tab obs --tsv --no-header -n 100 "$DATA/tiny.bigobs.h5ad" | wc -l)
+    BIG_N=$("$VV" --tab obs --tsv --no-header -n 100 "$DATA/tiny.bigobs.h5ad" | wc -l | tr -d ' ')
     assert_eq_file_inline "h5ad_obs_export_head_limit" "$(echo $BIG_N)" "100"
     # Categorical obs columns decode to their string labels, not integer codes.
     # The dictionary cap (VV_CATEGORY_DICT_CAP, default 1,000,000 — raised from
@@ -1712,7 +1722,7 @@ fi
 if [ -f "$DATA/tiny.big1d.h5" ]; then
     BIG1D=$("$VV" --no-interactive --color=never --tab /big "$DATA/tiny.big1d.h5" 2>&1)
     assert_contains "hdf5_1d_preview_cap_note" "$BIG1D" "first 1000 of 1500 rows"
-    BIG1D_ROWS=$("$VV" --tsv --no-header --tab /big "$DATA/tiny.big1d.h5" 2>/dev/null | wc -l)
+    BIG1D_ROWS=$("$VV" --tsv --no-header --tab /big "$DATA/tiny.big1d.h5" 2>/dev/null | wc -l | tr -d ' ')
     assert_eq_file_inline "hdf5_1d_preview_cap_rows" "$(echo $BIG1D_ROWS)" "1000"
 fi
 
@@ -1820,7 +1830,7 @@ fi
 # samtools mpileup: 6-col single-sample + 9-col two-sample fixtures; tabix
 # range query on the bgzipped variant.
 if [ -f "$DATA/tiny.mpileup" ]; then
-    MP_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.mpileup" | wc -l)
+    MP_ROWS=$("$VV" --tsv --no-header "$DATA/tiny.mpileup" | wc -l | tr -d ' ')
     assert_eq_file_inline "mpileup_rows"           "$MP_ROWS" "4"
     MP_SCH=$("$VV" --schema "$DATA/tiny.mpileup" 2>&1)
     assert_contains "mpileup_footer_format"        "$MP_SCH" "Format: mpileup"
@@ -1828,7 +1838,7 @@ if [ -f "$DATA/tiny.mpileup" ]; then
     assert_contains "mpileup_col_chrom"            "$MP_SCH" "chrom"
     assert_contains "mpileup_col_depth"            "$MP_SCH" "depth"
     # --filter on the typed depth column.
-    MP_FLT=$("$VV" --tsv --no-header --filter 'depth >= 12' "$DATA/tiny.mpileup" | wc -l)
+    MP_FLT=$("$VV" --tsv --no-header --filter 'depth >= 12' "$DATA/tiny.mpileup" | wc -l | tr -d ' ')
     assert_eq_file_inline "mpileup_filter_by_depth" "$MP_FLT" "3"
 fi
 if [ -f "$DATA/tiny.multi.mpileup" ]; then
@@ -1840,7 +1850,7 @@ fi
 if [ -f "$DATA/tiny.mpileup.gz" ] && [ -f "$DATA/tiny.mpileup.gz.tbi" ]; then
     # -r is UCSC 0-based half-open for every format, so 1-based pileup pos 100
     # is selected by the window [99, 100). (samtools would say chr1:100-100.)
-    MP_REG=$("$VV" --tsv --no-header -r chr1:99-100 "$DATA/tiny.mpileup.gz" | wc -l)
+    MP_REG=$("$VV" --tsv --no-header -r chr1:99-100 "$DATA/tiny.mpileup.gz" | wc -l | tr -d ' ')
     assert_eq_file_inline "mpileup_tabix_one_pos"  "$MP_REG" "1"
 fi
 
@@ -1859,7 +1869,7 @@ if [ -f "$DATA/tiny.mpileup" ]; then
     assert_eq_file_inline "decode_row_chr1_100"     "$DEC" "10	2	1	1	7	5"
     # --filter on the inferred int columns from the decoded schema.
     DEC_C=$("$VV" --tsv --no-header --decode-pileup --filter 'C >= 2' \
-        --select 'chrom,pos' "$DATA/tiny.mpileup" | wc -l)
+        --select 'chrom,pos' "$DATA/tiny.mpileup" | wc -l | tr -d ' ')
     assert_eq_file_inline "decode_filter_C_2plus"   "$DEC_C" "2"
 fi
 # Multi-sample: --decode-pileup produces per-sample suffixed columns.
@@ -1875,7 +1885,7 @@ fi
 # three reads spanning chr1:100-119 (20 positions); pos 105 carries a
 # uniform G mismatch on all reads.
 if [ -f "$DATA/tiny.bam" ]; then
-    PL_ROWS=$("$VV" --tsv --no-header --pileup "$DATA/tiny.bam" | wc -l)
+    PL_ROWS=$("$VV" --tsv --no-header --pileup "$DATA/tiny.bam" | wc -l | tr -d ' ')
     assert_eq_file_inline "bam_pileup_rows"        "$PL_ROWS" "20"
     PL_SCH=$("$VV" --schema --pileup "$DATA/tiny.bam" 2>&1)
     assert_contains "bam_pileup_footer_format"     "$PL_SCH" "mpileup (from BAM)"
@@ -1883,7 +1893,7 @@ if [ -f "$DATA/tiny.bam" ]; then
     # Range query: only emit positions within the requested span. vv's -r is
     # UCSC 0-based half-open for every format, so 1-based pileup pos 105 is the
     # window [104, 105) (samtools' own -r is 1-based: chr1:105-105).
-    PL_REG=$("$VV" --tsv --no-header --pileup -r chr1:104-105 "$DATA/tiny.bam" | wc -l)
+    PL_REG=$("$VV" --tsv --no-header --pileup -r chr1:104-105 "$DATA/tiny.bam" | wc -l | tr -d ' ')
     assert_eq_file_inline "bam_pileup_region_one"  "$PL_REG" "1"
     # Compare a single row byte-for-byte against samtools mpileup if samtools is
     # in PATH (skip otherwise — CI doesn't always ship it). The pileup *content*
@@ -2134,7 +2144,7 @@ echo "── Heatmap (--heatmap) ───────────────�
 "$VV" --heatmap --image-mode ascii "$DATA/tiny.parquet" 2>/dev/null > "$TMP/heatmap_ascii.out"
 assert_eq_file "heatmap_ascii" "$TMP/heatmap_ascii.out" "$GOLDEN/heatmap_ascii.expected"
 # Not a TTY (piped) + auto mode must fall back to ASCII — no escape sequences.
-HM_PIPED=$("$VV" --heatmap "$DATA/tiny.parquet" 2>/dev/null | tr -dc '\033' | wc -c)
+HM_PIPED=$("$VV" --heatmap "$DATA/tiny.parquet" 2>/dev/null | tr -dc '\033' | wc -c | tr -d ' ')
 assert_eq_file_inline "heatmap_no_escapes_when_piped" "$HM_PIPED" "0"
 # Unknown backend is rejected.
 if "$VV" --heatmap --image-mode bogus "$DATA/tiny.parquet" >/dev/null 2>&1; then
@@ -2194,7 +2204,7 @@ fi
 # viewport (verified by running this harness against a pre-cursor build, where
 # it fails with "moving the cursor scrolled the viewport: Col 4-5/5").
 if command -v python3 >/dev/null 2>&1; then
-    if timeout 120 python3 "$HERE/tui_cursor_check.py" "$VV" \
+    if run_with_timeout 120 python3 "$HERE/tui_cursor_check.py" "$VV" \
             "$DATA/tiny.parquet" "$DATA/tiny.bed"; then
         PASS=$((PASS+1)); echo "  ok    tui_cell_cursor"
     else
@@ -2347,7 +2357,7 @@ assert_exit_code "text_latin1_accepted" 0 "$VV" "$TMP/l1.txt"
 # a terminal in a broken state.
 head -c 4096 /dev/urandom > "$TMP/rand.bin"
 assert_exit_code "text_binary_refused" 1 "$VV" "$TMP/rand.bin"
-BIN_OUT=$("$VV" "$TMP/rand.bin" 2>/dev/null | wc -c)
+BIN_OUT=$("$VV" "$TMP/rand.bin" 2>/dev/null | wc -c | tr -d ' ')
 assert_eq_file_inline "text_binary_stdout_empty" "$BIN_OUT" "0"
 BIN_ERR=$("$VV" "$TMP/rand.bin" 2>&1 >/dev/null || true)
 assert_contains "text_binary_says_why" "$BIN_ERR" "binary file, not shown"
@@ -2361,7 +2371,7 @@ assert_exit_code "text_nul_byte_refused" 1 "$VV" "$TMP/nul.bin"
 # reader, which echoed the raw bytes back inside a parse error.
 cat "$TMP/rand.bin" | "$VV" - >/dev/null 2>&1
 assert_eq_file_inline "text_binary_stdin_refused" "$?" "1"
-STDIN_BIN=$(cat "$TMP/rand.bin" | "$VV" - 2>/dev/null | wc -c)
+STDIN_BIN=$(cat "$TMP/rand.bin" | "$VV" - 2>/dev/null | wc -c | tr -d ' ')
 assert_eq_file_inline "text_binary_stdin_stdout_empty" "$STDIN_BIN" "0"
 # ...and piped text still reaches the CSV reader, unchanged.
 STDIN_TSV=$(printf 'a\tb\n1\t2\n' | "$VV" - -n 5 2>/dev/null)
@@ -2437,7 +2447,7 @@ fi
 # `vv empty.dat` from 1 to 0 — pinned deliberately.
 : > "$TMP/empty.txt"
 assert_exit_code "text_empty_file_ok" 0 "$VV" "$TMP/empty.txt"
-EMPTY_OUT=$("$VV" "$TMP/empty.txt" 2>/dev/null | wc -c)
+EMPTY_OUT=$("$VV" "$TMP/empty.txt" 2>/dev/null | wc -c | tr -d ' ')
 assert_eq_file_inline "text_empty_file_no_output" "$EMPTY_OUT" "0"
 
 # ── Row-selection flags work naturally over one column of lines ─────────────
@@ -2476,7 +2486,7 @@ assert_exit_code "text_rejects_expand"  1 "$VV" --expand line "$TXT"
 assert_exit_code "text_rejects_parquet" 1 "$VV" --parquet "$TMP/t.parquet" "$TXT"
 assert_exit_code "text_rejects_arrow"   1 "$VV" --arrow   "$TMP/t.arrow"   "$TXT"
 # Rejection prints NOTHING on stdout — not the file first, then the error.
-TXT_REJ=$("$VV" --schema "$TXT" 2>/dev/null | wc -c)
+TXT_REJ=$("$VV" --schema "$TXT" 2>/dev/null | wc -c | tr -d ' ')
 assert_eq_file_inline "text_reject_stdout_empty" "$TXT_REJ" "0"
 TXT_REJ_ERR=$("$VV" --tsv "$TXT" 2>&1 >/dev/null || true)
 assert_contains "text_reject_says_why" "$TXT_REJ_ERR" "does not apply to a text file"
@@ -2496,7 +2506,7 @@ assert_contains "text_region_warning_shown" "$TXT_REG" "no region index"
 # running this harness against a build with the text branch removed from
 # draw_data_row: it reports 8 distinct failures.
 if command -v python3 >/dev/null 2>&1; then
-    if timeout 180 python3 "$HERE/text_tui_check.py" "$VV" "$TMP"; then
+    if run_with_timeout 180 python3 "$HERE/text_tui_check.py" "$VV" "$TMP"; then
         PASS=$((PASS+1)); echo "  ok    text_tui_document_view"
     else
         FAIL=$((FAIL+1)); echo "  FAIL  text_tui_document_view"
