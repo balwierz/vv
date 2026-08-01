@@ -108,6 +108,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   is rejected; the one `vh` implies from `argv[0]` is not.
 
 ### Fixed
+- **`--arrow` wrote unreadable files for most NumPy dtypes and every VCF `Flag`
+  key.** `arrow_type_for_id()` mapped only `INT64`/`DOUBLE`/`BINARY` and fell
+  through to `utf8()` for everything else, so the declared schema said `string`
+  while the chunk carried the real array. Arrow does not check that on the write
+  path: `--parquet` failed loudly, but `--arrow` exited **0** and produced an IPC
+  file that neither vv nor pyarrow could read back (`buffer_index out of range`).
+  This hit 7 of the 9 NumPy dtypes (`int8`/`int16`/`int32`/`uint8`/`uint16`/
+  `uint32`/`uint64`/`float32`/`bool` — only `int64` and `float64` worked) and,
+  through `--expand`, every VCF `Flag` INFO key: `DB`, `SOMATIC`, `IMPRECISE`,
+  `VALIDATED` are `Flag` in essentially every real callset. The TUI and
+  `--schema` also reported those columns as `string`.
+- **`--text` was a silent no-op on markdown files.** `vv --text notes.md` — the
+  literal example in the man page, `docs/USAGE.md` and the README — rendered the
+  document instead of showing its source, because `main()` intercepts markdown
+  before `open_source()` ever sees the flag.
+- **`--text` was a silent no-op on stdin.** `cat server.log | vv --text -` still
+  went to the CSV reader, which promotes line 1 to a column header and drops it
+  from the data. It now matches `vv server.log` byte for byte, gzip included.
+- **`--expand` did not refuse a non-`key=value` column on VCF.** The shape gate
+  lived only in the key-discovery branch, and a VCF takes the declared-keys
+  branch — so `--expand REF` or `--expand FILTER` appended every declared INFO
+  key as an all-null column at exit 0, contrary to the man page's promise that
+  such a column is refused. The `##INFO` declarations now apply only to the
+  column they describe.
+- **`--md` escaped the document flag gate.** On a text file it produced exactly
+  the one-column `line` table the plain-text feature exists to remove; on a
+  markdown file it was ignored, so `vv README.md --md > tables.md` wrote the
+  rendered prose instead of the embedded tables. It is now rejected for text and
+  emits the tables for markdown, like `--tsv`.
 - **`vv a.md b.md` no longer shows only the first file.** On a terminal the
   multi-positional guard let markdown through to its early return, which reads
   `cfg.path` alone — so the second file was dropped silently, exit 0.
