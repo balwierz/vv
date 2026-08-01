@@ -2618,4 +2618,41 @@ MD_TBL=$("$VV" --md "$DATA/tiny.md" 2>/dev/null)
 assert_contains  "markdown_md_emits_table"      "$MD_TBL" "| --- |"
 refute_contains  "markdown_md_omits_prose"      "$MD_TBL" "Hand-crafted fixture"
 
+# ── Every file that hard-codes the version must agree with the binary ────────
+# There is no single source of truth for vv's version — seven files carry it
+# independently. CITATION.cff sat at 1.5.0 for 11 releases and docs/USAGE.md
+# was stamped v1.5.0 while being edited every release, because nothing checked.
+# `vv --version` is the reference: it is what the .deb build script reads and
+# what the Parquet writer stamps into created_by.
+VER=$("$VV" --version 2>/dev/null | awk '{print $2}')
+assert_contains "version_binary_is_semver" "$VER" "."
+check_version() {  # $1 = label, $2 = file, $3 = grep -E pattern that must match
+    if grep -Eq "$3" "$2" 2>/dev/null; then
+        PASS=$((PASS+1)); echo "  ok    version_$1"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  version_$1 (no '$VER' in $2)"
+        grep -nE "1\.[0-9]+\.[0-9]+" "$2" 2>/dev/null | head -3 | sed 's/^/       /'
+    fi
+}
+check_version "cmakelists"  CMakeLists.txt            "^[[:space:]]*VERSION[[:space:]]+$VER"
+check_version "man_page"    man/vv.1                  "^\.TH VV 1 .* \"vv $VER\""
+check_version "citation"    CITATION.cff              "^version: \"$VER\""
+check_version "usage_stamp" docs/USAGE.md             "^date: \"v$VER\""
+check_version "pkgbuild"    packaging/arch/PKGBUILD   "^pkgver=$VER"
+check_version "changelog"   CHANGELOG.md              "^## \[$VER\]"
+# The install commands users copy-paste: an un-bumped one silently installs the
+# previous release, or 404s if the old assets were removed.
+check_version "readme_install"  README.md   "v$VER"
+check_version "install_md"      INSTALL.md  "v$VER"
+# ...and no install command may still name the PREVIOUS version.
+for f in README.md INSTALL.md; do
+    stale=$(grep -oE "releases/download/v[0-9]+\.[0-9]+\.[0-9]+" "$f" 2>/dev/null \
+            | grep -v "v$VER" | head -1)
+    if [ -z "$stale" ]; then
+        PASS=$((PASS+1)); echo "  ok    version_no_stale_download_url_$(basename "$f" .md)"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  version_no_stale_download_url_$(basename "$f" .md) ($stale)"
+    fi
+done
+
 summarize
