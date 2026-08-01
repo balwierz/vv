@@ -69,6 +69,10 @@ _vv() {
         '--markdown[Alias of --md]' \
         '--validate[Check LociSSD invariants and exit]' \
         '--text[Read the file as plain text whatever its extension]' \
+        '--expand+[Unpack a packed key=value column into real columns]:column:' \
+        '--formats[Print the supported-format table and exit]' \
+        '--list-columns[Print column names, one per line, and exit]' \
+        '--list-tabs[Print component tab names and exit]' \
         '--decode-pileup[mpileup: explode bases into per-allele counts]' \
         '--pileup[BAM/CRAM: emit mpileup-style per-base rows]' \
         '(-f --fasta)'{-f,--fasta}'[reference FASTA: --pileup ref column + ./, notation, or CRAM decoding]:fasta:_files' \

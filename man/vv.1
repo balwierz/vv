@@ -77,7 +77,7 @@ group / dataset with path / kind / shape / dtype, plus one tab per
 .IP \(bu 2
 \fB.ods\fR \(en OpenDocument Spreadsheet. Each sheet becomes a TUI
 tab. Hand-rolled parser: minizip inflates \fBcontent.xml\fR from the
-.ods ZIP, expat SAX-parses the SpreadsheetML payload. Cells with a
+\&.ods ZIP, expat SAX-parses the SpreadsheetML payload. Cells with a
 typed \fBoffice:value\fR (numeric / date / boolean) use that
 canonical value; string cells use the rendered text. Empty runs
 collapsed via \fBtable:number-columns-repeated\fR are honoured.
@@ -143,8 +143,8 @@ sequence index (\fBname\fR, \fBlength\fR, \fBn_blocks\fR,
 \fBmask_blocks\fR). DNA bases themselves are not decoded — too large
 for chromosome-scale references; use \fBtwoBitToFa\fR for that.
 .IP \(bu 2
-\fB.fa\fR, \fB.fasta\fR, \fB.fna\fR, \fB.faa\fR (and \fB.gz\fR) \(en
-sequences (FASTA)
+\fB.fa\fR, \fB.fasta\fR, \fB.fna\fR, \fB.faa\fR, \fB.ffn\fR,
+\fB.frn\fR (and \fB.gz\fR) \(en sequences (FASTA)
 .IP \(bu 2
 \fB.fq\fR, \fB.fastq\fR (and \fB.gz\fR) \(en sequencing reads (FASTQ)
 .IP \(bu 2
@@ -153,6 +153,11 @@ sequences (FASTA)
 \fB.bcf\fR \(en binary VCF (htslib)
 .IP \(bu 2
 \fB.paf\fR, \fB.paf.gz\fR \(en minimap2 pairwise alignments
+.IP \(bu 2
+\fB.npy\fR \(en a single NumPy array; \fB.npz\fR \(en a NumPy archive,
+one array per TUI tab. 1-D and 2-D arrays become rows and columns; 3-D+
+arrays are sliced along the leading axis, navigable with \fB[\fR / \fB]\fR
+in the viewer.
 .IP \(bu 2
 \fB-\fR \(en read text format from stdin (auto-detects gzip)
 .PP

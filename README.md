@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Latest release](https://img.shields.io/github/v/release/balwierz/vv)](https://github.com/balwierz/vv/releases)
 
-**One binary that opens 25 file formats and shows you the data.**
+**One binary that opens every genomic and tabular format you have, and shows you the data.**
 
 Parquet, Arrow, AnnData/HDF5, BAM/CRAM, VCF/BCF, GFF/GTF, BED, bigWig,
 bigBed, 2bit, FASTA/FASTQ, SQLite, Excel, NumPy, ORC — gzip and bgzip on the
@@ -199,7 +199,8 @@ as supported-but-unverified.
 
 ## Supported formats
 
-25 families, dispatched by extension or magic bytes. `vv --formats` prints the
+27 families, dispatched by extension or magic bytes (and plain text as the
+fallback for anything else that is textual). `vv --formats` prints the
 authoritative table with capability columns (gz variants, region queries,
 component tabs, streaming vs random access) — the shell completions are checked
 against it in CI, so this list cannot drift from the code.
@@ -220,8 +221,8 @@ against it in CI, so this list cannot drift from the code.
 | UCSC big files    | `.bb` / `.bigBed`, `.bw` / `.bigWig` (vendored libBigWig; bigBed's embedded autoSql is parsed into typed columns) |
 | UCSC 2bit         | `.2bit` (sequence index: name / length / N-blocks / mask-blocks) |
 | SQLite            | `.sqlite`, `.sqlite3`, `.db` (each table → one TUI tab; types follow SQLite affinity) |
-| Excel             | `.xlsx`, `.xlsm` (each sheet → one TUI tab; column types inferred from cell text via Arrow's CSV reader) |
-| OpenDocument      | `.ods`, `.fods` (flat XML ODS) (each sheet → one TUI tab; hand-rolled minizip + expat SAX parser; types inferred from cell content via Arrow's CSV reader) |
+| Excel             | `.xlsx`, `.xlsm` (each sheet → one TUI tab; column types inferred from cell text via Arrow's CSV reader). Flat XML `.fods` is not supported — convert it with `libreoffice --headless --convert-to ods`. |
+| OpenDocument      | `.ods` (each sheet → one TUI tab; hand-rolled minizip + expat SAX parser; types inferred from cell content via Arrow's CSV reader) |
 | AnnData / HDF5    | `.h5ad`, `.h5`, `.hdf5`, `.loom` (single-cell + generic). AnnData files surface as a summary tab plus obs / var / X-preview / obsm / varm / layers tabs; sparse X gets a first-N-row dense preview. Generic HDF5 opens with a hierarchy table and one tab per 1D / 2D dataset. |
 | NumPy arrays      | `.npz` (archive → a summary tab plus one tab per array), `.npy` (a single array, opened through the same reader). 1-D renders as a column, 2-D as a table, 3-D+ as 2-D slices stepped with `[` / `]`. Fixed numeric dtypes (int / uint / float / bool); object / structured arrays are listed but not displayed. |
 | samtools mpileup  | `.pileup`, `.mpileup`, `.pile` (plus `.gz`); per-base pileup with auto-named columns; multi-sample files get per-sample `depth_i` / `bases_i` / `quals_i` triplets; range queries on bgzipped + tabix-indexed files |
@@ -712,5 +713,6 @@ For security issues, see [SECURITY.md](SECURITY.md).
 
 It links against Apache Arrow (Apache 2.0), htslib (MIT), ncurses (MIT),
 mimalloc (MIT), and several compression libraries (zlib, zstd, lz4, etc.).
-The static binary distribution bundles all of these; their licenses are
-included in the source distribution under each `docker-sources/` archive.
+The static binary distribution bundles all of these. Their license texts are
+not redistributed with vv — `docker-sources/` is a build-time scratch
+directory, not part of any distribution — so consult each project upstream.

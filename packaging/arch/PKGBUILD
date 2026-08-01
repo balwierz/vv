@@ -14,10 +14,16 @@ license=('MIT')
 # expat + minizip + xlsxio are linked directly (.ods/.xlsx + NPZ/zip); xlsxio is
 # from the AUR. zlib is also linked directly (pulled transitively by arrow /
 # htslib / sqlite, but kept explicit for the build).
-makedepends=('cmake' 'gcc' 'arrow' 'htslib' 'ncurses' 'hdf5' 'sqlite'
+# `git` is required: CMake fetches mimalloc v2.1.9 from GitHub at configure
+# time (FetchContent, no vendored copy). `htslib` and `xlsxio` are AUR-only,
+# so `makepkg -s` cannot install them — see INSTALL.md.
+makedepends=('cmake' 'gcc' 'git' 'arrow' 'htslib' 'ncurses' 'hdf5' 'sqlite'
              'expat' 'minizip' 'xlsxio' 'zlib'
              'qt6-base' 'extra-cmake-modules' 'kio' 'kcoreaddons' 'kfilemetadata')
 source=("$pkgbase-$pkgver.tar.gz::https://github.com/balwierz/$pkgbase/archive/refs/tags/v$pkgver.tar.gz")
+# Regenerate after every pkgver bump — `updpkgsums` (from pacman-contrib)
+# rewrites this line in place. Do NOT use SKIP: this is a network-fetched
+# release tarball, and the checksum is the only thing pinning it.
 sha256sums=('e4cd73c0b890a7856a1aa251a188ddd1d3c2c5fd9a8b810b6749c91ffd5f81f5')
 
 build() {

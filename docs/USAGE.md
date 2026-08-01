@@ -824,7 +824,7 @@ on `--threads`).
 # LociSSD specifics
 
 LociSSD is a Parquet variant for sorted genomic intervals (see
-[`FORMAT_SPEC.md`](https://github.com/balwierz/LociSSD/blob/main/FORMAT_SPEC.md)).
+its format specification is not yet public).
 `vv` detects it via the `lociSSD_manifest` key in the Parquet footer:
 
 * Footer reads "Format: LociSSD".
@@ -979,8 +979,10 @@ vv --tsv --sample 1000 huge.parquet | head    # head of a random sample
 
 # Building and installing
 
-See `INSTALL.md` for the complete matrix (Bioconda, Homebrew, AUR,
-static binary, source build). Quick start:
+See `INSTALL.md` for the complete matrix (`.deb`, static binary, Arch
+PKGBUILD, source build). vv is **not** published on Bioconda, Homebrew or
+the AUR — those recipes exist in `packaging/` but have not been submitted.
+Quick start:
 
 ```sh
 # Build from source
@@ -988,9 +990,10 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 sudo cmake --install build
 
-# Or install the portable static binary
-curl -L https://github.com/balwierz/vv/releases/latest/download/vv-linux-x86_64.tar.gz | tar -xz
-sudo install vv-*-linux-x86_64/vv /usr/local/bin/
+# Or install the portable static binary (release assets carry the version)
+ver=1.16.0
+curl -L https://github.com/balwierz/vv/releases/download/v$ver/vv-$ver-linux-x86_64.tar.gz | tar -xz
+sudo install vv-$ver-linux-x86_64/vv /usr/local/bin/
 ```
 
 # Where to look next
@@ -999,7 +1002,6 @@ sudo install vv-*-linux-x86_64/vv /usr/local/bin/
 * [`man vv`](../man/vv.1) — flag reference.
 * [`CHANGELOG.md`](../CHANGELOG.md) — release notes.
 * [`TODO.md`](../TODO.md) — the planned-feature backlog.
-* [LociSSD spec](https://github.com/balwierz/LociSSD/blob/main/FORMAT_SPEC.md).
 
 # Reporting bugs
 
