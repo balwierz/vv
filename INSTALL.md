@@ -12,14 +12,14 @@ Every tagged release publishes, for **x86_64** and **aarch64**:
 | `vv_<ver>-1_<deb-arch>.deb` | Debian package (same static binary) |
 | `SHA256SUMS` | checksums for everything above |
 
-Replace `1.16.0` below with the
+Replace `1.17.0` below with the
 [latest release](https://github.com/balwierz/vv/releases/latest) if newer.
 
 ### Debian / Ubuntu
 
 ```sh
-curl -LO https://github.com/balwierz/vv/releases/download/v1.16.0/vv_1.16.0-1_amd64.deb
-sudo apt install ./vv_1.16.0-1_amd64.deb        # use arm64 on ARM
+curl -LO https://github.com/balwierz/vv/releases/download/v1.17.0/vv_1.17.0-1_amd64.deb
+sudo apt install ./vv_1.17.0-1_amd64.deb        # use arm64 on ARM
 ```
 
 The package installs `/usr/bin/vv`, the man page and the shell completions.
@@ -27,15 +27,15 @@ The package installs `/usr/bin/vv`, the man page and the shell completions.
 ### Static binary (any modern Linux)
 
 ```sh
-base=https://github.com/balwierz/vv/releases/download/v1.16.0
+base=https://github.com/balwierz/vv/releases/download/v1.17.0
 arch=x86_64    # aarch64 on ARM (AWS Graviton, Raspberry Pi 5, …)
 
-curl -LO $base/vv-1.16.0-linux-$arch.tar.gz
+curl -LO $base/vv-1.17.0-linux-$arch.tar.gz
 curl -LO $base/SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS
 
-tar -xzf vv-1.16.0-linux-$arch.tar.gz
-sudo install vv-1.16.0-linux-$arch/vv /usr/local/bin/
+tar -xzf vv-1.17.0-linux-$arch.tar.gz
+sudo install vv-1.17.0-linux-$arch/vv /usr/local/bin/
 ```
 
 Requires glibc ≥ 2.28 (RHEL/Rocky/AlmaLinux 8+, Debian 10+, Ubuntu 18.04+).
