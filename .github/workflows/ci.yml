@@ -296,9 +296,15 @@ jobs:
           /tmp/vvpy/bin/pip install pyarrow openpyxl odfpy anndata h5py scipy
       - name: Install fixture tools
         # bgzip/tabix come with brew's htslib (already installed above);
-        # bcftools is separate. The UCSC bigBed/bigWig tools are absent on
-        # macOS and generate.py already shutil.which-gates them.
-        run: brew install bcftools coreutils
+        # bcftools is separate. samtools and tmux unlock ~10 further tests
+        # (the BAM/CRAM region and pileup cross-checks, and one TUI check) —
+        # without them those blocks skip themselves and macOS silently covers
+        # less than Linux. coreutils provides gtimeout.
+        # Still skipped on macOS: the UCSC bigBed/bigWig tools (absent; the
+        # fixtures are shutil.which-gated in generate.py) and the ORC tests
+        # (Homebrew's apache-arrow is built without the ORC adapter, which vv
+        # reports honestly and the tests gate on).
+        run: brew install bcftools coreutils samtools tmux
       - name: Generate test fixtures
         run: /tmp/vvpy/bin/python tests/data/generate.py
         if: hashFiles('tests/data/generate.py') != ''

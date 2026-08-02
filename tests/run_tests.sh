@@ -2652,6 +2652,7 @@ check_version "pkgbuild"    packaging/arch/PKGBUILD   "^pkgver=$VER"
 check_version "changelog"   CHANGELOG.md              "^## \[$VER\]"
 # The install commands users copy-paste: an un-bumped one silently installs the
 # previous release, or 404s if the old assets were removed.
+check_version "homebrew_url"    packaging/homebrew/vv.rb "tags/v$VER\\.tar\\.gz"
 check_version "readme_install"  README.md   "v$VER"
 check_version "install_md"      INSTALL.md  "v$VER"
 # ...and no install command may still name the PREVIOUS version.

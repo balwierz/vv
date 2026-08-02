@@ -100,9 +100,84 @@ jobs:
             vv_*_*.deb
             SHA256SUMS-${{ matrix.arch }}
 
+  macos-arm64:
+    name: Build macOS binary (arm64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: brew install cmake apache-arrow htslib ncurses xlsxio expat minizip hdf5
+
+      - name: Configure
+        # Homebrew's ncurses is keg-only, and Arrow/xlsxio/... each live under
+        # their own prefix, so every one has to be named explicitly. Missing
+        # the ncurses entry silently resolves to Apple's 5.7 and fails the
+        # ncurses>=6 check in CMakeLists.txt.
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix apache-arrow);$(brew --prefix htslib);$(brew --prefix ncurses);$(brew --prefix xlsxio);$(brew --prefix expat);$(brew --prefix minizip);$(brew --prefix hdf5)"
+
+      - name: Build
+        run: cmake --build build -j$(sysctl -n hw.ncpu)
+
+      - name: Sanity check
+        run: |
+          ./build/vv --version
+          ./build/vv --help
+
+      - name: Package
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          stem="vv-${version}-macos-arm64"
+          mkdir -p "$stem"
+          cp build/vv "$stem/"
+          # `--strip-all` is GNU strip; macOS strip wants -S -x.
+          strip -S -x "$stem/vv"
+          cp LICENSE CHANGELOG.md "$stem/"
+          cp man/vv.1 "$stem/" 2>/dev/null || true
+          cp INSTALL.md docs/USAGE.md "$stem/" 2>/dev/null || true
+          {
+            echo "# vv ${version} (macOS arm64)"
+            echo
+            echo "Universal genomic file viewer."
+            echo
+            echo '```sh'
+            echo "sudo install ${stem}/vv /usr/local/bin/"
+            echo "vv --help"
+            echo '```'
+            echo
+            echo "NOT a static binary: it links the Homebrew libraries it was"
+            echo "built against. Install them with:"
+            echo
+            echo '```sh'
+            echo "brew install apache-arrow htslib ncurses xlsxio expat minizip hdf5"
+            echo '```'
+            echo
+            echo "Apple Silicon only. On an Intel Mac, build from source —"
+            echo "see \`INSTALL.md\`."
+            echo
+            echo "Also in this archive: \`vv.1\` (man page), \`INSTALL.md\`,"
+            echo "\`USAGE.md\` (full manual), \`CHANGELOG.md\`, \`LICENSE\`."
+            echo
+            echo "Homepage and issue tracker: https://github.com/balwierz/vv"
+          } > "$stem/README.md"
+          tar -czf "$stem.tar.gz" "$stem"
+          shasum -a 256 "$stem.tar.gz" > "SHA256SUMS-macos-arm64"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-arm64
+          path: |
+            vv-*-macos-arm64.tar.gz
+            SHA256SUMS-macos-arm64
+
   release:
     name: Publish GitHub Release
-    needs: static-linux
+    needs: [static-linux, macos-arm64]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -123,6 +198,7 @@ jobs:
         run: |
           mkdir -p release
           find dist-all -name 'vv-*-linux-*.tar.gz' -exec cp {} release/ \;
+          find dist-all -name 'vv-*-macos-*.tar.gz' -exec cp {} release/ \;
           find dist-all -name 'vv_*_*.deb'          -exec cp {} release/ \;
           # Merge per-arch SHA256SUMS into one file so the user can verify
           # any tarball or .deb with `sha256sum -c SHA256SUMS`.

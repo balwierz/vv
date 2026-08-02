@@ -193,9 +193,12 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ```
 
-**macOS** builds from source and is compiled on every commit in CI, but the
-test suite runs only on Linux and no macOS binaries are published — treat it
-as supported-but-unverified.
+**macOS** (Apple Silicon) is a published target: the full test suite runs on
+macOS in CI and each release carries a `vv-<ver>-macos-arm64.tar.gz`. That
+tarball is not static — it links the Homebrew libraries it was built against —
+so `brew install` is the smoother path. Intel Macs build from source. ORC is
+unavailable there because Homebrew's Arrow is built without the adapter.
+See [INSTALL.md](INSTALL.md).
 
 ## Supported formats
 

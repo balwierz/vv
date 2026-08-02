@@ -4,6 +4,43 @@ All notable changes to `vv` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **macOS is a tested, published target.** The "Build (macOS)" CI job had been
+  green for 15+ consecutive runs, but it only ran `cmake --build` plus
+  `vv --version && vv --help` — no fixtures, no tests, so not one reader was
+  ever exercised there. The suite now runs on macOS in CI (691 of the Linux
+  709; the rest gate themselves on tools absent from the runner), and each
+  release publishes `vv-<ver>-macos-arm64.tar.gz`. Unlike the Linux tarball it
+  is **not** static: it links the Homebrew libraries it was built against.
+
+### Fixed
+- **The documented macOS build command and the Homebrew formula both failed.**
+  `find_package(Curses REQUIRED)` set no version floor, and Homebrew's ncurses
+  is keg-only — so anything that did not name its prefix explicitly resolved to
+  Apple's bundled ncurses 5.7, which lacks `set_escdelay()` (≥ 5.9) and
+  `BUTTON5_PRESSED` (mouse version ≥ 2). CI worked only because it happened to
+  list every prefix. CMake now stops at configure with the fix in the message,
+  and `INSTALL.md` lists all seven prefixes.
+- **`packaging/homebrew/vv.rb` could not have installed anything.** It was
+  pinned to v1.4.0 with a placeholder all-zeros `sha256`, declared
+  `pkg-config` (a 404 in current Homebrew — it is `pkgconf` now), and omitted
+  `xlsxio`, `expat`, `minizip` and `hdf5`, every one a hard `FATAL_ERROR`
+  dependency. Rewritten, and its URL is now covered by the version-coherence
+  check so it cannot silently go stale again.
+- **`setenv()` was called between `fork()` and `exec()`** in the pager path
+  while Arrow's thread pool was live. It takes a libc lock and is not
+  async-signal-safe, so it can deadlock on a lock another thread held at fork
+  time — a hazard Apple's libc hits far more readily than glibc, presenting as
+  an intermittent hang. Moved before the fork.
+- **`STATIC_RUNTIME` on macOS** now errors at configure instead of failing at
+  link (AppleClang has neither `-static-libstdc++` nor `-static-libgcc`), the
+  unconditional `-L../static-libs/lib` no longer makes ld64 warn on every
+  link, `libminizip-ng.dylib` was missing from the minizip search names, and
+  the four freedesktop assets (`.desktop`, MIME XML, AppStream metainfo,
+  hicolor SVG) are no longer installed on macOS, where they mean nothing.
+
 ## [1.17.0] - 2026-08-01
 
 ### Added
