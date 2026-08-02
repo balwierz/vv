@@ -17,3 +17,11 @@ compile_commands.json
 release-notes.md
 docs/USAGE.html
 docs/USAGE.pdf
+
+# makepkg build artifacts (packaging/arch). `makepkg` leaves the downloaded
+# source tarball, an extracted src/, a staged pkg/ and the built packages in
+# the PKGBUILD's directory; none of it belongs in the repo.
+packaging/arch/src/
+packaging/arch/pkg/
+packaging/arch/*.pkg.tar.*
+packaging/arch/*.tar.gz
