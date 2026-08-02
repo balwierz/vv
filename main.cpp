@@ -9370,8 +9370,15 @@ read_1d_dataset_table(hid_t dataset, int64_t row_cap = -1,
 static arrow::Result<std::shared_ptr<arrow::Table>>
 read_sparse_preview(hid_t group, int64_t row_cap);
 // Label an AnnData X preview with its obs (row) / var (column) identifiers.
-static void apply_anndata_x_labels(hid_t file_id,
-                                   std::shared_ptr<arrow::Table>* tbl);
+// Which AnnData axes a dense 2-D tab is indexed by. X and layers/* are
+// (n_obs x n_var), but obsm/* is (n_obs x d) and varm/* is (n_var x d), where
+// d is an embedding dimension — not a gene. Labelling all three the same way
+// put gene names on UMAP coordinates.
+enum class AnnMatrixAxes { ObsByVar, ObsByDim, VarByDim };
+
+static void apply_anndata_matrix_labels(hid_t file_id, AnnMatrixAxes axes,
+                                        const std::string& key,
+                                        std::shared_ptr<arrow::Table>* tbl);
 
 // Tab specification: identifies which named object inside the HDF5 file
 // this tab should view, and how to render it.
@@ -9382,6 +9389,10 @@ struct OpenSpec {
     std::string h5_path;     // group / dataset path inside the file
     std::string display;     // tab label
     std::string footer_hint; // additional footer text
+    // Matrix2D only: how to label the axes, and the obsm/varm key whose name
+    // the dimension columns are derived from ("X_umap" -> X_umap1, X_umap2).
+    AnnMatrixAxes axes = AnnMatrixAxes::ObsByVar;
+    std::string   key;
 };
 
 // Read the AnnData layout and produce one OpenSpec per visible tab.
@@ -9562,10 +9573,10 @@ class Hdf5Source : public WorkbookSource {
                 }
                 if (!spec.footer_hint.empty())
                     *footer += "  |  " + spec.footer_hint;
-                // A dense AnnData X (Matrix2D, never generic Dataset2D) gets
-                // var/obs identifiers for its columns / row labels.
+                // A dense AnnData matrix (Matrix2D, never generic Dataset2D)
+                // gets obs/var identifiers, per its own axes.
                 if (spec.kind == OpenSpec::Kind::Matrix2D)
-                    apply_anndata_x_labels(file_id, out);
+                    apply_anndata_matrix_labels(file_id, spec.axes, spec.key, out);
                 return "";
             }
             case OpenSpec::Kind::Dataset1D: {
@@ -9602,8 +9613,10 @@ class Hdf5Source : public WorkbookSource {
                           std::to_string((*out)->num_rows()) + " rows";
                 if (!spec.footer_hint.empty())
                     *footer += "  |  " + spec.footer_hint;
-                // Name columns by var (genes), prepend obs (cells) row labels.
-                apply_anndata_x_labels(file_id, out);
+                // Sparse is always X, i.e. genuinely (n_obs x n_var): name
+                // columns by var (genes), prepend obs (cells) row labels.
+                apply_anndata_matrix_labels(file_id, AnnMatrixAxes::ObsByVar,
+                                            spec.key, out);
                 return "";
             }
         }
@@ -10242,46 +10255,72 @@ static void read_anndata_index_labels(hid_t file_id, const char* group_path,
         out->push_back(cell_to_string(*col, i));
 }
 
-// Label an AnnData X preview with its obs / var identifiers. X is
-// (n_obs x n_vars) = cells x genes, so the value columns are named by the var
-// index (gene names) and an obs-index column (cell barcodes) is prepended as a
-// row label. No-op for a non-AnnData file (no obs/var groups → empty labels).
-static void apply_anndata_x_labels(hid_t file_id,
-                                   std::shared_ptr<arrow::Table>* tbl) {
+// Label a dense AnnData 2-D preview with its obs / var identifiers.
+//
+// The three shapes are NOT interchangeable, and treating them as one put gene
+// names on UMAP coordinates:
+//
+//   X, layers/*  (n_obs x n_var)  rows <- obs (cells),  cols <- var (genes)
+//   obsm/*       (n_obs x d)      rows <- obs (cells),  cols <- dimensions
+//   varm/*       (n_var x d)      rows <- var (genes),  cols <- dimensions
+//
+// `d` is an embedding width (2 for a UMAP, 50 for a PCA), unrelated to the
+// number of genes — so the columns are named after the key that holds them,
+// 1-based: X_umap -> X_umap1, X_umap2.
+//
+// No-op for a non-AnnData file (no obs/var groups -> empty labels).
+static void apply_anndata_matrix_labels(hid_t file_id, AnnMatrixAxes axes,
+                                        const std::string& key,
+                                        std::shared_ptr<arrow::Table>* tbl) {
     if (!tbl || !*tbl) return;
     auto t = *tbl;
     const int64_t ncols = t->num_columns();
     const int64_t nrows = t->num_rows();
 
-    // Columns ← var index (genes). Rename only as far as we have labels.
-    std::vector<std::string> var_labels;
-    std::string var_idx_name;
-    read_anndata_index_labels(file_id, "/var", ncols, &var_labels, &var_idx_name);
-    if (!var_labels.empty()) {
+    // ── Columns ─────────────────────────────────────────────────────────────
+    std::vector<std::string> col_names;
+    if (axes == AnnMatrixAxes::ObsByVar) {
+        // Gene identifiers, from the var index.
+        std::string var_idx_name;
+        read_anndata_index_labels(file_id, "/var", ncols, &col_names,
+                                  &var_idx_name);
+    } else {
+        // Embedding dimensions. Derived from the key so the header says where
+        // the numbers came from; falls back to the existing generated names if
+        // the key is somehow empty.
+        if (!key.empty())
+            for (int64_t i = 0; i < ncols; ++i)
+                col_names.push_back(key + std::to_string(i + 1));
+    }
+    if (!col_names.empty()) {
         std::vector<std::string> names;
         names.reserve((size_t)ncols);
         for (int64_t i = 0; i < ncols; ++i)
-            names.push_back(i < (int64_t)var_labels.size()
-                                ? var_labels[(size_t)i]
+            names.push_back(i < (int64_t)col_names.size()
+                                ? col_names[(size_t)i]
                                 : t->field((int)i)->name());
         auto r = t->RenameColumns(names);
         if (r.ok()) t = *r;
     }
 
-    // Rows ← obs index (cells), prepended as a leading column.
-    std::vector<std::string> obs_labels;
-    std::string obs_idx_name;
-    read_anndata_index_labels(file_id, "/obs", nrows, &obs_labels, &obs_idx_name);
-    if (!obs_labels.empty()) {
+    // ── Rows: prepended as a leading label column ───────────────────────────
+    // varm is indexed by gene, everything else by cell.
+    const char* row_group = (axes == AnnMatrixAxes::VarByDim) ? "/var" : "/obs";
+    const char* row_default = (axes == AnnMatrixAxes::VarByDim) ? "var" : "obs";
+    std::vector<std::string> row_labels;
+    std::string row_idx_name;
+    read_anndata_index_labels(file_id, row_group, nrows, &row_labels,
+                              &row_idx_name);
+    if (!row_labels.empty()) {
         arrow::StringBuilder b;
         for (int64_t i = 0; i < nrows; ++i) {
-            if (i < (int64_t)obs_labels.size()) (void)b.Append(obs_labels[(size_t)i]);
+            if (i < (int64_t)row_labels.size()) (void)b.Append(row_labels[(size_t)i]);
             else                                (void)b.AppendNull();
         }
         std::shared_ptr<arrow::Array> a;
         if (b.Finish(&a).ok()) {
-            std::string header = obs_idx_name.empty() || obs_idx_name == "_index"
-                                     ? "obs" : obs_idx_name;
+            std::string header = row_idx_name.empty() || row_idx_name == "_index"
+                                     ? row_default : row_idx_name;
             auto col = std::make_shared<arrow::ChunkedArray>(a);
             auto r = t->AddColumn(0, arrow::field(header, arrow::utf8()), col);
             if (r.ok()) t = *r;
@@ -10405,7 +10444,8 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
     // obsm / varm / layers — each child becomes its own tab.
     auto add_subgroup_tabs = [&](const char* parent_name,
                                    OpenSpec::Kind k,
-                                   const char* footer_kind) {
+                                   const char* footer_kind,
+                                   AnnMatrixAxes axes) {
         if (!link_exists(file_id, parent_name) ||
             !is_group(file_id, parent_name)) return;
         hid_t g = H5Gopen2(file_id, parent_name, H5P_DEFAULT);
@@ -10415,14 +10455,18 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
             specs.push_back({k,
                               std::string("/") + parent_name + "/" + nm,
                               std::string(parent_name) + "[" + nm + "]",
-                              footer_kind});
+                              footer_kind, axes, nm});
         }
         if (!names.empty())
             add(parent_name, std::to_string(names.size()) + " entries");
     };
-    add_subgroup_tabs("obsm",   OpenSpec::Kind::Matrix2D, "obsm");
-    add_subgroup_tabs("varm",   OpenSpec::Kind::Matrix2D, "varm");
-    add_subgroup_tabs("layers", OpenSpec::Kind::Matrix2D, "layer");
+    // layers/* mirror X's shape, so they keep gene columns; obsm/varm do not.
+    add_subgroup_tabs("obsm",   OpenSpec::Kind::Matrix2D, "obsm",
+                      AnnMatrixAxes::ObsByDim);
+    add_subgroup_tabs("varm",   OpenSpec::Kind::Matrix2D, "varm",
+                      AnnMatrixAxes::VarByDim);
+    add_subgroup_tabs("layers", OpenSpec::Kind::Matrix2D, "layer",
+                      AnnMatrixAxes::ObsByVar);
 
     // uns (unstructured): one key/value tab surfacing scalars, strings and
     // small arrays (nested dicts flattened with dotted keys). Previously skipped.
@@ -16531,17 +16575,43 @@ class TableTUI {
 
     // Prefetch the source columns the visible virtual columns need, for the
     // chunks that currently intersect the viewport.  Cheap when already cached.
-    // Fit each integer virtual column's width to the rows currently on screen.
+    // Fit each visible virtual column's width to the rows currently on screen.
     // Called after prefetch so cached chunks are available; columns whose data
     // is not yet loaded keep their previous width.
-    void fit_integer_widths_to_visible(const std::vector<int>& visible_virt_cols) {
+    //
+    // Integer columns are fitted without an upper bound — digits must stay
+    // readable, and cell_at() returns them untruncated. Every other type is
+    // clamped to max_col_w_ (`-w`, default 32), because a long string does
+    // legitimately need truncating; cell_at() has already applied that, so the
+    // measurement can't exceed it anyway. The floor is the source's own
+    // min_col_width(), so formats that ask for a minimum (LociSSD) still get
+    // it and a column never collapses below its header.
+    //
+    // Before this, non-integer columns kept the type-based guess made at
+    // setup time (string -> 12, float -> 8, list -> 14) forever, so a `name`
+    // column holding 2-character values sat at 12 and a `val` column of `0.5`
+    // at 8 — on a wide table that is most of the screen.
+    void fit_widths_to_visible(const std::vector<int>& visible_virt_cols) {
         if (src_->num_chunks() == 0) return;
         int64_t bot = top_row_ + (int64_t)data_lines() - 1;
         if (total_rows() > 0) bot = std::min(bot, total_rows() - 1);
         if (bot < top_row_) return;
         for (int vc : visible_virt_cols) {
-            if (vc < 0 || vc >= num_cols_ || !is_integer_[vc]) continue;
+            if (vc < 0 || vc >= num_cols_) continue;
+            // The header block is three rows — name, type, rule — and the type
+            // row is drawn at the same width. Fitting to the data alone made
+            // `int64` render as `i…`, so the type string is a floor too. Long
+            // ones (list<element: string>) are still truncated, as before; the
+            // max_col_w_ clamp below bounds this.
             int w = (int)display_width(col_names_[vc]);
+            // Capped at 14 — the allowance this code already used as the
+            // list-type minimum. That covers every scalar type name (`int64`,
+            // `double`, `timestamp[us]`) without letting a verbose nested type
+            // (`list<element: string>`, 21) widen a column past what its data
+            // needs; those were truncated in the type row before this change
+            // too.
+            if (vc < (int)col_types_str_.size())
+                w = std::max(w, std::min(14, (int)display_width(col_types_str_[vc])));
             for (int64_t r = top_row_; r <= bot; ++r) {
                 int64_t srow = source_row(r);
                 int c = chunk_for_row(srow);
@@ -16561,6 +16631,12 @@ class TableTUI {
                     int ww = display_width(val);
                     if (ww > w) w = ww;
                 }
+            }
+            if (!is_integer_[vc]) {
+                int sc = virt_src_col_[vc];
+                int floor_w = (sc >= 0) ? src_->min_col_width(sc) : 4;
+                w = std::max(w, floor_w);
+                w = std::min(w, max_col_w_);
             }
             col_widths_[vc] = w;
         }
@@ -18121,7 +18197,7 @@ private:
             for (auto& c : vc) virt.push_back(c.col);
             prefetch_visible(virt);
             frame_cells_.clear();   // per-frame; populated by the fit pass below
-            fit_integer_widths_to_visible(virt);
+            fit_widths_to_visible(virt);
         }
         vc = visible_cols();
         draw_banner();
