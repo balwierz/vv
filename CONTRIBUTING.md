@@ -78,7 +78,8 @@ python3 tests/data/generate.py
    | `man/vv.1` | the `.TH` line — both the version and the month |
    | `docs/USAGE.md` | the `date:` field in the YAML front matter |
    | `README.md`, `INSTALL.md` | the hard-coded version in every install command |
-   | `packaging/arch/PKGBUILD` | `pkgver`, then run `updpkgsums` (from `pacman-contrib`) |
+   | `packaging/arch/PKGBUILD` | `pkgver` (the `sha256sums` follow **after** the tag) |
+   | `packaging/homebrew/vv.rb` | `url` (its `sha256` follows **after** the tag too) |
 
    `packaging/debian/build-deb.sh` derives its version from `vv --version`, and
    `release.yml` derives every artifact name from the tag, so neither needs an
@@ -92,7 +93,18 @@ python3 tests/data/generate.py
 6. The `release.yml` workflow builds the static binary for x86_64 and aarch64,
    attaches the tarballs, `.deb`s and `SHA256SUMS` to the GitHub Release, and
    publishes the page.
-7. Check `vv --version` in a downloaded artifact matches the tag.
+7. **After the tag exists**, pin the two source-tarball checksums — neither
+   can be computed before, because both hash the tarball GitHub generates
+   *from* the tag:
+
+   ```sh
+   cd packaging/arch && updpkgsums     # pacman-contrib; rewrites sha256sums=
+   curl -sL https://github.com/balwierz/vv/archive/refs/tags/vX.Y.Z.tar.gz \
+     | sha256sum                       # paste into packaging/homebrew/vv.rb
+   ```
+
+   Both are the same hash. `makepkg --verifysource` confirms the first.
+8. Check `vv --version` in a downloaded artifact matches the tag.
 
 `packaging/bioconda/meta.yaml` and `packaging/homebrew/vv.rb` are **unpublished
 drafts** — vv is not on Bioconda and there is no Homebrew tap, so there is
