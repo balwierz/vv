@@ -2072,9 +2072,9 @@ rm -f "$TMP/vh"
 
 # Multiple positionals: markdown returns early and renders only cfg.path, so on
 # a TTY it silently showed the first file and exited 0.
-if command -v script >/dev/null 2>&1; then
+if command -v python3 >/dev/null 2>&1; then
     printf '# B\n\nsecond body\n' > "$TMP/doc2.md"
-    MDMULTI=$(script -qec "env PATH=/usr/bin:/bin $VV $MDDOC $TMP/doc2.md" /dev/null 2>&1 || true)
+    MDMULTI=$(run_on_pty "$VV" "$MDDOC" "$TMP/doc2.md" 2>&1 || true)
     assert_contains "md_multifile_rejected" "$MDMULTI" "only supported in the interactive viewer"
     refute_contains "md_multifile_no_silent_render" "$MDMULTI" "some prose"
     rm -f "$TMP/doc2.md"

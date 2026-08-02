@@ -30,6 +30,15 @@ assert_eq_file() {
     fi
 }
 
+# Run a command with its stdout/stderr attached to a pseudo-terminal, echoing
+# the combined output. `script(1)` is the obvious tool but its syntax is
+# mutually incompatible: util-linux wants `script -qec "cmd" /dev/null`,
+# BSD/macOS wants `script -q /dev/null cmd args...`. python3's pty module is
+# identical on both, and is already how the six tui_*.py harnesses work.
+run_on_pty() {
+    python3 -c 'import pty, sys; sys.exit(pty.spawn(sys.argv[1:]))' "$@"
+}
+
 assert_contains() {
     # $1 = name, $2 = haystack, $3 = needle
     if printf '%s' "$2" | grep -qF -- "$3"; then
