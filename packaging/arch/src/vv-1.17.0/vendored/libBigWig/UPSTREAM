@@ -1,0 +1,9 @@
+upstream: https://github.com/dpryan79/libBigWig
+tag:      0.4.8
+sha:      43c294ef1721a73b760803ca5e9410d581b98f17
+date:     2026-05-12
+license:  MIT (see vendored/libBigWig/LICENSE)
+notes:    Built with -DNOCURL so only zlib is required; bwWrite.c is
+          compiled but unused at runtime (write APIs not exposed by vv).
+          Update by re-running:
+            git clone --depth 1 --branch <tag> https://github.com/dpryan79/libBigWig

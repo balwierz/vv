@@ -1,0 +1,796 @@
+.TH VV 1 "August 2026" "vv 1.17.0" "User Commands"
+.SH NAME
+vv \- universal genomic file viewer
+.SH SYNOPSIS
+.B vv
+[\fIOPTIONS\fR] \fIFILE\fR
+.SH DESCRIPTION
+\fBvv\fR is a fast command-line viewer for tabular and bioinformatics file
+formats. It prints the first \fIN\fR rows as an ASCII table (similar to
+\fBpandas.DataFrame.head()\fR), followed by a schema summary and file
+metadata. When stdout and stdin are both terminals, an interactive
+ncurses row browser is opened automatically.
+.PP
+Supported formats:
+.IP \(bu 2
+\fB.parquet\fR \(en Apache Parquet
+.IP \(bu 2
+\fB.arrow\fR, \fB.feather\fR \(en Arrow IPC and Feather v2
+.IP \(bu 2
+\fB.lociss\fR \(en LociSSD sorted-interval; either v3 Parquet (auto-detected via
+the \fBlociSSD_manifest\fR key in the Parquet footer; the derived
+\fBMaxEndSoFar\fR column is hidden from human-facing views but kept in
+\fB\-\-tsv\fR / \fB\-\-csv\fR / \fB\-\-parquet\fR output), or a v4 \(lqcolblock\(rq
+custom binary container (magic \fBLSB1\fR + a zone-map index of zstd column
+chunks \(en the index is stored inline in a single self-contained file (v4.1,
+default) or in a sidecar \fB.idx\fR (legacy v4)). Both are dispatched by magic and
+support \fB\-r\fR region queries
+.IP \(bu 2
+\fB.bam\fR, \fB.cram\fR, \fB.sam\fR \(en sequence alignments (htslib)
+.IP \(bu 2
+\fB.vcf\fR, \fB.vcf.gz\fR \(en variant calls
+.IP \(bu 2
+\fB.gff\fR, \fB.gff3\fR, \fB.gtf\fR (and \fB.gz\fR variants) \(en genome
+annotations
+.IP \(bu 2
+\fB.bed\fR, \fB.bed.gz\fR \(en genomic intervals (auto-named
+\fIBED3..BED12\fR by column type signature)
+.IP \(bu 2
+\fB.narrowPeak\fR / \fB.broadPeak\fR / \fB.gappedPeak\fR /
+\fB.bedGraph\fR (\fB.bg\fR) / \fB.tagAlign\fR (plus \fB.gz\fR) \(en
+ENCODE peak and signal formats. Read as BED variants with
+known-typed extra columns: \fIsignalValue\fR, \fIpValue\fR,
+\fIqValue\fR, \fIpeak\fR, \fIvalue\fR, \fIsequence\fR. Both
+non-gzip and gzip-compressed variants supported
+.IP \(bu 2
+\fB.bb\fR, \fB.bigBed\fR \(en UCSC bigBed (via vendored libBigWig); the
+embedded autoSql is parsed so the trailing fields (\fBname\fR,
+\fBscore\fR, \fBsignalValue\fR, \fBpValue\fR, …) become typed Arrow
+columns
+.IP \(bu 2
+\fB.bw\fR, \fB.bigWig\fR \(en UCSC bigWig; rendered as four columns
+(\fBchrom\fR, \fBstart\fR, \fBend\fR, \fBvalue\fR)
+.IP \(bu 2
+\fB.sqlite\fR, \fB.sqlite3\fR, \fB.db\fR \(en SQLite databases. Each
+user table becomes a TUI tab (\fBTab\fR / \fBShift+Tab\fR cycle).
+Column types follow SQLite type affinity: TEXT \(-> string, INTEGER
+\(-> int64, REAL \(-> double, BLOB \(-> binary. Read-only access.
+.IP \(bu 2
+\fB.xlsx\fR, \fB.xlsm\fR \(en Excel workbooks (Office Open XML). Each
+sheet becomes a TUI tab. Cell text is streamed through Arrow's CSV
+reader for column-type inference (int / float / bool / ISO 8601 date /
+string). The legacy binary \fB.xls\fR format is not supported. Requires
+\fBlibxlsxio\fR (\fBxlsxio\fR AUR on Arch, \fBlibxlsxio-dev\fR on
+Debian/Ubuntu, \fBbrew install xlsxio\fR on macOS).
+.IP \(bu 2
+\fB.h5ad\fR, \fB.h5\fR, \fB.hdf5\fR, \fB.loom\fR \(en HDF5 containers
+read via libhdf5. AnnData (\fB.h5ad\fR) is detected by the root
+\fBencoding-type\fR attribute (or modern heuristic /obs + /var + X);
+the layout decodes into a summary tab plus \fBobs\fR, \fBvar\fR,
+\fBX\fR (densified first-N-row preview for CSR sparse), and one tab
+per entry under \fBobsm\fR / \fBvarm\fR / \fBlayers\fR. Categoricals
+(\fBcodes\fR / \fBcategories\fR groups) decode back to string columns.
+Generic HDF5 files surface a \fBhierarchy\fR tab listing every
+group / dataset with path / kind / shape / dtype, plus one tab per
+1-D or 2-D dataset (capped at 32 datasets / 32 columns). \fBuns\fR
+(unstructured) decoding and CSC sparse preview are deferred.
+.IP \(bu 2
+\fB.ods\fR \(en OpenDocument Spreadsheet. Each sheet becomes a TUI
+tab. Hand-rolled parser: minizip inflates \fBcontent.xml\fR from the
+\&.ods ZIP, expat SAX-parses the SpreadsheetML payload. Cells with a
+typed \fBoffice:value\fR (numeric / date / boolean) use that
+canonical value; string cells use the rendered text. Empty runs
+collapsed via \fBtable:number-columns-repeated\fR are honoured.
+.IP \(bu 2
+\fB.pileup\fR, \fB.mpileup\fR, \fB.pile\fR (plus \fB.gz\fR) \(en
+samtools mpileup output. Per-base pileup: \fBchrom\fR, \fBpos\fR
+(1-based), \fBref\fR, then a \fBdepth\fR / \fBbases\fR / \fBquals\fR
+triplet per sample. vv counts tabs to infer the sample count;
+multi-sample triplets are suffixed (\fBdepth_1\fR, …). Range
+queries work on bgzipped + tabix-indexed files (\fBtabix -s 1 -b 2
+-e 2\fR). Pass \fB--decode-pileup\fR to replace the packed bases /
+qualities with typed per-allele counts: \fBA\fR, \fBC\fR, \fBG\fR,
+\fBT\fR, \fBN\fR, \fBdel_placeholder\fR, \fBins\fR, \fBdel\fR,
+\fBfwd\fR, \fBrev\fR, \fBmean_qual\fR (Phred mean). Multi-sample
+files get the same set suffixed per sample. Pass \fB--pileup\fR on
+a BAM/CRAM to walk the alignments through htslib's
+\fBbam_plp_auto\fR engine and emit the same mpileup rows directly,
+without a separate \fBsamtools mpileup\fR step. Range queries
+require an index (\fB.bai\fR / \fB.csi\fR / \fB.crai\fR). Pass
+\fB\-f\fR / \fB\-\-fasta\fR \fIref.fa\fR (which needs a \fB.fai\fR
+index) to fill the ref column from the reference and render bases
+matching it as \fB.\fR (forward) / \fB,\fR (reverse), byte-for-byte
+like \fBsamtools mpileup \-f\fR (vv applies no BAQ, i.e. \fB\-B\fR);
+without it ref is \fBN\fR and bases render as their literal letter
+case-by-strand.
+.IP \(bu 2
+\fB.orc\fR \(en Apache ORC (Optimized Row Columnar). Columnar storage
+used by Hadoop / Hive / Spark. One ORC stripe is treated as one chunk
+for lazy loading. Read via Arrow's ORC adapter \(em Arrow must be
+built with \fB-DARROW_ORC=ON\fR, which the Apache Arrow apt repo,
+Homebrew \fBapache-arrow\fR, and the conda-forge \fBpyarrow\fR wheel
+all have by default. The AlmaLinux 8 static binary currently does
+\fBnot\fR include ORC; \fBvv\fR reports "compiled without ORC support"
+when invoked on an .orc file there.
+.IP \(bu 2
+\fB.txt\fR, \fB.text\fR, \fB.log\fR (plus \fB.gz\fR) \(en plain text.
+Also the fallback for any file no other format claims: an unknown
+extension whose content sniffs as text is shown as text, with a note
+on stderr saying so. Viewed in the interactive TUI like \fBless -SN\fR
+\(em a line-number gutter, long lines chopped at the screen edge with
+\fBh\fR / \fBl\fR scrolling sideways and \fB0\fR returning to column 0,
+\fB/\fR search and \fB&\fR filter over the \fBline\fR column, and one tab
+per file. Written back verbatim when stdout is not a terminal, so
+\fBvv f.log > copy\fR round-trips byte for byte; on screen, SGR colour
+is honoured but every other escape sequence is dropped whole.
+Binary input is refused rather than dumped \(em \fBvv\fR has no hex
+view. See \fB--text\fR.
+.IP \(bu 2
+\fB.md\fR, \fB.markdown\fR, \fB.mdown\fR, \fB.mkd\fR \(en CommonMark
++ GFM markdown rendered as ANSI to stdout. Headings, bold / italic /
+strike / code, lists, block quotes, fenced code blocks, horizontal
+rules, and links are styled per the active \fB--theme\fR. GFM
+\fB|\fR-tables are extracted and rendered through vv's normal table
+view (column types inferred from cell contents \(em a benchmark
+column of integers stays an int64). Local PNG / JPEG / GIF images
+display inline on kitty, iTerm2, and WezTerm terminals via their
+graphics protocols; everything else (remote URLs, SVG, terminals
+without graphics support) falls back to a \fB[image: alt-text]\fR
+stub. Pipe to \fBless -R\fR to scroll.
+.IP \(bu 2
+\fB.2bit\fR \(en UCSC 2bit sequence container; rendered as a per-
+sequence index (\fBname\fR, \fBlength\fR, \fBn_blocks\fR,
+\fBmask_blocks\fR). DNA bases themselves are not decoded — too large
+for chromosome-scale references; use \fBtwoBitToFa\fR for that.
+.IP \(bu 2
+\fB.fa\fR, \fB.fasta\fR, \fB.fna\fR, \fB.faa\fR, \fB.ffn\fR,
+\fB.frn\fR (and \fB.gz\fR) \(en sequences (FASTA)
+.IP \(bu 2
+\fB.fq\fR, \fB.fastq\fR (and \fB.gz\fR) \(en sequencing reads (FASTQ)
+.IP \(bu 2
+\fB.tsv\fR, \fB.csv\fR (and \fB.gz\fR) \(en delimited text
+.IP \(bu 2
+\fB.bcf\fR \(en binary VCF (htslib)
+.IP \(bu 2
+\fB.paf\fR, \fB.paf.gz\fR \(en minimap2 pairwise alignments
+.IP \(bu 2
+\fB.npy\fR \(en a single NumPy array; \fB.npz\fR \(en a NumPy archive,
+one array per TUI tab. 1-D and 2-D arrays become rows and columns; 3-D+
+arrays are sliced along the leading axis, navigable with \fB[\fR / \fB]\fR
+in the viewer.
+.IP \(bu 2
+\fB-\fR \(en read text format from stdin (auto-detects gzip)
+.PP
+Unknown extensions are sniffed by magic bytes and delimiter heuristics.
+.SH OPTIONS
+.SS Display
+.TP
+.B \-i, \-\-interactive
+Force the ncurses row browser even when stdout is not a terminal.
+.TP
+.B \-\-no\-interactive
+Force plain ASCII table output even on a terminal.
+.TP
+.BI \-n " ROWS"
+Number of rows to display (default: 10, 0 = all).
+.TP
+.BI \-\-tail " N"
+Show the last \fIN\fR rows instead of the first \fIN\fR. Reads the
+whole source (filtered by \fB\-\-filter\fR if any) and slices the
+tail. Combines with every view / export mode. For streaming
+sources (BAM, BCF, FASTX, …) this implies a full scan.
+.TP
+.BI \-w " WIDTH"
+Maximum cell width in the ASCII table (default: 32).
+.TP
+.BI \-c " COLS"
+Maximum number of columns to display (default: all).
+.TP
+.BI \-\-select " terms"
+Project a subset of columns. \fIterms\fR is a comma-separated list;
+the output follows the order given, so \fB\-\-select End,Start\fR also
+reorders. Each term is one of:
+.RS
+.IP \(bu 2
+an exact column name \(en \fBChromosome\fR. An exact name always wins over
+pattern interpretation, so a column literally called \fB2\-4\fR or
+\fBlog2\-ratio\fR stays addressable;
+.IP \(bu 2
+a glob \(en \fBchr*\fR, \fB?_pct\fR (\fBfnmatch\fR(3); \fB*\fR and \fB?\fR,
+case-sensitive). Quote it, or the shell expands it first;
+.IP \(bu 2
+a 1-based inclusive index range \(en \fB2\-4\fR, or \fB5\-\fR to the last
+column;
+.IP \(bu 2
+a type class \(en \fB@numeric\fR, \fB@string\fR, \fB@list\fR, \fB@bool\fR,
+\fB@temporal\fR;
+.IP \(bu 2
+an exclusion \(en \fB!TERM\fR removes everything \fITERM\fR matches. A
+leading exclusion starts from the full set for the current mode.
+.RE
+.IP
+Duplicates collapse to their first occurrence. A name that does not exist,
+and a pattern that matches nothing, are both errors (reported differently) \(en
+neither is silently ignored, since an empty match would quietly drop data
+from an export. In display modes the hidden-by-default columns (e.g.
+LociSSD's \fBMaxEndSoFar\fR) stay hidden; in export modes
+(\fB\-\-tsv\fR / \fB\-\-csv\fR / \fB\-\-json\fR / \fB\-\-parquet\fR)
+the explicit list is honoured exactly.
+.TP
+.BI \-\-expand " col"
+Unpack a packed \fBkey=value\fR column into real columns, appended to the
+schema. Written for VCF \fBINFO\fR and GFF/GTF \fBattributes\fR, which carry
+the payload of those formats as a single opaque string \(en once expanded the
+keys behave like any other column, so
+.B \-\-select ,
+.B \-\-filter ,
+.B \-\-unique
+and the Parquet / Arrow writers all see them.
+.IP
+For VCF the key set and their types come from the \fB##INFO=<...>\fR
+declarations, which needs no data scan. A key declared
+\fBNumber=A\fR/\fBR\fR/\fBG\fR/\fB.\fR (\fBAD\fR, \fBPL\fR, …) holds one
+value per allele or genotype, so it stays text rather than being typed numeric
+and coming back null.
+.IP
+GFF/GTF declares nothing, so the keys are taken from the first chunk in
+first-seen order, capped at 256. A repeated key (gencode repeats \fBtag\fR)
+yields one column, from its first occurrence. Consequently a
+.B \-n
+preview and a full scan can legitimately report different column sets for the
+same GTF.
+.IP
+The original column is kept and existing column indices do not move, so a
+projection or region-column auto-detection that worked before is unaffected. A
+column that does not look like a key=value list is refused rather than
+expanded into one column per distinct value.
+.TP
+.BI \-\-filter " expr"
+Keep only rows matching \fIexpr\fR. Grammar:
+\fB<column> <op> <value>\fR joined by \fBAND\fR / \fBOR\fR. Operators:
+.RS
+.IP \(bu 2
+\fB==\fR, \fB!=\fR, \fB<\fR, \fB<=\fR, \fB>\fR, \fB>=\fR \(en compare;
+.IP \(bu 2
+\fB~\fR, \fB!~\fR \(en ECMAScript regular expression, unanchored (use
+\fB^\fR / \fB$\fR to anchor). A malformed pattern is a parse error, not a
+silently-empty result;
+.IP \(bu 2
+\fBcontains\fR, \fBstartswith\fR, \fBendswith\fR \(en substring tests;
+.IP \(bu 2
+\fBin (\fIa\fB, \fIb\fB, \fIc\fB)\fR and \fBnot in (\...)\fR \(en set
+membership. On a numeric column the members are compared numerically;
+.IP \(bu 2
+\fBis null\fR and \fBis not null\fR \(en match the column's actual nulls,
+the rows \fB\-\-describe\fR counts but nothing could previously select.
+.RE
+.IP
+The word operators are operators only in operator position, so a column
+genuinely named \fBin\fR, \fBis\fR or \fBcontains\fR stays filterable.
+Values: integer, float, single- or double-quoted string. Example:
+\fB\-\-filter 'Chromosome == "chr1" AND Score > 0.5'\fR. Evaluated
+per row after the source's own pruning (tabix region, LociSSD
+row-group stats) so combining with \fB\-r\fR is fine.
+.TP
+.B \-\-schema
+Print column names, Arrow types, nullability, and the file-info
+footer (row groups, compression, creator) and exit.
+.TP
+.BI \-\-tab " NAME"
+View a named component tab instead of the first one: AnnData
+\fBobs\fR / \fBvar\fR / \fBX\fR, a workbook sheet, and so on. Lets the
+CLI reach the data components that are otherwise only navigable in the
+interactive TUI, e.g. \fBvv cells.h5ad \-\-tab obs \-n 20\fR. Matching is
+case-insensitive; an unknown name lists the available tabs. Large
+components are shown as a capped preview (the footer notes the full size).
+.TP
+.B \-\-describe
+Per-column statistics: count, nulls, min, max, mean (numeric),
+distinct count (string, capped at 16). Respects \fB\-\-select\fR
+and \fB\-\-filter\fR. Currently scans the data; doesn't yet read
+Parquet's per-row-group statistics. Add \fB\-\-json\fR (array) or
+\fB\-\-ndjson\fR (one object per line) for machine-readable stats
+(integers exact, floats round-trippable, strings JSON-escaped;
+numeric columns omit \fBdistinct\fR, all-null columns report
+\fBnull\fR min/max/mean).
+.TP
+.B \-\-count
+Print the number of rows and exit. Reflects a \fB\-r\fR region
+(taken from the source's row count, so it is instant on formats
+that carry a count in metadata) and, when \fB\-\-filter\fR is
+given, counts only the matching rows (a scan).
+.TP
+.B \-\-stats
+Print Parquet metadata (row groups, compressed / uncompressed sizes,
+codecs, per-column sizes and null counts) without decoding any data.
+For non-Parquet sources, falls back to \fB\-\-schema\fR. Useful for
+"what's in this 50 GB file from a colleague?".
+.TP
+.BI \-\-unique " cols"
+Distinct-value counts per column, comma-separated. Each block lists up
+to 50 most frequent values; further values are summarised. Respects
+\fB\-\-filter\fR.
+.TP
+.BI \-\-sample " N"
+Uniformly random N rows (reservoir sampling) instead of head-N. The
+sample is the row set; combine with \fB\-\-tsv\fR, \fB\-\-parquet\fR,
+or any view mode for output. Honours \fB\-\-filter\fR (filter first,
+then sample). Reads the whole file; document upstream if you only want
+sample-from-the-first-M-rows.
+.TP
+.B \-\-text
+Read the file as plain text whatever its extension says. The escape
+hatch for a textual-but-tabular file: \fBvv --text notes.md\fR shows
+the markdown source instead of rendering it, \fBvv --text data.csv\fR
+shows the raw lines instead of a table. The content is still sniffed,
+so \fBvv --text foo.bam\fR is refused rather than dumped.
+.TP
+.B \-\-validate
+Check LociSSD invariants: required columns present with correct
+types; the manifest covers every row exactly once; rows are sorted
+by \fB(Start, End)\fR within each chromosome; \fBMaxEndSoFar[i]\fR
+equals the running \fBmax(End)\fR within each chromosome; and the
+\fBChromosome\fR label at each row matches the manifest. Prints
+\fBPASS\fR / \fBFAIL\fR per check and exits non-zero on any failure
+\(en suitable as a CI gate after a writer change.
+.TP
+.B \-\-no\-index
+Suppress the row-index column.
+.TP
+.BI \-\-color [= WHEN ]
+\fIWHEN\fR is \fBauto\fR (default), \fBalways\fR, or \fBnever\fR.
+.TP
+.BI \-\-theme " NAME"
+Pick a color palette. Built-in themes:
+.RS
+.IP \(bu 2
+\fBdefault\fR \(en the original vv palette: bright accents on the
+terminal's default background.
+.IP \(bu 2
+\fBdark\fR \(en slightly punchier accents, assumes a near-black
+background.
+.IP \(bu 2
+\fBlight\fR \(en darker mid-saturation accents for terminals with a
+light background; disables the zebra-stripe background tint so the
+table reads cleanly on white.
+.IP \(bu 2
+\fBsolarized-dark\fR / \fBsolarized-light\fR \(en Ethan Schoonover's
+Solarized palette. \fBsolarized\fR is accepted as a synonym for
+\fBsolarized-dark\fR.
+.RE
+.IP
+Affects both the non-interactive ASCII table (via ANSI escapes) and
+the ncurses TUI. On terminals with fewer than 256 colors, each theme
+falls back to a 16-color twin.
+.IP
+Inside the TUI, press \fBT\fR to open the theme-picker overlay; the
+choice is saved to the user config file and re-applied on the next
+launch. See \fBFILES\fR below.
+.TP
+.B \-\-vertical
+\fIVertical head\fR. Transpose the preview so each input field becomes a row
+and each record becomes a column; show as many records as fit in the
+terminal width. Implies \fB\-\-no\-interactive\fR. Useful for wide tables
+that would otherwise need horizontal scrolling. Auto-enabled when the
+binary is invoked as \fBvh\fR (a symlink to \fBvv\fR).
+.SS Parquet output
+.TP
+.BI \-\-parquet " FILE"
+Stream the input into a Parquet file at \fIFILE\fR. Combines with
+\fB\-c\fR (column subset) and \fB\-n\fR (row cap) to convert any supported
+input \(en BED, TSV, CSV, VCF, BCF, FASTA, FASTQ, BAM \(en into a Parquet
+file. Stays streaming for forward-only sources (BAM/FASTQ).
+\fIFILE\fR may be \fB-\fR to write to stdout; the data is spooled to a
+temp file first because Parquet's footer-at-end needs seekable writes.
+.TP
+.BI \-\-arrow " FILE" \fR, \fB\-\-feather\fR " FILE"
+Stream the input into an Arrow IPC file (a.k.a. Feather v2) at
+\fIFILE\fR \(en the zero-copy interchange format for pandas / polars /
+R \fBarrow\fR. Same column / row / filter handling as \fB\-\-parquet\fR;
+\fB\-\-feather\fR is an alias. \fIFILE\fR may be \fB-\fR for stdout.
+.TP
+.BI \-\-compression " CODEC"
+Codec for \fB\-\-parquet\fR output: \fBzstd\fR (default), \fBsnappy\fR,
+\fBgzip\fR, \fBlz4\fR, \fBnone\fR. For \fB\-\-arrow\fR / \fB\-\-feather\fR,
+only \fBzstd\fR (default), \fBlz4\fR, or \fBnone\fR (Arrow IPC body
+compression).
+.SS Delimited output
+.TP
+.B \-\-tsv
+Stream tab-separated values to stdout.
+.TP
+.B \-\-csv
+Stream comma-separated values to stdout.
+.TP
+.BI \-\-delimiter " SEP"
+Custom single-character field separator.
+.TP
+.B \-\-json
+Write a JSON array of row objects to stdout.
+.TP
+.B \-\-ndjson
+Write one JSON object per line (JSON Lines / NDJSON). Pipe-friendly
+for \fBjq(1)\fR.
+.TP
+.B \-\-md ", " \-\-markdown
+Write a GitHub-flavored markdown table to stdout. Pipes inside cells
+are escaped as \fB\\|\fR and newlines become \fB<br>\fR. Honours
+\fB\-\-select\fR, \fB\-\-filter\fR, \fB\-n\fR, \fB\-\-no\-header\fR.
+.TP
+.B \-\-no\-header
+Omit the header row in delimited output.
+.SS Visualization
+.TP
+.B \-\-heatmap
+Render the numeric columns as a colour heatmap in the terminal: a
+\fIrows \(mu numeric-columns\fR image, globally normalised (a viridis
+palette). Non-finite cells (NaN/Inf) and non-numeric columns are skipped.
+When stdout is not a terminal (redirected to a file or pipe), a plain
+ASCII intensity grid is written instead of raw terminal escape sequences.
+.TP
+.BI \-\-image\-mode " HOW"
+Heatmap rendering backend: \fBauto\fR (default \(en kitty graphics if the
+terminal supports it, else half-block), \fBkitty\fR, \fBsixel\fR,
+\fBhalfblock\fR, or \fBascii\fR (plain text).
+.SS Range queries
+.TP
+.BI \-\-region\-cols " NAMES"
+Three comma-separated column names (chrom,start,end) for region
+queries on plain Parquet when auto-detection picks the wrong fields.
+Common names \fIChromosome\fR / \fIChrom\fR / \fIChr\fR /
+\fIPOS\fR / \fIchromStart\fR / \fIchromEnd\fR are tried automatically.
+.TP
+.BI \-\-coords " KIND"
+Coordinate convention for the \fB\-r\fR argument. Two values:
+.RS
+.IP \(bu 2
+\fBUCSC\fR (default) \(en 0-based, half-open intervals. This is the
+convention introduced by Jim Kent's UCSC Genome Browser source tree in
+2000 and used today by BED, bigBed, bigWig, BAM, and the LociSSD
+Parquet format. Aliases: \fBKent\fR, \fB0-based\fR, \fBbed\fR.
+.IP \(bu 2
+\fBNCBI\fR \(en 1-based, fully-closed intervals. This is the convention
+inherited from GenBank (1982) and EMBL-Bank (1980); it is what VCF, GFF,
+tabix region strings, and the samtools/bcftools command line all use.
+Aliases: \fB1-based\fR, \fBGenBank\fR, \fBtabix\fR.
+.RE
+.IP
+\fB\-\-regions\-file\fR entries are always parsed as BED (UCSC
+0-based) per the BED spec, regardless of \fB\-\-coords\fR.
+.TP
+.BI \-r ", " \-\-region " REGION"
+Filter to records overlapping \fIREGION\fR (e.g. \fBchr1:1000-2000\fR).
+Multiple regions may be given comma-separated. Open-ended forms
+(\fBchr1:\fR \(en whole chromosome, \fBchr1:78-\fR, \fBchr1:-99\fR) are
+accepted. Coordinates follow the UCSC convention (0-based, half-open)
+by default; pass \fB\-\-coords NCBI\fR for 1-based inclusive
+(samtools / tabix / VCF style).
+.IP
+If the queried chromosome isn't in the file but its UCSC\(->Ensembl
+counterpart is, vv retries with the alias and notes the swap on stderr
+\(en so \fB\-r chr1\fR works on a file that names the contig \fB1\fR, and
+vice versa. This is limited to \fBhuman and mouse\fR standard chromosomes
+(autosomes \fB1\fR\(en\fB22\fR, \fBX\fR, \fBY\fR, and the mitochondrion
+\fBchrM\fR \(<> \fBMT\fR); scaffolds, patches and alt-contigs are never
+remapped.
+.IP
+Supported on:
+.RS
+.IP \(bu 2
+indexed \fB.bam\fR / \fB.cram\fR (needs \fB.bai\fR, \fB.csi\fR or
+\fB.crai\fR from \fBsamtools index\fR); a plain \fB.sam\fR has no
+index and is rejected;
+.IP \(bu 2
+tabix-indexed \fB.vcf.gz\fR, \fB.bed.gz\fR, \fB.gff.gz\fR, and
+\fB.tsv.gz\fR (via htslib's tabix iterator);
+.IP \(bu 2
+\fB.lociss\fR (LociSSD Parquet \(en pruning uses the manifest plus
+Parquet row-group statistics on the \fBStart\fR and \fBMaxEndSoFar\fR
+columns, then a per-row predicate inside surviving row groups).
+.RE
+.IP
+Plain \fB.parquet\fR with chrom/start/end columns works without a
+LociSSD manifest (see \fB\-\-region\-cols\fR for column-name overrides).
+.IP
+A format with no region index (Arrow IPC, ORC, FASTA, SQLite, spreadsheets,
+\&...) prints a warning to standard error and shows the whole file, rather
+than silently presenting an unfiltered result as a region query.
+.TP
+.BI \-\-window " REGION"
+Alias of \fB\-r\fR / \fB\-\-region\fR \(en the name LociSSD readers often
+reach for first.
+.TP
+.BI \-\-regions\-file " FILE"
+Read additional windows from a BED-formatted file (first three
+TSV columns: \fBchrom\fR, \fBstart\fR, \fBend\fR; UCSC convention,
+0-based half-open). Lines starting with \fB#\fR / \fBtrack\fR /
+\fBbrowser\fR are skipped. Combines with explicit \fB\-r\fR; both
+lists are taken.
+.TP
+.BI \-\-slop " N"
+Pad every window by \fIN\fR base pairs on each side (i.e. expand
+\fBstart\fR by \-N and \fBend\fR by +N; start is clamped at 0).
+Applied after \fB\-\-regions-file\fR. Equivalent to
+\fBbedtools slop(1)\fR.
+.IP
+For BCF, range queries require an index (\fB.csi\fR or \fB.tbi\fR
+next to the file). If absent, \fBvv\fR prints a hint pointing to
+\fBbcftools index(1)\fR.
+.SS Performance
+.TP
+.BI \-@ ", " \-\-threads " N"
+Number of worker threads for I/O and decoding. \fB0\fR (default) auto-
+detects (cores/2, capped at 8). Drives Arrow's CPU thread pool, htslib
+BAM/CRAM decompression, and BGZF decompression for FASTA/FASTQ.
+.TP
+.BI \-\-decode\-threads " N"
+Override the Arrow CPU thread-pool size used for Parquet column decode
+and CSV/TSV parallel parsing. Defaults to \fB\-\-threads\fR; raising it
+above can give 1.5–2× on cold reads where decompression is the
+bottleneck and the rest of the system has idle cores. Bounded at twice
+\fBhardware_concurrency()\fR.
+.SS Other
+.TP
+.B \-h, \-\-help
+Show help and exit.
+.TP
+.B \-V, \-\-version
+Print version and exit.
+.SH KEYS (interactive TUI)
+.TP
+.B Arrow keys / hjkl
+Move by row / column.
+.TP
+.B PgUp, PgDn, g, G
+Page up / down, jump to top / bottom.
+.TP
+.B / and ?
+Search forward (\fB/\fR) or backward (\fB?\fR), \fBless(1)\fR-style.
+The query is a case-insensitive ECMAScript regular expression; if the
+pattern is invalid it is matched literally instead. \fBn\fR continues in
+the same direction, \fBN\fR reverses it. All matches in the visible area
+are highlighted; the n/N target is rendered with reverse video.
+\fBEsc\fR clears.
+.TP
+.B Enter
+Open the detail pane for the highlighted row.
+.TP
+.B "," / "."
+Narrow / widen the column under the cursor.
+.TP
+.B z
+Toggle frozen first column (pin column 0 at the left edge while
+scrolling sideways).
+.TP
+.B S
+Per-column stats popup for the column under the cursor: count,
+null count, min, max, mean (numeric), distinct-value count (strings,
+capped at 16). Triggers a full-file scan with progress shown in the
+status bar. Any key dismisses the popup.
+.TP
+.B s
+Sort by the active column. Numeric types sort by raw value, others
+lexicographically; nulls go last regardless of direction. Repeated
+\fBs\fR on the same column toggles ascending / descending; \fBs\fR
+on a different column re-sorts ascending. \fBu\fR clears the sort.
+Builds an in-memory row permutation; cost is one full-file scan.
+.TP
+.B c
+Open the show/hide columns picker. \fBj\fR / \fBk\fR move the
+cursor, \fBSpace\fR / \fBEnter\fR toggle the column under the
+cursor, \fBEsc\fR / \fBq\fR / \fBc\fR closes the overlay. At least
+one column stays visible.
+.TP
+.B &
+Live filter: open a \fB&<expression>\fR input bar at the bottom of
+the screen. The grammar matches \fB\-\-filter\fR \(en
+\fB<col> <op> <literal>\fR joined with \fBAND\fR / \fBOR\fR, ops
+\fB==\fR \fB!=\fR \fB<\fR \fB<=\fR \fB>\fR \fB>=\fR. Enter commits;
+non-matching rows are hidden from the display. An empty commit
+clears the filter, and \fBEsc\fR in normal mode also clears an
+active filter before quitting. Composes with \fBs\fR (sort) and
+\fB/\fR (search).
+.TP
+.B mouse wheel
+Scroll three rows up / down.
+.TP
+.B mouse click
+On a column header: toggle sort by that column (same as moving
+\fBleft_col\fR to it and pressing \fBs\fR). On a data row:
+scroll the clicked row to the top of the viewport and make its
+column the focus for follow-up \fBS\fR / \fBy\fR / \fBs\fR.
+.TP
+.B mouse double-click
+On a data row: open the detail pane for that row (same as
+pressing \fBEnter\fR).
+.TP
+.B Shift+drag
+While vv has mouse capture, the terminal stops handling its own
+click-and-drag selection. Hold \fBShift\fR to bypass the capture
+and let the terminal emulator do its native text selection (works
+in xterm, alacritty, kitty, foot, wezterm, iTerm2, gnome-terminal,
+konsole). Alternatively, use \fBy\fR to copy the cell at the top
+of the viewport to the system clipboard via OSC52.
+.TP
+.B Tab, Shift+Tab
+Next / previous file tab. With multiple positional arguments on the
+command line each file becomes a tab; switching is instant because
+the chunk cache, sort, filter, column-hide, and search anchor are
+preserved per tab. The status bar shows the active tab number and
+basename. Single-file invocations don't show a tab indicator.
+.TP
+.B :
+Vim-style typed-command prompt at the bottom of the screen.
+Recognised verbs:
+.RS
+.IP \(bu 2
+\fB:<N>\fR \(en jump to row \fIN\fR (matches the row-index column;
+out-of-range values clamp to the last page).
+.IP \(bu 2
+\fB:q\fR / \fB:quit\fR \(en quit.
+.IP \(bu 2
+\fB:theme NAME\fR \(en switch to a named theme (same names as
+\fB\-\-theme\fR / the \fBT\fR overlay); the choice is persisted to
+\fI~/.config/vv/config\fR.
+.RE
+.IP
+Errors stay in the input bar so the line can be edited and
+re-submitted. \fBEsc\fR cancels.
+.TP
+.B H, F1
+Open / close the help overlay listing every keybinding.
+.TP
+.B q
+Quit.
+.SH ALIAS / vh
+\fBvh\fR is a symlink to \fBvv\fR that defaults to \fB\-\-vertical\fR mode.
+\fBvh wide.parquet\fR prints a transposed head where the user scrolls
+vertically through fields rather than horizontally through columns.
+.SH EXAMPLES
+.PP
+First 10 rows of a Parquet file with a nice ASCII table:
+.RS
+.EX
+vv data.parquet
+.EE
+.RE
+.PP
+Stream a 100-row TSV preview from a multi-GB Parquet file (uses fast path):
+.RS
+.EX
+vv \-\-tsv \-n 100 huge.parquet
+.EE
+.RE
+.PP
+Region preview of a LociSSD Parquet file (no tabix needed):
+.RS
+.EX
+vv \-r chr1:78\-99 peaks.lociss
+.EE
+.RE
+.PP
+Region query on a tabix-indexed VCF:
+.RS
+.EX
+vv \-r chr1:1000000-1100000 variants.vcf.gz
+.EE
+.RE
+.PP
+Multi-region tabix query on a BED file:
+.RS
+.EX
+vv \-r 'chr1:100-200,chr2:500-1000' regions.bed.gz
+.EE
+.RE
+.PP
+Open an Arrow IPC file in the interactive browser:
+.RS
+.EX
+vv data.arrow
+.EE
+.RE
+.PP
+Convert a BED file to Parquet (zstd, all rows):
+.RS
+.EX
+vv \-\-parquet peaks.parquet peaks.bed
+.EE
+.RE
+.PP
+Convert a tabix-filtered VCF region to Parquet:
+.RS
+.EX
+vv \-r chr1:1000000\-2000000 \-\-parquet region.parquet variants.vcf.gz
+.EE
+.RE
+.PP
+Multi-threaded scan of a 5 GB BAM:
+.RS
+.EX
+vv \-@ 4 \-n 1000 alignments.bam
+.EE
+.RE
+.PP
+Vertical head on a wide Parquet file (50+ columns) that doesn't fit:
+.RS
+.EX
+vh wide.parquet
+.EE
+.RE
+.SH FILES
+.TP
+.I $XDG_CONFIG_HOME/vv/config
+.RS
+User configuration file (default
+\fI$HOME/.config/vv/config\fR). Plain INI-style \fBkey = value\fR
+syntax; lines starting with \fB#\fR are comments. CLI flags always
+win over the config file.
+.IP
+Recognised keys:
+.IP \(bu 2
+\fBtheme\fR \(en one of \fBdefault\fR / \fBdark\fR / \fBlight\fR /
+\fBsolarized-dark\fR / \fBsolarized-light\fR. Written by the
+in-TUI theme picker (\fBT\fR key).
+.IP
+The format is extensible; future keys slot in without breaking
+existing files. Writes are atomic (\fI.tmp\fR + rename) and
+preserve any other lines you've added by hand.
+.RE
+.SH ENVIRONMENT
+.TP
+.B NO_COLOR
+When set to any non-empty value, disables coloured output (see
+\fIhttps://no-color.org\fR). An explicit \fB\-\-color=always\fR or
+\fB\-\-color=never\fR overrides it.
+.TP
+.B VV_CATEGORY_DICT_CAP
+Maximum number of categories an AnnData categorical \fIobs\fR/\fIvar\fR column
+may have before it is shown as integer codes rather than decoded labels
+(default \fB1000000\fR).
+.TP
+.B VV_BACKGROUND
+Force the terminal background the TUI assumes for its alternating-row (zebra)
+stripe: \fBlight\fR or \fBdark\fR. By default vv queries the terminal (OSC 11,
+then \fBCOLORFGBG\fR) and assumes dark if that fails. Set \fBlight\fR when the
+zebra stripe is a hard dark band on a light-background terminal (e.g.
+JupyterLab's web terminal) and auto-detection didn't catch it.
+.SH FORMATS
+.B vv \-\-formats
+prints the authoritative table of supported formats with their capability
+columns (gz variants, region queries, component tabs, streaming vs random
+access);
+.B vv \-\-formats \-\-json
+emits the same table as JSON. The shell completions are checked against it in
+CI, so the two cannot drift.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+A runtime or usage error: the input could not be opened, was an unsupported or
+malformed format, a read failed, an unknown option was given, or no input file
+was supplied. Also returned when a request could not be honoured in full \(em
+an unknown
+.B \-\-select
+column, an unparseable
+.B \-\-filter
+expression, a read error that truncated the output, or more than one input
+file in a non\-interactive mode (extra positionals are only meaningful in the
+interactive viewer, which gives each file a tab).
+.TP
+.B 2
+An invalid command\-line option argument: a flag was missing its required value,
+or a value was not one of the accepted choices (e.g.
+\fB\-\-image\-mode\fR, \fB\-\-coords\fR).
+.SH SEE ALSO
+.BR samtools (1),
+.BR bcftools (1),
+.BR tabix (1),
+.BR bgzip (1)
+.SH AUTHOR
+Piotr Balwierz and contributors.
+.SH REPORTING BUGS
+File issues at <https://github.com/balwierz/vv/issues>.
+.SH LICENSE
+MIT License. See \fBLICENSE\fR in the source distribution.

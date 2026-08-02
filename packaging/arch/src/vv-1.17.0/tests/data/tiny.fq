@@ -1,0 +1,12 @@
+@read1 lane=1
+ACGTACGTACGTACGT
++
+IIIIIIIIIIIIIIII
+@read2
+TTTTAAAA
++
+HHHHGGGG
+@read3 short
+GGG
++
+III

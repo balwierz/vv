@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- shared-mime-info definitions for the binary table formats vv opens that
+     the freedesktop database does not already register. Additive: types
+     already known system-wide (sqlite, xlsx, ods) are referenced by the
+     .desktop file but not redefined here. Installed to
+     $DATADIR/mime/packages; run update-mime-database afterwards. -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/vnd.apache.parquet">
+    <comment>Apache Parquet data</comment>
+    <glob pattern="*.parquet"/>
+    <glob pattern="*.parq"/>
+    <!-- Parquet files carry the magic "PAR1" at both the start and end. -->
+    <magic priority="60"><match type="string" value="PAR1" offset="0"/></magic>
+    <icon name="vv"/>
+  </mime-type>
+
+  <mime-type type="application/vnd.apache.arrow.file">
+    <comment>Apache Arrow / Feather data</comment>
+    <glob pattern="*.arrow"/>
+    <glob pattern="*.feather"/>
+    <magic priority="60"><match type="string" value="ARROW1" offset="0"/></magic>
+    <icon name="vv"/>
+  </mime-type>
+
+  <mime-type type="application/x-hdf5">
+    <comment>HDF5 / AnnData data</comment>
+    <glob pattern="*.h5"/>
+    <glob pattern="*.hdf5"/>
+    <glob pattern="*.h5ad"/>
+    <glob pattern="*.loom"/>
+    <magic priority="60">
+      <match type="string" value="\x89HDF\r\n\x1a\n" offset="0"/>
+    </magic>
+    <icon name="vv"/>
+  </mime-type>
+
+  <mime-type type="application/x-npz">
+    <comment>NumPy compressed array archive</comment>
+    <glob pattern="*.npz"/>
+    <sub-class-of type="application/zip"/>
+    <icon name="vv"/>
+  </mime-type>
+</mime-info>

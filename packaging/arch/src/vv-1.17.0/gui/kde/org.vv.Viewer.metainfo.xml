@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.vv.Viewer</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>vv</name>
+  <summary>Universal data table viewer</summary>
+  <description>
+    <p>
+      vv opens Parquet, Arrow/Feather, HDF5 and AnnData, NumPy .npz,
+      spreadsheets (xlsx/ods), SQLite, and the common genomic table
+      formats in a fast windowed viewer with sort, filter, regex search,
+      per-column statistics, a row-detail panel, and multi-tab navigation
+      of multi-sheet / multi-dataset files.
+    </p>
+  </description>
+  <launchable type="desktop-id">org.vv.Viewer.desktop</launchable>
+  <provides>
+    <binary>vvg</binary>
+  </provides>
+  <categories>
+    <category>Utility</category>
+    <category>Science</category>
+  </categories>
+  <url type="homepage">https://github.com/balwierz/vv</url>
+</component>

@@ -56,7 +56,8 @@ python3 tests/data/generate.py
 
 ## Pull request checklist
 
-- [ ] CI is green (Linux + macOS build + smoke tests).
+- [ ] CI is green: build + smoke tests on Linux (22.04, 24.04) and macOS,
+      plus the ASan/UBSan and fuzzer gates (Linux only).
 - [ ] CHANGELOG.md updated under "Unreleased".
 - [ ] Help text and man page (`man/vv.1`) updated if a CLI flag changed.
 - [ ] Bumped `kVersion` only if releasing.

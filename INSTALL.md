@@ -10,6 +10,7 @@ Every tagged release publishes, for **x86_64** and **aarch64**:
 |---|---|
 | `vv-<ver>-linux-<arch>.tar.gz` | static binary, no runtime dependencies |
 | `vv_<ver>-1_<deb-arch>.deb` | Debian package (same static binary) |
+| `vv-<ver>-macos-arm64.tar.gz` | Apple Silicon; **not** static — needs the Homebrew deps |
 | `SHA256SUMS` | checksums for everything above |
 
 Replace `1.17.0` below with the
@@ -202,20 +203,38 @@ sudo pacman -S kio kcoreaddons kfilemetadata                          # Arch
 
 ### macOS
 
+Apple Silicon binaries are published with each release (see the table at the
+top), and the full test suite runs on macOS in CI. To build from source:
+
 ```sh
 brew install cmake apache-arrow htslib ncurses xlsxio expat minizip hdf5
 ```
 
-Homebrew installs `apache-arrow` under its own prefix, so point CMake at it:
+Every one of those lives under its own prefix, so **each has to be named**.
+Listing only some of them is the usual failure: `ncurses` in particular is
+**keg-only**, so leaving it out silently resolves to Apple's bundled ncurses
+5.7, which lacks `set_escdelay()` and `BUTTON5_PRESSED`. CMake now stops with
+an explanation when that happens rather than emitting undefined-identifier
+errors.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH="$(brew --prefix apache-arrow);$(brew --prefix htslib)"
+  -DCMAKE_PREFIX_PATH="$(brew --prefix apache-arrow);$(brew --prefix htslib);\
+$(brew --prefix ncurses);$(brew --prefix xlsxio);$(brew --prefix expat);\
+$(brew --prefix minizip);$(brew --prefix hdf5)"
+cmake --build build -j$(sysctl -n hw.ncpu)
 ```
 
-macOS is compiled on every commit in CI and sanity-checked, but the test
-suite runs only on Linux and no macOS binaries are published — treat it as
-supported-but-unverified.
+Two platform limitations, both reported honestly at runtime rather than
+silently:
+
+- **ORC is unavailable.** Homebrew's `apache-arrow` is built without the ORC
+  adapter, so `vv file.orc` says "compiled without Apache ORC support".
+- **Intel Macs are not published.** `macos-latest` is Apple Silicon; an Intel
+  Mac builds from source with the same commands.
+
+Unlike the Linux tarball, the macOS one is **not** a static binary — it links
+the Homebrew libraries above, so install them before running it.
 
 ### Build
 

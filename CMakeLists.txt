@@ -134,7 +134,48 @@ foreach(_t ${ARROW_TARGET} ${PARQUET_TARGET} Arrow::arrow_bundled_dependencies m
 endforeach()
 
 # ── ncurses ───────────────────────────────────────────────────────────────────
+# Demand ncurses specifically (not a BSD curses that merely provides curses.h),
+# and demand version 6. The TUI calls set_escdelay() (ncurses >= 5.9) and uses
+# BUTTON5_PRESSED, which curses.h only defines under NCURSES_MOUSE_VERSION >= 2
+# (ncurses 6.0+). macOS ships ncurses 5.7 with mouse version 1, so a build that
+# picks up the system curses fails with two undefined identifiers and no
+# explanation.
+#
+# Checked here rather than #ifdef'd at the call sites on purpose: guarding them
+# would build, then silently drop scroll-wheel-down — the class of silent
+# degradation removed in #86 / #100. Better to fail at configure with the fix
+# in the message.
+set(CURSES_NEED_NCURSES TRUE)
 find_package(Curses REQUIRED)
+
+include(CheckCXXSourceCompiles)
+set(CMAKE_REQUIRED_INCLUDES "${CURSES_INCLUDE_DIRS}")
+check_cxx_source_compiles("
+#include <ncurses.h>
+#if !defined(NCURSES_VERSION_MAJOR) || NCURSES_VERSION_MAJOR < 6
+#error ncurses 6 required
+#endif
+#if !defined(NCURSES_MOUSE_VERSION) || NCURSES_MOUSE_VERSION < 2
+#error ncurses mouse version 2 required
+#endif
+#if !defined(BUTTON5_PRESSED)
+#error BUTTON5_PRESSED missing
+#endif
+int main() { return 0; }
+" VV_NCURSES6_OK)
+unset(CMAKE_REQUIRED_INCLUDES)
+if(NOT VV_NCURSES6_OK)
+  message(FATAL_ERROR
+      "ncurses >= 6 is required (found headers in '${CURSES_INCLUDE_DIRS}').\n"
+      "  macOS ships ncurses 5.7, which lacks set_escdelay() and "
+      "BUTTON5_PRESSED.\n"
+      "  Install a current one and point CMake at it -- note that Homebrew's "
+      "ncurses is keg-only, so it is NOT on the default search path:\n"
+      "      brew install ncurses\n"
+      "      cmake -S . -B build "
+      "-DCMAKE_PREFIX_PATH=\"$(brew --prefix ncurses)\"\n"
+      "  On Linux install libncurses-dev (Debian/Ubuntu) or ncurses (Arch).")
+endif()
 
 # ── htslib (BAM support) ─────────────────────────────────────────────────────
 find_package(PkgConfig REQUIRED)
@@ -217,7 +258,8 @@ find_path(EXPAT_INCLUDE_DIR    expat.h)
 # static build vendors minizip-ng).
 find_path(MINIZIP_INCLUDE_DIR  unzip.h PATH_SUFFIXES minizip minizip-ng)
 find_library(EXPAT_SHARED      NAMES expat libexpat.so libexpat.dylib)
-find_library(MINIZIP_SHARED    NAMES minizip libminizip.so libminizip.dylib minizip-ng libminizip-ng.so)
+find_library(MINIZIP_SHARED    NAMES minizip libminizip.so libminizip.dylib
+                                     minizip-ng libminizip-ng.so libminizip-ng.dylib)
 if(NOT EXPAT_INCLUDE_DIR OR NOT EXPAT_SHARED)
   message(FATAL_ERROR
       "libexpat not found. Install `expat` (Arch), "
@@ -268,6 +310,10 @@ endif()
 # ── Static runtime (libstdc++, libgcc) ───────────────────────────────────────
 option(STATIC_RUNTIME "Link libstdc++ and libgcc statically" OFF)
 if(STATIC_RUNTIME)
+  if(APPLE)
+    # AppleClang supports neither flag, and macOS has no static libSystem.
+    message(FATAL_ERROR "STATIC_RUNTIME is not supported on macOS.")
+  endif()
   add_link_options(-static-libstdc++ -static-libgcc)
 endif()
 
@@ -429,10 +475,15 @@ target_link_libraries(vv PRIVATE ${_vv_link_common} ${_vv_curses})
 if(NOT APPLE)
   target_link_options(vv PRIVATE -Wl,--gc-sections)
 endif()
-target_link_options(vv PRIVATE
-    # Put static-libs dir first so -lzstd/-llz4/-lbz2/-llzma resolve to .a
-    -L${_static_libs_dir}
-)
+# Only when the directory is actually there: ld64 warns on every link
+# otherwise ("directory not found for option -L..."), and macOS never has it.
+# (The vvcore target below already guards this the same way.)
+if(IS_DIRECTORY "${_static_libs_dir}")
+  target_link_options(vv PRIVATE
+      # Put static-libs dir first so -lzstd/-llz4/-lbz2/-llzma resolve to .a
+      -L${_static_libs_dir}
+  )
+endif()
 
 # Strip in Release. `--strip-all` is GNU strip; macOS strip uses `-S -x`.
 # (Skipping is fine; macOS binaries already strip many debug symbols.)

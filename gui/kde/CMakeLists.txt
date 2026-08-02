@@ -68,11 +68,18 @@ else()
 endif()
 
 # ── Desktop integration assets ───────────────────────────────────────────────
-install(FILES vv-formats.xml
-        DESTINATION ${CMAKE_INSTALL_DATADIR}/mime/packages)
-install(FILES org.vv.Viewer.desktop
-        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
-install(FILES org.vv.Viewer.metainfo.xml
-        DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
-install(FILES icons/vv.svg
-        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
+# freedesktop.org formats: a .desktop entry, shared-mime-info XML, AppStream
+# metainfo and a hicolor icon. None of them means anything on macOS, where the
+# equivalents live in an .app bundle's Info.plist (CFBundleDocumentTypes /
+# UTExportedTypeDeclarations) — so installing them there just litters the
+# prefix with four inert files.
+if(NOT APPLE)
+  install(FILES vv-formats.xml
+          DESTINATION ${CMAKE_INSTALL_DATADIR}/mime/packages)
+  install(FILES org.vv.Viewer.desktop
+          DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+  install(FILES org.vv.Viewer.metainfo.xml
+          DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
+  install(FILES icons/vv.svg
+          DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
+endif()
