@@ -921,11 +921,23 @@ else:
         "gene_name": ["G1", "G2", "G3", "G4"],
         "mt":        [False, False, True, False],
     }, index=[f"gene{i}" for i in range(4)])
+    # The three dense-2D shapes are deliberately all present and all distinct,
+    # because vv labels their axes differently and used to label them the same:
+    #   obsm/X_umap  (5 obs x 2 dims)  -> cells x embedding dimensions
+    #   varm/PCs     (4 var x 3 comps) -> GENES x components (rows are var!)
+    #   layers/counts(5 obs x 4 var)   -> same shape as X, so genes as columns
+    # A width of 2 / 3 / 4 keeps them mutually distinguishable in assertions.
     adata = ad.AnnData(X=X, obs=obs_df, var=var_df,
                           obsm={"X_umap": np.array(
                               [[0.1, 0.2], [-0.3, 0.4],
                                [0.5, -0.1], [-0.2, -0.5],
-                               [0.0, 0.0]], dtype=np.float64)})
+                               [0.0, 0.0]], dtype=np.float64)},
+                          varm={"PCs": np.array(
+                              [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0],
+                               [7.0, 8.0, 9.0], [10.0, 11.0, 12.0]],
+                              dtype=np.float64)},
+                          layers={"counts": np.arange(
+                              20, dtype=np.float64).reshape(5, 4)})
     adata.write_h5ad(h5ad_path)
 
     # tiny.dense.h5ad: a *dense* X that is wider than the 200-column dense

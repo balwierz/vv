@@ -6,6 +6,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **AnnData `obsm` / `varm` tabs were labelled with gene names.** A UMAP
+  embedding rendered as `gene0 | gene1`, which reads as expression data rather
+  than coordinates. The labelling helper was written for `X` — its own comment
+  said so — but was called for every dense 2-D tab, and the shapes differ:
+  `X` and `layers/*` are (n_obs × n_var), but `obsm/*` is (n_obs × d) and
+  `varm/*` is (n_var × d), where `d` is an embedding width unrelated to the
+  number of genes. `obsm[X_umap]` now shows `X_umap1` / `X_umap2`, `varm[PCs]`
+  shows `PCs1…PCs3` with **gene** row labels (its rows were wrong too — they
+  carried cell barcodes), and `X` / `layers/*` keep gene columns as before.
+  The test fixture gained a `varm` and a `layers` entry; it had only `obsm`, so
+  two of the three shapes had no test at all.
+- **TUI columns other than integers never resized to their contents.** Integer
+  columns were fitted to the visible rows, but everything else kept the guess
+  made at setup — string 12, float 8, list 14 — regardless of the data. A
+  `name` column holding two-character values sat at 12 and a `val` column of
+  `0.5` at 8; on a three-column file that is 40 screen columns where 32 will
+  do, and the waste scales with the number of columns. Widths now follow the
+  visible rows for every type, floored by the source's `min_col_width()` and
+  the type name (so `int64` does not render as `i…`) and still capped by `-w`.
+  Table (`--no-interactive`) output is unchanged.
+
 ### Added
 - **macOS is a tested, published target.** The "Build (macOS)" CI job had been
   green for 15+ consecutive runs, but it only ran `cmake --build` plus

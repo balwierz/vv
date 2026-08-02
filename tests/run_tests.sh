@@ -782,6 +782,51 @@ if command -v python3 >/dev/null 2>&1 && command -v tmux >/dev/null 2>&1; then
     fi
 fi
 
+# ── TUI column widths follow the data, not the type ─────────────────────────
+# Only integer columns were fitted to the visible rows; every other type kept
+# the guess made at setup (string -> 12, float -> 8) forever. A `name` column
+# holding 2-character values sat at 12 and a `val` column of `0.5` at 8, which
+# on a wide table is most of the screen.
+if command -v tmux >/dev/null 2>&1; then
+    printf 'id\tname\tval\n1\tab\t0.5\n2\tcd\t0.25\n3\tef\t0.125\n' > "$TMP/narrow.tsv"
+    tmux kill-session -t vvwid 2>/dev/null
+    tmux new-session -d -s vvwid -x 100 -y 10 \
+        "TERM=xterm-256color $VV -i $TMP/narrow.tsv"
+    sleep 2
+    WID_HDR=$(tmux capture-pane -p -t vvwid | sed -n 1p)
+    WID_TYP=$(tmux capture-pane -p -t vvwid | sed -n 2p)
+    tmux kill-session -t vvwid 2>/dev/null
+    # Header row width is the direct measure: with the old floors the three
+    # columns spanned ~12+8 more than their contents need.
+    WID_LEN=$(printf '%s' "$WID_HDR" | sed 's/[[:space:]]*$//' | wc -c | tr -d ' ')
+    if [ "$WID_LEN" -gt 0 ] && [ "$WID_LEN" -le 36 ]; then
+        PASS=$((PASS+1)); echo "  ok    tui_widths_fit_data"
+    else
+        FAIL=$((FAIL+1))
+        echo "  FAIL  tui_widths_fit_data (header spans $WID_LEN cols, want <= 36; unfitted is 40)"
+        echo "       got: $WID_HDR"
+    fi
+    # ...but the type row must stay readable: fitting to data alone rendered
+    # `int64` as `i…`.
+    assert_contains "tui_widths_keep_type_readable"  "$WID_TYP" "int64"
+    assert_contains "tui_widths_keep_type_readable2" "$WID_TYP" "double"
+    # And a long string must still truncate at -w rather than widening forever.
+    printf 'id\tdesc\n1\t%s\n' "$(printf 'x%.0s' $(seq 1 80))" > "$TMP/wide.tsv"
+    tmux kill-session -t vvwid2 2>/dev/null
+    tmux new-session -d -s vvwid2 -x 100 -y 10 \
+        "TERM=xterm-256color $VV -i -w 20 $TMP/wide.tsv"
+    sleep 2
+    W20=$(tmux capture-pane -p -t vvwid2 | sed -n 4p)
+    tmux kill-session -t vvwid2 2>/dev/null
+    NX=$(printf '%s' "$W20" | grep -o 'x' | wc -l | tr -d ' ')
+    if [ "$NX" -gt 0 ] && [ "$NX" -le 20 ]; then
+        PASS=$((PASS+1)); echo "  ok    tui_widths_respect_max_col_w"
+    else
+        FAIL=$((FAIL+1))
+        echo "  FAIL  tui_widths_respect_max_col_w (${NX} x's with -w 20)"
+    fi
+fi
+
 # ── Format registry (--formats) and drift ────────────────────────────────────
 # kFormats[] is the one authoritative list of what vv reads. Before it, the
 # same information was restated in seven places and had already drifted:
@@ -1541,7 +1586,7 @@ fi
 if [ -f "$DATA/tiny.h5ad" ]; then
     H5AD_SCH=$("$VV" --schema "$DATA/tiny.h5ad" 2>&1)
     assert_contains "h5ad_footer_format"     "$H5AD_SCH" "Format: AnnData"
-    assert_contains "h5ad_footer_siblings"   "$H5AD_SCH" "+4 more tab(s)"
+    assert_contains "h5ad_footer_siblings"   "$H5AD_SCH" "+6 more tab(s)"
     H5AD_OUT=$("$VV" --color=never --no-interactive "$DATA/tiny.h5ad" 2>&1)
     # Summary table has rows for format / X / obs / var / obsm.
     assert_contains "h5ad_summary_root"      "$H5AD_OUT" "AnnData"
@@ -2665,5 +2710,38 @@ for f in README.md INSTALL.md; do
         FAIL=$((FAIL+1)); echo "  FAIL  version_no_stale_download_url_$(basename "$f" .md) ($stale)"
     fi
 done
+
+# ── AnnData dense-2D tabs are labelled by their OWN axes ────────────────────
+# apply_anndata_*_labels() was written for X (n_obs x n_var) and then called
+# for every Matrix2D tab, so obsm and varm — which are indexed by an embedding
+# dimension, not by gene — got gene names on their columns. A UMAP rendered as
+# `gene0 | gene1`, which reads as expression data rather than coordinates.
+if [ -f "$DATA/tiny.h5ad" ]; then
+    UMAP=$("$VV" --tab "obsm[X_umap]" -n 2 --tsv "$DATA/tiny.h5ad" 2>/dev/null | head -1)
+    assert_contains    "anndata_obsm_cols_are_dims"   "$UMAP" "X_umap1"
+    assert_contains    "anndata_obsm_cols_are_dims_2" "$UMAP" "X_umap2"
+    refute_contains    "anndata_obsm_cols_not_genes"  "$UMAP" "gene0"
+    assert_contains    "anndata_obsm_rows_are_obs"    "$UMAP" "obs"
+
+    # varm is indexed by GENE, so both axes were wrong: gene names across the
+    # top, cell barcodes down the side.
+    PCS=$("$VV" --tab "varm[PCs]" -n 2 --tsv "$DATA/tiny.h5ad" 2>/dev/null | head -1)
+    assert_contains    "anndata_varm_cols_are_comps"  "$PCS" "PCs1"
+    refute_contains    "anndata_varm_cols_not_genes"  "$PCS" "gene0"
+    assert_contains    "anndata_varm_rows_are_var"    "$PCS" "var"
+    VARM_ROW=$("$VV" --tab "varm[PCs]" -n 1 --tsv --no-header "$DATA/tiny.h5ad" 2>/dev/null | head -1)
+    assert_contains    "anndata_varm_row_label_is_gene" "$VARM_ROW" "gene0"
+
+    # layers/* DO mirror X's shape, so they must keep gene columns — the guard
+    # against over-correcting.
+    LAYER=$("$VV" --tab "layers[counts]" -n 2 --tsv "$DATA/tiny.h5ad" 2>/dev/null | head -1)
+    assert_contains    "anndata_layer_cols_are_genes" "$LAYER" "gene0"
+    assert_contains    "anndata_layer_rows_are_obs"   "$LAYER" "obs"
+
+    # ...and so does X itself (sparse here, a different code path).
+    XHDR=$("$VV" --tab "X (preview)" -n 2 --tsv "$DATA/tiny.h5ad" 2>/dev/null | head -1)
+    assert_contains    "anndata_x_cols_are_genes"     "$XHDR" "gene0"
+    assert_contains    "anndata_x_rows_are_obs"       "$XHDR" "obs"
+fi
 
 summarize
