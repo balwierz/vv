@@ -142,14 +142,14 @@ a cell over OSC52 (works through ssh and tmux). `H` lists every binding in-app
 ## Install
 
 Every release publishes static Linux binaries and Debian packages for x86_64
-and aarch64, with a `SHA256SUMS` manifest. Replace `1.17.0` below with the
+and aarch64, with a `SHA256SUMS` manifest. Replace `1.18.0` below with the
 [latest release](https://github.com/balwierz/vv/releases/latest) if newer.
 
 ### Debian / Ubuntu
 
 ```sh
-curl -LO https://github.com/balwierz/vv/releases/download/v1.17.0/vv_1.17.0-1_amd64.deb
-sudo apt install ./vv_1.17.0-1_amd64.deb
+curl -LO https://github.com/balwierz/vv/releases/download/v1.18.0/vv_1.18.0-1_amd64.deb
+sudo apt install ./vv_1.18.0-1_amd64.deb
 ```
 
 Use `arm64` in place of `amd64` on ARM.
@@ -161,13 +161,13 @@ linked in, so there are no runtime dependencies. Use `aarch64` in place of
 `x86_64` on ARM (AWS Graviton, Raspberry Pi 5, …).
 
 ```sh
-base=https://github.com/balwierz/vv/releases/download/v1.17.0
-curl -LO $base/vv-1.17.0-linux-x86_64.tar.gz
+base=https://github.com/balwierz/vv/releases/download/v1.18.0
+curl -LO $base/vv-1.18.0-linux-x86_64.tar.gz
 curl -LO $base/SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS
 
-tar -xzf vv-1.17.0-linux-x86_64.tar.gz
-sudo install vv-1.17.0-linux-x86_64/vv /usr/local/bin/
+tar -xzf vv-1.18.0-linux-x86_64.tar.gz
+sudo install vv-1.18.0-linux-x86_64/vv /usr/local/bin/
 ```
 
 ### Arch Linux
