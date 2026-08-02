@@ -2698,6 +2698,38 @@ check_version "changelog"   CHANGELOG.md              "^## \[$VER\]"
 # The install commands users copy-paste: an un-bumped one silently installs the
 # previous release, or 404s if the old assets were removed.
 check_version "homebrew_url"    packaging/homebrew/vv.rb "tags/v$VER\\.tar\\.gz"
+
+# Every artifact release.yml COLLECTS must also be PUBLISHED. v1.18.0 shipped
+# a SHA256SUMS listing vv-<ver>-macos-arm64.tar.gz that was not attached to the
+# release, because the macOS pattern was added to the collect step and not to
+# the publish `files:` list — so `sha256sum -c SHA256SUMS` failed for everyone
+# who downloaded it.
+if command -v python3 >/dev/null 2>&1; then
+    python3 - .github/workflows/release.yml <<'PYEOF'
+import re, sys
+s = open(sys.argv[1]).read()
+collected = set(re.findall(r"find dist-all -name '([^']+)'", s))
+i = s.find('files: |')
+published = set()
+if i >= 0:
+    for line in s[i + len('files: |'):].split('\n'):
+        t = line.strip()
+        if not t:
+            continue
+        if not t.startswith('release/'):
+            break            # end of the block
+        published.add(t[len('release/'):])
+missing = sorted(c for c in collected if c not in published)
+if missing or not collected:
+    print('release.yml collects but never publishes:', ' '.join(missing) or '(no collect patterns found)')
+    sys.exit(1)
+PYEOF
+    if [ $? -eq 0 ]; then
+        PASS=$((PASS+1)); echo "  ok    release_collected_artifacts_published"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  release_collected_artifacts_published"
+    fi
+fi
 check_version "readme_install"  README.md   "v$VER"
 check_version "install_md"      INSTALL.md  "v$VER"
 # ...and no install command may still name the PREVIOUS version.
