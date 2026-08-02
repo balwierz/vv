@@ -227,5 +227,6 @@ jobs:
           body_path: release-notes.md
           files: |
             release/vv-*-linux-*.tar.gz
+            release/vv-*-macos-*.tar.gz
             release/vv_*_*.deb
             release/SHA256SUMS
