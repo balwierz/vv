@@ -149,7 +149,21 @@ set(CURSES_NEED_NCURSES TRUE)
 find_package(Curses REQUIRED)
 
 include(CheckCXXSourceCompiles)
-set(CMAKE_REQUIRED_INCLUDES "${CURSES_INCLUDE_DIRS}")
+# Include the PARENT of each curses include dir as well. A widec ncurses
+# installs into <prefix>/include/ncursesw/, and its own ncurses.h includes
+# <ncursesw/ncurses_dll.h> — a parent-relative path — so a probe given only
+# the ncursesw/ dir cannot even open the header. That is exactly what happened
+# in the static AlmaLinux 8 build: the header was present and the real compile
+# of main.cpp worked (it gets the parent via CMAKE_PREFIX_PATH), but the probe
+# could not see it.
+set(_vv_curses_probe_inc ${CURSES_INCLUDE_DIRS})
+foreach(_d IN LISTS CURSES_INCLUDE_DIRS)
+  get_filename_component(_p "${_d}" DIRECTORY)
+  if(_p)
+    list(APPEND _vv_curses_probe_inc "${_p}")
+  endif()
+endforeach()
+set(CMAKE_REQUIRED_INCLUDES "${_vv_curses_probe_inc}")
 check_cxx_source_compiles("
 #include <ncurses.h>
 #if !defined(NCURSES_VERSION_MAJOR) || NCURSES_VERSION_MAJOR < 6
@@ -163,19 +177,42 @@ check_cxx_source_compiles("
 #endif
 int main() { return 0; }
 " VV_NCURSES6_OK)
-unset(CMAKE_REQUIRED_INCLUDES)
 if(NOT VV_NCURSES6_OK)
-  message(FATAL_ERROR
-      "ncurses >= 6 is required (found headers in '${CURSES_INCLUDE_DIRS}').\n"
-      "  macOS ships ncurses 5.7, which lacks set_escdelay() and "
-      "BUTTON5_PRESSED.\n"
-      "  Install a current one and point CMake at it -- note that Homebrew's "
-      "ncurses is keg-only, so it is NOT on the default search path:\n"
-      "      brew install ncurses\n"
-      "      cmake -S . -B build "
-      "-DCMAKE_PREFIX_PATH=\"$(brew --prefix ncurses)\"\n"
-      "  On Linux install libncurses-dev (Debian/Ubuntu) or ncurses (Arch).")
+  # Distinguish "this ncurses is genuinely too old" from "the probe could not
+  # run here". Only the first is worth blocking on.
+  #
+  # This matters: the first version of this check had no such distinction and
+  # broke the static AlmaLinux 8 release build, which is the one configuration
+  # CI never exercises (it runs only on a tag). A convenience check must not be
+  # able to fail a build that would otherwise succeed — if we cannot positively
+  # prove the ncurses is too old, get out of the way and let the real compile
+  # of main.cpp speak for itself.
+  check_cxx_source_compiles("
+#include <ncurses.h>
+int main() { return 0; }
+" VV_NCURSES_HEADER_OK)
+  if(VV_NCURSES_HEADER_OK)
+    message(FATAL_ERROR
+        "ncurses >= 6 is required (found headers in '${CURSES_INCLUDE_DIRS}').\n"
+        "  The TUI uses set_escdelay() (ncurses >= 5.9) and BUTTON5_PRESSED, "
+        "which curses.h\n"
+        "  defines only under NCURSES_MOUSE_VERSION >= 2. macOS ships ncurses "
+        "5.7.\n"
+        "  Install a current one and point CMake at it -- note that Homebrew's "
+        "ncurses is\n"
+        "  keg-only, so it is NOT on the default search path:\n"
+        "      brew install ncurses\n"
+        "      cmake -S . -B build "
+        "-DCMAKE_PREFIX_PATH=\"$(brew --prefix ncurses)\"\n"
+        "  On Linux install libncurses-dev (Debian/Ubuntu) or ncurses (Arch).")
+  else()
+    message(STATUS
+        "ncurses    : version probe inconclusive in this configuration "
+        "(headers: '${CURSES_INCLUDE_DIRS}') -- continuing")
+  endif()
 endif()
+unset(CMAKE_REQUIRED_INCLUDES)
+unset(_vv_curses_probe_inc)
 
 # ── htslib (BAM support) ─────────────────────────────────────────────────────
 find_package(PkgConfig REQUIRED)
