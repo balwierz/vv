@@ -10,6 +10,7 @@ Every tagged release publishes, for **x86_64** and **aarch64**:
 |---|---|
 | `vv-<ver>-linux-<arch>.tar.gz` | static binary, no runtime dependencies |
 | `vv_<ver>-1_<deb-arch>.deb` | Debian package (same static binary) |
+| `vv-gui_<ver>-1+ubuntu24.04_<deb-arch>.deb` | Qt6 GUI (`vvg`) — **Ubuntu 24.04 only** |
 | `vv-<ver>-macos-arm64.tar.gz` | Apple Silicon; **not** static — needs the Homebrew deps |
 | `SHA256SUMS` | checksums for everything above |
 
@@ -24,6 +25,26 @@ sudo apt install ./vv_1.18.0-1_amd64.deb        # use arm64 on ARM
 ```
 
 The package installs `/usr/bin/vv`, the man page and the shell completions.
+
+The Qt6 GUI ships as its own package, built **for Ubuntu 24.04** — unlike the
+CLI `.deb` it cannot be a portable static binary, because a GUI has to link
+the distro's shared Qt6. Apache Arrow/Parquet and libxlsxio (which the
+Ubuntu 24.04 archive does not carry) are bundled inside the package under
+`/usr/lib/vv-gui`; everything else resolves from the standard archive, so
+**no third-party apt repository is needed**. Grab the
+`vv-gui_<ver>-1+ubuntu24.04_<deb-arch>.deb` asset from the
+[latest release](https://github.com/balwierz/vv/releases/latest) — it is
+first published with the release *after* v1.18.0 — then:
+
+```sh
+sudo apt install ./vv-gui_*_amd64.deb          # use arm64 on ARM
+```
+
+It installs `/usr/bin/vvg` plus the desktop entry, MIME types and icon. The
+Dolphin thumbnailer / KFileMetaData plugins are **not** in it — they need
+KF6, which Ubuntu 24.04 does not package. For those (or for any other
+distro), build from source with `-DVV_BUILD_GUI=ON` (below), or use the Arch
+split package.
 
 ### Static binary (any modern Linux)
 
@@ -186,6 +207,9 @@ sudo cmake --install xlsxio-bld && sudo ldconfig
 ```
 
 ### Optional: Qt6 GUI (`-DVV_BUILD_GUI=ON`)
+
+On Ubuntu 24.04 there is a prebuilt `vv-gui` `.deb` (see
+[Debian / Ubuntu](#debian--ubuntu) above); everywhere else, build it:
 
 ```sh
 sudo apt-get install -y qt6-base-dev extra-cmake-modules            # Debian/Ubuntu

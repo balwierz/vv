@@ -4,6 +4,27 @@ All notable changes to `vv` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **The Qt6 GUI ships as a Debian package.** Until now `vvg` existed only as
+  an Arch split package or a source build; releases now attach
+  `vv-gui_<ver>-1+ubuntu24.04_<arch>.deb` for amd64 and arm64. It cannot ride
+  in the static CLI `.deb` — a GUI has to link the distro's shared Qt6 — so
+  the package targets the release named in its version suffix. The two
+  libraries Ubuntu 24.04's archive does not carry (Apache Arrow/Parquet,
+  libxlsxio) are
+  bundled privately under `/usr/lib/vv-gui` and found via `DT_RPATH`; every
+  other dependency is computed from the ldd closure at build time, so
+  `apt install ./vv-gui_….deb` works without any third-party repository. CI
+  builds the same package on every push and install-tests it in a pristine
+  `ubuntu:24.04` container — the release job is not a tag-only code path —
+  and the KF6 Dolphin/KFileMetaData plugins are picked up automatically once
+  the builder distro packages KF6 (Ubuntu 25.10+). The Arrow apt-repo install
+  dance moved from `ci.yml` into a composite action
+  (`.github/actions/setup-linux-deps`) so CI and the release job share one
+  copy.
+
 ## [1.18.0] - 2026-08-02
 
 ### Fixed

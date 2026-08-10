@@ -100,6 +100,75 @@ jobs:
             vv_*_*.deb
             SHA256SUMS-${{ matrix.arch }}
 
+  gui-linux:
+    # The Qt6 GUI cannot ride in the static .deb above — it links the distro's
+    # shared Qt6 — so it ships as its own per-distro package. Built exactly
+    # like ci.yml's GUI leg (same composite action, same shared-deps config);
+    # build-gui-deb.sh bundles the non-archive libs (Apache Arrow/Parquet,
+    # xlsxio) under /usr/lib/vv-gui and computes the Depends, and the
+    # pristine-container test proves the result installs and runs from the
+    # Ubuntu archive alone. CI runs the same script on every push, so this
+    # job is not a tag-only code path.
+    name: Build vv-gui deb (Ubuntu 24.04, ${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install reader dependencies
+        uses: ./.github/actions/setup-linux-deps
+
+      - name: Install GUI dependencies (Qt6; KF6 if available)
+        # Same best-effort KF6 rule as ci.yml: the KF6 dev packages first
+        # appear in Ubuntu 25.10, so on 24.04 the build (and hence the .deb)
+        # skips the Dolphin/KFileMetaData plugins. build-gui-deb.sh packages
+        # them automatically the day the runner distro carries KF6.
+        run: |
+          sudo apt-get install -y -V qt6-base-dev extra-cmake-modules patchelf
+          sudo apt-get install -y -V \
+            libkf6kio-dev libkf6coreaddons-dev libkf6filemetadata-dev \
+            || echo "::notice::KF6 dev packages unavailable; the .deb ships without the Dolphin/KFileMetaData plugins."
+
+      - name: Build (VV_BUILD_GUI=ON)
+        run: |
+          cmake -S . -B build-gui -DCMAKE_BUILD_TYPE=Release -DVV_BUILD_GUI=ON
+          cmake --build build-gui -j$(nproc)
+
+      - name: Smoke-test vvg (offscreen)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          VVG_SELFTEST=1 ./build-gui/gui/vvg tests/data/tiny.parquet
+          test "$(VVG_WINTEST=1 ./build-gui/gui/vvg tests/data/tiny.parquet)" = "win_tabs=1"
+
+      - name: Build vv-gui deb
+        run: |
+          bash packaging/debian/build-gui-deb.sh build-gui .
+          sha256sum vv-gui_*.deb > "SHA256SUMS-gui-${{ matrix.arch }}"
+
+      - name: Install-test in a pristine container
+        run: |
+          deb="$(ls vv-gui_*.deb)"
+          docker run --rm -v "$PWD:/mnt" ubuntu:24.04 \
+            bash /mnt/packaging/debian/test-gui-deb.sh "/mnt/$deb" /mnt/tests/data/tiny.parquet
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: gui-linux-${{ matrix.arch }}
+          path: |
+            vv-gui_*.deb
+            SHA256SUMS-gui-${{ matrix.arch }}
+
   macos-arm64:
     name: Build macOS binary (arm64)
     runs-on: macos-latest
@@ -177,7 +246,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [static-linux, macos-arm64]
+    needs: [static-linux, gui-linux, macos-arm64]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -200,6 +269,7 @@ jobs:
           find dist-all -name 'vv-*-linux-*.tar.gz' -exec cp {} release/ \;
           find dist-all -name 'vv-*-macos-*.tar.gz' -exec cp {} release/ \;
           find dist-all -name 'vv_*_*.deb'          -exec cp {} release/ \;
+          find dist-all -name 'vv-gui_*.deb'        -exec cp {} release/ \;
           # Merge per-arch SHA256SUMS into one file so the user can verify
           # any tarball or .deb with `sha256sum -c SHA256SUMS`.
           (cd release && find ../dist-all -name 'SHA256SUMS-*' \
@@ -229,4 +299,5 @@ jobs:
             release/vv-*-linux-*.tar.gz
             release/vv-*-macos-*.tar.gz
             release/vv_*_*.deb
+            release/vv-gui_*.deb
             release/SHA256SUMS
