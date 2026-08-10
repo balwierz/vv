@@ -154,6 +154,17 @@ sudo apt install ./vv_1.18.0-1_amd64.deb
 
 Use `arm64` in place of `amd64` on ARM.
 
+The Qt6 desktop viewer `vvg` has its own package, built for **Ubuntu 24.04**
+(it links the distro's shared Qt6; Arrow and the other libraries missing from
+Ubuntu 24.04's archive are bundled inside, so no extra apt repository is
+needed). First published with the release *after* v1.18.0 — grab
+`vv-gui_<ver>-1+ubuntu24.04_amd64.deb` (or `arm64`) from the
+[latest release](https://github.com/balwierz/vv/releases/latest), then:
+
+```sh
+sudo apt install ./vv-gui_*_amd64.deb
+```
+
 ### Static binary — any Linux, glibc ≥ 2.28
 
 Self-contained: Arrow, Parquet, htslib, HDF5 and the compression stack are

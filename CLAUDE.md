@@ -171,6 +171,6 @@ man/vv.1                  groff man page
 tests/data/               small test fixtures (committed)
 tests/golden/             expected outputs (committed)
 tests/run_tests.sh        smoke test harness
-packaging/                bioconda, homebrew, arch (vv + vv-gui), rpm, docker
+packaging/                bioconda, homebrew, arch (vv + vv-gui), debian (vv + vv-gui), rpm, docker
 .github/workflows/        CI + release workflows
 ```
