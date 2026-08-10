@@ -141,8 +141,9 @@ a cell over OSC52 (works through ssh and tmux). `H` lists every binding in-app
 
 ## Install
 
-Every release publishes static Linux binaries and Debian packages for x86_64
-and aarch64, with a `SHA256SUMS` manifest. Replace `1.18.0` below with the
+Every release publishes static Linux binaries, Debian packages and Fedora
+RPMs for x86_64 and aarch64, plus a macOS tarball, with a `SHA256SUMS`
+manifest. Replace `1.18.0` below with the
 [latest release](https://github.com/balwierz/vv/releases/latest) if newer.
 
 ### Debian / Ubuntu
@@ -163,6 +164,17 @@ needed). First published with the release *after* v1.18.0 — grab
 
 ```sh
 sudo apt install ./vv-gui_*_amd64.deb
+```
+
+### Fedora
+
+RPMs for the CLI and the Qt6 GUI — the GUI one includes the KF6 Dolphin
+plugins, and every dependency comes from the Fedora repos. First published
+with the release *after* v1.18.0 — grab both from the
+[latest release](https://github.com/balwierz/vv/releases/latest):
+
+```sh
+sudo dnf install ./vv-*.rpm
 ```
 
 ### Static binary — any Linux, glibc ≥ 2.28

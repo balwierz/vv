@@ -11,6 +11,8 @@ Every tagged release publishes, for **x86_64** and **aarch64**:
 | `vv-<ver>-linux-<arch>.tar.gz` | static binary, no runtime dependencies |
 | `vv_<ver>-1_<deb-arch>.deb` | Debian package (same static binary) |
 | `vv-gui_<ver>-1+ubuntu24.04_<deb-arch>.deb` | Qt6 GUI (`vvg`) — **Ubuntu 24.04 only** |
+| `vv-<ver>-1.fc<NN>.<arch>.rpm` | Fedora package — CLI, deps from the Fedora repos |
+| `vv-gui-<ver>-1.fc<NN>.<arch>.rpm` | Fedora package — Qt6 GUI **with the KF6 Dolphin plugins** |
 | `vv-<ver>-macos-arm64.tar.gz` | Apple Silicon `vv` + `vvg`; **not** static — needs the Homebrew deps |
 | `SHA256SUMS` | checksums for everything above |
 
@@ -42,9 +44,26 @@ sudo apt install ./vv-gui_*_amd64.deb          # use arm64 on ARM
 
 It installs `/usr/bin/vvg` plus the desktop entry, MIME types and icon. The
 Dolphin thumbnailer / KFileMetaData plugins are **not** in it — they need
-KF6, which Ubuntu 24.04 does not package. For those (or for any other
-distro), build from source with `-DVV_BUILD_GUI=ON` (below), or use the Arch
-split package.
+KF6, which Ubuntu 24.04 does not package. For those, use the Fedora RPM
+(below) or the Arch split package, or build from source with
+`-DVV_BUILD_GUI=ON`.
+
+### Fedora
+
+Both RPMs install with their dependencies straight from the Fedora repos —
+Fedora carries Arrow, Qt6, KF6, htslib and HDF5, so unlike the Ubuntu `.deb`
+no private shared libraries ride along. (xlsxio, which no distro packages,
+is built in statically — joining mimalloc, libBigWig and md4c, the statics
+every vv build links.) `vv-gui` here is the one prebuilt artifact that
+carries the Dolphin thumbnailer / KFileMetaData plugins. The `fc<NN>` in the filename is
+the Fedora release the RPMs were built for; on another Fedora, rebuild with
+`packaging/rpm/build-rpm.sh` instead. Grab both `.rpm`s from the
+[latest release](https://github.com/balwierz/vv/releases/latest) — first
+published with the release *after* v1.18.0 — then:
+
+```sh
+sudo dnf install ./vv-*.rpm        # CLI + GUI in one transaction
+```
 
 ### Static binary (any modern Linux)
 
@@ -105,9 +124,9 @@ tree. To package local changes, bump `pkgver` and re-run `updpkgsums`
 
 ### Not currently published
 
-`packaging/` also carries Bioconda, Homebrew and RPM recipes, but **no
-package exists on those channels yet** — they are prepared, not published.
-Use the `.deb`, the static tarball, or a source build.
+`packaging/` also carries Bioconda and Homebrew recipes, but **no package
+exists on those channels yet** — they are prepared, not published. Use the
+`.deb`, the RPM, the static tarball, or a source build.
 
 ## Build from source
 
@@ -151,6 +170,9 @@ sudo apt-get install -y libarrow-dev libparquet-dev
 > `sudo apt-get remove libcurl4-openssl-dev` and retry.
 
 ### Fedora / RHEL / Rocky / AlmaLinux
+
+Prebuilt RPMs for the current Fedora are published with each release (see
+[Fedora](#fedora) above). To build from source instead:
 
 ```sh
 # Fedora 43+

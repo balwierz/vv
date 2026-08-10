@@ -80,10 +80,12 @@ python3 tests/data/generate.py
    | `README.md`, `INSTALL.md` | the hard-coded version in every install command |
    | `packaging/arch/PKGBUILD` | `pkgver` (the `sha256sums` follow **after** the tag) |
    | `packaging/homebrew/vv.rb` | `url` (its `sha256` follows **after** the tag too) |
+   | `packaging/rpm/vv.spec` | `Version:`, plus a `%changelog` entry |
 
-   `packaging/debian/build-deb.sh` derives its version from `vv --version`, and
-   `release.yml` derives every artifact name from the tag, so neither needs an
-   edit — but both are wrong if `kVersion` is.
+   `packaging/debian/build-deb.sh` derives its version from `vv --version`,
+   `packaging/rpm/build-rpm.sh` overrides the spec's `Version:` from
+   `CMakeLists.txt`, and `release.yml` derives every artifact name from the
+   tag, so none of those needs an edit — but all are wrong if `kVersion` is.
 
 3. Move "Unreleased" CHANGELOG entries to a new versioned section with the
    release date. `release.yml` extracts that section verbatim as the GitHub
@@ -92,8 +94,9 @@ python3 tests/data/generate.py
 5. Tag: `git tag -a vX.Y.Z -m "vX.Y.Z"; git push --tags`.
 6. The `release.yml` workflow builds the static binary for x86_64 and aarch64
    and wraps each in a CLI `.deb`, builds the `vv-gui` Ubuntu 24.04 `.deb`s
-   (amd64 + arm64) and the macOS tarball, attaches everything plus
-   `SHA256SUMS` to the GitHub Release, and publishes the page.
+   (amd64 + arm64), the Fedora RPMs (`vv` + `vv-gui`, x86_64 + aarch64) and
+   the macOS tarball, attaches everything plus `SHA256SUMS` to the GitHub
+   Release, and publishes the page.
 7. **After the tag exists**, pin the two source-tarball checksums — neither
    can be computed before, because both hash the tarball GitHub generates
    *from* the tag:

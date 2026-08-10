@@ -23,6 +23,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Arrow apt-repo install dance moved from `ci.yml` into a composite action
   (`.github/actions/setup-linux-deps`) so CI and the release job share one
   copy.
+- **Fedora RPMs, CLI + GUI.** `packaging/rpm/vv.spec` had rotted at 1.9.0 —
+  never built anywhere, missing half its BuildRequires (expat, minizip, zlib,
+  git, pkgconf), missing the shell completions, and silent on xlsxio, which
+  no distro packages. Rewritten: xlsxio is built inside `%build` as a PIC
+  static archive (PIC is load-bearing — libvvcore links into the KF6 plugin
+  `.so` files), and releases now attach `vv-<ver>-1.fc<NN>.<arch>.rpm` plus
+  `vv-gui-<ver>-1.fc<NN>.<arch>.rpm` for x86_64 and aarch64, built by
+  `packaging/rpm/build-rpm.sh` in a `fedora:latest` container. Fedora's repos
+  carry Arrow, Qt6, KF6, htslib and HDF5, so unlike the Ubuntu `.deb` the
+  RPMs ship no private shared libraries — xlsxio simply joins mimalloc,
+  libBigWig and md4c among the statics every vv build links — and `vv-gui`
+  is the first prebuilt artifact with the Dolphin thumbnailer /
+  KFileMetaData plugins. CI builds and pristine-container install-tests the
+  same packages on every push, and the spec's `Version:` is overridden from
+  `CMakeLists.txt` at build time (and joined the release checklist) so it
+  cannot rot unnoticed again.
 - **`vvg` ships in the macOS tarball.** `vv-<ver>-macos-arm64.tar.gz` now
   carries the Qt6 GUI next to the CLI. Like `vv` it links the Homebrew
   libraries it was built against, so it additionally needs `brew install qt`.

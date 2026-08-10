@@ -169,6 +169,51 @@ jobs:
             vv-gui_*.deb
             SHA256SUMS-gui-${{ matrix.arch }}
 
+  rpm-linux:
+    # Fedora packages, CLI + GUI, built by packaging/rpm/build-rpm.sh inside
+    # a fedora:latest container (the %{?dist} tag in the filename records
+    # which Fedora that was). Unlike the Ubuntu vv-gui .deb these ship no
+    # private shared libraries — Fedora's repos carry Arrow, Qt6, KF6, htslib
+    # and HDF5; xlsxio (packaged by no distro) is linked in statically. This is
+    # also the only prebuilt artifact with the KF6 Dolphin plugins. CI runs
+    # the same scripts on every push, so this job is not a tag-only code path.
+    name: Build RPMs (Fedora, ${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Build RPMs in a Fedora container
+        run: |
+          docker run --rm -v "$PWD:/mnt" -w /mnt fedora:latest \
+            bash packaging/rpm/build-rpm.sh .
+          sha256sum vv-[0-9]*.rpm vv-gui-[0-9]*.rpm > "SHA256SUMS-rpm-${{ matrix.arch }}"
+
+      - name: Install-test in a pristine container
+        run: |
+          cli="$(ls vv-[0-9]*.rpm)"
+          gui="$(ls vv-gui-[0-9]*.rpm)"
+          docker run --rm -v "$PWD:/mnt" fedora:latest \
+            bash /mnt/packaging/rpm/test-rpm.sh "/mnt/$cli" "/mnt/$gui" /mnt/tests/data/tiny.parquet
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: rpm-${{ matrix.arch }}
+          path: |
+            vv-[0-9]*.rpm
+            vv-gui-[0-9]*.rpm
+            SHA256SUMS-rpm-${{ matrix.arch }}
+
   macos-arm64:
     name: Build macOS binary (arm64)
     runs-on: macos-latest
@@ -258,7 +303,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [static-linux, gui-linux, macos-arm64]
+    needs: [static-linux, gui-linux, rpm-linux, macos-arm64]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -282,6 +327,8 @@ jobs:
           find dist-all -name 'vv-*-macos-*.tar.gz' -exec cp {} release/ \;
           find dist-all -name 'vv_*_*.deb'          -exec cp {} release/ \;
           find dist-all -name 'vv-gui_*.deb'        -exec cp {} release/ \;
+          find dist-all -name 'vv-[0-9]*.rpm'       -exec cp {} release/ \;
+          find dist-all -name 'vv-gui-[0-9]*.rpm'   -exec cp {} release/ \;
           # Merge per-arch SHA256SUMS into one file so the user can verify
           # any tarball or .deb with `sha256sum -c SHA256SUMS`.
           (cd release && find ../dist-all -name 'SHA256SUMS-*' \
@@ -312,4 +359,6 @@ jobs:
             release/vv-*-macos-*.tar.gz
             release/vv_*_*.deb
             release/vv-gui_*.deb
+            release/vv-[0-9]*.rpm
+            release/vv-gui-[0-9]*.rpm
             release/SHA256SUMS
