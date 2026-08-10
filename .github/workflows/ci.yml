@@ -202,6 +202,29 @@ jobs:
           docker run --rm -v "$PWD:/mnt" ubuntu:24.04 \
             bash /mnt/packaging/debian/test-gui-deb.sh "/mnt/$deb" /mnt/tests/data/tiny.parquet
 
+  build-rpm:
+    # release.yml ships these RPMs from a job that would otherwise first run
+    # on a tag; build and install-test the same packages here on every push
+    # (x86_64 only — the release job adds aarch64). fedora:latest on purpose:
+    # the RPMs target whatever Fedora is current at build time, and the
+    # %{?dist} tag in the filename records which one that was.
+    name: Build & install-test RPM (Fedora)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build RPMs in a Fedora container
+        run: |
+          docker run --rm -v "$PWD:/mnt" -w /mnt fedora:latest \
+            bash packaging/rpm/build-rpm.sh .
+
+      - name: Install-test in a pristine container
+        run: |
+          cli="$(ls vv-[0-9]*.rpm)"
+          gui="$(ls vv-gui-[0-9]*.rpm)"
+          docker run --rm -v "$PWD:/mnt" fedora:latest \
+            bash /mnt/packaging/rpm/test-rpm.sh "/mnt/$cli" "/mnt/$gui" /mnt/tests/data/tiny.parquet
+
   build-macos:
     name: Build (macOS)
     runs-on: macos-latest
