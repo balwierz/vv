@@ -13,17 +13,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   in the static CLI `.deb` — a GUI has to link the distro's shared Qt6 — so
   the package targets the release named in its version suffix. The two
   libraries Ubuntu 24.04's archive does not carry (Apache Arrow/Parquet,
-  libxlsxio) are
-  bundled privately under `/usr/lib/vv-gui` and found via `DT_RPATH`; every
-  other dependency is computed from the ldd closure at build time, so
-  `apt install ./vv-gui_….deb` works without any third-party repository. CI
-  builds the same package on every push and install-tests it in a pristine
-  `ubuntu:24.04` container — the release job is not a tag-only code path —
-  and the KF6 Dolphin/KFileMetaData plugins are picked up automatically once
-  the builder distro packages KF6 (Ubuntu 25.10+). The Arrow apt-repo install
-  dance moved from `ci.yml` into a composite action
+  libxlsxio) are bundled privately under `/usr/lib/vv-gui` and found via
+  `DT_RPATH`; every other dependency is computed from the ldd closure at
+  build time, so `apt install ./vv-gui_….deb` works without any third-party
+  repository. CI builds the same package on every push and install-tests it
+  in a pristine `ubuntu:24.04` container — the release job is not a tag-only
+  code path — and the KF6 Dolphin/KFileMetaData plugins are picked up
+  automatically once the builder distro packages KF6 (Ubuntu 25.10+). The
+  Arrow apt-repo install dance moved from `ci.yml` into a composite action
   (`.github/actions/setup-linux-deps`) so CI and the release job share one
   copy.
+- **`vvg` ships in the macOS tarball.** `vv-<ver>-macos-arm64.tar.gz` now
+  carries the Qt6 GUI next to the CLI. Like `vv` it links the Homebrew
+  libraries it was built against, so it additionally needs `brew install qt`.
+  The macOS CI leg builds with `-DVV_BUILD_GUI=ON` and runs the same offscreen
+  GUI checks as Linux (thumbnail/metadata cores, selftest, window path, tabix
+  region re-open, background filter and find) — the GUI cannot silently rot
+  on the one platform that ships it inside the main tarball.
 
 ## [1.18.0] - 2026-08-02
 

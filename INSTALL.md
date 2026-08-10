@@ -11,7 +11,7 @@ Every tagged release publishes, for **x86_64** and **aarch64**:
 | `vv-<ver>-linux-<arch>.tar.gz` | static binary, no runtime dependencies |
 | `vv_<ver>-1_<deb-arch>.deb` | Debian package (same static binary) |
 | `vv-gui_<ver>-1+ubuntu24.04_<deb-arch>.deb` | Qt6 GUI (`vvg`) — **Ubuntu 24.04 only** |
-| `vv-<ver>-macos-arm64.tar.gz` | Apple Silicon; **not** static — needs the Homebrew deps |
+| `vv-<ver>-macos-arm64.tar.gz` | Apple Silicon `vv` + `vvg`; **not** static — needs the Homebrew deps |
 | `SHA256SUMS` | checksums for everything above |
 
 Replace `1.18.0` below with the
@@ -209,11 +209,13 @@ sudo cmake --install xlsxio-bld && sudo ldconfig
 ### Optional: Qt6 GUI (`-DVV_BUILD_GUI=ON`)
 
 On Ubuntu 24.04 there is a prebuilt `vv-gui` `.deb` (see
-[Debian / Ubuntu](#debian--ubuntu) above); everywhere else, build it:
+[Debian / Ubuntu](#debian--ubuntu) above), and the macOS release tarball
+ships `vvg` prebuilt; everywhere else, build it:
 
 ```sh
 sudo apt-get install -y qt6-base-dev extra-cmake-modules            # Debian/Ubuntu
 sudo pacman -S qt6-base extra-cmake-modules                          # Arch
+brew install qt                                                      # macOS
 ```
 
 The Dolphin thumbnailer and KFileMetaData plugins additionally need KF6, and
@@ -228,7 +230,9 @@ sudo pacman -S kio kcoreaddons kfilemetadata                          # Arch
 ### macOS
 
 Apple Silicon binaries are published with each release (see the table at the
-top), and the full test suite runs on macOS in CI. To build from source:
+top) — the tarball carries both `vv` and the Qt6 GUI `vvg`, and neither is
+static: install the Homebrew deps below, plus `qt` if you use `vvg`. The full
+test suite (CLI and GUI, offscreen) runs on macOS in CI. To build from source:
 
 ```sh
 brew install cmake apache-arrow htslib ncurses xlsxio expat minizip hdf5
