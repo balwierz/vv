@@ -178,24 +178,32 @@ jobs:
           fetch-depth: 0
 
       - name: Install dependencies
-        run: brew install cmake apache-arrow htslib ncurses xlsxio expat minizip hdf5
+        run: brew install cmake apache-arrow htslib ncurses xlsxio expat minizip hdf5 qt
 
       - name: Configure
         # Homebrew's ncurses is keg-only, and Arrow/xlsxio/... each live under
         # their own prefix, so every one has to be named explicitly. Missing
         # the ncurses entry silently resolves to Apple's 5.7 and fails the
         # ncurses>=6 check in CMakeLists.txt.
+        # VV_BUILD_GUI=ON: the tarball ships vvg next to vv (both link the
+        # Homebrew libs; vvg additionally links Homebrew's qt).
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix apache-arrow);$(brew --prefix htslib);$(brew --prefix ncurses);$(brew --prefix xlsxio);$(brew --prefix expat);$(brew --prefix minizip);$(brew --prefix hdf5)"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVV_BUILD_GUI=ON \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix apache-arrow);$(brew --prefix htslib);$(brew --prefix ncurses);$(brew --prefix xlsxio);$(brew --prefix expat);$(brew --prefix minizip);$(brew --prefix hdf5);$(brew --prefix qt)"
 
       - name: Build
         run: cmake --build build -j$(sysctl -n hw.ncpu)
 
       - name: Sanity check
+        # The vvg checks use the committed tiny.parquet fixture — this job
+        # (unlike CI's build-macos) never runs generate.py.
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: |
           ./build/vv --version
           ./build/vv --help
+          VVG_SELFTEST=1 ./build/gui/vvg tests/data/tiny.parquet
+          test "$(VVG_WINTEST=1 ./build/gui/vvg tests/data/tiny.parquet)" = "win_tabs=1"
 
       - name: Package
         run: |
@@ -203,26 +211,30 @@ jobs:
           stem="vv-${version}-macos-arm64"
           mkdir -p "$stem"
           cp build/vv "$stem/"
+          cp build/gui/vvg "$stem/"
           # `--strip-all` is GNU strip; macOS strip wants -S -x.
-          strip -S -x "$stem/vv"
+          strip -S -x "$stem/vv" "$stem/vvg"
           cp LICENSE CHANGELOG.md "$stem/"
           cp man/vv.1 "$stem/" 2>/dev/null || true
           cp INSTALL.md docs/USAGE.md "$stem/" 2>/dev/null || true
           {
             echo "# vv ${version} (macOS arm64)"
             echo
-            echo "Universal genomic file viewer."
+            echo "Universal genomic file viewer — the CLI (\`vv\`) and the"
+            echo "Qt6 GUI (\`vvg\`)."
             echo
             echo '```sh'
             echo "sudo install ${stem}/vv /usr/local/bin/"
+            echo "sudo install ${stem}/vvg /usr/local/bin/    # Qt6 GUI (optional)"
             echo "vv --help"
             echo '```'
             echo
-            echo "NOT a static binary: it links the Homebrew libraries it was"
-            echo "built against. Install them with:"
+            echo "NOT static binaries: they link the Homebrew libraries they"
+            echo "were built against. Install them with:"
             echo
             echo '```sh'
             echo "brew install apache-arrow htslib ncurses xlsxio expat minizip hdf5"
+            echo "brew install qt        # only vvg needs this"
             echo '```'
             echo
             echo "Apple Silicon only. On an Intel Mac, build from source —"

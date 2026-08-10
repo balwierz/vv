@@ -205,9 +205,10 @@ cmake --build build -j$(nproc)
 ```
 
 **macOS** (Apple Silicon) is a published target: the full test suite runs on
-macOS in CI and each release carries a `vv-<ver>-macos-arm64.tar.gz`. That
-tarball is not static — it links the Homebrew libraries it was built against —
-so `brew install` is the smoother path. Intel Macs build from source. ORC is
+macOS in CI and each release carries a `vv-<ver>-macos-arm64.tar.gz` with the
+CLI and the Qt6 GUI (`vvg`). The tarball is not static — it links the
+Homebrew libraries it was built against (for `vvg`, additionally `qt`) — so
+`brew install` is the smoother path. Intel Macs build from source. ORC is
 unavailable there because Homebrew's Arrow is built without the adapter.
 See [INSTALL.md](INSTALL.md).
 

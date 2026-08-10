@@ -208,13 +208,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install dependencies
-        run: brew install cmake apache-arrow htslib ncurses xlsxio expat minizip hdf5
+        run: brew install cmake apache-arrow htslib ncurses xlsxio expat minizip hdf5 qt
       - name: Configure
         # Homebrew's `apache-arrow` formula installs to its own prefix
         # (`$(brew --prefix apache-arrow)` — typically /opt/homebrew/opt/…
         # on Apple Silicon, /usr/local/opt/… on Intel). CMake's
         # `find_package(Arrow)` doesn't pick this up automatically;
         # CMAKE_PREFIX_PATH points it at the right place.
+        #
+        # VV_BUILD_GUI=ON in the same build dir (unlike Linux's separate
+        # build-gui) so main.cpp compiles once for vv and once for vvcore,
+        # not four times: the macOS release tarball ships vvg next to vv,
+        # and this is where that configuration gets exercised.
         run: |
           ARROW_PREFIX="$(brew --prefix apache-arrow)"
           HTSLIB_PREFIX="$(brew --prefix htslib)"
@@ -223,8 +228,9 @@ jobs:
           EXPAT_PREFIX="$(brew --prefix expat)"
           MINIZIP_PREFIX="$(brew --prefix minizip)"
           HDF5_PREFIX="$(brew --prefix hdf5)"
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$ARROW_PREFIX;$HTSLIB_PREFIX;$NCURSES_PREFIX;$XLSXIO_PREFIX;$EXPAT_PREFIX;$MINIZIP_PREFIX;$HDF5_PREFIX"
+          QT_PREFIX="$(brew --prefix qt)"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVV_BUILD_GUI=ON \
+            -DCMAKE_PREFIX_PATH="$ARROW_PREFIX;$HTSLIB_PREFIX;$NCURSES_PREFIX;$XLSXIO_PREFIX;$EXPAT_PREFIX;$MINIZIP_PREFIX;$HDF5_PREFIX;$QT_PREFIX"
       - name: Build
         run: cmake --build build -j$(sysctl -n hw.ncpu)
       - name: Sanity check
@@ -258,3 +264,31 @@ jobs:
           VV: ${{ github.workspace }}/build/vv
         run: tests/run_tests.sh
         if: hashFiles('tests/run_tests.sh') != ''
+
+      # Mirrors the Linux "Verify GUI artifacts" step minus the KF6 .so
+      # checks (the KF6 plugins are freedesktop/Linux-only; gui/kde/CMakeLists
+      # never builds them on macOS). Same offscreen end-to-end coverage, so
+      # the GUI cannot silently rot on the platform that ships it in the
+      # release tarball.
+      - name: Verify GUI artifacts (offscreen)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -e
+          test -x build/gui/vvg
+          ./build/gui/kde/vvkdetest tests/data/tiny.parquet
+          ./build/gui/kde/vvkdetest --allow-empty tests/data/tiny.malformed.npz
+          VVG_SELFTEST=1 ./build/gui/vvg tests/data/tiny.parquet
+          test "$(VVG_WINTEST=1 ./build/gui/vvg tests/data/tiny.parquet)" = "win_tabs=1"
+          VVG_WINTEST=1 VVG_REGION=chr1:1099-1200 ./build/gui/vvg tests/data/tiny.bed.gz \
+            | grep -q 'rows=1'
+          VVG_WINTEST=1 VVG_REGION=chr1:0-3000 ./build/gui/vvg tests/data/tiny.parquet \
+            | grep -q 'rows=3'
+          VVG_WINTEST=1 VVG_AFILTER='Score > 0.2' ./build/gui/vvg tests/data/tiny.parquet \
+            | grep -q 'afilter .* rows=16'
+          VVG_WINTEST=1 VVG_AFIND='chr1' ./build/gui/vvg tests/data/tiny.parquet \
+            | grep -q 'afind .* matches=12'
+          if [ -f tests/data/tiny.dense.h5ad ]; then
+            VVG_WINTEST=1 VVG_TABDIMS=1 ./build/gui/vvg tests/data/tiny.dense.h5ad \
+              | grep -qE "tab 'X' rows=3 cols=201 .*first 200 of 250 cols"
+          fi
