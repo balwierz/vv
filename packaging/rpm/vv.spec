@@ -27,7 +27,7 @@
 %global xlsxio_version 0.2.36
 
 Name:           vv
-Version:        1.18.0
+Version:        1.18.1
 Release:        1%{?dist}
 Summary:        Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)
 License:        MIT
@@ -143,6 +143,10 @@ rm -f  %{buildroot}%{_libdir}/pkgconfig/mimalloc.pc
 %{_datadir}/icons/hicolor/scalable/apps/vv.svg
 
 %changelog
+* Mon Aug 10 2026 Piotr Balwierz <nikt@tuta.com> - 1.18.1-1
+- Update to 1.18.1 — the first release that publishes these RPMs (alongside
+  the Ubuntu vv-gui .deb and vvg in the macOS tarball).
+
 * Mon Aug 10 2026 Piotr Balwierz <nikt@tuta.com> - 1.18.0-1
 - Built and published from release CI (fedora:latest, x86_64 + aarch64).
 - xlsxio bundled as a PIC static archive (no distro packages it); mimalloc
