@@ -76,7 +76,7 @@ python3 tests/data/generate.py
    | `CMakeLists.txt` | `project(... VERSION ...)` |
    | `CITATION.cff` | `version:` **and** `date-released:` (GitHub's "Cite this repository" box) |
    | `man/vv.1` | the `.TH` line — both the version and the month |
-   | `docs/USAGE.md` | the `date:` field in the YAML front matter |
+   | `docs/USAGE.md` | the `date:` field in the YAML front matter, **and** the `ver=` install snippet near the end |
    | `README.md`, `INSTALL.md` | the hard-coded version in every install command |
    | `packaging/arch/PKGBUILD` | `pkgver` (the `sha256sums` follow **after** the tag) |
    | `packaging/homebrew/vv.rb` | `url` (its `sha256` follows **after** the tag too) |
