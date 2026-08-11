@@ -155,8 +155,9 @@ sudo apt install ./vv_1.18.2-1_amd64.deb
 
 Use `arm64` in place of `amd64` on ARM. On **Debian 13** use the
 `vv-gui_<ver>-1+debian13_<deb-arch>.deb` flavor instead — it also carries
-the KF6 Dolphin plugins, which Ubuntu 24.04 cannot build; see
-[INSTALL.md](INSTALL.md).
+the KF6 Dolphin plugins, which Ubuntu 24.04 cannot build — and on Debian
+**testing/sid** the `+debianforky` flavor, rebuilt against current testing
+at every release; see [INSTALL.md](INSTALL.md).
 
 The Qt6 desktop viewer `vvg` has its own package, built for **Ubuntu 24.04**
 (it links the distro's shared Qt6; Arrow and the other libraries missing from
