@@ -143,20 +143,20 @@ a cell over OSC52 (works through ssh and tmux). `H` lists every binding in-app
 
 Every release publishes static Linux binaries, Debian packages and Fedora
 RPMs for x86_64 and aarch64, plus a macOS tarball, with a `SHA256SUMS`
-manifest. Replace `1.18.1` below with the
+manifest. Replace `1.18.2` below with the
 [latest release](https://github.com/balwierz/vv/releases/latest) if newer.
 
 ### Debian / Ubuntu
 
 ```sh
-curl -LO https://github.com/balwierz/vv/releases/download/v1.18.1/vv_1.18.1-1_amd64.deb
-sudo apt install ./vv_1.18.1-1_amd64.deb
+curl -LO https://github.com/balwierz/vv/releases/download/v1.18.2/vv_1.18.2-1_amd64.deb
+sudo apt install ./vv_1.18.2-1_amd64.deb
 ```
 
 Use `arm64` in place of `amd64` on ARM. On **Debian 13** use the
-`vv-gui_<ver>-1+debian13_<deb-arch>.deb` flavor instead (from the release
-after v1.18.1; it also carries the KF6 Dolphin plugins, which Ubuntu 24.04
-cannot build) — see [INSTALL.md](INSTALL.md).
+`vv-gui_<ver>-1+debian13_<deb-arch>.deb` flavor instead — it also carries
+the KF6 Dolphin plugins, which Ubuntu 24.04 cannot build; see
+[INSTALL.md](INSTALL.md).
 
 The Qt6 desktop viewer `vvg` has its own package, built for **Ubuntu 24.04**
 (it links the distro's shared Qt6; Arrow and the other libraries missing from
@@ -164,8 +164,8 @@ Ubuntu 24.04's archive are bundled inside, so no extra apt repository is
 needed):
 
 ```sh
-curl -LO https://github.com/balwierz/vv/releases/download/v1.18.1/vv-gui_1.18.1-1+ubuntu24.04_amd64.deb
-sudo apt install ./vv-gui_1.18.1-1+ubuntu24.04_amd64.deb
+curl -LO https://github.com/balwierz/vv/releases/download/v1.18.2/vv-gui_1.18.2-1+ubuntu24.04_amd64.deb
+sudo apt install ./vv-gui_1.18.2-1+ubuntu24.04_amd64.deb
 ```
 
 Use `arm64` in place of `amd64` on ARM.
@@ -187,13 +187,13 @@ linked in, so there are no runtime dependencies. Use `aarch64` in place of
 `x86_64` on ARM (AWS Graviton, Raspberry Pi 5, …).
 
 ```sh
-base=https://github.com/balwierz/vv/releases/download/v1.18.1
-curl -LO $base/vv-1.18.1-linux-x86_64.tar.gz
+base=https://github.com/balwierz/vv/releases/download/v1.18.2
+curl -LO $base/vv-1.18.2-linux-x86_64.tar.gz
 curl -LO $base/SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS
 
-tar -xzf vv-1.18.1-linux-x86_64.tar.gz
-sudo install vv-1.18.1-linux-x86_64/vv /usr/local/bin/
+tar -xzf vv-1.18.2-linux-x86_64.tar.gz
+sudo install vv-1.18.2-linux-x86_64/vv /usr/local/bin/
 ```
 
 ### Arch Linux
