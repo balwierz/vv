@@ -27,7 +27,7 @@
 %global xlsxio_version 0.2.36
 
 Name:           vv
-Version:        1.18.2
+Version:        1.18.3
 Release:        1%{?dist}
 Summary:        Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)
 License:        MIT
@@ -143,6 +143,10 @@ rm -f  %{buildroot}%{_libdir}/pkgconfig/mimalloc.pc
 %{_datadir}/icons/hicolor/scalable/apps/vv.svg
 
 %changelog
+* Tue Aug 11 2026 Piotr Balwierz <nikt@tuta.com> - 1.18.3-1
+- Update to 1.18.3 (adds the Debian testing/sid flavor of the vv-gui .deb;
+  the RPMs themselves are unchanged).
+
 * Tue Aug 11 2026 Piotr Balwierz <nikt@tuta.com> - 1.18.2-1
 - Update to 1.18.2 (adds the Debian 13 flavor of the vv-gui .deb; the RPMs
   themselves are unchanged).

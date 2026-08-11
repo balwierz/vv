@@ -2,7 +2,7 @@
 title: "vv — User manual"
 subtitle: "Universal genomic file viewer"
 author: "Piotr Balwierz and contributors"
-date: "v1.18.2"
+date: "v1.18.3"
 papersize: a4
 fontsize: 10pt
 geometry: margin=2.4cm
@@ -991,7 +991,7 @@ cmake --build build -j$(nproc)
 sudo cmake --install build
 
 # Or install the portable static binary (release assets carry the version)
-ver=1.18.2
+ver=1.18.3
 curl -L https://github.com/balwierz/vv/releases/download/v$ver/vv-$ver-linux-x86_64.tar.gz | tar -xz
 sudo install vv-$ver-linux-x86_64/vv /usr/local/bin/
 ```

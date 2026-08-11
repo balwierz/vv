@@ -18,37 +18,38 @@ Every tagged release publishes, for **x86_64** and **aarch64**:
 | `vv-<ver>-macos-arm64.tar.gz` | Apple Silicon `vv` + `vvg`; **not** static — needs the Homebrew deps |
 | `SHA256SUMS` | checksums for everything above |
 
-Replace `1.18.2` below with the
+Replace `1.18.3` below with the
 [latest release](https://github.com/balwierz/vv/releases/latest) if newer.
 
 ### Debian / Ubuntu
 
 ```sh
-curl -LO https://github.com/balwierz/vv/releases/download/v1.18.2/vv_1.18.2-1_amd64.deb
-sudo apt install ./vv_1.18.2-1_amd64.deb        # use arm64 on ARM
+curl -LO https://github.com/balwierz/vv/releases/download/v1.18.3/vv_1.18.3-1_amd64.deb
+sudo apt install ./vv_1.18.3-1_amd64.deb        # use arm64 on ARM
 ```
 
 The package installs `/usr/bin/vv`, the man page and the shell completions.
 
-The Qt6 GUI ships as its own package, in two flavors — one built for
-**Ubuntu 24.04** and one for **Debian 13** (the `+ubuntu24.04` / `+debian13`
-in the filename: a GUI links the distro's shared Qt6, so unlike the CLI
-`.deb` it cannot be portable, and the two distros' library package names
-differ). Apache Arrow/Parquet and libxlsxio (which neither archive carries)
+The Qt6 GUI ships as its own package, in three flavors — **Ubuntu 24.04**,
+**Debian 13** and **Debian testing** (the `+ubuntu24.04` / `+debian13` /
+`+debianforky` in the filename: a GUI links the distro's shared Qt6, so
+unlike the CLI `.deb` it cannot be portable, and the distros' library
+package names differ). Apache Arrow/Parquet and libxlsxio (which no archive
+of theirs carries)
 are bundled inside the package under `/usr/lib/vv-gui`; everything else
 resolves from the standard archive, so **no third-party apt repository is
 needed**:
 
 ```sh
-curl -LO https://github.com/balwierz/vv/releases/download/v1.18.2/vv-gui_1.18.2-1+ubuntu24.04_amd64.deb
-sudo apt install ./vv-gui_1.18.2-1+ubuntu24.04_amd64.deb   # use arm64 on ARM
+curl -LO https://github.com/balwierz/vv/releases/download/v1.18.3/vv-gui_1.18.3-1+ubuntu24.04_amd64.deb
+sudo apt install ./vv-gui_1.18.3-1+ubuntu24.04_amd64.deb   # use arm64 on ARM
 ```
 
 On Debian:
 
 ```sh
-curl -LO https://github.com/balwierz/vv/releases/download/v1.18.2/vv-gui_1.18.2-1+debian13_amd64.deb
-sudo apt install ./vv-gui_1.18.2-1+debian13_amd64.deb      # use arm64 on ARM
+curl -LO https://github.com/balwierz/vv/releases/download/v1.18.3/vv-gui_1.18.3-1+debian13_amd64.deb
+sudo apt install ./vv-gui_1.18.3-1+debian13_amd64.deb      # use arm64 on ARM
 ```
 
 Debian 13 packages KF6, so the Debian flavors — unlike the Ubuntu one, since
@@ -58,19 +59,24 @@ KFileMetaData plugins.
 On Debian **testing/sid**, the `+debian13` package does not install: the
 bundled Arrow's transitive dependencies (`libthrift-*`, `libabsl*`,
 `libxml2*`, `libicu*`) are pinned under stable's package names, which
-testing renames on every soname bump. Use the `+debianforky` flavor from
-the [latest release](https://github.com/balwierz/vv/releases/latest)
-instead (first published with the release *after* v1.18.2) — it is rebuilt
-against whatever testing currently calls those libraries. Testing keeps
-moving between vv releases, so if apt objects, grab the newest release or
-rebuild locally:
+testing renames on every soname bump. Use the `+debianforky` flavor
+instead — it is rebuilt against whatever testing currently calls those
+libraries:
+
+```sh
+curl -LO https://github.com/balwierz/vv/releases/download/v1.18.3/vv-gui_1.18.3-1+debianforky_amd64.deb
+sudo apt install ./vv-gui_1.18.3-1+debianforky_amd64.deb   # use arm64 on ARM
+```
+
+Testing keeps moving between vv releases, so if apt objects, grab the
+newest release or rebuild locally:
 
 ```sh
 docker run --rm -v "$PWD:/mnt" -w /mnt debian:testing \
   bash packaging/debian/build-gui-deb-in-container.sh .
 ```
 
-Either flavor installs `/usr/bin/vvg` plus the desktop entry, MIME types and
+Every flavor installs `/usr/bin/vvg` plus the desktop entry, MIME types and
 icon. If you want the Dolphin plugins on a distro whose flavor lacks them,
 use the Fedora RPM (below), the Arch split package, or a source build with
 `-DVV_BUILD_GUI=ON`.
@@ -94,15 +100,15 @@ sudo dnf install ./vv-*.rpm        # CLI + GUI in one transaction
 ### Static binary (any modern Linux)
 
 ```sh
-base=https://github.com/balwierz/vv/releases/download/v1.18.2
+base=https://github.com/balwierz/vv/releases/download/v1.18.3
 arch=x86_64    # aarch64 on ARM (AWS Graviton, Raspberry Pi 5, …)
 
-curl -LO $base/vv-1.18.2-linux-$arch.tar.gz
+curl -LO $base/vv-1.18.3-linux-$arch.tar.gz
 curl -LO $base/SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS
 
-tar -xzf vv-1.18.2-linux-$arch.tar.gz
-sudo install vv-1.18.2-linux-$arch/vv /usr/local/bin/
+tar -xzf vv-1.18.3-linux-$arch.tar.gz
+sudo install vv-1.18.3-linux-$arch/vv /usr/local/bin/
 ```
 
 Requires glibc ≥ 2.28 (RHEL/Rocky/AlmaLinux 8+, Debian 10+, Ubuntu 18.04+).
