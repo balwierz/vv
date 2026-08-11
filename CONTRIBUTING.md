@@ -93,10 +93,10 @@ python3 tests/data/generate.py
 4. Commit: `release: X.Y.Z`.
 5. Tag: `git tag -a vX.Y.Z -m "vX.Y.Z"; git push --tags`.
 6. The `release.yml` workflow builds the static binary for x86_64 and aarch64
-   and wraps each in a CLI `.deb`, builds the `vv-gui` Ubuntu 24.04 `.deb`s
-   (amd64 + arm64), the Fedora RPMs (`vv` + `vv-gui`, x86_64 + aarch64) and
-   the macOS tarball, attaches everything plus `SHA256SUMS` to the GitHub
-   Release, and publishes the page.
+   and wraps each in a CLI `.deb`, builds the `vv-gui` `.deb`s (Ubuntu 24.04
+   and Debian 13 flavors, amd64 + arm64 each), the Fedora RPMs (`vv` +
+   `vv-gui`, x86_64 + aarch64) and the macOS tarball, attaches everything
+   plus `SHA256SUMS` to the GitHub Release, and publishes the page.
 7. **After the tag exists**, pin the two source-tarball checksums — neither
    can be computed before, because both hash the tarball GitHub generates
    *from* the tag:

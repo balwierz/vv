@@ -10,7 +10,8 @@ Every tagged release publishes, for **x86_64** and **aarch64**:
 |---|---|
 | `vv-<ver>-linux-<arch>.tar.gz` | static binary, no runtime dependencies |
 | `vv_<ver>-1_<deb-arch>.deb` | Debian package (same static binary) |
-| `vv-gui_<ver>-1+ubuntu24.04_<deb-arch>.deb` | Qt6 GUI (`vvg`) — **Ubuntu 24.04 only** |
+| `vv-gui_<ver>-1+ubuntu24.04_<deb-arch>.deb` | Qt6 GUI (`vvg`) for Ubuntu 24.04 |
+| `vv-gui_<ver>-1+debian13_<deb-arch>.deb` | Qt6 GUI for Debian 13 — **with the KF6 Dolphin plugins** |
 | `vv-<ver>-1.fc<NN>.<arch>.rpm` | Fedora package — CLI, deps from the Fedora repos |
 | `vv-gui-<ver>-1.fc<NN>.<arch>.rpm` | Fedora package — Qt6 GUI **with the KF6 Dolphin plugins** |
 | `vv-<ver>-macos-arm64.tar.gz` | Apple Silicon `vv` + `vvg`; **not** static — needs the Homebrew deps |
@@ -28,22 +29,31 @@ sudo apt install ./vv_1.18.1-1_amd64.deb        # use arm64 on ARM
 
 The package installs `/usr/bin/vv`, the man page and the shell completions.
 
-The Qt6 GUI ships as its own package, built **for Ubuntu 24.04** — unlike the
-CLI `.deb` it cannot be a portable static binary, because a GUI has to link
-the distro's shared Qt6. Apache Arrow/Parquet and libxlsxio (which the
-Ubuntu 24.04 archive does not carry) are bundled inside the package under
-`/usr/lib/vv-gui`; everything else resolves from the standard archive, so
-**no third-party apt repository is needed**:
+The Qt6 GUI ships as its own package, in two flavors — one built for
+**Ubuntu 24.04** and one for **Debian 13** (the `+ubuntu24.04` / `+debian13`
+in the filename: a GUI links the distro's shared Qt6, so unlike the CLI
+`.deb` it cannot be portable, and the two distros' library package names
+differ). Apache Arrow/Parquet and libxlsxio (which neither archive carries)
+are bundled inside the package under `/usr/lib/vv-gui`; everything else
+resolves from the standard archive, so **no third-party apt repository is
+needed**:
 
 ```sh
 curl -LO https://github.com/balwierz/vv/releases/download/v1.18.1/vv-gui_1.18.1-1+ubuntu24.04_amd64.deb
 sudo apt install ./vv-gui_1.18.1-1+ubuntu24.04_amd64.deb   # use arm64 on ARM
 ```
 
-It installs `/usr/bin/vvg` plus the desktop entry, MIME types and icon. The
-Dolphin thumbnailer / KFileMetaData plugins are **not** in it — they need
-KF6, which Ubuntu 24.04 does not package. For those, use the Fedora RPM
-(below) or the Arch split package, or build from source with
+On Debian, use the `vv-gui_<ver>-1+debian13_<deb-arch>.deb` asset from the
+[latest release](https://github.com/balwierz/vv/releases/latest) instead
+(first published with the release *after* v1.18.1). Debian 13 packages KF6,
+so the Debian flavor — unlike the Ubuntu one, since Ubuntu 24.04 has no
+KF6 — also carries the Dolphin thumbnailer / KFileMetaData plugins. It
+installs on current forky/sid too (the shared-library package names match);
+should apt ever object there, build from source (below).
+
+Either flavor installs `/usr/bin/vvg` plus the desktop entry, MIME types and
+icon. If you want the Dolphin plugins on a distro whose flavor lacks them,
+use the Fedora RPM (below), the Arch split package, or a source build with
 `-DVV_BUILD_GUI=ON`.
 
 ### Fedora
@@ -52,8 +62,8 @@ Both RPMs install with their dependencies straight from the Fedora repos —
 Fedora carries Arrow, Qt6, KF6, htslib and HDF5, so unlike the Ubuntu `.deb`
 no private shared libraries ride along. (xlsxio, which no distro packages,
 is built in statically — joining mimalloc, libBigWig and md4c, the statics
-every vv build links.) `vv-gui` here is the one prebuilt artifact that
-carries the Dolphin thumbnailer / KFileMetaData plugins. The `fc<NN>` in the
+every vv build links.) Like the Debian 13 `.deb`, the `vv-gui` RPM carries
+the Dolphin thumbnailer / KFileMetaData plugins. The `fc<NN>` in the
 filename is the Fedora release the RPMs were built for; on another Fedora,
 rebuild with
 `packaging/rpm/build-rpm.sh` instead. Grab both `.rpm`s from the
