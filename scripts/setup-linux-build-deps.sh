@@ -87,8 +87,13 @@ cd /tmp
 curl -fsSL --retry 3 -o xlsxio.tar.gz \
   https://github.com/brechtsanders/xlsxio/archive/refs/tags/0.2.36.tar.gz
 tar xf xlsxio.tar.gz
+# CMAKE_POLICY_VERSION_MINIMUM: xlsxio 0.2.36 declares
+# cmake_minimum_required(VERSION 2.6), and CMake 4 (Debian testing, Fedora
+# 44+) refuses anything below 3.5 without this override. Older CMakes
+# ignore the unused variable. Same fix as packaging/rpm/vv.spec.
 cmake -S xlsxio-* -B xlsxio-bld \
   -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DCMAKE_INSTALL_PREFIX=/usr/local \
   -DBUILD_SHARED=ON -DBUILD_STATIC=OFF \
   -DBUILD_TOOLS=OFF -DBUILD_EXAMPLES=OFF \

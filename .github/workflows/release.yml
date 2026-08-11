@@ -170,48 +170,53 @@ jobs:
             SHA256SUMS-gui-${{ matrix.arch }}
 
   gui-debian:
-    # The Debian 13 flavor of the vv-gui .deb
-    # (vv-gui_<ver>-1+debian13_<arch>.deb). The Ubuntu package cannot install
-    # on Debian — its computed Depends use noble's library package names — so
-    # each distro gets its own build of the same distro-agnostic
-    # build-gui-deb.sh, this one inside a debian:13 container (GitHub has no
-    # Debian runners; same pattern as rpm-linux). Debian 13 packages KF6, so
-    # unlike the Ubuntu flavor this .deb includes the Dolphin thumbnailer /
-    # KFileMetaData plugins. CI runs the same scripts on every push.
-    name: Build vv-gui deb (Debian 13, ${{ matrix.arch }})
+    # The Debian flavors of the vv-gui .deb: +debian13
+    # (vv-gui_<ver>-1+debian13_<arch>.deb) and +debianforky (testing/sid; the
+    # suffix follows testing's codename automatically via /etc/os-release).
+    # The Ubuntu package cannot install on Debian — its computed Depends use
+    # noble's library package names — and a stable-Debian build cannot
+    # install on testing either: the bundled Arrow's transitive deps
+    # (libthrift-*, libabsl*, libxml2*) get renamed there on every soname
+    # bump, so testing needs its own build against current names, refreshed
+    # at each release. Same distro-agnostic build-gui-deb.sh for all of them,
+    # run inside Debian containers (GitHub has no Debian runners; same
+    # pattern as rpm-linux). Debian packages KF6, so both flavors include
+    # the Dolphin thumbnailer / KFileMetaData plugins. CI runs the same
+    # scripts on every push.
+    name: Build vv-gui deb (${{ matrix.image }}, ${{ matrix.arch }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: amd64
-            runner: ubuntu-24.04
-          - arch: arm64
-            runner: ubuntu-24.04-arm
+          - { image: "debian:13", flavor: debian13, arch: amd64, runner: ubuntu-24.04 }
+          - { image: "debian:13", flavor: debian13, arch: arm64, runner: ubuntu-24.04-arm }
+          - { image: "debian:testing", flavor: debiantesting, arch: amd64, runner: ubuntu-24.04 }
+          - { image: "debian:testing", flavor: debiantesting, arch: arm64, runner: ubuntu-24.04-arm }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - name: Build in a debian:13 container
+      - name: Build in a ${{ matrix.image }} container
         run: |
-          docker run --rm -v "$PWD:/mnt" -w /mnt debian:13 \
+          docker run --rm -v "$PWD:/mnt" -w /mnt ${{ matrix.image }} \
             bash packaging/debian/build-gui-deb-in-container.sh .
-          sha256sum vv-gui_*.deb > "SHA256SUMS-gui-debian-${{ matrix.arch }}"
+          sha256sum vv-gui_*.deb > "SHA256SUMS-gui-${{ matrix.flavor }}-${{ matrix.arch }}"
 
       - name: Install-test in a pristine container
         run: |
           deb="$(ls vv-gui_*.deb)"
-          docker run --rm -v "$PWD:/mnt" debian:13 \
+          docker run --rm -v "$PWD:/mnt" ${{ matrix.image }} \
             bash /mnt/packaging/debian/test-gui-deb.sh "/mnt/$deb" /mnt/tests/data/tiny.parquet
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: gui-debian-${{ matrix.arch }}
+          name: gui-${{ matrix.flavor }}-${{ matrix.arch }}
           path: |
             vv-gui_*.deb
-            SHA256SUMS-gui-debian-${{ matrix.arch }}
+            SHA256SUMS-gui-${{ matrix.flavor }}-${{ matrix.arch }}
 
   rpm-linux:
     # Fedora packages, CLI + GUI, built by packaging/rpm/build-rpm.sh inside

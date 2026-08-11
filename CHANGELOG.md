@@ -4,6 +4,24 @@ All notable changes to `vv` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **A Debian testing/sid flavor of the vv-gui `.deb`** —
+  `vv-gui_<ver>-1+debianforky_<deb-arch>.deb`, built inside a
+  `debian:testing` container (the suffix follows testing's codename via
+  `/etc/os-release`, so it renames itself when forky releases). This
+  corrects a false claim shipped in 1.18.2: the `+debian13` package does
+  **not** install on forky/sid — the Qt6/KF6 names match, but the bundled
+  Arrow's transitive dependencies do not. A stable-built deb pins
+  `libthrift-0.19.0t64`, `libabsl20240722`, `libicu76` and `libxml2`, and
+  testing has since moved to `libthrift-0.23.0`, `libabsl20260107`,
+  `libicu78` and `libxml2-16` — package names that churn on every soname
+  bump, which is why testing gets its own build, refreshed against current
+  names at every release, rather than a promise that stable's happens to
+  fit. CI builds and pristine-container install-tests both Debian flavors
+  on every push.
+
 ## [1.18.2] - 2026-08-11
 
 Distribution release: the program is unchanged.

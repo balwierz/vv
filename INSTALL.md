@@ -12,6 +12,7 @@ Every tagged release publishes, for **x86_64** and **aarch64**:
 | `vv_<ver>-1_<deb-arch>.deb` | Debian package (same static binary) |
 | `vv-gui_<ver>-1+ubuntu24.04_<deb-arch>.deb` | Qt6 GUI (`vvg`) for Ubuntu 24.04 |
 | `vv-gui_<ver>-1+debian13_<deb-arch>.deb` | Qt6 GUI for Debian 13 — **with the KF6 Dolphin plugins** |
+| `vv-gui_<ver>-1+debianforky_<deb-arch>.deb` | Qt6 GUI for Debian testing/sid (rebuilt against current testing at every release) |
 | `vv-<ver>-1.fc<NN>.<arch>.rpm` | Fedora package — CLI, deps from the Fedora repos |
 | `vv-gui-<ver>-1.fc<NN>.<arch>.rpm` | Fedora package — Qt6 GUI **with the KF6 Dolphin plugins** |
 | `vv-<ver>-macos-arm64.tar.gz` | Apple Silicon `vv` + `vvg`; **not** static — needs the Homebrew deps |
@@ -50,11 +51,24 @@ curl -LO https://github.com/balwierz/vv/releases/download/v1.18.2/vv-gui_1.18.2-
 sudo apt install ./vv-gui_1.18.2-1+debian13_amd64.deb      # use arm64 on ARM
 ```
 
-Debian 13 packages KF6, so the Debian flavor — unlike the Ubuntu one, since
-Ubuntu 24.04 has no KF6 — also carries the Dolphin thumbnailer /
-KFileMetaData plugins. It installs on current forky/sid too (the
-shared-library package names match); should apt ever object there, build
-from source (below).
+Debian 13 packages KF6, so the Debian flavors — unlike the Ubuntu one, since
+Ubuntu 24.04 has no KF6 — also carry the Dolphin thumbnailer /
+KFileMetaData plugins.
+
+On Debian **testing/sid**, the `+debian13` package does not install: the
+bundled Arrow's transitive dependencies (`libthrift-*`, `libabsl*`,
+`libxml2*`, `libicu*`) are pinned under stable's package names, which
+testing renames on every soname bump. Use the `+debianforky` flavor from
+the [latest release](https://github.com/balwierz/vv/releases/latest)
+instead (first published with the release *after* v1.18.2) — it is rebuilt
+against whatever testing currently calls those libraries. Testing keeps
+moving between vv releases, so if apt objects, grab the newest release or
+rebuild locally:
+
+```sh
+docker run --rm -v "$PWD:/mnt" -w /mnt debian:testing \
+  bash packaging/debian/build-gui-deb-in-container.sh .
+```
 
 Either flavor installs `/usr/bin/vvg` plus the desktop entry, MIME types and
 icon. If you want the Dolphin plugins on a distro whose flavor lacks them,

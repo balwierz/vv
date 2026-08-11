@@ -203,26 +203,35 @@ jobs:
             bash /mnt/packaging/debian/test-gui-deb.sh "/mnt/$deb" /mnt/tests/data/tiny.parquet
 
   build-gui-deb-debian:
-    # The Debian 13 flavor of the vv-gui .deb — built inside a debian:13
-    # container (GitHub has no Debian runners) by the same scripts the
-    # release job uses. This is also the only build anywhere that exercises
+    # The Debian flavors of the vv-gui .deb — built inside Debian containers
+    # (GitHub has no Debian runners) by the same scripts the release job
+    # uses. Two flavors on purpose: a stable-built deb pins its bundled
+    # Arrow's transitive dependencies (libthrift-*, libabsl*, libxml2*) under
+    # stable's package names, which testing renames on every soname bump —
+    # a trixie deb is uninstallable on forky by construction (v1.18.2 proved
+    # it), so testing/sid gets its own build against whatever testing calls
+    # them this week. This job is also the only build anywhere that exercises
     # build-gui-deb.sh's KF6-plugin packaging path: Ubuntu 24.04 has no KF6,
     # so the Ubuntu flavor never reaches it. amd64 only here; the release
     # job adds arm64.
-    name: Build & install-test vv-gui deb (Debian 13)
+    name: Build & install-test vv-gui deb (${{ matrix.image }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["debian:13", "debian:testing"]
     steps:
       - uses: actions/checkout@v6
 
-      - name: Build in a debian:13 container
+      - name: Build in a ${{ matrix.image }} container
         run: |
-          docker run --rm -v "$PWD:/mnt" -w /mnt debian:13 \
+          docker run --rm -v "$PWD:/mnt" -w /mnt ${{ matrix.image }} \
             bash packaging/debian/build-gui-deb-in-container.sh .
 
       - name: Install-test in a pristine container
         run: |
           deb="$(ls vv-gui_*.deb)"
-          docker run --rm -v "$PWD:/mnt" debian:13 \
+          docker run --rm -v "$PWD:/mnt" ${{ matrix.image }} \
             bash /mnt/packaging/debian/test-gui-deb.sh "/mnt/$deb" /mnt/tests/data/tiny.parquet
 
   build-rpm:
