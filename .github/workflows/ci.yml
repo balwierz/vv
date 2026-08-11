@@ -202,6 +202,29 @@ jobs:
           docker run --rm -v "$PWD:/mnt" ubuntu:24.04 \
             bash /mnt/packaging/debian/test-gui-deb.sh "/mnt/$deb" /mnt/tests/data/tiny.parquet
 
+  build-gui-deb-debian:
+    # The Debian 13 flavor of the vv-gui .deb — built inside a debian:13
+    # container (GitHub has no Debian runners) by the same scripts the
+    # release job uses. This is also the only build anywhere that exercises
+    # build-gui-deb.sh's KF6-plugin packaging path: Ubuntu 24.04 has no KF6,
+    # so the Ubuntu flavor never reaches it. amd64 only here; the release
+    # job adds arm64.
+    name: Build & install-test vv-gui deb (Debian 13)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build in a debian:13 container
+        run: |
+          docker run --rm -v "$PWD:/mnt" -w /mnt debian:13 \
+            bash packaging/debian/build-gui-deb-in-container.sh .
+
+      - name: Install-test in a pristine container
+        run: |
+          deb="$(ls vv-gui_*.deb)"
+          docker run --rm -v "$PWD:/mnt" debian:13 \
+            bash /mnt/packaging/debian/test-gui-deb.sh "/mnt/$deb" /mnt/tests/data/tiny.parquet
+
   build-rpm:
     # release.yml ships these RPMs from a job that would otherwise first run
     # on a tag; build and install-test the same packages here on every push

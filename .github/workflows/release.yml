@@ -169,6 +169,50 @@ jobs:
             vv-gui_*.deb
             SHA256SUMS-gui-${{ matrix.arch }}
 
+  gui-debian:
+    # The Debian 13 flavor of the vv-gui .deb
+    # (vv-gui_<ver>-1+debian13_<arch>.deb). The Ubuntu package cannot install
+    # on Debian — its computed Depends use noble's library package names — so
+    # each distro gets its own build of the same distro-agnostic
+    # build-gui-deb.sh, this one inside a debian:13 container (GitHub has no
+    # Debian runners; same pattern as rpm-linux). Debian 13 packages KF6, so
+    # unlike the Ubuntu flavor this .deb includes the Dolphin thumbnailer /
+    # KFileMetaData plugins. CI runs the same scripts on every push.
+    name: Build vv-gui deb (Debian 13, ${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Build in a debian:13 container
+        run: |
+          docker run --rm -v "$PWD:/mnt" -w /mnt debian:13 \
+            bash packaging/debian/build-gui-deb-in-container.sh .
+          sha256sum vv-gui_*.deb > "SHA256SUMS-gui-debian-${{ matrix.arch }}"
+
+      - name: Install-test in a pristine container
+        run: |
+          deb="$(ls vv-gui_*.deb)"
+          docker run --rm -v "$PWD:/mnt" debian:13 \
+            bash /mnt/packaging/debian/test-gui-deb.sh "/mnt/$deb" /mnt/tests/data/tiny.parquet
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: gui-debian-${{ matrix.arch }}
+          path: |
+            vv-gui_*.deb
+            SHA256SUMS-gui-debian-${{ matrix.arch }}
+
   rpm-linux:
     # Fedora packages, CLI + GUI, built by packaging/rpm/build-rpm.sh inside
     # a fedora:latest container (the %{?dist} tag in the filename records
@@ -303,7 +347,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [static-linux, gui-linux, rpm-linux, macos-arm64]
+    needs: [static-linux, gui-linux, gui-debian, rpm-linux, macos-arm64]
     runs-on: ubuntu-latest
     permissions:
       contents: write

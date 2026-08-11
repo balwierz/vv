@@ -18,6 +18,20 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
 apt-get install -y -q "$deb"
 
+# If the package carries the KF6 plugins (the Debian 13 flavor does; Ubuntu
+# 24.04 has no KF6 to build them against), the install must have placed them
+# and their KF6 library deps must resolve.
+if dpkg-deb -c "$deb" | grep -q 'thumbcreator/vvthumbnail.so'; then
+    for plug in 'thumbcreator/vvthumbnail.so' 'kfilemetadata/vvextractor.so'; do
+        path="$(dpkg -L vv-gui | grep "$plug")"
+        test -f "$path"
+        if ldd "$path" | grep 'not found'; then
+            echo "error: unresolved libraries in $plug" >&2
+            exit 1
+        fi
+    done
+fi
+
 # Nothing may be left dangling after install, and the bundled Arrow — not a
 # system copy — must be the one in use (a pristine container has no other).
 ldd /usr/bin/vvg

@@ -4,6 +4,27 @@ All notable changes to `vv` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **A Debian 13 flavor of the vv-gui `.deb`.** The Ubuntu 24.04 package
+  declares noble's shared-library names (`libqt6gui6t64`, …) in its Depends,
+  which Debian does not have — Ubuntu-only by construction, and labelled so.
+  Releases now also attach `vv-gui_<ver>-1+debian13_<deb-arch>.deb` for amd64
+  and arm64, produced by the same distro-agnostic `build-gui-deb.sh` running
+  inside a `debian:13` container (GitHub has no Debian runners; same pattern
+  as the Fedora RPMs). Debian 13 packages KF6, so this flavor is the first
+  `.deb` to carry the Dolphin thumbnailer / KFileMetaData plugins — and the
+  only build anywhere that exercises the script's plugin-packaging path. The
+  Arrow apt-repo install dance moved from the composite action into
+  `scripts/setup-linux-build-deps.sh` (the action now calls it) so container
+  and runner builds share one copy; along the way the dep list swapped
+  `libncursesw5-dev` for `libncurses-dev`, because the transitional name was
+  removed in Debian 13 — the exact trap the 1.17.0 changelog records
+  INSTALL.md falling into. CI builds and pristine-container install-tests
+  the Debian flavor on every push; the package also installs on current
+  forky/sid, where the library package names still match.
+
 ## [1.18.1] - 2026-08-10
 
 Distribution release: the program is unchanged; every artifact channel grew.
