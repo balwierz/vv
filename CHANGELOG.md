@@ -4,6 +4,26 @@ All notable changes to `vv` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **The TUI quit "by itself" in jupyter-lab web consoles**, leaving
+  `11;rgb:ffff/ffff/ffff` on the shell prompt. vv queries the terminal
+  background (OSC 11) before ncurses starts and waits ~80 ms for the
+  answer; an xterm.js terminal proxied through a kubernetes API server
+  replies slower than that, so the reply landed in the input queue after
+  the TUI was up. ncurses handed its leading ESC to the Esc-quits binding —
+  a clean, instant, message-less exit that looks exactly like a crash —
+  and the unread tail drained to the shell (minus the `ESC]` ncurses had
+  already consumed, which is why the stray text was missing its prefix).
+  The key read now recognises a terminal-response introducer after a bare
+  ESC (the OSC/DCS/APC/SOS/PM string sequences, and CSI replies) and
+  swallows the sequence through its terminator; a real Esc, double-Esc and
+  Alt+key are pushed back and behave exactly as before. Regression-tested
+  by delivering that exact reply, byte for byte, into a live tmux TUI.
+  On builds without the fix, `VV_BACKGROUND=dark` (or `light`) skips the
+  query entirely and avoids the problem.
+
 ## [1.18.3] - 2026-08-11
 
 Distribution release: the program is unchanged.

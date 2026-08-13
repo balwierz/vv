@@ -827,6 +827,35 @@ if command -v tmux >/dev/null 2>&1; then
     fi
 fi
 
+# ── A late terminal reply must not quit the TUI ──────────────────────────────
+# vv queries the terminal background (OSC 11) before ncurses starts and waits
+# ~80 ms. Over a slow transport (a jupyter-lab web console proxied through
+# kubernetes) the reply arrives after the TUI is up, where its leading ESC hit
+# the Esc-quits binding: vv exited "by itself" and the reply's tail leaked to
+# the shell as `11;rgb:ffff/ffff/ffff`. Deliver exactly that reply into a
+# running TUI and assert it survives — then that a real Esc still quits.
+if command -v tmux >/dev/null 2>&1; then
+    tmux kill-session -t vvosc 2>/dev/null
+    tmux new-session -d -s vvosc -x 100 -y 10 \
+        "TERM=xterm-256color $VV -i $DATA/tiny.parquet"
+    sleep 2
+    # Byte-for-byte OSC 11 reply: ESC ] 1 1 ; r g b : ffff/ffff/ffff BEL
+    tmux send-keys -t vvosc -H \
+        1b 5d 31 31 3b 72 67 62 3a 66 66 66 66 2f 66 66 66 66 2f 66 66 66 66 07
+    sleep 1
+    OSC_HDR=$(tmux capture-pane -p -t vvosc 2>/dev/null | sed -n 1p)
+    assert_contains "tui_survives_late_osc_reply" "$OSC_HDR" "Score"
+    # A real, lone Esc must still quit (the session dies with the process).
+    tmux send-keys -t vvosc Escape
+    sleep 1
+    if tmux has-session -t vvosc 2>/dev/null; then
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_esc_still_quits (session still alive)"
+        tmux kill-session -t vvosc 2>/dev/null
+    else
+        PASS=$((PASS+1)); echo "  ok    tui_esc_still_quits"
+    fi
+fi
+
 # ── Format registry (--formats) and drift ────────────────────────────────────
 # kFormats[] is the one authoritative list of what vv reads. Before it, the
 # same information was restated in seven places and had already drifted:

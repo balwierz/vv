@@ -18440,15 +18440,61 @@ public:
         // enough that a deliberate pair-of-clicks isn't mistaken for one.
         mouseinterval(200);
 
+        // A late terminal reply must not read as keystrokes. detect_term_bg()
+        // sends an OSC 11 background query before ncurses starts and waits
+        // ~80 ms; over a slow transport (a jupyter-lab web console proxied
+        // through kubernetes, tmux over a laggy ssh) the terminal's reply
+        // can outrun that budget and land here instead — where its leading
+        // ESC used to hit the Esc-quits binding, so vv exited "by itself"
+        // and the tail leaked to the shell as `11;rgb:ffff/ffff/ffff`.
+        // After a bare ESC, peek: a string introducer (OSC/DCS/APC/SOS/PM)
+        // or a CSI start means the terminal is talking, not the user —
+        // swallow through the terminator and read on. Anything else is
+        // pushed back, so Esc, double-Esc and Alt+key behave as before.
+        // (Signals are allowed only while parked in the blocking getch():
+        // one arriving during draw() is delivered there — in read(), not
+        // mid-malloc — where the endwin() in the handler is safe.)
+        auto tui_getch = [&]() -> int {
+            for (;;) {
+                sigprocmask(SIG_UNBLOCK, &tui_sigs, nullptr);
+                int ch = getch();
+                sigprocmask(SIG_BLOCK, &tui_sigs, nullptr);
+                if (ch != 27) return ch;
+                timeout(0);
+                int nxt = getch();
+                if (nxt == ERR) { timeout(-1); return 27; }        // lone Esc
+                bool str_seq = nxt == ']' || nxt == 'P' || nxt == '_' ||
+                               nxt == 'X' || nxt == '^';
+                if (!str_seq && nxt != '[') {                      // Alt+key…
+                    ungetch(nxt);
+                    timeout(-1);
+                    return 27;
+                }
+                // The reply may still be trickling in over the transport
+                // that delayed it; allow 50 ms between bytes, cap the total.
+                timeout(50);
+                if (str_seq) {                    // …until BEL or ST (ESC \)
+                    int prev = 0;
+                    for (int i = 0; i < 4096; ++i) {
+                        int c = getch();
+                        if (c == ERR || c == '\a' || (prev == 27 && c == '\\'))
+                            break;
+                        prev = c;
+                    }
+                } else {                          // CSI: …until a final byte
+                    for (int i = 0; i < 256; ++i) {
+                        int c = getch();
+                        if (c == ERR || (c >= 0x40 && c <= 0x7e)) break;
+                    }
+                }
+                timeout(-1);
+            }
+        };
+
         bool quit = false;
         while (!quit) {
             draw();
-            // Allow the fatal signals only while parked in getch(): any that
-            // arrived during draw() is delivered here (in read(), not mid-
-            // malloc), where the endwin() in the handler is safe.
-            sigprocmask(SIG_UNBLOCK, &tui_sigs, nullptr);
-            int ch = getch();
-            sigprocmask(SIG_BLOCK, &tui_sigs, nullptr);
+            int ch = tui_getch();
             int dl = data_lines();
 
             // ── Help overlay: any key dismisses it (and is consumed) ─────────
