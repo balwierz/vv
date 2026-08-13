@@ -4,7 +4,7 @@ All notable changes to `vv` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.18.4] - 2026-08-13
 
 ### Fixed
 - **The TUI quit "by itself" in jupyter-lab web consoles**, leaving
