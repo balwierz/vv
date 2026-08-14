@@ -37,6 +37,11 @@ echo
 mkdir -p "$GOLDEN"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 
+# Hermetic config: a developer's real ~/.config/vv/config (theme,
+# max_col_width, …) must not leak into golden output. Tests that exercise
+# the config file override this per-invocation.
+export XDG_CONFIG_HOME="$TMP/xdg-hermetic"
+
 # Helper: run vv, capture stdout, compare against golden.
 run_case() {
     local name="$1"; shift
@@ -855,6 +860,32 @@ if command -v tmux >/dev/null 2>&1; then
         PASS=$((PASS+1)); echo "  ok    tui_esc_still_quits"
     fi
 fi
+
+# ── Config file: preferences beyond `theme` ──────────────────────────────────
+# The loader used to run only when --theme was absent, silently discarding
+# every other config key whenever a theme was named on the command line; and
+# the only keys were theme/scrolloff. Now: background, max_col_width and
+# threads, each losing to its CLI flag, with unknown keys ignored so a config
+# written for a newer vv doesn't break an older one.
+CFG_XDG="$TMP/xdgcfg"
+mkdir -p "$CFG_XDG/vv"
+printf 'id\tdesc\n1\tabcdefghijklmnopqrstuvwxyz\n' > "$TMP/cfgtest.tsv"
+printf 'max_col_width = 8\nthreads = 2\nfrom_the_future = yes\n' > "$CFG_XDG/vv/config"
+# Config width applies (the 26-char cell must be truncated at 8)...
+CFG_OUT=$(XDG_CONFIG_HOME="$CFG_XDG" "$VV" --no-interactive "$TMP/cfgtest.tsv" 2>&1)
+refute_contains "config_max_col_width_applies" "$CFG_OUT" "abcdefghijklmnopqrstuvwxyz"
+assert_contains "config_unknown_keys_ignored"  "$CFG_OUT" "abcdefg"
+# ...even when --theme is given on the command line (the old loader skipped
+# the whole file in that case)...
+CFG_OUT=$(XDG_CONFIG_HOME="$CFG_XDG" "$VV" --no-interactive --theme dark "$TMP/cfgtest.tsv" 2>&1)
+refute_contains "config_loads_despite_cli_theme" "$CFG_OUT" "abcdefghijklmnopqrstuvwxyz"
+# ...and -w on the command line wins over the config.
+CFG_OUT=$(XDG_CONFIG_HOME="$CFG_XDG" "$VV" --no-interactive -w 40 "$TMP/cfgtest.tsv" 2>&1)
+assert_contains "cli_w_beats_config" "$CFG_OUT" "abcdefghijklmnopqrstuvwxyz"
+# Config theme colors non-interactive output: light's bold-header escape.
+printf 'theme = light\nbackground = light\n' > "$CFG_XDG/vv/config"
+CFG_OUT=$(XDG_CONFIG_HOME="$CFG_XDG" "$VV" --no-interactive --color=always "$TMP/cfgtest.tsv" 2>&1)
+assert_contains "config_theme_applies" "$CFG_OUT" "38;5;25m"
 
 # ── Format registry (--formats) and drift ────────────────────────────────────
 # kFormats[] is the one authoritative list of what vv reads. Before it, the

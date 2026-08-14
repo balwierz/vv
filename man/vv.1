@@ -731,9 +731,21 @@ Recognised keys:
 \fBtheme\fR \(en one of \fBdefault\fR / \fBdark\fR / \fBlight\fR /
 \fBsolarized-dark\fR / \fBsolarized-light\fR. Written by the
 in-TUI theme picker (\fBT\fR key).
+.IP \(bu 2
+\fBbackground\fR \(en \fBdark\fR or \fBlight\fR; what
+\fBVV_BACKGROUND\fR sets, permanently. Also skips the OSC 11
+terminal background query, which web consoles answer too slowly
+to be useful.
+.IP \(bu 2
+\fBmax_col_width\fR \(en integer \(>= 4; the \fB\-w\fR default.
+.IP \(bu 2
+\fBthreads\fR \(en integer \(>= 1; the \fB\-@\fR default.
+.IP \(bu 2
+\fBscrolloff\fR \(en integer \(>= 0; TUI rows kept between the
+cursor and the viewport edge (config-only, no flag).
 .IP
-The format is extensible; future keys slot in without breaking
-existing files. Writes are atomic (\fI.tmp\fR + rename) and
+Unknown keys are ignored, so a config written for a newer vv does
+not break an older one. Writes are atomic (\fI.tmp\fR + rename) and
 preserve any other lines you've added by hand.
 .RE
 .SH ENVIRONMENT

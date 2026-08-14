@@ -290,6 +290,11 @@ static const Theme* g_theme = &kThemeDefault;
 // text. Detect the actual background so the stripe can adapt.
 enum class TermBg { Unknown, Dark, Light };
 static TermBg g_term_bg = TermBg::Unknown;
+// Set by the config file's `background` key (load_user_config); consulted by
+// detect_term_bg() after the VV_BACKGROUND env override and before the OSC 11
+// query — so a configured background also skips the query entirely, which
+// slow transports (web consoles) answer too late to be useful anyway.
+static TermBg g_config_term_bg = TermBg::Unknown;
 
 // Classify an OSC 11 "]11;rgb:RRRR/GGGG/BBBB" reply (2- or 4-hex-digit
 // components) by relative luminance. Unknown if it doesn't parse.
@@ -353,6 +358,7 @@ static void detect_term_bg() {
         if (!std::strcmp(e, "light")) { g_term_bg = TermBg::Light; return; }
         if (!std::strcmp(e, "dark"))  { g_term_bg = TermBg::Dark;  return; }
     }
+    if (g_config_term_bg != TermBg::Unknown) { g_term_bg = g_config_term_bg; return; }
     g_term_bg = query_osc11_bg();
     if (g_term_bg != TermBg::Unknown) return;
     if (const char* c = std::getenv("COLORFGBG")) {   // "fg;bg" or "fg;;bg"
@@ -551,6 +557,30 @@ static void load_user_config(Config& cfg) {
                 if (v >= 0 && v <= 1000) cfg.scrolloff = v;
             } catch (...) { /* ignore a malformed value */ }
         }
+        else if (key == "background") {
+            // Same values as VV_BACKGROUND, which wins over this. Also
+            // skips the OSC 11 background query — the terminals that need
+            // this key (web consoles) answer that query too late anyway.
+            if      (val == "dark")  g_config_term_bg = TermBg::Dark;
+            else if (val == "light") g_config_term_bg = TermBg::Light;
+            // any other value: ignored like every malformed entry
+        }
+        else if (key == "max_col_width" && !cfg.max_col_w_set) {
+            // Same floor as -w; -w on the command line wins.
+            try {
+                int v = std::stoi(val);
+                if (v >= 4 && v <= 100000) cfg.max_col_w = v;
+            } catch (...) { /* ignore */ }
+        }
+        else if (key == "threads" && cfg.threads == 0) {
+            // Same as -@; -@ on the command line wins (0 stays "auto").
+            try {
+                int v = std::stoi(val);
+                if (v >= 1 && v <= 1024) cfg.threads = v;
+            } catch (...) { /* ignore */ }
+        }
+        // Unknown keys are ignored: a config written for a newer vv must
+        // not break an older one.
     }
 }
 
@@ -965,6 +995,7 @@ static Config parse_args(int argc, char** argv) {
             cfg.head_rows_set = true;
         } else if (!std::strcmp(argv[i], "-w") && i + 1 < argc) {
             cfg.max_col_w = std::max(4, std::atoi(argv[++i]));
+            cfg.max_col_w_set = true;
         } else if (!std::strcmp(argv[i], "-c") && i + 1 < argc) {
             cfg.max_cols = std::atoi(argv[++i]);
         } else if ((!std::strcmp(argv[i], "-r") ||
@@ -19633,9 +19664,13 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Resolve theme: CLI flag wins; otherwise check the user's config file;
-    // otherwise fall back to the built-in default.
-    if (cfg.theme.empty()) load_user_config(cfg);
+    // Config file first — every key applies only where its CLI flag wasn't
+    // given, so this is unconditional. (It used to run only when --theme was
+    // absent, which silently discarded every OTHER config key — scrolloff —
+    // whenever a theme was named on the command line.)
+    load_user_config(cfg);
+    // Resolve theme: CLI flag wins; otherwise the config value; otherwise
+    // the built-in default.
     if (cfg.theme.empty()) cfg.theme = "default";
     if (auto* t = find_theme(cfg.theme)) {
         g_theme = t;

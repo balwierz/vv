@@ -38,6 +38,7 @@ struct Config {
     int         head_rows      = 10;
     bool        head_rows_set  = false;  // true when -n was given explicitly
     int         max_col_w      = 32;
+    bool        max_col_w_set  = false;  // true when -w was given explicitly
     int         max_cols       = 0;
     int         threads        = 0;      // -@ / --threads (0 = auto-detect)
     int         decode_threads = 0;      // --decode-threads (0 = follow --threads;
