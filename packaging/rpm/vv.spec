@@ -27,7 +27,7 @@
 %global xlsxio_version 0.2.36
 
 Name:           vv
-Version:        1.18.4
+Version:        1.18.5
 Release:        1%{?dist}
 Summary:        Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)
 License:        MIT
@@ -143,6 +143,10 @@ rm -f  %{buildroot}%{_libdir}/pkgconfig/mimalloc.pc
 %{_datadir}/icons/hicolor/scalable/apps/vv.svg
 
 %changelog
+* Fri Aug 14 2026 Piotr Balwierz <nikt@tuta.com> - 1.18.5-1
+- Update to 1.18.5: the config file gains background / max_col_width /
+  threads keys, and --theme no longer discards the rest of the config.
+
 * Thu Aug 13 2026 Piotr Balwierz <nikt@tuta.com> - 1.18.4-1
 - Update to 1.18.4: a late terminal reply (OSC 11 background query answered
   slowly, e.g. by web consoles) no longer quits the TUI as a phantom Esc.
