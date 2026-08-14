@@ -771,20 +771,34 @@ conversion use a shell loop.
 
 `vv` reads its config from `$XDG_CONFIG_HOME/vv/config` (default
 `~/.config/vv/config`) at startup. Format is plain INI-style
-`key = value`; lines starting with `#` are comments. Today the
-only recognised key is `theme`; the format is extensible, so future
-preferences slot in without breaking existing files.
+`key = value`; lines starting with `#` are comments. Unknown keys
+are ignored, so a config written for a newer vv doesn't break an
+older one.
 
 ```ini
 # ~/.config/vv/config
-theme = solarized-dark
+theme = solarized-light
+background = light      # what VV_BACKGROUND=light sets, permanently
+max_col_width = 48      # like -w
+threads = 4             # like -@
+scrolloff = 5           # TUI: rows kept between cursor and edge
 ```
 
-Resolution order, highest priority first:
+Recognised keys:
 
-1. `--theme NAME` on the command line.
-2. `theme = NAME` in the config file.
-3. Built-in `default`.
+| Key             | Values                                        | CLI/env equivalent |
+|-----------------|-----------------------------------------------|--------------------|
+| `theme`         | `default`, `dark`, `light`, `solarized-dark`, `solarized-light` | `--theme` |
+| `background`    | `dark`, `light`                               | `VV_BACKGROUND`    |
+| `max_col_width` | integer ≥ 4                                   | `-w`               |
+| `threads`       | integer ≥ 1                                   | `-@`               |
+| `scrolloff`     | integer ≥ 0                                   | (config only)      |
+
+The command line always wins over the config file, and the
+`VV_BACKGROUND` environment variable wins over the `background` key.
+Setting `background` also skips the OSC 11 terminal query, which is
+exactly what you want on web consoles (JupyterLab, cloud shells) —
+they answer that query too slowly for it to help.
 
 The TUI theme picker (`T`) writes to this file. Edits are atomic
 (`.tmp` + rename) and preserve any existing comments or unrelated

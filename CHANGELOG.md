@@ -4,6 +4,26 @@ All notable changes to `vv` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **The config file learned the terminal preferences.**
+  `~/.config/vv/config` (there since 1.10, written by the TUI theme picker)
+  recognised only `theme` and `scrolloff`; now also `background`
+  (dark/light — what `VV_BACKGROUND` sets, permanently; it also skips the
+  OSC 11 terminal query, which web consoles answer too slowly to be
+  useful), `max_col_width` (the `-w` default) and `threads` (the `-@`
+  default). The command line wins over the file, `VV_BACKGROUND` wins over
+  `background`, and unknown keys are ignored so a config written for a
+  newer vv doesn't break an older one.
+
+### Fixed
+- **Naming `--theme` on the command line silently discarded the rest of the
+  config file.** The loader only ran when no theme was given, so
+  `scrolloff` (and now every new key) vanished the moment a theme was
+  named. The file is now always read; each key still loses to its own CLI
+  flag.
+
 ## [1.18.4] - 2026-08-13
 
 ### Fixed
