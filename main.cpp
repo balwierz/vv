@@ -9970,6 +9970,51 @@ read_nullable_string_array(hid_t sub, int64_t cap, int64_t* full_rows) {
 
 // Read AnnData's obs / var DataFrame layout — one column per non-special
 // child link, categoricals expanded via the codes / categories sub-group.
+
+// Number of elements in a 1-D HDF5 dataset (0 if not rank-1 / on error).
+static int64_t h5_len_1d(hid_t d);
+
+// Reserved children of an obs/var group that are metadata, not columns.
+// anndata < 0.8 parks every categorical's lookup table in a `__categories`
+// group beside the columns; the reader skipped `__categories__` (with the
+// trailing underscores), which is a name anndata has never written, so the
+// real one fell through and was counted as a column.
+static bool anndata_reserved_child(const std::string& name) {
+    return name == "__categories" || name == "__categories__";
+}
+
+// Number of real columns in an obs/var group — i.e. children minus the
+// reserved ones. H5Gget_info's nlinks counts everything.
+static int64_t anndata_column_count(hid_t group) {
+    int64_t n = 0;
+    for (const auto& c : list_children(group))
+        if (!anndata_reserved_child(c)) ++n;
+    return n;
+}
+
+// Map integer codes onto their category strings. Shared by both AnnData
+// categorical encodings: the modern {codes, categories} group and the
+// pre-0.8 "integer dataset + __categories/<name>" layout. Out-of-range and
+// negative codes (anndata's -1 = missing) become nulls.
+static std::shared_ptr<arrow::Array> anndata_decode_codes(
+        const std::shared_ptr<arrow::Array>& codes_arr,
+        const std::shared_ptr<arrow::Array>& cats_arr) {
+    auto cats_s  = std::dynamic_pointer_cast<arrow::StringArray>(cats_arr);
+    auto codes_i = std::dynamic_pointer_cast<arrow::Int64Array>(codes_arr);
+    if (!cats_s || !codes_i) return nullptr;
+    const int64_t n = codes_i->length(), nc = cats_s->length();
+    arrow::StringBuilder b;
+    for (int64_t i = 0; i < n; ++i) {
+        if (codes_i->IsNull(i)) { (void)b.AppendNull(); continue; }
+        int64_t code = codes_i->Value(i);
+        if (code < 0 || code >= nc) (void)b.AppendNull();
+        else                        (void)b.Append(cats_s->GetString(code));
+    }
+    std::shared_ptr<arrow::Array> out;
+    if (!b.Finish(&out).ok()) return nullptr;
+    return out;
+}
+
 static arrow::Result<std::shared_ptr<arrow::Table>>
 read_anndata_dataframe(hid_t group, int64_t row_cap, int64_t* full_rows) {
     auto names = list_children(group);
@@ -9982,7 +10027,7 @@ read_anndata_dataframe(hid_t group, int64_t row_cap, int64_t* full_rows) {
     // Helper to convert one child into a (name, array) pair.
     auto add_child = [&](const std::string& name) -> arrow::Status {
         // Skip private / reserved children.
-        if (name == "__categories__") return arrow::Status::OK();
+        if (anndata_reserved_child(name)) return arrow::Status::OK();
         std::string display = name;
         VV_H5O_INFO_T info;
         if (VV_H5Oget_info_by_name(group, name.c_str(), &info, H5O_INFO_BASIC,
@@ -10027,24 +10072,12 @@ read_anndata_dataframe(hid_t group, int64_t row_cap, int64_t* full_rows) {
                 auto cats_t = read_1d_dataset_table(cats_d);
                 H5Dclose(cats_d); H5Dclose(codes_d); H5Gclose(sub);
                 if (cats_t.ok() && codes_t.ok()) {
-                    auto cats_arr = (*cats_t)->column(0)->chunk(0);
-                    auto codes_arr = (*codes_t)->column(0)->chunk(0);
-                    auto cats_s = std::dynamic_pointer_cast<arrow::StringArray>(cats_arr);
-                    auto codes_i = std::dynamic_pointer_cast<arrow::Int64Array>(codes_arr);
-                    arrow::StringBuilder b;
-                    int64_t n = codes_i ? codes_i->length() : 0;
-                    int64_t nc = cats_s ? cats_s->length() : 0;
-                    for (int64_t i = 0; i < n; ++i) {
-                        int64_t code = codes_i->Value(i);
-                        if (code < 0 || code >= nc)
-                            (void)b.AppendNull();
-                        else
-                            (void)b.Append(cats_s->GetString(code));
+                    auto a = anndata_decode_codes((*codes_t)->column(0)->chunk(0),
+                                                  (*cats_t)->column(0)->chunk(0));
+                    if (a) {
+                        cols.push_back(a);
+                        fields.push_back(arrow::field(display, arrow::utf8()));
                     }
-                    std::shared_ptr<arrow::Array> a;
-                    (void)b.Finish(&a);
-                    cols.push_back(a);
-                    fields.push_back(arrow::field(display, arrow::utf8()));
                 }
                 return arrow::Status::OK();
             }
@@ -10066,6 +10099,73 @@ read_anndata_dataframe(hid_t group, int64_t row_cap, int64_t* full_rows) {
         if (info.type != H5O_TYPE_DATASET) return arrow::Status::OK();
         hid_t d = H5Dopen2(group, name.c_str(), H5P_DEFAULT);
         if (d < 0) return arrow::Status::OK();
+
+        // anndata < 0.8 categorical: the column IS the integer code array, and
+        // its `categories` attribute is an HDF5 object reference to the lookup
+        // table, which that writer always parked at `__categories/<column>` in
+        // the same group. Without this the codes render as raw integers — and
+        // the digit-grouping formatter makes them look like measurements
+        // (`gene = 1_157`, `strand = 0`), which is worse than useless on a
+        // real dataset.
+        //
+        // Resolved by name rather than by dereferencing the attribute: H5R's
+        // API changed shape across the HDF5 versions vv builds against (1.14
+        // in the static image, 2.x on a current distro), and the by-name
+        // layout is what the writer that produced these files emitted. The
+        // attribute is still required, so a plain integer column is never
+        // mistaken for a categorical.
+        if (H5Aexists(d, "categories") > 0 && link_exists(group, "__categories")) {
+            hid_t catg = H5Gopen2(group, "__categories", H5P_DEFAULT);
+            if (catg >= 0) {
+                if (link_exists(catg, name.c_str())) {
+                    hid_t cats_d = H5Dopen2(catg, name.c_str(), H5P_DEFAULT);
+                    if (cats_d >= 0) {
+                        int64_t cats_len = h5_len_1d(cats_d);
+                        int64_t cf2 = 0;
+                        auto codes_t = read_1d_dataset_table(d, row_cap, &cf2);
+                        maxfull = std::max(maxfull, cf2);
+                        // Same guard as the modern branch: a per-cell-barcode
+                        // dictionary would mean reading millions of strings
+                        // just to render a preview.
+                        if (cats_len > category_dict_cap()) {
+                            H5Dclose(cats_d); H5Gclose(catg); H5Dclose(d);
+                            if (codes_t.ok() && (*codes_t)->num_columns() > 0) {
+                                cols.push_back((*codes_t)->column(0)->chunk(0));
+                                fields.push_back(arrow::field(
+                                    display + " (codes)",
+                                    (*codes_t)->schema()->field(0)->type()));
+                            }
+                            return arrow::Status::OK();
+                        }
+                        auto cats_t = read_1d_dataset_table(cats_d);
+                        H5Dclose(cats_d); H5Gclose(catg); H5Dclose(d);
+                        if (cats_t.ok() && codes_t.ok()) {
+                            auto a = anndata_decode_codes(
+                                (*codes_t)->column(0)->chunk(0),
+                                (*cats_t)->column(0)->chunk(0));
+                            if (a) {
+                                cols.push_back(a);
+                                fields.push_back(arrow::field(display, arrow::utf8()));
+                                return arrow::Status::OK();
+                            }
+                        }
+                        // Decode failed — fall through to the raw codes below.
+                        hid_t d2 = H5Dopen2(group, name.c_str(), H5P_DEFAULT);
+                        if (d2 < 0) return arrow::Status::OK();
+                        if (codes_t.ok() && (*codes_t)->num_columns() > 0) {
+                            cols.push_back((*codes_t)->column(0)->chunk(0));
+                            fields.push_back(arrow::field(
+                                display,
+                                (*codes_t)->schema()->field(0)->type()));
+                        }
+                        H5Dclose(d2);
+                        return arrow::Status::OK();
+                    }
+                }
+                H5Gclose(catg);
+            }
+        }
+
         int64_t cf = 0;
         auto t = read_1d_dataset_table(d, row_cap, &cf);
         maxfull = std::max(maxfull, cf);
@@ -10457,17 +10557,15 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
 
     if (link_exists(file_id, "obs") && is_group(file_id, "obs")) {
         hid_t g = H5Gopen2(file_id, "obs", H5P_DEFAULT);
-        H5G_info_t gi; H5Gget_info(g, &gi);
         add("obs", std::to_string(x_rows) + " rows, " +
-                    std::to_string(gi.nlinks) + " columns");
+                    std::to_string(anndata_column_count(g)) + " columns");
         H5Gclose(g);
         specs.push_back({OpenSpec::Kind::DataFrame, "/obs", "obs", ""});
     }
     if (link_exists(file_id, "var") && is_group(file_id, "var")) {
         hid_t g = H5Gopen2(file_id, "var", H5P_DEFAULT);
-        H5G_info_t gi; H5Gget_info(g, &gi);
         add("var", std::to_string(x_cols) + " rows, " +
-                    std::to_string(gi.nlinks) + " columns");
+                    std::to_string(anndata_column_count(g)) + " columns");
         H5Gclose(g);
         specs.push_back({OpenSpec::Kind::DataFrame, "/var", "var", ""});
     }
@@ -13735,12 +13833,27 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
     } else if (fends_ci(path, ".h5ad") || fends_ci(path, ".h5") ||
                fends_ci(path, ".hdf5") || fends_ci(path, ".loom")) {
         std::unique_ptr<h5v::Hdf5Source> src;
-        // In delimited export (--tsv/--csv) dump obs/var in full (or honour an
-        // explicit -n); the TUI/table view keep the bounded preview. Sparse /
-        // dense X and generic datasets stay capped regardless (see build_table).
-        int64_t df_cap = cfg.delimiter
-            ? (cfg.head_rows_set ? (int64_t)cfg.head_rows : -1)
-            : h5v::kDataFrameRowCap;
+        // The 1000-row cap exists so opening a 10 GB .h5ad in the TUI does not
+        // read 310k rows of obs up front. It must apply to THAT and nothing
+        // else: every mode that produces a complete answer — a count, an
+        // aggregate, an export, a delimited dump — has to see all the rows.
+        //
+        // Only --tsv/--csv used to escape it, so `--count` on a 310,385-row
+        // obs answered "1000", `--unique` reported "of 1000", and
+        // `--parquet out.parquet` wrote 1000 of 8563 rows. That last one is
+        // data loss during a format conversion.
+        //
+        // Sparse / dense X and generic datasets stay capped regardless (see
+        // build_table) — those are genuinely previews of a matrix.
+        const bool df_preview_only =
+            !cfg.delimiter && !cfg.count && !cfg.describe &&
+            cfg.unique_cols.empty() && cfg.sample_n <= 0 &&
+            !cfg.tail_rows_set && !cfg.json_array && !cfg.json_lines &&
+            !cfg.md && cfg.parquet_out.empty() && cfg.arrow_out.empty() &&
+            cfg.filter_expr.empty();
+        int64_t df_cap = df_preview_only
+            ? h5v::kDataFrameRowCap
+            : (cfg.head_rows_set ? (int64_t)cfg.head_rows : -1);
         std::string err = h5v::Hdf5Source::open_first(path, &src, df_cap);
         if (!err.empty()) return err;
         *out = std::move(src);

@@ -4,6 +4,32 @@ All notable changes to `vv` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **AnnData files written before anndata 0.8 showed integer codes instead of
+  categories.** That encoding stores a categorical column as a plain integer
+  array whose `categories` attribute is an HDF5 object reference into a
+  `__categories` group beside the columns — not the modern
+  `{codes, categories}` sub-group vv already understood. On a Perturb-seq
+  dataset that meant `gene` read `1_157`, `gene_id` `1_542` and `strand` `0`
+  instead of `NAF1`, `ENSG00000145414` and `+`; the digit-grouping formatter
+  made the codes look like measurements. Both encodings now share one decoder,
+  so the two files verified against each other are byte-identical across all
+  310,385 obs rows and 8,563 var rows.
+- **`__categories` was counted as a column.** The reserved-child skip tested
+  the name `__categories__`, which anndata has never written, so `--tab
+  summary` reported one column more than the file has (13 vs 12 for the same
+  data in the newer encoding).
+- **The obs/var preview cap applied to every mode, not just the preview.**
+  `kDataFrameRowCap` (1000) exists so opening a 10 GB `.h5ad` in the TUI does
+  not read 310k rows up front, but only `--tsv`/`--csv` escaped it. So
+  `vv f.h5ad --tab obs --count` answered **1000** for a 310,385-row obs,
+  `--unique` reported "of 1000", and — worst — `--tab var --parquet out.parquet`
+  wrote **1000 of 8,563 rows**, silently truncating a format conversion.
+  Every mode that produces a complete answer now reads all rows; the table and
+  TUI previews stay capped, and still say so in the footer.
+
 ## [1.18.5] - 2026-08-14
 
 ### Added
