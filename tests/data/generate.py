@@ -940,6 +940,49 @@ else:
                               20, dtype=np.float64).reshape(5, 4)})
     adata.write_h5ad(h5ad_path)
 
+    # tiny.legacy_cat.h5ad: the anndata < 0.8 categorical encoding, written by
+    # hand because modern anndata cannot emit it. A categorical column is a
+    # plain integer code array whose `categories` attribute is an HDF5 object
+    # reference to a lookup table parked in a `__categories` group beside the
+    # columns — NOT the modern {codes, categories} sub-group. vv read the codes
+    # raw, so a real Perturb-seq file showed `gene = 1_157` and `strand = 0`
+    # instead of gene names and +/-.
+    legacy_path = HERE / "tiny.legacy_cat.h5ad"
+    if legacy_path.exists():
+        legacy_path.unlink()
+    with h5py.File(legacy_path, "w") as h:
+        n = 4
+        obs = h.create_group("obs")
+        obs.attrs["_index"] = "cell_barcode"
+        obs.attrs["column-order"] = np.array(["gene", "strand", "n_counts"],
+                                             dtype=object)
+        obs.attrs["encoding-type"] = "dataframe"
+        obs.attrs["encoding-version"] = "0.1.0"
+        obs.create_dataset("cell_barcode",
+                           data=np.array([f"cell{i}".encode() for i in range(n)]))
+        obs.create_dataset("n_counts", data=np.array([10, 20, 30, 40],
+                                                     dtype=np.float32))
+        cats = obs.create_group("__categories")
+        # int16 codes + a 3-entry dictionary; code 2 is used twice and the
+        # order is deliberately not sorted, so a wrong decode is visible.
+        cats.create_dataset("gene",
+                            data=np.array([b"BRCA1", b"TP53", b"EGFR"]))
+        g = obs.create_dataset("gene", data=np.array([2, 0, 1, 2],
+                                                     dtype=np.int16))
+        g.attrs["categories"] = cats["gene"].ref
+        # int8 codes, and the classic genomics case: +/- must not read as 0/1.
+        cats.create_dataset("strand", data=np.array([b"+", b"-"]))
+        st = obs.create_dataset("strand", data=np.array([0, 1, 1, 0],
+                                                        dtype=np.int8))
+        st.attrs["categories"] = cats["strand"].ref
+        var = h.create_group("var")
+        var.attrs["_index"] = "gene_id"
+        var.attrs["encoding-type"] = "dataframe"
+        var.attrs["encoding-version"] = "0.1.0"
+        var.create_dataset("gene_id",
+                           data=np.array([b"ENSG1", b"ENSG2"]))
+        h.create_dataset("X", data=np.arange(n * 2, dtype=np.float32).reshape(n, 2))
+
     # tiny.dense.h5ad: a *dense* X that is wider than the 200-column dense
     # preview cap (3 cells × 250 genes). scan_anndata emits a Matrix2D tab for
     # a dense X with no column gate, so without the cap this densifies the whole

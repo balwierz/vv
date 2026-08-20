@@ -2836,4 +2836,63 @@ if [ -f "$DATA/tiny.h5ad" ]; then
     assert_contains    "anndata_x_rows_are_obs"       "$XHDR" "obs"
 fi
 
+# ── anndata < 0.8 categoricals (integer codes + __categories) ───────────────
+# The legacy encoding stores a categorical as a plain integer code array whose
+# `categories` attribute is an HDF5 object reference into a `__categories`
+# group beside the columns — not the modern {codes, categories} sub-group.
+# vv read the codes raw, so a real Perturb-seq file showed `gene = 1_157` and
+# `strand = 0` where gene names and +/- belong. Digit grouping made the codes
+# look like measurements.
+if [ -f "$DATA/tiny.legacy_cat.h5ad" ]; then
+    LC=$("$VV" --tab obs --tsv "$DATA/tiny.legacy_cat.h5ad" 2>/dev/null)
+    assert_contains "legacy_cat_decoded_gene"    "$LC" "BRCA1"
+    assert_contains "legacy_cat_decoded_strand"  "$LC" "+"
+    refute_contains "legacy_cat_no_raw_codes"    "$LC" "	2	"
+    # The mapping must be RIGHT, not merely string-shaped: codes are
+    # [2,0,1,2] over [BRCA1,TP53,EGFR], so row 0 is EGFR and row 1 BRCA1.
+    # A sorted-order or off-by-one decode would still produce gene names.
+    assert_eq_file_inline "legacy_cat_code_order" \
+        "$("$VV" --tab obs --tsv --no-header --select gene "$DATA/tiny.legacy_cat.h5ad" 2>/dev/null | paste -sd, -)" \
+        "EGFR,BRCA1,TP53,EGFR"
+    # strand is the genomics case that matters: 0/1 must read as +/-.
+    assert_eq_file_inline "legacy_cat_strand_signs" \
+        "$("$VV" --tab obs --tsv --no-header --select strand "$DATA/tiny.legacy_cat.h5ad" 2>/dev/null | paste -sd, -)" \
+        "+,-,-,+"
+    # The decoded column is a string, so --filter and --unique work on values.
+    assert_eq_file_inline "legacy_cat_filterable" \
+        "$("$VV" --tab obs --filter 'gene == "EGFR"' --count "$DATA/tiny.legacy_cat.h5ad" 2>/dev/null)" "2"
+    # __categories is metadata, not a column: it must not be rendered...
+    LC_HDR=$(printf '%s' "$LC" | head -1)
+    refute_contains "legacy_cat_categories_not_a_column" "$LC_HDR" "__categories"
+    # ...nor counted. The skip used to test the name "__categories__", which
+    # anndata has never written, so the real group was counted by H5Gget_info.
+    assert_contains "legacy_cat_column_count" \
+        "$("$VV" --tab summary --tsv "$DATA/tiny.legacy_cat.h5ad" 2>/dev/null | grep '^obs')" \
+        "4 columns"
+fi
+
+# ── The obs/var preview cap must bound the PREVIEW, not every mode ──────────
+# kDataFrameRowCap (1000) keeps opening a 10 GB .h5ad cheap. Only --tsv/--csv
+# escaped it, so `--count` answered 1000 for a 310,385-row obs, `--unique`
+# reported "of 1000", and `--parquet out.parquet` wrote 1000 of 8563 rows —
+# data loss during a format conversion.
+if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
+    BIGF="$DATA/tiny.bigobs.h5ad"
+    assert_eq_file_inline "h5ad_count_not_capped" \
+        "$("$VV" --tab obs --count "$BIGF" 2>/dev/null)" "1500"
+    "$VV" --tab obs --parquet "$TMP/bigobs.parquet" "$BIGF" >/dev/null 2>&1
+    assert_eq_file_inline "h5ad_parquet_export_not_capped" \
+        "$("$VV" --count "$TMP/bigobs.parquet" 2>/dev/null)" "1500"
+    "$VV" --tab obs --arrow "$TMP/bigobs.arrow" "$BIGF" >/dev/null 2>&1
+    assert_eq_file_inline "h5ad_arrow_export_not_capped" \
+        "$("$VV" --count "$TMP/bigobs.arrow" 2>/dev/null)" "1500"
+    assert_contains "h5ad_unique_not_capped" \
+        "$("$VV" --tab obs --unique grp "$BIGF" 2>/dev/null)" "of 1500"
+    # ...but the human-facing preview stays capped, which is the whole point:
+    # a 310k-row obs must not be read to draw ten lines.
+    assert_contains "h5ad_table_preview_still_capped" \
+        "$("$VV" --tab obs -n 3 --no-interactive --color=never "$BIGF" 2>/dev/null)" \
+        "1000 rows"
+fi
+
 summarize
