@@ -27,7 +27,7 @@
 %global xlsxio_version 0.2.36
 
 Name:           vv
-Version:        1.18.5
+Version:        1.18.6
 Release:        1%{?dist}
 Summary:        Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)
 License:        MIT
@@ -143,6 +143,11 @@ rm -f  %{buildroot}%{_libdir}/pkgconfig/mimalloc.pc
 %{_datadir}/icons/hicolor/scalable/apps/vv.svg
 
 %changelog
+* Thu Aug 20 2026 Piotr Balwierz <nikt@tuta.com> - 1.18.6-1
+- Update to 1.18.6: AnnData files written before anndata 0.8 now show their
+  categories instead of integer codes, and obs/var no longer cap --count,
+  --unique or a --parquet/--arrow export at the 1000-row preview.
+
 * Fri Aug 14 2026 Piotr Balwierz <nikt@tuta.com> - 1.18.5-1
 - Update to 1.18.5: the config file gains background / max_col_width /
   threads keys, and --theme no longer discards the rest of the config.
