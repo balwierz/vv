@@ -48,8 +48,10 @@ tests/run_tests.sh
 ```
 
 Smoke tests diff `vv` output against checked-in goldens under `tests/golden/`.
-If user-visible output changes intentionally, delete the affected golden files
-and re-run to regenerate.
+A missing golden fails the suite; it is never created from the binary under
+test. To accept an intentional output change, delete the affected golden,
+re-run, and use the `cp` command the failure prints — after reading the new
+output.
 
 ## Architecture
 

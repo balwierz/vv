@@ -50,8 +50,12 @@ run_case() {
     if [ -f "$GOLDEN/$name.expected" ]; then
         assert_eq_file "$name" "$out" "$GOLDEN/$name.expected"
     else
-        cp "$out" "$GOLDEN/$name.expected"
-        echo "  init  $name (created golden)"
+        # A missing golden is a FAILURE, never an invitation to record whatever
+        # the binary under test currently prints. Blessing it here made a new
+        # case pass on its first run, and — worse — made the documented "delete
+        # the golden and re-run to regenerate" workflow silently re-bless from
+        # the very build whose behaviour was under review.
+        missing_golden "$name" "$out"
     fi
 }
 
@@ -499,8 +503,7 @@ COLUMNS=150 "$VV" --vertical --color=never -n 3 "$DATA/tiny.parquet" \
 if [ -f "$GOLDEN/parquet_vertical.expected" ]; then
     assert_eq_file "parquet_vertical" "$TMP/parquet_vertical.out" "$GOLDEN/parquet_vertical.expected"
 else
-    cp "$TMP/parquet_vertical.out" "$GOLDEN/parquet_vertical.expected"
-    echo "  init  parquet_vertical (created golden)"
+    missing_golden "parquet_vertical" "$TMP/parquet_vertical.out"
 fi
 
 echo

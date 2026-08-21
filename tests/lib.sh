@@ -35,6 +35,17 @@ assert_eq_file() {
 # mutually incompatible: util-linux wants `script -qec "cmd" /dev/null`,
 # BSD/macOS wants `script -q /dev/null cmd args...`. python3's pty module is
 # identical on both, and is already how the six tui_*.py harnesses work.
+# A golden file that does not exist is a test failure, not a chance to create
+# one from the binary under test. Prints the exact command to accept the output
+# so an intentional change stays a deliberate, reviewable step.
+missing_golden() {
+    # $1 = name, $2 = actual_file
+    FAIL=$((FAIL + 1))
+    echo "  FAIL  $1 (no golden: $GOLDEN/$1.expected)"
+    echo "     if this output is correct, accept it with:"
+    echo "       cp $2 $GOLDEN/$1.expected"
+}
+
 run_on_pty() {
     python3 -c 'import pty, sys; sys.exit(pty.spawn(sys.argv[1:]))' "$@"
 }
