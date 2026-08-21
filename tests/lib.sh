@@ -3,6 +3,7 @@
 
 PASS=0
 FAIL=0
+SKIP=0
 
 assert_eq_file() {
     # $1 = name, $2 = actual_file, $3 = golden_file
@@ -35,6 +36,24 @@ assert_eq_file() {
 # mutually incompatible: util-linux wants `script -qec "cmd" /dev/null`,
 # BSD/macOS wants `script -q /dev/null cmd args...`. python3's pty module is
 # identical on both, and is already how the six tui_*.py harnesses work.
+# Gate a block of assertions on optional external tools. A skipped block is
+# ANNOUNCED and counted: silently vanishing assertions made the suite report
+# "failed: 0" while running fewer checks than the reader assumed, which is how
+# the samtools cross-checks went unrun on Linux CI for months.
+#   usage:  if require "<label>" tool [tool...]; then ... fi
+require() {
+    local label="$1"; shift
+    local missing=""
+    local t
+    for t in "$@"; do
+        command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
+    done
+    [ -z "$missing" ] && return 0
+    SKIP=$((SKIP + 1))
+    echo "  skip  $label (needs:$missing)"
+    return 1
+}
+
 # A golden file that does not exist is a test failure, not a chance to create
 # one from the binary under test. Prints the exact command to accept the output
 # so an intentional change stays a deliberate, reviewable step.
@@ -81,8 +100,9 @@ assert_exit_zero() {
         PASS=$((PASS + 1))
         echo "  ok    $name"
     else
+        local rc=$?                 # capture BEFORE the arithmetic clobbers it
         FAIL=$((FAIL + 1))
-        echo "  FAIL  $name (exit $?)"
+        echo "  FAIL  $name (exit $rc)"
     fi
 }
 
@@ -111,6 +131,11 @@ assert_eq_file_inline() {
 
 summarize() {
     echo
-    echo "passed: $PASS  failed: $FAIL"
+    if [ "$SKIP" -gt 0 ]; then
+        echo "passed: $PASS  failed: $FAIL  skipped blocks: $SKIP"
+        echo "note: $SKIP block(s) were skipped for missing tools — those assertions did NOT run."
+    else
+        echo "passed: $PASS  failed: $FAIL"
+    fi
     [ $FAIL -eq 0 ]
 }

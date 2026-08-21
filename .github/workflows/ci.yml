@@ -304,8 +304,10 @@ jobs:
         # bgzip/tabix come with brew's htslib (already installed above);
         # bcftools is separate. samtools and tmux unlock ~10 further tests
         # (the BAM/CRAM region and pileup cross-checks, and one TUI check) —
-        # without them those blocks skip themselves and macOS silently covers
-        # less than Linux. coreutils provides gtimeout.
+        # without them those blocks skip themselves. Linux installs the same
+        # two via scripts/setup-linux-build-deps.sh, so both platforms now
+        # run them; run_tests.sh announces any block it does skip.
+        # coreutils provides gtimeout.
         # Still skipped on macOS: the UCSC bigBed/bigWig tools (absent; the
         # fixtures are shutil.which-gated in generate.py) and the ORC tests
         # (Homebrew's apache-arrow is built without the ORC adapter, which vv
