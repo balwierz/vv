@@ -385,6 +385,18 @@ if [ -f "$DATA/tiny.bw" ]; then
     assert_eq_file_inline "bigwig_region_returns_two_rows" "$BW_REGION" "2"
 fi
 
+# Hostile bigWig: the chromosome B-tree names a chromId outside the itemCount
+# the file itself declares. libBigWig used it directly as the subscript for
+# writes into cl->len and cl->chrom, both sized to itemCount, so opening the
+# file corrupted the heap — glibc aborted (exit 134) before anything was
+# printed. Must be a clean refusal, exit 1, no abort.
+if [ -f "$DATA/tiny.oobchrom.bw" ]; then
+    assert_exit_code "bigwig_oob_chromid_rejected" 1 \
+        "$VV" --tsv --no-header "$DATA/tiny.oobchrom.bw"
+    OOB_ERR=$("$VV" --tsv --no-header "$DATA/tiny.oobchrom.bw" 2>&1 || true)
+    assert_contains "bigwig_oob_chromid_message" "$OOB_ERR" "as bigWig/bigBed"
+fi
+
 # Smart list/map truncation: when a column is too narrow for the full
 # value, the old code dropped to "[first, …]" after the first comma.
 # The new code walks every top-level comma and picks the largest prefix
