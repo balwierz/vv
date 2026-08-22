@@ -1831,6 +1831,23 @@ if [ -f "$DATA/tiny.big1d.h5" ]; then
     assert_eq_file_inline "hdf5_1d_preview_cap_rows" "$(echo $BIG1D_ROWS)" "1000"
 fi
 
+# Enum column whose base integer type is 32 bytes wide. H5Tget_member_value
+# writes one value in the base type, so decoding a member into a bare int64
+# wrote 24 bytes past it. NOTE: these assertions do NOT discriminate on output
+# alone — the member values are 0/1/2, whose low 8 little-endian bytes are
+# correct either way, so the unfixed reader prints exactly the same names. The
+# fixture earns its keep under the ASan/UBSan CI job, where the unfixed decode
+# aborts with stack-buffer-overflow inside H5Tget_member_value. What the
+# assertions below do guard is the decode itself: names must still resolve
+# through a base type wider than int64, not fall back to raw numbers.
+if [ -f "$DATA/tiny.wideenum.h5" ]; then
+    WIDEENUM=$("$VV" --tsv --no-header --tab /grade "$DATA/tiny.wideenum.h5" 2>&1)
+    assert_contains "hdf5_wide_enum_low"  "$WIDEENUM" "LOW"
+    assert_contains "hdf5_wide_enum_mid"  "$WIDEENUM" "MID"
+    assert_contains "hdf5_wide_enum_high" "$WIDEENUM" "HIGH"
+    assert_exit_code "hdf5_wide_enum_exit" 0 "$VV" --tsv --tab /grade "$DATA/tiny.wideenum.h5"
+fi
+
 # NumPy .npz — valid archive (summary lists each array) plus a malformed one.
 if [ -f "$DATA/tiny.npz" ]; then
     NPZ_OUT=$("$VV" --no-interactive --color=never "$DATA/tiny.npz" 2>&1)
