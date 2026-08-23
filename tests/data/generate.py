@@ -833,6 +833,65 @@ else:
     with h5py.File(big1d_path, "w") as f:
         f.create_dataset("big", data=np.arange(1500, dtype=np.int64))
 
+    # tiny.wideenum.h5: an enum column whose BASE integer type is 32 bytes
+    # wide. H5Tget_member_value writes one value in the base type, so reading
+    # a member into a bare int64 wrote 24 bytes past it. The values are 0/1/2,
+    # whose low 8 little-endian bytes are correct, so the RENDERED OUTPUT IS
+    # THE SAME with and without the fix — this fixture discriminates only
+    # under the ASan/UBSan CI job, where the unfixed code aborts with
+    # stack-buffer-overflow inside H5Tget_member_value.
+    #
+    # h5py cannot express this: enum_insert() takes a C long long, so it
+    # cannot write a value wider than 8 bytes, and its low-level dataset
+    # writer produces a type h5dump itself rejects. Drive libhdf5 through
+    # ctypes instead, mirroring the C API call sequence exactly.
+    wideenum_path = HERE / "tiny.wideenum.h5"
+    try:
+        import ctypes, ctypes.util
+        _lib = ctypes.CDLL(ctypes.util.find_library("hdf5") or "libhdf5.so")
+        _lib.H5open()          # populates the predefined-type globals below
+        _hid = ctypes.c_long
+        for _fn, _arg, _res in (
+            ("H5Fcreate", [ctypes.c_char_p, ctypes.c_uint, _hid, _hid], _hid),
+            ("H5Tcopy", [_hid], _hid),
+            ("H5Tset_size", [_hid, ctypes.c_size_t], ctypes.c_int),
+            ("H5Tenum_create", [_hid], _hid),
+            ("H5Tenum_insert", [_hid, ctypes.c_char_p, ctypes.c_void_p], ctypes.c_int),
+            ("H5Screate_simple",
+             [ctypes.c_int, ctypes.POINTER(ctypes.c_ulonglong), ctypes.c_void_p], _hid),
+            ("H5Dcreate2", [_hid, ctypes.c_char_p, _hid, _hid, _hid, _hid, _hid], _hid),
+            ("H5Dwrite", [_hid, _hid, _hid, _hid, _hid, ctypes.c_void_p], ctypes.c_int),
+            ("H5Dclose", [_hid], ctypes.c_int), ("H5Sclose", [_hid], ctypes.c_int),
+            ("H5Tclose", [_hid], ctypes.c_int), ("H5Fclose", [_hid], ctypes.c_int),
+        ):
+            _f = getattr(_lib, _fn); _f.argtypes = _arg; _f.restype = _res
+        if wideenum_path.exists():
+            wideenum_path.unlink()
+        _W = 32                                  # enum base width, in bytes
+        _fid = _lib.H5Fcreate(str(wideenum_path).encode(), 0x0002, 0, 0)
+        if _fid < 0:
+            raise RuntimeError("H5Fcreate failed")
+        _base = _lib.H5Tcopy(_hid.in_dll(_lib, "H5T_STD_I64LE_g").value)
+        _lib.H5Tset_size(_base, _W)
+        _et = _lib.H5Tenum_create(_base)
+        for _name, _v in ((b"LOW", 0), (b"MID", 1), (b"HIGH", 2)):
+            _buf = (ctypes.c_ubyte * _W)(); _buf[0] = _v      # little-endian
+            _lib.H5Tenum_insert(_et, _name, ctypes.byref(_buf))
+        _dims = (ctypes.c_ulonglong * 1)(3)
+        _sid = _lib.H5Screate_simple(1, _dims, None)
+        _did = _lib.H5Dcreate2(_fid, b"grade", _et, _sid, 0, 0, 0)
+        _data = (ctypes.c_ubyte * (3 * _W))()
+        for _i, _v in enumerate((0, 1, 2)):
+            _data[_i * _W] = _v
+        _lib.H5Dwrite(_did, _et, 0, 0, 0, ctypes.byref(_data))
+        for _close, _obj in ((_lib.H5Dclose, _did), (_lib.H5Sclose, _sid),
+                             (_lib.H5Tclose, _et), (_lib.H5Tclose, _base),
+                             (_lib.H5Fclose, _fid)):
+            _close(_obj)
+    except Exception as _e:                      # noqa: BLE001
+        print(f"warn: could not build tiny.wideenum.h5 via libhdf5 ctypes ({_e}); "
+              "keeping any committed copy", file=sys.stderr)
+
     # tiny.badsparse.h5ad: a HOSTILE AnnData. The CSR `X` group's `shape`
     # attribute lies (claims 100 rows) but `indptr` holds only 2 rows; and the
     # `obs` DataFrame has children of unequal length. vv used to derive row

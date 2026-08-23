@@ -9803,16 +9803,32 @@ read_1d_dataset_table(hid_t dset, int64_t row_cap, int64_t* full_rows) {
     } else if (cls == H5T_ENUM) {
         // Map enum codes to their member names — h5py stores a bool column as
         // an int enum {FALSE=0, TRUE=1}, which otherwise hit the "?" fallback.
-        // Member values read into a zeroed int64 are correct for little-endian
-        // base types <= 8 bytes (what numpy / AnnData produce).
+        //
+        // H5Tget_member_value writes one value in the enum's BASE type, i.e.
+        // H5Tget_size(t) bytes, and that width comes from the file: an enum
+        // whose base is a 256-byte integer is well-formed HDF5 and makes the
+        // library write 256 bytes. Reading into a bare int64 therefore let a
+        // crafted file scribble over the stack with bytes it chose. Size the
+        // buffer from the type, and convert to int64 through HDF5 instead of
+        // assuming a little-endian layout. H5Tconvert works in place and needs
+        // room for the wider of source and destination.
         std::map<int64_t, std::string> names;
         int nmem = H5Tget_nmembers(t);
-        for (int m = 0; m < nmem; ++m) {
+        hid_t base = H5Tget_super(t);
+        size_t esz = H5Tget_size(t);
+        for (int m = 0; base >= 0 && esz > 0 && m < nmem; ++m) {
+            std::vector<unsigned char> raw(std::max(esz, sizeof(int64_t)), 0);
+            if (H5Tget_member_value(t, (unsigned)m, raw.data()) < 0) continue;
+            if (H5Tconvert(base, H5T_NATIVE_INT64, 1, raw.data(), nullptr,
+                           H5P_DEFAULT) < 0)
+                continue;   // value does not fit an int64 — it cannot match a
+                            // datum read below as int64 either, so drop the name
             int64_t val = 0;
-            H5Tget_member_value(t, (unsigned)m, &val);
+            std::memcpy(&val, raw.data(), sizeof(val));
             char* mn = H5Tget_member_name(t, (unsigned)m);
             if (mn) { names[val] = mn; H5free_memory(mn); }
         }
+        if (base >= 0) H5Tclose(base);
         std::vector<int64_t> buf((size_t)n);
         hid_t ms = read_first_n(H5T_NATIVE_INT64, buf.data()); H5Sclose(ms);
         arrow::StringBuilder b;
