@@ -6315,8 +6315,17 @@ class BamPileupSource : public TabularSource {
                 if (p->is_refskip) bases += bam_is_rev(p->b) ? '<' : '>';
                 else               bases += '*';
             } else {
-                uint8_t bnt = bam_seqi(bam_get_seq(p->b), p->qpos);
-                char nt = seq_nt16_str[bnt];             // uppercase A/C/G/T/N/=
+                // p->qpos comes from htslib's CIGAR walk, not from l_qseq. A
+                // record with SEQ='*' (l_qseq == 0) but a full CIGAR is legal
+                // SAM and reaches here, so qpos can point past the packed SEQ
+                // array (0 bytes when SEQ is absent) — an out-of-bounds read of
+                // heap bytes rendered as base calls. The quality read below is
+                // already bounded the same way; bases with no sequence render
+                // as 'N'. (Matching samtools' depth for such reads — it drops
+                // them entirely — is a separate change: depth here is unchanged.)
+                char nt = (p->qpos < p->b->core.l_qseq)
+                              ? seq_nt16_str[bam_seqi(bam_get_seq(p->b), p->qpos)]
+                              : 'N';                     // uppercase A/C/G/T/N/=
                 bool rev = bam_is_rev(p->b);
                 if (ref) {
                     int rb = (pos < ref_len) ? (unsigned char)ref[pos] : 'N';
@@ -6346,8 +6355,13 @@ class BamPileupSource : public TabularSource {
                 bases += std::to_string(p->indel);
                 bool rev = bam_is_rev(p->b);
                 for (int k = 1; k <= p->indel; ++k) {
-                    uint8_t b = bam_seqi(bam_get_seq(p->b), p->qpos + k);
-                    char nt = seq_nt16_str[b];
+                    // Same bound as the base read above: an inserted base past
+                    // the record's SEQ (inconsistent CIGAR, or SEQ='*') would
+                    // otherwise over-read the packed array.
+                    char nt = (p->qpos + k < p->b->core.l_qseq)
+                                  ? seq_nt16_str[bam_seqi(bam_get_seq(p->b),
+                                                          p->qpos + k)]
+                                  : 'N';
                     if (rev) nt = (char)std::tolower(nt);
                     bases += nt;
                 }
