@@ -2104,6 +2104,34 @@ assert_exit_code "region_unsupported_still_succeeds" 0 \
 REGOK=$("$VV" --color=never --count -r chr1:1-2 "$DATA/tiny.bed.gz" 2>&1 >/dev/null || true)
 refute_contains "region_supported_no_warn" "$REGOK" "no region index"
 
+# Reads with SEQ='*' (no query bases) but a full CIGAR: legal SAM that reaches
+# the pileup. The base is read at a CIGAR-derived query offset, which with no
+# bases ran past the packed SEQ array — a heap over-read (garbage base calls,
+# and a crash once it left the allocation). The bases must render as 'N' and
+# the run must complete cleanly; the ASan/UBSan CI job is what proves the
+# over-read is gone (a regression aborts there). The 20000M fixture exercises
+# the base-column read, the 1M20000I1M fixture the inserted-base read.
+# The memory-safety discriminator is the ASan/UBSan job: on the unfixed reader
+# both fixtures over-read inside format_pileup_row, and ASan aborts. In a plain
+# release build the over-read reads adjacent heap without faulting for these
+# CIGAR sizes, so exit stays 0 — the assertions below check the intended base
+# rendering (col 5), which discriminates in practice (the unfixed reader prints
+# heap bytes there) but is not guaranteed to. mapq is 60, so the read-start
+# marker is "^]"; the missing base renders "N".
+if [ -f "$DATA/tiny.noseq.bam" ]; then
+    assert_exit_code "bam_pileup_noseq_exit" 0 \
+        "$VV" --tsv --no-header --pileup "$DATA/tiny.noseq.bam"
+    NOSEQ5=$("$VV" --tsv --no-header --pileup "$DATA/tiny.noseq.bam" | head -1 | cut -f5)
+    assert_eq_file_inline "bam_pileup_noseq_base_n" "$NOSEQ5" '^]N'
+fi
+if [ -f "$DATA/tiny.noseqins.bam" ]; then
+    assert_exit_code "bam_pileup_noseqins_exit" 0 \
+        "$VV" --tsv --no-header --pileup "$DATA/tiny.noseqins.bam"
+    NOSEQI5=$("$VV" --tsv --no-header --pileup "$DATA/tiny.noseqins.bam" | head -1 | cut -f5)
+    # inserted bases with no query sequence render as N: "^]N+20000NNN..."
+    assert_contains "bam_pileup_noseqins_ins_n" "$NOSEQI5" "+20000N"
+fi
+
 # Reference skips (CIGAR N, e.g. RNA-seq introns) and deletions: the whole
 # pileup must match samtools mpileup byte-for-byte — refskips render as '>'/'<'
 # (strand), deletions as '*', and the quality column always carries the real

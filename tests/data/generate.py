@@ -659,6 +659,36 @@ else:
             bf.write(r)
     pysam.index(str(sp_path))
 
+    # tiny.noseq.bam / tiny.noseqins.bam: reads with SEQ='*' (l_qseq == 0) but a
+    # full CIGAR. This is legal SAM — an aligner may store the alignment without
+    # the query bases — and htslib decodes it, so it reaches the pileup. The
+    # pileup base is read at a CIGAR-derived query offset; with no query bases
+    # that offset ran past the packed SEQ array, an out-of-bounds read of heap
+    # bytes rendered as base calls, and past the allocation it faulted. The
+    # 20000M read exercises the base-column read; the 1M20000I1M read exercises
+    # the insertion-expansion read. The CIGAR lengths are large enough that the
+    # over-read crosses the record allocation, so the ASan/UBSan job aborts on a
+    # regression; a bounded reader prints 'N' for the missing bases and exits 0.
+    for _name, _cigar in (("tiny.noseq.bam", "20000M"),
+                          ("tiny.noseqins.bam", "1M20000I1M")):
+        _p = HERE / _name
+        if _p.exists():
+            _p.unlink()
+        with pysam.AlignmentFile(str(_p), "wb", header=bam_header) as bf:
+            r = pysam.AlignedSegment(header=bf.header)
+            r.query_name = "r1"
+            r.flag = 0
+            r.reference_id = 0
+            r.reference_start = 0
+            r.mapping_quality = 60
+            r.cigarstring = _cigar
+            r.query_sequence = None          # SEQ = '*'  -> l_qseq = 0
+            r.next_reference_id = -1
+            r.next_reference_start = -1
+            r.template_length = 0
+            bf.write(r)
+        # Whole-file --pileup does not need an index, so none is written.
+
 # ── samtools mpileup (single-sample + two-sample fixtures) ──────────────────
 # Real samtools mpileup output. Six columns for single-sample; the
 # two-sample variant has 3 + 3*2 = 9 columns.
