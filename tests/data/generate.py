@@ -1414,6 +1414,34 @@ else:
     print("warn: bedToBigBed / bedGraphToBigWig not found; "
           "skipping tiny.bb and tiny.bw", file=sys.stderr)
 
+# tiny.oobchrom.bw: a HOSTILE bigWig. The chromosome B-tree leaf names a
+# chromId (64) outside the itemCount the same file declares (2). libBigWig used
+# that value directly as the subscript for writes into cl->len and cl->chrom,
+# both calloc'd to itemCount entries, so opening the file wrote four
+# file-chosen bytes and a pointer past the end of two heap allocations —
+# glibc aborted on the corrupted heap; ASan reports heap-buffer-overflow.
+# vv must now reject the file instead.
+#
+# Derived by patching the committed tiny.bw rather than built from scratch, so
+# it is reproducible without UCSC's kent tools (absent on macOS CI and most
+# dev boxes, which is why tiny.bw itself is gated above).
+bw_src = HERE / "tiny.bw"
+if bw_src.exists():
+    _d = bytearray(bw_src.read_bytes())
+    _ct = struct.unpack_from("<Q", _d, 8)[0]            # chromosomeTreeOffset
+    _keySize = struct.unpack_from("<I", _d, _ct + 8)[0]
+    _node = _ct + 32                                     # past the cirTree header
+    _isLeaf, _pad, _nVals = struct.unpack_from("<BBH", _d, _node)
+    if _isLeaf and _nVals:
+        # item layout: key[keySize], chromId(u32), chromSize(u32)
+        struct.pack_into("<I", _d, _node + 4 + _keySize, 64)
+        (HERE / "tiny.oobchrom.bw").write_bytes(bytes(_d))
+    else:
+        print("warn: tiny.bw chrom tree is not a populated leaf; "
+              "skipping tiny.oobchrom.bw", file=sys.stderr)
+else:
+    print("warn: tiny.bw absent; skipping tiny.oobchrom.bw", file=sys.stderr)
+
 # ── TSV / CSV ────────────────────────────────────────────────────────────────
 tsv = "name\tcount\tratio\nfoo\t100\t0.5\nbar\t250\t0.75\nbaz\t9999\t0.1\n"
 (HERE / "tiny.tsv").write_text(tsv)

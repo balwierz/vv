@@ -193,7 +193,17 @@ static uint64_t readChromLeaf(bigWigFile_t *bw, chromList_t *cl, uint32_t valueS
     for(i=0; i<nVals; i++) {
         if(bwRead((void*) chrom, sizeof(char), valueSize, bw) != valueSize) goto error;
         if(bwRead((void*) &idx, sizeof(uint32_t), 1, bw) != 1) goto error;
+        //LOCAL PATCH (vv): idx is the chromId, read straight from the file, and
+        //is used below as the subscript for writes into cl->len and cl->chrom.
+        //Both are calloc'd to cl->nKeys entries (itemCount, also from the file),
+        //so a chromId outside that range wrote 4 file-chosen bytes and an 8-byte
+        //pointer past the end of two heap allocations, at an offset the file
+        //picks. nKeys is a signed int64 assigned from a uint64, so guard the
+        //negative case before the unsigned comparison.
+        if(cl->nKeys <= 0 || (uint64_t) idx >= (uint64_t) cl->nKeys) goto error;
         if(bwRead((void*) &(cl->len[idx]), sizeof(uint32_t), 1, bw) != 1) goto error;
+        //A repeated chromId would otherwise leak the earlier bwStrdup().
+        if(cl->chrom[idx]) free(cl->chrom[idx]);
         cl->chrom[idx] = bwStrdup(chrom);
         if(!(cl->chrom[idx])) goto error;
     }
