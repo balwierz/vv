@@ -368,6 +368,27 @@ loc = loc.replace_schema_metadata({"lociSSD_manifest": manifest})
 # pruning is actually exercised by region-query tests.
 pq.write_table(loc, HERE / "tiny.lociss", compression="zstd", row_group_size=2)
 
+# tiny.badcoord.lociss: a LociSSD file with a NULL in the (nullable) int Start
+# column. --validate's per-row scan read each coordinate via std::stoll on the
+# rendered cell; a null renders as the null symbol, which stoll cannot parse, so
+# it threw std::invalid_argument and aborted the process. The columns are all the
+# right (integer/string) types, so every schema check passes first — the crash
+# hit on exactly the malformed file --validate exists to diagnose. Must now be a
+# reported failure, not an abort.
+badcoord = pa.table({
+    "Chromosome":  pa.array(["chr1", "chr1", "chr1"], pa.string()),
+    "Start":       pa.array([100, None, 300], pa.int32()),   # null coordinate
+    "End":         pa.array([200, 250, 400], pa.int32()),
+    "MaxEndSoFar": pa.array([200, 250, 400], pa.int32()),
+})
+_bc_manifest = json.dumps({
+    "format_version": 2, "row_count": 3, "assembly": "hg38",
+    "chromosomes": [{"name": "chr1", "rows": 3, "row_offset": 0}],
+    "sort_keys": ["Chromosome", "Start", "End"], "coord_dtype": "int32",
+})
+badcoord = badcoord.replace_schema_metadata({"lociSSD_manifest": _bc_manifest})
+pq.write_table(badcoord, HERE / "tiny.badcoord.lociss", compression="zstd")
+
 # ── LociSSD v4 "colblock" (tiny.v4.lociss + .idx) ───────────────────────────
 # A minimal hand-rolled v4 fixture (only pyarrow for the zstd frames). 2
 # chromosomes, block_rows=3 → 2 blocks (a block never spans a chromosome),

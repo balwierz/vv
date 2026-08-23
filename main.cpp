@@ -15112,14 +15112,15 @@ static std::string validate_lociss(const std::string& path) {
         }
         return false;
     };
+    bool coords_int = true;
     if (!is_string_like(*schema->field(j_chr)->type()))
         fail("Chromosome must be string or dict<string>");
     else                                                pass("Chromosome column is string-like");
-    if (!is_int_like(*schema->field(j_st)->type()))    fail("Start must be integer");
+    if (!is_int_like(*schema->field(j_st)->type()))  { fail("Start must be integer");       coords_int = false; }
     else                                                pass("Start column is integer");
-    if (!is_int_like(*schema->field(j_en)->type()))    fail("End must be integer");
+    if (!is_int_like(*schema->field(j_en)->type()))  { fail("End must be integer");         coords_int = false; }
     else                                                pass("End column is integer");
-    if (!is_int_like(*schema->field(j_mes)->type()))   fail("MaxEndSoFar must be integer");
+    if (!is_int_like(*schema->field(j_mes)->type())) { fail("MaxEndSoFar must be integer"); coords_int = false; }
     else                                                pass("MaxEndSoFar column is integer");
 
     // 3. Manifest coverage: row_offsets contiguous from 0, total = file rows.
@@ -15142,6 +15143,16 @@ static std::string validate_lociss(const std::string& path) {
     }
     if (coverage_ok) pass("manifest covers all " + std::to_string(total_rows) +
                           " rows contiguously");
+
+    // The per-row invariant scan below reads Start/End/MaxEndSoFar as integers.
+    // If any of those columns is not integer-typed the schema check above already
+    // failed; skip the scan rather than let a string cell reach std::stoll (which
+    // would throw and abort). The overall result is still "validation failed".
+    if (!coords_int) {
+        std::printf("\n%d check(s) passed, %d failed\n", n_pass, n_fail);
+        std::fflush(stdout);
+        return "validation failed (" + std::to_string(n_fail) + " checks)";
+    }
 
     // 4-6. Stream every row, checking sort order, MaxEndSoFar, chrom label.
     // GetRecordBatchReader takes Parquet *leaf* column indices — expand each
@@ -15181,7 +15192,7 @@ static std::string validate_lociss(const std::string& path) {
     int64_t prev_start = INT64_MIN, prev_end = INT64_MIN;
     int64_t running_max_end = INT64_MIN;
     std::string prev_chrom;
-    int   sort_failures = 0, mes_failures = 0, chrom_failures = 0;
+    int   sort_failures = 0, mes_failures = 0, chrom_failures = 0, coord_failures = 0;
     int64_t SHOW_MAX = 5;  // cap how many violations we print per check
 
     while (true) {
@@ -15193,11 +15204,26 @@ static std::string validate_lociss(const std::string& path) {
         auto st_col  = batch->column(1);
         auto en_col  = batch->column(2);
         auto mes_col = batch->column(3);
+        // A null or otherwise unparseable coordinate must be reported, not
+        // crash: cell_to_string renders a null as the null symbol, and
+        // std::stoll throws on it (and on any non-digit text).
+        auto read_coord = [](const arrow::Array& col, int64_t r, bool* ok) -> int64_t {
+            if (col.IsNull(r)) { *ok = false; return 0; }
+            try { return std::stoll(cell_to_string(col, r)); }
+            catch (...) { *ok = false; return 0; }
+        };
         for (int64_t r = 0; r < batch->num_rows(); ++r, ++row) {
             std::string this_chrom = cell_to_string(*chr_col, r);
-            int64_t this_start = std::stoll(cell_to_string(*st_col,  r));
-            int64_t this_end   = std::stoll(cell_to_string(*en_col,  r));
-            int64_t this_mes   = std::stoll(cell_to_string(*mes_col, r));
+            bool coord_ok = true;
+            int64_t this_start = read_coord(*st_col,  r, &coord_ok);
+            int64_t this_end   = read_coord(*en_col,  r, &coord_ok);
+            int64_t this_mes   = read_coord(*mes_col, r, &coord_ok);
+            if (!coord_ok) {
+                if (coord_failures++ < SHOW_MAX)
+                    fail("row " + std::to_string(row) +
+                         " has a null or non-integer coordinate");
+                continue;
+            }
 
             // Find this row's manifest entry.
             while (manifest_idx < chroms.size() &&
@@ -15268,6 +15294,11 @@ static std::string validate_lociss(const std::string& path) {
     else if (chrom_failures > SHOW_MAX)
         std::printf("        (%d more label/manifest mismatches not shown)\n",
                     (int)(chrom_failures - SHOW_MAX));
+    if (coord_failures == 0)
+        pass("every Start / End / MaxEndSoFar is a non-null integer");
+    else if (coord_failures > SHOW_MAX)
+        std::printf("        (%d more null/non-integer coordinates not shown)\n",
+                    (int)(coord_failures - SHOW_MAX));
 
     std::printf("\n%d check(s) passed, %d failed\n", n_pass, n_fail);
     std::fflush(stdout);
