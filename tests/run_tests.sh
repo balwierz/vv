@@ -50,8 +50,12 @@ run_case() {
     if [ -f "$GOLDEN/$name.expected" ]; then
         assert_eq_file "$name" "$out" "$GOLDEN/$name.expected"
     else
-        cp "$out" "$GOLDEN/$name.expected"
-        echo "  init  $name (created golden)"
+        # A missing golden is a FAILURE, never an invitation to record whatever
+        # the binary under test currently prints. Blessing it here made a new
+        # case pass on its first run, and — worse — made the documented "delete
+        # the golden and re-run to regenerate" workflow silently re-bless from
+        # the very build whose behaviour was under review.
+        missing_golden "$name" "$out"
     fi
 }
 
@@ -399,7 +403,7 @@ assert_contains "trunc_lists_fit_multiple_elements" "$NARROW" "[promoter, TF]"
 UTF8TSV="$TMP/utf8trunc.tsv"
 printf 'v\nééééééééé\n' > "$UTF8TSV"
 UTF8_OUT=$("$VV" --no-interactive --color=never -w 6 "$UTF8TSV" 2>&1)
-if command -v iconv >/dev/null 2>&1; then
+if require "utf8 truncation" iconv; then
     if printf '%s' "$UTF8_OUT" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
         PASS=$((PASS+1)); echo "  ok    truncate_utf8_codepoint_boundary"
     else
@@ -499,8 +503,7 @@ COLUMNS=150 "$VV" --vertical --color=never -n 3 "$DATA/tiny.parquet" \
 if [ -f "$GOLDEN/parquet_vertical.expected" ]; then
     assert_eq_file "parquet_vertical" "$TMP/parquet_vertical.out" "$GOLDEN/parquet_vertical.expected"
 else
-    cp "$TMP/parquet_vertical.out" "$GOLDEN/parquet_vertical.expected"
-    echo "  init  parquet_vertical (created golden)"
+    missing_golden "parquet_vertical" "$TMP/parquet_vertical.out"
 fi
 
 echo
@@ -543,7 +546,7 @@ assert_contains "arrow_bad_codec" "$ABAD" "supports --compression zstd, lz4, or 
 assert_eq_file_inline "arrow_stdout_select_cols" \
     "$("$VV" --schema "$TMP/sel.arrow" 2>&1 | awk 'seen&&!NF{exit} /^---/{seen=1;next} seen{print $1}' | tr '\n' ',')" "Chr,Start,"
 # pyarrow reads what vv wrote (cross-tool interop), if available.
-if command -v python3 >/dev/null 2>&1 && python3 -c "import pyarrow.feather" 2>/dev/null; then
+if require "feather interop" python3 && python3 -c "import pyarrow.feather" 2>/dev/null; then
     PA=$(python3 -c "import pyarrow.feather as f; t=f.read_table('$TMP/out.arrow'); print(t.num_rows)")
     assert_eq_file_inline "arrow_pyarrow_reads" "$PA" "$("$VV" --count "$DATA/tiny.tsv")"
 fi
@@ -724,7 +727,7 @@ assert_exit_code "expand_missing_arg"     2 "$VV" --tsv --expand
 # External oracle: an --expand + --filter predicate on an INFO key must select
 # the same records bcftools does. Gated on availability, as the other bcftools
 # cases are.
-if command -v bcftools >/dev/null 2>&1; then
+if require "bcf cross-check" bcftools; then
     for T in 'AF>0.2' 'AF>=0.3' 'AF<0.2'; do
         assert_eq_file_inline "expand_matches_bcftools_$T" \
             "$("$VV" --count --expand INFO --filter "AF ${T#AF}" "$DATA/tiny.vcf" 2>/dev/null)" \
@@ -771,7 +774,7 @@ rm -f "$TMP/expand.parquet"
 # The TUI must stand down when the source is already expanded, or every key
 # appears twice (verified against a build with the stand-down removed: the
 # header read "AF AF" instead of "INFO AF").
-if command -v python3 >/dev/null 2>&1 && command -v tmux >/dev/null 2>&1; then
+if require "tui mouse" python3 tmux; then
     tmux kill-session -t vvexp 2>/dev/null
     tmux new-session -d -s vvexp -x 160 -y 8 \
         "TERM=xterm-256color $VV -i --expand INFO $DATA/tiny.vcf"
@@ -792,7 +795,7 @@ fi
 # the guess made at setup (string -> 12, float -> 8) forever. A `name` column
 # holding 2-character values sat at 12 and a `val` column of `0.5` at 8, which
 # on a wide table is most of the screen.
-if command -v tmux >/dev/null 2>&1; then
+if require "tui interactive" tmux; then
     printf 'id\tname\tval\n1\tab\t0.5\n2\tcd\t0.25\n3\tef\t0.125\n' > "$TMP/narrow.tsv"
     tmux kill-session -t vvwid 2>/dev/null
     tmux new-session -d -s vvwid -x 100 -y 10 \
@@ -839,7 +842,7 @@ fi
 # the Esc-quits binding: vv exited "by itself" and the reply's tail leaked to
 # the shell as `11;rgb:ffff/ffff/ffff`. Deliver exactly that reply into a
 # running TUI and assert it survives — then that a real Esc still quits.
-if command -v tmux >/dev/null 2>&1; then
+if require "tui interactive" tmux; then
     tmux kill-session -t vvosc 2>/dev/null
     tmux new-session -d -s vvosc -x 100 -y 10 \
         "TERM=xterm-256color $VV -i $DATA/tiny.parquet"
@@ -2004,7 +2007,7 @@ if [ -f "$DATA/tiny.bam" ]; then
     # in PATH (skip otherwise — CI doesn't always ship it). The pileup *content*
     # must match; only the -r convention differs (vv 0-based [104,105) selects
     # the same base as samtools' 1-based chr1:105-105).
-    if command -v samtools >/dev/null 2>&1; then
+    if require "samtools cross-check" samtools; then
         VV_OUT=$("$VV" --tsv --no-header --pileup -r chr1:104-105 "$DATA/tiny.bam")
         SAM_OUT=$(samtools mpileup -r chr1:105-105 "$DATA/tiny.bam" 2>/dev/null)
         assert_eq_file_inline "bam_pileup_matches_samtools" "$VV_OUT" "$SAM_OUT"
@@ -2025,7 +2028,7 @@ if [ -f "$DATA/tiny.bam" ]; then
         assert_contains "bam_pileup_f_mismatch" "$(printf '%s\n' "$PLF" | sed -n 6p)"  "$(printf 'chr1\t105\tT\t3\tGgG')"
         assert_contains "bam_pileup_f_refcase"  "$(printf '%s\n' "$PLF" | sed -n 11p)" "$(printf 'chr1\t110\tt\t3\t.,.')"
         # Byte-for-byte vs samtools mpileup -B -f (vv applies no BAQ), if present.
-        if command -v samtools >/dev/null 2>&1; then
+        if require "samtools cross-check" samtools; then
             assert_eq_file_inline "bam_pileup_f_matches_samtools" \
                 "$PLF" "$(samtools mpileup -B -f "$DATA/tiny.pileup.fa" "$DATA/tiny.bam" 2>/dev/null)"
         fi
@@ -2057,7 +2060,7 @@ if [ -f "$DATA/tiny.bam" ]; then
     # Boundary parity with samtools: a read starting on the window's last base
     # is IN, one ending before its first base is OUT. This is also the
     # regression test for region_to_htslib's 0-based -> 1-based conversion.
-    if command -v samtools >/dev/null 2>&1; then
+    if require "samtools cross-check" samtools; then
         for W in 99-105 99-100 101-105 100-101; do
             S0=${W%-*}; S1=${W#*-}
             VVW=$("$VV" --tsv --no-header -r "chr1:$W" "$DATA/tiny.bam" | cut -f1)
@@ -2085,7 +2088,7 @@ if [ -f "$DATA/tiny.cram" ] && [ -f "$DATA/tiny.pileup.fa" ]; then
     CRAM_R=$("$VV" --tsv --no-header -f "$DATA/tiny.pileup.fa" \
         -r chr1:99-100 "$DATA/tiny.cram" | cut -f1 | tr '\n' ' ')
     assert_eq_file_inline "cram_region_window" "$CRAM_R" "r1 r2 "
-    if command -v samtools >/dev/null 2>&1; then
+    if require "samtools cross-check" samtools; then
         CVV=$("$VV" --tsv --no-header -f "$DATA/tiny.pileup.fa" \
             -r chr1:99-105 "$DATA/tiny.cram" | cut -f1)
         CSAM=$(samtools view -T "$DATA/tiny.pileup.fa" "$DATA/tiny.cram" \
@@ -2117,7 +2120,7 @@ if [ -f "$DATA/tiny.splice.bam" ]; then
     assert_contains "bam_pileup_refskip_bases" "$SP_SKIP" "><"
     assert_contains "bam_pileup_refskip_quals" "$SP_SKIP" "II"
     # Whole-pileup byte-for-byte against samtools when it's available (local).
-    if command -v samtools >/dev/null 2>&1; then
+    if require "samtools cross-check" samtools; then
         SP_VV=$("$VV" --tsv --no-header --pileup "$DATA/tiny.splice.bam" 2>/dev/null)
         SP_SAM=$(samtools mpileup "$DATA/tiny.splice.bam" 2>/dev/null)
         assert_eq_file_inline "bam_pileup_splice_matches_samtools" "$SP_VV" "$SP_SAM"

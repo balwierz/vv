@@ -27,13 +27,19 @@ $SUDO apt-get update
 # libncursesw5-dev: the transitional -w5 name was REMOVED in Debian 13,
 # while libncurses-dev exists on both distros (see the 1.17.0 changelog —
 # INSTALL.md tripped over exactly this).
+# samtools and tmux are test tools, not build deps: without them eight blocks
+# of run_tests.sh (the BAM/CRAM region + pileup byte-for-byte cross-checks
+# against samtools, and the TUI pty checks) skip themselves. They used to skip
+# silently on every Linux run while macOS installed both, so Linux quietly
+# covered LESS than macOS. tabix/bcftools/python3-pysam are already here for
+# the same reason.
 $SUDO apt-get remove -y libcurl4-openssl-dev || true
 $SUDO apt-get install -y -V \
   cmake g++ git curl libcurl4-gnutls-dev \
   libhts-dev libncurses-dev libsqlite3-dev \
   libexpat1-dev libminizip-dev libhdf5-dev pkg-config \
   python3 python3-venv python3-pip \
-  python3-pysam tabix bcftools ca-certificates lsb-release wget
+  python3-pysam tabix bcftools samtools tmux ca-certificates lsb-release wget
 
 # Phase 2 — Apache Arrow apt repo. Bound the retries: wget defaults
 # to --tries=20, so an outage at Apache's artifact host burns ~45
