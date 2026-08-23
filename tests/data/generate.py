@@ -100,6 +100,55 @@ with pa.OSFile(str(HERE / "tiny.arrow"), "wb") as f:
         w.write_batch(table.slice(0, 10).to_batches()[0])
         w.write_batch(table.slice(10, 10).to_batches()[0])
 
+# tiny.corrupt.arrow: an Arrow IPC whose footer declares 20 record batches but
+# whose batch 1 is corrupt. The file opens (schema + batch 0 are intact), so
+# num_chunks() reports 20, but batches after the failed one never load. Paging
+# to the last chunk read past batches_ / batch_first_row_ (a wild-pointer
+# dereference — SIGSEGV in a release build, heap-buffer-overflow under ASan).
+# The over-read is only reachable through the TUI / GUI (chunk_meta), so the
+# regression is driven by tests/tui_corrupt_chunk_check.py. 20 batches make the
+# out-of-bounds index far enough to fault reliably; the values stay small so no
+# 0xFFFFFFFF byte run collides with the IPC message framing scanned below.
+_cs = pa.schema([("chr", pa.string()), ("x", pa.int64())])
+_tmp = HERE / "tiny.corrupt.arrow"
+with pa.OSFile(str(_tmp), "wb") as f:
+    with ipc.new_file(f, _cs) as w:
+        for _k in range(20):
+            w.write_batch(pa.record_batch({"chr": pa.array([f"chr{_k}"] * 2),
+                                           "x":   pa.array([_k * 2, _k * 2 + 1],
+                                                           pa.int64())}))
+_data = bytearray(_tmp.read_bytes())
+# Encapsulated IPC messages are each framed by a 0xFFFFFFFF continuation marker:
+# [schema][batch 0][batch 1]...[EOS]. The 3rd marker starts batch 1; scramble
+# 16 bytes of its flatbuffer so ReadRecordBatch(1) fails while the footer and
+# batch 0 stay valid.
+_marker = b"\xff\xff\xff\xff"
+_pos, _i = [], 0
+while True:
+    _j = _data.find(_marker, _i)
+    if _j < 0:
+        break
+    _pos.append(_j)
+    _i = _j + 1
+if len(_pos) >= 3:
+    _b1 = _pos[2]
+    for _k in range(_b1 + 8, _b1 + 8 + 16):
+        _data[_k] ^= 0xFF
+    _tmp.write_bytes(bytes(_data))
+    # Confirm the intended shape: footer=20, batch 0 decodes, batch 1 does not.
+    _r = ipc.open_file(str(_tmp))
+    assert _r.num_record_batches == 20
+    _r.get_batch(0)
+    try:
+        _r.get_batch(1)
+        print("warn: tiny.corrupt.arrow batch 1 still decodes; fixture ineffective",
+              file=sys.stderr)
+    except Exception:
+        pass
+else:
+    print("warn: could not locate batch 1 framing; skipping tiny.corrupt.arrow",
+          file=sys.stderr)
+
 # tiny.empty.arrow: a valid Arrow IPC with a schema but zero record batches.
 # The reader seeds a zero-row batch so the schema renders, but num_chunks()
 # used to report 0 (num_record_batches_) and the table view drew nothing.
