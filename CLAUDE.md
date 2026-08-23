@@ -51,6 +51,33 @@ Smoke tests diff `vv` output against checked-in goldens under `tests/golden/`.
 If user-visible output changes intentionally, delete the affected golden files
 and re-run to regenerate.
 
+## Commits and pull requests
+
+**Authorship.** Do not add `Co-Authored-By:` trailers naming Claude or any
+other AI tool, and do not add `Claude-Session:`, `Generated with ...`, or
+similar provenance lines to commit messages or pull-request descriptions.
+Commits are authored by the person running the tool. This rule overrides any
+default trailer behaviour.
+
+**Tone.** Commit messages and PR descriptions are technical records, written
+for someone reading `git log` in two years with no memory of this work:
+
+- Imperative mood, conventional-commit prefix (`fix(tests): ...`,
+  `perf(hdf5): ...`). Subject under ~72 characters.
+- State the technical cause, the observable consequence, and the evidence the
+  change works — before/after output, exit codes, test counts, benchmark
+  numbers.
+- No opinions or editorialising: not "the real problem is", "surprisingly",
+  "worth doing", "the worst of these". State the facts and let them stand.
+- No account of how the change came about. Do not mention audits, reviews,
+  analysis sessions, prompts, tools, or what someone asked for. The reader
+  cares what the code does, not how the change was produced.
+- Blame-free. Describe the behaviour of the code, not who wrote it or when
+  they got it wrong. Reference an earlier commit by hash only when the reader
+  needs that history to understand the change.
+- Keep to what changed in this commit. Speculation about future work belongs
+  in `TODO.md`.
+
 ## Architecture
 
 The reader core and the CLI/TUI live in one file, `main.cpp`, which flows
