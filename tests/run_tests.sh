@@ -2337,6 +2337,20 @@ else
     echo "  skip  tui_sigint_restores_terminal (python3 not found)"
 fi
 
+# A partly-decodable Arrow IPC (footer declares 20 batches, batch 1 corrupt)
+# must not crash when the TUI pages to the bottom — chunk_meta() past the failed
+# batch used to read out of bounds. Driven under a pty; the harness fails if vv
+# dies from a signal.
+if command -v python3 >/dev/null 2>&1 && [ -f "$DATA/tiny.corrupt.arrow" ]; then
+    if run_with_timeout 60 python3 "$HERE/tui_corrupt_chunk_check.py" "$VV" "$DATA/tiny.corrupt.arrow"; then
+        PASS=$((PASS+1)); echo "  ok    tui_corrupt_ipc_no_crash"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_corrupt_ipc_no_crash"
+    fi
+else
+    echo "  skip  tui_corrupt_ipc_no_crash (python3 or fixture missing)"
+fi
+
 # Zebra stripe adapts to the terminal background (VV_BACKGROUND=light → subtle
 # light-grey 254 instead of the near-black 235 that swallows text on light
 # terminals, e.g. JupyterLab's web terminal).

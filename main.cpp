@@ -8211,6 +8211,17 @@ public:
     ChunkMeta chunk_meta(int i)                 const override {
         if (!is_feather_ && i >= (int)batches_.size())
             const_cast<IpcSource*>(this)->ensure(i);
+        // num_chunks() reports the declared record-batch count, but a batch
+        // that fails to decode leaves batches_ short (load_next_ipc records the
+        // sticky read_status_ and stops). Indexing batches_[i]/batch_first_row_
+        // past the end read out of bounds and dereferenced a garbage pointer.
+        // Report an empty chunk instead, keeping the caller's row math
+        // monotonic; the rows render blank and read_status() surfaces the error.
+        if (i < 0 || i >= (int)batches_.size()) {
+            int64_t end = batch_first_row_.empty()
+                ? 0 : batch_first_row_.back() + batches_.back()->num_rows();
+            return {end, 0};
+        }
         return {batch_first_row_[i], batches_[i]->num_rows()};
     }
     void ensure(int i) override {
@@ -8255,6 +8266,7 @@ class OrcSource : public TabularSource {
     mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
     mutable std::vector<int64_t>                             batch_first_row_;
     mutable int64_t                                          rows_so_far_ = 0;
+    mutable arrow::Status                                    read_status_;  // sticky error
 
     arrow::Status load_stripe(int i) const {
         ARROW_ASSIGN_OR_RAISE(auto b,
@@ -8334,13 +8346,24 @@ public:
     ChunkMeta chunk_meta(int i) const override {
         if (i >= (int)batches_.size())
             const_cast<OrcSource*>(this)->ensure(i);
+        // A stripe that fails to decode leaves batches_ short of num_stripes_
+        // (the count num_chunks() reports), so index past the end read out of
+        // bounds. Report an empty chunk; ensure() has set the sticky error.
+        if (i < 0 || i >= (int)batches_.size()) {
+            int64_t end = batch_first_row_.empty()
+                ? 0 : batch_first_row_.back() + batches_.back()->num_rows();
+            return {end, 0};
+        }
         return {batch_first_row_[i], batches_[i]->num_rows()};
     }
+    arrow::Status read_status() const override { return read_status_; }
     void ensure(int i) override {
         while ((int)batches_.size() <= i &&
                (int64_t)batches_.size() < num_stripes_) {
             auto st = load_stripe((int)batches_.size());
-            if (!st.ok()) break;
+            // A failed stripe read used to be swallowed here, so a truncated or
+            // corrupt ORC produced a partial table with exit 0. Make it sticky.
+            if (!st.ok()) { if (read_status_.ok()) read_status_ = st; break; }
         }
     }
     arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
