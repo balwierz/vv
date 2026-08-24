@@ -27,7 +27,7 @@
 %global xlsxio_version 0.2.36
 
 Name:           vv
-Version:        1.18.6
+Version:        1.18.7
 Release:        1%{?dist}
 Summary:        Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)
 License:        MIT
@@ -143,6 +143,13 @@ rm -f  %{buildroot}%{_libdir}/pkgconfig/mimalloc.pc
 %{_datadir}/icons/hicolor/scalable/apps/vv.svg
 
 %changelog
+* Mon Aug 24 2026 Piotr Balwierz <nikt@tuta.com> - 1.18.7-1
+- Update to 1.18.7: memory-safety hardening across the HDF5, bigWig/bigBed,
+  BAM pileup, Arrow IPC/ORC and LociSSD readers — crafted or unusual files that
+  could crash, over-read a buffer or return a wrong answer are now handled or
+  rejected cleanly; --validate reports a null/non-integer coordinate instead of
+  aborting.
+
 * Thu Aug 20 2026 Piotr Balwierz <nikt@tuta.com> - 1.18.6-1
 - Update to 1.18.6: AnnData files written before anndata 0.8 now show their
   categories instead of integer codes, and obs/var no longer cap --count,
