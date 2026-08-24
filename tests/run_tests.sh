@@ -241,6 +241,19 @@ if [ -f "$DATA/tiny.v4.nocoord.lociss" ]; then
     assert_contains "lociss_v4_nocoord_reads" \
         "$("$VV" --tsv --no-header "$DATA/tiny.v4.nocoord.lociss" 2>/dev/null | head -1)" "chr1"
 fi
+# Start / End declared as a non-integer type (int8). decode_colblock honours the
+# declared schema, but the region-overlap path cast the decoded array to
+# Int32Array, reading 4 bytes per 1-byte element — a heap over-read (ASan:
+# heap-buffer-overflow in array_to_int64). Must be rejected at open, in both the
+# whole-file and region paths.
+if [ -f "$DATA/tiny.v4.badcoordtype.lociss" ]; then
+    assert_exit_code "lociss_v4_reject_badcoordtype" 1 \
+        "$VV" --tsv "$DATA/tiny.v4.badcoordtype.lociss"
+    assert_exit_code "lociss_v4_reject_badcoordtype_region" 1 \
+        "$VV" --tsv -r chr1:0-200 "$DATA/tiny.v4.badcoordtype.lociss"
+    assert_contains "lociss_v4_badcoordtype_message" \
+        "$("$VV" --tsv "$DATA/tiny.v4.badcoordtype.lociss" 2>&1 || true)" "must be int32 or int64"
+fi
 
 # Generic Parquet range queries: auto-detected chrom/start/end columns,
 # plus the --region-cols override path.

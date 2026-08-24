@@ -3898,6 +3898,21 @@ std::string LocissV4Source::open(const std::string& path, const Config& cfg,
     }
     self->start_si_ = self->stored_index("Start");
     self->end_si_   = self->stored_index("End");
+    // Start / End drive the region-overlap mask and the LENGTH codec, and are
+    // read back through array_to_int64 / the End test, which cast the decoded
+    // array to exactly Int32Array or Int64Array. decode_colblock honours
+    // whatever Arrow type the file's own schema declares (int8, double, string,
+    // …), so a file declaring Start or End as any other type would make those
+    // casts reinterpret the buffer and read out of bounds. Require integer
+    // coordinates up front; a column that is simply absent (index -1) never
+    // reaches a cast.
+    auto coord_is_int = [&](int si) {
+        if (si < 0) return true;
+        auto id = self->col_types_[(size_t)si]->id();
+        return id == arrow::Type::INT32 || id == arrow::Type::INT64;
+    };
+    if (!coord_is_int(self->start_si_) || !coord_is_int(self->end_si_))
+        return "'" + path + "': LociSSD Start/End columns must be int32 or int64";
     std::string rc;
     if (lociss_manifest_value(meta, "row_count", &rc)) self->row_count_ = std::atoll(rc.c_str());
     lociss_manifest_value(meta, "assembly", &self->assembly_);
