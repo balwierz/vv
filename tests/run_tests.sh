@@ -488,6 +488,16 @@ if [ $? -ne 0 ] && grep -q "not a LociSSD file" "$TMP/validate.bad"; then
 else
     FAIL=$((FAIL + 1)); echo "  FAIL  validate_rejects_non_lociss_parquet"
 fi
+# --validate on a LociSSD with a null coordinate must report it, not abort. All
+# schema checks pass (columns are the right types), then the per-row scan reads
+# the coordinate via std::stoll — a null rendered as the null symbol used to
+# throw and abort (exit 134). It must now be a clean failure with a message.
+if [ -f "$DATA/tiny.badcoord.lociss" ]; then
+    assert_exit_code "validate_null_coord_no_abort" 1 \
+        "$VV" --validate "$DATA/tiny.badcoord.lociss"
+    BADCOORD=$("$VV" --validate "$DATA/tiny.badcoord.lociss" 2>&1 || true)
+    assert_contains "validate_null_coord_reported" "$BADCOORD" "null or non-integer coordinate"
+fi
 TABLE_OUT=$("$VV" --no-interactive --no-index --color=never "$DATA/tiny.lociss" 2>&1)
 if printf '%s' "$TABLE_OUT" | grep -q "^| MaxEndSoFar "; then
     FAIL=$((FAIL + 1))
