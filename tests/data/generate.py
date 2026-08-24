@@ -534,6 +534,36 @@ _v4_hostile("tiny.v4.badarena.lociss", "Name", "utf8", 5, 2, b"\x00" + _badarena
 # 3) Valid single-string column with NO Start/End — a -r query must error, not OOB.
 _okdict = struct.pack("<I", 1) + struct.pack("<II", 0, 3) + b"abc" + b"\x00\x00"
 _v4_hostile("tiny.v4.nocoord.lociss", "Name", "utf8", 3, 2, b"\x00" + _okdict)
+# 5) Start / End declared as a non-int type (int8). decode_colblock honours the
+#    declared schema type, but the region-overlap path cast the decoded array to
+#    Int32Array unconditionally, reading 4 bytes per 1-byte element — a heap
+#    over-read past the padded Arrow buffer once the column is wide enough (n=64
+#    here). Must be rejected at open. Two columns, so it can't use _v4_hostile.
+def _v4_badcoordtype():
+    def _raw(payload):
+        return _v4_zstd(b"\x00" + payload)   # has_nulls=0, then raw int8 payload
+    _n = 64
+    _sc = _raw(bytes([(10 + i) & 0x7f for i in range(_n)]))
+    _ec = _raw(bytes([(50 + i) & 0x7f for i in range(_n)]))
+    _data = bytearray(b"LSB1" + bytes([4, 0, 0, 0]))
+    _os = len(_data); _data += _sc
+    _oe = len(_data); _data += _ec
+    _meta = {"format_version": 4, "writer_version": "vv test-hostile",
+             "stored": ["Start", "End"], "schema": {"Start": "int8", "End": "int8"},
+             "codecs": {"Start": 0, "End": 0}, "coord_dtype": "int32",
+             "block_rows": _n, "row_count": _n, "rank_to_name": {"0": "chr1"},
+             "assembly": "hg38", "species": None}
+    _mb = json.dumps(_meta).encode()
+    _idx = bytearray(b"LSI1" + bytes([1, 0, 0, 0]))
+    _idx += struct.pack("<IIII", 1, 2, 0, len(_mb)) + _mb          # n_blocks=1, n_cols=2
+    _idx += struct.pack("<i", 0) + struct.pack("<i", 0) + struct.pack("<i", 200)
+    _idx += struct.pack("<I", _n) + struct.pack("<i", 200)         # n_rows, prefix_max_end
+    _idx += struct.pack("<QQ", _os, _oe)                          # col_offset (SoA)
+    _idx += struct.pack("<II", len(_sc), len(_ec))                # col_clen  (SoA)
+    (HERE / "tiny.v4.badcoordtype.lociss").write_bytes(bytes(_data))
+    (HERE / "tiny.v4.badcoordtype.lociss.idx").write_bytes(bytes(_idx))
+_v4_badcoordtype()
+
 # 4) zstd decompression bomb: a tiny compressed chunk inflating past the ~64 MiB
 #    cap (n=1 → max_out ≈ 64 MiB). Body is 65 MiB of zeros → a few bytes zstd'd.
 _v4_hostile("tiny.v4.zbomb.lociss", "V", "int8", 0, 1, bytes(65 << 20))
