@@ -4,6 +4,36 @@ All notable changes to `vv` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.18.7] - 2026-08-24
+
+### Fixed
+- **Crashes reachable from an untrusted file.** A round of hardening closed
+  several ways a crafted or merely unusual file could crash `vv`, read past a
+  buffer, or return a wrong answer:
+  - An HDF5/AnnData enum column whose base integer type is wider than 8 bytes
+    wrote past a fixed stack slot when decoded (`H5Tget_member_value`); the
+    buffer is now sized from the datatype.
+  - A bigWig or bigBed whose chromosome B-tree names a chromosome ID outside
+    the count the file declares corrupted the heap at open; the ID is now
+    bounds-checked (also fixed upstream in the vendored libBigWig).
+  - `--pileup` read the base at a CIGAR-derived offset with no length bound, so
+    a record with `SEQ=*` and a full CIGAR — legal SAM — over-read the sequence
+    array (garbage bases, then a fault); the read is now bounded and a missing
+    base renders `N`.
+  - A partly-decodable Arrow IPC or ORC file crashed when the table view paged
+    past a batch that failed to decode; `chunk_meta()` is now bounded, and a
+    truncated ORC reports the error instead of silently dropping rows.
+  - `--validate` aborted (rather than reporting) on a LociSSD file with a null
+    or non-integer coordinate; it now reports it as a validation failure.
+  - A LociSSD v4 file declaring its `Start`/`End` column as a non-integer type
+    read past the decoded buffer; such a file is now rejected at open.
+
+### Internal
+- The test suite no longer creates a golden file from the binary under test
+  when one is missing (a missing golden now fails), skipped test blocks are
+  announced and counted, and the Linux CI job installs `samtools` / `tmux` so
+  the pileup cross-checks and TUI checks actually run there.
+
 ## [1.18.6] - 2026-08-20
 
 ### Fixed
