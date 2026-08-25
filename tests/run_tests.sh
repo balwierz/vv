@@ -868,6 +868,39 @@ if require "tui interactive" tmux; then
         FAIL=$((FAIL+1))
         echo "  FAIL  tui_widths_respect_max_col_w (${NX} x's with -w 20)"
     fi
+
+    # Auto-size: a string column is fitted to the 95th percentile of its cells,
+    # so a 40-char identifier — wider than the old 32-char default — shows in
+    # full while a single 70-char value elides. `-w` still caps.
+    {
+        printf 'gene_id\tcount\n'
+        for i in $(seq 1 39); do printf 'ENSG%036d\t%d\n' "$i" "$i"; done
+        printf 'RARE_%s\t99\n' "$(printf 'X%.0s' $(seq 1 65))"
+    } > "$TMP/wideid.tsv"
+    ID40="ENSG000000000000000000000000000000000001"
+    tmux kill-session -t vvauto 2>/dev/null
+    tmux new-session -d -s vvauto -x 200 -y 12 \
+        "TERM=xterm-256color $VV -i $TMP/wideid.tsv"
+    sleep 2
+    AUTO=$(tmux capture-pane -p -t vvauto)
+    tmux kill-session -t vvauto 2>/dev/null
+    if printf '%s' "$AUTO" | grep -q "$ID40"; then
+        PASS=$((PASS+1)); echo "  ok    tui_autosize_widens_id"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_autosize_widens_id (40-char id not shown in full)"
+        printf '%s\n' "$AUTO" | sed -n '4,7p'
+    fi
+    tmux kill-session -t vvauto2 2>/dev/null
+    tmux new-session -d -s vvauto2 -x 200 -y 12 \
+        "TERM=xterm-256color $VV -i -w 20 $TMP/wideid.tsv"
+    sleep 2
+    CAP=$(tmux capture-pane -p -t vvauto2)
+    tmux kill-session -t vvauto2 2>/dev/null
+    if printf '%s' "$CAP" | grep -q "$ID40"; then
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_autosize_respects_w (-w 20 did not cap the id)"
+    else
+        PASS=$((PASS+1)); echo "  ok    tui_autosize_respects_w"
+    fi
 fi
 
 # ── A late terminal reply must not quit the TUI ──────────────────────────────
