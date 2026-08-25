@@ -1725,6 +1725,19 @@ if [ -f "$DATA/tiny.h5ad" ]; then
     assert_contains "h5ad_summary_obs"       "$H5AD_OUT" "5 rows, 3 columns"
     assert_contains "h5ad_summary_var"       "$H5AD_OUT" "4 rows, 3 columns"
     assert_contains "h5ad_summary_obsm"      "$H5AD_OUT" "obsm"
+    # Multi-tab overview: --schema (no --tab) now dumps every tab's schema and
+    # names them all, instead of only the summary tab's key/value schema.
+    assert_contains "h5ad_schema_lists_all_tabs" "$H5AD_SCH" "Tabs (7):"
+    assert_contains "h5ad_schema_names_layers"   "$H5AD_SCH" "layers[counts]"
+    # A var-only column proves var's schema is dumped (the old --schema showed
+    # only the summary's key/value pair).
+    assert_contains "h5ad_schema_shows_var_col"  "$H5AD_SCH" "gene_name"
+    # --no-interactive previews each real data tab, not just the summary.
+    assert_contains "h5ad_preview_obs_column"    "$H5AD_OUT" "cluster"
+    assert_contains "h5ad_preview_names_tabs"    "$H5AD_OUT" "Tabs (7):"
+    # A single-tab file must NOT get the multi-tab treatment.
+    P_SCH=$("$VV" --schema "$DATA/tiny.parquet" 2>&1)
+    refute_contains "parquet_schema_not_multitab" "$P_SCH" "Tabs ("
 fi
 
 # Dense-X AnnData (.h5ad) — a 3 × 250 dense X. The summary reports the true
@@ -1735,6 +1748,8 @@ if [ -f "$DATA/tiny.dense.h5ad" ]; then
     TIMES=$(printf '\xc3\x97')
     DENSE_OUT=$("$VV" --color=never --no-interactive "$DATA/tiny.dense.h5ad" 2>&1)
     assert_contains "h5ad_dense_summary_shape" "$DENSE_OUT" "3 $TIMES 250"
+    # The wide X tab is previewed with a column cap, not a 250-wide row.
+    assert_contains "h5ad_dense_X_col_capped"  "$DENSE_OUT" "more column(s) not shown"
     assert_exit_zero "h5ad_dense_no_crash" \
         "$VV" --no-interactive --color=never "$DATA/tiny.dense.h5ad"
 fi
