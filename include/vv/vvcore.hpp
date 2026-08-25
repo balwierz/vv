@@ -295,3 +295,32 @@ std::string open_source(const std::string& path, const Config& cfg,
 // are coordinate-agnostic. A frontend offering region queries calls this once
 // before open_source(). Returns "" on success or a human-readable error.
 std::string apply_region_modifiers(Config& cfg);
+
+// ── Column-width planning ────────────────────────────────────────────────────
+// Frontend-agnostic width heuristic shared by the TUI and the Qt GUI. Works in
+// whatever integer unit the caller measures in (terminal columns or pixels) —
+// every field below is in that same unit.
+//
+// For each column the caller supplies a sample of rendered cell widths (the
+// first ~1-2k rows is plenty). The plan gives each column the `percentile`-th
+// of its own sample, so the common case shows in full and rare long values
+// elide, capped at `c_max` so a prose column can't dominate. The desired widths
+// are then packed into `viewport` by max-min fair water-filling: narrow columns
+// keep their width and the pressure falls on the widest columns first, which is
+// where truncation belongs. `viewport <= 0` skips the budget step (unbounded).
+struct WidthPlanOptions {
+    int percentile = 95;   // target coverage, 1..100
+    int c_max      = 50;   // per-column ceiling for the auto width
+    int slack      = 2;    // if max_sample <= percentile_width + slack, use the max
+    int min_floor  = 4;    // absolute lower bound if a floor is smaller
+};
+
+// per_column_samples[i] = sampled rendered widths of column i's cells (may be
+// empty for an all-null column). floors[i] = that column's minimum (e.g. its
+// header width); floors may be shorter than per_column_samples (missing = 0).
+// Returns one planned width per column, each >= max(floor, min_floor).
+std::vector<int> plan_column_widths(
+    const std::vector<std::vector<int>>& per_column_samples,
+    const std::vector<int>& floors,
+    int viewport,
+    const WidthPlanOptions& opt = WidthPlanOptions());
