@@ -12,8 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   little wider than the old fixed default now show in full while the occasional
   long value still elides; a prose column is capped (50 characters) so it can't
   push the rest off-screen. Columns you resize by hand are left alone. The width
-  heuristic (`plan_column_widths`) lives in the shared core for the TUI to adopt
-  next.
+  heuristic (`plan_column_widths`) lives in the shared core, shared with the TUI.
+- **The interactive terminal viewer (`vv -i`) does the same.** A string column
+  is sized once to the 95th percentile of a sample of its cells (default cap
+  raised to 50 characters, still overridable with `-w`), so identifiers show in
+  full instead of being cut at the old 32-character default, and the width is
+  stable while you scroll rather than jumping to the widest value on screen.
+  Integer columns keep tracking the digits currently visible, and `,`/`.`
+  resizes now stick.
 
 ## [1.18.7] - 2026-08-24
 

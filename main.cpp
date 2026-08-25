@@ -16287,6 +16287,9 @@ class TableTUI {
     std::vector<std::string> col_names_;
     std::vector<std::string> col_types_str_;  // short label rendered under the column name
     std::vector<int>         col_widths_;
+    std::vector<bool>       width_manual_;   // per virtual col: user resized via `,`/`.`
+    bool                    autosized_ = false;  // string widths fitted to content once
+    int                     tui_cap_ = 50;   // per-column ceiling for auto-fit (>= -w)
     std::vector<bool>        right_align_;
     std::vector<bool>        is_bool_;
     std::vector<bool>        is_rgb_;
@@ -16413,6 +16416,8 @@ class TableTUI {
         std::vector<std::string>        col_names;
         std::vector<std::string>        col_types_str;
         std::vector<int>                col_widths;
+        std::vector<bool>               width_manual;  // columns the user resized (`,`/`.`)
+        bool                            autosized = false;  // string widths fitted once
         std::vector<bool>               right_align, is_bool, is_rgb, is_integer;
         std::vector<int>                virt_src_col;
         std::vector<std::string>        virt_info_key;
@@ -16867,7 +16872,7 @@ class TableTUI {
                 std::string formatted = src_->format_cell(sc, std::move(val));
                 // Never truncate integer values — digits must stay readable.
                 if (is_integer_type(chunk->type_id())) return formatted;
-                return truncate(std::move(formatted), max_col_w_);
+                return truncate(std::move(formatted), tui_cap_);
             }
             off -= chunk->length();
         }
@@ -16922,18 +16927,17 @@ class TableTUI {
         if (bot < top_row_) return;
         for (int vc : visible_virt_cols) {
             if (vc < 0 || vc >= num_cols_) continue;
+            // Only integer columns are re-fitted per frame — their width tracks
+            // the digits actually on screen, unbounded, so a huge value that is
+            // not visible doesn't reserve space. String / list / other columns
+            // are sized once to their content by autosize_string_columns() and
+            // then left stable; a column the user resized (`,`/`.`) is pinned.
+            if (!is_integer_[vc] || (vc < (int)width_manual_.size() && width_manual_[vc]))
+                continue;
             // The header block is three rows — name, type, rule — and the type
-            // row is drawn at the same width. Fitting to the data alone made
-            // `int64` render as `i…`, so the type string is a floor too. Long
-            // ones (list<element: string>) are still truncated, as before; the
-            // max_col_w_ clamp below bounds this.
+            // row is drawn at the same width, so the header and (capped) type
+            // string are a floor.
             int w = (int)display_width(col_names_[vc]);
-            // Capped at 14 — the allowance this code already used as the
-            // list-type minimum. That covers every scalar type name (`int64`,
-            // `double`, `timestamp[us]`) without letting a verbose nested type
-            // (`list<element: string>`, 21) widen a column past what its data
-            // needs; those were truncated in the type row before this change
-            // too.
             if (vc < (int)col_types_str_.size())
                 w = std::max(w, std::min(14, (int)display_width(col_types_str_[vc])));
             for (int64_t r = top_row_; r <= bot; ++r) {
@@ -16944,11 +16948,9 @@ class TableTUI {
                 const CachedRG& cr = it->second;
                 int64_t local = srow - cr.first_row;
                 if (local < 0 || local >= cr.num_rows) continue;
-                // Format the cell through the same path draw_data_row uses and
-                // memoize it for the render pass — cell_at returns integers
-                // untruncated, so this is the true display width and matches
-                // what's painted (format_cell included). Nulls render as the
-                // null glyph; skip them from the width like the old code did.
+                // Format through the same path draw_data_row uses and memoize it
+                // for the render pass — cell_at returns integers untruncated, so
+                // this is the true display width.
                 std::string val = cell_at(cr, local, vc, nullptr, nullptr, 0);
                 frame_cells_[frame_key(srow, vc)] = val;
                 if (val != NULL_SYMBOL) {
@@ -16956,14 +16958,64 @@ class TableTUI {
                     if (ww > w) w = ww;
                 }
             }
-            if (!is_integer_[vc]) {
-                int sc = virt_src_col_[vc];
-                int floor_w = (sc >= 0) ? src_->min_col_width(sc) : 4;
-                w = std::max(w, floor_w);
-                w = std::min(w, max_col_w_);
-            }
             col_widths_[vc] = w;
         }
+    }
+
+    // Size every non-integer column once, when the first chunk is loaded, to the
+    // 95th percentile of a sample of its rendered cells (capped at tui_cap_), so
+    // the common value shows in full and the occasional long one elides. Integer
+    // columns keep the per-frame fit above; a manually resized column is left
+    // alone. Runs once per tab (autosized_), and only after data is available.
+    void autosize_string_columns() {
+        if (autosized_ || num_cols_ == 0) return;
+        bool any = false;
+        std::vector<int> floors(num_cols_);
+        for (int vc = 0; vc < num_cols_; ++vc) {
+            int fl = (int)display_width(col_names_[vc]);
+            if (vc < (int)col_types_str_.size())
+                fl = std::max(fl, std::min(14, (int)display_width(col_types_str_[vc])));
+            int sc = virt_src_col_[vc];
+            fl = std::max(fl, (sc >= 0) ? src_->min_col_width(sc) : 4);
+            floors[vc] = fl;
+            if (!is_integer_[vc] && !(vc < (int)width_manual_.size() && width_manual_[vc]))
+                any = true;
+        }
+        if (!any) { autosized_ = true; return; }   // nothing to size
+
+        const int64_t nrows = total_rows();
+        const int64_t K = (nrows > 0) ? std::min<int64_t>(nrows, 2000) : 2000;
+        std::vector<std::vector<int>> samples(num_cols_);
+        bool got_data = false;
+        for (int64_t r = 0; r < K; ++r) {
+            int c = chunk_for_row(r);
+            auto it = cache_.find(c);
+            if (it == cache_.end() || !it->second.ok) continue;
+            const CachedRG& cr = it->second;
+            int64_t local = r - cr.first_row;
+            if (local < 0 || local >= cr.num_rows) continue;
+            got_data = true;
+            for (int vc = 0; vc < num_cols_; ++vc) {
+                if (is_integer_[vc]) continue;
+                if (vc < (int)width_manual_.size() && width_manual_[vc]) continue;
+                std::string val = cell_at(cr, local, vc, nullptr, nullptr, 0);
+                if (val != NULL_SYMBOL) samples[vc].push_back((int)display_width(val));
+            }
+        }
+        if (!got_data) return;   // first chunk not loaded yet — retry next frame
+
+        WidthPlanOptions opt;
+        opt.percentile = 95;
+        opt.c_max      = tui_cap_;
+        opt.slack      = 2;
+        opt.min_floor  = 4;
+        std::vector<int> w = plan_column_widths(samples, floors, 0, opt);
+        for (int vc = 0; vc < num_cols_ && vc < (int)w.size(); ++vc) {
+            if (is_integer_[vc]) continue;
+            if (vc < (int)width_manual_.size() && width_manual_[vc]) continue;
+            col_widths_[vc] = w[vc];
+        }
+        autosized_ = true;
     }
 
     void prefetch_visible(const std::vector<int>& visible_virt_cols) {
@@ -17942,6 +17994,8 @@ class TableTUI {
         t.col_names      = col_names_;
         t.col_types_str  = col_types_str_;
         t.col_widths     = col_widths_;
+        t.width_manual   = width_manual_;
+        t.autosized      = autosized_;
         t.right_align    = right_align_;
         t.is_bool        = is_bool_;
         t.is_rgb         = is_rgb_;
@@ -17980,6 +18034,8 @@ class TableTUI {
         col_names_       = t.col_names;
         col_types_str_   = t.col_types_str;
         col_widths_      = t.col_widths;
+        width_manual_    = t.width_manual;
+        autosized_       = t.autosized;
         right_align_     = t.right_align;
         is_bool_         = t.is_bool;
         is_rgb_          = t.is_rgb;
@@ -18521,6 +18577,7 @@ private:
             for (auto& c : vc) virt.push_back(c.col);
             prefetch_visible(virt);
             frame_cells_.clear();   // per-frame; populated by the fit pass below
+            autosize_string_columns();   // once per tab, when data is available
             fit_widths_to_visible(virt);
         }
         vc = visible_cols();
@@ -18597,6 +18654,7 @@ public:
         : sources_(std::move(sources)),
           src_(sources_.empty() ? nullptr : sources_[0].get()),
           max_col_w_(cfg.max_col_w),
+          tui_cap_(cfg.max_col_w_set ? cfg.max_col_w : std::max(cfg.max_col_w, 50)),
           no_index_(cfg.no_index),
           max_cols_cfg_(cfg.max_cols)
     {
@@ -18697,6 +18755,8 @@ public:
         }
 
         col_widths_.assign(num_cols_, 0);
+        width_manual_.assign(num_cols_, false);
+        autosized_ = false;
         right_align_.assign(num_cols_, false);
         is_bool_.assign(num_cols_, false);
         is_rgb_.assign(num_cols_, false);
@@ -18722,7 +18782,7 @@ public:
                 base = std::max(base, 14);
             if (t == arrow::Type::STRING || t == arrow::Type::LARGE_STRING)
                 base = std::max(base, 12);
-            col_widths_[vc]  = is_integer_[vc] ? base : std::min(base, max_col_w_);
+            col_widths_[vc]  = is_integer_[vc] ? base : std::min(base, tui_cap_);
             right_align_[vc] = is_numeric_type(t);
             is_bool_[vc]     = v_is_bool[vc];
             is_rgb_[vc]      = (col_names_[vc] == "RGB");
@@ -19270,9 +19330,11 @@ public:
                 }
                 case '.':
                     col_widths_[cur_col_] = std::min(256, col_widths_[cur_col_] + 4);
+                    if (cur_col_ < (int)width_manual_.size()) width_manual_[cur_col_] = true;
                     break;
                 case ',':
                     col_widths_[cur_col_] = std::max(1, col_widths_[cur_col_] - 4);
+                    if (cur_col_ < (int)width_manual_.size()) width_manual_[cur_col_] = true;
                     break;
                 case '/':
                     search_mode_  = SearchMode::Input;
