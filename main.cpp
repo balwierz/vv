@@ -816,7 +816,7 @@ static void print_usage(const char* prog) {
         "   binary files are refused — vv has no hex view)\n"
         "\nInteractive viewer (default when stdout is a terminal):\n"
         "  -i / --interactive  open the ncurses row browser\n"
-        "  --no-interactive    force plain table output even on a terminal\n"        "  --text              read the file as plain text whatever its extension\n"
+        "  --table / -t        force plain table output (also --no-interactive)\n"        "  --text              read the file as plain text whatever its extension\n"
         "  Keys: arrows/hjkl move the cell cursor, PgUp/PgDn, g/G, /:search,\n"
         "        S:column-stats, s:sort by current column (u clears),\n"
         "        &:live filter, c:show/hide columns, y:copy cell (OSC52),\n"
@@ -985,7 +985,9 @@ static Config parse_args(int argc, char** argv) {
             cfg.no_header = true;
         } else if (!std::strcmp(argv[i], "-i") || !std::strcmp(argv[i], "--interactive")) {
             cfg.interactive = true;
-        } else if (!std::strcmp(argv[i], "--no-interactive")) {
+        } else if (!std::strcmp(argv[i], "--no-interactive") ||
+                   !std::strcmp(argv[i], "--table") ||
+                   !std::strcmp(argv[i], "-t")) {
             cfg.no_interactive = true;
         } else if (!std::strcmp(argv[i], "--vertical")) {
             cfg.vertical       = true;
