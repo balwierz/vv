@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Integer columns keep tracking the digits currently visible, and `,`/`.`
   resizes now stick.
 
+### Changed
+- **`--schema` and `--no-interactive` on a multi-tab file now cover every tab.**
+  An AnnData `.h5ad`, an Excel workbook, a SQLite database, an HDF5 file or an
+  `.npz` archive used to show only its first tab (for AnnData, the near-empty
+  key/value *summary*) and hide the rest behind `+N more tab(s)`. `--schema` now
+  prints each tab's schema and lists them all; `--no-interactive` previews each
+  tab (a bounded number of rows). A matrix-like tab such as an AnnData `X` is
+  shown with only its first columns and rows, never a full-width dump, so a file
+  with tens of thousands of genes stays readable. Selecting one tab with `--tab`,
+  and single-tab files, are unchanged.
+
 ## [1.18.7] - 2026-08-24
 
 ### Fixed

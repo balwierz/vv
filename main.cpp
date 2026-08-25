@@ -19565,7 +19565,8 @@ static std::string print_vertical_table(TabularSource& src, const Config& cfg) {
 
 // Returns "" on success, an error message otherwise, so a bad --select /
 // --filter exits non-zero instead of printing and exiting 0.
-static std::string print_table(TabularSource& src, const Config& cfg) {
+static std::string print_table(TabularSource& src, const Config& cfg,
+                               bool with_footer = true) {
     auto schema = src.schema();
     std::vector<std::string> unknown;
     std::vector<int> col_indices = select_field_indices(src, cfg, &unknown);
@@ -19691,18 +19692,18 @@ static std::string print_table(TabularSource& src, const Config& cfg) {
     std::printf("\n%s[%lld rows x %d columns]%s\n",
                 g_color.meta_key, (long long)total, num_cols, g_color.reset);
 
-    print_schema_block(src);
+    if (with_footer) print_schema_block(src);
     return "";
 }
 
 // Schema + file-info block. Shared by print_table's footer and the
 // stand-alone `--schema` mode.
-static void print_schema_block(TabularSource& src) {
-    auto schema = src.schema();
-    int num_cols = schema->num_fields();
+static void print_schema_columns(const arrow::Schema& schema, int max_rows = 0) {
+    int num_cols = schema.num_fields();
+    int shown = (max_rows > 0 && num_cols > max_rows) ? max_rows : num_cols;
     int name_w = 6, type_w = 4;
     for (int ci = 0; ci < num_cols; ++ci) {
-        auto f = schema->field(ci);
+        auto f = schema.field(ci);
         name_w = std::max(name_w, (int)f->name().size());
         type_w = std::max(type_w, (int)f->type()->ToString().size());
     }
@@ -19712,8 +19713,8 @@ static void print_schema_block(TabularSource& src) {
                 g_color.header, name_w, "Column", type_w, "Type", g_color.reset);
     std::printf("%s%s  %s  --------%s\n", g_color.border,
                 std::string(name_w,'-').c_str(), std::string(type_w,'-').c_str(), g_color.reset);
-    for (int ci = 0; ci < num_cols; ++ci) {
-        auto f = schema->field(ci);
+    for (int ci = 0; ci < shown; ++ci) {
+        auto f = schema.field(ci);
         std::string fname = truncate(f->name(), name_w);
         std::string ftype = truncate(f->type()->ToString(), type_w);
         const char* tc = *g_color.reset ? type_color(display_type(*f)) : "";
@@ -19722,6 +19723,13 @@ static void print_schema_block(TabularSource& src) {
                     tc, type_w, ftype.c_str(), g_color.reset,
                     f->nullable() ? "yes" : "no");
     }
+    if (shown < num_cols)
+        std::printf("%s... %d more column(s)%s\n",
+                    g_color.meta_key, num_cols - shown, g_color.reset);
+}
+
+static void print_schema_block(TabularSource& src) {
+    print_schema_columns(*src.schema());
 
     // File info footer
     std::printf("\n%sFile:%s %s\n", g_color.meta_key, g_color.reset, src.path().c_str());
@@ -19740,6 +19748,60 @@ static void print_schema_block(TabularSource& src) {
             std::printf("%s... (%zu more header lines)%s\n",
                         g_color.meta_key, pb.size() - limit, g_color.reset);
     }
+}
+
+// Multi-tab overview: a file that expands into component tabs (AnnData obs/var/X,
+// Excel sheets, SQLite tables, HDF5 datasets, NPZ arrays) shows only its first
+// tab under --schema / the table view. These render every tab instead — the
+// direct fix for "the schema shows very little" and "no rows of any tab". Wide
+// tabs (an X matrix) are column-capped by print_table's own fit-to-terminal.
+
+static std::string tab_list_line(
+        const std::vector<std::unique_ptr<TabularSource>>& tabs) {
+    std::string names;
+    for (auto& t : tabs) { if (!names.empty()) names += ", "; names += t->tab_label(); }
+    return "Tabs (" + std::to_string(tabs.size()) + "): " + names;
+}
+
+static void render_multitab_schema(
+        std::vector<std::unique_ptr<TabularSource>>& tabs,
+        const std::string& path) {
+    constexpr int kWideTab = 40;   // above this a tab is matrix-like, not a frame
+    for (auto& t : tabs) {
+        std::printf("\n%s\xe2\x94\x80\xe2\x94\x80 %s \xe2\x94\x80\xe2\x94\x80%s\n",
+                    g_color.header, t->tab_label().c_str(), g_color.reset);
+        int nc = t->schema()->num_fields();
+        print_schema_columns(*t->schema(), nc > kWideTab ? 24 : 0);
+        std::printf("%s%s%s\n", g_color.meta_key, t->footer().c_str(), g_color.reset);
+    }
+    std::printf("\n%sFile:%s %s\n", g_color.meta_key, g_color.reset, path.c_str());
+    std::printf("%s%s%s\n", g_color.meta_key, tab_list_line(tabs).c_str(), g_color.reset);
+}
+
+static std::string render_multitab_table(
+        std::vector<std::unique_ptr<TabularSource>>& tabs,
+        const Config& cfg) {
+    constexpr int kWideTab = 40;   // above this a tab is matrix-like, not a frame
+    Config base = cfg;
+    if (base.head_rows <= 0 || base.head_rows > 10) base.head_rows = 10;  // bounded preview
+    base.head_rows_set = true;
+    for (auto& t : tabs) {
+        std::printf("\n%s\xe2\x94\x80\xe2\x94\x80 %s \xe2\x94\x80\xe2\x94\x80%s\n",
+                    g_color.header, t->tab_label().c_str(), g_color.reset);
+        Config pcfg = base;
+        // A matrix-like tab (X, layers) would print a very wide row; show only
+        // the first columns and let print_table note the rest. A data frame
+        // (obs / var) keeps all its columns.
+        if (t->schema()->num_fields() > kWideTab && pcfg.max_cols == 0)
+            pcfg.max_cols = 12;
+        std::string err = print_table(*t, pcfg, /*with_footer=*/false);
+        if (!err.empty()) return err;
+        std::printf("%s%s%s\n", g_color.meta_key, t->footer().c_str(), g_color.reset);
+    }
+    std::printf("\n%sFile:%s %s\n", g_color.meta_key, g_color.reset,
+                tabs.empty() ? "" : tabs.front()->path().c_str());
+    std::printf("%s%s%s\n", g_color.meta_key, tab_list_line(tabs).c_str(), g_color.reset);
+    return "";
 }
 
 // Machine-readable counterpart of print_schema_block. The only structured
@@ -20301,10 +20363,21 @@ int main(int argc, char** argv) {
     // --schema: print schema + footer, then exit. With --json/--ndjson emit
     // the machine-readable form instead — both were silently ignored here.
     if (cfg.schema_only) {
-        if (cfg.json_array || cfg.json_lines)
+        if (cfg.json_array || cfg.json_lines) {
             emit_schema_json(*src, format_label_of(*src));
-        else
+        } else if (cfg.tab.empty()) {
+            auto sibs = src->expand_tabs();
+            if (!sibs.empty()) {
+                std::vector<std::unique_ptr<TabularSource>> tabs;
+                tabs.push_back(std::move(src));
+                for (auto& sib : sibs) tabs.push_back(std::move(sib));
+                render_multitab_schema(tabs, cfg.path);
+            } else {
+                print_schema_block(*src);
+            }
+        } else {
             print_schema_block(*src);
+        }
         return 0;
     }
 
@@ -20539,6 +20612,17 @@ int main(int argc, char** argv) {
 
     // Table display
     {
+        if (!cfg.vertical && cfg.tab.empty()) {
+            auto sibs = src->expand_tabs();
+            if (!sibs.empty()) {
+                std::vector<std::unique_ptr<TabularSource>> tabs;
+                tabs.push_back(std::move(src));
+                for (auto& sib : sibs) tabs.push_back(std::move(sib));
+                std::string terr = render_multitab_table(tabs, cfg);
+                if (!terr.empty()) { report(cfg.path, terr); return 1; }
+                return 0;   // src moved into tabs; skip the read_status check
+            }
+        }
         std::string terr = cfg.vertical ? print_vertical_table(*src, cfg)
                                         : print_table(*src, cfg);
         if (!terr.empty()) { report(cfg.path, terr); return 1; }
