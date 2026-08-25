@@ -38,6 +38,7 @@ _vv() {
         '(- *)'{-V,--version}'[Print version]' \
         '(-i --interactive)'{-i,--interactive}'[Open ncurses row browser]' \
         '--no-interactive[Force plain table output]' \
+        '(-t --table)'{-t,--table}'[Force plain table output (alias of --no-interactive)]' \
         '--vertical[Transposed (vertical-head) preview]' \
         '-n+[Rows to display]:rows:' \
         '-w+[Max cell width]:width:' \

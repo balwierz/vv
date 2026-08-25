@@ -74,7 +74,7 @@ _vv() {
         -*)
             local opts='
                 -h --help -V --version
-                -i --interactive --no-interactive
+                -i --interactive --no-interactive --table -t
                 -n -w -c
                 -r --region --window --regions-file --region-cols --slop --coords
                 --tail

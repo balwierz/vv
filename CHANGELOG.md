@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`-t` / `--table` is a short name for `--no-interactive`** (force the printed
+  table instead of the TUI). `--no-interactive` still works.
 - **The Qt viewer (`vvg`) sizes columns to their content at open.** Each column
   is fitted to the 95th percentile of its values, so identifiers that were a
   little wider than the old fixed default now show in full while the occasional

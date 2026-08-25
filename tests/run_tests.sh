@@ -1106,6 +1106,14 @@ assert_contains "formats_lists_parquet" "$FMT_OUT" ".parquet"
 assert_contains "formats_lists_npz"     "$FMT_OUT" ".npz"
 assert_contains "formats_lists_arrow"   "$FMT_OUT" ".arrow"
 
+# -t / --table are short aliases of --no-interactive (force the printed table).
+NI_OUT=$("$VV" --color=never --no-interactive "$DATA/tiny.parquet" 2>&1)
+T_OUT=$("$VV" --color=never -t "$DATA/tiny.parquet" 2>&1)
+TABLE_OUT=$("$VV" --color=never --table "$DATA/tiny.parquet" 2>&1)
+assert_eq_file_inline "table_flag_short_alias"      "$T_OUT"     "$NI_OUT"
+assert_eq_file_inline "table_flag_long_alias"       "$TABLE_OUT" "$NI_OUT"
+assert_contains       "table_flag_in_help"          "$("$VV" --help 2>&1)" "--table / -t"
+
 # ── Machine-readable metadata ────────────────────────────────────────────────
 # --schema --json and --count --json were parsed and then silently ignored:
 # --schema printed the human ASCII table and --count a bare number. The only
