@@ -27,7 +27,7 @@
 %global xlsxio_version 0.2.36
 
 Name:           vv
-Version:        1.18.7
+Version:        1.19.0
 Release:        1%{?dist}
 Summary:        Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)
 License:        MIT
@@ -143,6 +143,12 @@ rm -f  %{buildroot}%{_libdir}/pkgconfig/mimalloc.pc
 %{_datadir}/icons/hicolor/scalable/apps/vv.svg
 
 %changelog
+* Wed Aug 26 2026 Piotr Balwierz <nikt@tuta.com> - 1.19.0-1
+- Update to 1.19.0: the Qt viewer and the interactive TUI size table columns to
+  their content at open; --schema and --no-interactive show every tab of a
+  multi-tab file (AnnData / Excel / SQLite / HDF5 / NPZ) instead of only the
+  first; -t / --table is a short alias for --no-interactive.
+
 * Mon Aug 24 2026 Piotr Balwierz <nikt@tuta.com> - 1.18.7-1
 - Update to 1.18.7: memory-safety hardening across the HDF5, bigWig/bigBed,
   BAM pileup, Arrow IPC/ORC and LociSSD readers — crafted or unusual files that
