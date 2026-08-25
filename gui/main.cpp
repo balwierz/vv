@@ -184,12 +184,64 @@ private:
         return m->source()->tab_label();
     }
 
+    // Auto-size columns to their content at open. Each column is sized to the
+    // 95th percentile of a sample of its rendered cells, so the common case
+    // shows in full and the occasional long value elides; capped so a prose
+    // column can't dominate. The horizontal scrollbar absorbs any overflow, so
+    // identifiers are always shown in full rather than pre-truncated. This runs
+    // once at open; nothing resizes the columns afterwards, so a manual drag is
+    // preserved.
+    static std::vector<int> planColumnWidths(ArrowTableModel* model,
+                                             const QFontMetrics& fm) {
+        const int ncols = model->columnCount();
+        const int64_t nrows = model->rowCount();
+        if (ncols <= 0) return {};
+        const int ch  = std::max(1, fm.horizontalAdvance(QLatin1Char('0')));
+        const int pad = 2 * ch;                 // cell text margins, both sides
+        const int64_t sample = std::min<int64_t>(nrows, 2000);
+
+        std::vector<std::vector<int>> samples((size_t)ncols);
+        std::vector<int> floors((size_t)ncols);
+        for (int c = 0; c < ncols; ++c) {
+            // Floor: the header label must stay readable, plus room for the
+            // sort-indicator arrow.
+            QString head = model->headerData(c, Qt::Horizontal, Qt::DisplayRole).toString();
+            floors[(size_t)c] = fm.horizontalAdvance(head) + pad + 3 * ch;
+            samples[(size_t)c].reserve((size_t)sample);
+            for (int64_t r = 0; r < sample; ++r) {
+                QString t = model->data(model->index((int)r, c), Qt::DisplayRole).toString();
+                if (t.isEmpty()) continue;       // nulls / blanks don't set width
+                samples[(size_t)c].push_back(fm.horizontalAdvance(t) + pad);
+            }
+        }
+
+        WidthPlanOptions opt;
+        opt.percentile = 95;
+        opt.c_max      = 50 * ch + pad;          // 50 characters, in pixels
+        opt.slack      = 2 * ch;
+        opt.min_floor  = 3 * ch;
+        // viewport 0 = no shrink-to-fit: give each column its natural width and
+        // let the scrollbar handle a wide table (idiomatic for a GUI, and it
+        // keeps identifiers un-truncated).
+        return plan_column_widths(samples, floors, 0, opt);
+    }
+
+    static void autosizeColumns(QTableView* view, ArrowTableModel* model) {
+        std::vector<int> w = planColumnWidths(model, view->fontMetrics());
+        QHeaderView* hh = view->horizontalHeader();
+        for (int c = 0; c < model->columnCount() && c < (int)w.size(); ++c)
+            hh->resizeSection(c, w[(size_t)c]);
+    }
+
     // Build one model+view tab from a source and wire sort + detail-pane.
     void addSourceTab(std::unique_ptr<TabularSource> src) {
         auto* model = new ArrowTableModel(std::move(src), this);
         auto* view  = new QTableView(tabs_);
         view->setModel(model);
         view->setAlternatingRowColors(true);
+        // Size columns to their content once, now. Nothing resizes them again,
+        // so a later manual drag is preserved for the life of the tab.
+        autosizeColumns(view, model);
         view->setEditTriggers(QAbstractItemView::NoEditTriggers);
         view->setSelectionBehavior(QAbstractItemView::SelectItems);
         view->horizontalHeader()->setSectionsClickable(true);
@@ -751,6 +803,46 @@ private:
     QMap<ArrowTableModel*, Qt::SortOrder> sortOrder_;
 };
 
+// Deterministic, font-free self-check of the shared column-width planner. Run
+// from VVG_SELFTEST so a regression in plan_column_widths fails CI. Returns true
+// on success.
+static bool checkWidthPlan() {
+    auto eq = [](const std::vector<int>& got, std::vector<int> want,
+                 const char* name) {
+        if (got != want) {
+            std::fprintf(stderr, "widthplan FAIL %s: got", name);
+            for (int x : got) std::fprintf(stderr, " %d", x);
+            std::fprintf(stderr, ", want");
+            for (int x : want) std::fprintf(stderr, " %d", x);
+            std::fprintf(stderr, "\n");
+            return false;
+        }
+        return true;
+    };
+    bool ok = true;
+    {   // p95 excludes a 5% long tail (95x20 + 5x100 -> 20, not the max, not the cap).
+        std::vector<int> col; col.assign(95, 20); col.insert(col.end(), 5, 100);
+        ok &= eq(plan_column_widths({col}, {}, 0, WidthPlanOptions{}), {20}, "tail");
+    }
+    {   // A wide/prose column is capped at c_max (50).
+        std::vector<int> col; for (int v = 30; v < 130; ++v) col.push_back(v);
+        ok &= eq(plan_column_widths({col}, {}, 0, WidthPlanOptions{}), {50}, "cap");
+    }
+    {   // Over budget: max-min fair water-filling truncates the widest equally.
+        WidthPlanOptions o; o.c_max = 200;
+        ok &= eq(plan_column_widths({{40},{60}}, {4,4}, 60, o), {30,30}, "waterfill");
+    }
+    {   // Fits within the viewport: everyone keeps their desired width.
+        ok &= eq(plan_column_widths({{10},{10}}, {4,4}, 100, WidthPlanOptions{}),
+                 {10,10}, "fits");
+    }
+    {   // Even the floors overflow: fall back to floors (scroll), never below.
+        ok &= eq(plan_column_widths({{40},{40}}, {30,30}, 40, WidthPlanOptions{}),
+                 {30,30}, "floors");
+    }
+    return ok;
+}
+
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
 
@@ -761,6 +853,8 @@ int main(int argc, char** argv) {
     }
 
     if (const char* st = std::getenv("VVG_SELFTEST"); st && *st && *st != '0') {
+        if (!checkWidthPlan()) return 1;
+        std::printf("widthplan=ok\n");
         // Model-level self-test (CI path): needs a file on the command line.
         if (paths.isEmpty()) { std::fprintf(stderr, "usage: vvg <file>\n"); return 2; }
         Config cfg;

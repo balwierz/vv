@@ -4,6 +4,17 @@ All notable changes to `vv` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **The Qt viewer (`vvg`) sizes columns to their content at open.** Each column
+  is fitted to the 95th percentile of its values, so identifiers that were a
+  little wider than the old fixed default now show in full while the occasional
+  long value still elides; a prose column is capped (50 characters) so it can't
+  push the rest off-screen. Columns you resize by hand are left alone. The width
+  heuristic (`plan_column_widths`) lives in the shared core for the TUI to adopt
+  next.
+
 ## [1.18.7] - 2026-08-24
 
 ### Fixed

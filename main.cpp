@@ -1478,6 +1478,87 @@ std::string truncate(const std::string& s, int max_w) {
     return s.substr(0, utf8_prefix_for_width(s, max_w - 1)) + ELLIPSIS;
 }
 
+// See vvcore.hpp. Pure width-planning math shared by the TUI and Qt GUI; it is
+// unit-agnostic (terminal columns or pixels).
+std::vector<int> plan_column_widths(
+    const std::vector<std::vector<int>>& per_column_samples,
+    const std::vector<int>& floors,
+    int viewport,
+    const WidthPlanOptions& opt) {
+    const size_t n = per_column_samples.size();
+    std::vector<int> floor(n), desired(n);
+    for (size_t i = 0; i < n; ++i) {
+        int fl = (i < floors.size()) ? floors[i] : 0;
+        if (fl < opt.min_floor) fl = opt.min_floor;
+        floor[i] = fl;
+
+        const std::vector<int>& smp = per_column_samples[i];
+        if (smp.empty()) { desired[i] = fl; continue; }
+
+        // Nearest-rank percentile over a sorted copy.
+        std::vector<int> w(smp);
+        std::sort(w.begin(), w.end());
+        int mx = w.back();
+        // rank = ceil(p/100 * n), 1-based; index rank-1.
+        size_t rank = (size_t)(((int64_t)opt.percentile * (int64_t)w.size() + 99) / 100);
+        if (rank < 1) rank = 1;
+        if (rank > w.size()) rank = w.size();
+        int pw = w[rank - 1];
+        // If the longest value is barely over the percentile, showing everyone
+        // is nearly free — round up to the max rather than elide a hair.
+        int want = (mx <= pw + opt.slack) ? mx : pw;
+        if (want > opt.c_max) want = opt.c_max;
+        if (want < fl) want = fl;              // never below the header/floor
+        desired[i] = want;
+    }
+
+    if (viewport <= 0) return desired;         // unbounded — no budget step
+
+    int64_t sum_desired = 0, sum_floor = 0;
+    for (size_t i = 0; i < n; ++i) { sum_desired += desired[i]; sum_floor += floor[i]; }
+    if (sum_desired <= viewport) return desired;   // everything fits
+    if (sum_floor   >= viewport) return floor;     // even floors overflow → scroll
+
+    // Max-min fair water-filling on the excess (desired - floor): find a level L
+    // such that sum(min(excess_i, L)) == budget R. Columns whose excess is below
+    // L are fully satisfied; the widest columns are capped at floor + L.
+    int64_t R = (int64_t)viewport - sum_floor;
+    std::vector<int> excess(n);
+    for (size_t i = 0; i < n; ++i) excess[i] = desired[i] - floor[i];   // >= 0
+    std::vector<int> order(n);
+    for (size_t i = 0; i < n; ++i) order[i] = (int)i;
+    std::sort(order.begin(), order.end(),
+              [&](int a, int b){ return excess[a] < excess[b]; });
+
+    // Walk columns from the smallest excess up. At each step, if raising every
+    // still-unsatisfied column to the current column's excess fits R, satisfy it
+    // fully; otherwise split the remaining R evenly across the rest.
+    std::vector<int> width(floor);
+    int64_t remaining = R;
+    size_t left = n;
+    int prev = 0;
+    for (size_t k = 0; k < n; ++k) {
+        int e = excess[order[k]];
+        int step = e - prev;
+        if (step > 0 && (int64_t)step * (int64_t)left > remaining) {
+            // Can't raise all `left` columns by `step`; share `remaining` evenly.
+            int share = (int)(remaining / (int64_t)left);
+            int64_t rem = remaining - (int64_t)share * (int64_t)left;
+            for (size_t j = k; j < n; ++j) {
+                int col = order[j];
+                width[col] = floor[col] + prev + share;
+                if (rem > 0) { width[col] += 1; --rem; }   // spread the remainder
+            }
+            return width;
+        }
+        remaining -= (int64_t)step * (int64_t)left;
+        prev = e;
+        width[order[k]] = floor[order[k]] + e;   // fully satisfied
+        --left;
+    }
+    return width;   // all satisfied (shouldn't happen given sum_desired > viewport)
+}
+
 // Format a decimal integer string with '_' grouping every three digits
 // (Python PEP 515 style).  A leading '-' or '+' is preserved.
 // e.g. "123456789" → "123_456_789", "-1000000" → "-1_000_000".
