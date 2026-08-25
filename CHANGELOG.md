@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.19.0] - 2026-08-26
+
 ### Added
 - **`-t` / `--table` is a short name for `--no-interactive`** (force the printed
   table instead of the TUI). `--no-interactive` still works.

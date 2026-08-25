@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 project(vv
-    VERSION 1.18.7
+    VERSION 1.19.0
     DESCRIPTION "Universal genomic file viewer"
     HOMEPAGE_URL "https://github.com/balwierz/vv"
     LANGUAGES C CXX)
