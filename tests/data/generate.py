@@ -1539,6 +1539,46 @@ if bb_tool and bw_tool:
         "chr2\t1500\t1800\t0.1\n"
     )
     subprocess.run([bw_tool, str(bg), str(sizes), str(HERE / "tiny.bw")], check=True)
+
+    # tiny.badnitems.bw: HOSTILE bigWig. An uncompressed data block's header
+    # declares nItems=65535 while the block holds only four intervals. libBigWig
+    # trusted nItems and read 24 + 65535*12 bytes from a 72-byte block — an
+    # out-of-bounds heap read (glibc/ASan abort). vv now bounds each record to
+    # the block, reading the four real intervals and stopping. Built with -unc so
+    # the nItems field can be patched in place without recompression.
+    nbg = HERE / "_nitems.bedGraph"
+    nbg.write_text("chr1\t0\t10\t1.0\nchr1\t10\t20\t2.0\n"
+                   "chr1\t20\t30\t3.0\nchr1\t30\t40\t4.0\n")
+    subprocess.run([bw_tool, "-unc", str(nbg), str(sizes),
+                    str(HERE / "tiny.badnitems.bw")], check=True)
+    _nb = bytearray((HERE / "tiny.badnitems.bw").read_bytes())
+    _ndo = struct.unpack_from("<Q", _nb, 0x10)[0]        # dataOffset
+    struct.pack_into("<H", _nb, _ndo + 8 + 22, 65535)    # inflate the block nItems
+    (HERE / "tiny.badnitems.bw").write_bytes(bytes(_nb))
+    nbg.unlink()
+
+    # tiny.unterminated.bb: HOSTILE bigBed. The final entry's name string has its
+    # NUL terminator overwritten, so it runs to the end of the uncompressed data
+    # block. libBigWig's strlen then read past the buffer (out-of-bounds heap
+    # read, ASan abort). vv now bounds the string to the block and stops at the
+    # unterminated entry. Built with -unc so the edit needs no recompression.
+    ubed = HERE / "_unterm.bed"
+    ubed.write_text("chr1\t100\t200\tpeakAAAA\t500\t+\t12.5\t30.2\t25.1\n"
+                    "chr1\t500\t800\tpeakBBBB\t800\t-\t8.0\t15.0\t12.0\n"
+                    "chr1\t1000\t1200\tpeakCCCC\t300\t+\t5.5\t8.1\t7.0\n")
+    subprocess.run([bb_tool, "-unc", "-type=bed6+3", "-as=" + str(bb_as),
+                    str(ubed), str(sizes), str(HERE / "tiny.unterminated.bb")],
+                   check=True)
+    _ub = bytearray((HERE / "tiny.unterminated.bb").read_bytes())
+    _uio = struct.unpack_from("<Q", _ub, 0x18)[0]        # indexOffset = data end
+    if _ub[_uio - 1] == 0:                               # final block byte is a NUL
+        _ub[_uio - 1] = ord("X")
+        (HERE / "tiny.unterminated.bb").write_bytes(bytes(_ub))
+    else:
+        print("warn: tiny.unterminated.bb final byte not NUL; skipping edit",
+              file=sys.stderr)
+    ubed.unlink()
+
     sizes.unlink(); bb_bed.unlink(); bb_as.unlink(); bg.unlink()
 else:
     print("warn: bedToBigBed / bedGraphToBigWig not found; "

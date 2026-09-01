@@ -440,6 +440,29 @@ if [ -f "$DATA/tiny.oobchrom.bw" ]; then
     assert_contains "bigwig_oob_chromid_message" "$OOB_ERR" "as bigWig/bigBed"
 fi
 
+# Hostile bigWig: a data block header declares nItems=65535 while the block holds
+# only four intervals. The decode loop trusted nItems and read 24 + 65535*12
+# bytes past a 72-byte block — an out-of-bounds heap read (glibc/ASan abort). It
+# now bounds every record to the decompressed block, reading the four real
+# intervals and stopping, so the file reads cleanly with the true count.
+if [ -f "$DATA/tiny.badnitems.bw" ]; then
+    assert_exit_code "bigwig_bad_nitems_no_overread" 0 \
+        "$VV" --count "$DATA/tiny.badnitems.bw"
+    BADN=$("$VV" --count "$DATA/tiny.badnitems.bw")
+    assert_eq_file_inline "bigwig_bad_nitems_reads_real_count" "$BADN" "4"
+fi
+
+# Hostile bigBed: the final entry's name string has no NUL terminator inside the
+# data block, so strlen ran off the end (out-of-bounds heap read, ASan abort).
+# The reader now bounds the string to the block with memchr and stops at the
+# unterminated entry, emitting the two well-formed entries before it.
+if [ -f "$DATA/tiny.unterminated.bb" ]; then
+    assert_exit_code "bigbed_unterminated_no_overread" 0 \
+        "$VV" --count "$DATA/tiny.unterminated.bb"
+    UNTERM=$("$VV" --count "$DATA/tiny.unterminated.bb")
+    assert_eq_file_inline "bigbed_unterminated_reads_valid_prefix" "$UNTERM" "2"
+fi
+
 # Smart list/map truncation: when a column is too narrow for the full
 # value, the old code dropped to "[first, …]" after the first comma.
 # The new code walks every top-level comma and picks the largest prefix

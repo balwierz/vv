@@ -427,7 +427,13 @@ bwOverlappingIntervals_t *bwGetOverlappingIntervalsCore(bigWigFile_t *fp, bwOver
             buf = compBuf;
         }
 
-        //TODO: ensure that tmp is large enough!
+        /* LOCAL PATCH (vv): the decompressed data block is untrusted. dataLen
+         * is its valid byte count — the uncompressed size for a compressed
+         * block, else the on-disk block size. A corrupt or truncated block can
+         * declare an nItems far larger than it holds; without a bound the loop
+         * below reads past the buffer (upstream's FIXME, an OOB heap read). */
+        size_t dataLen = compressed ? (size_t)tmp : (size_t)o->size[i];
+        if(dataLen < 24) continue;   // no room even for the 24-byte data header
         bwFillDataHdr(&hdr, buf);
 
         p = ((uint32_t*) buf);
@@ -436,8 +442,13 @@ bwOverlappingIntervals_t *bwGetOverlappingIntervalsCore(bigWigFile_t *fp, bwOver
 
         if(hdr.type == 3) start = hdr.start - hdr.step;
 
-        //FIXME: We should ensure that sz is large enough to hold nItems of the given type
+        /* LOCAL PATCH (vv): per-item record size and the end of valid data;
+         * unknown types keep itemSz 0 so the switch default still errors. */
+        const char *dataEnd = (const char*)buf + dataLen;
+        size_t itemSz = (hdr.type == 1) ? 12 : (hdr.type == 2) ? 8
+                      : (hdr.type == 3) ? 4  : 0;
         for(j=0; j<hdr.nItems; j++) {
+            if((const char*)p + itemSz > dataEnd) break;  // nItems overruns block
             switch(hdr.type) {
             case 1:
                 start = *p;
@@ -526,13 +537,21 @@ bbOverlappingEntries_t *bbGetOverlappingEntriesCore(bigWigFile_t *fp, bwOverlapB
         while(buf < bufEnd) {
             /* LOCAL PATCH (vv): buf advances by a variable-length string each
              * iteration, so it is not 4-byte aligned — read via memcpy
-             * (portable; misaligned loads are UB and can fault on aarch64). */
+             * (portable; misaligned loads are UB and can fault on aarch64).
+             * The block is untrusted, so bound both the 12-byte fixed record
+             * and the NUL-terminated string against bufEnd; a truncated entry
+             * or an unterminated string would otherwise read past the buffer. */
+            if((char*)buf + 12 > (char*)bufEnd) break;   // truncated fixed record
             memcpy(&entryTid, (char*)buf + 0, 4);
             memcpy(&start,    (char*)buf + 4, 4);
             memcpy(&end,      (char*)buf + 8, 4);
             buf = (char*)buf + 12;
             str = (char*)buf;
-            slen = strlen(str) + 1;
+            {
+                char *nul = memchr(str, 0, (char*)bufEnd - str);
+                if(!nul) break;   // string runs off the end of the block
+                slen = (int)(nul - str) + 1;
+            }
             buf = (char*)buf + slen;
 
             if(entryTid < tid) continue;
