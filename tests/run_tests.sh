@@ -2152,6 +2152,20 @@ if [ -f "$DATA/tiny.mpileup" ]; then
         --select 'chrom,pos' "$DATA/tiny.mpileup" | wc -l | tr -d ' ')
     assert_eq_file_inline "decode_filter_C_2plus"   "$DEC_C" "2"
 fi
+# mean_qual alignment: every pileup element — a real base, a '*' deletion
+# placeholder, or a '>'/'<' reference skip — carries exactly one quality char.
+# The decoder skipped a refskip without advancing the quality index, so a base
+# after one read the wrong quality; and it averaged a '*' placeholder's quality
+# in as if it were a base. quals I/5/? are Phred 40/20/30, so the mean over the
+# two real bases (A, C) must be (40+30)/2 = 35, ignoring the middle element.
+PQ_RS="$TMP/pileup_refskip.mpileup"
+printf 'chr1\t100\tA\t3\tA>C\tI5?\n' > "$PQ_RS"
+PQ_RS_OUT=$("$VV" --tsv --no-header --decode-pileup --select mean_qual "$PQ_RS")
+assert_eq_file_inline "decode_mean_qual_skips_refskip"   "$PQ_RS_OUT" "35"
+PQ_DS="$TMP/pileup_delstar.mpileup"
+printf 'chr1\t100\tA\t3\tA*C\tI5?\n' > "$PQ_DS"
+PQ_DS_OUT=$("$VV" --tsv --no-header --decode-pileup --select mean_qual "$PQ_DS")
+assert_eq_file_inline "decode_mean_qual_excludes_delstar" "$PQ_DS_OUT" "35"
 # Multi-sample: --decode-pileup produces per-sample suffixed columns.
 if [ -f "$DATA/tiny.multi.mpileup" ]; then
     DM_SCH=$("$VV" --schema --decode-pileup "$DATA/tiny.multi.mpileup" 2>&1)
