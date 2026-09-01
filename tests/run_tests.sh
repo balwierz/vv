@@ -676,6 +676,20 @@ assert_eq_file_inline "normal_int_col_unchanged"   "$IDZ_SAMPLE" "int64"
 IDZ_TSV=$("$VV" --tsv --no-header "$IDZ" 2>&1)
 assert_contains "leading_zero_value_preserved"     "$IDZ_TSV" "007"
 rm -f "$IDZ"
+# Headerless + leading-zero: no header, first column is a leading-zero ID. The
+# headerless retry autogenerates f0/f1, so the forced-string set is recomputed
+# under that naming — otherwise the retry dropped the zeros (007 -> 7) while the
+# header path preserved them.
+HLZ="$TMP/headerless_lz.csv"
+printf '007,1.5\n042,2.5\n003,9.1\n' > "$HLZ"
+HLZ_F0=$("$VV" --schema "$HLZ" 2>&1 | awk '/^f0[[:space:]]/{print $2; exit}')
+assert_eq_file_inline "headerless_leading_zero_is_string" "$HLZ_F0" "string"
+HLZ_TSV=$("$VV" --tsv --no-header "$HLZ" 2>&1)
+assert_contains "headerless_leading_zero_preserved" "$HLZ_TSV" "007"
+# The plain-numeric second column must stay numeric (no over-forcing).
+HLZ_F1=$("$VV" --schema "$HLZ" 2>&1 | awk '/^f1[[:space:]]/{print $2; exit}')
+assert_eq_file_inline "headerless_lz_other_col_numeric" "$HLZ_F1" "double"
+rm -f "$HLZ"
 # Scientific notation must stay numeric (forcing it to string would corrupt
 # legitimate numeric data — explicitly out of scope).
 SCI="$TMP/sci.csv"
