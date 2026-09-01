@@ -1459,16 +1459,29 @@ std::string truncate(const std::string& s, int max_w) {
                     commas.push_back(i);
             }
             if (!commas.empty()) {
-                // Try the largest prefix that fits, down to 1 element.
-                for (size_t n = commas.size(); n >= 1; --n) {
+                // The candidate for n kept elements grows with n, so its display
+                // width is monotone — binary-search the largest element count
+                // that still fits rather than scanning every count from K down
+                // (O(log K) width evaluations instead of O(K), each O(cand len)).
+                auto make_cand = [&](size_t n) {
                     std::string cand;
                     cand += open;
                     cand.append(s, 1, commas[n - 1] - 1);  // up to "eN"
                     cand += ", ";
                     cand += ELLIPSIS;
                     cand += close;
-                    if (display_width(cand) <= max_w) return cand;
+                    return cand;
+                };
+                size_t lo = 1, hi = commas.size(), best = 0;
+                while (lo <= hi) {
+                    size_t mid = lo + (hi - lo) / 2;
+                    if (display_width(make_cand(mid)) <= max_w) {
+                        best = mid; lo = mid + 1;
+                    } else {
+                        hi = mid - 1;   // mid >= 1, so hi bottoms out at 0
+                    }
                 }
+                if (best >= 1) return make_cand(best);
             }
         }
     }
