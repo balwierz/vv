@@ -18,14 +18,14 @@ Every tagged release publishes, for **x86_64** and **aarch64**:
 | `vv-<ver>-macos-arm64.tar.gz` | Apple Silicon `vv` + `vvg`; **not** static — needs the Homebrew deps |
 | `SHA256SUMS` | checksums for everything above |
 
-Replace `1.19.0` below with the
+Replace `1.20.0` below with the
 [latest release](https://github.com/balwierz/vv/releases/latest) if newer.
 
 ### Debian / Ubuntu
 
 ```sh
-curl -LO https://github.com/balwierz/vv/releases/download/v1.19.0/vv_1.19.0-1_amd64.deb
-sudo apt install ./vv_1.19.0-1_amd64.deb        # use arm64 on ARM
+curl -LO https://github.com/balwierz/vv/releases/download/v1.20.0/vv_1.20.0-1_amd64.deb
+sudo apt install ./vv_1.20.0-1_amd64.deb        # use arm64 on ARM
 ```
 
 The package installs `/usr/bin/vv`, the man page and the shell completions.
@@ -41,15 +41,15 @@ resolves from the standard archive, so **no third-party apt repository is
 needed**:
 
 ```sh
-curl -LO https://github.com/balwierz/vv/releases/download/v1.19.0/vv-gui_1.19.0-1+ubuntu24.04_amd64.deb
-sudo apt install ./vv-gui_1.19.0-1+ubuntu24.04_amd64.deb   # use arm64 on ARM
+curl -LO https://github.com/balwierz/vv/releases/download/v1.20.0/vv-gui_1.20.0-1+ubuntu24.04_amd64.deb
+sudo apt install ./vv-gui_1.20.0-1+ubuntu24.04_amd64.deb   # use arm64 on ARM
 ```
 
 On Debian:
 
 ```sh
-curl -LO https://github.com/balwierz/vv/releases/download/v1.19.0/vv-gui_1.19.0-1+debian13_amd64.deb
-sudo apt install ./vv-gui_1.19.0-1+debian13_amd64.deb      # use arm64 on ARM
+curl -LO https://github.com/balwierz/vv/releases/download/v1.20.0/vv-gui_1.20.0-1+debian13_amd64.deb
+sudo apt install ./vv-gui_1.20.0-1+debian13_amd64.deb      # use arm64 on ARM
 ```
 
 Debian 13 packages KF6, so the Debian flavors — unlike the Ubuntu one, since
@@ -64,8 +64,8 @@ instead — it is rebuilt against whatever testing currently calls those
 libraries:
 
 ```sh
-curl -LO https://github.com/balwierz/vv/releases/download/v1.19.0/vv-gui_1.19.0-1+debianforky_amd64.deb
-sudo apt install ./vv-gui_1.19.0-1+debianforky_amd64.deb   # use arm64 on ARM
+curl -LO https://github.com/balwierz/vv/releases/download/v1.20.0/vv-gui_1.20.0-1+debianforky_amd64.deb
+sudo apt install ./vv-gui_1.20.0-1+debianforky_amd64.deb   # use arm64 on ARM
 ```
 
 Testing keeps moving between vv releases, so if apt objects, grab the
@@ -100,15 +100,15 @@ sudo dnf install ./vv-*.rpm        # CLI + GUI in one transaction
 ### Static binary (any modern Linux)
 
 ```sh
-base=https://github.com/balwierz/vv/releases/download/v1.19.0
+base=https://github.com/balwierz/vv/releases/download/v1.20.0
 arch=x86_64    # aarch64 on ARM (AWS Graviton, Raspberry Pi 5, …)
 
-curl -LO $base/vv-1.19.0-linux-$arch.tar.gz
+curl -LO $base/vv-1.20.0-linux-$arch.tar.gz
 curl -LO $base/SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS
 
-tar -xzf vv-1.19.0-linux-$arch.tar.gz
-sudo install vv-1.19.0-linux-$arch/vv /usr/local/bin/
+tar -xzf vv-1.20.0-linux-$arch.tar.gz
+sudo install vv-1.20.0-linux-$arch/vv /usr/local/bin/
 ```
 
 Requires glibc ≥ 2.28 (RHEL/Rocky/AlmaLinux 8+, Debian 10+, Ubuntu 18.04+).
