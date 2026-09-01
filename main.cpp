@@ -9169,9 +9169,14 @@ static void XMLCALL ods_end(void* ud, const char* name) {
             // Cap repeats sanely; ODS sometimes uses huge values for
             // "rest of the row" even when there's no real data.
             if (reps > 16384) reps = 16384;
+            // Quote once, then repeat — a cell carrying a large
+            // number-columns-repeated would otherwise re-scan and re-quote the
+            // same value up to `reps` times.
+            std::string quoted;
+            csv_append_quoted(quoted, s->row_cells[i].c_str());
             for (int r = 0; r < reps; ++r) {
                 if (emitted) line += ',';
-                csv_append_quoted(line, s->row_cells[i].c_str());
+                line += quoted;
                 ++emitted;
             }
         }
@@ -16779,6 +16784,7 @@ class TableTUI {
     SearchMode  search_mode_  = SearchMode::None;
     std::string search_input_;   // text being typed in the search bar
     std::string search_query_;   // committed query (empty = no active search)
+    std::string search_query_lc_;  // search_query_ lowercased once, for matching
     int64_t     search_row_   = -1;   // row of the focused match (-1 = none)
     bool        search_wrap_  = false;  // last search wrapped around
     bool        search_fail_  = false;  // last search found nothing
@@ -16866,8 +16872,7 @@ class TableTUI {
         src_->set_retain_all(true);  // search re-reads every chunk: keep them
         drain_to_eof();   // search must cover the whole streaming file
         note_full_pass();
-        std::string q = search_query_;
-        for (auto& c : q) c = (char)std::tolower((unsigned char)c);
+        const std::string& q = search_query_lc_;
 
         std::vector<int> all_cols;
         for (int i = 0; i < src_num_cols_; ++i) all_cols.push_back(i);
@@ -17017,9 +17022,7 @@ class TableTUI {
         const CachedRG& cr = it->second;
         int64_t local = srow - cr.first_row;
         if (local < 0 || local >= cr.num_rows) return false;
-        std::string q = search_query_;
-        for (auto& c2 : q) c2 = (char)std::tolower((unsigned char)c2);
-        return cached_row_matches(cr, local, q);
+        return cached_row_matches(cr, local, search_query_lc_);
     }
 
     // ── Cache ────────────────────────────────────────────────────────────────
@@ -18375,7 +18378,7 @@ private:
             cache_.clear(); lru_.clear();
             sort_col_ = -1; sort_desc_ = false; sort_order_.clear();
             filter_active_ = false; filter_expr_str_.clear(); filter_total_ = 0;
-            search_mode_ = SearchMode::None; search_query_.clear(); search_row_ = -1;
+            search_mode_ = SearchMode::None; search_query_.clear(); search_query_lc_.clear(); search_row_ = -1;
         } else {
             load_snapshot_into_active();
         }
@@ -19311,13 +19314,16 @@ public:
                 if (ch == '\n' || ch == KEY_ENTER) {
                     if (!search_input_.empty()) {
                         search_query_ = search_input_;
+                        search_query_lc_ = search_query_;
+                        for (auto& c : search_query_lc_)
+                            c = (char)std::tolower((unsigned char)c);
                         compile_search();
                         search_mode_  = SearchMode::Active;
                         search_row_   = -1;
                         do_search(search_dir_forward_);
                     } else {
                         search_mode_  = SearchMode::None;
-                        search_query_.clear();
+                        search_query_.clear(); search_query_lc_.clear();
                         search_regex_.reset();
                         search_regex_valid_ = false;
                         search_row_   = -1;
@@ -19436,7 +19442,7 @@ public:
                 case 27:  // Esc: clear search/filter if active, else quit
                     if (search_mode_ == SearchMode::Active) {
                         search_mode_  = SearchMode::None;
-                        search_query_.clear();
+                        search_query_.clear(); search_query_lc_.clear();
                         search_regex_.reset();
                         search_regex_valid_ = false;
                         search_row_   = -1;
