@@ -20824,8 +20824,16 @@ int main(int argc, char** argv) {
             TableTUI tui(std::move(tab_srcs), cfg);
             if (tui.run()) return 0;
             src = tui.take_first_source();
+            // The TUI could not start. With an explicit -i that is an error;
+            // for auto-launch (a TTY, no -i) it used to fall through silently,
+            // so the user saw a static table with no hint the interactive
+            // viewer was even attempted. Note the fallback either way.
             if (cfg.interactive)
                 std::fprintf(stderr, "error: cannot initialize terminal (missing terminfo?)\n");
+            else
+                std::fprintf(stderr, "vv: interactive viewer unavailable "
+                             "(terminal init failed); showing non-interactive "
+                             "output\n");
         }
     }
 
