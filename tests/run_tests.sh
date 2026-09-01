@@ -261,6 +261,13 @@ PQ_REG=$("$VV" --tsv --no-header -r chr1:1000-2500 "$DATA/tiny.parquet" | wc -l 
 assert_eq_file_inline "parquet_region_autodetect_two_rows" "$PQ_REG" "2"
 PQ_REG_OV=$("$VV" --tsv --no-header -r chr1:1000-2500 --region-cols Chr,Start,End "$DATA/tiny.parquet" | wc -l | tr -d ' ')
 assert_eq_file_inline "parquet_region_cols_override_two_rows" "$PQ_REG_OV" "2"
+# Two windows overlapping the same row group: the second reuses the first's
+# decoded row group (the region row-group cache) rather than re-decoding it.
+# Each window is applied independently, so the row at chr1:1100-1200 (matched by
+# both windows) appears twice — 4 rows in all — and the cache must not change that.
+PQ_REG_2W=$("$VV" --tsv --no-header -r 'chr1:1000-2500,chr1:100-1500' \
+    --region-cols Chr,Start,End "$DATA/tiny.parquet" | wc -l | tr -d ' ')
+assert_eq_file_inline "parquet_region_two_windows_same_rowgroup" "$PQ_REG_2W" "4"
 PQ_REG_BAD=$("$VV" -r chr1:0-100 --region-cols NoSuch,Start,End "$DATA/tiny.parquet" 2>&1 || true)
 assert_contains "parquet_region_cols_unknown_errors" "$PQ_REG_BAD" "not found"
 # Region predicate must handle compact integer coordinate types, not just

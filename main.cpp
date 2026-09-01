@@ -4639,8 +4639,19 @@ class ParquetSource : public TabularSource {
     int64_t                       region_total_rows_ = 0;
     // Column indices we need for filtering (looked up once at open()).
     int                           j_chrom_=-1, j_start_=-1, j_end_=-1, j_mes_=-1;
-    // Per-row filter cache: the filtered Table for slice i (lazily computed).
-    mutable std::map<int, std::shared_ptr<arrow::Table>> filtered_cache_;
+    // Decoded-row-group cache for region mode. Two windows overlapping the same
+    // row group, and the count pass in open() ahead of the output pass, would
+    // otherwise each re-decode it. Keyed by (row_group, projected columns), it
+    // holds the full row-group decode before the per-slice Slice + BED overlap
+    // filter. A small LRU: a multi-window query over one row group decodes it
+    // once, without pinning every touched row group in memory.
+    struct RgCacheEntry {
+        int                           row_group;
+        std::vector<int>              need;    // projected field indices, sorted
+        std::shared_ptr<arrow::Table> raw;
+    };
+    mutable std::vector<RgCacheEntry> rg_cache_;
+    static constexpr size_t           kRgCacheMax = 4;
 
     static std::string fmt_size(int64_t sz) {
         char buf[32];
@@ -4966,14 +4977,31 @@ public:
         std::vector<int> need(need_set.begin(), need_set.end());
 
         std::shared_ptr<arrow::Table> raw;
+        // Reuse a cached decode when a prior slice needed the same
+        // (row_group, columns); move the hit to the front (LRU).
+        for (size_t k = 0; k < rg_cache_.size(); ++k) {
+            if (rg_cache_[k].row_group == s.row_group && rg_cache_[k].need == need) {
+                raw = rg_cache_[k].raw;
+                if (k != 0)
+                    std::rotate(rg_cache_.begin(), rg_cache_.begin() + k,
+                                rg_cache_.begin() + k + 1);
+                break;
+            }
+        }
+        if (!raw) {
 #if ARROW_VERSION_MAJOR >= 24
-        ARROW_ASSIGN_OR_RAISE(raw, reader_->ReadRowGroups(
-            {s.row_group}, arrow_to_leaf_indices(need)));
+            ARROW_ASSIGN_OR_RAISE(raw, reader_->ReadRowGroups(
+                {s.row_group}, arrow_to_leaf_indices(need)));
 #else
-        ARROW_RETURN_NOT_OK(reader_->ReadRowGroups(
-            {s.row_group}, arrow_to_leaf_indices(need), &raw));
+            ARROW_RETURN_NOT_OK(reader_->ReadRowGroups(
+                {s.row_group}, arrow_to_leaf_indices(need), &raw));
 #endif
-        // Slice to the chromosome's portion of the row group.
+            rg_cache_.insert(rg_cache_.begin(),
+                             RgCacheEntry{s.row_group, need, raw});
+            if (rg_cache_.size() > kRgCacheMax) rg_cache_.pop_back();
+        }
+        // Slice to the chromosome's portion of the row group. (The cached table
+        // is the full row group; Slice returns a view and never mutates it.)
         raw = raw->Slice(s.off_in_rg, s.len);
 
         // Locate the columns *within the projected table*.
