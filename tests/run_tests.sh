@@ -2663,6 +2663,25 @@ if command -v python3 >/dev/null 2>&1; then
         FAIL=$((FAIL+1)); echo "  FAIL  tui_marks_partial_full_pass"
     fi
     rm -f "$TMP/partial.fq"
+
+    # FastxSource batches by record count (4096); a file of a few very long
+    # records stays under that cap and, without a byte budget, becomes one giant
+    # batch. A small VV_FASTX_BATCH_BYTES must split it (so eviction fires and a
+    # full pass flags [PARTIAL]); the default budget must not (few records fit
+    # one batch). The harness isolates the byte budget as the only variable.
+    awk 'BEGIN{s="A"; while(length(s)<300000) s=s s; s=substr(s,1,300000);
+               for(r=0;r<4;r++) printf "@rec%d\n%s\n+\n%s\n", r, s, s}' \
+        > "$TMP/fewbig.fq"
+    if python3 "$HERE/tui_fastx_byte_budget_check.py" "$VV" "$TMP/fewbig.fq"; then
+        PASS=$((PASS+1)); echo "  ok    fastx_byte_budget_splits_batches"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  fastx_byte_budget_splits_batches"
+    fi
+    # Correctness: a small byte budget must not lose or corrupt any record.
+    FB_FULL=$("$VV" --tsv --no-header "$TMP/fewbig.fq" | md5sum)
+    FB_CAP=$(VV_FASTX_BATCH_BYTES=131072 "$VV" --tsv --no-header "$TMP/fewbig.fq" | md5sum)
+    assert_eq_file_inline "fastx_byte_budget_output_identical" "$FB_CAP" "$FB_FULL"
+    rm -f "$TMP/fewbig.fq"
 else
     echo "  skip  tui_marks_partial_full_pass (python3 not found)"
 fi

@@ -5231,6 +5231,25 @@ inline int stream_batch_cap() {
     return cap;
 }
 
+// Per-batch byte budget for record-oriented streaming sources (FASTA/FASTQ).
+// Batching purely by record count assumes records are small; a genome FASTA of
+// a few chromosome-sized records would otherwise pack gigabytes into one batch,
+// defeating the trailing-window eviction above. Cap the accumulated payload per
+// batch so memory stays bounded by record size, not file size. A single record
+// larger than the budget still forms its own (one-row) batch — no record is
+// split or dropped. Override with VV_FASTX_BATCH_BYTES (used by the test suite).
+inline int64_t fastx_byte_budget() {
+    static const int64_t budget = [] () -> int64_t {
+        if (const char* e = std::getenv("VV_FASTX_BATCH_BYTES")) {
+            char* end = nullptr;
+            long long v = std::strtoll(e, &end, 10);
+            if (end != e && v > 0) return (int64_t)v;
+        }
+        return (int64_t)64 << 20;   // 64 MiB
+    }();
+    return budget;
+}
+
 // Append a freshly-decoded batch to a forward-only streaming source's storage:
 // record its (first_row, num_rows) metadata (kept forever, so chunk_meta() /
 // total_rows() stay exact after eviction) and enforce the bounded trailing
@@ -7400,6 +7419,8 @@ class FastxSource : public TabularSource {
         arrow::StringBuilder name_b, comm_b, seq_b, qual_b;
         int cap = (row_cap > 0 && row_cap < BATCH_SIZE) ? (int)row_cap : BATCH_SIZE;
         int count = 0, ret = 0;
+        int64_t bytes = 0;
+        const int64_t byte_budget = fastx_byte_budget();
         while (count < cap && (ret = kseq_read(ks_)) >= 0) {
             // kseq doesn't reset .s on absent fields, only .l → use length.
             ARROW_RETURN_NOT_OK(name_b.Append(
@@ -7412,6 +7433,12 @@ class FastxSource : public TabularSource {
                 ARROW_RETURN_NOT_OK(qual_b.Append(
                     ks_->qual.s ? ks_->qual.s : "", (int32_t)ks_->qual.l));
             ++count;
+            // Close the batch once its payload passes the budget, even below the
+            // row cap, so a few very long records can't build one huge batch.
+            bytes += (int64_t)ks_->name.l + (int64_t)ks_->comment.l +
+                     (int64_t)ks_->seq.l +
+                     (is_fastq_ ? (int64_t)ks_->qual.l : 0);
+            if (bytes >= byte_budget) break;
         }
         if (ret < -1) {
             // Malformed record (kseq_read returns < -1). Record it stickily and
