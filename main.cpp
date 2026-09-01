@@ -8906,6 +8906,7 @@ struct OdsParserState {
     // Current cell state.
     int          cell_depth = 0;          // > 0 while inside a table:table-cell
     int          cell_repeat = 1;
+    bool         cell_covered = false;    // table:covered-table-cell (merge filler)
     std::string  cell_value_type;         // office:value-type
     std::string  cell_typed_value;        // office:value / date-value / boolean-value
     std::string  cell_text;               // accumulated <text:p>
@@ -8948,22 +8949,33 @@ static void XMLCALL ods_start(void* ud, const char* name, const char** atts) {
             int n = std::atoi(v);
             if (n > 1) s->row_repeat_count = n;
         }
-    } else if (s->in_sheet && std::strcmp(name, "table:table-cell") == 0) {
+    } else if (s->in_sheet &&
+               (std::strcmp(name, "table:table-cell") == 0 ||
+                std::strcmp(name, "table:covered-table-cell") == 0)) {
+        // A table:covered-table-cell holds the grid positions a spanned
+        // (merged) cell overlaps. It carries no value of its own but still
+        // occupies columns; dropping it shifted every later column left. Treat
+        // it as an empty cell so the columns after a merge stay aligned (what
+        // pandas/odf do — the merged value stays in its top-left column).
         s->cell_depth = 1;
         s->cell_repeat = 1;
+        s->cell_covered =
+            std::strcmp(name, "table:covered-table-cell") == 0;
         s->cell_value_type.clear();
         s->cell_typed_value.clear();
         s->cell_text.clear();
-        if (auto v = OdsParserState::attr(atts, "office:value-type"))
-            s->cell_value_type = v;
-        if (auto v = OdsParserState::attr(atts, "office:value"))
-            s->cell_typed_value = v;
-        else if (auto v = OdsParserState::attr(atts, "office:date-value"))
-            s->cell_typed_value = v;
-        else if (auto v = OdsParserState::attr(atts, "office:time-value"))
-            s->cell_typed_value = v;
-        else if (auto v = OdsParserState::attr(atts, "office:boolean-value"))
-            s->cell_typed_value = v;
+        if (!s->cell_covered) {
+            if (auto v = OdsParserState::attr(atts, "office:value-type"))
+                s->cell_value_type = v;
+            if (auto v = OdsParserState::attr(atts, "office:value"))
+                s->cell_typed_value = v;
+            else if (auto v = OdsParserState::attr(atts, "office:date-value"))
+                s->cell_typed_value = v;
+            else if (auto v = OdsParserState::attr(atts, "office:time-value"))
+                s->cell_typed_value = v;
+            else if (auto v = OdsParserState::attr(atts, "office:boolean-value"))
+                s->cell_typed_value = v;
+        }
         if (auto v = OdsParserState::attr(atts,
                                            "table:number-columns-repeated")) {
             int n = std::atoi(v);
@@ -8985,17 +8997,22 @@ static void XMLCALL ods_end(void* ud, const char* name) {
     auto* s = static_cast<OdsParserState*>(ud);
     if (s->cell_depth > 0) {
         if (std::strcmp(name, "text:p") == 0) s->in_text_p = false;
-        if (std::strcmp(name, "table:table-cell") == 0) {
+        if (std::strcmp(name, "table:table-cell") == 0 ||
+            std::strcmp(name, "table:covered-table-cell") == 0) {
             // Pick the canonical value: typed attribute wins for numeric /
             // date / boolean cells; text is the fallback (string cells +
-            // anything without office:value).
+            // anything without office:value). A covered cell holds no value —
+            // it only reserves the columns a merge spans.
             std::string v;
-            if (!s->cell_typed_value.empty() &&
-                s->cell_value_type != "string" &&
-                !s->cell_value_type.empty())
+            if (s->cell_covered) {
+                // empty placeholder — keeps later columns aligned
+            } else if (!s->cell_typed_value.empty() &&
+                       s->cell_value_type != "string" &&
+                       !s->cell_value_type.empty()) {
                 v = std::move(s->cell_typed_value);
-            else
+            } else {
                 v = std::move(s->cell_text);
+            }
 
             // Multiple inline <text:p> children → newlines. The simplest
             // sanitisation for CSV is to swap them for spaces; preserving
@@ -9006,6 +9023,7 @@ static void XMLCALL ods_end(void* ud, const char* name) {
             s->row_cells.push_back(std::move(v));
             s->row_repeat.push_back(s->cell_repeat);
             s->cell_depth = 0;
+            s->cell_covered = false;
         } else {
             s->cell_depth--;
         }

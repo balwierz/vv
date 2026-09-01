@@ -898,6 +898,35 @@ else:
     doc.spreadsheet.addElement(t)
     doc.save(str(rg_path))
 
+    # tiny.merged.ods: a horizontally-merged (column-spanned) cell. The value
+    # sits in the merge's top-left cell; the spanned columns are filled by
+    # table:covered-table-cell elements. The reader dropped those covered cells,
+    # so every column after a merge shifted left — here "x"/"y" landed under
+    # b/c instead of c/d. The merge is on the second row: [M spans a+b], then
+    # x under c and y under d, so the aligned row is M, "", x, y.
+    from odf.table import CoveredTableCell        # type: ignore
+    mg_path = HERE / "tiny.merged.ods"
+    if mg_path.exists():
+        mg_path.unlink()
+    mdoc = OpenDocumentSpreadsheet()
+    mt = Table(name="merged")
+    hr = TableRow()
+    for h in ("a", "b", "c", "d"):
+        hc = TableCell(valuetype="string"); hc.addElement(P(text=h))
+        hr.addElement(hc)
+    mt.addElement(hr)
+    dr = TableRow()
+    mc = TableCell(valuetype="string", numbercolumnsspanned=2,
+                   numberrowsspanned=1)
+    mc.addElement(P(text="M")); dr.addElement(mc)
+    dr.addElement(CoveredTableCell())            # the covered grid position
+    for val in ("x", "y"):
+        c = TableCell(valuetype="string"); c.addElement(P(text=val))
+        dr.addElement(c)
+    mt.addElement(dr)
+    mdoc.spreadsheet.addElement(mt)
+    mdoc.save(str(mg_path))
+
     # tiny.rowrep.ods: a *non-empty* row carrying table:number-rows-repeated.
     # The reader used to ignore the attribute and emit the row once, silently
     # dropping the duplicates. The "dup" row (repeat=3) must yield 3 rows, so
