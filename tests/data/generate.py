@@ -1320,6 +1320,22 @@ else:
              empty_f=np.asfortranarray(np.zeros((0, 3), dtype=np.float64)),
              empty_c=np.zeros((0, 3), dtype=np.float64))
 
+    # tiny.dupmember.npz: a HOSTILE archive with two members both named
+    # "arr.npy" — shapes (3,) then (5,). numpy's np.load keeps the last (its
+    # central-directory dict overwrites earlier keys); vv used to keep the
+    # first, so it displayed a different array than numpy and left the second
+    # as an unreachable, shadowed tab. vv now keeps the last, matching numpy,
+    # and warns. numpy's savez refuses duplicate keys, so write the ZIP by hand.
+    import io, warnings                                       # type: ignore
+    def _npy_bytes(a):
+        b = io.BytesIO(); np.save(b, a); return b.getvalue()
+    with zipfile.ZipFile(HERE / "tiny.dupmember.npz", "w") as _z, \
+         warnings.catch_warnings():
+        warnings.simplefilter("ignore")                      # dup-name UserWarning
+        _z.writestr("arr.npy",  _npy_bytes(np.array([1, 2, 3], dtype=np.int64)))
+        _z.writestr("keep.npy", _npy_bytes(np.array([7, 7], dtype=np.int64)))
+        _z.writestr("arr.npy",  _npy_bytes(np.arange(100, 105, dtype=np.int64)))
+
     # tiny.shapeovf.npz: a shape that declares an EMPTY array (trailing 0) while
     # its leading dimensions multiply past int64. One zero dim makes the total
     # element count zero, so the size check passes for free — but the 3-D+

@@ -11242,7 +11242,27 @@ static std::string load_archive(const std::string& path,
             unzClose(zf);
             return "'" + path + "' / '" + name + "': " + err;
         }
-        out->push_back({std::move(name), std::move(buf), std::move(h)});
+        // A ZIP may carry two members with the same name; numpy's np.load keeps
+        // the last (its central-directory dict overwrites earlier keys), so the
+        // earlier bytes are dead. Match that — overwrite the existing entry in
+        // place (its first position, the later value) instead of appending a
+        // second, unreachable tab that find_entry would always shadow. Warn so
+        // the replaced member is not dropped silently.
+        bool merged = false;
+        for (auto& prev : *out) {
+            if (prev.name == name) {
+                std::fprintf(stderr,
+                    "vv: NPZ '%s': member '%s' appears more than once; "
+                    "showing the last, as numpy does\n",
+                    path.c_str(), name.c_str());
+                prev.bytes  = std::move(buf);
+                prev.header = std::move(h);
+                merged = true;
+                break;
+            }
+        }
+        if (!merged)
+            out->push_back({std::move(name), std::move(buf), std::move(h)});
     } while (unzGoToNextFile(zf) == UNZ_OK);
 
     unzClose(zf);
