@@ -3080,6 +3080,16 @@ if printf '%s' "$MDLEAK_2ND" | grep -qaF "$(printf '\033[1m')"; then
     MDLEAK_RES=leaked; else MDLEAK_RES=clean; fi
 assert_eq_file_inline "md_unclosed_tag_no_style_leak" "$MDLEAK_RES" "clean"
 rm -f "$MDLEAK"
+# role is a stack: a nested span that sets its own role (inline code inside a
+# link) must restore the outer role on close, not blank it. After the `code`,
+# " and more" is still inside the link, so it must carry the link colour again —
+# i.e. the underline SGR is NOT immediately followed by that text with no colour.
+MDROLE="$TMP/role.md"
+printf 'See [the `code` and more](http://x) end.\n' > "$MDROLE"
+if "$VV" --color=always "$MDROLE" 2>/dev/null | grep -qaF "$(printf '\033[4m and more')"; then
+    MDROLE_RES=lost; else MDROLE_RES=restored; fi
+assert_eq_file_inline "md_role_restored_after_nested_span" "$MDROLE_RES" "restored"
+rm -f "$MDROLE"
 
 # stdin: `cat foo.log | vv --text -` must match `vv foo.log`. The flag was
 # excluded from the `-` path, so piped prose still went to the CSV reader,
