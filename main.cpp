@@ -7019,6 +7019,14 @@ class BigSource : public TabularSource {
     mutable size_t                           cur_chrom_  = 0;
     mutable bool                             all_read_   = false;
 
+    // A single window (chrom span) can hold far more than BATCH_SIZE
+    // intervals. Retain its libBigWig container across advance() calls and
+    // resume at cur_off_ so nothing past the batch boundary is dropped.
+    mutable bwOverlappingIntervals_t*        cur_iv_    = nullptr;  // bigWig
+    mutable bbOverlappingEntries_t*          cur_bb_    = nullptr;  // bigBed
+    mutable uint32_t                         cur_off_   = 0;        // next unread index
+    mutable std::string                      cur_label_;           // chrom of the window
+
     mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
     mutable std::vector<int64_t>             batch_first_row_;
     mutable std::vector<int64_t>             batch_num_rows_;   // kept after eviction
@@ -7100,21 +7108,33 @@ class BigSource : public TabularSource {
             } catch (...) { return bad(); }
         };
 
-        while (count < BATCH_SIZE && idx < n_iter) {
-            std::string chrom = chrom_at(idx);
-            uint32_t qs, qe;
-            chrom_span(idx, &qs, &qe);
-            ++idx;
-            // Unknown chrom — libBigWig will return NULL.
+        while (count < BATCH_SIZE) {
+            // Fetch the next window's intervals only once the previous one
+            // is fully drained; cur_off_ resumes a window split across
+            // batches so nothing past BATCH_SIZE is discarded.
+            if (!cur_iv_ && !cur_bb_) {
+                if (idx >= n_iter) break;
+                cur_label_ = chrom_at(idx);
+                uint32_t qs, qe;
+                chrom_span(idx, &qs, &qe);
+                ++idx;
+                cur_off_ = 0;
+                // Unknown chrom — libBigWig will return NULL.
+                if (is_bb_) {
+                    cur_bb_ = bbGetOverlappingEntries(
+                        fp_, cur_label_.c_str(), qs, qe, /*withString=*/1);
+                } else {
+                    cur_iv_ = bwGetOverlappingIntervals(
+                        fp_, cur_label_.c_str(), qs, qe);
+                }
+                if (!cur_iv_ && !cur_bb_) continue;
+            }
             if (is_bb_) {
-                bbOverlappingEntries_t* o = bbGetOverlappingEntries(
-                    fp_, chrom.c_str(), qs, qe, /*withString=*/1);
-                if (!o) continue;
-                for (uint32_t i = 0; i < o->l && count < BATCH_SIZE; ++i) {
-                    ARROW_RETURN_NOT_OK(chrom_b.Append(chrom));
-                    ARROW_RETURN_NOT_OK(start_b.Append(o->start[i]));
-                    ARROW_RETURN_NOT_OK(end_b.Append(o->end[i]));
-                    const char* s = o->str[i];
+                for (; cur_off_ < cur_bb_->l && count < BATCH_SIZE; ++cur_off_) {
+                    ARROW_RETURN_NOT_OK(chrom_b.Append(cur_label_));
+                    ARROW_RETURN_NOT_OK(start_b.Append(cur_bb_->start[cur_off_]));
+                    ARROW_RETURN_NOT_OK(end_b.Append(cur_bb_->end[cur_off_]));
+                    const char* s = cur_bb_->str[cur_off_];
                     // Split s on tabs into N fields.
                     std::vector<std::string> toks;
                     if (s) {
@@ -7139,22 +7159,25 @@ class BigSource : public TabularSource {
                     }
                     ++count;
                 }
-                bbDestroyOverlappingEntries(o);
+                if (cur_off_ >= cur_bb_->l) {
+                    bbDestroyOverlappingEntries(cur_bb_);
+                    cur_bb_ = nullptr;
+                }
             } else {
-                bwOverlappingIntervals_t* iv = bwGetOverlappingIntervals(
-                    fp_, chrom.c_str(), qs, qe);
-                if (!iv) continue;
-                for (uint32_t i = 0; i < iv->l && count < BATCH_SIZE; ++i) {
-                    ARROW_RETURN_NOT_OK(chrom_b.Append(chrom));
-                    ARROW_RETURN_NOT_OK(start_b.Append(iv->start[i]));
-                    ARROW_RETURN_NOT_OK(end_b.Append(iv->end[i]));
-                    ARROW_RETURN_NOT_OK(value_b.Append(iv->value[i]));
+                for (; cur_off_ < cur_iv_->l && count < BATCH_SIZE; ++cur_off_) {
+                    ARROW_RETURN_NOT_OK(chrom_b.Append(cur_label_));
+                    ARROW_RETURN_NOT_OK(start_b.Append(cur_iv_->start[cur_off_]));
+                    ARROW_RETURN_NOT_OK(end_b.Append(cur_iv_->end[cur_off_]));
+                    ARROW_RETURN_NOT_OK(value_b.Append(cur_iv_->value[cur_off_]));
                     ++count;
                 }
-                bwDestroyOverlappingIntervals(iv);
+                if (cur_off_ >= cur_iv_->l) {
+                    bwDestroyOverlappingIntervals(cur_iv_);
+                    cur_iv_ = nullptr;
+                }
             }
         }
-        if (idx >= n_iter) all_read_ = true;
+        if (idx >= n_iter && !cur_iv_ && !cur_bb_) all_read_ = true;
         if (count == 0) return arrow::Status::OK();
 
         std::vector<std::shared_ptr<arrow::Array>> a;
@@ -7179,6 +7202,8 @@ class BigSource : public TabularSource {
 
 public:
     ~BigSource() {
+        if (cur_iv_) { bwDestroyOverlappingIntervals(cur_iv_); cur_iv_ = nullptr; }
+        if (cur_bb_) { bbDestroyOverlappingEntries(cur_bb_);   cur_bb_ = nullptr; }
         if (fp_) { bwClose(fp_); fp_ = nullptr; }
         bwCleanup();
     }

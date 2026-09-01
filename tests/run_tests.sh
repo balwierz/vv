@@ -402,6 +402,32 @@ if [ -f "$DATA/tiny.bw" ]; then
     assert_eq_file_inline "bigwig_region_returns_two_rows" "$BW_REGION" "2"
 fi
 
+# Batch-boundary resume: a single chromosome holding more than BATCH_SIZE
+# (32768) intervals must be read in full. BigSource advanced its window cursor
+# before copying and capped each window at 32768, so every interval past the
+# batch boundary was silently discarded — a 40000-interval file reported 32768
+# rows, exit 0. A per-window resume cursor now drains the whole window across
+# batches. pyBigWig writes the fixture on the fly (too large to commit).
+if require "bigwig batch resume" python3 && python3 -c "import pyBigWig" 2>/dev/null; then
+    BW_BIG="$TMP/manyint.bw"
+    python3 - "$BW_BIG" <<'PY'
+import sys, pyBigWig
+n = 40000  # > BATCH_SIZE (32768), one chromosome, one query window
+bw = pyBigWig.open(sys.argv[1], "w")
+bw.addHeader([("chr1", n * 10 + 10)])
+bw.addEntries(["chr1"] * n, list(range(0, n * 10, 10)),
+              ends=list(range(10, n * 10 + 10, 10)),
+              values=[float(i) for i in range(n)])
+bw.close()
+PY
+    BW_BIG_N=$("$VV" --count "$BW_BIG")
+    assert_eq_file_inline "bigwig_batch_resume_full_count" "$BW_BIG_N" "40000"
+    # The final interval (value 39999) lives past the batch boundary, so this
+    # proves the resumed rows carry the right payload, not just the right count.
+    BW_BIG_LAST=$("$VV" --tsv --no-header "$BW_BIG" | tail -1 | awk -F'\t' '{print $4}')
+    assert_eq_file_inline "bigwig_batch_resume_last_value" "$BW_BIG_LAST" "39999"
+fi
+
 # Hostile bigWig: the chromosome B-tree names a chromId outside the itemCount
 # the file itself declares. libBigWig used it directly as the subscript for
 # writes into cl->len and cl->chrom, both sized to itemCount, so opening the
