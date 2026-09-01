@@ -12602,6 +12602,12 @@ struct Renderer {
     // Span-style stack — md4c may nest spans (e.g., bold inside link).
     uint16_t     style = 0;
     uint8_t      role  = ROLE_NONE;
+    // Saved role per open span/tag. `style` is a bitmask that each span
+    // toggles independently, but `role` is a single value: a nested span that
+    // sets its own role (inline code inside a link) must restore the outer
+    // role on close, not blank it. Pushed on span/tag enter, popped on leave;
+    // cleared at block boundaries so an unbalanced inline tag can't leak.
+    std::vector<uint8_t> role_stack_;
 
     // Current block accumulator.
     MdBlockKind  cur_block = MdBlockKind::Paragraph;
@@ -12738,6 +12744,7 @@ struct Renderer {
         // into the next block.
         style = 0;
         role  = ROLE_NONE;
+        role_stack_.clear();
     }
 
     // ── md4c callbacks ─────────────────────────────────────────────────────
@@ -13002,6 +13009,7 @@ struct Renderer {
     }
 
     int enter_span(MD_SPANTYPE type, void* detail) {
+        role_stack_.push_back(role);   // restored by the paired leave_span
         switch (type) {
             case MD_SPAN_EM:        style |= MD_ITALIC; break;
             case MD_SPAN_STRONG:    style |= MD_BOLD; break;
@@ -13048,11 +13056,9 @@ struct Renderer {
             case MD_SPAN_DEL:   style &= ~MD_STRIKE; break;
             case MD_SPAN_CODE:
                 style &= ~MD_CODE;
-                role = ROLE_NONE;
                 break;
             case MD_SPAN_A:
                 style &= ~MD_UNDER;
-                role = ROLE_NONE;
                 if (!pending_href.empty()) {
                     bool autolink = ((MD_SPAN_A_DETAIL*)detail)->is_autolink;
                     if (osc8 && g_color.reset != nullptr &&
@@ -13117,6 +13123,12 @@ struct Renderer {
                 break;
             }
             default: break;
+        }
+        // Restore the role that was active before this span (md4c pairs
+        // enter/leave, so the stack stays balanced).
+        if (!role_stack_.empty()) {
+            role = role_stack_.back();
+            role_stack_.pop_back();
         }
         return 0;
     }
@@ -13308,8 +13320,15 @@ static void html_apply(Renderer& r, const std::string& html) {
             continue;
         }
         if (n == "code" || n == "kbd" || n == "samp" || n == "tt") {
-            if (t.closing) { r.style &= ~MD_CODE; r.role = ROLE_NONE; }
-            else           { r.style |= MD_CODE;  r.role = ROLE_CODE; }
+            if (t.closing) {
+                r.style &= ~MD_CODE;
+                if (!r.role_stack_.empty()) {
+                    r.role = r.role_stack_.back(); r.role_stack_.pop_back();
+                } else r.role = ROLE_NONE;
+            } else {
+                r.role_stack_.push_back(r.role);
+                r.style |= MD_CODE; r.role = ROLE_CODE;
+            }
             continue;
         }
         if (n == "mark") {     // emit as reverse-video, no role colour
@@ -13330,7 +13349,9 @@ static void html_apply(Renderer& r, const std::string& html) {
             if (t.closing) {
                 if (r.html_a_depth > 0) {
                     r.style &= ~MD_UNDER;
-                    r.role  = ROLE_NONE;
+                    if (!r.role_stack_.empty()) {
+                        r.role = r.role_stack_.back(); r.role_stack_.pop_back();
+                    } else r.role = ROLE_NONE;
                     if (r.osc8 && g_color.reset != nullptr &&
                         *g_color.reset != '\0') {
                         MdSegment seg;
@@ -13354,6 +13375,7 @@ static void html_apply(Renderer& r, const std::string& html) {
                 auto it_href = t.attrs.find("href");
                 std::string href = (it_href != t.attrs.end()) ? it_href->second : "";
                 r.pending_href = href;
+                r.role_stack_.push_back(r.role);
                 r.role  = ROLE_LINK;
                 r.style |= MD_UNDER;
                 if (r.osc8 && !href.empty() && g_color.reset != nullptr &&
