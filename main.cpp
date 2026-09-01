@@ -11628,8 +11628,15 @@ static PileupCounts decode_pileup_cell(const std::string_view bases,
     size_t qual_idx = 0;
     int64_t qual_sum = 0;
     int     qual_count = 0;
-    auto consume_qual = [&]() {
-        if (qual_idx < quals.size()) {
+    // Every pileup element — a real base, a '*' deletion placeholder, or a
+    // '>' / '<' reference skip — carries exactly one quality char, so the index
+    // must advance for each to stay aligned with the base column. Only real
+    // bases contribute to mean_qual (`count`); a placeholder or refskip consumes
+    // its quality char without adding to the mean. Skipping the advance for a
+    // non-base (as the old code did for refskips) both dropped their quality and
+    // shifted every later base onto the wrong quality char.
+    auto consume_qual = [&](bool count) {
+        if (count && qual_idx < quals.size()) {
             qual_sum += (int)(unsigned char)quals[qual_idx] - 33;
             ++qual_count;
         }
@@ -11643,7 +11650,7 @@ static PileupCounts decode_pileup_cell(const std::string_view bases,
         else if (u == 'T') ++c.T;
         else               ++c.N;
         if (reverse) ++c.rev; else ++c.fwd;
-        consume_qual();
+        consume_qual(/*count=*/true);
     };
     for (size_t i = 0; i < bases.size(); ) {
         char ch = bases[i];
@@ -11653,7 +11660,12 @@ static PileupCounts decode_pileup_cell(const std::string_view bases,
         if (ch == '$') { ++i; continue; }      // postfix end-of-read marker
         if (ch == '*') {                        // deletion placeholder
             ++c.del_placeholder;
-            consume_qual();
+            consume_qual(/*count=*/false);       // has a quality char, not a base
+            ++i;
+            continue;
+        }
+        if (ch == '>' || ch == '<') {           // reference skip (CIGAR N)
+            consume_qual(/*count=*/false);       // has a quality char, not a base
             ++i;
             continue;
         }
@@ -11680,7 +11692,9 @@ static PileupCounts decode_pileup_cell(const std::string_view bases,
             ++i;
             continue;
         }
-        // Unknown char (rare; '>' '<' refskip markers fall here) — skip silently.
+        // Unknown char (rare) — skip silently. '>' / '<' refskips and '*'
+        // deletion placeholders are handled above so their quality chars stay
+        // aligned; anything else here carries no quality char.
         ++i;
     }
     c.mean_qual = (qual_count > 0)
