@@ -5442,13 +5442,17 @@ class DelimitedSource : public TabularSource {
     // ignored by Arrow, never an error.
     static std::vector<std::string>
     detect_leading_zero_columns(const std::string& path, bool is_gz, char delim,
-                                const std::vector<std::string>& header_names) {
+                                const std::vector<std::string>& header_names,
+                                bool headerless = false) {
         std::shared_ptr<arrow::io::ReadableFile> raw;
         std::shared_ptr<arrow::io::InputStream>  input;
         if (!open_stream(path, is_gz, &raw, &input).empty()) return {};
         LineReader lr(input);
         std::vector<std::string> names = header_names;   // from a `#`-header, if any
-        bool have_names = !names.empty();
+        // Headerless mode: every data line (including the first) is data, and
+        // columns are named f0, f1, … to match Arrow's autogenerate_column_names
+        // so the forced-string set lines up with the retried reader's schema.
+        bool have_names = !names.empty() || headerless;
         std::vector<std::string> sample;
         std::string line;
         const int kMaxData = 200;
@@ -5465,6 +5469,17 @@ class DelimitedSource : public TabularSource {
                 }
             }
             if (!ok) break;
+        }
+        if (headerless) {
+            size_t ncols = 0;
+            std::vector<std::string> f;
+            for (const auto& s : sample) {
+                split_delimited_line(s, delim, &f);
+                ncols = std::max(ncols, f.size());
+            }
+            names.clear();
+            for (size_t i = 0; i < ncols; ++i)
+                names.push_back("f" + std::to_string(i));
         }
         if (names.empty()) return {};
         return leading_zero_columns(sample, delim, names);
@@ -5701,8 +5716,14 @@ private:
                 std::shared_ptr<arrow::io::ReadableFile>  raw2;
                 std::shared_ptr<arrow::io::InputStream>   input2;
                 if (open_stream(path, is_gz, &raw2, &input2).empty()) {
+                    // The first reader keyed force_string to the header-as-data
+                    // names; the retry autogenerates f0, f1, …, so recompute the
+                    // leading-zero columns under that naming — otherwise a
+                    // headerless "007" column loses its zeros (inferred as int).
+                    std::vector<std::string> force2 = detect_leading_zero_columns(
+                        path, is_gz, self->delimiter_, {}, /*headerless=*/true);
                     auto r2 = make_reader(input2, self->delimiter_,
-                                          /*autogen=*/true, {}, force_string);
+                                          /*autogen=*/true, {}, force2);
                     if (r2.ok()) {
                         self->reader_ = r2.ValueOrDie();
                         self->schema_ = self->reader_->schema();
