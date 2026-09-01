@@ -5,10 +5,12 @@
 find_package(Qt6 REQUIRED COMPONENTS Widgets Concurrent)
 
 set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)   # compile vvg.qrc (the embedded app icon)
 
 add_executable(vvg
     main.cpp
     arrowtablemodel.cpp
+    vvg.qrc
 )
 target_include_directories(vvg PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(vvg PRIVATE vvcore Qt6::Widgets Qt6::Concurrent)

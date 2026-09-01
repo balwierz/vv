@@ -11,6 +11,7 @@
 // without a display server.
 
 #include <QApplication>
+#include <QIcon>
 #include <QClipboard>
 #include <QComboBox>
 #include <QDockWidget>
@@ -900,6 +901,17 @@ static bool checkWidthPlan() {
 
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
+    // Identity + icon. On Wayland the compositor picks the taskbar/dock icon by
+    // matching the window's app_id to a .desktop file, so it must equal the
+    // installed org.vv.Viewer.desktop base name — without this the window shows
+    // a generic placeholder. setWindowIcon covers the title bar / X11 / an
+    // uninstalled run, preferring the themed icon and falling back to the copy
+    // embedded via vvg.qrc.
+    app.setApplicationName(QStringLiteral("vv"));
+    app.setApplicationDisplayName(QStringLiteral("vv"));
+    app.setDesktopFileName(QStringLiteral("org.vv.Viewer"));
+    app.setWindowIcon(QIcon::fromTheme(QStringLiteral("vv"),
+                                       QIcon(QStringLiteral(":/icons/vv.svg"))));
 
     QStringList paths;
     for (int i = 1; i < argc; ++i) {
@@ -909,7 +921,16 @@ int main(int argc, char** argv) {
 
     if (const char* st = std::getenv("VVG_SELFTEST"); st && *st && *st != '0') {
         if (!checkWidthPlan()) return 1;
-        std::printf("widthplan=ok\n");
+        // App identity: the desktop file name must match the installed .desktop
+        // (Wayland taskbar icon), and the window icon must resolve — the themed
+        // "vv" or, uninstalled, the copy embedded via vvg.qrc.
+        if (app.desktopFileName() != QStringLiteral("org.vv.Viewer")) {
+            std::fprintf(stderr, "vvg: desktop file name not set\n"); return 1;
+        }
+        if (app.windowIcon().isNull()) {
+            std::fprintf(stderr, "vvg: window icon did not resolve\n"); return 1;
+        }
+        std::printf("widthplan=ok icon=ok\n");
         // Model-level self-test (CI path): needs a file on the command line.
         if (paths.isEmpty()) { std::fprintf(stderr, "usage: vvg <file>\n"); return 2; }
         Config cfg;
