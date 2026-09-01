@@ -553,7 +553,7 @@ be done first: it catches this whole bug class automatically.
 
 **Performance**
 - [ ] `gui/main.cpp:243` — Detail dock rebuilds all rows and allocates fresh QTableWidgetItems on every selection change
-- [ ] `main.cpp:898` — truncate() is O(n^2) on wide collection cells, re-run per visible cell per redraw
+- [x] `main.cpp:898` — truncate() is O(n^2) on wide collection cells, re-run per visible cell per redraw — fixed on `perf/truncate-binsearch` (the collection branch scanned element counts K..1, evaluating display_width on a candidate of length up to the whole cell each step — O(K) width evals, each O(cand len). The candidate width is monotone in the kept element count, so it now binary-searches the largest count that fits: O(log K) evals. Byte-identical output verified across 19 widths (6..80) on lists of length 0..3000 and on tiny.parquet's collection columns; covered by the existing trunc_lists_fit_multiple_elements / truncate_utf8_* goldens. A 20-row parquet whose cells are 5000-element lists rendered at -w 15 drops from ~5.40s to ~0.01s.)
 - [x] `main.cpp:4338` — BcfSource builds and immediately destroys a throwaway region iterator per window — fixed on `fix/region-coord-offbyone`
 - [ ] `main.cpp:5277` — read_first() fast-path cap is dead for SqliteSource and FastxSource because open() eagerly reads a full 4096-row batch
 - [ ] `main.cpp:5441` — ORC read_chunk decodes every column of a stripe even when only a few columns are requested
