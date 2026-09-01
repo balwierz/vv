@@ -2648,6 +2648,18 @@ else
     echo "  skip  tui_wide_column_not_blank (python3 not found)"
 fi
 
+# Auto-launched TUI that can't initialise (bad TERM, no -i) must note the
+# fallback on stderr instead of silently degrading to a static table.
+if command -v python3 >/dev/null 2>&1; then
+    if python3 "$HERE/tui_fallback_note_check.py" "$VV" "$DATA/tiny.parquet" "Chr"; then
+        PASS=$((PASS+1)); echo "  ok    tui_fallback_note_on_init_failure"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_fallback_note_on_init_failure"
+    fi
+else
+    echo "  skip  tui_fallback_note_on_init_failure (python3 not found)"
+fi
+
 # The TUI has a cell cursor: j/k/h/l move a highlighted cell and the per-cell
 # actions act on it, rather than every one of them reading the top-left corner.
 # The discriminating check is that moving the cursor no longer drags the
