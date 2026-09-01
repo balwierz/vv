@@ -1583,6 +1583,14 @@ assert_contains "unique_lists_chr1" "$UNIQ_OUT" "chr1"
 assert_contains "unique_counts_2_distinct" "$UNIQ_OUT" "2 distinct"
 BAD_UNIQ=$("$VV" --unique BogusCol "$DATA/tiny.lociss" 2>&1 || true)
 assert_contains "unique_unknown_column_errors" "$BAD_UNIQ" "unknown"
+# --unique counts through a hash map (O(1) inserts); iteration order is then
+# unspecified, so the output sort breaks equal-count ties by value ascending to
+# stay deterministic. a and b both occur twice (a before b), c once.
+UDET="$TMP/udet.tsv"
+printf 'x\nb\na\nb\na\nc\n' > "$UDET"
+UDET_ORDER=$("$VV" --unique x "$UDET" 2>/dev/null | grep -E '^  [a-z]' | awk '{print $1}' | tr '\n' ' ')
+assert_eq_file_inline "unique_tie_order_deterministic" "$UDET_ORDER" "a b c "
+rm -f "$UDET"
 
 # --sample: pulls a subset and preserves the hidden-column convention.
 SAMPLE_OUT=$("$VV" --tsv --no-header --sample 2 "$DATA/tiny.lociss" | wc -l | tr -d ' ')

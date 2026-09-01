@@ -16023,8 +16023,11 @@ static std::string print_unique(TabularSource& src, const Config& cfg) {
     }
     std::vector<int> read_set = have_filter ? union_with_filter(cols, fx) : cols;
 
-    // Counts per column.
-    std::vector<std::map<std::string, int64_t>> counts(cols.size());
+    // Counts per column. Hash map: O(1) average insert per cell, versus a
+    // red-black tree's O(log distinct) string comparisons — the distinct set is
+    // unbounded here, so on a high-cardinality column the tree dominates. The
+    // final sort imposes a deterministic order, so iteration order is moot.
+    std::vector<std::unordered_map<std::string, int64_t>> counts(cols.size());
     int64_t total = 0;
     for (int c = 0; ; ++c) {
         src.ensure(c);
@@ -16057,8 +16060,13 @@ static std::string print_unique(TabularSource& src, const Config& cfg) {
         first = false;
         auto& m = counts[k];
         std::vector<std::pair<std::string,int64_t>> entries(m.begin(), m.end());
+        // Count descending; ties broken by value ascending so the output is
+        // deterministic despite the hash map's unspecified iteration order.
         std::sort(entries.begin(), entries.end(),
-            [](const auto& a, const auto& b) { return a.second > b.second; });
+            [](const auto& a, const auto& b) {
+                if (a.second != b.second) return a.second > b.second;
+                return a.first < b.first;
+            });
         std::printf("%s%s%s — %s%zu%s distinct value(s) (of %s%lld%s)\n",
                     g_color.header, schema->field(cols[k])->name().c_str(),
                     g_color.reset,
