@@ -1367,6 +1367,24 @@ assert_contains "filter_bad_is" "$BADIS" "is null"
 # cover the shared parser; this pins that the OLD grammar is untouched.
 assert_eq_file_inline "filter_legacy_grammar_unchanged" \
     "$(fcount 'Score > 0.4' "$DATA/tiny.lociss")" "3"
+
+# Dictionary (categorical) columns: filter/stat accessors read only plain
+# String/Int/Double arrays, so a predicate on a dictionary column silently
+# matched nothing (== / in) or every row (!= / not in). tiny.dict.arrow keeps
+# the encoding through to the reader: cat = b a b c a, dnum = 100 200 100 300 200.
+if [ -f "$DATA/tiny.dict.arrow" ]; then
+    D=$DATA/tiny.dict.arrow
+    assert_eq_file_inline "filter_dict_string_eq"  "$(fcount 'cat == "b"' "$D")"  "2"
+    assert_eq_file_inline "filter_dict_string_ne"  "$(fcount 'cat != "b"' "$D")"  "3"
+    assert_eq_file_inline "filter_dict_string_in"  "$(fcount 'cat in (a,b)' "$D")" "4"
+    assert_eq_file_inline "filter_dict_string_re"  "$(fcount 'cat ~ ^a' "$D")"    "2"
+    assert_eq_file_inline "filter_dict_int_gt"     "$(fcount 'dnum > 150' "$D")"  "3"
+    assert_eq_file_inline "filter_dict_int_eq"     "$(fcount 'dnum == 100' "$D")" "2"
+    # array_value_as_double now decodes dict cells, so --describe sees the values.
+    DDESC=$("$VV" --describe "$D" 2>/dev/null | grep -E '^dnum')
+    assert_contains "describe_dict_int_min" "$DDESC" "100"
+    assert_contains "describe_dict_int_max" "$DDESC" "300"
+fi
 # eval_atom runs per row, so the compiled regex must be cached — recompiling
 # the pattern for every cell would dominate the scan. Guard it, but loosely:
 # a shared CI runner is noisy, and the point is to catch the cache DISAPPEARING

@@ -100,6 +100,20 @@ with pa.OSFile(str(HERE / "tiny.arrow"), "wb") as f:
         w.write_batch(table.slice(0, 10).to_batches()[0])
         w.write_batch(table.slice(10, 10).to_batches()[0])
 
+# tiny.dict.arrow: an Arrow IPC file that carries dictionary (categorical)
+# encoding through to the reader. The filter / stats accessors handled only
+# plain String / Int / Double arrays, so a predicate on a dictionary column
+# matched nothing (== / in) or every row (!= / not in), silently. The accessors
+# now decode the dictionary. cat: b a b c a ; dnum (dict-int): 100 200 100 300 200
+_dict_tbl = pa.table({
+    "cat":  pa.array(["b", "a", "b", "c", "a"], pa.string()).dictionary_encode(),
+    "dnum": pa.array([100, 200, 100, 300, 200], pa.int64()).dictionary_encode(),
+    "val":  pa.array([10, 20, 30, 40, 50], pa.int64()),
+})
+with pa.OSFile(str(HERE / "tiny.dict.arrow"), "wb") as f:
+    with ipc.new_file(f, _dict_tbl.schema) as w:
+        w.write_table(_dict_tbl)
+
 # tiny.corrupt.arrow: an Arrow IPC whose footer declares 20 record batches but
 # whose batch 1 is corrupt. The file opens (schema + batch 0 are intact), so
 # num_chunks() reports 20, but batches after the failed one never load. Paging

@@ -2684,21 +2684,46 @@ static bool cell_is_null(const arrow::Table& tbl, int col, int64_t row) {
 
 // Get the int64 / double / string value of cell (col_idx, row) in `tbl`.
 // Returns false for nulls or unsupported types.
+// Resolve a possibly dictionary-encoded cell to its underlying value array and
+// index. For a plain array this is just (&a, r); for a DictionaryArray it is
+// the dictionary's array at the decoded index. Returns false when the cell is
+// null (a null dictionary index or a null dictionary value). The filter and
+// stats accessors all route through this so a categorical column is compared by
+// its decoded value, not skipped as an unhandled type.
+static bool resolve_dict_cell(const arrow::Array& a, int64_t r,
+                              const arrow::Array** out_arr, int64_t* out_idx) {
+    const arrow::Array* arr = &a;
+    int64_t idx = r;
+    if (a.type_id() == arrow::Type::DICTIONARY) {
+        const auto& d = static_cast<const arrow::DictionaryArray&>(a);
+        if (d.IsNull(r)) return false;
+        arr = d.dictionary().get();
+        idx = d.GetValueIndex(r);
+    }
+    if (arr->IsNull(idx)) return false;
+    *out_arr = arr;
+    *out_idx = idx;
+    return true;
+}
+
 static bool cell_as_int(const arrow::Table& tbl, int col, int64_t row,
                          int64_t* out) {
     auto chunked = tbl.column(col);
     int64_t r = row;
     for (const auto& ch : chunked->chunks()) {
         if (r < ch->length()) {
-            if (ch->IsNull(r)) return false;
-            if (auto a = std::dynamic_pointer_cast<arrow::Int64Array>(ch))  { *out = a->Value(r); return true; }
-            if (auto a = std::dynamic_pointer_cast<arrow::Int32Array>(ch))  { *out = a->Value(r); return true; }
-            if (auto a = std::dynamic_pointer_cast<arrow::Int16Array>(ch))  { *out = a->Value(r); return true; }
-            if (auto a = std::dynamic_pointer_cast<arrow::Int8Array>(ch))   { *out = a->Value(r); return true; }
-            if (auto a = std::dynamic_pointer_cast<arrow::UInt32Array>(ch)) { *out = (int64_t)a->Value(r); return true; }
-            if (auto a = std::dynamic_pointer_cast<arrow::FloatArray>(ch))  { *out = (int64_t)a->Value(r); return true; }
-            if (auto a = std::dynamic_pointer_cast<arrow::DoubleArray>(ch)) { *out = (int64_t)a->Value(r); return true; }
-            return false;
+            const arrow::Array* a; int64_t i;
+            if (!resolve_dict_cell(*ch, r, &a, &i)) return false;
+            switch (a->type_id()) {
+                case arrow::Type::INT64:  *out = static_cast<const arrow::Int64Array&>(*a).Value(i);  return true;
+                case arrow::Type::INT32:  *out = static_cast<const arrow::Int32Array&>(*a).Value(i);  return true;
+                case arrow::Type::INT16:  *out = static_cast<const arrow::Int16Array&>(*a).Value(i);  return true;
+                case arrow::Type::INT8:   *out = static_cast<const arrow::Int8Array&>(*a).Value(i);   return true;
+                case arrow::Type::UINT32: *out = (int64_t)static_cast<const arrow::UInt32Array&>(*a).Value(i); return true;
+                case arrow::Type::FLOAT:  *out = (int64_t)static_cast<const arrow::FloatArray&>(*a).Value(i);  return true;
+                case arrow::Type::DOUBLE: *out = (int64_t)static_cast<const arrow::DoubleArray&>(*a).Value(i); return true;
+                default: return false;
+            }
         }
         r -= ch->length();
     }
@@ -2711,6 +2736,11 @@ static bool cell_as_int(const arrow::Table& tbl, int col, int64_t row,
 // chronologically and scale in heatmaps; decimals honour their scale.
 static bool array_value_as_double(const arrow::Array& a, int64_t r, double* out) {
     if (a.IsNull(r)) return false;
+    if (a.type_id() == arrow::Type::DICTIONARY) {
+        // Dictionary-encoded numeric column: read the decoded value.
+        const auto& d = static_cast<const arrow::DictionaryArray&>(a);
+        return array_value_as_double(*d.dictionary(), d.GetValueIndex(r), out);
+    }
     switch (a.type_id()) {
         case arrow::Type::DOUBLE: *out = static_cast<const arrow::DoubleArray&>(a).Value(r); return true;
         case arrow::Type::FLOAT:  *out = static_cast<const arrow::FloatArray&>(a).Value(r);  return true;
@@ -2760,9 +2790,12 @@ static bool cell_as_string(const arrow::Table& tbl, int col, int64_t row,
     int64_t r = row;
     for (const auto& ch : chunked->chunks()) {
         if (r < ch->length()) {
-            if (ch->IsNull(r)) return false;
-            if (auto a = std::dynamic_pointer_cast<arrow::StringArray>(ch))      { *out = a->GetString(r); return true; }
-            if (auto a = std::dynamic_pointer_cast<arrow::LargeStringArray>(ch)) { *out = a->GetString(r); return true; }
+            const arrow::Array* a; int64_t i;
+            if (!resolve_dict_cell(*ch, r, &a, &i)) return false;
+            if (a->type_id() == arrow::Type::STRING)
+                { *out = static_cast<const arrow::StringArray&>(*a).GetString(i); return true; }
+            if (a->type_id() == arrow::Type::LARGE_STRING)
+                { *out = static_cast<const arrow::LargeStringArray&>(*a).GetString(i); return true; }
             return false;
         }
         r -= ch->length();
