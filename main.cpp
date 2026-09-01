@@ -13352,21 +13352,21 @@ static void html_apply(Renderer& r, const std::string& html) {
                     if (!r.role_stack_.empty()) {
                         r.role = r.role_stack_.back(); r.role_stack_.pop_back();
                     } else r.role = ROLE_NONE;
-                    if (r.osc8 && g_color.reset != nullptr &&
-                        *g_color.reset != '\0') {
+                    // Only emit the OSC 8 close when the open emitted an OSC 8
+                    // open — i.e. the link had a non-empty href. A hrefless <a>
+                    // opened no hyperlink, so a close here would be a stray,
+                    // unmatched escape (and could truncate a surrounding link).
+                    if (r.osc8 && !r.pending_href.empty() &&
+                        g_color.reset != nullptr && *g_color.reset != '\0') {
                         MdSegment seg;
                         seg.text     = "\033]8;;\033\\";
                         seg.verbatim = true;
                         r.cur_runs.push_back(std::move(seg));
-                    } else {
-                        // Stash the URL for the fallback stub. The href
-                        // for an open <a> lived on the renderer via
-                        // pending_href.
-                        if (!r.pending_href.empty()) {
-                            r.cur_runs.push_back(
-                                {" (" + r.pending_href + ")",
-                                  MD_DIM, ROLE_LINK});
-                        }
+                    } else if (!r.pending_href.empty()) {
+                        // No OSC 8 (or unsupported): show the URL stub. The href
+                        // for an open <a> lived on the renderer via pending_href.
+                        r.cur_runs.push_back(
+                            {" (" + r.pending_href + ")", MD_DIM, ROLE_LINK});
                     }
                     r.pending_href.clear();
                     --r.html_a_depth;
