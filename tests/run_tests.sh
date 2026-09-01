@@ -3090,6 +3090,15 @@ if "$VV" --color=always "$MDROLE" 2>/dev/null | grep -qaF "$(printf '\033[4m and
     MDROLE_RES=lost; else MDROLE_RES=restored; fi
 assert_eq_file_inline "md_role_restored_after_nested_span" "$MDROLE_RES" "restored"
 rm -f "$MDROLE"
+# A hrefless <a> opens no OSC 8 hyperlink, so its close must not emit a stray
+# OSC 8 escape (which would truncate any surrounding link). With OSC 8 forced on
+# (KITTY_WINDOW_ID), a <a>..</a> without href must produce zero OSC 8 sequences.
+MDHREF="$TMP/href.md"
+printf 'X <a>no href</a> Y.\n' > "$MDHREF"
+MDHREF_N=$(KITTY_WINDOW_ID=1 "$VV" --color=always "$MDHREF" 2>/dev/null \
+    | grep -oaF "$(printf '\033]8;;')" | wc -l | tr -d ' ')
+assert_eq_file_inline "md_hrefless_a_no_osc8" "$MDHREF_N" "0"
+rm -f "$MDHREF"
 
 # stdin: `cat foo.log | vv --text -` must match `vv foo.log`. The flag was
 # excluded from the `-` path, so piped prose still went to the CSV reader,
