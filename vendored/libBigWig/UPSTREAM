@@ -7,8 +7,17 @@ notes:    Built with -DNOCURL so only zlib is required; bwWrite.c is
           compiled but unused at runtime (write APIs not exposed by vv).
 
 local patches (re-apply after any re-vendor; grep "LOCAL PATCH (vv)"):
-  bwValues.c  fix a misaligned load in the interval decoder (UB on aarch64,
-              found by the ASan/UBSan CI job).
+  bwValues.c  (1) fix a misaligned load in the interval decoder (UB on
+              aarch64, found by the ASan/UBSan CI job).
+              (2) bwGetOverlappingIntervalsCore(): bound each fixed-size
+              record to the decompressed data block. A block header's nItems
+              is a 16-bit file field; upstream (its own FIXME) trusts it, so a
+              corrupt block with an inflated nItems reads past the buffer
+              (out-of-bounds heap read). (3) bbGetOverlappingEntriesCore():
+              bound the 12-byte fixed record and the NUL-terminated string
+              (via memchr) to the block, so a truncated entry or an
+              unterminated string cannot over-read. Not reported upstream yet;
+              present in 0.4.8.
   bwRead.c    readChromLeaf(): bounds-check the chromId against cl->nKeys
               before using it as a subscript. Upstream writes cl->len[idx]
               and cl->chrom[idx] with idx taken verbatim from the file while
