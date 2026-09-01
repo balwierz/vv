@@ -1768,6 +1768,16 @@ if [ -f "$DATA/tiny.rowrep.ods" ]; then
     RR_DUP=$("$VV" --tsv --no-header "$DATA/tiny.rowrep.ods" | grep -c '^dup')
     assert_eq_file_inline "ods_rowrep_dup_count"    "$RR_DUP" "3"
 fi
+# Merged (column-spanned) cell: the value lives in the merge's top-left cell and
+# the spanned columns are filled by table:covered-table-cell elements. The reader
+# dropped those, so columns after a merge shifted left. The data row is
+# [M spans a,b], x under c, y under d — the aligned row must be "M<tab><tab>x<tab>y",
+# not "M<tab>x<tab>y" with a trailing empty.
+if [ -f "$DATA/tiny.merged.ods" ]; then
+    # a/b/c/d is the header; the one data row is the only --no-header line.
+    MRG_ROW=$("$VV" --tsv --no-header "$DATA/tiny.merged.ods" | sed -n '1p')
+    assert_eq_file_inline "ods_merged_cell_alignment" "$MRG_ROW" "$(printf 'M\t\tx\ty')"
+fi
 
 # AnnData (.h5ad) — first tab is the summary; siblings are obs / var /
 # X-preview / obsm[X_umap]. Footer reports sibling count.
