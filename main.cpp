@@ -12259,9 +12259,40 @@ static void wrap_runs(const std::vector<MdSegment>& src,
                 pending_space = false;
             }
 
-            if (pos + wlen > width && pos > indent) push_line();
-            cur.runs.push_back({word, seg.style, seg.role});
-            pos += wlen;
+            int content_w = width - indent;   // widest a wrapped line can hold
+            if (content_w < 1) content_w = 1;
+            if (wlen <= content_w) {
+                // Fits on a line: move to a fresh one if it won't fit here.
+                if (pos + wlen > width && pos > indent) push_line();
+                cur.runs.push_back({word, seg.style, seg.role});
+                pos += wlen;
+            } else {
+                // Longer than any line — hard-cut on codepoint boundaries so it
+                // never overflows the wrap width (this function's contract).
+                size_t off = 0;
+                while (off < word.size()) {
+                    if (pos >= width) push_line();
+                    int rem = width - pos;
+                    // Longest codepoint-aligned prefix of word[off:] fitting rem.
+                    size_t k = off; int used = 0;
+                    while (k < word.size()) {
+                        int len = 1;
+                        int cw = codepoint_width(utf8_decode(word, k, &len));
+                        if (used + cw > rem) break;
+                        used += cw; k += (size_t)len;
+                    }
+                    if (k == off) {            // nothing fit on this line
+                        if (pos > indent) { push_line(); continue; }
+                        int len = 1;           // 1-col line vs a wide char:
+                        used = codepoint_width(utf8_decode(word, off, &len));
+                        k = off + (size_t)len; // force one codepoint to progress
+                    }
+                    cur.runs.push_back({word.substr(off, k - off),
+                                         seg.style, seg.role});
+                    pos += used;
+                    off = k;
+                }
+            }
             i = j;
         }
     }
