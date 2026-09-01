@@ -3,6 +3,67 @@
 # Install: place this file as `_vv` in any directory listed in $fpath
 # (e.g. /usr/share/zsh/site-functions/_vv).
 
+# Bounded vv invocation for introspecting the file on the command line; a large
+# or slow file must never hang the prompt (timeout), and errors are silent.
+_vv_run() {
+    local vv=${words[1]:-vv}
+    if (( $+commands[timeout] )); then
+        timeout 1s $vv "$@" 2>/dev/null
+    elif (( $+commands[gtimeout] )); then
+        gtimeout 1s $vv "$@" 2>/dev/null
+    else
+        $vv "$@" 2>/dev/null
+    fi
+}
+
+# The input file already on the command line: the sole positional argument.
+# Skip options and the argument of any value-taking option so an output path is
+# not mistaken for the input.
+_vv_file_arg() {
+    local -a valopts
+    valopts=(-n -w -c -@ --threads --decode-threads --delimiter --color --theme
+             -r --region --window --regions-file --region-cols --slop --coords
+             --tail --expand --parquet --arrow --feather --compression
+             --image-mode -f --fasta --select --cols --filter --tab --unique
+             --sample)
+    local i tok
+    for (( i = 2; i < CURRENT; i++ )); do
+        tok=$words[i]
+        if [[ $tok == -* ]]; then
+            (( ${valopts[(I)$tok]} )) && (( i++ ))
+            continue
+        fi
+        [[ -f $tok ]] && { print -r -- $tok; return; }
+    done
+}
+
+# Complete the file's column names — comma-separated list form (--select etc.).
+_vv_columns() {
+    local file; file=$(_vv_file_arg)
+    [[ -n $file ]] || return 1
+    local -a cols; cols=(${(f)"$(_vv_run --list-columns $file)"})
+    (( ${#cols} )) || return 1
+    _values -s , 'column' $cols
+}
+
+# Complete the file's column names — single value (--expand / --filter).
+_vv_column() {
+    local file; file=$(_vv_file_arg)
+    [[ -n $file ]] || return 1
+    local -a cols; cols=(${(f)"$(_vv_run --list-columns $file)"})
+    (( ${#cols} )) || return 1
+    compadd -a cols
+}
+
+# Complete the file's component tab names (--tab).
+_vv_tabs() {
+    local file; file=$(_vv_file_arg)
+    [[ -n $file ]] || return 1
+    local -a tabs; tabs=(${(f)"$(_vv_run --list-tabs $file)"})
+    (( ${#tabs} )) || return 1
+    compadd -a tabs
+}
+
 _vv() {
     local -a opts file_exts
     file_exts=(
@@ -46,7 +107,7 @@ _vv() {
         '--no-index[Suppress the row-index column]' \
         '(-r --region --window)'{-r,--region,--window}'+[Region (chr:start-end)]:region:' \
         '--regions-file+[BED file with windows]:path:_files' \
-        '--region-cols+[chrom,start,end column names (plain Parquet)]:names:' \
+        '--region-cols+[chrom,start,end column names (plain Parquet)]:names:_vv_columns' \
         '--slop+[Pad each window by N bp]:n:' \
         '--coords+[Coordinate convention for -r (UCSC default, NCBI = 1-based inclusive)]:kind:(UCSC Kent NCBI GenBank 0-based 1-based bed tabix)' \
         '--tail+[Show the last N rows]:n:' \
@@ -70,17 +131,17 @@ _vv() {
         '--markdown[Alias of --md]' \
         '--validate[Check LociSSD invariants and exit]' \
         '--text[Read the file as plain text whatever its extension]' \
-        '--expand+[Unpack a packed key=value column into real columns]:column:' \
+        '--expand+[Unpack a packed key=value column into real columns]:column:_vv_column' \
         '--formats[Print the supported-format table and exit]' \
         '--list-columns[Print column names, one per line, and exit]' \
         '--list-tabs[Print component tab names and exit]' \
         '--decode-pileup[mpileup: explode bases into per-allele counts]' \
         '--pileup[BAM/CRAM: emit mpileup-style per-base rows]' \
         '(-f --fasta)'{-f,--fasta}'[reference FASTA: --pileup ref column + ./, notation, or CRAM decoding]:fasta:_files' \
-        '(--select --cols)'{--select,--cols}'+[Project columns: names, globs, N-M ranges, @types, !exclusions]:terms:' \
-        '--filter+[Row predicate]:expr:' \
+        '(--select --cols)'{--select,--cols}'+[Project columns: names, globs, N-M ranges, @types, !exclusions]:terms:_vv_columns' \
+        '--filter+[Row predicate]:expr:_vv_column' \
         '--schema[Print schema and exit]' \
-        '--tab+[View a named component tab (AnnData obs/var/X, sheet)]:name:' \
+        '--tab+[View a named component tab (AnnData obs/var/X, sheet)]:name:_vv_tabs' \
         '--describe[Per-column statistics (add --json/--ndjson for machine-readable)]' \
         '--count[Print the row count and exit]' \
         '--stats[Parquet metadata dump]' \

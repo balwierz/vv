@@ -1148,6 +1148,63 @@ PYEOF
         FAIL=$((FAIL+1)); echo "  FAIL  flags_completions_no_drift"
     fi
 fi
+
+# Dynamic completion: --select must offer the file's real columns and --tab its
+# real tabs, introspected by running `vv --list-columns` / `--list-tabs` on the
+# file already on the command line. The completion command is the built binary
+# (passed as words[0]/$VV), so no PATH lookup or installed shell state is needed.
+# bash: drive the helpers directly — no bash-completion package required.
+BC_COLS=$(VV="$VV" BASHF=completions/vv.bash FILE="$DATA/tiny.parquet" \
+    bash --noprofile --norc -c '
+        source "$BASHF"
+        words=("$VV" "$FILE" --select ""); cword=3; cur=""; COMPREPLY=()
+        [ "$(_vv_input_file)" = "$FILE" ] || exit 3
+        _vv_complete_columns ","
+        printf "%s\n" "${COMPREPLY[@]}"' 2>/dev/null)
+assert_contains "bash_dyn_select_lists_columns" "$BC_COLS" "Score"
+BC_TABS=$(VV="$VV" BASHF=completions/vv.bash FILE="$DATA/tiny.dupmember.npz" \
+    bash --noprofile --norc -c '
+        source "$BASHF"
+        words=("$VV" "$FILE" --tab ""); cword=3
+        _vv_run --list-tabs "$(_vv_input_file)"' 2>/dev/null)
+assert_contains "bash_dyn_tab_lists_tabs" "$BC_TABS" "keep"
+# bash: an output path (--parquet out) must not be taken as the input file.
+BC_SKIP=$(VV="$VV" BASHF=completions/vv.bash FILE="$DATA/tiny.parquet" \
+    bash --noprofile --norc -c '
+        source "$BASHF"
+        words=("$VV" --parquet /tmp/out.parquet "$FILE" --tab ""); cword=5
+        _vv_input_file' 2>/dev/null)
+assert_eq_file_inline "bash_dyn_skips_output_path" "$BC_SKIP" "$DATA/tiny.parquet"
+
+# fish: complete -C runs completion non-interactively — the definitive check.
+if require "fish completion" fish; then
+    FISH_TAB=$(PATH="$(dirname "$VV"):$PATH" VVF="$DATA/tiny.dupmember.npz" \
+        fish --no-config -c 'source completions/vv.fish
+            complete -C "vv $VVF --tab "' 2>/dev/null)
+    assert_contains "fish_dyn_tab_lists_tabs" "$FISH_TAB" "keep"
+    FISH_SEL=$(PATH="$(dirname "$VV"):$PATH" VVF="$DATA/tiny.parquet" \
+        fish --no-config -c 'source completions/vv.fish
+            complete -C "vv $VVF --select "' 2>/dev/null)
+    assert_contains "fish_dyn_select_lists_columns" "$FISH_SEL" "Score"
+fi
+
+# zsh: stub the completion sinks and confirm the action functions gather the
+# file's columns / tabs.
+if require "zsh completion" zsh; then
+    ZSH_SEL=$(PATH="$(dirname "$VV"):$PATH" VVF="$DATA/tiny.parquet" \
+        zsh -f -c 'source completions/_vv
+            _values() { shift 2; print -r -- "$@" }
+            words=(vv $VVF --select ""); CURRENT=4
+            _vv_columns' 2>/dev/null)
+    assert_contains "zsh_dyn_select_lists_columns" "$ZSH_SEL" "Score"
+    ZSH_TAB=$(PATH="$(dirname "$VV"):$PATH" VVF="$DATA/tiny.dupmember.npz" \
+        zsh -f -c 'source completions/_vv
+            compadd() { [[ $1 == -a ]] && print -r -- ${(P)2} || print -r -- "$@" }
+            words=(vv $VVF --tab ""); CURRENT=4
+            _vv_tabs' 2>/dev/null)
+    assert_contains "zsh_dyn_tab_lists_tabs" "$ZSH_TAB" "keep"
+fi
+
 # --formats needs no input file, and the human form is a table.
 assert_exit_code "formats_needs_no_file" 0 "$VV" --formats
 FMT_OUT=$("$VV" --formats 2>/dev/null)

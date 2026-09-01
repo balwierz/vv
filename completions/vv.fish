@@ -9,6 +9,62 @@ for ext in parquet arrow feather lociss bam cram sam vcf vcf.gz bcf gff gff.gz g
     complete -c vv -c vh -F -a "*.$ext"
 end
 
+# ── Dynamic completion helpers (columns / tabs from the file on the line) ─────
+# The input file already on the command line: the sole positional. Skip the
+# argument of any value-taking option so an output path is not taken as input.
+function __vv_file
+    set -l valopts n w c @ threads decode-threads delimiter color theme r region \
+        window regions-file region-cols slop coords tail expand parquet arrow \
+        feather compression image-mode f fasta select cols filter tab unique sample
+    set -l toks (commandline -opc)
+    set -l i 2
+    while test $i -le (count $toks)
+        set -l tok $toks[$i]
+        if string match -q -- '-*' $tok
+            if contains -- (string replace -r '^-+' '' -- $tok) $valopts
+                set i (math $i + 1)
+            end
+        else if test -f $tok
+            echo $tok
+            return 0
+        end
+        set i (math $i + 1)
+    end
+end
+
+# Bounded vv invocation so a large or slow file cannot hang the prompt.
+function __vv_run
+    set -l vv (commandline -opc)[1]
+    test -n "$vv"; or set vv vv
+    if type -q timeout
+        timeout 1s $vv $argv 2>/dev/null
+    else if type -q gtimeout
+        gtimeout 1s $vv $argv 2>/dev/null
+    else
+        $vv $argv 2>/dev/null
+    end
+end
+
+function __vv_tabs
+    set -l f (__vv_file); test -n "$f"; and __vv_run --list-tabs $f
+end
+
+function __vv_columns
+    set -l f (__vv_file); test -n "$f"; and __vv_run --list-columns $f
+end
+
+# Comma-aware variant for list flags (--select etc.): prepend the already-typed
+# comma prefix so fish replaces the whole token rather than a single item.
+function __vv_columns_csv
+    set -l f (__vv_file); test -n "$f"; or return
+    set -l cur (commandline -ct)
+    set -l pre ''
+    string match -q -- '*,*' $cur; and set pre (string replace -r '[^,]*$' '' -- $cur)
+    for c in (__vv_run --list-columns $f)
+        echo $pre$c
+    end
+end
+
 # ── Flags ────────────────────────────────────────────────────────────────────
 complete -c vv -c vh -s h -l help          -d 'Show help'
 complete -c vv -c vh -s V -l version       -d 'Print version'
@@ -27,7 +83,7 @@ complete -c vv -c vh -l no-index           -d 'Suppress the row-index column'
 complete -c vv -c vh -s r -l region -r     -d 'Region for tabix-indexed file (e.g. chr1:1000-2000)'
 complete -c vv -c vh -l window -r          -d 'Alias of --region'
 complete -c vv -c vh -l regions-file -r -F -d 'BED file with additional windows'
-complete -c vv -c vh -l region-cols -r     -d 'chrom,start,end column names for plain Parquet'
+complete -c vv -c vh -l region-cols -x -a '(__vv_columns_csv)' -d 'chrom,start,end column names for plain Parquet'
 complete -c vv -c vh -l slop -r            -d 'Pad each window by N bp'
 complete -c vv -c vh -l coords -r -a 'UCSC Kent NCBI GenBank 0-based 1-based bed tabix' -d 'Coordinate convention for -r (UCSC default, NCBI = 1-based inclusive)'
 complete -c vv -c vh -l tail -r            -d 'Show the last N rows'
@@ -61,7 +117,7 @@ complete -c vv -c vh -l compression -r -a 'zstd snappy gzip lz4 none' -d 'Parque
 complete -c vv -c vh -l json               -d 'Write JSON array of row objects'
 complete -c vv -c vh -l ndjson             -d 'Write one JSON object per line'
 complete -c vv -c vh -l text               -d 'Read the file as plain text whatever its extension'
-complete -c vv -c vh -l expand -r          -d 'Unpack a packed key=value column into real columns'
+complete -c vv -c vh -l expand -x -a '(__vv_columns)' -d 'Unpack a packed key=value column into real columns'
 complete -c vv -c vh -l formats            -d 'Print the supported-format table and exit'
 complete -c vv -c vh -l list-columns       -d 'Print column names, one per line, and exit'
 complete -c vv -c vh -l list-tabs          -d 'Print component tab names and exit'
@@ -71,11 +127,11 @@ complete -c vv -c vh -l validate           -d 'Check LociSSD invariants and exit
 complete -c vv -c vh -l decode-pileup      -d 'mpileup: explode bases into A/C/G/T/N + ins/del + strand + mean_qual columns'
 complete -c vv -c vh -l pileup             -d 'BAM/CRAM: emit mpileup-style per-base rows via htslib bam_plp'
 complete -c vv -c vh -s f -l fasta -r -F   -d 'reference FASTA (.fai): --pileup ref column + ./, notation, or CRAM decoding'
-complete -c vv -c vh -l select -r          -d 'Project columns: names, globs, N-M ranges, @types, !exclusions'
-complete -c vv -c vh -l cols -r            -d 'Alias of --select'
-complete -c vv -c vh -l filter -r          -d 'Row predicate: <col> <op> <value> [AND/OR ...]'
+complete -c vv -c vh -l select -x -a '(__vv_columns_csv)' -d 'Project columns: names, globs, N-M ranges, @types, !exclusions'
+complete -c vv -c vh -l cols -x -a '(__vv_columns_csv)' -d 'Alias of --select'
+complete -c vv -c vh -l filter -x -a '(__vv_columns)' -d 'Row predicate: <col> <op> <value> [AND/OR ...]'
 complete -c vv -c vh -l schema             -d 'Print schema + metadata and exit'
-complete -c vv -c vh -l tab -r             -d 'View a named component tab (AnnData obs/var/X, sheet)'
+complete -c vv -c vh -l tab -x -a '(__vv_tabs)' -d 'View a named component tab (AnnData obs/var/X, sheet)'
 complete -c vv -c vh -l describe           -d 'Per-column statistics (add --json/--ndjson for machine-readable)'
 complete -c vv -c vh -l count              -d 'Print the row count and exit'
 complete -c vv -c vh -l stats              -d 'Parquet metadata dump (no data read)'
