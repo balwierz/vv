@@ -1998,6 +1998,21 @@ if [ -f "$DATA/tiny.npz" ]; then
     assert_contains "npz_summary_mat"    "$NPZ_OUT" "mat"
     assert_contains "npz_summary_cube"   "$NPZ_OUT" "cube"
 fi
+# Duplicate member names: a ZIP can carry two members with the same name.
+# numpy's np.load keeps the last (its central-directory dict overwrites earlier
+# keys); vv kept the first, so it showed a different array than numpy and the
+# second member was an unreachable, shadowed tab. vv now keeps the last (the
+# "arr" member is (3,)=[1,2,3] then (5,)=[100..104]) and warns on stderr.
+if [ -f "$DATA/tiny.dupmember.npz" ]; then
+    DUP_ARR=$("$VV" --tab arr --count "$DATA/tiny.dupmember.npz" 2>/dev/null)
+    assert_eq_file_inline "npz_dup_keeps_last_len" "$DUP_ARR" "5"
+    DUP_FIRST=$("$VV" --tab arr --tsv --no-header "$DATA/tiny.dupmember.npz" 2>/dev/null | head -1)
+    assert_eq_file_inline "npz_dup_keeps_last_value" "$DUP_FIRST" "100"
+    DUP_SUMMARY=$("$VV" --schema "$DATA/tiny.dupmember.npz" 2>/dev/null)
+    assert_contains "npz_dup_collapsed_to_two_arrays" "$DUP_SUMMARY" "Arrays: 2"
+    DUP_WARN=$("$VV" --count "$DATA/tiny.dupmember.npz" 2>&1 1>/dev/null)
+    assert_contains "npz_dup_warns" "$DUP_WARN" "appears more than once"
+fi
 # Wide .npz: a 2-D array with 5000 columns. vv builds one Arrow column per
 # declared column, so it must render only the first kNpzMaxCols (4096) and flag
 # the truncation in the footer — otherwise a genuinely-wide (or hostile) array
