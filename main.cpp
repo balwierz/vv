@@ -12707,15 +12707,37 @@ struct Renderer {
         }
     }
 
+    // Close any inline <a> hyperlink left open in the current block (an
+    // unbalanced <a> with no matching </a>) so its OSC 8 link doesn't bleed
+    // past the block.
+    void close_dangling_html_links() {
+        while (html_a_depth > 0) {
+            if (osc8 && g_color.reset != nullptr && *g_color.reset != '\0') {
+                MdSegment seg;
+                seg.text     = "\033]8;;\033\\";
+                seg.verbatim = true;
+                cur_runs.push_back(std::move(seg));
+            }
+            --html_a_depth;
+        }
+    }
+
     void finish_paragraph() {
-        if (cur_runs.empty()) return;
-        // Drop a trailing space that wrap_runs would emit otherwise.
-        MdBlockKind k = (quote_depth > 0) ? MdBlockKind::Quote
-                                          : MdBlockKind::Paragraph;
-        int indent = quote_depth * 2;
-        // For block quotes we put the ▌ glyphs at the start of every
-        // wrapped line, not just the first — easier to inject before wrap.
-        finish_block(k, indent);
+        close_dangling_html_links();
+        if (!cur_runs.empty()) {
+            // Drop a trailing space that wrap_runs would emit otherwise.
+            MdBlockKind k = (quote_depth > 0) ? MdBlockKind::Quote
+                                              : MdBlockKind::Paragraph;
+            int indent = quote_depth * 2;
+            // For block quotes we put the ▌ glyphs at the start of every
+            // wrapped line, not just the first — easier to inject before wrap.
+            finish_block(k, indent);
+        }
+        // Inline style/role never span blocks; drop anything left set by an
+        // unbalanced inline tag (e.g. a <b> with no </b>) so it can't leak
+        // into the next block.
+        style = 0;
+        role  = ROLE_NONE;
     }
 
     // ── md4c callbacks ─────────────────────────────────────────────────────
@@ -12970,17 +12992,7 @@ struct Renderer {
                     html_apply(*this, html_buf);
                     html_buf.clear();
                 }
-                // Close any unbalanced <a> OSC 8 wrappers.
-                while (html_a_depth > 0) {
-                    if (osc8 && g_color.reset != nullptr &&
-                        *g_color.reset != '\0') {
-                        MdSegment seg;
-                        seg.text     = "\033]8;;\033\\";
-                        seg.verbatim = true;
-                        cur_runs.push_back(std::move(seg));
-                    }
-                    --html_a_depth;
-                }
+                // finish_paragraph() closes any unbalanced <a> OSC 8 wrappers.
                 finish_paragraph();
                 push_spacer();
                 break;

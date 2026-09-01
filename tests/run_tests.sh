@@ -3070,6 +3070,16 @@ MDWRAP_OK=$(COLUMNS=50 "$VV" --color=never "$MDWRAP" 2>/dev/null \
     | awk '{ if (length($0) > 50) bad=1 } END { print bad ? "OVERFLOW" : "ok" }')
 assert_eq_file_inline "md_wrap_hardcuts_long_word" "$MDWRAP_OK" "ok"
 rm -f "$MDWRAP"
+# An unbalanced inline HTML tag must not leak its style into later blocks. A
+# <b> with no </b> makes its own text bold, but the following paragraph must
+# render normally (inline style/role are reset at block boundaries).
+MDLEAK="$TMP/leak.md"
+printf 'Intro <b>bold text\n\nSecond paragraph normal.\n' > "$MDLEAK"
+MDLEAK_2ND=$("$VV" --color=always "$MDLEAK" 2>/dev/null | grep -a "Second paragraph")
+if printf '%s' "$MDLEAK_2ND" | grep -qaF "$(printf '\033[1m')"; then
+    MDLEAK_RES=leaked; else MDLEAK_RES=clean; fi
+assert_eq_file_inline "md_unclosed_tag_no_style_leak" "$MDLEAK_RES" "clean"
+rm -f "$MDLEAK"
 
 # stdin: `cat foo.log | vv --text -` must match `vv foo.log`. The flag was
 # excluded from the `-` path, so piped prose still went to the CSV reader,
