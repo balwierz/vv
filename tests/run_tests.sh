@@ -3059,6 +3059,17 @@ fi
 # ...and without it markdown still renders.
 assert_contains "markdown_still_renders_without_text_flag" \
     "$("$VV" --no-interactive "$DATA/tiny.md" 2>/dev/null)" "•"
+# wrap_runs must hard-cut a word longer than the wrap width (its doc comment
+# promises this) instead of letting it overflow. A 120-char unbreakable word at
+# COLUMNS=50 must leave no rendered line wider than 50; before the fix it
+# produced one 120-column line. (COLUMNS drives the markdown render width.)
+MDWRAP="$TMP/longword.md"
+LONGW=$(awk 'BEGIN{s="";for(i=0;i<120;i++)s=s"x";print s}')
+printf '# T\n\nA %s end.\n' "$LONGW" > "$MDWRAP"
+MDWRAP_OK=$(COLUMNS=50 "$VV" --color=never "$MDWRAP" 2>/dev/null \
+    | awk '{ if (length($0) > 50) bad=1 } END { print bad ? "OVERFLOW" : "ok" }')
+assert_eq_file_inline "md_wrap_hardcuts_long_word" "$MDWRAP_OK" "ok"
+rm -f "$MDWRAP"
 
 # stdin: `cat foo.log | vv --text -` must match `vv foo.log`. The flag was
 # excluded from the `-` path, so piped prose still went to the CSV reader,
