@@ -6,13 +6,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-09-01
+
 ### Added
+- **Shell completion now completes a file's columns and tabs.** In bash, zsh and
+  fish, `--select` / `--cols` / `--filter` / `--expand` / `--region-cols`
+  complete the real column names of the file on the command line, and `--tab`
+  completes its component tabs (AnnData obs/var/X, spreadsheet sheets, NumPy
+  arrays, …). Flag, value and file-extension completion are unchanged.
+- **The Qt viewer (`vvg`) has a proper application icon.** It also declares its
+  desktop-file identity, so on Wayland the taskbar/dock shows the icon instead
+  of a generic placeholder.
 - **The Qt viewer (`vvg`) can copy from the grid by right-click.** Right-click a
   cell for a menu with *Copy* (the selected cells, or the cell under the cursor)
   and *Copy Row* (every column of the row, as one tab-separated line); *Copy Row*
   is also `Ctrl+Shift+C`. A copy now takes the raw value — a big integer is
   copied as `11200`, not the grouped `11_200` shown in the grid — so it pastes
   cleanly into a spreadsheet or code.
+
+### Fixed
+- **bigWig / bigBed reads no longer stop at 32,768 intervals per chromosome.** A
+  chromosome with more intervals than that was silently truncated with exit 0;
+  every interval is now read.
+- **Filtering a dictionary-encoded (categorical) column works.** A `--filter` on
+  such a column previously matched nothing — or every row for `!=` / `not in` —
+  because the value was never decoded; it now compares the decoded value, and
+  `--describe` reads these columns too.
+- **Headerless CSV/TSV keep leading-zero IDs.** A file with no header whose first
+  column looks like `007` no longer has the zeros dropped (read as the integer
+  7); the header case already preserved them.
+- **Markdown rendering fixes.** Over-long words are hard-cut to the wrap width
+  instead of overflowing; an unclosed inline HTML tag (`<b>` with no `</b>`) no
+  longer leaks its style into the rest of the document; text after inline code
+  inside a link keeps the link colour; and a hrefless `<a>` no longer emits a
+  stray hyperlink escape.
+- Also: NumPy `.npz` archives with duplicate member names now resolve to the
+  same array `np.load` would; merged (column-spanned) ODS cells keep the later
+  columns aligned; `--decode-pileup` mean quality ignores deletions and
+  reference skips; malformed bigWig/bigBed data blocks are bounded against an
+  out-of-bounds read; and the auto-launched TUI notes on stderr when it falls
+  back to non-interactive output.
+
+### Performance
+- `--unique` on a high-cardinality column, narrow rendering of very wide list
+  cells, and multi-window region queries on Parquet are all faster, with
+  identical output.
 
 ## [1.19.0] - 2026-08-26
 

@@ -27,7 +27,7 @@
 %global xlsxio_version 0.2.36
 
 Name:           vv
-Version:        1.19.0
+Version:        1.20.0
 Release:        1%{?dist}
 Summary:        Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)
 License:        MIT
@@ -143,6 +143,13 @@ rm -f  %{buildroot}%{_libdir}/pkgconfig/mimalloc.pc
 %{_datadir}/icons/hicolor/scalable/apps/vv.svg
 
 %changelog
+* Tue Sep 01 2026 Piotr Balwierz <nikt@tuta.com> - 1.20.0-1
+- Update to 1.20.0: shell completion now completes a file's columns and tabs
+  (--select, --tab, --filter, ...); the Qt viewer gains a proper application
+  icon and a Wayland-correct app id. Fixes: bigWig/bigBed reads no longer stop
+  at 32768 intervals per chromosome; filtering a dictionary/categorical column
+  works; headerless CSVs keep leading-zero IDs; several markdown rendering
+  fixes; and a few smaller data-integrity fixes.
 * Wed Aug 26 2026 Piotr Balwierz <nikt@tuta.com> - 1.19.0-1
 - Update to 1.19.0: the Qt viewer and the interactive TUI size table columns to
   their content at open; --schema and --no-interactive show every tab of a
