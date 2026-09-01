@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **The Qt viewer (`vvg`) can copy from the grid by right-click.** Right-click a
+  cell for a menu with *Copy* (the selected cells, or the cell under the cursor)
+  and *Copy Row* (every column of the row, as one tab-separated line); *Copy Row*
+  is also `Ctrl+Shift+C`. A copy now takes the raw value — a big integer is
+  copied as `11200`, not the grouped `11_200` shown in the grid — so it pastes
+  cleanly into a spreadsheet or code.
+
 ## [1.19.0] - 2026-08-26
 
 ### Added

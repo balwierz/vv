@@ -46,6 +46,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <set>
 #include <memory>
 #include <string>
 #include <vector>
@@ -244,6 +245,9 @@ private:
         autosizeColumns(view, model);
         view->setEditTriggers(QAbstractItemView::NoEditTriggers);
         view->setSelectionBehavior(QAbstractItemView::SelectItems);
+        view->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(view, &QWidget::customContextMenuRequested, this,
+                [this, view](const QPoint& p){ showTableContextMenu(view, p); });
         view->horizontalHeader()->setSectionsClickable(true);
         view->verticalHeader()->setDefaultSectionSize(
             view->fontMetrics().height() + 6);
@@ -329,6 +333,10 @@ private:
         cp->setShortcut(QKeySequence::Copy);
         connect(cp, &QAction::triggered, this, [this]{ copySelection(); });
         edit->addAction(cp);
+        QAction* cpRow = new QAction(tr("Copy &Row"), this);
+        cpRow->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+C")));
+        connect(cpRow, &QAction::triggered, this, [this]{ copyRows(); });
+        edit->addAction(cpRow);
 
         auto* view = menuBar()->addMenu(tr("&View"));
         QAction* go = new QAction(tr("&Go to Row…"), this);
@@ -346,7 +354,7 @@ private:
                    "Filter:  the Filter bar — e.g.  score > 5 and chrom == \"chr1\"\n"
                    "Find:    the Find bar (regex); Ctrl+F / F3 for next match\n"
                    "Region:  the Region bar — chr1:1000-2000 (UCSC) / NCBI; Pileup for BAM\n"
-                   "Copy:    Ctrl+C copies the selection as TSV\n"
+                   "Copy:    Ctrl+C the selection, Ctrl+Shift+C a whole row; right-click for both\n"
                    "Slice:   ◀ / ▶ steps the leading axis of NPZ 3-D+ arrays\n"
                    "Go to:   Ctrl+G jumps to a row; View ▸ Columns shows/hides columns"));
         });
@@ -726,11 +734,58 @@ private:
         for (const auto& idx : sel) {
             if (idx.row() != curRow) { out += '\n'; curRow = idx.row(); firstInRow = true; }
             if (!firstInRow) out += '\t';
-            out += idx.data(Qt::DisplayRole).toString();
+            out += idx.data(ArrowTableModel::RawTextRole).toString();
             firstInRow = false;
         }
         QApplication::clipboard()->setText(out);
         statusBar()->showMessage(tr("Copied %1 cell(s)").arg(sel.size()), 2000);
+    }
+
+    // Copy the full row(s) touched by the selection (or the current cell) as
+    // one TSV line each — every column, in display order, raw values. This
+    // works across columns of different types because a cell's value is always
+    // rendered to text (that is what the grid shows); joining those texts with
+    // tabs is type-agnostic.
+    void copyRows() {
+        auto* v = activeView();
+        auto* m = activeModel();
+        if (!v || !m) return;
+        std::set<int> rows;
+        for (const auto& idx : v->selectionModel()->selectedIndexes())
+            rows.insert(idx.row());
+        if (rows.empty() && v->currentIndex().isValid())
+            rows.insert(v->currentIndex().row());
+        if (rows.empty()) return;
+        const int ncols = m->columnCount();
+        QString out;
+        bool firstRow = true;
+        for (int r : rows) {
+            if (!firstRow) out += '\n';
+            firstRow = false;
+            for (int c = 0; c < ncols; ++c) {
+                if (c) out += '\t';
+                out += m->index(r, c).data(ArrowTableModel::RawTextRole).toString();
+            }
+        }
+        QApplication::clipboard()->setText(out);
+        statusBar()->showMessage(tr("Copied %1 row(s)").arg((int)rows.size()), 2000);
+    }
+
+    // Right-click menu on the grid: Copy (cell/selection) and Copy Row.
+    void showTableContextMenu(QTableView* view, const QPoint& pos) {
+        QModelIndex idx = view->indexAt(pos);
+        // Right-clicking a cell outside the current selection acts on that cell.
+        if (idx.isValid() && !view->selectionModel()->isSelected(idx)) {
+            view->selectionModel()->select(idx, QItemSelectionModel::ClearAndSelect);
+            view->setCurrentIndex(idx);
+        }
+        QMenu menu(view);
+        QAction* copyCell = menu.addAction(tr("&Copy"));
+        copyCell->setShortcut(QKeySequence::Copy);
+        connect(copyCell, &QAction::triggered, this, [this]{ copySelection(); });
+        QAction* copyRow = menu.addAction(tr("Copy &Row"));
+        connect(copyRow, &QAction::triggered, this, [this]{ copyRows(); });
+        menu.exec(view->viewport()->mapToGlobal(pos));
     }
 
     void refreshStatus() {
@@ -881,6 +936,38 @@ int main(int argc, char** argv) {
             }
             std::printf("sorted_row0=%s\n", r0.c_str());
             m.sortByDisplayColumn(-1, Qt::AscendingOrder);   // reset
+        }
+        // Clipboard copy uses RawTextRole (the value without digit grouping),
+        // so a grouped integer like "11_200" is copied as "11200". Verify the
+        // raw role differs from the display role on any grouped cell, and that a
+        // full row's raw TSV has one field per column.
+        {
+            int grouped = 0, mismatch = 0;
+            for (int r = 0; r < m.rowCount() && r < 200; ++r)
+                for (int c = 0; c < m.columnCount(); ++c) {
+                    QString disp = m.index(r, c).data(Qt::DisplayRole).toString();
+                    QString raw  = m.index(r, c).data(ArrowTableModel::RawTextRole).toString();
+                    if (disp.contains(QLatin1Char('_')) && !disp.contains(QLatin1Char(' '))) {
+                        ++grouped;
+                        QString ungrouped = disp; ungrouped.remove(QLatin1Char('_'));
+                        if (raw == ungrouped) ++mismatch;
+                    }
+                }
+            std::printf("copy_raw_grouped=%d copy_raw_ungrouped=%d\n", grouped, mismatch);
+            if (grouped > 0 && mismatch != grouped) {
+                std::fprintf(stderr, "copy: RawTextRole failed to ungroup "
+                             "%d of %d cells\n", grouped - mismatch, grouped);
+                return 1;
+            }
+            if (m.columnCount() > 0) {
+                QString rowtsv;
+                for (int c = 0; c < m.columnCount(); ++c) {
+                    if (c) rowtsv += QLatin1Char('\t');
+                    rowtsv += m.index(0, c).data(ArrowTableModel::RawTextRole).toString();
+                }
+                std::printf("copy_row_fields=%lld\n",
+                            (long long)(rowtsv.count(QLatin1Char('\t')) + 1));
+            }
         }
         // Optional filter check: VVG_FILTER="<expr>".
         if (const char* fe = std::getenv("VVG_FILTER"); fe && *fe) {

@@ -17,6 +17,14 @@ std::string chunked_cell(const arrow::ChunkedArray& ca, int64_t i) {
     return {};
 }
 
+std::string chunked_cell_raw(const arrow::ChunkedArray& ca, int64_t i) {
+    for (const auto& a : ca.chunks()) {
+        if (i < a->length()) return cell_to_string(*a, i);   // no digit grouping
+        i -= a->length();
+    }
+    return {};
+}
+
 // Element i of a boolean ChunkedArray (a match_substring result). A null
 // (e.g. a null cell) counts as "no match".
 bool chunkedBoolAt(const arrow::ChunkedArray& ca, int64_t i) {
@@ -171,6 +179,16 @@ QString ArrowTableModel::cellText(int viewRow, int dispCol) const {
     return QString::fromStdString(raw);
 }
 
+QString ArrowTableModel::rawCellText(int viewRow, int dispCol) const {
+    const LoadedChunk* lc = chunkForRow(sourceRow(viewRow));
+    if (!lc || !lc->table) return {};
+    if (dispCol < 0 || dispCol >= lc->table->num_columns()) return {};
+    int64_t local = sourceRow(viewRow) - lc->first_row;
+    std::string raw = chunked_cell_raw(*lc->table->column(dispCol), local);
+    raw = src_->format_cell(displayCols_[dispCol], std::move(raw));
+    return QString::fromStdString(raw);
+}
+
 int ArrowTableModel::rowCount(const QModelIndex& parent) const {
     if (parent.isValid()) return 0;
     if (computing_) return 0;   // blanked while a worker recomputes order_
@@ -187,6 +205,8 @@ QVariant ArrowTableModel::data(const QModelIndex& index, int role) const {
     if (!index.isValid() || computing_) return {};
     if (role == Qt::DisplayRole || role == Qt::ToolTipRole)
         return cellText(index.row(), index.column());
+    if (role == RawTextRole)
+        return rawCellText(index.row(), index.column());
     if (role == Qt::BackgroundRole && hasSearch_) {
         QString v = cellText(index.row(), index.column());
         if (searchRe_.match(v).hasMatch())

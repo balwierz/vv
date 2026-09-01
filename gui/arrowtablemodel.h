@@ -29,6 +29,10 @@ public:
                              QObject* parent = nullptr);
     ~ArrowTableModel() override;
 
+    // Cell value without display formatting (no digit grouping), for the
+    // clipboard — pasting "1000000" is more useful than "1_000_000".
+    enum { RawTextRole = Qt::UserRole + 1 };
+
     int      rowCount(const QModelIndex& parent = {}) const override;
     int      columnCount(const QModelIndex& parent = {}) const override;
     QVariant data(const QModelIndex& index, int role) const override;
@@ -119,6 +123,7 @@ private:
         return order_.empty() ? (int64_t)viewRow : order_[viewRow];
     }
     QString   cellText(int viewRow, int dispCol) const;
+    QString   rawCellText(int viewRow, int dispCol) const;
     void      drainStreaming() const;
     std::shared_ptr<arrow::ChunkedArray> readFullColumn(int srcCol) const;
     void      reseedRowCount();
