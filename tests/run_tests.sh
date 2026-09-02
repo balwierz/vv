@@ -2501,6 +2501,56 @@ if [ -f "$DATA/tiny.cram" ] && [ -f "$DATA/tiny.pileup.fa" ]; then
     fi
 fi
 
+# ── --tags: BAM/CRAM/SAM aux tags as typed columns ─────────────────────────────
+# tiny.bam carries NM:i / AS:i / BC:Z on every read and Xf:f on r1/r3 only.
+if [ -f "$DATA/tiny.bam" ]; then
+    # Each named tag becomes a column; a read without the tag (r2's Xf) is null.
+    TAGS_OUT=$("$VV" --tsv --no-header --tags NM,AS,BC,Xf \
+        --select QNAME,NM,AS,BC,Xf "$DATA/tiny.bam")
+    assert_eq_file_inline "bam_tags_values" "$TAGS_OUT" \
+        "$(printf 'r1\t1\t98\tAAAA\t0.5\nr2\t1\t98\tCCCC\t\nr3\t0\t100\tGGGG\t0.9')"
+    # Column type follows the SAM type code, not a blanket string.
+    TAGS_SCH=$("$VV" --schema --tags NM,BC,Xf "$DATA/tiny.bam" 2>&1)
+    assert_contains "bam_tags_int_type"    "$TAGS_SCH" "$(printf 'NM      int64')"
+    assert_contains "bam_tags_string_type" "$TAGS_SCH" "$(printf 'BC      string')"
+    assert_contains "bam_tags_float_type"  "$TAGS_SCH" "$(printf 'Xf      double')"
+    # Typed column means a numeric --filter compares numbers, not text.
+    TAGS_FILTER=$("$VV" --tsv --no-header --tags NM --select QNAME \
+        --filter 'NM <= 0' "$DATA/tiny.bam" | tr '\n' ' ')
+    assert_eq_file_inline "bam_tags_numeric_filter" "$TAGS_FILTER" "r3 "
+    # A read missing the tag is null, so --describe counts it.
+    TAGS_DESC=$("$VV" --describe --tags Xf --select Xf "$DATA/tiny.bam" 2>&1)
+    assert_contains "bam_tags_null_for_absent" "$TAGS_DESC" "Xf"
+    # A malformed tag name is rejected before any output.
+    assert_exit_code "bam_tags_bad_name_exits_1" 1 "$VV" --tags NMX "$DATA/tiny.bam"
+    # --tags does not apply to a non-alignment file, and not with --pileup.
+    assert_exit_code "bam_tags_non_alignment_exits_1" 1 "$VV" --tags NM "$DATA/tiny.parquet"
+    assert_exit_code "bam_tags_with_pileup_exits_1"   1 "$VV" --tags NM --pileup "$DATA/tiny.bam"
+    TAGS_NONALN_ERR=$("$VV" --tags NM "$DATA/tiny.parquet" 2>&1 || true)
+    assert_contains "bam_tags_non_alignment_message" "$TAGS_NONALN_ERR" "BAM/CRAM/SAM"
+fi
+
+# --tags on a plain .sam is routed through htslib so aux fields decode into typed
+# columns (rather than the delimited text reader). A B-array tag renders as
+# `subtype:v1,v2,…`, exercising the array formatter.
+BTAG_SAM="$TMP/btags.sam"
+{
+    printf '@HD\tVN:1.6\n'
+    printf '@SQ\tSN:chr1\tLN:1000\n'
+    printf 'r1\t0\tchr1\t100\t60\t5M\t*\t0\t0\tACGTA\tIIIII\tNM:i:2\tZB:B:i,10,20,30\n'
+} > "$BTAG_SAM"
+SAM_TAGS=$("$VV" --tsv --no-header --tags NM,ZB --select QNAME,NM,ZB "$BTAG_SAM")
+assert_eq_file_inline "sam_tags_via_htslib" "$SAM_TAGS" \
+    "$(printf 'r1\t2\ti:10,20,30')"
+
+# CRAM inherits tiny.bam's tags (same reads, re-encoded).
+if [ -f "$DATA/tiny.cram" ] && [ -f "$DATA/tiny.pileup.fa" ]; then
+    CRAM_TAGS=$("$VV" --tsv --no-header -f "$DATA/tiny.pileup.fa" \
+        --tags NM,BC --select QNAME,NM,BC "$DATA/tiny.cram")
+    assert_eq_file_inline "cram_tags_values" "$CRAM_TAGS" \
+        "$(printf 'r1\t1\tAAAA\nr2\t1\tCCCC\nr3\t0\tGGGG')"
+fi
+
 # -r on a format with no region index: warn and show the whole file, rather
 # than silently pretending the filter was applied.
 NOREG=$("$VV" --color=never --count -r chr1:1-2 "$DATA/tiny.arrow" 2>&1 >/dev/null || true)

@@ -23,7 +23,7 @@ _vv_input_file() {
     local i tok
     local val_opts=' -n -w -c -@ --threads --decode-threads --delimiter --color
         --theme -r --region --window --regions-file --region-cols --slop --coords
-        --tail --sort --expand --parquet --arrow --feather --compression --image-mode
+        --tail --sort --tags --expand --parquet --arrow --feather --compression --image-mode
         -f --fasta --select --cols --filter --tab --unique --sample '
     for (( i = 1; i < ${#words[@]}; i++ )); do
         tok=${words[i]}
@@ -168,7 +168,7 @@ _vv() {
                 --expand --formats --list-columns --list-tabs
                 -f --fasta
                 --tab
-                --unique --sample --sort
+                --unique --sample --sort --tags
                 --vertical
                 --no-header
                 --heatmap --image-mode

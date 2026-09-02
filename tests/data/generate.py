@@ -696,6 +696,14 @@ else:
         # forward strand starting at pos 102, only 17bp long (covers 102-118)
         ("r3", 101, "TTTGTTTTTTTTTTTTT",     0,    True),
     ]
+    # Optional (aux) tags for --tags. NM/AS (integer) and BC (string) on every
+    # read; the float Xf only on r1/r3, so r2's Xf column reads null. The mix of
+    # SAM types exercises the int / double / string tag columns.
+    bam_tags = {
+        "r1": [("NM", 1, "i"), ("AS", 98,  "i"), ("BC", "AAAA", "Z"), ("Xf", 0.5, "f")],
+        "r2": [("NM", 1, "i"), ("AS", 98,  "i"), ("BC", "CCCC", "Z")],
+        "r3": [("NM", 0, "i"), ("AS", 100, "i"), ("BC", "GGGG", "Z"), ("Xf", 0.9, "f")],
+    }
     with pysam.AlignmentFile(str(bam_path), "wb", header=bam_header) as bf:
         for (qn, pos0, seq, flag, _) in reads:
             r = pysam.AlignedSegment(header=bf.header)
@@ -710,6 +718,7 @@ else:
             r.next_reference_id = -1
             r.next_reference_start = -1
             r.template_length = 0
+            r.set_tags(bam_tags[qn])
             bf.write(r)
     pysam.index(str(bam_path))
 

@@ -73,6 +73,9 @@ struct Config {
     bool        tail_rows_set  = false;
     std::string sort_col;                // --sort COL[:asc|:desc]: order rows
     bool        sort_desc      = false;  // by one column before output
+    std::string bam_tags;                // --tags LIST: BAM/CRAM/SAM only — add
+                                         // one typed column per named aux tag
+                                         // (comma-separated 2-char SAM tags)
     bool        decode_pileup  = false;  // --decode-pileup: explode mpileup's
                                          // packed bases column into per-allele
                                          // counts (A/C/G/T/N + ins/del + strand)

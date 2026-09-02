@@ -59,7 +59,7 @@ would need horizontal scrolling.
 | Apache Parquet    | `.parquet`                                                  |
 | Arrow IPC, Feather| `.arrow`, `.feather`                                        |
 | **LociSSD**       | `.lociss` (auto-detected via the `lociSSD_manifest` footer; `MaxEndSoFar` hidden from views) |
-| Sequence alignments | `.bam`, `.cram`, `.sam`, `.paf` / `.paf.gz`               |
+| Sequence alignments | `.bam`, `.cram`, `.sam`, `.paf` / `.paf.gz`. `--tags` surfaces optional aux tags as typed columns (see [`--tags`](#--tags-list-bam--cram--sam-aux-tags)). |
 | Variant calls     | `.vcf`, `.vcf.gz`, `.bcf` (with `.csi` / `.tbi` for range queries) |
 | Genome annotation | `.gff`, `.gff3`, `.gtf` (plus `.gz`)                        |
 | Genomic intervals | `.bed`, `.bed.gz`                                           |
@@ -727,6 +727,31 @@ source (honouring `--filter`) into memory and then feeds the sorted
 result to every view / export mode — including the interactive viewer,
 which opens on the sorted rows. For ordering files too large to hold in
 memory, reach for a query engine (`duckdb`, `datamash`).
+
+## `--tags LIST` (BAM / CRAM / SAM aux tags)
+
+```sh
+$ vv --tags NM,AS,RG reads.bam
+$ vv --tags NM --select QNAME,MAPQ,NM --filter 'NM <= 2' reads.bam
+```
+
+The 11 mandatory SAM columns (`QNAME` … `QUAL`) are always shown; a read's
+optional fields (`NM:i:2`, `AS:i:100`, `RG:Z:grp`, `MD:Z:…`) are not. `--tags`
+takes a comma-separated list of two-character SAM tags and adds one column
+per tag. The column's type follows the tag's SAM type code — integer tags
+(`i` and its width variants) become `int64`, `f` becomes `double`, and `A`
+/ `Z` / `H` / `B` become strings — so `--filter 'NM <= 2'` compares numbers
+rather than text, and `--describe NM` gives real min / max / mean. A read
+that does not carry the tag is null. `B` arrays render as `subtype:v1,v2,…`.
+
+The type is resolved from the first records that carry each tag (scanned once
+at open), so the schema is known before streaming begins; the reader stays
+forward-only and previews files larger than memory. Tags compose with `-r`
+region queries on an indexed BAM/CRAM. A plain `.sam` is normally read by the
+delimited-text reader, but with `--tags` it is decoded through htslib so the
+aux fields become typed columns too. `--tags` is rejected on non-alignment
+files and cannot be combined with `--pileup` (whose rows are per-base counts,
+not alignment records).
 
 # Stdin
 

@@ -244,7 +244,7 @@ against it in CI, so this list cannot drift from the code.
 | Apache Parquet    | `.parquet`                                                 |
 | Arrow IPC, Feather| `.arrow`, `.feather`                                       |
 | LociSSD           | `.lociss` (sorted-interval Parquet; `MaxEndSoFar` auto-hidden) |
-| Sequence alignments | `.bam`, `.cram`, `.sam`, `.paf` / `.paf.gz` (minimap2)   |
+| Sequence alignments | `.bam`, `.cram`, `.sam`, `.paf` / `.paf.gz` (minimap2). `--tags NM,AS,RG` adds a typed column per optional aux tag (filterable). |
 | Variant calls     | `.vcf`, `.vcf.gz`, `.bcf` (binary VCF via htslib)          |
 | Genome annotation | `.gff`, `.gff3`, `.gtf` (plus `.gz` / `.zst`)              |
 | Genomic intervals | `.bed`, `.bed.gz`, `.bed.zst`                              |

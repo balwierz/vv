@@ -203,6 +203,18 @@ keep input order. Reads the whole source (filtered by
 export mode. For ordering very large files, a query engine is the
 right tool.
 .TP
+.BI \-\-tags " LIST"
+BAM / CRAM / SAM only. Add one column per named optional (aux) tag,
+\fILIST\fR being a comma-separated list of two-character SAM tags
+(e.g. \fB\-\-tags NM,AS,RG\fR). Each column's Arrow type follows the
+tag's SAM type code \(en integer tags (\fBi\fR and friends) become
+\fBint64\fR, \fBf\fR becomes \fBdouble\fR, and \fBA\fR / \fBZ\fR /
+\fBH\fR / \fBB\fR become strings \(en so \fB\-\-filter 'NM <= 2'\fR
+compares numbers, not text. A read that lacks the tag is null. The
+type is resolved from the first records that carry each tag. A plain
+\fB.sam\fR is read through htslib when \fB\-\-tags\fR is given so the
+aux fields decode into typed columns.
+.TP
 .BI \-w " WIDTH"
 Maximum cell width in the ASCII table (default: 32).
 .TP
