@@ -371,6 +371,19 @@ Distinct-value counts per column, comma-separated. Each block lists up
 to 50 most frequent values; further values are summarised. Respects
 \fB\-\-filter\fR.
 .TP
+.B \-\-distinct
+Drop duplicate rows, keeping the first occurrence of each \(en SQL
+\fBSELECT DISTINCT\fR. Rows are compared over the columns that would be
+shown, so a bare \fB\-\-distinct\fR deduplicates whole displayed rows
+while \fB\-\-select chrom \-\-distinct\fR lists the distinct
+chromosomes and \fB\-\-select chrom,strand \-\-distinct\fR the distinct
+pairs. Honours \fB\-\-filter\fR (filter first, then deduplicate) and
+composes with \fB\-\-sort\fR, \fB\-\-count\fR (which then counts the
+distinct rows), and every view / export mode. Distinct from
+\fB\-\-unique\fR, which is a per-column value-frequency table rather
+than row deduplication. Materialises the result in memory, like
+\fB\-\-sort\fR.
+.TP
 .BI \-\-sample " N"
 Uniformly random N rows (reservoir sampling) instead of head-N. The
 sample is the row set; combine with \fB\-\-tsv\fR, \fB\-\-parquet\fR,

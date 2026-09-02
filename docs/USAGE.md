@@ -727,6 +727,34 @@ Distinct value counts per column, sorted descending. Top-50 values
 per column; further values summarised. Multiple columns
 comma-separated. Honours `--filter`.
 
+## `--distinct`
+
+```sh
+$ vv --distinct calls.parquet                       # drop exact duplicate rows
+$ vv --distinct --select chrom calls.parquet         # the distinct chromosomes
+$ vv --distinct --select sample,cell_type cells.parquet --count
+$ vv --distinct --select chrom --sort chrom calls.vcf.gz
+```
+
+Drop duplicate rows, keeping the first occurrence of each — SQL `SELECT
+DISTINCT`. Rows are compared over **the columns that would be shown**, so a
+bare `--distinct` deduplicates whole displayed rows, while `--select chrom
+--distinct` lists the distinct chromosomes and `--select chrom,strand
+--distinct` the distinct pairs. The result carries only those columns.
+
+* **Not `--unique`.** `--unique COL` prints a per-column value-frequency table
+  (how many times each value appears); `--distinct` deduplicates whole rows and
+  hands back a table of the surviving rows, so it composes with everything.
+* **Composes.** Honours `--filter` (rows are filtered first, then
+  deduplicated), and combines with `--sort` (sort the distinct set), `--count`
+  (`--distinct --count` counts distinct rows — `--select chrom --distinct
+  --count` is "how many chromosomes?"), `-n N`, and every export mode.
+* **Nulls** are values like any other: two rows that are null in the same place
+  collapse to one. Nested `list` / `struct` cells compare by their rendered
+  form.
+* Materialises the result in memory, like `--sort`. For deduplicating files too
+  large to hold in memory, a query engine (`duckdb`, `datamash`) is the tool.
+
 ## `--sample N`
 
 ```sh
