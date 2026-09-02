@@ -83,6 +83,9 @@ struct Config {
     bool        contigs        = false;  // --contigs: list a file's reference
                                          // sequences (name, length) and detect
                                          // the assembly (BAM/CRAM/SAM, VCF/BCF)
+    bool        gt_stats       = false;  // --gt-stats: VCF/BCF per-variant
+                                         // genotype aggregate columns (het/hom/
+                                         // missing counts, AC/AN/AF, call_rate)
     bool        decode_pileup  = false;  // --decode-pileup: explode mpileup's
                                          // packed bases column into per-allele
                                          // counts (A/C/G/T/N + ins/del + strand)

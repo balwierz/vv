@@ -2723,6 +2723,54 @@ assert_contains "contigs_non_genomic_message" "$CTG_NG_ERR" "BAM/CRAM/SAM and VC
 assert_exit_code "contigs_with_region_exits_1"  1 "$VV" --contigs -r chr1 "$CTGSAM"
 assert_exit_code "contigs_with_pileup_exits_1"  1 "$VV" --contigs --pileup "$CTGSAM"
 
+# ── --gt-stats: per-variant genotype aggregates ───────────────────────────────
+# A VCF-text multi-sample fixture with known genotypes; the counts and allele
+# totals are checked by hand below.
+GTVCF="$TMP/gt.vcf"
+{
+    printf '##fileformat=VCFv4.2\n'
+    printf '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+    printf '##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Depth">\n'
+    printf '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\tS3\n'
+    # het + hom_alt + missing: n_het=1 n_hom_ref=0 n_hom_alt=1 n_miss=1 AC=3 AN=4 AF=0.75 called=2/3
+    printf 'chr1\t100\trs1\tA\tG\t30\tPASS\t.\tGT:DP\t0/1:10\t1/1:8\t./.:0\n'
+    # hom_ref + het + hom_alt: n_het=1 n_hom_ref=1 n_hom_alt=1 AC=3 AN=6 AF=0.5 called=3/3
+    printf 'chr1\t200\trs2\tC\tT\t40\tPASS\t.\tGT:DP\t0/0:20\t0/1:15\t1/1:12\n'
+    # compound het (1/2) + hom_alt(2/2) + hom_ref: het=1 hom_ref=1 hom_alt=1 AC=4 AN=6
+    printf 'chr1\t300\t.\tA\tG,T\t.\tPASS\t.\tGT\t1/2\t2/2\t0/0\n'
+} > "$GTVCF"
+GT_OUT=$("$VV" --tsv --no-header --gt-stats \
+    --select POS,n_called,n_het,n_hom_ref,n_hom_alt,n_missing,AC,AN,AF,call_rate "$GTVCF")
+assert_eq_file_inline "gt_stats_vcf_rows" "$GT_OUT" "$(printf \
+'100\t2\t1\t0\t1\t1\t3\t4\t0.75\t0.666667\n200\t3\t1\t1\t1\t0\t3\t6\t0.5\t1\n300\t3\t1\t1\t1\t0\t4\t6\t0.666667\t1')"
+# Numeric filter and sort work on the computed columns.
+GT_HIAF=$("$VV" --tsv --no-header --gt-stats --select POS --filter 'AF >= 0.75' "$GTVCF" | tr '\n' ' ')
+assert_eq_file_inline "gt_stats_filter_af" "$GT_HIAF" "100 "
+GT_SORT=$("$VV" --tsv --no-header --gt-stats --select POS --sort n_missing:desc "$GTVCF" | head -1)
+assert_eq_file_inline "gt_stats_sort_missing" "$GT_SORT" "100"
+# Haploid genotypes (chrY): "1" is hom-alt, "0" hom-ref, "." missing.
+GTHAP="$TMP/gthap.vcf"
+{
+    printf '##fileformat=VCFv4.2\n##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">\n'
+    printf '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tA\tB\tC\n'
+    printf 'chrY\t20\t.\tA\tG\t.\tPASS\t.\tGT\t1\t0\t.\n'
+} > "$GTHAP"
+GT_HAP=$("$VV" --tsv --no-header --gt-stats \
+    --select n_het,n_hom_ref,n_hom_alt,n_missing,AC,AN "$GTHAP")
+assert_eq_file_inline "gt_stats_haploid" "$GT_HAP" "$(printf '0\t1\t1\t1\t1\t2')"
+# BCF: the collapsed FORMAT_SAMPLES blob is parsed the same way.
+if [ -f "$DATA/tiny.samples.bcf" ]; then
+    BCF_GT=$("$VV" --tsv --no-header --gt-stats \
+        --select POS,n_het,n_hom_ref,n_hom_alt,AC,AN,AF "$DATA/tiny.samples.bcf" 2>/dev/null)
+    assert_eq_file_inline "gt_stats_bcf" "$BCF_GT" \
+        "$(printf '100\t1\t0\t1\t3\t4\t0.75\n500\t1\t1\t0\t1\t4\t0.25')"
+fi
+# Errors: no genotypes present, and a non-variant file.
+assert_exit_code "gt_stats_sites_only_exits_1" 1 "$VV" --gt-stats "$DATA/tiny.vcf"
+assert_exit_code "gt_stats_non_vcf_exits_1"    1 "$VV" --gt-stats "$DATA/tiny.parquet"
+GT_ERR=$("$VV" --gt-stats "$DATA/tiny.vcf" 2>&1 || true)
+assert_contains "gt_stats_error_message" "$GT_ERR" "no per-sample genotypes"
+
 # -r on a format with no region index: warn and show the whole file, rather
 # than silently pretending the filter was applied.
 NOREG=$("$VV" --color=never --count -r chr1:1-2 "$DATA/tiny.arrow" 2>&1 >/dev/null || true)

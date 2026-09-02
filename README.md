@@ -549,6 +549,23 @@ $ vv --contigs reads.bam
 Reference sequences: 25  |  Assembly: GRCh38 / hg38 (Homo sapiens)
 ```
 
+### Genotype summaries — `--gt-stats`
+
+For a multi-sample VCF / BCF, `--gt-stats` appends per-variant genotype summary
+columns computed over the sample `GT` fields — `n_called`, `n_het`, `n_hom_ref`,
+`n_hom_alt`, `n_missing`, `AC`, `AN`, `AF`, `call_rate`. It's a **fixed** set of
+columns regardless of cohort size (a per-sample expansion would be samples ×
+FORMAT-fields columns), so you can screen a 10,000-sample VCF for
+`--filter 'AF > 0.01 and call_rate > 0.95'` or `--sort AC:desc`. Diploid,
+haploid, and multi-allelic (`1/2` compound het) calls are all handled; the
+columns are numeric and stream, so a cohort VCF larger than memory still
+previews.
+
+```sh
+$ vv cohort.vcf.gz --gt-stats --select CHROM,POS,REF,ALT,AF,call_rate,n_het
+$ vv cohort.bcf --gt-stats --filter 'AF > 0.05 and n_missing == 0' --count
+```
+
 ### Pipeline-friendly text — `--tsv` / `--csv` / `--json` / `--ndjson` / `--md`
 
 Stream the file (or a `-n N` head, or a `--sample N` reservoir sample,
@@ -701,7 +718,7 @@ a headless browser such as `chromium`).
 | `--parquet OUT`            | convert input to a Parquet file (or `-` for stdout)  |
 | `--heatmap`                | render numeric columns as a terminal heatmap (`--image-mode auto/kitty/sixel/halfblock/ascii`) |
 | `--tab <name>`             | view a named component tab from the CLI (AnnData `obs`/`var`/`X`, a workbook sheet) — e.g. `vv cells.h5ad --tab obs -n 20` |
-| `--schema` / `--describe` / `--stats` / `--unique` / `--distinct` / `--sample` / `--contigs` | data-exploration modes |
+| `--schema` / `--describe` / `--stats` / `--unique` / `--distinct` / `--sample` / `--contigs` / `--gt-stats` | data-exploration modes |
 | `--validate`               | LociSSD invariants check; exits non-zero on failure  |
 | `--vertical`               | transposed (vh) preview                              |
 | `--theme <name>`           | `default`/`dark`/`light`/`solarized-dark`/`solarized-light` |
