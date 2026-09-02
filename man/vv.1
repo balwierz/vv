@@ -154,6 +154,12 @@ for chromosome-scale references; use \fBtwoBitToFa\fR for that.
 .IP \(bu 2
 \fB.paf\fR, \fB.paf.gz\fR \(en minimap2 pairwise alignments
 .IP \(bu 2
+\fB.json\fR, \fB.ndjson\fR, \fB.jsonl\fR \(en JSON, as a top-level array of
+objects or as newline-delimited objects (JSON Lines). Records need not share
+a schema \(en Arrow infers the union of fields and fills gaps with nulls;
+nested objects and arrays become struct and list columns. Also \fB.gz\fR /
+\fB.zst\fR. Use \fBvv --text\fR to view a non-tabular JSON file as raw source.
+.IP \(bu 2
 \fB.npy\fR \(en a single NumPy array; \fB.npz\fR \(en a NumPy archive,
 one array per TUI tab. 1-D and 2-D arrays become rows and columns; 3-D+
 arrays are sliced along the leading axis, navigable with \fB[\fR / \fB]\fR
