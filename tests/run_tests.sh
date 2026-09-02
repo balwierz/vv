@@ -1620,6 +1620,32 @@ assert_contains "tail_picks_last_row" "$TAIL_LAST" "7100"  # last row Start
 TAIL_BIG=$("$VV" --tail 100 --tsv --no-header "$DATA/tiny.parquet" | wc -l | tr -d ' ')
 assert_eq_file_inline "tail_larger_than_total_returns_all" "$TAIL_BIG" "20"
 
+# --sort: order rows by a column before output. A numeric column sorts
+# numerically (9 < 20 < 100, not the lexical 100 < 20 < 9); :desc reverses it.
+SORTNUM="$TMP/sortnum.csv"
+printf 'n\n100\n9\n20\n' > "$SORTNUM"
+assert_eq_file_inline "sort_numeric_ascending" \
+    "$("$VV" --tsv --no-header --sort n "$SORTNUM" | tr '\n' ' ')" "9 20 100 "
+assert_eq_file_inline "sort_numeric_descending" \
+    "$("$VV" --tsv --no-header --sort n:desc "$SORTNUM" | tr '\n' ' ')" "100 20 9 "
+rm -f "$SORTNUM"
+# A non-numeric column sorts by text.
+SORTSTR="$TMP/sortstr.csv"
+printf 'name,n\nbob,1\nalice,2\ncarol,3\n' > "$SORTSTR"
+assert_eq_file_inline "sort_string_alpha" \
+    "$("$VV" --tsv --no-header --select name --sort name "$SORTSTR" | tr '\n' ' ')" \
+    "alice bob carol "
+rm -f "$SORTSTR"
+# Nulls sort last, and equal keys keep input order (stable): k = 2 1 2 (null),
+# ids a d c (b) -> 1(d), then the two 2s in input order a,c, then the null b.
+SORTNULL="$TMP/sortnull.csv"
+printf 'k,id\n2,a\n,b\n2,c\n1,d\n' > "$SORTNULL"
+assert_eq_file_inline "sort_nulls_last_stable" \
+    "$("$VV" --tsv --no-header --select id --sort k "$SORTNULL" | tr '\n' ' ')" "d a c b "
+rm -f "$SORTNULL"
+# An unknown sort column is a clean error, exit 1.
+assert_exit_code "sort_unknown_column_exit1" 1 "$VV" --sort nope "$DATA/tiny.parquet"
+
 # --coords: NCBI (1-based inclusive) input converts to UCSC (0-based
 # half-open). "chr1:101-200" NCBI == "chr1:100-200" UCSC (default).
 COORDS_UCSC=$("$VV" -r 'chr1:100-200' --tsv --no-header "$DATA/tiny.parquet")

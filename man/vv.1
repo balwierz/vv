@@ -181,6 +181,15 @@ whole source (filtered by \fB\-\-filter\fR if any) and slices the
 tail. Combines with every view / export mode. For streaming
 sources (BAM, BCF, FASTX, …) this implies a full scan.
 .TP
+.BI \-\-sort " COL[:desc]"
+Order rows by column \fICOL\fR before output (ascending by default;
+append \fB:desc\fR to reverse). Numeric columns sort numerically,
+others by their rendered text; null values sort last and equal keys
+keep input order. Reads the whole source (filtered by
+\fB\-\-filter\fR if any) into memory, so it combines with every view /
+export mode. For ordering very large files, a query engine is the
+right tool.
+.TP
 .BI \-w " WIDTH"
 Maximum cell width in the ASCII table (default: 32).
 .TP

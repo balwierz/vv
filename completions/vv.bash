@@ -23,7 +23,7 @@ _vv_input_file() {
     local i tok
     local val_opts=' -n -w -c -@ --threads --decode-threads --delimiter --color
         --theme -r --region --window --regions-file --region-cols --slop --coords
-        --tail --expand --parquet --arrow --feather --compression --image-mode
+        --tail --sort --expand --parquet --arrow --feather --compression --image-mode
         -f --fasta --select --cols --filter --tab --unique --sample '
     for (( i = 1; i < ${#words[@]}; i++ )); do
         tok=${words[i]}
@@ -100,6 +100,11 @@ _vv() {
             _vv_complete_columns ''
             return
             ;;
+        --sort)
+            # A single column name (an optional :asc/:desc the user adds).
+            _vv_complete_columns ''
+            return
+            ;;
         --filter)
             # Complete a column name at a token boundary; the rest of the
             # predicate grammar (operators, values) is free-form.
@@ -163,7 +168,7 @@ _vv() {
                 --expand --formats --list-columns --list-tabs
                 -f --fasta
                 --tab
-                --unique --sample
+                --unique --sample --sort
                 --vertical
                 --no-header
                 --heatmap --image-mode

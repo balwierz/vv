@@ -14,7 +14,7 @@ end
 # argument of any value-taking option so an output path is not taken as input.
 function __vv_file
     set -l valopts n w c @ threads decode-threads delimiter color theme r region \
-        window regions-file region-cols slop coords tail expand parquet arrow \
+        window regions-file region-cols slop coords tail sort expand parquet arrow \
         feather compression image-mode f fasta select cols filter tab unique sample
     set -l toks (commandline -opc)
     set -l i 2
@@ -118,6 +118,7 @@ complete -c vv -c vh -l json               -d 'Write JSON array of row objects'
 complete -c vv -c vh -l ndjson             -d 'Write one JSON object per line'
 complete -c vv -c vh -l text               -d 'Read the file as plain text whatever its extension'
 complete -c vv -c vh -l expand -x -a '(__vv_columns)' -d 'Unpack a packed key=value column into real columns'
+complete -c vv -c vh -l sort -x -a '(__vv_columns)' -d 'Order rows by a column before output (COL or COL:desc)'
 complete -c vv -c vh -l formats            -d 'Print the supported-format table and exit'
 complete -c vv -c vh -l list-columns       -d 'Print column names, one per line, and exit'
 complete -c vv -c vh -l list-tabs          -d 'Print component tab names and exit'

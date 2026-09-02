@@ -71,6 +71,8 @@ struct Config {
                                          // default); config-file key only.
     int         tail_rows      = 0;      // --tail N
     bool        tail_rows_set  = false;
+    std::string sort_col;                // --sort COL[:asc|:desc]: order rows
+    bool        sort_desc      = false;  // by one column before output
     bool        decode_pileup  = false;  // --decode-pileup: explode mpileup's
                                          // packed bases column into per-allele
                                          // counts (A/C/G/T/N + ins/del + strand)

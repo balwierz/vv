@@ -704,6 +704,24 @@ active `--filter`, then slices the tail. Combines with every view /
 export mode. For streaming sources (BAM, BCF, FASTX, …) this implies
 a full scan.
 
+## `--sort COL[:desc]`
+
+```sh
+$ vv --sort Score:desc --tsv --no-header tests/data/tiny.parquet | head -3
+chr2	7100	7200	0.95	[promoter, TF]
+chr2	6100	6200	0.9	[TF]
+chr2	5100	5200	0.85	[]
+```
+
+Order the rows by one column before any output. Ascending by default;
+append `:desc` to reverse. Numeric columns sort numerically (`9` before
+`100`), others by their rendered text; nulls sort last and equal keys
+keep their input order (stable). Like `--tail`, it reads the whole
+source (honouring `--filter`) into memory and then feeds the sorted
+result to every view / export mode — including the interactive viewer,
+which opens on the sorted rows. For ordering files too large to hold in
+memory, reach for a query engine (`duckdb`, `datamash`).
+
 # Stdin
 
 ```sh
