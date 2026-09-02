@@ -23,7 +23,7 @@ _vv_file_arg() {
     local -a valopts
     valopts=(-n -w -c -@ --threads --decode-threads --delimiter --color --theme
              -r --region --window --regions-file --region-cols --slop --coords
-             --tail --sort --expand --parquet --arrow --feather --compression
+             --tail --sort --tags --expand --parquet --arrow --feather --compression
              --image-mode -f --fasta --select --cols --filter --tab --unique
              --sample)
     local i tok
@@ -136,6 +136,7 @@ _vv() {
         '--text[Read the file as plain text whatever its extension]' \
         '--expand+[Unpack a packed key=value column into real columns]:column:_vv_column' \
         '--sort+[Order rows by a column before output (COL or COL:desc)]:column:_vv_column' \
+        '--tags+[BAM/CRAM/SAM: add a typed column per aux tag (comma-separated, e.g. NM,AS,RG)]:tags:' \
         '--formats[Print the supported-format table and exit]' \
         '--list-columns[Print column names, one per line, and exit]' \
         '--list-tabs[Print component tab names and exit]' \

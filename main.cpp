@@ -903,6 +903,12 @@ static void print_usage(const char* prog) {
         "  --decode-pileup     mpileup only: replace the packed bases/quals\n"
         "                      columns with typed per-allele counts\n"
         "                      (A, C, G, T, N, del, ins, fwd, rev, mean_qual)\n"
+        "  --tags <list>       BAM/CRAM/SAM only: add one column per named aux\n"
+        "                      tag (comma-separated 2-char SAM tags, e.g.\n"
+        "                      --tags NM,AS,RG). Column type follows the tag's\n"
+        "                      SAM type (i->int, f->float, else string), so\n"
+        "                      `--filter 'NM <= 2'` compares numbers; a read\n"
+        "                      without the tag is null\n"
         "  --no-index          suppress the row-index column\n"
         "  --color[=WHEN]      colorize output: auto (default), always, never\n"
         "  --theme <name>      color palette: default, dark, light,\n"
@@ -1058,6 +1064,8 @@ static Config parse_args(int argc, char** argv) {
                 else if (suf == "asc")  { cfg.sort_desc = false; v.resize(colon); }
             }
             cfg.sort_col = v;
+        } else if (!std::strcmp(argv[i], "--tags") && i + 1 < argc) {
+            cfg.bam_tags = argv[++i];
         } else if ((!std::strcmp(argv[i], "-@") ||
                     !std::strcmp(argv[i], "--threads")) && i + 1 < argc) {
             cfg.threads = std::max(0, std::atoi(argv[++i]));
@@ -1165,7 +1173,7 @@ static Config parse_args(int argc, char** argv) {
             static const std::set<std::string> needs_arg = {
                 "-n", "-w", "-c", "-r", "--region", "--window",
                 "--regions-file", "--region-cols", "--slop", "--coords",
-                "--tail", "--sort", "-@", "--threads", "--decode-threads", "--parquet",
+                "--tail", "--sort", "--tags", "-@", "--threads", "--decode-threads", "--parquet",
                 "--arrow", "--feather",
                 "--compression", "--unique", "--sample", "--filter",
                 "--select", "--cols", "--image-mode", "--tab", "--theme",
@@ -6189,6 +6197,95 @@ private:
     }
 };
 
+// ── BAM aux-tag support (--tags) ──────────────────────────────────────────────
+//
+// SAM/BAM optional fields (`NM:i:2`, `AS:i:100`, `RG:Z:grp`, `MD:Z:…`) are
+// per-record and are not part of the mandatory 11-column schema. `--tags LIST`
+// adds one column per named tag. The Arrow column type is fixed at open() from
+// the tag's SAM type code, so a numeric tag stays numeric and `--filter 'NM<=2'`
+// compares numbers rather than strings.
+
+enum class BamTagKind { Int, Double, Str };
+
+// SAM type code (the first byte a bam_aux_get() pointer addresses) → column kind.
+static BamTagKind bam_tag_kind_from_code(char c) {
+    switch (c) {
+        case 'c': case 'C': case 's': case 'S': case 'i': case 'I':
+            return BamTagKind::Int;
+        case 'f': case 'd':
+            return BamTagKind::Double;
+        default:   // 'A' (char), 'Z' (string), 'H' (hex), 'B' (array)
+            return BamTagKind::Str;
+    }
+}
+static bool bam_tag_is_int_code(char c) {
+    return c=='c'||c=='C'||c=='s'||c=='S'||c=='i'||c=='I';
+}
+
+// Render one aux value as text — for a string tag column, and for any tag whose
+// type doesn't match the column kind resolved at open().
+static std::string bam_aux_to_string(const uint8_t* s) {
+    char t = (char)*s;
+    switch (t) {
+        case 'A': return std::string(1, (char)*(s + 1));
+        case 'c': case 'C': case 's': case 'S': case 'i': case 'I':
+            return std::to_string(bam_aux2i(s));
+        case 'f': case 'd': {
+            char b[32];
+            std::snprintf(b, sizeof(b), "%g", bam_aux2f(s));
+            return b;
+        }
+        case 'Z': case 'H': {
+            const char* z = bam_aux2Z(s);
+            return z ? std::string(z) : std::string();
+        }
+        case 'B': {
+            char sub = (char)*(s + 1);
+            uint32_t n = bam_auxB_len(s);
+            std::string out(1, sub);
+            out.push_back(':');
+            for (uint32_t i = 0; i < n; ++i) {
+                if (i) out.push_back(',');
+                if (sub == 'f') {
+                    char b[32];
+                    std::snprintf(b, sizeof(b), "%g", bam_auxB2f(s, i));
+                    out += b;
+                } else {
+                    out += std::to_string(bam_auxB2i(s, i));
+                }
+            }
+            return out;
+        }
+        default: return std::string();
+    }
+}
+
+// Split the --tags value into distinct two-character SAM tags, preserving order.
+// Returns an error string in *err on a malformed tag.
+static std::vector<std::string> parse_bam_tag_list(const std::string& spec,
+                                                   std::string* err) {
+    std::vector<std::string> out;
+    std::set<std::string> seen;
+    size_t i = 0;
+    while (i < spec.size()) {
+        size_t j = spec.find(',', i);
+        std::string tok = spec.substr(i, j == std::string::npos ? j : j - i);
+        i = (j == std::string::npos) ? spec.size() : j + 1;
+        // trim spaces
+        size_t a = tok.find_first_not_of(" \t");
+        size_t b = tok.find_last_not_of(" \t");
+        if (a == std::string::npos) continue;   // empty token (e.g. trailing comma)
+        tok = tok.substr(a, b - a + 1);
+        if (tok.size() != 2) {
+            *err = "invalid SAM tag '" + tok + "' (tags are exactly two characters)";
+            return {};
+        }
+        if (seen.insert(tok).second) out.push_back(tok);
+    }
+    if (out.empty()) *err = "--tags needs at least one two-character tag";
+    return out;
+}
+
 // ── BAM source ────────────────────────────────────────────────────────────────
 
 class BamSource : public TabularSource {
@@ -6197,6 +6294,8 @@ class BamSource : public TabularSource {
     std::vector<std::string>              preamble_lines_;
     int                                   num_refs_   = 0;
     std::string                           fmt_name_;   // "BAM", "CRAM", or "SAM"
+    std::vector<std::string>              tag_names_;  // --tags: aux tag columns
+    std::vector<BamTagKind>               tag_kinds_;  // resolved column type per tag
 
     mutable htsFile*   hts_ = nullptr;
     mutable sam_hdr_t* hdr_ = nullptr;
@@ -6225,6 +6324,19 @@ class BamSource : public TabularSource {
         arrow::StringBuilder qname_b, rname_b, cigar_b, rnext_b, seq_b, qual_b;
         arrow::Int32Builder  flag_b, mapq_b;
         arrow::Int64Builder  pos_b, pnext_b, tlen_b;
+
+        // One builder per --tags column, of the type resolved at open().
+        std::vector<std::unique_ptr<arrow::ArrayBuilder>> tag_b;
+        for (BamTagKind kind : tag_kinds_) {
+            std::shared_ptr<arrow::DataType> dt =
+                kind == BamTagKind::Int    ? arrow::int64()
+              : kind == BamTagKind::Double ? arrow::float64()
+                                           : arrow::utf8();
+            std::unique_ptr<arrow::ArrayBuilder> bld;
+            ARROW_RETURN_NOT_OK(
+                arrow::MakeBuilder(arrow::default_memory_pool(), dt, &bld));
+            tag_b.push_back(std::move(bld));
+        }
 
         int cap = (row_cap > 0 && row_cap < BATCH_SIZE) ? (int)row_cap : BATCH_SIZE;
         int count = 0, ret = 0;
@@ -6313,6 +6425,36 @@ class BamSource : public TabularSource {
                 }
             }
 
+            // Aux tags (--tags): one typed column each, null where the read has
+            // no such tag (or its stored type doesn't fit the resolved column).
+            for (size_t k = 0; k < tag_names_.size(); ++k) {
+                const uint8_t* aux = bam_aux_get(rec_, tag_names_[k].c_str());
+                arrow::ArrayBuilder* bld = tag_b[k].get();
+                if (!aux) { ARROW_RETURN_NOT_OK(bld->AppendNull()); continue; }
+                char t = (char)*aux;
+                switch (tag_kinds_[k]) {
+                    case BamTagKind::Int:
+                        if (bam_tag_is_int_code(t))
+                            ARROW_RETURN_NOT_OK(static_cast<arrow::Int64Builder*>(bld)
+                                                    ->Append(bam_aux2i(aux)));
+                        else ARROW_RETURN_NOT_OK(bld->AppendNull());
+                        break;
+                    case BamTagKind::Double:
+                        if (t == 'f' || t == 'd')
+                            ARROW_RETURN_NOT_OK(static_cast<arrow::DoubleBuilder*>(bld)
+                                                    ->Append(bam_aux2f(aux)));
+                        else if (bam_tag_is_int_code(t))
+                            ARROW_RETURN_NOT_OK(static_cast<arrow::DoubleBuilder*>(bld)
+                                                    ->Append((double)bam_aux2i(aux)));
+                        else ARROW_RETURN_NOT_OK(bld->AppendNull());
+                        break;
+                    case BamTagKind::Str:
+                        ARROW_RETURN_NOT_OK(static_cast<arrow::StringBuilder*>(bld)
+                                                ->Append(bam_aux_to_string(aux)));
+                        break;
+                }
+            }
+
             ++count;
         }
 
@@ -6329,24 +6471,63 @@ class BamSource : public TabularSource {
         if (count == 0) { all_read_ = true; return arrow::Status::OK(); }
         if (ret < 0) all_read_ = true;   // EOF hit during this batch
 
-        std::shared_ptr<arrow::Array> a[11];
-        ARROW_RETURN_NOT_OK(qname_b.Finish(&a[0]));
-        ARROW_RETURN_NOT_OK(flag_b.Finish(&a[1]));
-        ARROW_RETURN_NOT_OK(rname_b.Finish(&a[2]));
-        ARROW_RETURN_NOT_OK(pos_b.Finish(&a[3]));
-        ARROW_RETURN_NOT_OK(mapq_b.Finish(&a[4]));
-        ARROW_RETURN_NOT_OK(cigar_b.Finish(&a[5]));
-        ARROW_RETURN_NOT_OK(rnext_b.Finish(&a[6]));
-        ARROW_RETURN_NOT_OK(pnext_b.Finish(&a[7]));
-        ARROW_RETURN_NOT_OK(tlen_b.Finish(&a[8]));
-        ARROW_RETURN_NOT_OK(seq_b.Finish(&a[9]));
-        ARROW_RETURN_NOT_OK(qual_b.Finish(&a[10]));
+        std::vector<std::shared_ptr<arrow::Array>> arrs(11 + tag_b.size());
+        ARROW_RETURN_NOT_OK(qname_b.Finish(&arrs[0]));
+        ARROW_RETURN_NOT_OK(flag_b.Finish(&arrs[1]));
+        ARROW_RETURN_NOT_OK(rname_b.Finish(&arrs[2]));
+        ARROW_RETURN_NOT_OK(pos_b.Finish(&arrs[3]));
+        ARROW_RETURN_NOT_OK(mapq_b.Finish(&arrs[4]));
+        ARROW_RETURN_NOT_OK(cigar_b.Finish(&arrs[5]));
+        ARROW_RETURN_NOT_OK(rnext_b.Finish(&arrs[6]));
+        ARROW_RETURN_NOT_OK(pnext_b.Finish(&arrs[7]));
+        ARROW_RETURN_NOT_OK(tlen_b.Finish(&arrs[8]));
+        ARROW_RETURN_NOT_OK(seq_b.Finish(&arrs[9]));
+        ARROW_RETURN_NOT_OK(qual_b.Finish(&arrs[10]));
+        for (size_t k = 0; k < tag_b.size(); ++k)
+            ARROW_RETURN_NOT_OK(tag_b[k]->Finish(&arrs[11 + k]));
 
-        auto batch = arrow::RecordBatch::Make(schema_, count,
-            {a[0],a[1],a[2],a[3],a[4],a[5],a[6],a[7],a[8],a[9],a[10]});
+        auto batch = arrow::RecordBatch::Make(schema_, count, arrs);
         stream_retain(batches_, batch_first_row_, batch_num_rows_, rows_so_far_,
                       retain_all_, evicted_any_, std::move(batch));
         return arrow::Status::OK();
+    }
+
+    // Resolve each requested tag's column type from the SAM type code it carries
+    // in the first records that have it. Reopens the file for a bounded scan
+    // (up to kScan records, or until every tag's type is known) so the schema is
+    // fixed before the main read starts. A tag never seen defaults to string.
+    static std::vector<BamTagKind> scan_tag_types(
+            const std::string& path, const Config& cfg,
+            const std::vector<std::string>& tags) {
+        std::vector<BamTagKind> kinds(tags.size(), BamTagKind::Str);
+        std::vector<bool>       found(tags.size(), false);
+        int remaining = (int)tags.size();
+        if (remaining == 0) return kinds;
+
+        htsFile* fp = hts_open(path.c_str(), "r");
+        if (!fp) return kinds;
+        if (!cfg.pileup_ref.empty())
+            (void)hts_set_fai_filename(fp, cfg.pileup_ref.c_str());
+        sam_hdr_t* h = sam_hdr_read(fp);
+        if (!h) { hts_close(fp); return kinds; }
+        bam1_t* b = bam_init1();
+
+        const int kScan = 4096;
+        for (int r = 0; r < kScan && remaining > 0; ++r) {
+            if (sam_read1(fp, h, b) < 0) break;
+            for (size_t k = 0; k < tags.size(); ++k) {
+                if (found[k]) continue;
+                const uint8_t* aux = bam_aux_get(b, tags[k].c_str());
+                if (!aux) continue;
+                kinds[k] = bam_tag_kind_from_code((char)*aux);
+                found[k] = true;
+                --remaining;
+            }
+        }
+        bam_destroy1(b);
+        sam_hdr_destroy(h);
+        hts_close(fp);
+        return kinds;
     }
 
 public:
@@ -6420,7 +6601,7 @@ public:
                     "... (" + std::to_string(total - 20) + " more header lines)");
         }
 
-        self->schema_ = arrow::schema({
+        arrow::FieldVector fields = {
             arrow::field("QNAME", arrow::utf8()),
             arrow::field("FLAG",  arrow::int32()),
             arrow::field("RNAME", arrow::utf8()),
@@ -6432,7 +6613,25 @@ public:
             arrow::field("TLEN",  arrow::int64()),
             arrow::field("SEQ",   arrow::utf8()),
             arrow::field("QUAL",  arrow::utf8()),
-        });
+        };
+
+        // --tags: append one column per requested aux tag. Its Arrow type is
+        // fixed here from the tag's SAM type code (scanned from the first records
+        // that carry it), so a numeric tag stays numeric for --filter and stats.
+        if (!cfg.bam_tags.empty()) {
+            std::string terr;
+            self->tag_names_ = parse_bam_tag_list(cfg.bam_tags, &terr);
+            if (!terr.empty()) return "'" + path + "': " + terr;
+            self->tag_kinds_ = scan_tag_types(path, cfg, self->tag_names_);
+            for (size_t k = 0; k < self->tag_names_.size(); ++k) {
+                std::shared_ptr<arrow::DataType> dt =
+                    self->tag_kinds_[k] == BamTagKind::Int    ? arrow::int64()
+                  : self->tag_kinds_[k] == BamTagKind::Double ? arrow::float64()
+                                                              : arrow::utf8();
+                fields.push_back(arrow::field(self->tag_names_[k], dt));
+            }
+        }
+        self->schema_ = arrow::schema(fields);
 
         // -r: restrict the scan to the requested windows. Needs a
         // coordinate-sorted file with an index (.bai / .csi / .crai). Without
@@ -14341,6 +14540,21 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
     if      (fends_ci(det, ".zstd")) det.resize(det.size() - 5);
     else if (fends_ci(det, ".zst"))  det.resize(det.size() - 4);
 
+    // --tags names aux-tag columns and applies only to the alignment formats
+    // read through htslib (BamSource). Reject it elsewhere rather than let it be
+    // a silent no-op, and reject the pileup combination (pileup rows are not
+    // alignment records).
+    if (!cfg.bam_tags.empty()) {
+        bool is_aln = fends_ci(path, ".bam") || fends_ci(path, ".cram") ||
+                      fends_ci(path, ".sam");
+        if (!is_aln)
+            return "'" + path + "': --tags applies to BAM/CRAM/SAM alignment "
+                   "files (a read's optional NM/AS/RG/… aux tags)";
+        if (cfg.pileup)
+            return "--tags cannot be combined with --pileup — pileup rows are "
+                   "per-base counts, not alignment records";
+    }
+
     // --text: read it as plain text whatever the extension says. The escape
     // hatch for a textual-but-tabular file — `vv --text notes.md` shows the
     // markdown source, `vv --text data.csv` shows the raw lines. Still
@@ -14470,7 +14684,10 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
                "(Arrow needs -DARROW_ORC=ON; rebuild Arrow and vv)";
 #endif
         return "";
-    } else if (fends_ci(path, ".bam") || fends_ci(path, ".cram")) {
+    } else if (fends_ci(path, ".bam") || fends_ci(path, ".cram") ||
+               (fends_ci(path, ".sam") && !cfg.bam_tags.empty())) {
+        // .sam normally reads through the delimited text reader; with --tags it
+        // is routed here so htslib decodes the aux fields into typed columns.
         if (cfg.pileup) {
             // --pileup: walk the alignments through htslib's bam_plp engine
             // and emit mpileup-style per-base rows instead of alignment

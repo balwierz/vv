@@ -14,7 +14,7 @@ end
 # argument of any value-taking option so an output path is not taken as input.
 function __vv_file
     set -l valopts n w c @ threads decode-threads delimiter color theme r region \
-        window regions-file region-cols slop coords tail sort expand parquet arrow \
+        window regions-file region-cols slop coords tail sort tags expand parquet arrow \
         feather compression image-mode f fasta select cols filter tab unique sample
     set -l toks (commandline -opc)
     set -l i 2
@@ -127,6 +127,7 @@ complete -c vv -c vh -l markdown           -d 'Alias of --md'
 complete -c vv -c vh -l validate           -d 'Check LociSSD invariants and exit'
 complete -c vv -c vh -l decode-pileup      -d 'mpileup: explode bases into A/C/G/T/N + ins/del + strand + mean_qual columns'
 complete -c vv -c vh -l pileup             -d 'BAM/CRAM: emit mpileup-style per-base rows via htslib bam_plp'
+complete -c vv -c vh -l tags -x            -d 'BAM/CRAM/SAM: add a typed column per aux tag (comma-separated, e.g. NM,AS,RG)'
 complete -c vv -c vh -s f -l fasta -r -F   -d 'reference FASTA (.fai): --pileup ref column + ./, notation, or CRAM decoding'
 complete -c vv -c vh -l select -x -a '(__vv_columns_csv)' -d 'Project columns: names, globs, N-M ranges, @types, !exclusions'
 complete -c vv -c vh -l cols -x -a '(__vv_columns_csv)' -d 'Alias of --select'
