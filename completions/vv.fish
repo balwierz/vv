@@ -13,7 +13,7 @@ end
 # The input file already on the command line: the sole positional. Skip the
 # argument of any value-taking option so an output path is not taken as input.
 function __vv_file
-    set -l valopts n w c @ threads decode-threads delimiter color theme r region \
+    set -l valopts n w c @ threads decode-threads delimiter color theme box r region \
         window regions-file region-cols slop coords tail sort tags expand parquet arrow \
         feather compression image-mode f fasta select cols filter tab unique sample
     set -l toks (commandline -opc)
@@ -96,6 +96,7 @@ complete -c vv -c vh -l decode-threads -r  -d 'Arrow CPU pool size for Parquet/C
 complete -c vv -c vh -l color              -d 'Colorize output (auto/always/never)'
 complete -c vv -c vh -l color -r -a 'auto always never' -d 'Color mode'
 complete -c vv -c vh -l theme -r -a 'default dark light solarized-dark solarized-light' -d 'Color palette'
+complete -c vv -c vh -l box -x -a 'unicode ascii' -d 'Table frame style (ascii for a C locale / plain-text paste)'
 
 # Delimited output
 complete -c vv -c vh -l tsv                -d 'Write tab-separated values'

@@ -109,6 +109,32 @@ lists / fixed-size lists / maps render Python-style as
 a collection is always preserved when truncation kicks in
 (`[0.0904, …]`, not `[0.0…`).
 
+### ASCII frame (`--box ascii`)
+
+```sh
+$ vv --no-interactive --box ascii tests/data/tiny.parquet
++---+------+-------+-------+-------+------------------+
+|   | Chr  | Start | End   | Score | Tags             |
++---+------+-------+-------+-------+------------------+
+| 0 | chr1 |   100 |   200 |     0 | [promoter]       |
+| 1 | chr1 | 1_100 | 1_200 |  0.05 | [enhancer, open] |
++---+------+-------+-------+-------+------------------+
+```
+
+`--box unicode` (the default) uses the rounded box-drawing characters
+above; `--box ascii` draws the frame with `+` `-` `|` and uses `...` (not
+`…`) as the truncation marker, so the whole table is plain 7-bit ASCII.
+Reach for it when the box-drawing bytes would turn to mojibake or misalign:
+a terminal in the **`C` / `POSIX` locale**, an ASCII-only pipe, or a paste
+into an email or ticket without the font.
+
+With no `--box` given, vv reads `LC_ALL` / `LC_CTYPE` / `LANG` and defaults
+to the ASCII frame when the locale is **not** a UTF-8 one — so `LC_ALL=C vv
+data.parquet` already draws a clean table instead of a garbled one, with no
+flag needed. `--box` affects only the non-interactive table; the ncurses
+viewer always uses the Unicode frame (it runs in an interactive terminal,
+which handles UTF-8).
+
 ## Vertical-head (`vh`, or `--vertical`)
 
 ```sh

@@ -705,6 +705,7 @@ a headless browser such as `chromium`).
 | `--validate`               | LociSSD invariants check; exits non-zero on failure  |
 | `--vertical`               | transposed (vh) preview                              |
 | `--theme <name>`           | `default`/`dark`/`light`/`solarized-dark`/`solarized-light` |
+| `--box <style>`            | table frame: `unicode` (default) or `ascii` (`+-\|`); auto-`ascii` in a non-UTF-8 locale |
 | `--color=auto/always/never`| color output mode                                    |
 | `-V`, `--version`          | print version and exit                               |
 

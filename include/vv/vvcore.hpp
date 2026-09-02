@@ -59,6 +59,8 @@ struct Config {
     bool        distinct       = false;  // --distinct: drop duplicate rows (SQL
                                          // SELECT DISTINCT), over the shown columns
     int         sample_n       = 0;      // --sample N (reservoir sample of N rows)
+    std::string box_style;               // --box unicode|ascii; "" = auto (ASCII
+                                         // when the locale is not UTF-8)
     std::string filter_expr;             // --filter "<col> <op> <literal> ..."
     std::string select_cols;             // --select Chr,Start,End (name-based projection)
     bool        json_array     = false;  // --json

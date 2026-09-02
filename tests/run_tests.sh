@@ -1828,6 +1828,31 @@ assert_contains "distinct_footer" "$DIST_FOOT" "Distinct rows: 4 / 5"
 # An unknown --select column is a clean error.
 assert_exit_code "distinct_unknown_column_exit1" 1 "$VV" --distinct --select nope "$DISTF"
 
+# ── --box: ASCII vs Unicode table frame ───────────────────────────────────────
+# --box ascii draws the frame with + - | (a C locale, an ASCII-only pipe, or a
+# plain-text paste); the default (a UTF-8 locale) keeps the box-drawing glyphs.
+BOX_ASCII=$(LANG=en_US.UTF-8 "$VV" -n 1 --box ascii --color=never "$DATA/tiny.parquet" 2>&1)
+assert_contains "box_ascii_uses_plus"  "$BOX_ASCII" "+---"
+assert_contains "box_ascii_uses_pipe"  "$BOX_ASCII" "|"
+refute_contains "box_ascii_no_unicode" "$BOX_ASCII" "$(printf '\342\225\255')"   # ╭
+BOX_UNI=$(LANG=en_US.UTF-8 "$VV" -n 1 --box unicode --color=never "$DATA/tiny.parquet" 2>&1)
+assert_contains "box_unicode_uses_glyph" "$BOX_UNI" "$(printf '\342\225\255')"   # ╭
+# Auto: a non-UTF-8 locale falls back to the ASCII frame without the flag.
+BOX_CLOCALE=$(env -u LANG -u LC_CTYPE LC_ALL=C "$VV" -n 1 --color=never "$DATA/tiny.parquet" 2>&1)
+assert_contains "box_c_locale_auto_ascii"    "$BOX_CLOCALE" "+---"
+refute_contains "box_c_locale_no_unicode"    "$BOX_CLOCALE" "$(printf '\342\225\255')"
+# ...and --box unicode overrides the locale default.
+BOX_C_FORCE=$(env -u LANG -u LC_CTYPE LC_ALL=C "$VV" -n 1 --box unicode --color=never "$DATA/tiny.parquet" 2>&1)
+assert_contains "box_unicode_overrides_locale" "$BOX_C_FORCE" "$(printf '\342\225\255')"
+# The ASCII truncation marker is "..." and the cell stays inside its width.
+BOXW="$TMP/boxwide.csv"
+printf 'id,description\n1,this_is_a_very_long_value_that_truncates\n' > "$BOXW"
+BOX_TRUNC=$("$VV" -n 1 -w 20 --box ascii --color=never "$BOXW" 2>&1)
+assert_contains "box_ascii_ellipsis_dots" "$BOX_TRUNC" "..."
+refute_contains "box_ascii_ellipsis_no_unicode" "$BOX_TRUNC" "$(printf '\342\200\246')"  # …
+# An unknown style is a clean error.
+assert_exit_code "box_unknown_style_exits_2" 2 "$VV" --box sideways "$DATA/tiny.parquet"
+
 # --coords: NCBI (1-based inclusive) input converts to UCSC (0-based
 # half-open). "chr1:101-200" NCBI == "chr1:100-200" UCSC (default).
 COORDS_UCSC=$("$VV" -r 'chr1:100-200' --tsv --no-header "$DATA/tiny.parquet")

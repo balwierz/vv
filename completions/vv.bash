@@ -22,7 +22,7 @@ _vv_run() {
 _vv_input_file() {
     local i tok
     local val_opts=' -n -w -c -@ --threads --decode-threads --delimiter --color
-        --theme -r --region --window --regions-file --region-cols --slop --coords
+        --theme --box -r --region --window --regions-file --region-cols --slop --coords
         --tail --sort --tags --expand --parquet --arrow --feather --compression --image-mode
         -f --fasta --select --cols --filter --tab --unique --sample '
     for (( i = 1; i < ${#words[@]}; i++ )); do
@@ -78,6 +78,10 @@ _vv() {
             ;;
         --theme)
             COMPREPLY=( $(compgen -W 'default dark light solarized-dark solarized-light' -- "$cur") )
+            return
+            ;;
+        --box)
+            COMPREPLY=( $(compgen -W 'unicode ascii' -- "$cur") )
             return
             ;;
         -r|--region|--window)
@@ -169,6 +173,7 @@ _vv() {
                 -f --fasta
                 --tab
                 --unique --distinct --sample --sort --tags
+                --box
                 --vertical
                 --no-header
                 --heatmap --image-mode

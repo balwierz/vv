@@ -925,6 +925,9 @@ static void print_usage(const char* prog) {
         "  --color[=WHEN]      colorize output: auto (default), always, never\n"
         "  --theme <name>      color palette: default, dark, light,\n"
         "                      solarized-dark, solarized-light (default = default)\n"
+        "  --box <style>       table frame: unicode (default) or ascii (+-| for a\n"
+        "                      C locale, an ASCII-only pipe, or plain-text paste).\n"
+        "                      Auto-selects ascii when the locale is not UTF-8\n"
         "  --vertical          \"vertical head\": transpose the preview so each\n"
         "                      field is a row; show as many records per line as\n"
         "                      fit. Implies --no-interactive. Default when the\n"
@@ -1110,6 +1113,8 @@ static Config parse_args(int argc, char** argv) {
             cfg.contigs = true;
         } else if (!std::strcmp(argv[i], "--distinct")) {
             cfg.distinct = true;
+        } else if (!std::strcmp(argv[i], "--box") && i + 1 < argc) {
+            cfg.box_style = argv[++i];
         } else if (!std::strcmp(argv[i], "--unique") && i + 1 < argc) {
             cfg.unique_cols = argv[++i];
         } else if (!std::strcmp(argv[i], "--sample") && i + 1 < argc) {
@@ -1194,7 +1199,7 @@ static Config parse_args(int argc, char** argv) {
                 "--compression", "--unique", "--sample", "--filter",
                 "--select", "--cols", "--image-mode", "--tab", "--theme",
                 "--expand",
-                "--delimiter", "-f", "--fasta",
+                "--delimiter", "-f", "--fasta", "--box",
             };
             if (needs_arg.count(argv[i])) {
                 std::fprintf(stderr, "Option %s requires an argument.\n", argv[i]);
@@ -1261,6 +1266,56 @@ static constexpr const char BOX_RT[]    = "\xe2\x94\xa4";  // ┤
 static constexpr const char BOX_TT[]    = "\xe2\x94\xac";  // ┬
 static constexpr const char BOX_BT[]    = "\xe2\x94\xb4";  // ┴
 static constexpr const char BOX_X[]     = "\xe2\x94\xbc";  // ┼
+
+// The non-interactive table's frame glyphs, chosen at runtime so `--box ascii`
+// (or a non-UTF-8 locale) draws with plain ASCII instead of the box-drawing
+// characters — which render as mojibake on a C-locale terminal, in an ASCII-only
+// pipe, or when pasted somewhere without the font. The Unicode set reuses the
+// constants above; the TUI keeps drawing them directly (an interactive terminal
+// that runs the ncurses UI is assumed to handle UTF-8).
+struct BoxGlyphs {
+    const char *hline, *vline, *tl, *tr, *br, *bl, *lt, *rt, *tt, *bt, *x;
+    // The truncation marker travels with the frame style: the ASCII table uses
+    // "..." (3 columns) where the Unicode one uses "…" (1 column). Both are 3
+    // bytes, so the byte arithmetic that finds a trailing marker is identical;
+    // only the display width reserved for it differs, handled where it is used.
+    const char *ell;
+};
+static constexpr BoxGlyphs kBoxUnicode = {
+    BOX_HLINE, BOX_VLINE, BOX_TL, BOX_TR, BOX_BR, BOX_BL,
+    BOX_LT, BOX_RT, BOX_TT, BOX_BT, BOX_X, ELLIPSIS,
+};
+static constexpr BoxGlyphs kBoxAscii = {
+    "-", "|", "+", "+", "+", "+", "+", "+", "+", "+", "+", "...",
+};
+static const BoxGlyphs* g_box = &kBoxUnicode;
+
+// True when the environment's effective locale is a UTF-8 one. Checked by
+// reading LC_ALL / LC_CTYPE / LANG directly (in POSIX precedence) rather than
+// calling setlocale(), which vv leaves at "C" for the non-interactive path and
+// which would change locale-dependent formatting globally. No locale set → the
+// C locale is in effect, i.e. not UTF-8.
+static bool env_locale_is_utf8() {
+    for (const char* var : {"LC_ALL", "LC_CTYPE", "LANG"}) {
+        const char* v = std::getenv(var);
+        if (!v || !*v) continue;
+        std::string s;
+        for (const char* p = v; *p; ++p) s += (char)std::tolower((unsigned char)*p);
+        return s.find("utf-8") != std::string::npos ||
+               s.find("utf8")  != std::string::npos;
+    }
+    return false;
+}
+
+// Resolve --box (and the locale default) to the glyph set for the ASCII table.
+// Returns an error string for an unknown style.
+static std::string select_box_glyphs(const std::string& style) {
+    if (style.empty())         g_box = env_locale_is_utf8() ? &kBoxUnicode : &kBoxAscii;
+    else if (style == "unicode") g_box = &kBoxUnicode;
+    else if (style == "ascii")   g_box = &kBoxAscii;
+    else return "unknown --box style '" + style + "'; use 'unicode' or 'ascii'";
+    return "";
+}
 
 static std::string repeat_utf8(const char* glyph, int n) {
     std::string s;
@@ -1517,7 +1572,7 @@ std::string truncate(const std::string& s, int max_w) {
                     cand += open;
                     cand.append(s, 1, commas[n - 1] - 1);  // up to "eN"
                     cand += ", ";
-                    cand += ELLIPSIS;
+                    cand += g_box->ell;
                     cand += close;
                     return cand;
                 };
@@ -1535,11 +1590,15 @@ std::string truncate(const std::string& s, int max_w) {
         }
     }
 
-    // ELLIPSIS is 3 UTF-8 bytes but 1 display column, so we keep content up to
-    // (max_w-1) display columns. Cut on a terminal-column boundary — a
+    // Keep content up to (max_w - marker width) display columns, then append the
+    // truncation marker so the whole cell is max_w wide. "…" reserves 1 column,
+    // the ASCII "..." reserves 3. Cut on a terminal-column boundary — a
     // byte-based substr would split a multibyte codepoint (invalid UTF-8) and a
     // codepoint-based one would overshoot the column budget for wide chars.
-    return s.substr(0, utf8_prefix_for_width(s, max_w - 1)) + ELLIPSIS;
+    int ew = display_width(g_box->ell);
+    int keep = max_w - ew;
+    if (keep < 0) keep = 0;
+    return s.substr(0, utf8_prefix_for_width(s, keep)) + g_box->ell;
 }
 
 // See vvcore.hpp. Pure width-planning math shared by the TUI and Qt GUI; it is
@@ -1821,14 +1880,14 @@ static void draw_separator(const std::vector<Column>& cols,
     const char* sep;
     const char* right;
     switch (kind) {
-        case SepKind::Top:    left = BOX_TL; sep = BOX_TT; right = BOX_TR; break;
-        case SepKind::Bottom: left = BOX_BL; sep = BOX_BT; right = BOX_BR; break;
+        case SepKind::Top:    left = g_box->tl; sep = g_box->tt; right = g_box->tr; break;
+        case SepKind::Bottom: left = g_box->bl; sep = g_box->bt; right = g_box->br; break;
         case SepKind::Middle: default:
-                              left = BOX_LT; sep = BOX_X;  right = BOX_RT; break;
+                              left = g_box->lt; sep = g_box->x;  right = g_box->rt; break;
     }
     std::printf("%s%s", g_color.border, left);
     for (size_t i = 0; i < cols.size(); ++i) {
-        for (int j = 0; j < cols[i].width + 2; ++j) std::printf("%s", BOX_HLINE);
+        for (int j = 0; j < cols[i].width + 2; ++j) std::printf("%s", g_box->hline);
         std::printf("%s", (i + 1 == cols.size()) ? right : sep);
     }
     std::printf("%s\n", g_color.reset);
@@ -1856,17 +1915,18 @@ static void emit_cell(const Column& col, const std::string& val,
         }
     }
 
-    // For truncated values, render the body normally and the "…" dimmed.
-    // ELLIPSIS is 3 UTF-8 bytes so the body is val.size()-3 bytes (same arithmetic as "...").
+    // For truncated values, render the body normally and the marker dimmed.
+    // Both "…" and the ASCII "..." are 3 bytes, so the body is val.size()-3 bytes
+    // regardless of style; only the marker glyph differs (g_box->ell).
     bool truncated = !is_header && val.size() >= 3 &&
-                     val.compare(val.size() - 3, 3, ELLIPSIS) == 0;
+                     val.compare(val.size() - 3, 3, g_box->ell) == 0;
 
     if (right_align) {
         std::printf(" %*s", pad, "");   // leading spaces (no color)
         if (truncated) {
             std::printf("%s%.*s%s%s%s%s",
                 fg, (int)val.size() - 3, val.c_str(),   // body
-                g_color.reset, g_color.trunc, ELLIPSIS, g_color.reset);
+                g_color.reset, g_color.trunc, g_box->ell, g_color.reset);
         } else {
             std::printf("%s%s%s", fg, val.c_str(), *fg ? g_color.reset : "");
         }
@@ -1874,7 +1934,7 @@ static void emit_cell(const Column& col, const std::string& val,
         if (truncated) {
             std::printf(" %s%.*s%s%s%s%s%*s",
                 fg, (int)val.size() - 3, val.c_str(),   // body
-                g_color.reset, g_color.trunc, ELLIPSIS, g_color.reset,
+                g_color.reset, g_color.trunc, g_box->ell, g_color.reset,
                 pad, "");
         } else {
             std::printf(" %s%s%s%*s",
@@ -1888,7 +1948,7 @@ static void draw_row(const std::vector<Column>& cols,
                      const std::vector<bool>& right_align,
                      bool is_header = false) {
     for (std::size_t i = 0; i < cols.size(); ++i) {
-        std::printf("%s%s%s", g_color.border, BOX_VLINE, g_color.reset);
+        std::printf("%s%s%s", g_color.border, g_box->vline, g_color.reset);
         int r, gv, b;
         if (!is_header && cols[i].is_rgb && *g_color.reset
                        && parse_rgb(vals[i], &r, &gv, &b)) {
@@ -1899,7 +1959,7 @@ static void draw_row(const std::vector<Column>& cols,
             std::printf(" ");
         }
     }
-    std::printf("%s%s%s\n", g_color.border, BOX_VLINE, g_color.reset);
+    std::printf("%s%s%s\n", g_color.border, g_box->vline, g_color.reset);
 }
 
 // ── Delimited output ─────────────────────────────────────────────────────────
@@ -18552,10 +18612,10 @@ class TableTUI {
             return std::string(w - dw, ' ') + val;
         }
         if (dw > w) {
-            bool has_ell = val.size() >= 3 && val.compare(val.size()-3, 3, ELLIPSIS) == 0;
+            bool has_ell = val.size() >= 3 && val.compare(val.size()-3, 3, g_box->ell) == 0;
             std::string base = has_ell ? val.substr(0, val.size()-3) : val;
             if ((int)base.size() > w - 1) base.resize(w - 1);
-            return base + ELLIPSIS;
+            return base + g_box->ell;
         }
         return val + std::string(w - dw, ' ');
     }
@@ -19223,7 +19283,7 @@ class TableTUI {
             int avail = panel_w - 2 - (xx - x0) - (w_l + 2) - 1;
             std::string v = rows[i].second;
             if ((int)display_width(v) > avail && avail > 3) {
-                v.resize(avail - 3); v += ELLIPSIS;
+                v.resize(avail - 3); v += g_box->ell;
             }
             mvaddstr(yy, xx + w_l + 2, v.c_str());
         }
@@ -19922,7 +19982,7 @@ private:
                 if ((int)display_width(V) > avail_v) {
                     if (avail_v >= 3) {
                         V.resize(avail_v - 3);
-                        V += ELLIPSIS;
+                        V += g_box->ell;
                     } else V.resize(avail_v);
                 }
                 else V += std::string(avail_v - display_width(V), ' ');
@@ -21645,6 +21705,12 @@ int main(int argc, char** argv) {
                      C_BOLD, C_RST, C_DIM, path.c_str(), C_RST,
                      C_RED, why.c_str(), C_RST);
     };
+
+    // Resolve the ASCII-table frame style (--box, else the locale).
+    if (auto e = select_box_glyphs(cfg.box_style); !e.empty()) {
+        std::fprintf(stderr, "vv: %s\n", e.c_str());
+        return 2;
+    }
 
     {
         std::string why = preflight_path(cfg.path);
