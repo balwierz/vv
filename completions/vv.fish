@@ -139,6 +139,7 @@ complete -c vv -c vh -l describe           -d 'Per-column statistics (add --json
 complete -c vv -c vh -l count              -d 'Print the row count and exit'
 complete -c vv -c vh -l stats              -d 'Parquet metadata dump (no data read)'
 complete -c vv -c vh -l contigs            -d 'BAM/CRAM/SAM, VCF/BCF: list reference sequences + detect assembly'
+complete -c vv -c vh -l gt-stats           -d 'VCF/BCF: add per-variant genotype summary columns (het/hom/missing, AC/AN/AF, call_rate)'
 complete -c vv -c vh -l unique -r          -d 'Distinct value counts per column'
 complete -c vv -c vh -l distinct           -d 'Drop duplicate rows (SQL SELECT DISTINCT), over the shown columns'
 complete -c vv -c vh -l sample -r          -d 'Reservoir-sample N random rows'

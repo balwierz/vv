@@ -740,6 +740,45 @@ Reference sequences: 25  |  Assembly: GRCh38 / hg38 (Homo sapiens)
   interactive viewer all work on it. `-r`, `--pileup`, `--tags`, and
   `--expand` — which read the file's records — are rejected in combination.
 
+## `--gt-stats` (VCF/BCF genotype aggregates)
+
+```sh
+$ vv cohort.vcf.gz --gt-stats --select CHROM,POS,REF,ALT,AF,call_rate,n_het
+$ vv cohort.bcf --gt-stats --filter 'AF > 0.05 and call_rate > 0.9' --count
+$ vv cohort.vcf.gz --gt-stats --sort AC:desc -n 20        # the top carriers
+```
+
+For a multi-sample VCF / BCF, `--gt-stats` appends per-variant summary columns
+computed over the sample `GT` fields. Expanding the genotypes fully would be
+samples × FORMAT-fields columns — thousands for a cohort — so instead this adds
+a **fixed** set that answers the usual questions:
+
+| column | meaning |
+|--------|---------|
+| `n_called` | samples with a non-missing genotype (`n_hom_ref + n_het + n_hom_alt`) |
+| `n_het` | heterozygous samples (`0/1`, and compound het `1/2`) |
+| `n_hom_ref` | homozygous-reference samples (`0/0`) |
+| `n_hom_alt` | homozygous-alternate samples (`1/1`, `2/2`, …) |
+| `n_missing` | samples with a missing genotype (`./.`) |
+| `AC` | alternate-allele count (non-reference alleles across all samples) |
+| `AN` | allele number (total called alleles; `2 × n_called` for diploid) |
+| `AF` | alternate-allele frequency, `AC / AN` (null when `AN = 0`) |
+| `call_rate` | `n_called / samples` |
+
+* **Both encodings.** A text VCF keeps `FORMAT` and the sample columns
+  separate; a BCF (read through htslib) collapses them into one
+  `FORMAT_SAMPLES` blob. `--gt-stats` finds the `GT` sub-field in either and
+  parses it the same way. Diploid, haploid (`1` on chrY / mito), and
+  multi-allelic (`1/2`) genotypes are all classified; a phased `1|0` counts the
+  same as `1/0`.
+* **Numeric and composable.** The appended columns are `int64` / `double`, so
+  `--filter 'AF > 0.01 and n_missing == 0'`, `--sort call_rate`, `--describe`,
+  and `--select` all work on them, and the raw records stay in the table
+  alongside.
+* **Streaming.** Computed one chunk at a time, so a cohort VCF far larger than
+  memory still previews. Needs a VCF/BCF with a `FORMAT` column and at least one
+  sample; a sites-only VCF or a non-variant file is a clean error.
+
 ## `--unique`
 
 ```sh

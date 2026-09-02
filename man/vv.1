@@ -366,6 +366,22 @@ that carried no \fBlength=\fR. Composes with \fB\-\-tsv\fR, \fB\-\-json\fR,
 \fB\-\-filter 'length > 1000000'\fR works). Answers "which assembly is
 this BAM aligned to?" without a full \fBsamtools view -H\fR read.
 .TP
+.B \-\-gt\-stats
+For a VCF / BCF with genotypes, append per-variant summary columns
+computed over the sample \fBGT\fR fields: \fBn_called\fR, \fBn_het\fR,
+\fBn_hom_ref\fR, \fBn_hom_alt\fR, \fBn_missing\fR (sample counts by
+zygosity), \fBAC\fR (alternate-allele count), \fBAN\fR (called-allele
+count), \fBAF\fR (\fBAC\fR/\fBAN\fR), and \fBcall_rate\fR
+(\fBn_called\fR/samples). This is a \fBfixed\fR set of columns no matter
+how many samples the file holds \(en the alternative, one column per
+sample per FORMAT field, is unusable for a cohort. Each sample's genotype
+is classified from its \fBGT\fR sub-field; diploid, haploid, and
+multi-allelic (a \fB1/2\fR compound heterozygote) calls are all handled,
+and a \fB./.\fR call is missing. The columns are numeric, so
+\fB\-\-filter 'AF > 0.05 and call_rate > 0.9'\fR and \fB\-\-sort AC:desc\fR
+work on them. Streaming, so a cohort VCF larger than memory still
+previews.
+.TP
 .BI \-\-unique " cols"
 Distinct-value counts per column, comma-separated. Each block lists up
 to 50 most frequent values; further values are summarised. Respects

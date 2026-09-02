@@ -152,6 +152,7 @@ _vv() {
         '--count[Print the row count and exit]' \
         '--stats[Parquet metadata dump]' \
         '--contigs[List reference sequences (name, length) and detect the assembly]' \
+        '--gt-stats[VCF/BCF: add per-variant genotype summary columns (het/hom/missing, AC/AN/AF, call_rate)]' \
         '--unique+[Distinct value counts]:cols:' \
         '--distinct[Drop duplicate rows (SQL SELECT DISTINCT), over the shown columns]' \
         '--sample+[Reservoir-sample N rows]:n:' \

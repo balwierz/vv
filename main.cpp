@@ -895,6 +895,11 @@ static void print_usage(const char* prog) {
         "                      (name, length) from the header and name the assembly\n"
         "                      (GRCh38, mm10, …). Reads no records; composes with\n"
         "                      --tsv / --json / --sort / --filter\n"
+        "  --gt-stats          VCF/BCF: add per-variant genotype summary columns\n"
+        "                      over the samples — n_called/n_het/n_hom_ref/\n"
+        "                      n_hom_alt/n_missing, AC/AN/AF, call_rate. A fixed\n"
+        "                      set whatever the sample count; `--filter 'AF > 0.05'`\n"
+        "                      and `--sort call_rate` work on them\n"
         "  --unique <cols>     comma-separated columns: print distinct-value counts\n"
         "  --distinct          drop duplicate rows (SQL SELECT DISTINCT), keeping\n"
         "                      the first of each. Over the shown columns, so\n"
@@ -1111,6 +1116,8 @@ static Config parse_args(int argc, char** argv) {
             cfg.stats_only = true;
         } else if (!std::strcmp(argv[i], "--contigs")) {
             cfg.contigs = true;
+        } else if (!std::strcmp(argv[i], "--gt-stats")) {
+            cfg.gt_stats = true;
         } else if (!std::strcmp(argv[i], "--distinct")) {
             cfg.distinct = true;
         } else if (!std::strcmp(argv[i], "--box") && i + 1 < argc) {
@@ -14527,6 +14534,313 @@ public:
     }
 };
 
+// ── VCF genotype aggregates (--gt-stats) ──────────────────────────────────────
+//
+// Per-variant summaries over the per-sample GT field. A cohort VCF/BCF carries
+// N samples × M FORMAT fields of genotype data; expanding all of it would be
+// thousands of columns. Instead --gt-stats adds a FIXED set of columns —
+// hom-ref / het / hom-alt / missing sample counts and pooled allele totals —
+// that answer the usual cohort questions (call rate, allele frequency, how many
+// carriers) regardless of sample count. Streaming: computed per chunk, so a
+// cohort VCF larger than memory still previews.
+
+namespace gtstat {
+
+enum class GtClass { HomRef, Het, HomAlt, Missing };
+struct GtInfo { GtClass cls; int an; int ac; };  // an: called alleles, ac: alt
+
+// Classify one GT string: "0/1", "1|1", "./.", "0", "0/0/1", "1/2" (compound
+// het). Diploid, haploid, and polyploid are all handled; a genotype with no
+// present allele is Missing.
+static GtInfo classify_gt(const std::string& gt) {
+    GtInfo r{GtClass::Missing, 0, 0};
+    bool all_zero = true, all_same_alt = true;
+    int first_alt = -1;
+    size_t i = 0, n = gt.size();
+    while (i < n) {
+        size_t j = i;
+        while (j < n && gt[j] != '/' && gt[j] != '|') ++j;
+        std::string tok = gt.substr(i, j - i);
+        i = (j < n) ? j + 1 : n;
+        if (tok == "." || tok.empty()) continue;      // a missing allele
+        int a = 0;
+        try { a = std::stoi(tok); } catch (...) { continue; }
+        ++r.an;
+        if (a != 0) all_zero = false;
+        if (a > 0) {
+            ++r.ac;
+            if (first_alt < 0) first_alt = a;
+            else if (a != first_alt) all_same_alt = false;
+        }
+    }
+    if (r.an == 0)                          r.cls = GtClass::Missing;
+    else if (all_zero)                      r.cls = GtClass::HomRef;
+    else if (r.ac == r.an && all_same_alt)  r.cls = GtClass::HomAlt;
+    else                                    r.cls = GtClass::Het;
+    return r;
+}
+
+// Position of the GT sub-field in a FORMAT string ("GT:AD:DP" → 0). -1 if none.
+static int gt_field_index(const std::string& fmt) {
+    int idx = 0;
+    size_t i = 0, n = fmt.size();
+    while (i <= n) {
+        size_t j = i;
+        while (j < n && fmt[j] != ':') ++j;
+        if (fmt.compare(i, j - i, "GT") == 0) return idx;
+        if (j >= n) break;
+        i = j + 1; ++idx;
+    }
+    return -1;
+}
+
+// The `idx`-th colon-separated sub-field of a sample string ("0/1:5,6:11", 0 →
+// "0/1"). Empty when the field is absent.
+static std::string nth_subfield(const std::string& s, int idx) {
+    size_t i = 0, n = s.size();
+    int k = 0;
+    while (i <= n) {
+        size_t j = i;
+        while (j < n && s[j] != ':') ++j;
+        if (k == idx) return s.substr(i, j - i);
+        if (j >= n) break;
+        i = j + 1; ++k;
+    }
+    return std::string();
+}
+
+}  // namespace gtstat
+
+class GenotypeStatsSource : public TabularSource {
+    std::unique_ptr<TabularSource> inner_;
+    std::shared_ptr<arrow::Schema> schema_;
+    int                            n_inner_ = 0;
+    // Source columns holding genotype text. BCF collapses FORMAT + all samples
+    // into one tab-joined "FORMAT_SAMPLES" column; VCF text keeps FORMAT and the
+    // sample columns separate.
+    bool                           collapsed_ = false;
+    int                            fs_col_    = -1;   // collapsed: FORMAT_SAMPLES
+    int                            fmt_col_   = -1;   // separate: FORMAT
+    int                            n_samples_ = 0;    // separate: fixed sample count
+    std::vector<int>               src_cols_;         // inner cols needed to compute
+
+    static constexpr int kNStat = 9;   // the appended columns
+    static const char* stat_name(int k) {
+        static const char* names[kNStat] = {
+            "n_called", "n_het", "n_hom_ref", "n_hom_alt", "n_missing",
+            "AC", "AN", "AF", "call_rate"};
+        return names[k];
+    }
+
+    // Compute the kNStat aggregate arrays for one chunk. `col_at` returns the
+    // ChunkedArray in `tbl` for an inner column index.
+    arrow::Status build_stat_arrays(
+            const arrow::Table& tbl,
+            const std::function<std::shared_ptr<arrow::ChunkedArray>(int)>& col_at,
+            std::vector<std::shared_ptr<arrow::Array>>* out) const {
+        int64_t nrows = tbl.num_rows();
+        arrow::Int64Builder  called_b, het_b, hr_b, ha_b, miss_b, ac_b, an_b;
+        arrow::DoubleBuilder af_b, cr_b;
+
+        // Row-major access to the source columns via a flat cache.
+        auto cell = [](const std::shared_ptr<arrow::ChunkedArray>& c, int64_t r) {
+            // ChunkedArray row lookup.
+            int64_t rr = r;
+            for (const auto& ch : c->chunks()) {
+                if (rr < ch->length())
+                    return ch->IsNull(rr) ? std::string() : cell_to_string(*ch, rr);
+                rr -= ch->length();
+            }
+            return std::string();
+        };
+        std::shared_ptr<arrow::ChunkedArray> fs, fmt;
+        std::vector<std::shared_ptr<arrow::ChunkedArray>> samp;
+        if (collapsed_) fs = col_at(fs_col_);
+        else {
+            fmt = col_at(fmt_col_);
+            for (int c = fmt_col_ + 1; c < n_inner_; ++c) samp.push_back(col_at(c));
+        }
+
+        std::vector<std::string> sample_gts;
+        for (int64_t r = 0; r < nrows; ++r) {
+            std::string fmt_s;
+            sample_gts.clear();
+            if (collapsed_) {
+                const std::string blob = cell(fs, r);
+                // FORMAT<TAB>S1<TAB>S2...
+                size_t i = 0, n = blob.size(); bool first = true;
+                while (i <= n) {
+                    size_t j = i;
+                    while (j < n && blob[j] != '\t') ++j;
+                    std::string tok = blob.substr(i, j - i);
+                    if (first) { fmt_s = tok; first = false; }
+                    else       sample_gts.push_back(std::move(tok));
+                    if (j >= n) break;
+                    i = j + 1;
+                }
+            } else {
+                fmt_s = cell(fmt, r);
+                for (auto& sc : samp) sample_gts.push_back(cell(sc, r));
+            }
+
+            int gi = gtstat::gt_field_index(fmt_s);
+            int n_samp = (int)sample_gts.size();
+            int64_t het = 0, hr = 0, ha = 0, miss = 0, ac = 0, an = 0;
+            if (gi < 0) {
+                // No GT field this row: every sample counts as missing.
+                miss = n_samp;
+            } else {
+                for (const auto& s : sample_gts) {
+                    gtstat::GtInfo g = gtstat::classify_gt(gtstat::nth_subfield(s, gi));
+                    switch (g.cls) {
+                        case gtstat::GtClass::HomRef:  ++hr;   break;
+                        case gtstat::GtClass::Het:     ++het;  break;
+                        case gtstat::GtClass::HomAlt:  ++ha;   break;
+                        case gtstat::GtClass::Missing: ++miss; break;
+                    }
+                    ac += g.ac; an += g.an;
+                }
+            }
+            int64_t called = hr + het + ha;
+            ARROW_RETURN_NOT_OK(called_b.Append(called));
+            ARROW_RETURN_NOT_OK(het_b.Append(het));
+            ARROW_RETURN_NOT_OK(hr_b.Append(hr));
+            ARROW_RETURN_NOT_OK(ha_b.Append(ha));
+            ARROW_RETURN_NOT_OK(miss_b.Append(miss));
+            ARROW_RETURN_NOT_OK(ac_b.Append(ac));
+            ARROW_RETURN_NOT_OK(an_b.Append(an));
+            if (an > 0) ARROW_RETURN_NOT_OK(af_b.Append((double)ac / (double)an));
+            else        ARROW_RETURN_NOT_OK(af_b.AppendNull());
+            if (n_samp > 0) ARROW_RETURN_NOT_OK(cr_b.Append((double)called / (double)n_samp));
+            else            ARROW_RETURN_NOT_OK(cr_b.AppendNull());
+        }
+        out->resize(kNStat);
+        ARROW_RETURN_NOT_OK(called_b.Finish(&(*out)[0]));
+        ARROW_RETURN_NOT_OK(het_b.Finish(&(*out)[1]));
+        ARROW_RETURN_NOT_OK(hr_b.Finish(&(*out)[2]));
+        ARROW_RETURN_NOT_OK(ha_b.Finish(&(*out)[3]));
+        ARROW_RETURN_NOT_OK(miss_b.Finish(&(*out)[4]));
+        ARROW_RETURN_NOT_OK(ac_b.Finish(&(*out)[5]));
+        ARROW_RETURN_NOT_OK(an_b.Finish(&(*out)[6]));
+        ARROW_RETURN_NOT_OK(af_b.Finish(&(*out)[7]));
+        ARROW_RETURN_NOT_OK(cr_b.Finish(&(*out)[8]));
+        return arrow::Status::OK();
+    }
+
+public:
+    static std::string open(std::unique_ptr<TabularSource> inner,
+                            std::unique_ptr<TabularSource>* out) {
+        auto in_schema = inner->schema();
+        auto self = std::unique_ptr<GenotypeStatsSource>(new GenotypeStatsSource());
+        self->n_inner_ = in_schema->num_fields();
+
+        int fs = in_schema->GetFieldIndex("FORMAT_SAMPLES");
+        int fmt = in_schema->GetFieldIndex("FORMAT");
+        if (fs >= 0) {
+            self->collapsed_ = true;
+            self->fs_col_ = fs;
+            self->src_cols_ = {fs};
+        } else if (fmt >= 0 && fmt + 1 < self->n_inner_) {
+            self->collapsed_ = false;
+            self->fmt_col_ = fmt;
+            self->n_samples_ = self->n_inner_ - (fmt + 1);
+            for (int c = fmt; c < self->n_inner_; ++c) self->src_cols_.push_back(c);
+        } else {
+            return "--gt-stats: no per-sample genotypes found — needs a VCF/BCF "
+                   "with a FORMAT column and one or more sample columns";
+        }
+
+        arrow::FieldVector fields;
+        for (int i = 0; i < self->n_inner_; ++i) fields.push_back(in_schema->field(i));
+        for (int k = 0; k < kNStat; ++k) {
+            std::string nm = stat_name(k);
+            if (in_schema->GetFieldIndex(nm) >= 0) nm += "_gt";   // avoid a clash
+            auto ty = (k <= 6) ? arrow::int64() : arrow::float64();
+            fields.push_back(arrow::field(nm, ty));
+        }
+        self->schema_ = arrow::schema(fields);
+        self->inner_ = std::move(inner);
+        *out = std::move(self);
+        return "";
+    }
+
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+
+    arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
+                              std::shared_ptr<arrow::Table>* out) override {
+        // Any stat column needs every genotype source column read.
+        std::vector<int> inner_req;
+        bool want_stat = false;
+        for (int c : col_indices) {
+            if (c < n_inner_) inner_req.push_back(c);
+            else              want_stat = true;
+        }
+        if (want_stat)
+            for (int sc : src_cols_)
+                if (std::find(inner_req.begin(), inner_req.end(), sc) == inner_req.end())
+                    inner_req.push_back(sc);
+
+        std::shared_ptr<arrow::Table> in_tbl;
+        ARROW_RETURN_NOT_OK(inner_->read_chunk(i, inner_req, &in_tbl));
+        if (!in_tbl) { *out = nullptr; return arrow::Status::OK(); }
+
+        auto pos_of = [&](int inner_idx) {
+            for (size_t k = 0; k < inner_req.size(); ++k)
+                if (inner_req[k] == inner_idx) return (int)k;
+            return -1;
+        };
+
+        std::vector<std::shared_ptr<arrow::Array>> stats;
+        if (want_stat) {
+            auto col_at = [&](int inner_idx) {
+                return in_tbl->column(pos_of(inner_idx));
+            };
+            ARROW_RETURN_NOT_OK(build_stat_arrays(*in_tbl, col_at, &stats));
+        }
+
+        arrow::FieldVector fields;
+        std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
+        for (int c : col_indices) {
+            fields.push_back(schema_->field(c));
+            if (c < n_inner_) {
+                cols.push_back(in_tbl->column(pos_of(c)));
+            } else {
+                cols.push_back(std::make_shared<arrow::ChunkedArray>(
+                    stats[(size_t)(c - n_inner_)]));
+            }
+        }
+        *out = arrow::Table::Make(arrow::schema(fields), cols, in_tbl->num_rows());
+        return arrow::Status::OK();
+    }
+
+    // Everything else forwards, preserving chunk boundaries (streaming contract).
+    int64_t total_rows()      const override { return inner_->total_rows(); }
+    int     num_chunks()      const override { return inner_->num_chunks(); }
+    ChunkMeta chunk_meta(int i) const override { return inner_->chunk_meta(i); }
+    void    ensure(int i)           override { inner_->ensure(i); }
+    void    set_retain_all(bool b)  override { inner_->set_retain_all(b); }
+    bool    evicted_any()     const override { return inner_->evicted_any(); }
+    arrow::Status read_status() const override { return inner_->read_status(); }
+    bool    region_applied()  const override { return inner_->region_applied(); }
+    const std::string& path() const override { return inner_->path(); }
+    std::vector<std::string> preamble_above() const override {
+        return inner_->preamble_above();
+    }
+    std::vector<std::string> preamble_below() const override {
+        return inner_->preamble_below();
+    }
+    std::vector<std::string> hidden_for_display() const override {
+        return inner_->hidden_for_display();
+    }
+    std::string format_cell(int col_idx, std::string val) const override {
+        return (col_idx < n_inner_) ? inner_->format_cell(col_idx, std::move(val))
+                                     : val;
+    }
+    std::string footer() const override {
+        return inner_->footer() + "  |  +genotype stats";
+    }
+};
+
 // The dispatch ladder. open_source() wraps this so a decorator (--expand)
 // applies to every one of its ~25 success paths at once, including the
 // multi-file TUI loop, instead of each `*out = std::move(src)` needing a patch.
@@ -15366,11 +15680,19 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
 std::string open_source(const std::string& path, const Config& cfg,
                          std::unique_ptr<TabularSource>* out) {
     std::string err = open_source_dispatch(path, cfg, out);
-    if (!err.empty() || cfg.expand_col.empty() || !*out) return err;
-    std::unique_ptr<TabularSource> wrapped;
-    err = ExpandedSource::open(std::move(*out), cfg.expand_col, &wrapped);
-    if (!err.empty()) return err;
-    *out = std::move(wrapped);
+    if (!err.empty() || !*out) return err;
+    if (!cfg.expand_col.empty()) {
+        std::unique_ptr<TabularSource> wrapped;
+        err = ExpandedSource::open(std::move(*out), cfg.expand_col, &wrapped);
+        if (!err.empty()) return err;
+        *out = std::move(wrapped);
+    }
+    if (cfg.gt_stats) {
+        std::unique_ptr<TabularSource> wrapped;
+        err = GenotypeStatsSource::open(std::move(*out), &wrapped);
+        if (!err.empty()) return err;
+        *out = std::move(wrapped);
+    }
     return "";
 }
 
