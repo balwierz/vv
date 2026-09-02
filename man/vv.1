@@ -166,6 +166,18 @@ arrays are sliced along the leading axis, navigable with \fB[\fR / \fB]\fR
 in the viewer.
 .IP \(bu 2
 \fB-\fR \(en read text format from stdin (auto-detects gzip and zstandard)
+.IP \(bu 2
+\fIDIR/\fR \(en a directory is read as one dataset: the data files under it
+(recursively, in filename order) are concatenated into a single table.
+Supported formats are the columnar and delimited ones \(en Parquet, Arrow /
+Feather, ORC, CSV / TSV, and JSON / NDJSON (optionally \fB.gz\fR / \fB.zst\fR);
+one format per directory. Files beginning with \fB.\fR or \fB_\fR (Spark's
+\fB_SUCCESS\fR, \fB.crc\fR checksums) and non-data files are skipped. Hive-style
+\fBkey=value/\fR path components become columns, constant within each file \(en
+an all-integer key is an \fBint64\fR column (so it filters numerically), any
+other stays a string. Every file must share one schema (same column names and
+types). Streaming and forward-only, so a dataset larger than memory still
+previews; \fB-r\fR is not supported on a directory.
 .PP
 Unknown extensions are sniffed by magic bytes and delimiter heuristics.
 .PP

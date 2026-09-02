@@ -730,6 +730,80 @@ JTEXT=$("$VV" --text --no-header "$TMP/j.json")
 assert_contains "json_text_shows_raw_source" "$JTEXT" '[{"id":1,"name":"alice"}'
 
 echo
+echo '── Directory / partitioned-dataset input ──────────────'
+# A directory concatenates its data files (recursively, filename order), skipping
+# Spark noise (_SUCCESS, .crc) and hidden files.
+DS="$TMP/ds_plain"
+rm -rf "$DS"; mkdir -p "$DS"
+printf 'id,name\n1,alice\n2,bob\n'  > "$DS/part-00.csv"
+printf 'id,name\n3,carol\n4,dave\n' > "$DS/part-01.csv"
+: > "$DS/_SUCCESS"; : > "$DS/.part-00.csv.crc"
+assert_eq_file_inline "dataset_plain_count" "$("$VV" --count "$DS")" "4"
+DS_OUT=$("$VV" --tsv --no-header "$DS")
+assert_eq_file_inline "dataset_plain_concat" "$DS_OUT" \
+    "$(printf '1\talice\n2\tbob\n3\tcarol\n4\tdave')"
+
+# Hive key=value directories become columns, constant within each file. An
+# all-integer key (year) is an int64 column — so it filters numerically; a value
+# with a leading zero (month=01) stays a string, preserving the zero.
+DH="$TMP/ds_hive"
+rm -rf "$DH"
+mkdir -p "$DH/year=2020/month=01" "$DH/year=2020/month=02" "$DH/year=2021/month=01"
+printf 'id,val\n1,10\n' > "$DH/year=2020/month=01/p.csv"
+printf 'id,val\n2,20\n' > "$DH/year=2020/month=02/p.csv"
+printf 'id,val\n3,30\n' > "$DH/year=2021/month=01/p.csv"
+assert_eq_file_inline "dataset_hive_count" "$("$VV" --count "$DH")" "3"
+DH_SCH=$("$VV" --schema "$DH" 2>&1)
+assert_contains "dataset_partition_int_type"    "$DH_SCH" "$(printf 'year    int64')"
+assert_contains "dataset_partition_string_type" "$DH_SCH" "$(printf 'month   string')"
+# Leading zero preserved (string), and numeric filter on the int partition.
+DH_MONTH=$("$VV" --tsv --no-header --select month "$DH" | sort -u | tr '\n' ' ')
+assert_eq_file_inline "dataset_partition_leading_zero" "$DH_MONTH" "01 02 "
+DH_YEAR=$("$VV" --tsv --no-header --select id --filter 'year == 2020' "$DH" | tr '\n' ' ')
+assert_eq_file_inline "dataset_partition_numeric_filter" "$DH_YEAR" "1 2 "
+# Footer names the format group and partition keys.
+DH_FOOT=$("$VV" --color=never "$DH" 2>&1)
+assert_contains "dataset_footer" "$DH_FOOT" "dataset (csv)"
+assert_contains "dataset_footer_partitions" "$DH_FOOT" "Partitions: year, month"
+
+# A Parquet dataset — same concatenation, string partition (non-integer values).
+DP="$TMP/ds_pq"
+rm -rf "$DP"; mkdir -p "$DP/g=a" "$DP/g=b"
+"$VV" --parquet "$DP/g=a/p.parquet" "$DS/part-00.csv" >/dev/null 2>&1
+"$VV" --parquet "$DP/g=b/p.parquet" "$DS/part-01.csv" >/dev/null 2>&1
+if [ -f "$DP/g=a/p.parquet" ]; then
+    assert_eq_file_inline "dataset_parquet_count" "$("$VV" --count "$DP")" "4"
+    DP_G=$("$VV" --tsv --no-header --select g "$DP" | sort -u | tr '\n' ' ')
+    assert_eq_file_inline "dataset_parquet_partition" "$DP_G" "a b "
+fi
+
+# Streaming: eviction to a one-batch window must not change the row count.
+assert_eq_file_inline "dataset_eviction_count" \
+    "$(VV_STREAM_BATCH_CAP=1 "$VV" --count "$DH")" "3"
+
+# Error paths, each a clean non-zero exit.
+DE="$TMP/ds_empty"; rm -rf "$DE"; mkdir -p "$DE"
+assert_exit_code "dataset_empty_exits_1" 1 "$VV" --count "$DE"
+DNODATA="$TMP/ds_nodata"; rm -rf "$DNODATA"; mkdir -p "$DNODATA"; : > "$DNODATA/_SUCCESS"
+assert_exit_code "dataset_no_data_exits_1" 1 "$VV" --count "$DNODATA"
+DMIX="$TMP/ds_mixed"; rm -rf "$DMIX"; mkdir -p "$DMIX"
+printf 'a\n1\n' > "$DMIX/x.csv"; cp "$DH/year=2020/month=01/p.csv" "$DMIX/keep.csv"
+cp "$DP/g=a/p.parquet" "$DMIX/y.parquet" 2>/dev/null || : > "$DMIX/y.parquet"
+DMIX_ERR=$("$VV" --count "$DMIX" 2>&1 || true)
+assert_contains "dataset_mixed_formats_message" "$DMIX_ERR" "single format"
+DINC="$TMP/ds_incons"; rm -rf "$DINC"; mkdir -p "$DINC/year=2020" "$DINC/plain"
+printf 'a\n1\n' > "$DINC/year=2020/p.csv"; printf 'a\n2\n' > "$DINC/plain/p.csv"
+assert_exit_code "dataset_inconsistent_partitions_exits_1" 1 "$VV" --count "$DINC"
+# -r is not supported on a directory dataset.
+DR_ERR=$("$VV" -r chr1:1-2 "$DH" 2>&1 || true)
+assert_contains "dataset_region_rejected" "$DR_ERR" "not supported on a directory"
+# A partition key that also names a data column must not desync the schema from
+# the batches (it appears twice rather than crashing).
+DCOL="$TMP/ds_collide"; rm -rf "$DCOL"; mkdir -p "$DCOL/g=x"
+printf 'g,v\ndata,1\n' > "$DCOL/g=x/p.csv"
+assert_exit_zero "dataset_partition_name_collision" "$VV" --count "$DCOL"
+
+echo
 echo "── --schema / --describe / --select / --filter / --json ─"
 SCHEMA_OUT=$("$VV" --schema "$DATA/tiny.lociss")
 assert_contains "schema_has_chromosome" "$SCHEMA_OUT" "Chromosome"

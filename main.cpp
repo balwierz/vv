@@ -91,6 +91,7 @@ extern "C" {
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <list>
 #include <map>
@@ -820,6 +821,9 @@ static void print_usage(const char* prog) {
         "                              not tabulated). The fallback for any file\n"
         "                              no other format claims.\n"
         "  -                           read text format from stdin (auto-decompress gzip/zstd)\n"
+        "  DIR/                        a directory: concatenate the data files under\n"
+        "                              it (Parquet/Arrow/ORC/CSV/TSV/JSON). Hive\n"
+        "                              key=value/ path parts become columns\n"
         "  (`vv --formats` prints this table with capability columns;\n"
         "   add --json for the machine-readable form)\n"
         "  (unknown extensions: identified by magic bytes, else sniffed as text;\n"
@@ -14527,6 +14531,328 @@ static std::string open_text(const std::string& path, const Config& cfg,
     return "";
 }
 
+// Opens a single file — declared here so DatasetSource (below) can open its
+// member files, and defined further down with the directory branch that reaches
+// DatasetSource. A member file is never itself a directory, so there is no
+// recursion.
+static std::string open_source_dispatch(const std::string& path, const Config& cfg,
+                                        std::unique_ptr<TabularSource>* out);
+
+// ── Directory / partitioned-dataset source ────────────────────────────────────
+//
+// `vv DIR` concatenates the data files under DIR (recursively) into one table,
+// the way Spark / Arrow / DuckDB write a "dataset": many `part-*.parquet` files,
+// often under Hive-style `key=value/` directories. It reuses the per-file
+// readers (Parquet, Arrow/Feather, ORC, CSV/TSV, JSON) — one child open at a
+// time — and streams their chunks in filename order, so a dataset larger than
+// memory still previews. Hive `key=value` path components become columns,
+// constant within each file. Scope is the columnar / delimited formats where
+// concatenation is meaningful; the genomics formats (with per-file headers and
+// indexes) are not treated as datasets.
+
+namespace dataset {
+
+// Coarse format group of a data-file name, ignoring a .gz/.zst wrapper. Empty
+// for a file that is not dataset data (sidecars, _SUCCESS, README, …), so it is
+// skipped during discovery. Also the guard against concatenating mixed formats.
+static std::string format_group(const std::string& name) {
+    std::string s = name;
+    if      (fends_ci(s, ".zst"))  s.resize(s.size() - 4);
+    else if (fends_ci(s, ".zstd")) s.resize(s.size() - 5);
+    else if (fends_ci(s, ".gz"))   s.resize(s.size() - 3);
+    if (fends_ci(s, ".parquet"))                          return "parquet";
+    if (fends_ci(s, ".arrow") || fends_ci(s, ".feather")) return "arrow";
+    if (fends_ci(s, ".orc"))                              return "orc";
+    if (fends_ci(s, ".csv"))                              return "csv";
+    if (fends_ci(s, ".tsv"))                              return "tsv";
+    if (fends_ci(s, ".json") || fends_ci(s, ".ndjson") ||
+        fends_ci(s, ".jsonl"))                            return "json";
+    return "";
+}
+
+// A partition value is treated as an integer column only when it is a canonical
+// integer — no leading zeros (so `month=01` stays the string "01" rather than
+// becoming 1 and losing the zero), fitting int64. Mirrors vv's leading-zero-ID
+// handling elsewhere.
+static bool is_canonical_int(const std::string& s) {
+    size_t i = 0;
+    if (i < s.size() && s[i] == '-') ++i;
+    if (i >= s.size()) return false;                 // "" or "-"
+    if (s[i] == '0' && s.size() - i > 1) return false;  // leading zero
+    for (size_t j = i; j < s.size(); ++j)
+        if (s[j] < '0' || s[j] > '9') return false;
+    errno = 0;
+    char* end = nullptr;
+    (void)std::strtoll(s.c_str(), &end, 10);
+    return errno == 0 && end && *end == '\0';
+}
+
+struct DsFile {
+    std::string                                       path;
+    std::vector<std::pair<std::string, std::string>>  parts;  // (key,value), in path order
+};
+
+// Two files belong to the same dataset when their schemas agree on column names
+// and types, in order. Nullability and field metadata are ignored: parts written
+// by the same job commonly differ there (an all-present column in one file,
+// with a null in another) while being the same table.
+static bool schemas_compatible(const arrow::Schema& a, const arrow::Schema& b) {
+    if (a.num_fields() != b.num_fields()) return false;
+    for (int i = 0; i < a.num_fields(); ++i) {
+        if (a.field(i)->name() != b.field(i)->name()) return false;
+        if (!a.field(i)->type()->Equals(*b.field(i)->type())) return false;
+    }
+    return true;
+}
+
+}  // namespace dataset
+
+class DatasetSource : public TabularSource {
+    std::string                            label_;
+    std::string                            group_;
+    std::vector<dataset::DsFile>           files_;
+    std::vector<std::string>               part_keys_;
+    std::vector<bool>                      part_is_int_;
+    std::shared_ptr<arrow::Schema>         data_schema_;   // the child files' schema
+    std::shared_ptr<arrow::Schema>         schema_;        // data + partition columns
+    int                                    ndata_ = 0;
+    Config                                 child_cfg_;
+
+    mutable std::unique_ptr<TabularSource> child_;
+    mutable size_t                         cur_file_  = 0;
+    mutable int                            cur_local_ = 0;
+    mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
+    mutable std::vector<int64_t>           batch_first_row_;
+    mutable std::vector<int64_t>           batch_num_rows_;
+    mutable int64_t                        rows_so_far_ = 0;
+    mutable bool                           all_read_    = false;
+    mutable bool                           retain_all_  = false;
+    mutable bool                           evicted_any_ = false;
+    mutable arrow::Status                  read_status_;
+
+    // Build the constant partition-value array for the current file.
+    arrow::Result<std::shared_ptr<arrow::Array>>
+    partition_array(size_t key_idx, int64_t n) const {
+        const std::string& val = files_[cur_file_].parts[key_idx].second;
+        if (part_is_int_[key_idx]) {
+            arrow::Int64Scalar s(std::strtoll(val.c_str(), nullptr, 10));
+            return arrow::MakeArrayFromScalar(s, n);
+        }
+        arrow::StringScalar s(val);
+        return arrow::MakeArrayFromScalar(s, n);
+    }
+
+    arrow::Status advance() const {
+        for (;;) {
+            if (all_read_) return arrow::Status::OK();
+            if (cur_file_ >= files_.size()) { all_read_ = true; return arrow::Status::OK(); }
+
+            if (!child_) {
+                std::unique_ptr<TabularSource> c;
+                std::string e = open_source_dispatch(files_[cur_file_].path, child_cfg_, &c);
+                if (!e.empty()) {
+                    read_status_ = arrow::Status::IOError(e);
+                    all_read_ = true; return read_status_;
+                }
+                if (!dataset::schemas_compatible(*c->schema(), *data_schema_)) {
+                    read_status_ = arrow::Status::Invalid(
+                        "schema of '", files_[cur_file_].path,
+                        "' differs from '", files_[0].path,
+                        "' — every file in a dataset must share one schema "
+                        "(same column names and types)");
+                    all_read_ = true; return read_status_;
+                }
+                child_ = std::move(c);
+                cur_local_ = 0;
+            }
+
+            child_->ensure(cur_local_);
+            if (cur_local_ < child_->num_chunks()) {
+                std::vector<int> allcols(ndata_);
+                std::iota(allcols.begin(), allcols.end(), 0);
+                std::shared_ptr<arrow::Table> t;
+                arrow::Status st = child_->read_chunk(cur_local_, allcols, &t);
+                ++cur_local_;
+                if (!st.ok()) { read_status_ = st; all_read_ = true; return st; }
+
+                auto combined = t->CombineChunks();
+                if (!combined.ok()) {
+                    read_status_ = combined.status(); all_read_ = true;
+                    return read_status_;
+                }
+                int64_t n = (*combined)->num_rows();
+                if (n == 0) continue;   // empty chunk — nothing to retain
+
+                std::vector<std::shared_ptr<arrow::Array>> arrs;
+                arrs.reserve(ndata_ + part_keys_.size());
+                for (int c = 0; c < ndata_; ++c)
+                    arrs.push_back((*combined)->column(c)->chunk(0));
+                for (size_t k = 0; k < part_keys_.size(); ++k) {
+                    auto pa = partition_array(k, n);
+                    if (!pa.ok()) { read_status_ = pa.status(); all_read_ = true;
+                                    return read_status_; }
+                    arrs.push_back(*pa);
+                }
+                auto batch = arrow::RecordBatch::Make(schema_, n, arrs);
+                stream_retain(batches_, batch_first_row_, batch_num_rows_,
+                              rows_so_far_, retain_all_, evicted_any_, std::move(batch));
+                return arrow::Status::OK();
+            }
+
+            // Current file drained — surface any read error, then move on.
+            if (!child_->read_status().ok()) {
+                read_status_ = child_->read_status();
+                all_read_ = true; return read_status_;
+            }
+            child_.reset();
+            ++cur_file_;
+        }
+    }
+
+    // Walk DIR, collecting data files and their Hive partitions. Populates the
+    // members; returns an error string on a bad layout.
+    std::string discover(const std::string& dir) {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        for (fs::recursive_directory_iterator
+                 it(dir, fs::directory_options::skip_permission_denied, ec), end;
+             it != end; it.increment(ec)) {
+            if (ec) break;
+            if (!it->is_regular_file(ec)) continue;
+            std::string base = it->path().filename().string();
+            if (base.empty() || base[0] == '.' || base[0] == '_') continue;  // hidden / _SUCCESS
+            std::string g = dataset::format_group(base);
+            if (g.empty()) continue;                       // sidecar / non-data file
+            if (group_.empty()) group_ = g;
+            else if (g != group_)
+                return "'" + dir + "': directory mixes " + group_ + " and " + g +
+                       " files; a dataset must be a single format";
+            dataset::DsFile f;
+            f.path = it->path().string();
+            fs::path rel = fs::relative(it->path(), dir, ec);
+            for (const auto& comp : rel.parent_path()) {
+                std::string c = comp.string();
+                auto eq = c.find('=');
+                if (eq != std::string::npos && eq > 0)
+                    f.parts.emplace_back(c.substr(0, eq), c.substr(eq + 1));
+            }
+            files_.push_back(std::move(f));
+        }
+        if (files_.empty())
+            return "'" + dir + "': no supported data files found "
+                   "(.parquet / .arrow / .feather / .orc / .csv / .tsv / .json / "
+                   ".ndjson / .jsonl, optionally .gz / .zst)";
+        std::sort(files_.begin(), files_.end(),
+                  [](const dataset::DsFile& a, const dataset::DsFile& b) {
+                      return a.path < b.path;
+                  });
+        // Partition keys must be identical across every file (Hive guarantees
+        // this); the first file's keys are canonical.
+        for (const auto& kv : files_[0].parts) part_keys_.push_back(kv.first);
+        for (const auto& f : files_) {
+            std::vector<std::string> fk;
+            for (const auto& kv : f.parts) fk.push_back(kv.first);
+            if (fk != part_keys_)
+                return "'" + dir + "': inconsistent partition layout — '" +
+                       f.path + "' does not carry the same key=value directories "
+                       "as the other files";
+        }
+        // A partition key is an integer column only if every value is a canonical
+        // integer; otherwise it stays a string.
+        part_is_int_.assign(part_keys_.size(), true);
+        for (const auto& f : files_)
+            for (size_t k = 0; k < part_keys_.size(); ++k)
+                if (!dataset::is_canonical_int(f.parts[k].second))
+                    part_is_int_[k] = false;
+        return "";
+    }
+
+public:
+    static std::string open(const std::string& dir, const Config& cfg,
+                            std::unique_ptr<DatasetSource>* out) {
+        auto self = std::make_unique<DatasetSource>();
+        self->label_ = dir;
+
+        std::string derr = self->discover(dir);
+        if (!derr.empty()) return derr;
+
+        // Children are opened raw: the row/range operators apply to the dataset
+        // as a whole, above this source, not per file.
+        self->child_cfg_               = cfg;
+        self->child_cfg_.region.clear();
+        self->child_cfg_.regions_file.clear();
+        self->child_cfg_.head_rows     = 0;
+        self->child_cfg_.head_rows_set = false;
+        self->child_cfg_.bam_tags.clear();
+
+        // The first file fixes the data schema; the unified schema appends one
+        // column per partition key.
+        {
+            std::unique_ptr<TabularSource> first;
+            std::string e = open_source_dispatch(self->files_[0].path,
+                                                 self->child_cfg_, &first);
+            if (!e.empty())
+                return "'" + self->files_[0].path + "': " + e;
+            self->data_schema_ = first->schema();
+            self->ndata_ = self->data_schema_->num_fields();
+            self->child_ = std::move(first);   // reused as the first child to read
+        }
+        // Partition columns are appended after the data columns, one per key.
+        // (A key that also names a data column is rare — Hive keeps the partition
+        // value in the path, not the file — and would just appear twice; the
+        // schema and each batch stay in lock-step either way.)
+        arrow::FieldVector fields = self->data_schema_->fields();
+        for (size_t k = 0; k < self->part_keys_.size(); ++k)
+            fields.push_back(arrow::field(
+                self->part_keys_[k],
+                self->part_is_int_[k] ? arrow::int64() : arrow::utf8()));
+        self->schema_ = arrow::schema(fields);
+
+        auto st = self->advance();
+        if (!st.ok()) return st.ToString();
+        *out = std::move(self);
+        return "";
+    }
+
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    int64_t total_rows() const override { return all_read_ ? rows_so_far_ : -1; }
+    int     num_chunks() const override { return (int)batches_.size(); }
+    ChunkMeta chunk_meta(int i) const override {
+        return {batch_first_row_[i], batch_num_rows_[i]};
+    }
+    void set_retain_all(bool b) override { retain_all_ = b; }
+    bool evicted_any() const override { return evicted_any_; }
+    void ensure(int i) override {
+        while (!all_read_ && (int)batches_.size() <= i) {
+            auto st = advance();
+            if (!st.ok()) { if (read_status_.ok()) read_status_ = st; break; }
+        }
+    }
+    arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
+                              std::shared_ptr<arrow::Table>* out) override {
+        ensure(i);
+        if (i >= (int)batches_.size())
+            return arrow::Status::IndexError("chunk ", i, " out of range");
+        if (!batches_[i])
+            return arrow::Status::CapacityError(
+                "chunk ", i, " was released by the streaming window");
+        *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
+        return arrow::Status::OK();
+    }
+    arrow::Status read_status() const override { return read_status_; }
+    const std::string& path() const override { return label_; }
+    std::string footer() const override {
+        std::string f = "Format: dataset (" + group_ + ")  |  Files: " +
+                        std::to_string(files_.size());
+        if (!part_keys_.empty()) {
+            f += "  |  Partitions: ";
+            for (size_t k = 0; k < part_keys_.size(); ++k)
+                f += (k ? ", " : "") + part_keys_[k];
+        }
+        return f;
+    }
+};
+
 static std::string open_source_dispatch(const std::string& path, const Config& cfg,
                                 std::unique_ptr<TabularSource>* out) {
     // ── Determine file kind ──────────────────────────────────────────────────
@@ -14553,6 +14879,23 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         if (cfg.pileup)
             return "--tags cannot be combined with --pileup — pileup rows are "
                    "per-base counts, not alignment records";
+    }
+
+    // A directory is a dataset: concatenate the data files under it. Checked
+    // before the format ladder (a directory has no extension to match) and
+    // before --text (which has nothing to sniff on a directory).
+    {
+        std::error_code ec;
+        if (std::filesystem::is_directory(path, ec)) {
+            if (!cfg.region.empty())
+                return "'" + path + "': -r/--region is not supported on a "
+                       "directory dataset";
+            std::unique_ptr<DatasetSource> src;
+            std::string err = DatasetSource::open(path, cfg, &src);
+            if (!err.empty()) return err;
+            *out = std::move(src);
+            return "";
+        }
     }
 
     // --text: read it as plain text whatever the extension says. The escape
@@ -20955,8 +21298,10 @@ static std::string preflight_path(const std::string& path) {
             default:     return std::string("cannot stat: ") + std::strerror(errno);
         }
     }
-    if (S_ISDIR(st.st_mode)) return "path is a directory";
-    if (!S_ISREG(st.st_mode) && !S_ISFIFO(st.st_mode) && !S_ISLNK(st.st_mode))
+    // A directory is a dataset (concatenated data files); let the dataset
+    // opener validate its contents and report any problem.
+    if (!S_ISDIR(st.st_mode) &&
+        !S_ISREG(st.st_mode) && !S_ISFIFO(st.st_mode) && !S_ISLNK(st.st_mode))
         return "not a regular file";
     if (::access(path.c_str(), R_OK) != 0) return "permission denied";
     return "";
