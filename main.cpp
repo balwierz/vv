@@ -14917,6 +14917,43 @@ static std::string open_text(const std::string& path, const Config& cfg,
     return "";
 }
 
+// A markdown file's embedded GFM tables, one per tab (like a workbook's
+// sheets). The CLI renders markdown in main() before it ever reaches
+// open_source(); the other libvvcore consumers — the Qt GUI and the KDE
+// plugins — do go through open_source(), where a .md previously fell to the
+// plain-text reader and showed as a single `line` column. This surfaces its
+// tables instead. A markdown file with no table is left to the text reader.
+class MarkdownTablesSource : public MemoryTableSource {
+    std::vector<std::shared_ptr<arrow::Table>> tables_;
+    std::vector<std::string>                   captions_;
+    size_t                                     which_;
+
+    static std::string tab_name(const std::vector<std::string>& caps, size_t i) {
+        if (i < caps.size() && !caps[i].empty()) return caps[i];
+        return "table " + std::to_string(i + 1);
+    }
+public:
+    MarkdownTablesSource(std::vector<std::shared_ptr<arrow::Table>> tables,
+                         std::vector<std::string> captions,
+                         const std::string& path, size_t which)
+        : MemoryTableSource(tables[which], path,
+              "Format: markdown table (" + tab_name(captions, which) + ")"),
+          tables_(std::move(tables)), captions_(std::move(captions)),
+          which_(which) {}
+
+    std::string tab_label() const override { return tab_name(captions_, which_); }
+
+    std::vector<std::unique_ptr<TabularSource>> expand_tabs() const override {
+        std::vector<std::unique_ptr<TabularSource>> out;
+        for (size_t i = 0; i < tables_.size(); ++i) {
+            if (i == which_) continue;
+            out.push_back(std::make_unique<MarkdownTablesSource>(
+                tables_, captions_, path(), i));
+        }
+        return out;
+    }
+};
+
 // Opens a single file — declared here so DatasetSource (below) can open its
 // member files, and defined further down with the directory branch that reaches
 // DatasetSource. A member file is never itself a directory, so there is no
@@ -15552,6 +15589,21 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
+    } else if (fends_ci(path, ".md")    || fends_ci(path, ".markdown") ||
+               fends_ci(path, ".mdown") || fends_ci(path, ".mkd")) {
+        // The CLI renders markdown in main() before reaching open_source(); a
+        // caller that gets here (the GUI, the KDE plugins) is a grid viewer, so
+        // surface the file's GFM tables — each a tab. A markdown file with no
+        // table (or a parse error) falls through to the text reader below, which
+        // shows its source, as it did before.
+        md::MarkdownDoc doc;
+        std::string merr = md::parse_markdown_file(path, /*term_w=*/80, &doc);
+        if (merr.empty() && !doc.tables.empty()) {
+            *out = std::make_unique<MarkdownTablesSource>(
+                doc.tables, doc.table_captions, path, 0);
+            return "";
+        }
+        return open_text(path, cfg, out);
     } else if (fends_ci(det, ".vcf")   || fends_ci(det, ".vcf.gz")) {
         dk = DelimKind::VCF;
     } else if (fends_ci(det, ".gff")   || fends_ci(det, ".gff.gz")  ||
