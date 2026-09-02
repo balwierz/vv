@@ -652,6 +652,26 @@ PARQUET_REJECT=$("$VV" - < "$DATA/tiny.parquet" 2>&1 || true)
 assert_contains "stdin_rejects_parquet" "$PARQUET_REJECT" "seekable"
 
 echo
+echo '── zstd (.zst) auto-decompression ─────────────────────'
+# The delimited-text and plain-text readers accept a zstandard wrapper on top
+# of any format they already read, detected by content: from the file suffix
+# for DelimitedSource, from the leading magic bytes for text and for stdin.
+# Range queries need bgzip + tabix and so stay gzip-only; only whole-file reads
+# are exercised here. Each .zst read must reproduce its uncompressed read byte
+# for byte.
+if require "zstd roundtrip" zstd; then
+    for base in tiny.tsv tiny.csv tiny.bed; do
+        zstd -qf "$DATA/$base" -o "$TMP/$base.zst"
+        "$VV" --tsv --no-header "$DATA/$base"   > "$TMP/${base}.plain.out" 2>&1
+        "$VV" --tsv --no-header "$TMP/$base.zst" > "$TMP/${base}.zst.out"   2>&1
+        assert_eq_file "zst_matches_plain_${base}" "$TMP/${base}.zst.out" "$TMP/${base}.plain.out"
+    done
+    # stdin, no extension: the codec is chosen from the leading magic bytes.
+    zstd -qc "$DATA/tiny.tsv" | "$VV" --tsv --no-header - > "$TMP/stdin_zst.out"
+    assert_eq_file "stdin_tsv_zst_matches_file" "$TMP/stdin_zst.out" "$GOLDEN/tsv_tsv.expected"
+fi
+
+echo
 echo "── --schema / --describe / --select / --filter / --json ─"
 SCHEMA_OUT=$("$VV" --schema "$DATA/tiny.lociss")
 assert_contains "schema_has_chromosome" "$SCHEMA_OUT" "Chromosome"
@@ -1096,7 +1116,7 @@ known |= {e.lower() + '.gz' for f in formats if f['gz'] for e in f['extensions']
 src = open(sys.argv[2]).read()
 # Extensions the ladder branches on but that are NOT format extensions:
 # sidecar index files, output suffixes, and the compression suffix itself.
-allow = {'.gz', '.bai', '.csi', '.crai', '.tbi', '.fai', '.gzi', '.idx', '.bgz',
+allow = {'.gz', '.zst', '.zstd', '.bai', '.csi', '.crai', '.tbi', '.fai', '.gzi', '.idx', '.bgz',
          # Recognised ONLY to produce a better error than the generic one.
          # Deliberately absent from the registry: advertising a format vv
          # cannot open is the thing this check exists to prevent.

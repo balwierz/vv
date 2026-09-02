@@ -159,9 +159,16 @@ one array per TUI tab. 1-D and 2-D arrays become rows and columns; 3-D+
 arrays are sliced along the leading axis, navigable with \fB[\fR / \fB]\fR
 in the viewer.
 .IP \(bu 2
-\fB-\fR \(en read text format from stdin (auto-detects gzip)
+\fB-\fR \(en read text format from stdin (auto-detects gzip and zstandard)
 .PP
 Unknown extensions are sniffed by magic bytes and delimiter heuristics.
+.PP
+The delimited-text formats (VCF, GFF/GTF, BED and the peak family, TSV/CSV,
+mpileup, PAF) and plain text also read a zstandard wrapper: a
+\fB.csv.zst\fR, \fB.bed.zst\fR or bare \fB.zst\fR is decompressed on the fly,
+by content for stdin and text and by suffix otherwise. FASTA/FASTQ
+compression stays gzip-only (bgzf), and range queries (\fB-r\fR) require a
+bgzipped + tabix-indexed file, so they need gzip rather than zstandard.
 .SH OPTIONS
 .SS Display
 .TP

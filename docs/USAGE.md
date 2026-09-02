@@ -24,7 +24,8 @@ header-includes:
 formats. The same binary covers Parquet / Arrow IPC / Feather / LociSSD,
 the htslib formats BAM / CRAM / SAM / VCF / BCF, the genomics text
 formats GFF3 / GTF / BED / PAF / FASTA / FASTQ, and plain delimited
-text (TSV / CSV) — gzip-decompressing on the fly where it makes sense.
+text (TSV / CSV) — gzip- or zstandard-decompressing on the fly where it
+makes sense.
 
 This manual covers every flag with a concrete example. The full flag
 reference also lives in `vv --help` and `man vv`.
@@ -78,7 +79,7 @@ would need horizontal scrolling.
 | Sequences (FASTA) | `.fa`, `.fasta`, `.fna`, `.faa`, `.ffn`, `.frn` (plus `.gz`)|
 | Sequencing reads  | `.fq`, `.fastq` (plus `.gz`)                                |
 | Delimited text    | `.tsv`, `.csv` (plus `.gz`)                                 |
-| Stdin             | `vv -` reads any text format from stdin (auto-gunzip)       |
+| Stdin             | `vv -` reads any text format from stdin (auto-decompresses gzip / zstd) |
 
 Unknown extensions are auto-detected by magic bytes (Parquet, Arrow IPC,
 Feather, BAM/BCF/CRAM) or delimiter heuristic (TSV vs. CSV).
@@ -241,7 +242,7 @@ other escape sequence (cursor moves, OSC window-title sets) is dropped whole
 
 ### Which files count as text
 
-1. `.txt`, `.text`, `.log` — plus `.gz` on any of them.
+1. `.txt`, `.text`, `.log` — plus `.gz` or `.zst` on any of them.
 2. Otherwise, whatever the extension and magic bytes say (a `.tsv` of prose is
    still a table; a `foo.dat` starting with `PAR1` is still Parquet).
 3. Otherwise the first 8 KiB are sniffed. Text is shown, with a note on stderr
@@ -249,8 +250,12 @@ other escape sequence (cursor moves, OSC window-title sets) is dropped whole
    error telling you to rename it, so it should not silently become a text
    dump. Extension-less files (`README`, `Makefile`) get no note.
 
-gzip is detected by magic rather than by suffix, so `syslog.1.gz` works as
-well as `notes.txt.gz`.
+Compression is detected by magic rather than by suffix, so `syslog.1.gz` works
+as well as `notes.txt.gz`, and a zstandard-wrapped `dump.zst` works as well as
+`notes.txt.zst`. The delimited-text readers (VCF, GFF/GTF, BED and the peak
+family, TSV/CSV, mpileup, PAF) accept the same `.zst` wrapper. FASTA/FASTQ
+compression stays gzip-only (bgzf), and range queries (`-r`) still require a
+bgzipped + tabix-indexed file — so those need gzip, not zstandard.
 
 **Binary is refused**, deliberately unlike `less`:
 

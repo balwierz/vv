@@ -767,6 +767,11 @@ static void print_formats(bool as_json) {
                     f.streaming ? "stream" : "random",
                     f.exts);
     }
+    std::printf(
+        "\ngz: reads gzip-compressed input. The delimited-text and plain-text\n"
+        "readers also accept zstandard (.zst / .zstd), detected by content;\n"
+        "FASTA/FASTQ compression is gzip-only (bgzf). Range queries (-r) need\n"
+        "bgzip + a tabix index and so require gzip, not zstd.\n");
 }
 
 static void print_usage(const char* prog) {
@@ -781,8 +786,8 @@ static void print_usage(const char* prog) {
         "  .bam  .cram                  binary/compressed sequence alignments (htslib)\n"
         "  .sam                        text sequence alignments\n"
         "  .vcf  .vcf.gz               variant calls\n"
-        "  .gff  .gff3  .gtf           and .gz variants  genome annotations\n"
-        "  .bed  .tsv  .csv            and .gz variants\n"
+        "  .gff  .gff3  .gtf           and .gz / .zst variants  genome annotations\n"
+        "  .bed  .tsv  .csv            and .gz / .zst variants\n"
         "  .pileup  .mpileup  .pile        samtools mpileup output (single- or multi-sample)\n"
         "  .narrowPeak  .broadPeak  .gappedPeak  .bedGraph  .bg  .tagAlign\n"
         "                              ENCODE peak / signal formats (BED+typed cols)\n"
@@ -806,10 +811,10 @@ static void print_usage(const char* prog) {
         "  .fq  .fastq                 sequencing reads (FASTQ, plus .gz)\n"
         "  .bcf                        binary VCF (htslib)\n"
         "  .paf  .paf.gz               minimap2 pairwise alignments\n"
-        "  .txt  .text  .log           plain text (also .gz; viewed like less -SN,\n"
+        "  .txt  .text  .log           plain text (also .gz / .zst; viewed like less -SN,\n"
         "                              not tabulated). The fallback for any file\n"
         "                              no other format claims.\n"
-        "  -                           read text format from stdin (auto-gunzip)\n"
+        "  -                           read text format from stdin (auto-decompress gzip/zstd)\n"
         "  (`vv --formats` prints this table with capability columns;\n"
         "   add --json for the machine-readable form)\n"
         "  (unknown extensions: identified by magic bytes, else sniffed as text;\n"
@@ -5468,8 +5473,10 @@ class DelimitedSource : public TabularSource {
             return "Cannot open '" + path + "': " + maybe_raw.status().ToString();
         auto raw = maybe_raw.ValueOrDie();
         std::shared_ptr<arrow::io::InputStream> input = raw;
-        if (is_gz) {
-            auto mc = arrow::util::Codec::Create(arrow::Compression::GZIP);
+        if (is_gz) {   // "is_gz" == the stream is compressed; pick the codec.
+            auto comp = (fends_ci(path, ".zst") || fends_ci(path, ".zstd"))
+                            ? arrow::Compression::ZSTD : arrow::Compression::GZIP;
+            auto mc = arrow::util::Codec::Create(comp);
             if (!mc.ok()) return mc.status().ToString();
             auto ci = arrow::io::CompressedInputStream::Make(mc->get(), raw);
             if (!ci.ok()) return ci.status().ToString();
@@ -5590,7 +5597,11 @@ public:
         self->kind_      = kind;
         self->delimiter_ = (kind == DelimKind::CSV) ? ',' : '\t';
 
-        bool is_gz = fends_ci(path, ".gz");
+        // "is_gz" means the byte stream is compressed (non-seekable). Both a
+        // gzip (.gz) and a zstandard (.zst / .zstd) wrapper qualify; open_stream
+        // selects the matching codec.
+        bool is_gz = fends_ci(path, ".gz") ||
+                     fends_ci(path, ".zst") || fends_ci(path, ".zstd");
 
         std::shared_ptr<arrow::io::ReadableFile>  raw;
         std::shared_ptr<arrow::io::InputStream>   input;
@@ -7675,6 +7686,24 @@ static std::string text_binary_error(const std::string& what,
            "`vv --formats`; it has no hex view.";
 }
 
+// Return the compression codec a file starts with — gzip (magic 1f 8b) or
+// zstandard (magic 28 b5 2f fd) — else UNCOMPRESSED. Detects by content, not
+// suffix, so `syslog.1.gz` or a bare `dump.zst` work too. Rewinds `rf`.
+static arrow::Compression::type sniff_stream_codec(
+        const std::shared_ptr<arrow::io::ReadableFile>& rf) {
+    auto head = rf->Read(4);
+    arrow::Compression::type comp = arrow::Compression::UNCOMPRESSED;
+    if (head.ok() && (*head)->size() >= 2) {
+        const uint8_t* m = (*head)->data();
+        int64_t n = (*head)->size();
+        if (m[0] == 0x1f && m[1] == 0x8b) comp = arrow::Compression::GZIP;
+        else if (n >= 4 && m[0] == 0x28 && m[1] == 0xB5 &&
+                 m[2] == 0x2F && m[3] == 0xFD) comp = arrow::Compression::ZSTD;
+    }
+    (void)rf->Seek(0);
+    return comp;
+}
+
 class TextSource : public TabularSource {
     std::string                            path_;
     std::shared_ptr<arrow::Schema>         schema_;
@@ -7690,7 +7719,9 @@ class TextSource : public TabularSource {
     mutable bool                           final_newline_ = true;
     mutable std::string                    pending_;      // partial last line
     mutable arrow::Status                  read_status_;
-    bool                                   gz_ = false;
+    bool                                   gz_ = false;   // compressed stream
+    arrow::Compression::type               comp_ =
+        arrow::Compression::UNCOMPRESSED;                 // gzip or zstd, if gz_
 
     static constexpr int    BATCH_SIZE = 4096;
     static constexpr size_t READ_SIZE  = 64 * 1024;
@@ -7751,15 +7782,20 @@ public:
                             std::unique_ptr<TextSource>* out) {
         auto self = std::make_unique<TextSource>();
         self->path_ = path;
-        self->gz_   = gz;
         self->schema_ = arrow::schema({arrow::field("line", arrow::utf8())});
 
         auto rf = arrow::io::ReadableFile::Open(path);
         if (!rf.ok())
             return "Cannot open '" + path + "': " + rf.status().ToString();
-        std::shared_ptr<arrow::io::InputStream> in = rf.ValueOrDie();
-        if (gz) {
-            auto codec = arrow::util::Codec::Create(arrow::Compression::GZIP);
+        auto raw = rf.ValueOrDie();
+        // Detect gzip / zstd by magic (the `gz` hint from the caller is
+        // suffix-based and may be blank for a magic-only match).
+        self->comp_ = sniff_stream_codec(raw);
+        (void)gz;
+        self->gz_ = (self->comp_ != arrow::Compression::UNCOMPRESSED);
+        std::shared_ptr<arrow::io::InputStream> in = raw;
+        if (self->gz_) {
+            auto codec = arrow::util::Codec::Create(self->comp_);
             if (!codec.ok()) return codec.status().ToString();
             auto ci = arrow::io::CompressedInputStream::Make(codec->get(), in);
             if (!ci.ok()) return ci.status().ToString();
@@ -7812,7 +7848,9 @@ public:
     arrow::Status read_status() const override { return read_status_; }
     const std::string& path() const override { return path_; }
     std::string footer() const override {
-        return std::string("Format: text") + (gz_ ? " (gzip)" : "");
+        return std::string("Format: text") +
+               (comp_ == arrow::Compression::GZIP ? " (gzip)" :
+                comp_ == arrow::Compression::ZSTD ? " (zstd)" : "");
     }
     // True when the file's last line carries no terminator, so a verbatim
     // dump can reproduce that.
@@ -14026,20 +14064,13 @@ static std::string open_text(const std::string& path, const Config& cfg,
         return "Cannot open '" + path + "': " + rf.status().ToString();
     std::shared_ptr<arrow::io::InputStream> in = rf.ValueOrDie();
 
-    // gzip is detected by magic, not by suffix, so `syslog.1.gz` and a bare
-    // `dump.gz` work as well as `notes.txt.gz`.
-    bool gz = false;
-    {
-        auto head = in->Read(2);
-        if (head.ok() && (*head)->size() >= 2) {
-            const uint8_t* m = (*head)->data();
-            gz = (m[0] == 0x1f && m[1] == 0x8b);
-        }
-        auto st = rf.ValueOrDie()->Seek(0);
-        if (!st.ok()) return "Cannot rewind '" + path + "': " + st.ToString();
-    }
+    // Compression is detected by magic, not by suffix, so `syslog.1.gz` and a
+    // bare `dump.zst` work as well as `notes.txt.gz`. Decompress before sniffing
+    // so the text/binary check sees the real content.
+    arrow::Compression::type comp = sniff_stream_codec(rf.ValueOrDie());
+    bool gz = (comp != arrow::Compression::UNCOMPRESSED);
     if (gz) {
-        auto codec = arrow::util::Codec::Create(arrow::Compression::GZIP);
+        auto codec = arrow::util::Codec::Create(comp);
         if (!codec.ok()) return codec.status().ToString();
         auto ci = arrow::io::CompressedInputStream::Make(codec->get(), in);
         if (!ci.ok()) return ci.status().ToString();
@@ -14071,6 +14102,13 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
     // ── Determine file kind ──────────────────────────────────────────────────
     bool        is_parquet = false;
     DelimKind   dk         = DelimKind::TSV;
+
+    // A trailing .zst / .zstd is a compression wrapper, not a format: strip it
+    // so a foo.csv.zst dispatches like foo.csv (the delimited / text readers
+    // then decompress it). A .gz wrapper stays and is matched explicitly below.
+    std::string det = path;
+    if      (fends_ci(det, ".zstd")) det.resize(det.size() - 5);
+    else if (fends_ci(det, ".zst"))  det.resize(det.size() - 4);
 
     // --text: read it as plain text whatever the extension says. The escape
     // hatch for a textual-but-tabular file — `vv --text notes.md` shows the
@@ -14116,11 +14154,17 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         std::shared_ptr<arrow::io::InputStream> input =
             std::make_shared<FdInputStream>(STDIN_FILENO);
 
-        bool is_gz = starts_with("\x1f\x8b", 2);   // plain gzip → wrap
-        // Reattach the sniffed bytes BEFORE the gzip wrapper sees the stream.
+        // Compressed stdin: gzip (1f 8b) or zstandard (28 b5 2f fd). BGZF (BAM/
+        // BCF) shares the gzip magic but was already rejected above by its
+        // 1f 8b 08 04 header.
+        arrow::Compression::type comp = arrow::Compression::UNCOMPRESSED;
+        if      (starts_with("\x1f\x8b", 2))         comp = arrow::Compression::GZIP;
+        else if (starts_with("\x28\xB5\x2F\xFD", 4)) comp = arrow::Compression::ZSTD;
+        bool is_gz = (comp != arrow::Compression::UNCOMPRESSED);
+        // Reattach the sniffed bytes BEFORE the decompressor sees the stream.
         input = std::make_shared<PrependInputStream>(std::move(sniff), input);
         if (is_gz) {
-            auto codec = arrow::util::Codec::Create(arrow::Compression::GZIP);
+            auto codec = arrow::util::Codec::Create(comp);
             if (!codec.ok()) return codec.status().ToString();
             auto ci = arrow::io::CompressedInputStream::Make(codec->get(), input);
             if (!ci.ok()) return ci.status().ToString();
@@ -14323,33 +14367,33 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
-    } else if (fends_ci(path, ".vcf")   || fends_ci(path, ".vcf.gz")) {
+    } else if (fends_ci(det, ".vcf")   || fends_ci(det, ".vcf.gz")) {
         dk = DelimKind::VCF;
-    } else if (fends_ci(path, ".gff")   || fends_ci(path, ".gff.gz")  ||
-               fends_ci(path, ".gff3")  || fends_ci(path, ".gff3.gz") ||
-               fends_ci(path, ".gtf")   || fends_ci(path, ".gtf.gz")) {
+    } else if (fends_ci(det, ".gff")   || fends_ci(det, ".gff.gz")  ||
+               fends_ci(det, ".gff3")  || fends_ci(det, ".gff3.gz") ||
+               fends_ci(det, ".gtf")   || fends_ci(det, ".gtf.gz")) {
         dk = DelimKind::GFF;
-    } else if (fends_ci(path, ".sam")) {
+    } else if (fends_ci(det, ".sam")) {
         dk = DelimKind::SAM;
-    } else if (fends_ci(path, ".paf") || fends_ci(path, ".paf.gz")) {
+    } else if (fends_ci(det, ".paf") || fends_ci(det, ".paf.gz")) {
         dk = DelimKind::PAF;
-    } else if (fends_ci(path, ".bed")        || fends_ci(path, ".bed.gz")
-            || fends_ci(path, ".narrowPeak") || fends_ci(path, ".narrowPeak.gz")
-            || fends_ci(path, ".broadPeak")  || fends_ci(path, ".broadPeak.gz")
-            || fends_ci(path, ".gappedPeak") || fends_ci(path, ".gappedPeak.gz")
-            || fends_ci(path, ".bedGraph")   || fends_ci(path, ".bedGraph.gz")
-            || fends_ci(path, ".bg")         || fends_ci(path, ".bg.gz")
-            || fends_ci(path, ".tagAlign")   || fends_ci(path, ".tagAlign.gz")) {
+    } else if (fends_ci(det, ".bed")        || fends_ci(det, ".bed.gz")
+            || fends_ci(det, ".narrowPeak") || fends_ci(det, ".narrowPeak.gz")
+            || fends_ci(det, ".broadPeak")  || fends_ci(det, ".broadPeak.gz")
+            || fends_ci(det, ".gappedPeak") || fends_ci(det, ".gappedPeak.gz")
+            || fends_ci(det, ".bedGraph")   || fends_ci(det, ".bedGraph.gz")
+            || fends_ci(det, ".bg")         || fends_ci(det, ".bg.gz")
+            || fends_ci(det, ".tagAlign")   || fends_ci(det, ".tagAlign.gz")) {
         dk = DelimKind::BED;
-    } else if (fends_ci(path, ".pileup")  || fends_ci(path, ".pileup.gz")
-            || fends_ci(path, ".mpileup") || fends_ci(path, ".mpileup.gz")
-            || fends_ci(path, ".pile")    || fends_ci(path, ".pile.gz")) {
+    } else if (fends_ci(det, ".pileup")  || fends_ci(det, ".pileup.gz")
+            || fends_ci(det, ".mpileup") || fends_ci(det, ".mpileup.gz")
+            || fends_ci(det, ".pile")    || fends_ci(det, ".pile.gz")) {
         dk = DelimKind::Mpileup;
-    } else if (fends_ci(path, ".tsv")   || fends_ci(path, ".tsv.gz")) {
+    } else if (fends_ci(det, ".tsv")   || fends_ci(det, ".tsv.gz")) {
         dk = DelimKind::TSV;
-    } else if (fends_ci(path, ".csv")   || fends_ci(path, ".csv.gz")) {
+    } else if (fends_ci(det, ".csv")   || fends_ci(det, ".csv.gz")) {
         dk = DelimKind::CSV;
-    } else if (text_ext(path)) {
+    } else if (text_ext(det)) {
         // Known text extension. Still sniffed: a `.log` holding a core dump
         // is binary whatever it is called, and the sniff is what keeps the
         // "vv never dumps binary to your terminal" promise true.
