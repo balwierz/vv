@@ -1798,6 +1798,36 @@ rm -f "$SORTNULL"
 # An unknown sort column is a clean error, exit 1.
 assert_exit_code "sort_unknown_column_exit1" 1 "$VV" --sort nope "$DATA/tiny.parquet"
 
+# ── --distinct: drop duplicate rows (SQL SELECT DISTINCT) ──────────────────────
+DISTF="$TMP/dup.csv"
+printf 'chrom,strand,val\nchr1,+,10\nchr1,+,20\nchr2,-,30\nchr1,+,10\nchr2,-,40\n' > "$DISTF"
+# Full-row distinct keeps the first occurrence and drops the exact duplicate.
+DIST_ALL=$("$VV" --distinct --tsv --no-header "$DISTF")
+assert_eq_file_inline "distinct_full_row" "$DIST_ALL" \
+    "$(printf 'chr1\t+\t10\nchr1\t+\t20\nchr2\t-\t30\nchr2\t-\t40')"
+assert_eq_file_inline "distinct_full_row_count" "$("$VV" --distinct --count "$DISTF")" "4"
+# Over the selected columns: distinct chromosomes, distinct (chrom,strand) pairs.
+DIST_CHR=$("$VV" --distinct --select chrom --tsv --no-header "$DISTF" | tr '\n' ' ')
+assert_eq_file_inline "distinct_select_one" "$DIST_CHR" "chr1 chr2 "
+assert_eq_file_inline "distinct_select_one_count" \
+    "$("$VV" --distinct --select chrom --count "$DISTF")" "2"
+DIST_PAIR=$("$VV" --distinct --select chrom,strand --tsv --no-header "$DISTF" | tr '\n' ' ')
+assert_eq_file_inline "distinct_select_pair" "$DIST_PAIR" "$(printf 'chr1\t+ chr2\t- ')"
+# Honours --filter (filter first, then dedup) and composes with --sort.
+DIST_FILT=$("$VV" --distinct --filter 'val > 15' --count "$DISTF")
+assert_eq_file_inline "distinct_after_filter" "$DIST_FILT" "3"
+DIST_SORT=$("$VV" --distinct --select chrom --sort chrom:desc --tsv --no-header "$DISTF" | tr '\n' ' ')
+assert_eq_file_inline "distinct_then_sort" "$DIST_SORT" "chr2 chr1 "
+# A null cell is a value like any other, so two all-null rows collapse to one.
+DNULL="$TMP/dnull.csv"
+printf 'a,b\n1,\n1,\n2,x\n' > "$DNULL"
+assert_eq_file_inline "distinct_nulls" "$("$VV" --distinct --count "$DNULL")" "2"
+# Footer reports kept / total.
+DIST_FOOT=$("$VV" --distinct --color=never "$DISTF" 2>&1)
+assert_contains "distinct_footer" "$DIST_FOOT" "Distinct rows: 4 / 5"
+# An unknown --select column is a clean error.
+assert_exit_code "distinct_unknown_column_exit1" 1 "$VV" --distinct --select nope "$DISTF"
+
 # --coords: NCBI (1-based inclusive) input converts to UCSC (0-based
 # half-open). "chr1:101-200" NCBI == "chr1:100-200" UCSC (default).
 COORDS_UCSC=$("$VV" -r 'chr1:100-200' --tsv --no-header "$DATA/tiny.parquet")

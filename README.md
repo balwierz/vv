@@ -651,6 +651,9 @@ $ vv --heatmap --image-mode ascii embedding.npy > grid.txt
   before still works.
 - **`--sample N`** — reservoir sample uniformly; honours `--filter`.
 - **`--unique COL[,COL,...]`** — distinct-value counts per column.
+- **`--distinct`** — drop duplicate rows (SQL `SELECT DISTINCT`), over the shown
+  columns: `--select chrom --distinct` lists distinct chromosomes, `--distinct
+  --count` counts distinct rows. Honours `--filter`; composes with `--sort`.
 - **`--tail N`** — last N rows instead of head-N.
 - **`--validate`** — LociSSD invariants check (sort order,
   `MaxEndSoFar`, manifest consistency). Non-zero exit on failure;
@@ -698,7 +701,7 @@ a headless browser such as `chromium`).
 | `--parquet OUT`            | convert input to a Parquet file (or `-` for stdout)  |
 | `--heatmap`                | render numeric columns as a terminal heatmap (`--image-mode auto/kitty/sixel/halfblock/ascii`) |
 | `--tab <name>`             | view a named component tab from the CLI (AnnData `obs`/`var`/`X`, a workbook sheet) — e.g. `vv cells.h5ad --tab obs -n 20` |
-| `--schema` / `--describe` / `--stats` / `--unique` / `--sample` | data-exploration modes |
+| `--schema` / `--describe` / `--stats` / `--unique` / `--distinct` / `--sample` / `--contigs` | data-exploration modes |
 | `--validate`               | LociSSD invariants check; exits non-zero on failure  |
 | `--vertical`               | transposed (vh) preview                              |
 | `--theme <name>`           | `default`/`dark`/`light`/`solarized-dark`/`solarized-light` |

@@ -56,6 +56,8 @@ struct Config {
     bool        stats_only     = false;  // --stats: Parquet metadata dump (no data read)
     bool        count          = false;  // --count: print row count and exit
     std::string unique_cols;             // --unique COL[,COL,...] : distinct value counts
+    bool        distinct       = false;  // --distinct: drop duplicate rows (SQL
+                                         // SELECT DISTINCT), over the shown columns
     int         sample_n       = 0;      // --sample N (reservoir sample of N rows)
     std::string filter_expr;             // --filter "<col> <op> <literal> ..."
     std::string select_cols;             // --select Chr,Start,End (name-based projection)

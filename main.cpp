@@ -896,6 +896,10 @@ static void print_usage(const char* prog) {
         "                      (GRCh38, mm10, …). Reads no records; composes with\n"
         "                      --tsv / --json / --sort / --filter\n"
         "  --unique <cols>     comma-separated columns: print distinct-value counts\n"
+        "  --distinct          drop duplicate rows (SQL SELECT DISTINCT), keeping\n"
+        "                      the first of each. Over the shown columns, so\n"
+        "                      `--select chrom --distinct` lists distinct chroms;\n"
+        "                      honours --filter, composes with --sort / --count\n"
         "  --sample <N>        reservoir-sample N rows uniformly instead of head-N\n"
         "  --validate          check LociSSD invariants (sort order, MaxEndSoFar,\n"
         "                      manifest vs. data); exit non-zero on failure\n"
@@ -1104,6 +1108,8 @@ static Config parse_args(int argc, char** argv) {
             cfg.stats_only = true;
         } else if (!std::strcmp(argv[i], "--contigs")) {
             cfg.contigs = true;
+        } else if (!std::strcmp(argv[i], "--distinct")) {
+            cfg.distinct = true;
         } else if (!std::strcmp(argv[i], "--unique") && i + 1 < argc) {
             cfg.unique_cols = argv[++i];
         } else if (!std::strcmp(argv[i], "--sample") && i + 1 < argc) {
@@ -17354,6 +17360,130 @@ static std::string build_sort(std::unique_ptr<TabularSource>& src,
     return "";
 }
 
+// --distinct: SQL SELECT DISTINCT — drop duplicate rows, keeping the first
+// occurrence, over the columns that would be shown (honouring --select and
+// --filter). So `--select chrom --distinct` lists distinct chromosomes, and a
+// bare `--distinct` deduplicates whole displayed rows. Materialises like --sort
+// (a viewer convenience; a query engine is the tool for deduping huge files);
+// the gather uses AppendArraySlice, not a compute kernel. Produces a
+// MemoryTableSource of the projected, deduplicated rows and clears --select /
+// --filter, which it has already applied.
+static std::string build_distinct(std::unique_ptr<TabularSource>& src,
+                                  Config& cfg) {
+    // The columns to compare on (and to keep) are the ones the output would
+    // show: --select if given, else the visible set.
+    std::vector<std::string> unknown;
+    std::vector<int> proj = select_field_indices(*src, cfg, &unknown, false);
+    if (!unknown.empty())
+        return "--select: unknown column '" + unknown[0] + "'";
+    if (proj.empty())
+        return "--distinct: no columns to compare";
+
+    auto src_schema = src->schema();
+    int n_fields = src_schema->num_fields();
+    arrow::FieldVector pf;
+    for (int i : proj) pf.push_back(src_schema->field(i));
+    auto proj_schema = arrow::schema(pf);
+
+    FilterExpr fx; bool have_filter = false;
+    if (!cfg.filter_expr.empty()) {
+        std::string ferr;
+        if (!parse_filter_expr(cfg.filter_expr, *src_schema, &fx, &ferr))
+            return "--filter: " + ferr;
+        have_filter = true;
+    }
+
+    std::vector<int> all_cols;
+    for (int i = 0; i < n_fields; ++i) all_cols.push_back(i);
+
+    std::vector<std::shared_ptr<arrow::Table>> chunks;
+    for (int c = 0; ; ++c) {
+        src->ensure(c);
+        if (c >= src->num_chunks()) break;
+        std::shared_ptr<arrow::Table> tbl;
+        if (!src->read_chunk(c, all_cols, &tbl).ok()) continue;
+        if (have_filter) tbl = apply_filter(tbl, fx, all_cols);
+        if (tbl && tbl->num_rows() > 0) chunks.push_back(std::move(tbl));
+    }
+    std::string old_path = src->path();
+
+    std::shared_ptr<arrow::Table> master;
+    if (chunks.empty()) {
+        std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
+        for (int i = 0; i < n_fields; ++i)
+            cols.push_back(std::make_shared<arrow::ChunkedArray>(
+                arrow::ArrayVector{}, src_schema->field(i)->type()));
+        master = arrow::Table::Make(src_schema, cols, 0);
+    } else {
+        auto cat = arrow::ConcatenateTables(chunks);
+        if (!cat.ok()) return "--distinct: concat failed: " + cat.status().ToString();
+        master = cat.ValueOrDie();
+    }
+    int64_t N = master->num_rows();
+
+    // Flatten just the projected columns (for the key and the gather).
+    const int np = (int)proj.size();
+    std::vector<std::shared_ptr<arrow::Array>> flat((size_t)np);
+    for (int k = 0; k < np; ++k) {
+        auto ch = master->column(proj[k]);
+        if (ch->num_chunks() == 1) flat[(size_t)k] = ch->chunk(0);
+        else if (ch->num_chunks() == 0)
+            flat[(size_t)k] = arrow::MakeArrayOfNull(
+                src_schema->field(proj[k])->type(), 0).ValueOrDie();
+        else {
+            auto cc = arrow::Concatenate(ch->chunks());
+            if (!cc.ok()) return "--distinct: concat column failed: " + cc.status().ToString();
+            flat[(size_t)k] = cc.ValueOrDie();
+        }
+    }
+
+    // Keep the first occurrence of each distinct projected row. The key joins
+    // each cell's rendered text with a null marker and a unit separator that a
+    // value can't contain, so distinct rows never collide.
+    std::vector<int64_t> keep;
+    keep.reserve((size_t)N);
+    std::unordered_set<std::string> seen;
+    seen.reserve((size_t)N * 2 + 1);
+    std::string key;
+    for (int64_t i = 0; i < N; ++i) {
+        key.clear();
+        for (int k = 0; k < np; ++k) {
+            const arrow::Array& a = *flat[(size_t)k];
+            if (a.IsNull(i)) key.push_back('\x00');
+            else { key.push_back('\x01'); key += cell_to_string(a, i); }
+            key.push_back('\x1f');   // unit separator between columns
+        }
+        if (seen.insert(key).second) keep.push_back(i);
+    }
+    int64_t M = (int64_t)keep.size();
+
+    // Gather the kept rows for each projected column.
+    arrow::ArrayVector out_cols((size_t)np);
+    for (int k = 0; k < np; ++k) {
+        std::unique_ptr<arrow::ArrayBuilder> b;
+        auto mk = arrow::MakeBuilder(arrow::default_memory_pool(),
+                                     flat[(size_t)k]->type(), &b);
+        if (!mk.ok()) return "--distinct: builder failed: " + mk.ToString();
+        if (M) { auto r = b->Reserve(M); if (!r.ok()) return "--distinct: " + r.ToString(); }
+        arrow::ArraySpan span(*flat[(size_t)k]->data());
+        for (int64_t idx : keep) {
+            auto as = b->AppendArraySlice(span, idx, 1);
+            if (!as.ok()) return "--distinct: gather failed: " + as.ToString();
+        }
+        auto fs = b->Finish(&out_cols[(size_t)k]);
+        if (!fs.ok()) return "--distinct: finish failed: " + fs.ToString();
+    }
+    auto distinct = arrow::Table::Make(proj_schema, out_cols, M);
+
+    src = std::make_unique<MemoryTableSource>(distinct,
+        "<distinct " + old_path + ">",
+        "Distinct rows: " + std::to_string(M) + " / " + std::to_string(N));
+    // --select and --filter are now baked into the deduplicated table.
+    cfg.select_cols.clear();
+    cfg.filter_expr.clear();
+    return "";
+}
+
 // ── Interactive TUI viewer (ncurses) ─────────────────────────────────────────
 // Everything from here through the end of TableTUI is the ncurses CLI
 // frontend; excluded from libvvcore (the headless reader core).
@@ -21805,6 +21935,16 @@ int main(int argc, char** argv) {
         std::string err = print_describe(*src, cfg);
         if (!err.empty()) { report(cfg.path, err); return 1; }
         return 0;
+    }
+
+    // --distinct: drop duplicate rows over the shown columns, then fall through
+    // to the normal path. Runs before --count / --heatmap / output so they see
+    // the deduplicated set (`--distinct --count` counts distinct rows, and
+    // `--select chrom --distinct` lists distinct chromosomes). Materialises like
+    // --sort; it bakes in --select / --filter, so those are cleared inside.
+    if (cfg.distinct) {
+        std::string derr = build_distinct(src, cfg);
+        if (!derr.empty()) { report(cfg.path, derr); return 1; }
     }
 
     // --count: row count and exit. Reflects any -r region (baked into

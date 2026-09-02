@@ -168,7 +168,7 @@ _vv() {
                 --expand --formats --list-columns --list-tabs
                 -f --fasta
                 --tab
-                --unique --sample --sort --tags
+                --unique --distinct --sample --sort --tags
                 --vertical
                 --no-header
                 --heatmap --image-mode
