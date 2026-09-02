@@ -440,6 +440,18 @@ Inside the TUI, press \fBT\fR to open the theme-picker overlay; the
 choice is saved to the user config file and re-applied on the next
 launch. See \fBFILES\fR below.
 .TP
+.BI \-\-box " STYLE"
+Frame style for the non-interactive table: \fBunicode\fR (the default,
+rounded box-drawing characters) or \fBascii\fR (\fB+\fR \fB-\fR \fB|\fR,
+and \fB...\fR for the truncation marker). Use \fBascii\fR when the output
+must be plain 7-bit ASCII \(en a terminal in the \fBC\fR / \fBPOSIX\fR
+locale (where the box-drawing bytes render as mojibake), an ASCII-only
+pipe, or a paste into a context without the font. With no \fB\-\-box\fR
+given, vv reads \fBLC_ALL\fR / \fBLC_CTYPE\fR / \fBLANG\fR and defaults to
+\fBascii\fR when the locale is not a UTF-8 one, so \fBLC_ALL=C vv file\fR
+already draws a clean ASCII table. Affects only the plain table; the
+interactive viewer always uses the Unicode frame.
+.TP
 .B \-\-vertical
 \fIVertical head\fR. Transpose the preview so each input field becomes a row
 and each record becomes a column; show as many records as fit in the

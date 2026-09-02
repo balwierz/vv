@@ -21,7 +21,7 @@ _vv_run() {
 # not mistaken for the input.
 _vv_file_arg() {
     local -a valopts
-    valopts=(-n -w -c -@ --threads --decode-threads --delimiter --color --theme
+    valopts=(-n -w -c -@ --threads --decode-threads --delimiter --color --theme --box
              -r --region --window --regions-file --region-cols --slop --coords
              --tail --sort --tags --expand --parquet --arrow --feather --compression
              --image-mode -f --fasta --select --cols --filter --tab --unique
@@ -118,6 +118,7 @@ _vv() {
         '--decode-threads+[Arrow CPU pool size for Parquet/CSV decode]:n:' \
         '--color=-[Color mode]:mode:(auto always never)' \
         '--theme+[Color palette]:name:(default dark light solarized-dark solarized-light)' \
+        '--box+[Table frame style]:style:(unicode ascii)' \
         '--tsv[Write tab-separated values]' \
         '--csv[Write comma-separated values]' \
         '--delimiter+[Custom delimiter]:char:' \
