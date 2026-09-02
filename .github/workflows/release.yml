@@ -148,6 +148,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           VVG_SELFTEST=1 ./build-gui/gui/vvg tests/data/tiny.parquet
+          VVG_SELFTEST=1 ./build-gui/gui/vvg tests/data/tiny.md | grep -q 'footer=Format: markdown table'
           test "$(VVG_WINTEST=1 ./build-gui/gui/vvg tests/data/tiny.parquet)" = "win_tabs=1"
 
       - name: Build vv-gui deb
@@ -297,6 +298,7 @@ jobs:
           ./build/vv --version
           ./build/vv --help
           VVG_SELFTEST=1 ./build/gui/vvg tests/data/tiny.parquet
+          VVG_SELFTEST=1 ./build/gui/vvg tests/data/tiny.md | grep -q 'footer=Format: markdown table'
           test "$(VVG_WINTEST=1 ./build/gui/vvg tests/data/tiny.parquet)" = "win_tabs=1"
 
       - name: Package

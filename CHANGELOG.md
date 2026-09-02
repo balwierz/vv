@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **The Qt viewer (`vvg`) opens a markdown `.md` file as its tables, not as raw
+  text.** The CLI renders markdown in `main()` before it reaches
+  `open_source()`, but the GUI (and the KDE plugins) go through `open_source()`,
+  where a `.md` fell to the plain-text reader and showed as a single `line`
+  column. `open_source()` now surfaces the file's GFM tables — each as a tab —
+  and a markdown file with no table still falls back to showing its source text.
+
 ## [1.21.0] - 2026-09-02
 
 ### Added

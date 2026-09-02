@@ -144,6 +144,11 @@ jobs:
           ./build-gui/gui/kde/vvkdetest --allow-empty tests/data/tiny.malformed.npz
           # Model path end-to-end through libvvcore.
           VVG_SELFTEST=1 ./build-gui/gui/vvg tests/data/tiny.parquet
+          # A markdown file must open as its GFM tables, not the plain-text
+          # fallback (one `line` column): the CLI renders .md in main() before
+          # open_source(), but the GUI goes through open_source(), so the .md
+          # dispatch branch must surface the tables.
+          VVG_SELFTEST=1 ./build-gui/gui/vvg tests/data/tiny.md | grep -q 'footer=Format: markdown table'
           # App-shell path: build the QMainWindow offscreen and open a file via
           # the same addSourceTab/loadSources path the menus and drag-drop use.
           test "$(VVG_WINTEST=1 ./build-gui/gui/vvg tests/data/tiny.parquet)" = "win_tabs=1"
