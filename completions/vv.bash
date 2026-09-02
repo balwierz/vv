@@ -164,7 +164,7 @@ _vv() {
                 --parquet --arrow --feather --compression
                 --json --ndjson --md --markdown
                 --select --cols --filter
-                --schema --describe --count --stats --validate --decode-pileup --pileup --text
+                --schema --describe --count --stats --contigs --validate --decode-pileup --pileup --text
                 --expand --formats --list-columns --list-tabs
                 -f --fasta
                 --tab

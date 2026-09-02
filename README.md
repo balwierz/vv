@@ -530,6 +530,25 @@ Score   float                     10      0  0     0.45        0.225
 Tags    list<element: string>     10      0  [TF]  [promoter]         5
 ```
 
+### Reference sequences & assembly — `--contigs`
+
+For BAM / CRAM / SAM and VCF / BCF, list the sequences named in the header
+(the `@SQ` lines, or `##contig` records) as a `name` / `length` table —
+reading no records — and name the genome assembly by the length of `chr1`.
+Answers "which assembly is this aligned to?" at a glance, and composes with
+`--tsv` / `--json` / `--sort` / `--filter`.
+
+```
+$ vv --contigs reads.bam
+╭───┬──────┬─────────────╮
+│   │ name │ length      │
+├───┼──────┼─────────────┤
+│ 0 │ chr1 │ 248_956_422 │
+│ 1 │ chr2 │ 242_193_529 │
+╰───┴──────┴─────────────╯
+Reference sequences: 25  |  Assembly: GRCh38 / hg38 (Homo sapiens)
+```
+
 ### Pipeline-friendly text — `--tsv` / `--csv` / `--json` / `--ndjson` / `--md`
 
 Stream the file (or a `-n N` head, or a `--sample N` reservoir sample,

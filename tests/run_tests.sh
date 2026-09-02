@@ -2625,6 +2625,49 @@ if [ -f "$DATA/tiny.cram" ] && [ -f "$DATA/tiny.pileup.fa" ]; then
         "$(printf 'r1\t1\tAAAA\nr2\t1\tCCCC\nr3\t0\tGGGG')"
 fi
 
+# ── --contigs: reference sequences + assembly detection ────────────────────────
+# The header's @SQ / ##contig records become a (name, length) table without
+# reading any records; it composes with --tsv / --json / --sort / --filter.
+if [ -f "$DATA/tiny.bam" ]; then
+    BAM_CTG=$("$VV" --contigs --tsv "$DATA/tiny.bam")
+    assert_eq_file_inline "contigs_bam" "$BAM_CTG" \
+        "$(printf 'name\tlength\nchr1\t1000\nchr2\t1000')"
+    assert_eq_file_inline "contigs_bam_count" "$("$VV" --contigs --count "$DATA/tiny.bam")" "2"
+    # JSON form for machine consumers.
+    BAM_CTG_JSON=$("$VV" --contigs --ndjson "$DATA/tiny.bam" | head -1)
+    assert_eq_file_inline "contigs_ndjson" "$BAM_CTG_JSON" '{"name": "chr1", "length": 1000}'
+    # Composes with --filter on the numeric length column.
+    BAM_CTG_F=$("$VV" --contigs --tsv --no-header --select name --filter 'length >= 1000' "$DATA/tiny.bam" | tr '\n' ' ')
+    assert_eq_file_inline "contigs_filter_length" "$BAM_CTG_F" "chr1 chr2 "
+fi
+if [ -f "$DATA/tiny.cram" ]; then
+    # CRAM: the @SQ lines are in the header, so no reference FASTA is needed.
+    CRAM_CTG=$("$VV" --contigs --tsv --no-header "$DATA/tiny.cram" | cut -f1 | tr '\n' ' ')
+    assert_eq_file_inline "contigs_cram_no_ref" "$CRAM_CTG" "chr1 chr2 "
+fi
+if [ -f "$DATA/tiny.vcf.gz" ]; then
+    VCF_CTG=$("$VV" --contigs --tsv --no-header "$DATA/tiny.vcf.gz" 2>/dev/null | cut -f1 | tr '\n' ' ')
+    assert_eq_file_inline "contigs_vcf" "$VCF_CTG" "chr1 chr2 "
+fi
+# Assembly detection keys on the length of chr1 (a distinctive per-assembly
+# value); a synthetic GRCh38-length header is recognised.
+CTGSAM="$TMP/grch38.sam"
+{
+    printf '@HD\tVN:1.6\n'
+    printf '@SQ\tSN:chr1\tLN:248956422\n'
+    printf '@SQ\tSN:chr2\tLN:242193529\n'
+    printf 'r1\t0\tchr1\t100\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n'
+} > "$CTGSAM"
+CTG_ASM=$("$VV" --contigs --color=never "$CTGSAM" 2>&1)
+assert_contains "contigs_assembly_grch38" "$CTG_ASM" "GRCh38"
+assert_contains "contigs_assembly_species" "$CTG_ASM" "Homo sapiens"
+# Errors: not an alignment/variant file, and combinations that read records.
+assert_exit_code "contigs_non_genomic_exits_1" 1 "$VV" --contigs "$DATA/tiny.parquet"
+CTG_NG_ERR=$("$VV" --contigs "$DATA/tiny.parquet" 2>&1 || true)
+assert_contains "contigs_non_genomic_message" "$CTG_NG_ERR" "BAM/CRAM/SAM and VCF/BCF"
+assert_exit_code "contigs_with_region_exits_1"  1 "$VV" --contigs -r chr1 "$CTGSAM"
+assert_exit_code "contigs_with_pileup_exits_1"  1 "$VV" --contigs --pileup "$CTGSAM"
+
 # -r on a format with no region index: warn and show the whole file, rather
 # than silently pretending the filter was applied.
 NOREG=$("$VV" --color=never --count -r chr1:1-2 "$DATA/tiny.arrow" 2>&1 >/dev/null || true)

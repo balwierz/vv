@@ -137,5 +137,6 @@ complete -c vv -c vh -l tab -x -a '(__vv_tabs)' -d 'View a named component tab (
 complete -c vv -c vh -l describe           -d 'Per-column statistics (add --json/--ndjson for machine-readable)'
 complete -c vv -c vh -l count              -d 'Print the row count and exit'
 complete -c vv -c vh -l stats              -d 'Parquet metadata dump (no data read)'
+complete -c vv -c vh -l contigs            -d 'BAM/CRAM/SAM, VCF/BCF: list reference sequences + detect assembly'
 complete -c vv -c vh -l unique -r          -d 'Distinct value counts per column'
 complete -c vv -c vh -l sample -r          -d 'Reservoir-sample N random rows'
