@@ -23,9 +23,9 @@ header-includes:
 `vv` is a fast command-line viewer for tabular and bioinformatics file
 formats. The same binary covers Parquet / Arrow IPC / Feather / LociSSD,
 the htslib formats BAM / CRAM / SAM / VCF / BCF, the genomics text
-formats GFF3 / GTF / BED / PAF / FASTA / FASTQ, and plain delimited
-text (TSV / CSV) — gzip- or zstandard-decompressing on the fly where it
-makes sense.
+formats GFF3 / GTF / BED / PAF / FASTA / FASTQ, plain delimited
+text (TSV / CSV) and JSON / NDJSON — gzip- or zstandard-decompressing on
+the fly where it makes sense.
 
 This manual covers every flag with a concrete example. The full flag
 reference also lives in `vv --help` and `man vv`.
@@ -79,6 +79,7 @@ would need horizontal scrolling.
 | Sequences (FASTA) | `.fa`, `.fasta`, `.fna`, `.faa`, `.ffn`, `.frn` (plus `.gz`)|
 | Sequencing reads  | `.fq`, `.fastq` (plus `.gz`)                                |
 | Delimited text    | `.tsv`, `.csv` (plus `.gz`)                                 |
+| JSON / NDJSON     | `.json`, `.ndjson`, `.jsonl` (plus `.gz` / `.zst`) via Arrow's streaming JSON reader. Two shapes are accepted: a top-level array of objects `[{…},{…}]` (pretty-printed or compact), and newline-delimited / concatenated objects (JSON Lines). The array form is unwrapped into records by a small stream filter — it drops the enclosing `[` `]` and turns the commas between elements into newlines, tracking string and nesting state so structural characters inside a value are left alone — before Arrow parses it; NDJSON passes straight through. Records need not share a schema: `unexpected_field_behavior = InferType` means Arrow infers the union of all fields and fills the gaps with nulls. Nested objects become `struct` columns and nested arrays become `list` columns, rendered by the same cell formatters as Parquet. Streaming and forward-only, so a file larger than memory still previews. An empty array, an array of scalars, or a field whose type changes between rows is not tabular and errors with a pointer to `--text`, which shows the raw JSON source instead. |
 | Stdin             | `vv -` reads any text format from stdin (auto-decompresses gzip / zstd) |
 
 Unknown extensions are auto-detected by magic bytes (Parquet, Arrow IPC,

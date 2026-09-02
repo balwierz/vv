@@ -7,7 +7,7 @@
 **One binary that opens every genomic and tabular format you have, and shows you the data.**
 
 Parquet, Arrow, AnnData/HDF5, BAM/CRAM, VCF/BCF, GFF/GTF, BED, bigWig,
-bigBed, 2bit, FASTA/FASTQ, SQLite, Excel, NumPy, ORC — gzip, bgzip and
+bigBed, 2bit, FASTA/FASTQ, JSON/NDJSON, SQLite, Excel, NumPy, ORC — gzip, bgzip and
 zstandard on the fly, tabix range queries, an ncurses browser, and an optional Qt6 / KDE
 desktop app (`vvg`). No environment to activate, no import, no runtime
 dependencies. On a terminal it opens the interactive viewer; in a pipe it
@@ -262,6 +262,7 @@ against it in CI, so this list cannot drift from the code.
 | Sequences (FASTA) | `.fa`, `.fasta`, `.fna`, `.faa`, `.ffn`, `.frn` (plus `.gz`) |
 | Sequencing reads  | `.fq`, `.fastq` (plus `.gz`)                               |
 | Delimited text    | `.tsv`, `.csv` (plus `.gz` / `.zst`)                       |
+| JSON / NDJSON     | `.json`, `.ndjson`, `.jsonl` (plus `.gz` / `.zst`) — a top-level array of objects `[{…},{…}]` or newline-delimited objects. Records need not share a schema: Arrow infers the union of fields and fills gaps with nulls, and nested objects / arrays become struct / list columns. A non-tabular JSON file (an array of scalars, mismatched types) errors with a pointer to `--text`, which shows the raw source. |
 | Plain text        | `.txt`, `.text`, `.log` (plus `.gz` / `.zst`) — and **any file no other format claims**, if its content sniffs as text. Viewed in the TUI like `less -SN`: line-number gutter, long lines chopped with `h`/`l` scrolling sideways, `/` search, `&` filter, tabs across several files. In a pipe it is written back verbatim, so `vv f.log > copy` round-trips byte for byte. Binary is **refused**, not dumped — vv has no hex view. `--text` forces text mode whatever the extension. |
 | Stdin             | `vv -` reads any text format from stdin (auto-decompresses gzip / zstd) |
 

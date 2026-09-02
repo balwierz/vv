@@ -10,6 +10,7 @@
 #include <arrow/type.h>
 #include <arrow/scalar.h>
 #include <arrow/csv/api.h>
+#include <arrow/json/api.h>
 #include <arrow/io/compressed.h>
 #include <arrow/ipc/feather.h>
 #include <arrow/ipc/reader.h>
@@ -694,6 +695,8 @@ static const FormatInfo kFormats[] = {
    false, false, false, false, false, ""},
   {"Markdown", ".md .markdown .mdown .mkd", "md4c renderer",
    false, false, false, false, false, ""},
+  {"JSON / NDJSON", ".json .ndjson .jsonl", "JsonSource",
+   true,  false, false, true,  false, ""},
   // Plain text is last on purpose: it is the fallback, and any file no other
   // row claims is content-sniffed into it. The extension list is short by
   // design — .py / .c / .conf / .toml reach the same reader through the
@@ -768,10 +771,10 @@ static void print_formats(bool as_json) {
                     f.exts);
     }
     std::printf(
-        "\ngz: reads gzip-compressed input. The delimited-text and plain-text\n"
-        "readers also accept zstandard (.zst / .zstd), detected by content;\n"
-        "FASTA/FASTQ compression is gzip-only (bgzf). Range queries (-r) need\n"
-        "bgzip + a tabix index and so require gzip, not zstd.\n");
+        "\ngz: reads gzip-compressed input. The delimited-text, JSON, and\n"
+        "plain-text readers also accept zstandard (.zst / .zstd), detected by\n"
+        "content; FASTA/FASTQ compression is gzip-only (bgzf). Range queries (-r)\n"
+        "need bgzip + a tabix index and so require gzip, not zstd.\n");
 }
 
 static void print_usage(const char* prog) {
@@ -811,6 +814,8 @@ static void print_usage(const char* prog) {
         "  .fq  .fastq                 sequencing reads (FASTQ, plus .gz)\n"
         "  .bcf                        binary VCF (htslib)\n"
         "  .paf  .paf.gz               minimap2 pairwise alignments\n"
+        "  .json  .ndjson  .jsonl      JSON: an array of objects or newline-delimited\n"
+        "                              (plus .gz / .zst; nested → struct/list columns)\n"
         "  .txt  .text  .log           plain text (also .gz / .zst; viewed like less -SN,\n"
         "                              not tabulated). The fallback for any file\n"
         "                              no other format claims.\n"
@@ -4271,6 +4276,107 @@ public:
         while (n > 0) {
             if (out_pos_ >= out_buf_.size()) {
                 if (inner_done_ || !refill()) break;
+            }
+            int64_t avail = (int64_t)(out_buf_.size() - out_pos_);
+            int64_t take  = std::min(n, avail);
+            std::memcpy(p, out_buf_.data() + out_pos_, (size_t)take);
+            p += take; out_pos_ += (size_t)take; n -= take; total += take;
+        }
+        return total;
+    }
+    arrow::Result<std::shared_ptr<arrow::Buffer>> Read(int64_t n) override {
+        ARROW_ASSIGN_OR_RAISE(auto buf, arrow::AllocateResizableBuffer(n));
+        ARROW_ASSIGN_OR_RAISE(int64_t actual, Read(n, buf->mutable_data()));
+        ARROW_RETURN_NOT_OK(buf->Resize(actual, false));
+        return std::shared_ptr<arrow::Buffer>(std::move(buf));
+    }
+};
+
+// Turn a top-level JSON array `[ {…}, {…} ]` into the newline-delimited records
+// that Arrow's JSON reader wants: it drops the enclosing `[` / `]` and replaces
+// the commas between elements with newlines, leaving everything else byte for
+// byte. NDJSON, a bare object, and pretty-printed or concatenated objects have
+// no enclosing array, so they stream straight through untouched — the reader
+// already tolerates newlines inside a record. Structural characters inside
+// strings, and any nesting depth, are tracked so a `,` / `[` / `]` inside a
+// value is never mistaken for the array framing.
+class JsonArrayUnwrapStream : public arrow::io::InputStream {
+    std::shared_ptr<arrow::io::InputStream> inner_;
+    std::string  out_buf_;
+    size_t       out_pos_    = 0;
+    bool         inner_done_ = false;
+    // First non-space byte decides the shape: `[` is an array to unwrap, any
+    // other byte is a passthrough stream. Until then the mode is UNKNOWN.
+    enum Mode { UNKNOWN, ARRAY, PASSTHROUGH } mode_ = UNKNOWN;
+    int   depth_      = 0;      // brace/bracket nesting inside the outer array
+    bool  in_string_  = false;
+    bool  escaped_    = false;
+    bool  array_done_ = false;  // the outer `]` was consumed
+
+    static constexpr int64_t BLK = 64 * 1024;
+
+    void feed(const uint8_t* p, int64_t n) {
+        for (int64_t i = 0; i < n; ++i) {
+            char c = (char)p[i];
+            if (mode_ == UNKNOWN) {
+                if (c==' '||c=='\t'||c=='\r'||c=='\n') { out_buf_.push_back(c); continue; }
+                if (c=='[') { mode_ = ARRAY; depth_ = 0; continue; }  // drop outer [
+                mode_ = PASSTHROUGH; out_buf_.push_back(c); continue;
+            }
+            if (mode_ == PASSTHROUGH) { out_buf_.push_back(c); continue; }
+            // ARRAY mode.
+            if (array_done_) continue;              // trailing bytes after outer ]
+            if (in_string_) {
+                out_buf_.push_back(c);
+                if (escaped_)        escaped_ = false;
+                else if (c=='\\')    escaped_ = true;
+                else if (c=='"')     in_string_ = false;
+                continue;
+            }
+            switch (c) {
+                case '"': in_string_ = true; out_buf_.push_back(c); break;
+                case '{': case '[': ++depth_; out_buf_.push_back(c); break;
+                case '}': if (depth_ > 0) --depth_; out_buf_.push_back(c); break;
+                case ']':
+                    if (depth_ == 0) array_done_ = true;   // outer close → drop
+                    else { --depth_; out_buf_.push_back(c); }
+                    break;
+                case ',':
+                    if (depth_ == 0) out_buf_.push_back('\n');  // record separator
+                    else out_buf_.push_back(c);
+                    break;
+                default: out_buf_.push_back(c); break;
+            }
+        }
+    }
+
+    bool refill() {
+        out_buf_.clear(); out_pos_ = 0;
+        while (out_buf_.empty() && !inner_done_) {
+            auto r = inner_->Read(BLK);
+            if (!r.ok()) { inner_done_ = true; return false; }
+            auto buf = *r;
+            if (!buf || buf->size() == 0) { inner_done_ = true; break; }
+            feed(buf->data(), buf->size());
+        }
+        return !out_buf_.empty();
+    }
+
+public:
+    explicit JsonArrayUnwrapStream(std::shared_ptr<arrow::io::InputStream> inner)
+        : inner_(std::move(inner)) {}
+
+    arrow::Status Close() override { return inner_->Close(); }
+    bool closed() const override { return inner_->closed(); }
+    arrow::Result<int64_t> Tell() const override {
+        return arrow::Status::NotImplemented("JsonArrayUnwrapStream::Tell");
+    }
+    arrow::Result<int64_t> Read(int64_t n, void* buf) override {
+        uint8_t* p = static_cast<uint8_t*>(buf);
+        int64_t total = 0;
+        while (n > 0) {
+            if (out_pos_ >= out_buf_.size()) {
+                if (!refill()) break;
             }
             int64_t avail = (int64_t)(out_buf_.size() - out_pos_);
             int64_t take  = std::min(n, avail);
@@ -7856,6 +7962,130 @@ public:
     // dump can reproduce that.
     bool final_newline() const { return final_newline_; }
     bool is_text() const override { return true; }
+};
+
+// ── JSON / NDJSON source ──────────────────────────────────────────────────────
+//
+// Reads newline-delimited JSON (`.ndjson` / `.jsonl`, one object per line) and
+// ordinary JSON (`.json`) through Arrow's streaming JSON reader. A top-level
+// array is unwrapped into records by JsonArrayUnwrapStream first; NDJSON and
+// concatenated / pretty-printed objects pass through it untouched. Records need
+// not share a schema — Arrow infers the union of fields and fills the gaps with
+// nulls (`unexpected_field_behavior = InferType`). Nested objects and arrays
+// become struct / list columns, rendered by the same cell formatters as Parquet.
+//
+// Streaming and forward-only, modelled on FastxSource: each block Arrow yields
+// is one chunk, retained through the shared bounded-window helper so a file
+// larger than memory still previews. Compression (gzip / zstd) is detected by
+// magic, like the plain-text reader. Range queries and tabix do not apply.
+class JsonSource : public TabularSource {
+    std::string                            path_;
+    std::shared_ptr<arrow::Schema>         schema_;
+    arrow::Compression::type               comp_ = arrow::Compression::UNCOMPRESSED;
+
+    mutable std::shared_ptr<arrow::json::StreamingReader> reader_;
+    mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
+    mutable std::vector<int64_t>           batch_first_row_;
+    mutable std::vector<int64_t>           batch_num_rows_;
+    mutable int64_t                        rows_so_far_ = 0;
+    mutable bool                           all_read_    = false;
+    mutable bool                           retain_all_  = false;
+    mutable bool                           evicted_any_ = false;
+    mutable arrow::Status                  read_status_;
+
+    arrow::Status advance() const {
+        if (all_read_) return arrow::Status::OK();
+        std::shared_ptr<arrow::RecordBatch> batch;
+        arrow::Status st = reader_->ReadNext(&batch);
+        if (!st.ok()) {
+            // A record with a type conflict (a field that is a number in one
+            // row and an object in another) surfaces here past the first block.
+            // Record it stickily and stop so ensure()'s loop can't spin.
+            read_status_ = st;
+            all_read_ = true;
+            return st;
+        }
+        if (!batch) { all_read_ = true; return arrow::Status::OK(); }
+        stream_retain(batches_, batch_first_row_, batch_num_rows_, rows_so_far_,
+                      retain_all_, evicted_any_, std::move(batch));
+        return arrow::Status::OK();
+    }
+
+public:
+    static std::string open(const std::string& path, const Config& /*cfg*/,
+                            std::unique_ptr<JsonSource>* out) {
+        auto self = std::make_unique<JsonSource>();
+        self->path_ = path;
+
+        auto maybe_raw = arrow::io::ReadableFile::Open(path);
+        if (!maybe_raw.ok())
+            return "Cannot open '" + path + "': " + maybe_raw.status().ToString();
+        auto raw = maybe_raw.ValueOrDie();
+        self->comp_ = sniff_stream_codec(raw);
+        std::shared_ptr<arrow::io::InputStream> input = raw;
+        if (self->comp_ != arrow::Compression::UNCOMPRESSED) {
+            auto codec = arrow::util::Codec::Create(self->comp_);
+            if (!codec.ok()) return codec.status().ToString();
+            auto ci = arrow::io::CompressedInputStream::Make(codec->get(), input);
+            if (!ci.ok()) return ci.status().ToString();
+            input = ci.ValueOrDie();
+        }
+        std::shared_ptr<arrow::io::InputStream> unwrapped =
+            std::make_shared<JsonArrayUnwrapStream>(std::move(input));
+
+        auto ropts = arrow::json::ReadOptions::Defaults();
+        ropts.block_size  = 16 << 20;
+        ropts.use_threads = true;
+        auto popts = arrow::json::ParseOptions::Defaults();
+        popts.newlines_in_values         = true;   // tolerate pretty-printed records
+        popts.unexpected_field_behavior  =
+            arrow::json::UnexpectedFieldBehavior::InferType;
+
+        auto r = arrow::json::StreamingReader::Make(
+            std::move(unwrapped), ropts, popts);
+        if (!r.ok()) {
+            std::string m = r.status().ToString();
+            if (m.find("Empty JSON") != std::string::npos)
+                return "'" + path + "': no JSON records to display";
+            return "'" + path + "': " + m +
+                   " (if this is not tabular JSON, view it raw with `--text`)";
+        }
+        self->reader_ = *r;
+        self->schema_ = self->reader_->schema();
+        *out = std::move(self);
+        return "";
+    }
+
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    int64_t total_rows() const override { return all_read_ ? rows_so_far_ : -1; }
+    int     num_chunks() const override { return (int)batches_.size(); }
+    ChunkMeta chunk_meta(int i) const override {
+        return {batch_first_row_[i], batch_num_rows_[i]};
+    }
+    void set_retain_all(bool b) override { retain_all_ = b; }
+    bool evicted_any() const override { return evicted_any_; }
+    void ensure(int i) override {
+        while (!all_read_ && (int)batches_.size() <= i)
+            (void)advance();
+    }
+    arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
+                              std::shared_ptr<arrow::Table>* out) override {
+        ensure(i);
+        if (i >= (int)batches_.size())
+            return arrow::Status::IndexError("chunk ", i, " out of range");
+        if (!batches_[i])
+            return arrow::Status::CapacityError(
+                "chunk ", i, " was released by the streaming window");
+        *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
+        return arrow::Status::OK();
+    }
+    arrow::Status read_status() const override { return read_status_; }
+    const std::string& path() const override { return path_; }
+    std::string footer() const override {
+        return std::string("Format: JSON") +
+               (comp_ == arrow::Compression::GZIP ? " (gzip)" :
+                comp_ == arrow::Compression::ZSTD ? " (zstd)" : "");
+    }
 };
 
 // ── 2bit (UCSC) source ────────────────────────────────────────────────────────
@@ -14030,8 +14260,9 @@ public:
 // The extension list is deliberately SHORT. `.py`, `.c`, `.conf`, `.toml`,
 // `.rst` need no entry: the content sniff at the bottom of the ladder routes
 // them to text identically, and claiming them in `--formats` would advertise
-// vv as a code viewer with no highlighting. `.json` is left out on purpose so
-// a real JSON reader stays possible later.
+// vv as a code viewer with no highlighting. `.json` is absent here because it
+// has its own tabular reader (JsonSource, dispatched above); `vv --text f.json`
+// still shows the raw source.
 static const char* kTextExts[] = { ".txt", ".text", ".log" };
 
 static bool text_ext(const std::string& p) {
@@ -14364,6 +14595,14 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
                fends_ci(path, ".fastq") || fends_ci(path, ".fastq.gz")) {
         std::unique_ptr<FastxSource> src;
         std::string err = FastxSource::open(path, /*is_fastq=*/true, cfg, &src);
+        if (!err.empty()) return err;
+        *out = std::move(src);
+        return "";
+    } else if (fends_ci(det, ".json")   || fends_ci(det, ".json.gz")   ||
+               fends_ci(det, ".ndjson") || fends_ci(det, ".ndjson.gz") ||
+               fends_ci(det, ".jsonl")  || fends_ci(det, ".jsonl.gz")) {
+        std::unique_ptr<JsonSource> src;
+        std::string err = JsonSource::open(path, cfg, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";

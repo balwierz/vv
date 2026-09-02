@@ -672,6 +672,64 @@ if require "zstd roundtrip" zstd; then
 fi
 
 echo
+echo '── JSON / NDJSON input ────────────────────────────────'
+# NDJSON (one object per line) and a top-level JSON array must read to the same
+# table — the array form is unwrapped into records before Arrow parses it.
+printf '{"id":1,"name":"alice"}\n{"id":2,"name":"bob"}\n{"id":3,"name":"carol"}\n' > "$TMP/j.ndjson"
+printf '[{"id":1,"name":"alice"},{"id":2,"name":"bob"},{"id":3,"name":"carol"}]'   > "$TMP/j.json"
+NDJSON_OUT=$("$VV" --tsv --no-header "$TMP/j.ndjson")
+JSON_OUT=$("$VV" --tsv --no-header "$TMP/j.json")
+assert_eq_file_inline "json_array_equals_ndjson" "$JSON_OUT" "$NDJSON_OUT"
+assert_eq_file_inline "json_ndjson_row_count" "$("$VV" --count "$TMP/j.ndjson")" "3"
+# Type inference: numeric id sorts numerically, name is text.
+assert_contains "json_infers_int_column" "$("$VV" --schema "$TMP/j.ndjson")" "id"
+assert_contains "json_id_is_int64" "$("$VV" --schema "$TMP/j.ndjson")" "int64"
+# Pretty-printed array with nested list + object → list / struct columns.
+cat > "$TMP/j2.json" <<'JEOF'
+[
+  { "id": 1, "tags": ["x","y"], "meta": { "ok": true } },
+  { "id": 2, "tags": ["z"],     "meta": { "ok": false } }
+]
+JEOF
+J2_SCHEMA=$("$VV" --schema "$TMP/j2.json" 2>&1)
+assert_contains "json_nested_list_column"   "$J2_SCHEMA" "list"
+assert_contains "json_nested_struct_column" "$J2_SCHEMA" "struct"
+assert_eq_file_inline "json_pretty_array_count" "$("$VV" --count "$TMP/j2.json")" "2"
+# .jsonl extension.
+printf '{"a":1}\n{"a":2}\n' > "$TMP/j.jsonl"
+assert_eq_file_inline "jsonl_extension_count" "$("$VV" --count "$TMP/j.jsonl")" "2"
+# Heterogeneous records: union of fields, gaps filled with nulls (not an error).
+printf '{"a":1}\n{"b":2}\n{"a":3,"b":4}\n' > "$TMP/jhet.ndjson"
+assert_eq_file_inline "json_heterogeneous_count" "$("$VV" --count "$TMP/jhet.ndjson")" "3"
+assert_contains "json_heterogeneous_union_a" "$("$VV" --schema "$TMP/jhet.ndjson")" "a"
+assert_contains "json_heterogeneous_union_b" "$("$VV" --schema "$TMP/jhet.ndjson")" "b"
+# Compression: a .json.gz / .ndjson.zst read like the plain file.
+gzip -c "$TMP/j.json" > "$TMP/j.json.gz"
+JSON_GZ=$("$VV" --tsv --no-header "$TMP/j.json.gz")
+assert_eq_file_inline "json_gz_matches_plain" "$JSON_GZ" "$JSON_OUT"
+if require "json zstd" zstd; then
+    zstd -qf "$TMP/j.ndjson" -o "$TMP/j.ndjson.zst"
+    NDJSON_ZST=$("$VV" --tsv --no-header "$TMP/j.ndjson.zst")
+    assert_eq_file_inline "ndjson_zst_matches_plain" "$NDJSON_ZST" "$NDJSON_OUT"
+fi
+# Round-trip: reading a top-level array and re-emitting --ndjson yields the same
+# stream as reading the equivalent NDJSON file.
+RT_FROM_ARRAY=$("$VV" --ndjson "$TMP/j.json")
+RT_FROM_NDJSON=$("$VV" --ndjson "$TMP/j.ndjson")
+assert_eq_file_inline "json_array_ndjson_roundtrip" "$RT_FROM_ARRAY" "$RT_FROM_NDJSON"
+# An empty array has no records to infer a schema from → clean error, exit 1.
+printf '[]' > "$TMP/jempty.json"
+assert_exit_code "json_empty_array_exits_1" 1 "$VV" --count "$TMP/jempty.json"
+JEMPTY_ERR=$("$VV" "$TMP/jempty.json" 2>&1 || true)
+assert_contains "json_empty_array_message" "$JEMPTY_ERR" "no JSON records"
+# Malformed JSON errors non-zero rather than emitting a partial table.
+printf '[{"a":1},{"a":' > "$TMP/jbad.json"
+assert_exit_code "json_malformed_exits_1" 1 "$VV" --count "$TMP/jbad.json"
+# --text is the escape hatch: a .json shown as raw source, not parsed.
+JTEXT=$("$VV" --text --no-header "$TMP/j.json")
+assert_contains "json_text_shows_raw_source" "$JTEXT" '[{"id":1,"name":"alice"}'
+
+echo
 echo "── --schema / --describe / --select / --filter / --json ─"
 SCHEMA_OUT=$("$VV" --schema "$DATA/tiny.lociss")
 assert_contains "schema_has_chromosome" "$SCHEMA_OUT" "Chromosome"
