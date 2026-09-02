@@ -766,6 +766,47 @@ $ zcat huge.tsv.gz | vv --tsv --no-header -      # plain text pipeline
   substitution (`vv <(zcat foo.bam)`).
 * Auto-detects gzip via magic bytes.
 
+# Directories and partitioned datasets
+
+```sh
+$ vv lake/events/                                # concatenate every part
+$ vv lake/events/ --filter 'year == 2024' --count
+$ vv lake/events/ --select year,month,user_id --tsv | head
+```
+
+Point `vv` at a directory and it reads the data files under it (recursively,
+in filename order) as one table — the way Spark, Arrow, and DuckDB write a
+dataset: many `part-*.parquet` files, often under Hive-style `key=value/`
+directories.
+
+* **Formats.** The columnar and delimited formats, where concatenation is
+  meaningful: Parquet, Arrow / Feather, ORC, CSV / TSV, and JSON / NDJSON
+  (optionally `.gz` / `.zst`). One format per directory — a directory that
+  mixes, say, Parquet and CSV is an error. The genomics formats (BAM, VCF,
+  BED, …), which carry per-file headers and indexes, are not treated as
+  datasets.
+* **What is skipped.** Files whose name starts with `.` or `_` (Spark's
+  `_SUCCESS` marker, `.crc` checksums) and any non-data file (a `README`, a
+  sidecar index) are ignored, so a real Spark/Hive output directory reads
+  cleanly.
+* **Partition columns.** Each `key=value` component of a file's path becomes a
+  column, constant within that file. A key whose values are all canonical
+  integers (`year=2024`) becomes an `int64` column, so `--filter 'year ==
+  2024'` compares numbers; anything else (including a value with a leading
+  zero like `month=01`, which would lose the zero as an integer) stays a
+  string. Partition columns are appended after the data columns. The
+  partition layout must be consistent across the directory.
+* **Schema.** Every file must share one schema — the same column names and
+  types (nullability may differ). Parquet / Arrow / ORC carry an explicit
+  schema, so this always holds; for CSV / JSON, where the schema is inferred
+  per file, a part that infers a different type (an empty part, or a column
+  that is integer in one file and float in another) is reported as a
+  mismatch. Convert such data to Parquet, or make the parts consistent.
+* **Streaming.** Files are opened one at a time and their chunks streamed, so
+  a dataset far larger than memory still previews, sorts (`--sort` loads into
+  memory like always), and exports. `-r` region queries are not supported on a
+  directory.
+
 # Color themes (`--theme`)
 
 ```sh
