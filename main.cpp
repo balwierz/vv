@@ -827,6 +827,10 @@ static void print_usage(const char* prog) {
         "\nTable options:\n"
         "  -n <rows>           rows to display  (default: 10, 0 = all)\n"
         "  --tail <N>          show the last N rows instead of the first N\n"
+        "  --sort <col>[:desc]  order rows by a column before output (asc\n"
+        "                      default; numeric columns sort numerically,\n"
+        "                      others by text; nulls last). Loads the file\n"
+        "                      into memory.\n"
         "  -w <width>          max cell width   (default: 32)\n"
         "  -c <cols>           max columns to show (default: all)\n"
         "  --select <terms>    project columns. Comma-separated; output follows\n"
@@ -1033,6 +1037,17 @@ static Config parse_args(int argc, char** argv) {
         } else if (!std::strcmp(argv[i], "--tail") && i + 1 < argc) {
             cfg.tail_rows     = std::max(0, std::atoi(argv[++i]));
             cfg.tail_rows_set = true;
+        } else if (!std::strcmp(argv[i], "--sort") && i + 1 < argc) {
+            // COL, or COL:asc / COL:desc. Only a trailing :asc/:desc is a
+            // direction — a column name may itself contain a colon.
+            std::string v = argv[++i];
+            auto colon = v.rfind(':');
+            if (colon != std::string::npos) {
+                std::string suf = v.substr(colon + 1);
+                if      (suf == "desc") { cfg.sort_desc = true;  v.resize(colon); }
+                else if (suf == "asc")  { cfg.sort_desc = false; v.resize(colon); }
+            }
+            cfg.sort_col = v;
         } else if ((!std::strcmp(argv[i], "-@") ||
                     !std::strcmp(argv[i], "--threads")) && i + 1 < argc) {
             cfg.threads = std::max(0, std::atoi(argv[++i]));
@@ -1140,7 +1155,7 @@ static Config parse_args(int argc, char** argv) {
             static const std::set<std::string> needs_arg = {
                 "-n", "-w", "-c", "-r", "--region", "--window",
                 "--regions-file", "--region-cols", "--slop", "--coords",
-                "--tail", "-@", "--threads", "--decode-threads", "--parquet",
+                "--tail", "--sort", "-@", "--threads", "--decode-threads", "--parquet",
                 "--arrow", "--feather",
                 "--compression", "--unique", "--sample", "--filter",
                 "--select", "--cols", "--image-mode", "--tab", "--theme",
@@ -16362,6 +16377,134 @@ static std::string build_tail(std::unique_ptr<TabularSource>& src,
     return "";
 }
 
+// --sort COL[:asc|:desc]: fully materialise the (filtered) source, stable-sort
+// its rows by one column, and replace `src` with a MemoryTableSource so every
+// downstream view / export renders the sorted result identically. Sorting needs
+// the whole table in memory (a viewer convenience; for ordering huge files, a
+// query engine is the right tool). Numeric columns sort numerically, others by
+// their rendered text, matching the interactive `s` sort; nulls sort last and
+// ties keep input order (stable). Arrow's compute kernels are GC'd from the
+// static build, so the gather is done by hand with AppendArraySlice.
+static std::string build_sort(std::unique_ptr<TabularSource>& src,
+                               const Config& cfg) {
+    auto schema = src->schema();
+    int n_fields = schema->num_fields();
+    int sort_idx = -1;
+    for (int i = 0; i < n_fields; ++i)
+        if (schema->field(i)->name() == cfg.sort_col) { sort_idx = i; break; }
+    if (sort_idx < 0) return "--sort: unknown column '" + cfg.sort_col + "'";
+
+    std::vector<int> all_cols;
+    for (int i = 0; i < n_fields; ++i) all_cols.push_back(i);
+
+    FilterExpr fx; bool have_filter = false;
+    if (!cfg.filter_expr.empty()) {
+        std::string ferr;
+        if (!parse_filter_expr(cfg.filter_expr, *schema, &fx, &ferr))
+            return "--filter: " + ferr;
+        have_filter = true;
+    }
+    std::vector<std::shared_ptr<arrow::Table>> chunks;
+    for (int c = 0; ; ++c) {
+        src->ensure(c);
+        if (c >= src->num_chunks()) break;
+        std::shared_ptr<arrow::Table> tbl;
+        if (!src->read_chunk(c, all_cols, &tbl).ok()) continue;
+        if (have_filter) tbl = apply_filter(tbl, fx, all_cols);
+        if (tbl && tbl->num_rows() > 0) chunks.push_back(std::move(tbl));
+    }
+    auto hidden_from_src = src->hidden_for_display();
+    std::string old_path = src->path();
+
+    std::shared_ptr<arrow::Table> master;
+    if (chunks.empty()) {
+        std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
+        for (int i = 0; i < n_fields; ++i)
+            cols.push_back(std::make_shared<arrow::ChunkedArray>(
+                arrow::ArrayVector{}, schema->field(i)->type()));
+        master = arrow::Table::Make(schema, cols, 0);
+    } else {
+        auto cat = arrow::ConcatenateTables(chunks);
+        if (!cat.ok()) return "--sort: concat failed: " + cat.status().ToString();
+        master = cat.ValueOrDie();
+    }
+    int64_t N = master->num_rows();
+
+    // Flatten each column to one contiguous array (for the key and the gather).
+    std::vector<std::shared_ptr<arrow::Array>> flat(n_fields);
+    for (int c = 0; c < n_fields; ++c) {
+        auto ch = master->column(c);
+        if (ch->num_chunks() == 1) { flat[c] = ch->chunk(0); continue; }
+        if (ch->num_chunks() == 0) {
+            flat[c] = arrow::MakeArrayOfNull(schema->field(c)->type(), 0).ValueOrDie();
+            continue;
+        }
+        auto cc = arrow::Concatenate(ch->chunks());
+        if (!cc.ok()) return "--sort: concat column failed: " + cc.status().ToString();
+        flat[c] = cc.ValueOrDie();
+    }
+
+    std::vector<int64_t> order((size_t)N);
+    for (int64_t i = 0; i < N; ++i) order[(size_t)i] = i;
+    const arrow::Array& key = *flat[sort_idx];
+    const bool desc = cfg.sort_desc;
+    if (is_numeric_type(key.type_id())) {
+        std::vector<double> kv((size_t)N);
+        std::vector<char>   kn((size_t)N);
+        for (int64_t i = 0; i < N; ++i) {
+            double d = 0;
+            if (key.IsNull(i)) kn[(size_t)i] = 1;
+            else if (array_value_as_double(key, i, &d)) { kn[(size_t)i]=0; kv[(size_t)i]=d; }
+            else kn[(size_t)i] = 1;
+        }
+        std::stable_sort(order.begin(), order.end(), [&](int64_t a, int64_t b) -> bool {
+            if (kn[(size_t)a] != kn[(size_t)b]) return !kn[(size_t)a];  // non-null first
+            if (kn[(size_t)a]) return false;
+            return desc ? kv[(size_t)a] > kv[(size_t)b] : kv[(size_t)a] < kv[(size_t)b];
+        });
+    } else {
+        std::vector<std::string> kv((size_t)N);
+        std::vector<char>        kn((size_t)N);
+        for (int64_t i = 0; i < N; ++i) {
+            if (key.IsNull(i)) kn[(size_t)i] = 1;
+            else kv[(size_t)i] = cell_to_string(key, i);
+        }
+        std::stable_sort(order.begin(), order.end(), [&](int64_t a, int64_t b) -> bool {
+            if (kn[(size_t)a] != kn[(size_t)b]) return !kn[(size_t)a];  // non-null first
+            if (kn[(size_t)a]) return false;
+            return desc ? kv[(size_t)a] > kv[(size_t)b] : kv[(size_t)a] < kv[(size_t)b];
+        });
+    }
+
+    // Gather every column into the sorted order (AppendArraySlice is a plain
+    // builder method — not a compute kernel — so it survives --gc-sections).
+    arrow::ArrayVector sorted_cols((size_t)n_fields);
+    for (int c = 0; c < n_fields; ++c) {
+        std::unique_ptr<arrow::ArrayBuilder> b;
+        auto mk = arrow::MakeBuilder(arrow::default_memory_pool(),
+                                     flat[c]->type(), &b);
+        if (!mk.ok()) return "--sort: builder failed: " + mk.ToString();
+        if (N) { auto r = b->Reserve(N); if (!r.ok()) return "--sort: " + r.ToString(); }
+        arrow::ArraySpan span(*flat[c]->data());
+        for (int64_t idx : order) {
+            auto as = b->AppendArraySlice(span, idx, 1);
+            if (!as.ok()) return "--sort: gather failed: " + as.ToString();
+        }
+        std::shared_ptr<arrow::Array> out_arr;
+        auto fs = b->Finish(&out_arr);
+        if (!fs.ok()) return "--sort: finish failed: " + fs.ToString();
+        sorted_cols[(size_t)c] = out_arr;
+    }
+    auto sorted = arrow::Table::Make(schema, sorted_cols, N);
+
+    src = std::make_unique<MemoryTableSource>(sorted,
+        "<sorted " + old_path + ">",
+        "Sorted by " + cfg.sort_col + (desc ? " (desc)" : "") +
+        "  |  Rows: " + std::to_string(N),
+        hidden_from_src);
+    return "";
+}
+
 // ── Interactive TUI viewer (ncurses) ─────────────────────────────────────────
 // Everything from here through the end of TableTUI is the ncurses CLI
 // frontend; excluded from libvvcore (the headless reader core).
@@ -20750,6 +20893,14 @@ int main(int argc, char** argv) {
             if (auto* m = dynamic_cast<MemoryTableSource*>(src.get())) m->mark_text();
         cfg.filter_expr.clear();
         cfg.head_rows = 0; cfg.head_rows_set = false;
+    }
+
+    // --sort COL: materialise + stable-sort the rows, then fall through to the
+    // normal view / export path (which now sees a pre-sorted MemoryTableSource).
+    if (!cfg.sort_col.empty()) {
+        std::string err = build_sort(src, cfg);
+        if (!err.empty()) { report(cfg.path, err); return 1; }
+        cfg.filter_expr.clear();   // applied during the sort's materialisation
     }
 
     // --json / --ndjson: stream JSON rows to stdout.
