@@ -150,6 +150,7 @@ _vv() {
         '--describe[Per-column statistics (add --json/--ndjson for machine-readable)]' \
         '--count[Print the row count and exit]' \
         '--stats[Parquet metadata dump]' \
+        '--contigs[List reference sequences (name, length) and detect the assembly]' \
         '--unique+[Distinct value counts]:cols:' \
         '--sample+[Reservoir-sample N rows]:n:' \
         "*:file:_files -g '${(j:|:)file_exts}'"

@@ -76,6 +76,9 @@ struct Config {
     std::string bam_tags;                // --tags LIST: BAM/CRAM/SAM only — add
                                          // one typed column per named aux tag
                                          // (comma-separated 2-char SAM tags)
+    bool        contigs        = false;  // --contigs: list a file's reference
+                                         // sequences (name, length) and detect
+                                         // the assembly (BAM/CRAM/SAM, VCF/BCF)
     bool        decode_pileup  = false;  // --decode-pileup: explode mpileup's
                                          // packed bases column into per-allele
                                          // counts (A/C/G/T/N + ins/del + strand)

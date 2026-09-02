@@ -353,6 +353,19 @@ codecs, per-column sizes and null counts) without decoding any data.
 For non-Parquet sources, falls back to \fB\-\-schema\fR. Useful for
 "what's in this 50 GB file from a colleague?".
 .TP
+.B \-\-contigs
+For BAM / CRAM / SAM and VCF / BCF, list the reference sequences named
+in the header \(en the \fB@SQ\fR lines of an alignment file, or the
+\fB##contig\fR records of a variant file \(en as a two-column
+(\fBname\fR, \fBlength\fR) table, and name the genome assembly when the
+length of \fBchr1\fR matches a known reference (GRCh38 / hg38, GRCh37 /
+hg19, T2T-CHM13, GRCm39 / mm39, GRCm38 / mm10, and others). Reads only
+the header, no records; \fBlength\fR is null for a VCF \fB##contig\fR
+that carried no \fBlength=\fR. Composes with \fB\-\-tsv\fR, \fB\-\-json\fR,
+\fB\-\-sort\fR, and \fB\-\-filter\fR (the length column is numeric, so
+\fB\-\-filter 'length > 1000000'\fR works). Answers "which assembly is
+this BAM aligned to?" without a full \fBsamtools view -H\fR read.
+.TP
 .BI \-\-unique " cols"
 Distinct-value counts per column, comma-separated. Each block lists up
 to 50 most frequent values; further values are summarised. Respects

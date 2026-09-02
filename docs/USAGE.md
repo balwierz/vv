@@ -671,6 +671,49 @@ MaxEndSoFar  int32   zstd        284 B         230 B  0.809x      0
 Reads no data — just the Parquet footer. Use it on inherited
 multi-GB files to find out how they were written.
 
+## `--contigs` (reference sequences & assembly)
+
+```sh
+$ vv --contigs reads.bam
+$ vv --contigs --tsv reads.bam | sort -k2 -nr        # largest contigs first
+$ vv --contigs --filter 'length > 40000000' calls.vcf.gz
+```
+
+For the alignment and variant formats — BAM / CRAM / SAM and VCF / BCF —
+`--contigs` lists the reference sequences named in the file's header as a
+two-column `name` / `length` table, and names the genome assembly:
+
+```
+$ vv --contigs reads.bam
+╭───┬──────┬─────────────╮
+│   │ name │ length      │
+├───┼──────┼─────────────┤
+│ 0 │ chr1 │ 248_956_422 │
+│ 1 │ chr2 │ 242_193_529 │
+│ … │ …    │ …           │
+╰───┴──────┴─────────────╯
+Reference sequences: 25  |  Assembly: GRCh38 / hg38 (Homo sapiens)
+```
+
+* **Header only.** The contigs come from the `@SQ` lines of an alignment
+  header or the `##contig` records of a variant header. No alignment or
+  variant records are read, so it is instant even on a multi-GB BAM — a
+  faster answer than `samtools view -H | grep @SQ`. A CRAM needs no reference
+  FASTA for this (the `@SQ` lines are in the CRAM header itself).
+* **Assembly detection.** The genome is identified by the length of `chr1`
+  (or `1`), a value that is distinct across assemblies — GRCh38 / hg38,
+  GRCh37 / hg19, NCBI36 / hg18, T2T-CHM13v2.0, GRCm39 / mm39, GRCm38 / mm10,
+  mm9, rat rn6 / rn7, and zebrafish GRCz11. It is a best-effort label; an
+  unknown or non-standard reference simply reports no assembly.
+* **`length` is numeric.** VCF `##contig` records that omit `length=` show a
+  null length. Because the column is `int64`, `--filter 'length > 1e7'`
+  compares numbers, `--sort length:desc` orders by size, and `--describe`
+  summarises.
+* **Composes.** The result is an ordinary table, so `--tsv`, `--csv`,
+  `--json` / `--ndjson`, `--select`, `--filter`, `--sort`, and the
+  interactive viewer all work on it. `-r`, `--pileup`, `--tags`, and
+  `--expand` — which read the file's records — are rejected in combination.
+
 ## `--unique`
 
 ```sh

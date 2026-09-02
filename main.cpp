@@ -891,6 +891,10 @@ static void print_usage(const char* prog) {
         "                      --filter)\n"
         "  --stats             print Parquet metadata footer (row groups, codecs,\n"
         "                      per-column sizes) without reading data; exit\n"
+        "  --contigs           BAM/CRAM/SAM, VCF/BCF: list the reference sequences\n"
+        "                      (name, length) from the header and name the assembly\n"
+        "                      (GRCh38, mm10, …). Reads no records; composes with\n"
+        "                      --tsv / --json / --sort / --filter\n"
         "  --unique <cols>     comma-separated columns: print distinct-value counts\n"
         "  --sample <N>        reservoir-sample N rows uniformly instead of head-N\n"
         "  --validate          check LociSSD invariants (sort order, MaxEndSoFar,\n"
@@ -1098,6 +1102,8 @@ static Config parse_args(int argc, char** argv) {
             cfg.count = true;
         } else if (!std::strcmp(argv[i], "--stats")) {
             cfg.stats_only = true;
+        } else if (!std::strcmp(argv[i], "--contigs")) {
+            cfg.contigs = true;
         } else if (!std::strcmp(argv[i], "--unique") && i + 1 < argc) {
             cfg.unique_cols = argv[++i];
         } else if (!std::strcmp(argv[i], "--sample") && i + 1 < argc) {
@@ -21328,6 +21334,134 @@ static std::string shorten_reader_error(std::string msg) {
     return msg;
 }
 
+// ── --contigs: reference-sequence dictionary + assembly detection ─────────────
+//
+// Lists the sequences a genomics file is aligned / called against — the @SQ
+// lines of a BAM/CRAM/SAM header, or the ##contig records of a VCF/BCF — as a
+// (name, length) table, and fingerprints the assembly by the length of chr1.
+// Reads only the header, never the records. The result is a MemoryTableSource,
+// so --tsv / --json / --sort / --filter / the TUI all work on it.
+
+namespace contigs {
+
+// chr1 length → assembly, for the common vertebrate references. A single
+// primary-chromosome length is distinctive enough for a best-effort label; the
+// values are the canonical chr1 lengths of each assembly.
+struct AssemblyEntry { int64_t chr1_len; const char* name; const char* species; };
+static const AssemblyEntry kAssemblies[] = {
+    {248956422, "GRCh38 / hg38",     "Homo sapiens"},
+    {249250621, "GRCh37 / hg19",     "Homo sapiens"},
+    {247249719, "NCBI36 / hg18",     "Homo sapiens"},
+    {248387328, "T2T-CHM13v2.0",     "Homo sapiens"},
+    {195154279, "GRCm39 / mm39",     "Mus musculus"},
+    {195471971, "GRCm38 / mm10",     "Mus musculus"},
+    {197195432, "NCBI37 / mm9",      "Mus musculus"},
+    {260522016, "mRatBN7.2 / rn7",   "Rattus norvegicus"},
+    {282763074, "Rnor_6.0 / rn6",    "Rattus norvegicus"},
+    { 59578282, "GRCz11 / danRer11", "Danio rerio"},
+};
+
+// Best-effort assembly label from the contig table, or "" if none matches.
+static std::string detect(const std::vector<std::string>& names,
+                          const std::vector<int64_t>& lengths) {
+    for (size_t i = 0; i < names.size(); ++i) {
+        if (lengths[i] <= 0) continue;
+        if (names[i] != "chr1" && names[i] != "1") continue;
+        for (const auto& a : kAssemblies)
+            if (a.chr1_len == lengths[i])
+                return std::string(a.name) + " (" + a.species + ")";
+    }
+    return "";
+}
+
+}  // namespace contigs
+
+// Build the reference-sequence table for --contigs from a genomics file's
+// header alone. Returns an error string when the format has no such dictionary
+// or when --contigs is combined with a flag that operates on the file's data.
+static std::string build_contigs(const Config& cfg,
+                                 std::unique_ptr<TabularSource>* out) {
+    if (!cfg.region.empty())
+        return "--contigs lists a file's reference sequences; it does not take a "
+               "region (-r)";
+    if (cfg.pileup || cfg.decode_pileup || !cfg.bam_tags.empty() ||
+        !cfg.expand_col.empty())
+        return "--contigs cannot be combined with a flag that reads the file's "
+               "records (--pileup / --decode-pileup / --tags / --expand)";
+
+    const std::string& path = cfg.path;
+    bool is_aln = fends_ci(path, ".bam") || fends_ci(path, ".cram") ||
+                  fends_ci(path, ".sam");
+    bool is_var = fends_ci(path, ".vcf")   || fends_ci(path, ".vcf.gz") ||
+                  fends_ci(path, ".bcf");
+    if (!is_aln && !is_var)
+        return "'" + path + "': --contigs applies to BAM/CRAM/SAM and VCF/BCF "
+               "(the reference sequences named in the header)";
+
+    htsFile* fp = hts_open(path.c_str(), "r");
+    if (!fp) return "Cannot open '" + path + "'";
+    if (!cfg.pileup_ref.empty())
+        (void)hts_set_fai_filename(fp, cfg.pileup_ref.c_str());
+
+    std::vector<std::string> names;
+    std::vector<int64_t>     lengths;   // <= 0 means "not stated in the header"
+
+    const htsFormat* fmt = hts_get_format(fp);
+    bool variant = fmt && fmt->category == variant_data;
+
+    if (variant) {
+        bcf_hdr_t* h = bcf_hdr_read(fp);
+        if (!h) { hts_close(fp); return "Cannot read VCF/BCF header from '" + path + "'"; }
+        int n = h->n[BCF_DT_CTG];
+        for (int i = 0; i < n; ++i) {
+            const char* key = h->id[BCF_DT_CTG][i].key;
+            if (!key) continue;
+            names.emplace_back(key);
+            // Contig length lives in info[0] of the CTG dictionary entry; 0 when
+            // the ##contig line carried no length=.
+            const bcf_idinfo_t* v = h->id[BCF_DT_CTG][i].val;
+            lengths.push_back(v ? (int64_t)v->info[0] : 0);
+        }
+        bcf_hdr_destroy(h);
+    } else {
+        sam_hdr_t* h = sam_hdr_read(fp);
+        if (!h) { hts_close(fp); return "Cannot read BAM/SAM header from '" + path + "'"; }
+        int n = sam_hdr_nref(h);
+        for (int i = 0; i < n; ++i) {
+            const char* nm = sam_hdr_tid2name(h, i);
+            names.emplace_back(nm ? nm : "");
+            lengths.push_back((int64_t)sam_hdr_tid2len(h, i));
+        }
+        sam_hdr_destroy(h);
+    }
+    hts_close(fp);
+
+    if (names.empty())
+        return "'" + path + "': the header names no reference sequences";
+
+    arrow::StringBuilder name_b;
+    arrow::Int64Builder  len_b;
+    for (size_t i = 0; i < names.size(); ++i) {
+        auto s1 = name_b.Append(names[i]);
+        (void)s1;
+        if (lengths[i] > 0) (void)len_b.Append(lengths[i]);
+        else                (void)len_b.AppendNull();
+    }
+    std::shared_ptr<arrow::Array> name_a, len_a;
+    if (!name_b.Finish(&name_a).ok() || !len_b.Finish(&len_a).ok())
+        return "'" + path + "': failed to build the contig table";
+    auto schema = arrow::schema({arrow::field("name",   arrow::utf8()),
+                                 arrow::field("length", arrow::int64())});
+    auto table = arrow::Table::Make(schema, {name_a, len_a});
+
+    std::string footer = "Reference sequences: " + std::to_string(names.size());
+    std::string asm_label = contigs::detect(names, lengths);
+    if (!asm_label.empty()) footer += "  |  Assembly: " + asm_label;
+
+    *out = std::make_unique<MemoryTableSource>(table, path, footer);
+    return "";
+}
+
 #ifndef VV_CORE_LIB   // CLI entry point — excluded from libvvcore
 int main(int argc, char** argv) {
     Config cfg = parse_args(argc, argv);
@@ -21529,7 +21663,17 @@ int main(int argc, char** argv) {
     }
 
     std::unique_ptr<TabularSource> src;
-    std::string err = open_source(cfg.path, cfg, &src);
+
+    // --contigs: read only the header, present its reference sequences as a
+    // table, and skip the normal data open. Everything below (--tsv / --json /
+    // --sort / --filter / the TUI) then renders that table.
+    if (cfg.contigs) {
+        std::string cerr = build_contigs(cfg, &src);
+        if (!cerr.empty()) { report(cfg.path, cerr); return 1; }
+    }
+
+    std::string err;
+    if (!src) err = open_source(cfg.path, cfg, &src);
     if (!err.empty()) {
         // open_source returns "Cannot open '<path>': <detail>"; split it back
         // out so we can reformat with color and strip Arrow's noisy prefix.
