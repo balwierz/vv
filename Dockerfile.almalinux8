@@ -382,6 +382,12 @@ RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
         -DARROW_PARQUET=ON \
         -DARROW_CSV=ON \
         -DARROW_IPC=ON \
+        # JSON input (.json/.ndjson) needs Arrow's JSON module. Its only extra
+        # dependency is the header-only RapidJSON, forced BUNDLED so Arrow
+        # downloads its own pinned version (the build runs with --network=host);
+        # ARROW_DEPENDENCY_SOURCE=SYSTEM would otherwise fail to find it.
+        -DARROW_JSON=ON \
+        -DRapidJSON_SOURCE=BUNDLED \
         -DARROW_S3=OFF \
         -DARROW_GCS=OFF \
         -DARROW_FLIGHT=OFF \
