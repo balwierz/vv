@@ -61,7 +61,7 @@ _vv() {
     local cur prev words cword
     _init_completion || return
 
-    local file_exts='parquet arrow feather lociss bam cram sam vcf vcf.gz bcf gff gff.gz gff3 gff3.gz gtf gtf.gz bed bed.gz narrowPeak narrowPeak.gz broadPeak broadPeak.gz gappedPeak gappedPeak.gz bedGraph bedGraph.gz bg bg.gz tagAlign tagAlign.gz tsv tsv.gz csv csv.gz fa fa.gz fasta fasta.gz fna fna.gz faa faa.gz ffn ffn.gz frn frn.gz fq fq.gz fastq fastq.gz paf paf.gz bb bigBed bigbed bw bigWig bigwig 2bit sqlite sqlite3 db xlsx xlsm ods fods orc npz npy pileup pileup.gz mpileup mpileup.gz pile pile.gz md markdown mdown mkd h5 h5ad hdf5 loom txt txt.gz text text.gz log log.gz'
+    local file_exts='parquet arrow feather lociss bam cram sam vcf vcf.gz vcf.zst bcf gff gff.gz gff.zst gff3 gff3.gz gff3.zst gtf gtf.gz gtf.zst bed bed.gz bed.zst narrowPeak narrowPeak.gz narrowPeak.zst broadPeak broadPeak.gz broadPeak.zst gappedPeak gappedPeak.gz gappedPeak.zst bedGraph bedGraph.gz bedGraph.zst bg bg.gz bg.zst tagAlign tagAlign.gz tagAlign.zst tsv tsv.gz tsv.zst csv csv.gz csv.zst fa fa.gz fasta fasta.gz fna fna.gz faa faa.gz ffn ffn.gz frn frn.gz fq fq.gz fastq fastq.gz paf paf.gz paf.zst bb bigBed bigbed bw bigWig bigwig 2bit sqlite sqlite3 db xlsx xlsm ods fods orc npz npy pileup pileup.gz pileup.zst mpileup mpileup.gz mpileup.zst pile pile.gz pile.zst md markdown mdown mkd h5 h5ad hdf5 loom txt txt.gz txt.zst text text.gz text.zst log log.gz log.zst'
 
     case "$prev" in
         -n|-w|-c|-@|--threads|--decode-threads)

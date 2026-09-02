@@ -7,8 +7,8 @@
 **One binary that opens every genomic and tabular format you have, and shows you the data.**
 
 Parquet, Arrow, AnnData/HDF5, BAM/CRAM, VCF/BCF, GFF/GTF, BED, bigWig,
-bigBed, 2bit, FASTA/FASTQ, SQLite, Excel, NumPy, ORC — gzip and bgzip on the
-fly, tabix range queries, an ncurses browser, and an optional Qt6 / KDE
+bigBed, 2bit, FASTA/FASTQ, SQLite, Excel, NumPy, ORC — gzip, bgzip and
+zstandard on the fly, tabix range queries, an ncurses browser, and an optional Qt6 / KDE
 desktop app (`vvg`). No environment to activate, no import, no runtime
 dependencies. On a terminal it opens the interactive viewer; in a pipe it
 prints plain text.
@@ -246,9 +246,9 @@ against it in CI, so this list cannot drift from the code.
 | LociSSD           | `.lociss` (sorted-interval Parquet; `MaxEndSoFar` auto-hidden) |
 | Sequence alignments | `.bam`, `.cram`, `.sam`, `.paf` / `.paf.gz` (minimap2)   |
 | Variant calls     | `.vcf`, `.vcf.gz`, `.bcf` (binary VCF via htslib)          |
-| Genome annotation | `.gff`, `.gff3`, `.gtf` (plus `.gz`)                       |
-| Genomic intervals | `.bed`, `.bed.gz`                                          |
-| ENCODE peaks / signal | `.narrowPeak`, `.broadPeak`, `.gappedPeak`, `.bedGraph` (`.bg`), `.tagAlign` (plus `.gz`); BED-family with typed extra columns named `signalValue` / `pValue` / `qValue` / `peak` / `value` |
+| Genome annotation | `.gff`, `.gff3`, `.gtf` (plus `.gz` / `.zst`)              |
+| Genomic intervals | `.bed`, `.bed.gz`, `.bed.zst`                              |
+| ENCODE peaks / signal | `.narrowPeak`, `.broadPeak`, `.gappedPeak`, `.bedGraph` (`.bg`), `.tagAlign` (plus `.gz` / `.zst`); BED-family with typed extra columns named `signalValue` / `pValue` / `qValue` / `peak` / `value` |
 | UCSC big files    | `.bb` / `.bigBed`, `.bw` / `.bigWig` (vendored libBigWig; bigBed's embedded autoSql is parsed into typed columns) |
 | UCSC 2bit         | `.2bit` (sequence index: name / length / N-blocks / mask-blocks) |
 | SQLite            | `.sqlite`, `.sqlite3`, `.db` (each table → one TUI tab; types follow SQLite affinity) |
@@ -256,14 +256,14 @@ against it in CI, so this list cannot drift from the code.
 | OpenDocument      | `.ods` (each sheet → one TUI tab; hand-rolled minizip + expat SAX parser; types inferred from cell content via Arrow's CSV reader) |
 | AnnData / HDF5    | `.h5ad`, `.h5`, `.hdf5`, `.loom` (single-cell + generic). AnnData files surface as a summary tab plus obs / var / X-preview / obsm / varm / layers tabs; sparse X gets a first-N-row dense preview. Generic HDF5 opens with a hierarchy table and one tab per 1D / 2D dataset. |
 | NumPy arrays      | `.npz` (archive → a summary tab plus one tab per array), `.npy` (a single array, opened through the same reader). 1-D renders as a column, 2-D as a table, 3-D+ as 2-D slices stepped with `[` / `]`. Fixed numeric dtypes (int / uint / float / bool); object / structured arrays are listed but not displayed. |
-| samtools mpileup  | `.pileup`, `.mpileup`, `.pile` (plus `.gz`); per-base pileup with auto-named columns; multi-sample files get per-sample `depth_i` / `bases_i` / `quals_i` triplets; range queries on bgzipped + tabix-indexed files |
+| samtools mpileup  | `.pileup`, `.mpileup`, `.pile` (plus `.gz` / `.zst`); per-base pileup with auto-named columns; multi-sample files get per-sample `depth_i` / `bases_i` / `quals_i` triplets; range queries on bgzipped + tabix-indexed files |
 | Apache ORC        | `.orc` (columnar; one stripe → one chunk; via Arrow's ORC adapter — requires Arrow built with `-DARROW_ORC=ON`, which apt/brew Arrow packages have by default) |
 | Markdown          | `.md`, `.markdown`, `.mdown`, `.mkd` — CommonMark + GFM via vendored md4c. Renders as ANSI on stdout (pipe to `less -R`). GFM tables are extracted and rendered through vv's regular table renderer with column-type inference. Local PNG/JPEG/GIF images inline on kitty / iTerm2 / WezTerm terminals via their graphics protocols. |
 | Sequences (FASTA) | `.fa`, `.fasta`, `.fna`, `.faa`, `.ffn`, `.frn` (plus `.gz`) |
 | Sequencing reads  | `.fq`, `.fastq` (plus `.gz`)                               |
-| Delimited text    | `.tsv`, `.csv` (plus `.gz`)                                |
-| Plain text        | `.txt`, `.text`, `.log` (plus `.gz`) — and **any file no other format claims**, if its content sniffs as text. Viewed in the TUI like `less -SN`: line-number gutter, long lines chopped with `h`/`l` scrolling sideways, `/` search, `&` filter, tabs across several files. In a pipe it is written back verbatim, so `vv f.log > copy` round-trips byte for byte. Binary is **refused**, not dumped — vv has no hex view. `--text` forces text mode whatever the extension. |
-| Stdin             | `vv -` reads any text format from stdin (auto-gunzip)      |
+| Delimited text    | `.tsv`, `.csv` (plus `.gz` / `.zst`)                       |
+| Plain text        | `.txt`, `.text`, `.log` (plus `.gz` / `.zst`) — and **any file no other format claims**, if its content sniffs as text. Viewed in the TUI like `less -SN`: line-number gutter, long lines chopped with `h`/`l` scrolling sideways, `/` search, `&` filter, tabs across several files. In a pipe it is written back verbatim, so `vv f.log > copy` round-trips byte for byte. Binary is **refused**, not dumped — vv has no hex view. `--text` forces text mode whatever the extension. |
+| Stdin             | `vv -` reads any text format from stdin (auto-decompresses gzip / zstd) |
 
 
 </details>
