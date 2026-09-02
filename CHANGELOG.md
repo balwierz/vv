@@ -6,6 +6,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.21.0] - 2026-09-02
+
+### Added
+- **`--sort COL[:asc|:desc]`** orders rows by one column before any output mode.
+  Numeric columns sort numerically, others by their rendered text; nulls sort
+  last and equal keys keep input order (stable). Materialises in memory.
+- **Zstandard input.** `.zst` / `.zstd`-compressed files are decompressed on the
+  fly for the delimited-text (VCF, GFF/GTF, BED and peak family, TSV/CSV,
+  mpileup, PAF), JSON, and plain-text readers, and for stdin. Detected by content
+  (magic bytes) for text and stdin, by suffix otherwise. FASTA/FASTQ and tabix
+  range queries remain gzip-only (htslib bgzf).
+- **JSON and NDJSON input** (`.json`, `.ndjson`, `.jsonl`, plus `.gz` / `.zst`).
+  A top-level array of objects or newline-delimited objects parses into a table;
+  records need not share a schema (fields are unioned, gaps filled with nulls),
+  and nested objects / arrays become struct / list columns.
+- **`--tags LIST`** (BAM/CRAM/SAM) adds one typed column per named aux tag
+  (`--tags NM,AS,RG`). The column type follows the tag's SAM type code, so
+  `--filter 'NM <= 2'` compares numbers; a read without the tag is null.
+- **Directory / partitioned-dataset input.** `vv DIR/` concatenates the data
+  files under a directory (recursively, one format: Parquet / Arrow / ORC /
+  CSV / TSV / JSON), skipping `_SUCCESS` / `.crc` / hidden files. Hive-style
+  `key=value/` path components become columns (an all-integer key is `int64`, so
+  it filters numerically). Streaming.
+- **`--contigs`** (BAM/CRAM/SAM, VCF/BCF) lists the reference sequences named in
+  the header as a `name` / `length` table — reading no records — and names the
+  genome assembly by the length of `chr1` (GRCh38, GRCh37, T2T-CHM13, mm39,
+  mm10, and others). Composes with `--tsv` / `--json` / `--sort` / `--filter`.
+- **`--distinct`** drops duplicate rows (SQL `SELECT DISTINCT`) over the shown
+  columns: `--select chrom --distinct` lists the distinct chromosomes,
+  `--distinct --count` counts distinct rows. Honours `--filter`.
+- **`--box <style>`** picks the non-interactive table frame: `unicode` (default)
+  or `ascii` (`+ - |`, with `...` truncation). Auto-selects `ascii` when the
+  locale is not UTF-8, so `LC_ALL=C vv file` no longer renders the box-drawing
+  characters as mojibake.
+- **`--gt-stats`** (VCF/BCF) appends per-variant genotype summary columns over
+  the samples — `n_called`, `n_het`, `n_hom_ref`, `n_hom_alt`, `n_missing`,
+  `AC`, `AN`, `AF`, `call_rate` — a fixed set regardless of sample count.
+  Diploid, haploid, and multi-allelic calls are classified; the columns are
+  numeric, so `--filter 'AF > 0.05'` and `--sort AC:desc` work. Streaming.
+
 ## [1.20.0] - 2026-09-01
 
 ### Added
