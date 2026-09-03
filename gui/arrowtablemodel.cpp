@@ -6,7 +6,6 @@
 #include <QtConcurrent>
 #include <algorithm>
 #include <unordered_set>
-#include <arrow/compute/api.h>
 
 namespace {
 std::string chunked_cell(const arrow::ChunkedArray& ca, int64_t i) {
@@ -25,25 +24,6 @@ std::string chunked_cell_raw(const arrow::ChunkedArray& ca, int64_t i) {
     return {};
 }
 
-// Element i of a boolean ChunkedArray (a match_substring result). A null
-// (e.g. a null cell) counts as "no match".
-bool chunkedBoolAt(const arrow::ChunkedArray& ca, int64_t i) {
-    for (const auto& a : ca.chunks()) {
-        if (i < a->length()) {
-            const auto& b = static_cast<const arrow::BooleanArray&>(*a);
-            return b.IsValid(i) && b.Value(i);
-        }
-        i -= a->length();
-    }
-    return false;
-}
-
-// A pattern with no regex metacharacters is a plain substring needle.
-bool isLiteralPattern(const QString& pat) {
-    for (QChar ch : pat)
-        if (QStringLiteral("\\^$.|?*+()[]{}").contains(ch)) return false;
-    return true;
-}
 }  // namespace
 
 ArrowTableModel::ArrowTableModel(std::unique_ptr<TabularSource> src,
@@ -486,11 +466,10 @@ QModelIndex ArrowTableModel::findNext(const QModelIndex& from, bool forward) con
 // Scan every (viewRow, col) for a regex match, returning the matching cell
 // positions (viewRow*cols + col) sorted ascending. Iterates source chunks in
 // order (cache-friendly), maps each source row back to its view row via the
-// inverse of order_, and for literal needles on Arrow string columns uses
-// match_substring as a candidate prefilter — the Qt regex on the displayed
-// cell text is always the source of truth, so the result equals a pure
-// per-cell scan (the prefilter only skips cells Arrow rules out; this is exact
-// for ASCII needles, the realistic case).
+// inverse of order_, and matches the Qt regex against each displayed cell.
+// (An arrow::compute match_substring prefilter used to sit here, but its kernel
+// is not registered in this Arrow linkage — the same reason the sort is
+// hand-rolled — so it never skipped anything; the per-cell regex is the matcher.)
 std::vector<int64_t>
 ArrowTableModel::computeFindPos(QRegularExpression re,
                                std::atomic<bool>* cancel) const {
@@ -498,19 +477,6 @@ ArrowTableModel::computeFindPos(QRegularExpression re,
     const int cols = (int)displayCols_.size();
     std::vector<int64_t> pos;
     if (cols == 0 || re.pattern().isEmpty()) return pos;
-
-    // A literal needle (no regex metacharacters) can be vectorized with
-    // match_substring on string columns.
-    const QString pat = re.pattern();
-    const bool literal = isLiteralPattern(pat);
-    const std::string needle = literal ? pat.toStdString() : std::string();
-    const bool ci = re.patternOptions() & QRegularExpression::CaseInsensitiveOption;
-
-    std::vector<char> strCol(cols, 0);
-    for (int j = 0; j < cols; ++j) {
-        auto id = schema_->field(displayCols_[j])->type()->id();
-        strCol[j] = (id == arrow::Type::STRING || id == arrow::Type::LARGE_STRING);
-    }
 
     // Map source row -> view row. Empty order_ == identity (view == source).
     const bool identity = order_.empty();
@@ -530,18 +496,6 @@ ArrowTableModel::computeFindPos(QRegularExpression re,
         const int64_t first = src_->chunk_meta(c).first_row;
         const int64_t nrows = tbl->num_rows();
 
-        // Per-column candidate masks (literal needle, string columns only).
-        std::vector<std::shared_ptr<arrow::ChunkedArray>> mask(cols);
-        if (literal) {
-            arrow::compute::MatchSubstringOptions opt(needle, ci);
-            for (int j = 0; j < cols; ++j) {
-                if (!strCol[j]) continue;
-                auto r = arrow::compute::CallFunction(
-                    "match_substring", {arrow::Datum(tbl->column(j))}, &opt);
-                if (r.ok()) mask[j] = r->chunked_array();
-            }
-        }
-
         for (int64_t i = 0; i < nrows; ++i) {
             if ((i & 0x3fff) == 0 && aborted()) return {};
             const int64_t srcRow = first + i;
@@ -554,9 +508,6 @@ ArrowTableModel::computeFindPos(QRegularExpression re,
                 viewRow = it->second;
             }
             for (int j = 0; j < cols; ++j) {
-                // Arrow candidate prefilter: skip cells the substring match
-                // rules out; everything else is checked by the Qt regex.
-                if (mask[j] && !chunkedBoolAt(*mask[j], i)) continue;
                 std::string raw = chunked_cell(*tbl->column(j), i);
                 raw = src_->format_cell(displayCols_[j], std::move(raw));
                 if (re.match(QString::fromStdString(raw)).hasMatch())

@@ -5,10 +5,11 @@
 // decoded lazily, chunk by chunk, with a small LRU cache mirroring the TUI.
 //
 // View state is a single display→source permutation (order_) combining the
-// live filter (vvcore::filter_rows) and the typed sort (Arrow
-// compute::SortIndices) — filter first, then sort within the kept rows, just
-// like the TUI's rebuild_display_order. Search is overlaid as a cell
-// highlight (Qt::BackgroundRole) plus a findNext() cursor.
+// live filter (vvcore::filter_rows) and the typed sort (vvcore::stable_sort_order,
+// hand-rolled — arrow::compute's kernels aren't registered in this linkage) —
+// filter first, then sort within the kept rows, just like the TUI's
+// rebuild_display_order. Search is overlaid as a cell highlight
+// (Qt::BackgroundRole) plus a findNext() cursor.
 #pragma once
 
 #include <QAbstractTableModel>
