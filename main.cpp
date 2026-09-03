@@ -5688,7 +5688,8 @@ class DelimitedSource : public TabularSource {
     static arrow::Result<std::shared_ptr<arrow::csv::StreamingReader>>
     make_reader(std::shared_ptr<arrow::io::InputStream> input, char delim,
                 bool autogen_names, const std::vector<std::string>& col_names,
-                const std::vector<std::string>& force_string_cols = {}) {
+                const std::vector<std::string>& force_string_cols = {},
+                bool strings_nullable = false) {
         auto ropts = arrow::csv::ReadOptions::Defaults();
         // 16 MiB blocks + per-block parsing on the CPU pool. The default
         // (~1 MiB) is too small for multi-GB files; raising it amortises
@@ -5702,6 +5703,19 @@ class DelimitedSource : public TabularSource {
         auto popts = arrow::csv::ParseOptions::Defaults();
         popts.delimiter = delim;
         auto copts = arrow::csv::ConvertOptions::Defaults();
+        // Missing values in string columns. Arrow only nulls a string cell when
+        // strings_can_be_null is set; otherwise a bare NA / NULL / empty field
+        // is kept as that literal text. R (and pandas) write a missing value as
+        // an unquoted token and quote a genuine string, so honour that: an
+        // *unquoted* null token (NA, NULL, NaN, empty, …) becomes null while a
+        // *quoted* one ("NA") stays the literal string — a column whose real
+        // value is "NA" (e.g. Namibia's country code) survives as long as it is
+        // quoted. Only for user CSV/TSV; the fixed-schema genomics formats
+        // (BED/VCF/GFF/SAM/PAF) keep their own missing conventions.
+        if (strings_nullable) {
+            copts.strings_can_be_null        = true;
+            copts.quoted_strings_can_be_null = false;
+        }
         // Force the detected leading-zero-ID columns to utf8 so inference can't
         // drop the zeros ("007" -> 7). Keyed by name (Arrow has no by-index
         // override); a no-op for a column Arrow would have made string anyway.
@@ -5952,8 +5966,9 @@ private:
         if (kind == DelimKind::CSV || kind == DelimKind::TSV)
             force_string = detect_leading_zero_columns(path, is_gz,
                                                        self->delimiter_, col_names);
+        bool strings_nullable = (kind == DelimKind::CSV || kind == DelimKind::TSV);
         auto r = make_reader(input, self->delimiter_, autogen, col_names,
-                             force_string);
+                             force_string, strings_nullable);
         if (!r.ok()) {
             // A region query whose window overlaps no records leaves the tabix
             // stream empty, and Arrow's CSV reader rejects empty input with
@@ -6006,7 +6021,8 @@ private:
                     std::vector<std::string> force2 = detect_leading_zero_columns(
                         path, is_gz, self->delimiter_, {}, /*headerless=*/true);
                     auto r2 = make_reader(input2, self->delimiter_,
-                                          /*autogen=*/true, {}, force2);
+                                          /*autogen=*/true, {}, force2,
+                                          /*strings_nullable=*/true);
                     if (r2.ok()) {
                         self->reader_ = r2.ValueOrDie();
                         self->schema_ = self->reader_->schema();
