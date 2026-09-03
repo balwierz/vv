@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **The Qt viewer (`vvg`) reaches the new open-time features.** *File → Open
+  Folder…* opens a directory as one dataset (concatenated parts, Hive
+  `key=value/` partitions become columns). The session toolbar gains a **tags**
+  box (BAM/CRAM/SAM: add a typed column per aux tag, e.g. `NM,AS,RG`) and a **GT
+  stats** toggle (VCF/BCF: per-variant genotype summary columns), applied through
+  the same reopen path as the region/pileup controls.
+
 ### Fixed
 - **The Qt viewer (`vvg`) sorts the rows when a column header is clicked.** It
   toggled the sort-direction indicator but left the rows in place: the sort went

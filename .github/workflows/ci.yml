@@ -171,6 +171,16 @@ jobs:
           # Background (off-UI-thread) filter returns the same rows as the CLI.
           VVG_WINTEST=1 VVG_AFILTER='Score > 0.2' ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -q 'afilter .* rows=16'
+          # The session toolbar exposes the new open-time options through the same
+          # reopen path as region/pileup. --tags adds a column per aux tag (11 SAM
+          # columns + NM,AS = 13); --gt-stats adds 9 genotype columns to the BCF's
+          # 9 (= 18); a directory opens as a dataset.
+          VVG_WINTEST=1 VVG_TAGS='NM,AS' ./build-gui/gui/vvg tests/data/tiny.bam \
+            | grep -q "tags='NM,AS'.*cols=13"
+          VVG_WINTEST=1 VVG_GTSTATS=1 ./build-gui/gui/vvg tests/data/tiny.samples.bcf 2>/dev/null \
+            | grep -q 'gtstats=1.*cols=18'
+          d=$(mktemp -d); mkdir -p "$d/k=a"; printf 'id,v\n1,2\n' > "$d/k=a/p.csv"
+          VVG_SELFTEST=1 ./build-gui/gui/vvg "$d" | grep -q 'footer=Format: dataset'; rm -rf "$d"
           # Background (off-UI-thread) find returns the same match count as a
           # full per-cell scan ("chr1" matches 12 displayed cells; the Arrow
           # match_substring prefilter must not drop any).
