@@ -134,6 +134,7 @@ public:
     }
     int tabCount() const { return tabs_->count(); }
     int firstTabRows() const { return models_.empty() ? 0 : models_.front()->rowCount(); }
+    int firstTabCols() const { return models_.empty() ? 0 : models_.front()->columnCount(); }
     // Print every open tab's materialised dimensions — used by the self-test to
     // confirm dense 2-D matrices are previewed (row/col capped) rather than
     // fully densified.
@@ -173,11 +174,14 @@ public:
     void setHeadless(bool h) { headless_ = h; }
     // Programmatic region query for the self-test / future scripting.
     void applyRegionQuery(const QString& region, bool ncbi = false,
-                          int slop = 0, bool pileup = false) {
+                          int slop = 0, bool pileup = false,
+                          const QString& tags = QString(), bool gtStats = false) {
         if (regionEdit_)  regionEdit_->setText(region);
         if (coordsCombo_) coordsCombo_->setCurrentIndex(ncbi ? 1 : 0);
         if (slopSpin_)    slopSpin_->setValue(slop);
         if (pileupAction_) pileupAction_->setChecked(pileup);
+        if (tagsEdit_)     tagsEdit_->setText(tags);
+        if (gtStatsAction_) gtStatsAction_->setChecked(gtStats);
         applyRegion();
     }
 
@@ -316,6 +320,11 @@ private:
         open->setShortcut(QKeySequence::Open);
         connect(open, &QAction::triggered, this, [this]{ openFilesDialog(); });
         file->addAction(open);
+        QAction* openDir = new QAction(tr("Open &Folder…"), this);
+        openDir->setToolTip(tr("Open a directory as one dataset (Parquet / CSV / "
+                               "JSON parts; Hive key=value/ partitions)"));
+        connect(openDir, &QAction::triggered, this, [this]{ openFolderDialog(); });
+        file->addAction(openDir);
         recentMenu_ = file->addMenu(tr("Open &Recent"));
         rebuildRecentMenu();
         file->addSeparator();
@@ -407,6 +416,14 @@ private:
         openPaths(files);
     }
 
+    // A directory opens as one dataset (libvvcore concatenates its part files
+    // and turns Hive key=value/ path components into columns).
+    void openFolderDialog() {
+        QString dir = QFileDialog::getExistingDirectory(
+            this, tr("Open folder as dataset"), lastDir_);
+        if (!dir.isEmpty()) openPaths(QStringList{dir});
+    }
+
     void addRecent(const QString& path) {
         QSettings s(QStringLiteral("vv"), QStringLiteral("vvg"));
         QStringList recent = s.value(QStringLiteral("recentFiles")).toStringList();
@@ -489,6 +506,25 @@ private:
         pileupAction_->setToolTip(
             tr("BAM/CRAM: emit samtools mpileup-style per-base rows"));
         connect(pileupAction_, &QAction::toggled, this, [this](bool){ applyRegion(); });
+
+        // BAM/CRAM/SAM aux tags → one typed column each, e.g. NM,AS,RG.
+        tb->addWidget(new QLabel(tr("  tags ")));
+        tagsEdit_ = new QLineEdit(tb);
+        tagsEdit_->setPlaceholderText(tr("NM,AS,RG"));
+        tagsEdit_->setClearButtonEnabled(true);
+        tagsEdit_->setMaximumWidth(120);
+        tagsEdit_->setToolTip(
+            tr("BAM/CRAM/SAM: add a typed column per aux tag (comma-separated)"));
+        tb->addWidget(tagsEdit_);
+        connect(tagsEdit_, &QLineEdit::returnPressed, this, [this]{ applyRegion(); });
+
+        // VCF/BCF per-variant genotype summary columns.
+        gtStatsAction_ = tb->addAction(tr("GT stats"));
+        gtStatsAction_->setCheckable(true);
+        gtStatsAction_->setToolTip(
+            tr("VCF/BCF: add per-variant genotype columns "
+               "(het/hom/missing counts, AC/AN/AF, call_rate)"));
+        connect(gtStatsAction_, &QAction::toggled, this, [this](bool){ applyRegion(); });
     }
 
     void applyRegion() {
@@ -496,6 +532,8 @@ private:
         sessionCfg_.coords_one_based = (coordsCombo_->currentIndex() == 1);
         sessionCfg_.slop             = slopSpin_->value();
         sessionCfg_.pileup           = pileupAction_->isChecked();
+        sessionCfg_.bam_tags         = tagsEdit_->text().trimmed().toStdString();
+        sessionCfg_.gt_stats         = gtStatsAction_->isChecked();
         reopenAll();
     }
 
@@ -841,6 +879,8 @@ private:
     QComboBox*                     coordsCombo_ = nullptr;
     QSpinBox*                      slopSpin_   = nullptr;
     QAction*                       pileupAction_ = nullptr;
+    QLineEdit*                     tagsEdit_   = nullptr;
+    QAction*                       gtStatsAction_ = nullptr;
     QMenu*                         recentMenu_  = nullptr;
     QMenu*                         columnsMenu_ = nullptr;
     QProgressBar*                  progress_   = nullptr;
@@ -1054,12 +1094,16 @@ int main(int argc, char** argv) {
         // [VVG_PILEUP=1].
         const char* rg = std::getenv("VVG_REGION");
         bool pileup = std::getenv("VVG_PILEUP") != nullptr;
-        if ((rg && *rg) || pileup) {
+        const char* tg = std::getenv("VVG_TAGS");
+        bool gtStats = std::getenv("VVG_GTSTATS") != nullptr;
+        if ((rg && *rg) || pileup || (tg && *tg) || gtStats) {
             win.applyRegionQuery(QString::fromLocal8Bit(rg ? rg : ""),
-                                 std::getenv("VVG_NCBI") != nullptr, 0, pileup);
-            std::printf("region '%s' pileup=%d -> tabs=%d rows=%d\n",
-                        rg ? rg : "", pileup ? 1 : 0,
-                        win.tabCount(), win.firstTabRows());
+                                 std::getenv("VVG_NCBI") != nullptr, 0, pileup,
+                                 QString::fromLocal8Bit(tg ? tg : ""), gtStats);
+            std::printf("region '%s' pileup=%d tags='%s' gtstats=%d "
+                        "-> tabs=%d rows=%d cols=%d\n",
+                        rg ? rg : "", pileup ? 1 : 0, tg ? tg : "", gtStats ? 1 : 0,
+                        win.tabCount(), win.firstTabRows(), win.firstTabCols());
         }
         // Optional async-filter check: VVG_AFILTER="<expr>" (off-thread + pump).
         if (const char* af = std::getenv("VVG_AFILTER"); af && *af) {
