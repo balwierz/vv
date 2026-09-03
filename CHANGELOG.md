@@ -10,9 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **The Qt viewer (`vvg`) reaches the new open-time features.** *File → Open
   Folder…* opens a directory as one dataset (concatenated parts, Hive
   `key=value/` partitions become columns). The session toolbar gains a **tags**
-  box (BAM/CRAM/SAM: add a typed column per aux tag, e.g. `NM,AS,RG`) and a **GT
-  stats** toggle (VCF/BCF: per-variant genotype summary columns), applied through
-  the same reopen path as the region/pileup controls.
+  box (BAM/CRAM/SAM: add a typed column per aux tag, e.g. `NM,AS,RG`), a **GT
+  stats** toggle (VCF/BCF: per-variant genotype summary columns), and a
+  **Contigs** toggle (BAM/CRAM/SAM, VCF/BCF: the header's reference sequences as
+  a `name` / `length` table with the detected assembly), applied through the
+  same reopen path as the region/pileup controls. `--contigs` moved into
+  `open_source()` so every caller — CLI, GUI, KDE plugins — reaches it.
 
 ### Fixed
 - **The Qt viewer (`vvg`) sorts the rows when a column header is clicked.** It

@@ -175,13 +175,15 @@ public:
     // Programmatic region query for the self-test / future scripting.
     void applyRegionQuery(const QString& region, bool ncbi = false,
                           int slop = 0, bool pileup = false,
-                          const QString& tags = QString(), bool gtStats = false) {
+                          const QString& tags = QString(), bool gtStats = false,
+                          bool contigs = false) {
         if (regionEdit_)  regionEdit_->setText(region);
         if (coordsCombo_) coordsCombo_->setCurrentIndex(ncbi ? 1 : 0);
         if (slopSpin_)    slopSpin_->setValue(slop);
         if (pileupAction_) pileupAction_->setChecked(pileup);
         if (tagsEdit_)     tagsEdit_->setText(tags);
         if (gtStatsAction_) gtStatsAction_->setChecked(gtStats);
+        if (contigsAction_) contigsAction_->setChecked(contigs);
         applyRegion();
     }
 
@@ -525,6 +527,15 @@ private:
             tr("VCF/BCF: add per-variant genotype columns "
                "(het/hom/missing counts, AC/AN/AF, call_rate)"));
         connect(gtStatsAction_, &QAction::toggled, this, [this](bool){ applyRegion(); });
+
+        // BAM/CRAM/SAM, VCF/BCF: show the header's reference sequences instead of
+        // the records (name, length + detected assembly).
+        contigsAction_ = tb->addAction(tr("Contigs"));
+        contigsAction_->setCheckable(true);
+        contigsAction_->setToolTip(
+            tr("BAM/CRAM/SAM, VCF/BCF: list the reference sequences "
+               "(name, length) and detect the assembly"));
+        connect(contigsAction_, &QAction::toggled, this, [this](bool){ applyRegion(); });
     }
 
     void applyRegion() {
@@ -534,6 +545,7 @@ private:
         sessionCfg_.pileup           = pileupAction_->isChecked();
         sessionCfg_.bam_tags         = tagsEdit_->text().trimmed().toStdString();
         sessionCfg_.gt_stats         = gtStatsAction_->isChecked();
+        sessionCfg_.contigs          = contigsAction_->isChecked();
         reopenAll();
     }
 
@@ -881,6 +893,7 @@ private:
     QAction*                       pileupAction_ = nullptr;
     QLineEdit*                     tagsEdit_   = nullptr;
     QAction*                       gtStatsAction_ = nullptr;
+    QAction*                       contigsAction_ = nullptr;
     QMenu*                         recentMenu_  = nullptr;
     QMenu*                         columnsMenu_ = nullptr;
     QProgressBar*                  progress_   = nullptr;
@@ -1096,13 +1109,15 @@ int main(int argc, char** argv) {
         bool pileup = std::getenv("VVG_PILEUP") != nullptr;
         const char* tg = std::getenv("VVG_TAGS");
         bool gtStats = std::getenv("VVG_GTSTATS") != nullptr;
-        if ((rg && *rg) || pileup || (tg && *tg) || gtStats) {
+        bool contigs = std::getenv("VVG_CONTIGS") != nullptr;
+        if ((rg && *rg) || pileup || (tg && *tg) || gtStats || contigs) {
             win.applyRegionQuery(QString::fromLocal8Bit(rg ? rg : ""),
                                  std::getenv("VVG_NCBI") != nullptr, 0, pileup,
-                                 QString::fromLocal8Bit(tg ? tg : ""), gtStats);
-            std::printf("region '%s' pileup=%d tags='%s' gtstats=%d "
+                                 QString::fromLocal8Bit(tg ? tg : ""), gtStats, contigs);
+            std::printf("region '%s' pileup=%d tags='%s' gtstats=%d contigs=%d "
                         "-> tabs=%d rows=%d cols=%d\n",
                         rg ? rg : "", pileup ? 1 : 0, tg ? tg : "", gtStats ? 1 : 0,
+                        contigs ? 1 : 0,
                         win.tabCount(), win.firstTabRows(), win.firstTabCols());
         }
         // Optional async-filter check: VVG_AFILTER="<expr>" (off-thread + pump).
