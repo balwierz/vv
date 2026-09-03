@@ -96,6 +96,28 @@ assert_eq_file_inline "string_null_quoted_literal_kept" \
 assert_eq_file_inline "string_null_unquoted_is_missing" \
     "$("$VV" --tsv "$RSN" 2>&1 | sed -n '3p')" "$(printf 'Canada\tCA\t')"
 rm -f "$RSN"
+# R's write.table(sep="\t") / write.csv() emit an index (row-names) column with
+# no matching header field, so the header row is one field short. Arrow's CSV
+# reader would reject the wider data rows ("Expected N columns, got N+1"); vv
+# names the leading column "index" and reads the file. write.csv() writes the
+# same column with an empty header field ("","x",…), relabelled the same way.
+RTBL="$TMP/rtable.tsv"
+printf 'x\ty\tz\nrow1\t1\t2\t3\nrow2\t4\t5\t6\n' > "$RTBL"
+assert_eq_file_inline "rstyle_write_table_index_header" \
+    "$("$VV" --tsv "$RTBL" 2>&1 | head -n 1)" "$(printf 'index\tx\ty\tz')"
+assert_eq_file_inline "rstyle_write_table_first_row" \
+    "$("$VV" --tsv "$RTBL" 2>&1 | sed -n '2p')" "$(printf 'row1\t1\t2\t3')"
+RCSV="$TMP/rwrite.csv"
+printf '"","x","y","z"\n"row1",1,2,3\n"row2",4,5,6\n' > "$RCSV"
+assert_eq_file_inline "rstyle_write_csv_index_header" \
+    "$("$VV" --csv "$RCSV" 2>&1 | head -n 1)" "index,x,y,z"
+# A normal delimited file whose header matches the data width is untouched: no
+# injected "index" column.
+RNORM="$TMP/rnormal.tsv"
+printf 'a\tb\tc\n1\t2\t3\n' > "$RNORM"
+assert_eq_file_inline "rstyle_normal_header_untouched" \
+    "$("$VV" --tsv "$RNORM" 2>&1 | head -n 1)" "$(printf 'a\tb\tc')"
+rm -f "$RTBL" "$RCSV" "$RNORM"
 
 # Streaming delimited error handling: a malformed row BEYOND the first 16 MiB
 # CSV block must surface as a non-zero exit, not be swallowed into a silently
