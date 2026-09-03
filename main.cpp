@@ -831,6 +831,10 @@ static void print_usage(const char* prog) {
         "\nInteractive viewer (default when stdout is a terminal):\n"
         "  -i / --interactive  open the ncurses row browser\n"
         "  --table / -t        force plain table output (also --no-interactive)\n"        "  --text              read the file as plain text whatever its extension\n"
+        "  -d, --in-delimiter <sep>\n"
+        "                      read the input with this field separator, overriding\n"
+        "                      the extension (a single char or: tab, space, comma,\n"
+        "                      semicolon, pipe). E.g. -d space for R write.table().\n"
         "  Keys: arrows/hjkl move the cell cursor, PgUp/PgDn, g/G, /:search,\n"
         "        S:column-stats, s:sort by current column (u clears),\n"
         "        &:live filter, c:show/hide columns, y:copy cell (OSC52),\n"
@@ -1187,6 +1191,22 @@ static Config parse_args(int argc, char** argv) {
             else if (!std::strcmp(sep, "comma")) cfg.delimiter = ',';
             else if (sep[0] && !sep[1])     cfg.delimiter = sep[0];
             else { std::fprintf(stderr, "delimiter must be a single character\n"); std::exit(1); }
+        } else if ((!std::strcmp(argv[i], "--in-delimiter") ||
+                    !std::strcmp(argv[i], "-d")) && i + 1 < argc) {
+            // Input field separator: read the file as delimited text with this
+            // character, overriding the extension (so a space-, semicolon- or
+            // pipe-separated file — e.g. R's default write.table() .txt — opens
+            // as a table). Distinct from --delimiter, which sets the OUTPUT sep.
+            const char* sep = argv[++i];
+            if      (!std::strcmp(sep, "tab")   || !std::strcmp(sep, "\\t")) cfg.in_delimiter = '\t';
+            else if (!std::strcmp(sep, "space"))     cfg.in_delimiter = ' ';
+            else if (!std::strcmp(sep, "comma"))     cfg.in_delimiter = ',';
+            else if (!std::strcmp(sep, "semicolon")) cfg.in_delimiter = ';';
+            else if (!std::strcmp(sep, "pipe"))      cfg.in_delimiter = '|';
+            else if (sep[0] && !sep[1])              cfg.in_delimiter = sep[0];
+            else { std::fprintf(stderr, "--in-delimiter must be a single character "
+                                        "or one of: tab, space, comma, semicolon, pipe\n");
+                   std::exit(1); }
         } else if (argv[i][0] != '-' || (argv[i][0] == '-' && argv[i][1] == 0)) {
             // Bare "-" means stdin; treat as a positional argument. Every
             // positional becomes a TUI tab; the first one keeps cfg.path
@@ -1206,7 +1226,7 @@ static Config parse_args(int argc, char** argv) {
                 "--compression", "--unique", "--sample", "--filter",
                 "--select", "--cols", "--image-mode", "--tab", "--theme",
                 "--expand",
-                "--delimiter", "-f", "--fasta", "--box",
+                "--delimiter", "--in-delimiter", "-d", "-f", "--fasta", "--box",
             };
             if (needs_arg.count(argv[i])) {
                 std::fprintf(stderr, "Option %s requires an argument.\n", argv[i]);
@@ -5832,21 +5852,27 @@ public:
         std::shared_ptr<arrow::io::InputStream> input,
         const std::string& path_label, DelimKind kind, bool is_gz,
         const std::string& region,
-        std::unique_ptr<DelimitedSource>* out) {
+        std::unique_ptr<DelimitedSource>* out, char delim_override = 0) {
         auto self = std::make_unique<DelimitedSource>();
         self->path_      = path_label;
         self->kind_      = kind;
-        self->delimiter_ = (kind == DelimKind::CSV) ? ',' : '\t';
+        self->delimiter_ = delim_override ? delim_override
+                                          : ((kind == DelimKind::CSV) ? ',' : '\t');
         return continue_open(std::move(self), std::move(input),
                              /*raw=*/nullptr, is_gz, kind, region, out);
     }
+    // `delim_override` (non-zero) forces the input field separator, overriding
+    // the kind's default (used by -d/--in-delimiter); pass kind CSV or TSV so
+    // the CSV/TSV code paths — header auto-detect, leading-zero guard — apply.
     static std::string open(const std::string& path, DelimKind kind,
                              const std::string& region,
-                             std::unique_ptr<DelimitedSource>* out) {
+                             std::unique_ptr<DelimitedSource>* out,
+                             char delim_override = 0) {
         auto self = std::make_unique<DelimitedSource>();
         self->path_      = path;
         self->kind_      = kind;
-        self->delimiter_ = (kind == DelimKind::CSV) ? ',' : '\t';
+        self->delimiter_ = delim_override ? delim_override
+                                          : ((kind == DelimKind::CSV) ? ',' : '\t');
 
         // "is_gz" means the byte stream is compressed (non-seekable). Both a
         // gzip (.gz) and a zstandard (.zst / .zstd) wrapper qualify; open_stream
@@ -15413,6 +15439,23 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
     // sniff and its stream is already open.)
     if (cfg.force_text && path != "-") return open_text(path, cfg, out);
 
+    // -d/--in-delimiter: read the file as delimited text with the given field
+    // separator, overriding the extension. Turns a space-, semicolon- or
+    // pipe-separated file (e.g. R's default write.table() .txt) into a table.
+    // A comma routes through the CSV path, anything else through TSV — both run
+    // the same header auto-detection; only the separator char differs. Trusts
+    // the user like the .csv/.tsv extensions do (no binary sniff). Directory
+    // datasets and --text are handled above and still win.
+    if (cfg.in_delimiter != 0 && path != "-") {
+        DelimKind dk2 = (cfg.in_delimiter == ',') ? DelimKind::CSV : DelimKind::TSV;
+        std::unique_ptr<DelimitedSource> src;
+        std::string err = DelimitedSource::open(path, dk2, cfg.region, &src,
+                                                cfg.in_delimiter);
+        if (!err.empty()) return err;
+        *out = std::move(src);
+        return "";
+    }
+
     // ── Stdin (`-`): text formats only ───────────────────────────────────────
     if (path == "-") {
         if (isatty(STDIN_FILENO))
@@ -15499,11 +15542,14 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
 
         // Choose CSV/TSV from the user-provided flag (none → assume TSV; the
         // header-line auto-detect in DelimitedSource will catch obvious CSV).
+        // -d/--in-delimiter overrides the field separator outright.
         DelimKind kind = DelimKind::TSV;
-        if (cfg.delimiter == ',') kind = DelimKind::CSV;
+        if (cfg.in_delimiter == ',' ||
+            (cfg.in_delimiter == 0 && cfg.delimiter == ',')) kind = DelimKind::CSV;
         std::unique_ptr<DelimitedSource> src;
         std::string e = DelimitedSource::open_from_stream(
-            std::move(input), "-", kind, /*is_gz=*/is_gz, cfg.region, &src);
+            std::move(input), "-", kind, /*is_gz=*/is_gz, cfg.region, &src,
+            cfg.in_delimiter);
         if (!e.empty()) return e;
         *out = std::move(src);
         return "";

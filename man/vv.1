@@ -414,6 +414,17 @@ the markdown source instead of rendering it, \fBvv --text data.csv\fR
 shows the raw lines instead of a table. The content is still sniffed,
 so \fBvv --text foo.bam\fR is refused rather than dumped.
 .TP
+.BI \-d ", " \-\-in\-delimiter " SEP"
+Read the input as delimited text using \fISEP\fR as the field
+separator, overriding the extension. \fISEP\fR is a single character
+or one of the words \fBtab\fR, \fBspace\fR, \fBcomma\fR,
+\fBsemicolon\fR, \fBpipe\fR. This opens space-, semicolon- or
+pipe-separated files that no extension identifies \(en for example
+R's default \fBwrite.table()\fR output (\fBvv -d space out.txt\fR).
+Distinct from \fB\-\-delimiter\fR, which sets the \fIoutput\fR
+separator. A comma routes through the CSV reader, any other separator
+through the TSV reader; both auto-detect the header row.
+.TP
 .B \-\-validate
 Check LociSSD invariants: required columns present with correct
 types; the manifest covers every row exactly once; rows are sorted

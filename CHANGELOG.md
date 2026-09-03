@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`-d` / `--in-delimiter <sep>` sets the input field separator.** Reads a file
+  as delimited text with the given separator, overriding the extension, so
+  space-, semicolon- and pipe-separated data that no extension identifies opens
+  as a table — including R's default `write.table()` output (`vv -d space
+  out.txt`). `<sep>` is a single character or one of `tab`, `space`, `comma`,
+  `semicolon`, `pipe`. Distinct from `--delimiter`, which sets the *output*
+  separator; the two are independent. Works on files and stdin.
 - **The Qt viewer (`vvg`) reaches the new open-time features.** *File → Open
   Folder…* opens a directory as one dataset (concatenated parts, Hive
   `key=value/` partitions become columns). The session toolbar gains a **tags**

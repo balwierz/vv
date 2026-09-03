@@ -83,6 +83,28 @@ fi
 run_case paf_tsv      --tsv --no-header "$DATA/tiny.paf"
 run_case paf_gz_tsv   --tsv --no-header "$DATA/tiny.paf.gz"
 
+# -d/--in-delimiter: read a file with an explicit input field separator,
+# overriding the extension. Opens space-, semicolon- and pipe-separated data
+# that no extension identifies (e.g. R's default write.table() output). Input
+# separator is independent of the --tsv/--csv OUTPUT delimiter.
+IND="$TMP/ind_space.txt"
+printf 'gene expr sample\nBRCA1 12.5 s1\nTP53 8 s2\n' > "$IND"
+assert_eq_file_inline "in_delimiter_space_header" \
+    "$("$VV" --tsv -d space "$IND" 2>&1 | head -n 1)" "$(printf 'gene\texpr\tsample')"
+assert_eq_file_inline "in_delimiter_space_row" \
+    "$("$VV" --tsv -d space "$IND" 2>&1 | sed -n '2p')" "$(printf 'BRCA1\t12.5\ts1')"
+INS="$TMP/ind_semi.csv"
+printf 'a;b;c\n1;2;3\n' > "$INS"
+# semicolon input, comma output — input/output separators are independent
+assert_eq_file_inline "in_delimiter_semicolon" \
+    "$("$VV" --csv -d semicolon "$INS" 2>&1 | sed -n '2p')" "1,2,3"
+# stdin honours -d too (pipe word form)
+assert_eq_file_inline "in_delimiter_stdin_pipe" \
+    "$(printf 'x|y\n7|8\n' | "$VV" --tsv -d pipe - 2>&1 | sed -n '2p')" "$(printf '7\t8')"
+# --in-delimiter long form + single-char value
+assert_eq_file_inline "in_delimiter_long_char" \
+    "$(printf 'p:q\n5:6\n' | "$VV" --tsv --in-delimiter ':' - 2>&1 | sed -n '2p')" "$(printf '5\t6')"
+rm -f "$IND" "$INS"
 # Missing values in string columns: R and pandas write a missing value as an
 # *unquoted* null token and quote a genuine string. vv honours that — an
 # unquoted NA/NULL/empty in a string column becomes null, while a quoted "NA"
