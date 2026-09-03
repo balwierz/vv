@@ -21,7 +21,7 @@ _vv_run() {
 # not mistaken for the input.
 _vv_file_arg() {
     local -a valopts
-    valopts=(-n -w -c -@ --threads --decode-threads --delimiter --color --theme --box
+    valopts=(-n -w -c -@ --threads --decode-threads --delimiter --in-delimiter -d --color --theme --box
              -r --region --window --regions-file --region-cols --slop --coords
              --tail --sort --tags --expand --parquet --arrow --feather --compression
              --image-mode -f --fasta --select --cols --filter --tab --unique
@@ -121,7 +121,8 @@ _vv() {
         '--box+[Table frame style]:style:(unicode ascii)' \
         '--tsv[Write tab-separated values]' \
         '--csv[Write comma-separated values]' \
-        '--delimiter+[Custom delimiter]:char:' \
+        '--delimiter+[Custom output delimiter]:char:' \
+        '(-d --in-delimiter)'{-d,--in-delimiter}'+[Input field separator (char or tab/space/comma/semicolon/pipe)]:sep:(tab space comma semicolon pipe)' \
         '--no-header[Omit the header row]' \
         '--parquet+[Write a Parquet file]:path:_files' \
         '--arrow+[Write an Arrow IPC file (Feather v2)]:path:_files' \

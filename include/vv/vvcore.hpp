@@ -47,6 +47,7 @@ struct Config {
     bool        no_index       = false;
     ColorMode   color          = ColorMode::Auto;
     char        delimiter      = 0;      // 0 = table/interactive; '\t'/','= delimited
+    char        in_delimiter   = 0;      // -d/--in-delimiter: input field sep (0 = auto by extension)
     bool        no_header      = false;
     bool        interactive    = false;  // -i / --interactive
     bool        no_interactive = false;  // --no-interactive

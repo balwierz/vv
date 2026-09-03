@@ -13,7 +13,7 @@ end
 # The input file already on the command line: the sole positional. Skip the
 # argument of any value-taking option so an output path is not taken as input.
 function __vv_file
-    set -l valopts n w c @ threads decode-threads delimiter color theme box r region \
+    set -l valopts n w c @ threads decode-threads delimiter in-delimiter d color theme box r region \
         window regions-file region-cols slop coords tail sort tags expand parquet arrow \
         feather compression image-mode f fasta select cols filter tab unique sample
     set -l toks (commandline -opc)
@@ -102,6 +102,7 @@ complete -c vv -c vh -l box -x -a 'unicode ascii' -d 'Table frame style (ascii f
 complete -c vv -c vh -l tsv                -d 'Write tab-separated values'
 complete -c vv -c vh -l csv                -d 'Write comma-separated values'
 complete -c vv -c vh -l delimiter -r       -d 'Write with a custom single-character delimiter'
+complete -c vv -c vh -s d -l in-delimiter -x -a 'tab space comma semicolon pipe' -d 'Read input with this field separator (overrides extension)'
 complete -c vv -c vh -l no-header          -d 'Omit the header row in delimited output'
 
 # Visualization
