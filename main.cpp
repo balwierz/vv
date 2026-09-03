@@ -15725,12 +15725,21 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
     return "";
 }
 
+// --contigs reads only a genomics file's header and presents its reference
+// sequences as a table; defined below (near main) but reachable here so every
+// caller — CLI, GUI, KDE plugins — gets it through open_source().
+static std::string build_contigs(const Config& cfg,
+                                 std::unique_ptr<TabularSource>* out);
+
 // The public entry point: dispatch, then apply --expand once. Doing it here
 // rather than at each `*out = std::move(src)` means every format and every
 // caller (CLI, multi-file TUI loop, Qt GUI, KDE plugins) gets it, and no
 // future dispatch branch can forget to.
 std::string open_source(const std::string& path, const Config& cfg,
                          std::unique_ptr<TabularSource>* out) {
+    // --contigs replaces the data view with the header's reference-sequence
+    // table (BAM/CRAM/SAM, VCF/BCF), reading no records.
+    if (cfg.contigs) return build_contigs(cfg, out);
     std::string err = open_source_dispatch(path, cfg, out);
     if (!err.empty() || !*out) return err;
     if (!cfg.expand_col.empty()) {
@@ -22242,17 +22251,11 @@ int main(int argc, char** argv) {
     }
 
     std::unique_ptr<TabularSource> src;
-
-    // --contigs: read only the header, present its reference sequences as a
-    // table, and skip the normal data open. Everything below (--tsv / --json /
-    // --sort / --filter / the TUI) then renders that table.
-    if (cfg.contigs) {
-        std::string cerr = build_contigs(cfg, &src);
-        if (!cerr.empty()) { report(cfg.path, cerr); return 1; }
-    }
-
-    std::string err;
-    if (!src) err = open_source(cfg.path, cfg, &src);
+    // --contigs is applied inside open_source() now (so the GUI / KDE plugins
+    // reach it too); it reads only the header and returns the reference-sequence
+    // table, which the modes below (--tsv / --json / --sort / --filter / the TUI)
+    // then render.
+    std::string err = open_source(cfg.path, cfg, &src);
     if (!err.empty()) {
         // open_source returns "Cannot open '<path>': <detail>"; split it back
         // out so we can reformat with color and strip Arrow's noisy prefix.

@@ -179,6 +179,10 @@ jobs:
             | grep -q "tags='NM,AS'.*cols=13"
           VVG_WINTEST=1 VVG_GTSTATS=1 ./build-gui/gui/vvg tests/data/tiny.samples.bcf 2>/dev/null \
             | grep -q 'gtstats=1.*cols=18'
+          # --contigs replaces the alignment/variant view with the header's
+          # reference-sequence table (name, length) — 2 columns.
+          VVG_WINTEST=1 VVG_CONTIGS=1 ./build-gui/gui/vvg tests/data/tiny.bam \
+            | grep -q 'contigs=1.*cols=2'
           d=$(mktemp -d); mkdir -p "$d/k=a"; printf 'id,v\n1,2\n' > "$d/k=a/p.csv"
           VVG_SELFTEST=1 ./build-gui/gui/vvg "$d" | grep -q 'footer=Format: dataset'; rm -rf "$d"
           # Background (off-UI-thread) find returns the same match count as a
