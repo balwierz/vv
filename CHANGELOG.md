@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Header detection for CSV/TSV without a header row.** When a delimited file
+  has no explicit header, the first row is no longer assumed to be column names:
+  `vv` infers each column's type from the rows below row 0, then keeps row 0 as
+  a header only if it looks like one. A value that fits a numeric or boolean
+  column is data, a label over such a column is a header — so `chr1 1000 2000`
+  is read as data (columns auto-named `f0, f1, …`) while `gene count value` stays
+  a header. All-text data keeps the header (no signal to overturn the default),
+  and the previous all-numeric special case still reads as headerless. The table
+  footer notes when columns were auto-named. New `--header auto|on|off` forces
+  the choice (`auto` is the default). File inputs only — a piped stream cannot
+  be re-read, so its first row is always taken as the header.
 - **`-d` / `--in-delimiter <sep>` sets the input field separator.** Reads a file
   as delimited text with the given separator, overriding the extension, so
   space-, semicolon- and pipe-separated data that no extension identifies opens

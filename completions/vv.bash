@@ -21,7 +21,7 @@ _vv_run() {
 # output path (e.g. --parquet out.parquet) is not mistaken for the input.
 _vv_input_file() {
     local i tok
-    local val_opts=' -n -w -c -@ --threads --decode-threads --delimiter --in-delimiter -d --color
+    local val_opts=' -n -w -c -@ --threads --decode-threads --delimiter --in-delimiter -d --header --color
         --theme --box -r --region --window --regions-file --region-cols --slop --coords
         --tail --sort --tags --expand --parquet --arrow --feather --compression --image-mode
         -f --fasta --select --cols --filter --tab --unique --sample '
@@ -74,6 +74,10 @@ _vv() {
             ;;
         -d|--in-delimiter)
             COMPREPLY=( $(compgen -W 'tab space comma semicolon pipe' -- "$cur") )
+            return
+            ;;
+        --header)
+            COMPREPLY=( $(compgen -W 'auto on off' -- "$cur") )
             return
             ;;
         --color)
@@ -173,7 +177,7 @@ _vv() {
                 --json --ndjson --md --markdown
                 --select --cols --filter
                 --schema --describe --count --stats --contigs --gt-stats --validate --decode-pileup --pileup --text
-                --in-delimiter
+                --in-delimiter --header
                 --expand --formats --list-columns --list-tabs
                 -f --fasta
                 --tab

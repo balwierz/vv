@@ -425,6 +425,18 @@ Distinct from \fB\-\-delimiter\fR, which sets the \fIoutput\fR
 separator. A comma routes through the CSV reader, any other separator
 through the TSV reader; both auto-detect the header row.
 .TP
+.BI \-\-header " MODE"
+Whether a CSV/TSV file's first row is a column header. \fBauto\fR (the
+default) decides by comparing row 0 against the types inferred from the
+rows below it: a value that fits a numeric or boolean column is data, a
+label over such a column is a header. A file with no informative column
+(all text) keeps its header. When row 0 is judged to be data, the
+columns are auto-named \fBf0\fR, \fBf1\fR, \(... and the table footer
+says so. \fBon\fR forces the first row to be treated as a header;
+\fBoff\fR forces it to be treated as data (auto-named columns). Applies
+to file inputs; a piped stream cannot be re-read, so its first row is
+always taken as the header.
+.TP
 .B \-\-validate
 Check LociSSD invariants: required columns present with correct
 types; the manifest covers every row exactly once; rows are sorted
