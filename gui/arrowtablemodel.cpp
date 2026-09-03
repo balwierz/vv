@@ -285,32 +285,35 @@ std::vector<int64_t> ArrowTableModel::computeOrderVec(
         auto ca = readFullColumn(displayCols_[sortCol]);
         if (aborted()) return {};
         if (ca && ca->length() > 0) {
-            arrow::compute::SortOptions opts(
-                {arrow::compute::SortKey(
-                    "", order == Qt::AscendingOrder
-                            ? arrow::compute::SortOrder::Ascending
-                            : arrow::compute::SortOrder::Descending)});
-            auto res = arrow::compute::CallFunction("sort_indices",
-                                                    {arrow::Datum(ca)}, &opts);
-            if (aborted()) return {};
-            if (res.ok()) {
-                auto idx = std::static_pointer_cast<arrow::UInt64Array>(
-                    res->make_array());
-                std::vector<int64_t> out;
+            // Flatten the (possibly multi-chunk) column to one array so
+            // stable_sort_order can index it. stable_sort_order is the reader
+            // core's hand-rolled sort — the same one --sort uses — because
+            // arrow::compute's sort_indices kernel is GC'd from the static build
+            // and is not reliably registered in every Arrow linkage (using it
+            // here made the click-to-sort a silent no-op: the header toggled but
+            // the rows never moved).
+            std::shared_ptr<arrow::Array> flat;
+            if (ca->num_chunks() == 1) {
+                flat = ca->chunk(0);
+            } else {
+                auto cc = arrow::Concatenate(ca->chunks());
+                if (cc.ok()) flat = *cc;
+            }
+            if (flat) {
+                std::vector<int64_t> idx =
+                    stable_sort_order(*flat, order == Qt::DescendingOrder);
+                if (aborted()) return {};
                 if (hasFilter) {
                     std::unordered_set<int64_t> keep(base.begin(), base.end());
+                    std::vector<int64_t> out;
                     out.reserve(keep.size());
-                    for (int64_t i = 0; i < idx->length(); ++i) {
+                    for (size_t i = 0; i < idx.size(); ++i) {
                         if ((i & 0xffff) == 0 && aborted()) return {};
-                        int64_t r = (int64_t)idx->Value(i);
-                        if (keep.count(r)) out.push_back(r);
+                        if (keep.count(idx[i])) out.push_back(idx[i]);
                     }
-                } else {
-                    out.resize(idx->length());
-                    for (int64_t i = 0; i < idx->length(); ++i)
-                        out[i] = (int64_t)idx->Value(i);
+                    return out;
                 }
-                return out;
+                return idx;
             }
         }
     }

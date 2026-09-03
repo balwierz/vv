@@ -125,6 +125,14 @@ std::string digits_with_sep(const std::string& s);
 std::string cell_to_string(const arrow::Array& arr, int64_t row);
 std::string cell_to_display_string(const arrow::Array& arr, int64_t row);
 
+// Stable sort order (a row permutation) for one column's values: numeric
+// columns compare numerically, others by their rendered text; nulls sort last;
+// equal keys keep input order. Hand-rolled rather than arrow::compute, whose
+// kernels are GC'd from the static build and are not reliably registered in
+// every Arrow linkage — the same reason the CLI's --sort avoids them. Shared by
+// --sort and the GUI's click-to-sort.
+std::vector<int64_t> stable_sort_order(const arrow::Array& key, bool descending);
+
 // ── Filter engine ────────────────────────────────────────────────────────────
 // The same DSL behind --filter and the TUI's `&` live filter. Parse once
 // against the source schema, then evaluate per row. Reused verbatim by the

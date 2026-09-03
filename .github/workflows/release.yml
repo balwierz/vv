@@ -148,6 +148,10 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           VVG_SELFTEST=1 ./build-gui/gui/vvg tests/data/tiny.parquet
+          st=$(VVG_SELFTEST=1 ./build-gui/gui/vvg tests/data/tiny.parquet); echo "$st"
+          asc=$(printf '%s\n' "$st" | sed -n 's/^sorted_row0=//p')
+          desc=$(printf '%s\n' "$st" | sed -n 's/^sorted_row0_desc=//p')
+          test -n "$asc" && test "$asc" != "$desc"   # sort must reorder
           VVG_SELFTEST=1 ./build-gui/gui/vvg tests/data/tiny.md | grep -q 'footer=Format: markdown table'
           test "$(VVG_WINTEST=1 ./build-gui/gui/vvg tests/data/tiny.parquet)" = "win_tabs=1"
 
@@ -298,6 +302,10 @@ jobs:
           ./build/vv --version
           ./build/vv --help
           VVG_SELFTEST=1 ./build/gui/vvg tests/data/tiny.parquet
+          st=$(VVG_SELFTEST=1 ./build/gui/vvg tests/data/tiny.parquet); echo "$st"
+          asc=$(printf '%s\n' "$st" | sed -n 's/^sorted_row0=//p')
+          desc=$(printf '%s\n' "$st" | sed -n 's/^sorted_row0_desc=//p')
+          test -n "$asc" && test "$asc" != "$desc"   # sort must reorder
           VVG_SELFTEST=1 ./build/gui/vvg tests/data/tiny.md | grep -q 'footer=Format: markdown table'
           test "$(VVG_WINTEST=1 ./build/gui/vvg tests/data/tiny.parquet)" = "win_tabs=1"
 

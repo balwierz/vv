@@ -948,14 +948,22 @@ int main(int argc, char** argv) {
                     m.rowCount(), m.columnCount());
         std::printf("footer=%s\n", m.footer().toStdString().c_str());
         if (m.columnCount() > 0) {
-            // Exercise the typed sort path on column 0.
+            // Exercise the typed sort path on column 0. Emit the first row for
+            // both directions: a working sort makes them differ (unless column 0
+            // is constant), so CI can assert the rows actually reorder rather
+            // than the header indicator just toggling.
+            auto row0 = [&]() {
+                std::string s;
+                for (int c = 0; c < m.columnCount(); ++c) {
+                    if (c) s += " | ";
+                    s += m.data(m.index(0, c), Qt::DisplayRole).toString().toStdString();
+                }
+                return s;
+            };
             m.sortByDisplayColumn(0, Qt::AscendingOrder);
-            std::string r0;
-            for (int c = 0; c < m.columnCount(); ++c) {
-                if (c) r0 += " | ";
-                r0 += m.data(m.index(0, c), Qt::DisplayRole).toString().toStdString();
-            }
-            std::printf("sorted_row0=%s\n", r0.c_str());
+            std::printf("sorted_row0=%s\n", row0().c_str());
+            m.sortByDisplayColumn(0, Qt::DescendingOrder);
+            std::printf("sorted_row0_desc=%s\n", row0().c_str());
             m.sortByDisplayColumn(-1, Qt::AscendingOrder);   // reset
         }
         // Clipboard copy uses RawTextRole (the value without digit grouping),

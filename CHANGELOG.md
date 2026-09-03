@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **The Qt viewer (`vvg`) sorts the rows when a column header is clicked.** It
+  toggled the sort-direction indicator but left the rows in place: the sort went
+  through `arrow::compute`'s `sort_indices`, whose kernel is not registered in
+  the GUI's Arrow linkage (the same reason the CLI's `--sort` never used compute),
+  so the call failed and the model fell back to the unsorted order. Sorting now
+  uses the reader core's hand-rolled `stable_sort_order` — shared with `--sort`,
+  so numeric columns sort numerically, others by text, and nulls sort last.
 - **The Qt viewer (`vvg`) opens a markdown `.md` file as its tables, not as raw
   text.** The CLI renders markdown in `main()` before it reaches
   `open_source()`, but the GUI (and the KDE plugins) go through `open_source()`,

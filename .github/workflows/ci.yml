@@ -142,8 +142,16 @@ jobs:
           # Crash-safety: a malformed file must be handled gracefully (empty
           # result, exit 0) rather than aborting the Dolphin/Baloo worker.
           ./build-gui/gui/kde/vvkdetest --allow-empty tests/data/tiny.malformed.npz
-          # Model path end-to-end through libvvcore.
-          VVG_SELFTEST=1 ./build-gui/gui/vvg tests/data/tiny.parquet
+          # Model path end-to-end through libvvcore. Column sort must actually
+          # reorder the rows (not just toggle the header indicator): tiny.parquet
+          # column 0 is chr1/chr2, so the ascending and descending first rows
+          # differ when the sort works. The GUI sorts via stable_sort_order (no
+          # arrow::compute, whose kernels aren't registered in this linkage).
+          st=$(VVG_SELFTEST=1 ./build-gui/gui/vvg tests/data/tiny.parquet)
+          echo "$st"
+          asc=$(printf '%s\n' "$st" | sed -n 's/^sorted_row0=//p')
+          desc=$(printf '%s\n' "$st" | sed -n 's/^sorted_row0_desc=//p')
+          test -n "$asc" && test "$asc" != "$desc"
           # A markdown file must open as its GFM tables, not the plain-text
           # fallback (one `line` column): the CLI renders .md in main() before
           # open_source(), but the GUI goes through open_source(), so the .md

@@ -17666,6 +17666,45 @@ static std::string build_tail(std::unique_ptr<TabularSource>& src,
     return "";
 }
 
+// Row permutation that stable-sorts one column's values (see vvcore.hpp).
+// Numeric columns compare numerically, others by rendered text; nulls last;
+// ties keep input order. Hand-rolled because arrow::compute's sort kernels are
+// GC'd from the static build / not reliably registered — shared by --sort and
+// the GUI's click-to-sort so their semantics stay identical.
+std::vector<int64_t> stable_sort_order(const arrow::Array& key, bool descending) {
+    const int64_t N = key.length();
+    std::vector<int64_t> order((size_t)N);
+    std::iota(order.begin(), order.end(), (int64_t)0);
+    if (is_numeric_type(key.type_id())) {
+        std::vector<double> kv((size_t)N);
+        std::vector<char>   kn((size_t)N);
+        for (int64_t i = 0; i < N; ++i) {
+            double d = 0;
+            if (key.IsNull(i)) kn[(size_t)i] = 1;
+            else if (array_value_as_double(key, i, &d)) { kn[(size_t)i]=0; kv[(size_t)i]=d; }
+            else kn[(size_t)i] = 1;
+        }
+        std::stable_sort(order.begin(), order.end(), [&](int64_t a, int64_t b) -> bool {
+            if (kn[(size_t)a] != kn[(size_t)b]) return !kn[(size_t)a];  // non-null first
+            if (kn[(size_t)a]) return false;
+            return descending ? kv[(size_t)a] > kv[(size_t)b] : kv[(size_t)a] < kv[(size_t)b];
+        });
+    } else {
+        std::vector<std::string> kv((size_t)N);
+        std::vector<char>        kn((size_t)N);
+        for (int64_t i = 0; i < N; ++i) {
+            if (key.IsNull(i)) kn[(size_t)i] = 1;
+            else kv[(size_t)i] = cell_to_string(key, i);
+        }
+        std::stable_sort(order.begin(), order.end(), [&](int64_t a, int64_t b) -> bool {
+            if (kn[(size_t)a] != kn[(size_t)b]) return !kn[(size_t)a];  // non-null first
+            if (kn[(size_t)a]) return false;
+            return descending ? kv[(size_t)a] > kv[(size_t)b] : kv[(size_t)a] < kv[(size_t)b];
+        });
+    }
+    return order;
+}
+
 // --sort COL[:asc|:desc]: fully materialise the (filtered) source, stable-sort
 // its rows by one column, and replace `src` with a MemoryTableSource so every
 // downstream view / export renders the sorted result identically. Sorting needs
@@ -17733,37 +17772,7 @@ static std::string build_sort(std::unique_ptr<TabularSource>& src,
         flat[c] = cc.ValueOrDie();
     }
 
-    std::vector<int64_t> order((size_t)N);
-    for (int64_t i = 0; i < N; ++i) order[(size_t)i] = i;
-    const arrow::Array& key = *flat[sort_idx];
-    const bool desc = cfg.sort_desc;
-    if (is_numeric_type(key.type_id())) {
-        std::vector<double> kv((size_t)N);
-        std::vector<char>   kn((size_t)N);
-        for (int64_t i = 0; i < N; ++i) {
-            double d = 0;
-            if (key.IsNull(i)) kn[(size_t)i] = 1;
-            else if (array_value_as_double(key, i, &d)) { kn[(size_t)i]=0; kv[(size_t)i]=d; }
-            else kn[(size_t)i] = 1;
-        }
-        std::stable_sort(order.begin(), order.end(), [&](int64_t a, int64_t b) -> bool {
-            if (kn[(size_t)a] != kn[(size_t)b]) return !kn[(size_t)a];  // non-null first
-            if (kn[(size_t)a]) return false;
-            return desc ? kv[(size_t)a] > kv[(size_t)b] : kv[(size_t)a] < kv[(size_t)b];
-        });
-    } else {
-        std::vector<std::string> kv((size_t)N);
-        std::vector<char>        kn((size_t)N);
-        for (int64_t i = 0; i < N; ++i) {
-            if (key.IsNull(i)) kn[(size_t)i] = 1;
-            else kv[(size_t)i] = cell_to_string(key, i);
-        }
-        std::stable_sort(order.begin(), order.end(), [&](int64_t a, int64_t b) -> bool {
-            if (kn[(size_t)a] != kn[(size_t)b]) return !kn[(size_t)a];  // non-null first
-            if (kn[(size_t)a]) return false;
-            return desc ? kv[(size_t)a] > kv[(size_t)b] : kv[(size_t)a] < kv[(size_t)b];
-        });
-    }
+    std::vector<int64_t> order = stable_sort_order(*flat[sort_idx], cfg.sort_desc);
 
     // Gather every column into the sorted order (AppendArraySlice is a plain
     // builder method — not a compute kernel — so it survives --gc-sections).
@@ -17788,7 +17797,7 @@ static std::string build_sort(std::unique_ptr<TabularSource>& src,
 
     src = std::make_unique<MemoryTableSource>(sorted,
         "<sorted " + old_path + ">",
-        "Sorted by " + cfg.sort_col + (desc ? " (desc)" : "") +
+        "Sorted by " + cfg.sort_col + (cfg.sort_desc ? " (desc)" : "") +
         "  |  Rows: " + std::to_string(N),
         hidden_from_src);
     return "";
