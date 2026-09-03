@@ -83,6 +83,29 @@ fi
 run_case paf_tsv      --tsv --no-header "$DATA/tiny.paf"
 run_case paf_gz_tsv   --tsv --no-header "$DATA/tiny.paf.gz"
 
+# R's write.table(sep="\t") / write.csv() emit an index (row-names) column with
+# no matching header field, so the header row is one field short. Arrow's CSV
+# reader would reject the wider data rows ("Expected N columns, got N+1"); vv
+# names the leading column "index" and reads the file. write.csv() writes the
+# same column with an empty header field ("","x",…), relabelled the same way.
+RTBL="$TMP/rtable.tsv"
+printf 'x\ty\tz\nrow1\t1\t2\t3\nrow2\t4\t5\t6\n' > "$RTBL"
+assert_eq_file_inline "rstyle_write_table_index_header" \
+    "$("$VV" --tsv "$RTBL" 2>&1 | head -n 1)" "$(printf 'index\tx\ty\tz')"
+assert_eq_file_inline "rstyle_write_table_first_row" \
+    "$("$VV" --tsv "$RTBL" 2>&1 | sed -n '2p')" "$(printf 'row1\t1\t2\t3')"
+RCSV="$TMP/rwrite.csv"
+printf '"","x","y","z"\n"row1",1,2,3\n"row2",4,5,6\n' > "$RCSV"
+assert_eq_file_inline "rstyle_write_csv_index_header" \
+    "$("$VV" --csv "$RCSV" 2>&1 | head -n 1)" "index,x,y,z"
+# A normal delimited file whose header matches the data width is untouched: no
+# injected "index" column.
+RNORM="$TMP/rnormal.tsv"
+printf 'a\tb\tc\n1\t2\t3\n' > "$RNORM"
+assert_eq_file_inline "rstyle_normal_header_untouched" \
+    "$("$VV" --tsv "$RNORM" 2>&1 | head -n 1)" "$(printf 'a\tb\tc')"
+rm -f "$RTBL" "$RCSV" "$RNORM"
+
 # Streaming delimited error handling: a malformed row BEYOND the first 16 MiB
 # CSV block must surface as a non-zero exit, not be swallowed into a silently
 # truncated result with status 0. Build the fixture in $TMP (too big to commit:
