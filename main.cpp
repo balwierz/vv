@@ -5631,6 +5631,10 @@ leading_zero_columns(const std::vector<std::string>& sample_lines, char delim,
 }
 
 class DelimitedSource : public TabularSource {
+    // Name given to R's unnamed leading index / row-names column (see
+    // detect_rstyle_index_header).
+    static constexpr const char* kRowIndexColName = "index";
+
     std::string                           path_;
     char                                  delimiter_;
     DelimKind                             kind_;
@@ -5708,7 +5712,8 @@ class DelimitedSource : public TabularSource {
     static arrow::Result<std::shared_ptr<arrow::csv::StreamingReader>>
     make_reader(std::shared_ptr<arrow::io::InputStream> input, char delim,
                 bool autogen_names, const std::vector<std::string>& col_names,
-                const std::vector<std::string>& force_string_cols = {}) {
+                const std::vector<std::string>& force_string_cols = {},
+                bool strings_nullable = false) {
         auto ropts = arrow::csv::ReadOptions::Defaults();
         // 16 MiB blocks + per-block parsing on the CPU pool. The default
         // (~1 MiB) is too small for multi-GB files; raising it amortises
@@ -5722,6 +5727,19 @@ class DelimitedSource : public TabularSource {
         auto popts = arrow::csv::ParseOptions::Defaults();
         popts.delimiter = delim;
         auto copts = arrow::csv::ConvertOptions::Defaults();
+        // Missing values in string columns. Arrow only nulls a string cell when
+        // strings_can_be_null is set; otherwise a bare NA / NULL / empty field
+        // is kept as that literal text. R (and pandas) write a missing value as
+        // an unquoted token and quote a genuine string, so honour that: an
+        // *unquoted* null token (NA, NULL, NaN, empty, …) becomes null while a
+        // *quoted* one ("NA") stays the literal string — a column whose real
+        // value is "NA" (e.g. Namibia's country code) survives as long as it is
+        // quoted. Only for user CSV/TSV; the fixed-schema genomics formats
+        // (BED/VCF/GFF/SAM/PAF) keep their own missing conventions.
+        if (strings_nullable) {
+            copts.strings_can_be_null        = true;
+            copts.quoted_strings_can_be_null = false;
+        }
         // Force the detected leading-zero-ID columns to utf8 so inference can't
         // drop the zeros ("007" -> 7). Keyed by name (Arrow has no by-index
         // override); a no-op for a column Arrow would have made string anyway.
@@ -5782,6 +5800,42 @@ class DelimitedSource : public TabularSource {
         }
         if (names.empty()) return {};
         return leading_zero_columns(sample, delim, names);
+    }
+
+    // R's write.table(sep="\t") / write.csv() emit an index (row-names) column
+    // with no matching header field, so the header row has exactly one fewer
+    // field than every data row ("x\ty\tz" over "row1\t1\t2\t3"). Arrow's CSV
+    // reader takes the short row as the column list and then rejects the wider
+    // data rows ("Expected N columns, got N+1"), making the file unreadable.
+    // Detect that shape by reading the header and the first data line: return
+    // true when the header has one fewer field than the data (and at least one
+    // field), so the caller can inject a name for the leading index column.
+    // Best-effort: false on any I/O problem, EOF before two lines, or a header
+    // that already matches the data width. (This only runs when no explicit
+    // header was found, so a '#'-header or an already-empty leading name — R's
+    // write.csv writes `""` there, which Arrow reads fine — never reaches here.)
+    static bool detect_rstyle_index_header(const std::string& path, bool is_gz,
+                                           char delim) {
+        std::shared_ptr<arrow::io::ReadableFile> raw;
+        std::shared_ptr<arrow::io::InputStream>  input;
+        if (!open_stream(path, is_gz, &raw, &input).empty()) return false;
+        LineReader lr(input);
+        std::string line;
+        auto next_content_line = [&](std::string* dst) -> bool {
+            for (;;) {
+                bool ok = lr.read_line(&line);
+                if (!ok && line.empty()) return false;   // true EOF
+                if (!line.empty() && line[0] != '#') { *dst = line; return true; }
+                if (!ok) return false;                   // EOF after only comments
+            }
+        };
+        std::string header, data;
+        if (!next_content_line(&header)) return false;
+        if (!next_content_line(&data))   return false;
+        std::vector<std::string> hf, df;
+        split_delimited_line(header, delim, &hf);
+        split_delimited_line(data,   delim, &df);
+        return hf.size() >= 1 && df.size() == hf.size() + 1;
     }
 
 public:
@@ -5968,6 +6022,20 @@ private:
             self->region_applied_ = true;
         }
 
+        // R row-names / index convention: header shorter than the data by one
+        // field (the leading index column is unnamed). Inject a name for that
+        // column so Arrow's header row matches the data width, instead of
+        // failing with "Expected N columns, got N+1". Only for a plain CSV/TSV
+        // whose header Arrow auto-detects (col_names still empty) and not under
+        // a tabix region query. The injected `<name><delim>` sits at the front
+        // of the stream, so the first (header) line gains the extra field.
+        if ((kind == DelimKind::CSV || kind == DelimKind::TSV) &&
+            col_names.empty() && region.empty() &&
+            detect_rstyle_index_header(path, is_gz, self->delimiter_)) {
+            std::string inject = std::string(kRowIndexColName) + self->delimiter_;
+            input = std::make_shared<PrependInputStream>(std::move(inject), input);
+        }
+
         bool autogen = (kind == DelimKind::BED) ||
                        (kind == DelimKind::Mpileup);
         // Leading-zero IDs: a CSV/TSV column like "007" would otherwise be
@@ -5978,8 +6046,9 @@ private:
         if (kind == DelimKind::CSV || kind == DelimKind::TSV)
             force_string = detect_leading_zero_columns(path, is_gz,
                                                        self->delimiter_, col_names);
+        bool strings_nullable = (kind == DelimKind::CSV || kind == DelimKind::TSV);
         auto r = make_reader(input, self->delimiter_, autogen, col_names,
-                             force_string);
+                             force_string, strings_nullable);
         if (!r.ok()) {
             // A region query whose window overlaps no records leaves the tabix
             // stream empty, and Arrow's CSV reader rejects empty input with
@@ -6032,13 +6101,28 @@ private:
                     std::vector<std::string> force2 = detect_leading_zero_columns(
                         path, is_gz, self->delimiter_, {}, /*headerless=*/true);
                     auto r2 = make_reader(input2, self->delimiter_,
-                                          /*autogen=*/true, {}, force2);
+                                          /*autogen=*/true, {}, force2,
+                                          /*strings_nullable=*/true);
                     if (r2.ok()) {
                         self->reader_ = r2.ValueOrDie();
                         self->schema_ = self->reader_->schema();
                     }
                 }
             }
+        }
+
+        // R write.csv() writes the index column with an empty header field
+        // ("","x","y",…); Arrow reads it as a column literally named "". Give it
+        // the same placeholder as the write.table() form (which has no field at
+        // all — handled by the stream injection above) so both round-trip to a
+        // clear header instead of a blank one. Only the leading column, only
+        // when Arrow auto-detected the header (no explicit col_names / #-header).
+        if ((kind == DelimKind::CSV || kind == DelimKind::TSV) &&
+            col_names.empty() && self->schema_->num_fields() >= 2 &&
+            self->schema_->field(0)->name().empty()) {
+            auto fields = self->schema_->fields();
+            fields[0] = fields[0]->WithName(kRowIndexColName);
+            self->schema_ = arrow::schema(fields);
         }
 
         // Eagerly read first batch so schema + first rows are immediately available.

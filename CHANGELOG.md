@@ -25,6 +25,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `open_source()` so every caller — CLI, GUI, KDE plugins — reaches it.
 
 ### Fixed
+- **Missing values in CSV/TSV string columns read as null.** Arrow keeps a bare
+  `NA` / `NULL` / empty cell in a string column as that literal text unless told
+  otherwise, so a value R or pandas wrote as *missing* showed up as the string
+  `"NA"`. An unquoted null token (`NA`, `NULL`, `NaN`, empty, …) in a string
+  column now becomes null, while a quoted `"NA"` stays the literal string — so a
+  column whose real value is `NA` (e.g. Namibia's country code) survives as long
+  as it is quoted, matching how R and pandas write it. Numeric/boolean columns
+  are unchanged (they already read `NA` as null); the fixed-schema genomics
+  formats (BED/VCF/GFF/SAM/PAF) keep their own missing conventions.
+- **CSV/TSV files written by R's `write.table()` / `write.csv()` are read
+  instead of rejected.** These write an index (row-names) column with no
+  matching header field, so the header row has one fewer field than the data
+  ("`x\ty\tz`" over "`row1\t1\t2\t3`"). Arrow's CSV reader took the short row as
+  the column list and rejected every wider data row ("Expected 3 columns, got
+  4"), making the file unreadable. That leading column is now named `index`, and
+  the `write.csv()` variant — which writes the same column with an empty header
+  (`"","x",…`) — gets the same label instead of a blank one.
 - **The Qt viewer (`vvg`) sorts the rows when a column header is clicked.** It
   toggled the sort-direction indicator but left the rows in place: the sort went
   through `arrow::compute`'s `sort_indices`, whose kernel is not registered in
