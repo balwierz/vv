@@ -83,6 +83,19 @@ fi
 run_case paf_tsv      --tsv --no-header "$DATA/tiny.paf"
 run_case paf_gz_tsv   --tsv --no-header "$DATA/tiny.paf.gz"
 
+# Missing values in string columns: R and pandas write a missing value as an
+# *unquoted* null token and quote a genuine string. vv honours that — an
+# unquoted NA/NULL/empty in a string column becomes null, while a quoted "NA"
+# stays the literal string (so e.g. Namibia's country code "NA" survives).
+RSN="$TMP/strnull.csv"
+printf 'country,code,miss\n"Namibia","NA","x"\n"Canada","CA",NA\n"Mexico","MX","z"\n' > "$RSN"
+# quoted "NA" is kept as literal text (Namibia row: code field = NA)
+assert_eq_file_inline "string_null_quoted_literal_kept" \
+    "$("$VV" --tsv "$RSN" 2>&1 | sed -n '2p')" "$(printf 'Namibia\tNA\tx')"
+# unquoted NA is missing → empty field (Canada row: miss field blank)
+assert_eq_file_inline "string_null_unquoted_is_missing" \
+    "$("$VV" --tsv "$RSN" 2>&1 | sed -n '3p')" "$(printf 'Canada\tCA\t')"
+rm -f "$RSN"
 # R's write.table(sep="\t") / write.csv() emit an index (row-names) column with
 # no matching header field, so the header row is one field short. Arrow's CSV
 # reader would reject the wider data rows ("Expected N columns, got N+1"); vv
