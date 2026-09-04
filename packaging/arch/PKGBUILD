@@ -24,7 +24,7 @@ source=("$pkgbase-$pkgver.tar.gz::https://github.com/balwierz/$pkgbase/archive/r
 # Regenerate after every pkgver bump — `updpkgsums` (from pacman-contrib)
 # rewrites this line in place. Do NOT use SKIP: this is a network-fetched
 # release tarball, and the checksum is the only thing pinning it.
-sha256sums=('1c05c4e75d525c13415c604179b2ca19e89e75ea067b373c59712e67054c7506')
+sha256sums=('60904c6e89d944cee0cfe28d7c87ae1f20b0ad76255bf87276c3cd6f3084a58d')
 
 build() {
     cmake -S "$pkgbase-$pkgver" -B build \
