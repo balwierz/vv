@@ -27,7 +27,7 @@
 %global xlsxio_version 0.2.36
 
 Name:           vv
-Version:        1.20.0
+Version:        1.22.0
 Release:        1%{?dist}
 Summary:        Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)
 License:        MIT
@@ -143,6 +143,13 @@ rm -f  %{buildroot}%{_libdir}/pkgconfig/mimalloc.pc
 %{_datadir}/icons/hicolor/scalable/apps/vv.svg
 
 %changelog
+* Thu Sep 04 2026 Piotr Balwierz <nikt@tuta.com> - 1.22.0-1
+- Update to 1.22.0: CSV/TSV files written by R's write.table()/write.csv() read
+  correctly (unnamed row-names/index column, missing values as null); new
+  -d/--in-delimiter sets the input field separator (space/semicolon/pipe, incl.
+  R's default write.table() .txt); header detection for CSV/TSV without a header
+  row, with --header auto|on|off; and a genuine trailing ellipsis in cell data
+  is no longer dimmed as a truncation marker.
 * Tue Sep 01 2026 Piotr Balwierz <nikt@tuta.com> - 1.20.0-1
 - Update to 1.20.0: shell completion now completes a file's columns and tabs
   (--select, --tab, --filter, ...); the Qt viewer gains a proper application

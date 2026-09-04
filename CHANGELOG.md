@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.22.0] - 2026-09-04
+
 ### Added
 - **Header detection for CSV/TSV without a header row.** When a delimited file
   has no explicit header, the first row is no longer assumed to be column names:
