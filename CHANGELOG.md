@@ -36,6 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `open_source()` so every caller — CLI, GUI, KDE plugins — reaches it.
 
 ### Fixed
+- **A table cell whose data genuinely ends in `…` is no longer greyed as a
+  truncation marker.** The table renderer dimmed any cell ending in the ellipsis
+  glyph, on the assumption it was the marker `truncate()` appends — so a real
+  value like `Loading…` had its `…` shown dim. A value is now treated as
+  truncated only when it also fills the column-width cap (which is exactly what a
+  truncated cell does), so genuine trailing ellipses render in the normal colour.
 - **Missing values in CSV/TSV string columns read as null.** Arrow keeps a bare
   `NA` / `NULL` / empty cell in a string column as that literal text unless told
   otherwise, so a value R or pandas wrote as *missing* showed up as the string

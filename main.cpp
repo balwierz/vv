@@ -1939,8 +1939,11 @@ static void draw_separator(const std::vector<Column>& cols,
 
 // Emit one cell with color, proper padding, but no border characters.
 // Returns nothing; writes directly to stdout.
+// `trunc_width` is the width cells were truncated to (cfg.max_col_w); a value is
+// the truncation marker only if it both ends in the ellipsis glyph and fills
+// that width — otherwise a datum that genuinely ends in "…" would be dimmed.
 static void emit_cell(const Column& col, const std::string& val,
-                      bool right_align, bool is_header) {
+                      bool right_align, bool is_header, int trunc_width) {
     int pad = col.width - display_width(val);
 
     // Choose foreground color for the content
@@ -1961,9 +1964,14 @@ static void emit_cell(const Column& col, const std::string& val,
 
     // For truncated values, render the body normally and the marker dimmed.
     // Both "…" and the ASCII "..." are 3 bytes, so the body is val.size()-3 bytes
-    // regardless of style; only the marker glyph differs (g_box->ell).
+    // regardless of style; only the marker glyph differs (g_box->ell). A value
+    // ending in the ellipsis is the marker only if it (nearly) fills trunc_width:
+    // truncate() cuts to that width, though a trailing wide (2-column) glyph can
+    // leave it one short, so allow trunc_width-1. A clearly shorter value ending
+    // in "…" is genuine data and its ellipsis must not be dimmed.
     bool truncated = !is_header && val.size() >= 3 &&
-                     val.compare(val.size() - 3, 3, g_box->ell) == 0;
+                     val.compare(val.size() - 3, 3, g_box->ell) == 0 &&
+                     (int)display_width(val) >= trunc_width - 1;
 
     if (right_align) {
         std::printf(" %*s", pad, "");   // leading spaces (no color)
@@ -1990,6 +1998,7 @@ static void emit_cell(const Column& col, const std::string& val,
 static void draw_row(const std::vector<Column>& cols,
                      const std::vector<std::string>& vals,
                      const std::vector<bool>& right_align,
+                     int trunc_width,
                      bool is_header = false) {
     for (std::size_t i = 0; i < cols.size(); ++i) {
         std::printf("%s%s%s", g_color.border, g_box->vline, g_color.reset);
@@ -1999,7 +2008,7 @@ static void draw_row(const std::vector<Column>& cols,
             // Truecolor background bar using ANSI 24-bit escape; width = col.width + 2
             std::printf(" \033[48;2;%d;%d;%dm%*s\033[0m ", r, gv, b, cols[i].width, "");
         } else {
-            emit_cell(cols[i], vals[i], right_align[i], is_header);
+            emit_cell(cols[i], vals[i], right_align[i], is_header, trunc_width);
             std::printf(" ");
         }
     }
@@ -21578,7 +21587,7 @@ static std::string print_vertical_table(TabularSource& src, const Config& cfg) {
     {
         std::vector<std::string> hdr; std::vector<bool> ra;
         for (auto& c : columns) { hdr.push_back(c.header); ra.push_back(false); }
-        draw_row(columns, hdr, ra, /*is_header=*/true);
+        draw_row(columns, hdr, ra, cfg.max_col_w, /*is_header=*/true);
     }
     draw_separator(columns, SepKind::Middle);
     for (int f = 0; f < show_fields; ++f) {
@@ -21590,7 +21599,7 @@ static std::string print_vertical_table(TabularSource& src, const Config& cfg) {
             row.push_back(columns[i].cells[f]);
             ra.push_back(i != 0);
         }
-        draw_row(columns, row, ra);
+        draw_row(columns, row, ra, cfg.max_col_w);
     }
     draw_separator(columns, SepKind::Bottom);
 
@@ -21720,12 +21729,12 @@ static std::string print_table(TabularSource& src, const Config& cfg,
     draw_separator(columns, SepKind::Top);
     { std::vector<std::string> hdr; std::vector<bool> ra;
       for (auto& c : columns) { hdr.push_back(c.header); ra.push_back(false); }
-      draw_row(columns, hdr, ra, true); }
+      draw_row(columns, hdr, ra, cfg.max_col_w, true); }
     draw_separator(columns, SepKind::Middle);
     for (int64_t r = 0; r < n_display; ++r) {
         std::vector<std::string> row; std::vector<bool> ra;
         for (auto& c : columns) { row.push_back(c.cells[r]); ra.push_back(c.right_align); }
-        draw_row(columns, row, ra);
+        draw_row(columns, row, ra, cfg.max_col_w);
     }
     draw_separator(columns, SepKind::Bottom);
 
