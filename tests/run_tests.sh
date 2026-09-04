@@ -581,6 +581,29 @@ fi
 # The kept prefix is whole codepoints + ellipsis (5×'é' then '…' at width 6).
 assert_contains "truncate_utf8_keeps_whole_codepoints" "$UTF8_OUT" "ééééé…"
 rm -f "$UTF8TSV"
+
+# A cell whose data genuinely ends in "…" (well under the max column width) must
+# not have that ellipsis dimmed as a truncation marker. With colour on, the
+# marker-dim path emits a colour reset + the dim colour right before the "…", so
+# a dimmed ellipsis is not contiguous with the text before it — a genuine one
+# is. (Goldens run --color=never, so this needs an explicit colour check.)
+ELLF="$TMP/ellipsis.csv"
+printf 'name,note\nfile1,Loading…\n' > "$ELLF"
+assert_contains "trailing_ellipsis_not_dimmed" \
+    "$("$VV" -n 2 --color=always "$ELLF" 2>&1)" "Loading…"
+# A real truncation still dims its marker: the body and the "…" are separated by
+# the reset+dim escape, so the truncated text is not contiguous with the "…".
+LONGF="$TMP/longtrunc.csv"
+printf 'name,long\nr,%s\n' "$(printf 'x%.0s' $(seq 1 60))" > "$LONGF"
+refute_contains "truncation_marker_still_dimmed" \
+    "$("$VV" -n 2 --color=always "$LONGF" 2>&1)" "xxx…"
+# A wide-character (CJK) truncation lands one column short of the cap, so the
+# dim threshold must still catch it: its marker is separated from the text.
+CJKF="$TMP/cjktrunc.csv"
+python3 -c "print('name,txt'); print('r,' + '中'*40)" > "$CJKF"
+refute_contains "truncation_marker_dimmed_wide_char" \
+    "$("$VV" -n 2 --color=always "$CJKF" 2>&1)" "中…"
+rm -f "$ELLF" "$LONGF" "$CJKF"
 # display_width must count terminal columns (wide CJK / Hangul = 2 cols), not
 # codepoints, so a table mixing wide and narrow cells stays aligned. Render one
 # and confirm every box-drawing line has the same display width — computed
