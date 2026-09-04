@@ -835,6 +835,9 @@ static void print_usage(const char* prog) {
         "                      read the input with this field separator, overriding\n"
         "                      the extension (a single char or: tab, space, comma,\n"
         "                      semicolon, pipe). E.g. -d space for R write.table().\n"
+        "  --header <mode>     is the CSV/TSV first row a header? auto (default,\n"
+        "                      detects it from the data), on (force), off (no header;\n"
+        "                      columns are auto-named f0, f1, …)\n"
         "  Keys: arrows/hjkl move the cell cursor, PgUp/PgDn, g/G, /:search,\n"
         "        S:column-stats, s:sort by current column (u clears),\n"
         "        &:live filter, c:show/hide columns, y:copy cell (OSC52),\n"
@@ -1207,6 +1210,19 @@ static Config parse_args(int argc, char** argv) {
             else { std::fprintf(stderr, "--in-delimiter must be a single character "
                                         "or one of: tab, space, comma, semicolon, pipe\n");
                    std::exit(1); }
+        } else if (!std::strcmp(argv[i], "--header") && i + 1 < argc) {
+            // Whether a CSV/TSV first row is a header. auto (default) detects it
+            // by comparing row 0 against the types of the rows below; on/off
+            // force the choice when the guess is wrong.
+            const char* m = argv[++i];
+            if      (!std::strcmp(m, "auto"))  cfg.header = HeaderMode::Auto;
+            else if (!std::strcmp(m, "on")  || !std::strcmp(m, "yes") ||
+                     !std::strcmp(m, "true"))  cfg.header = HeaderMode::On;
+            else if (!std::strcmp(m, "off") || !std::strcmp(m, "no")  ||
+                     !std::strcmp(m, "false") || !std::strcmp(m, "none"))
+                                               cfg.header = HeaderMode::Off;
+            else { std::fprintf(stderr, "--header must be one of: auto, on, off\n");
+                   std::exit(1); }
         } else if (argv[i][0] != '-' || (argv[i][0] == '-' && argv[i][1] == 0)) {
             // Bare "-" means stdin; treat as a positional argument. Every
             // positional becomes a TUI tab; the first one keeps cfg.path
@@ -1226,7 +1242,8 @@ static Config parse_args(int argc, char** argv) {
                 "--compression", "--unique", "--sample", "--filter",
                 "--select", "--cols", "--image-mode", "--tab", "--theme",
                 "--expand",
-                "--delimiter", "--in-delimiter", "-d", "-f", "--fasta", "--box",
+                "--delimiter", "--in-delimiter", "-d", "--header",
+                "-f", "--fasta", "--box",
             };
             if (needs_arg.count(argv[i])) {
                 std::fprintf(stderr, "Option %s requires an argument.\n", argv[i]);
@@ -5579,6 +5596,14 @@ static bool looks_like_plain_number(const std::string& s) {
     return *ep == '\0';
 }
 
+// The boolean spellings Arrow's CSV type inference accepts. Used by header
+// detection: a value like this in a column Arrow inferred as bool is a datum,
+// not a column label.
+static bool is_bool_token(const std::string& s) {
+    return s == "true" || s == "false" || s == "TRUE" ||
+           s == "FALSE" || s == "True" || s == "False";
+}
+
 // Split one delimited line into fields, honouring Arrow's default CSV quoting: a
 // field that starts with '"' is quoted until the next unescaped '"', a doubled
 // '""' inside is a literal quote, and the delimiter is literal inside quotes.
@@ -5643,6 +5668,8 @@ class DelimitedSource : public TabularSource {
     int                                   bed_level_ = 3; // detected BED standard cols (3..9)
     BedVariant                            bed_variant_ = BedVariant::None;
     int                                   mpileup_samples_ = 0; // samtools mpileup samples (>=1)
+    HeaderMode                            header_mode_ = HeaderMode::Auto; // -d/--header
+    bool                                  auto_headerless_ = false; // Auto-detected: row 0 is data
 
     // Decoded batches in a bounded trailing window: older entries are freed
     // (set null) once retain_all_ is false and the window overflows. Per-batch
@@ -5852,10 +5879,12 @@ public:
         std::shared_ptr<arrow::io::InputStream> input,
         const std::string& path_label, DelimKind kind, bool is_gz,
         const std::string& region,
-        std::unique_ptr<DelimitedSource>* out, char delim_override = 0) {
+        std::unique_ptr<DelimitedSource>* out, char delim_override = 0,
+        HeaderMode header_mode = HeaderMode::Auto) {
         auto self = std::make_unique<DelimitedSource>();
         self->path_      = path_label;
         self->kind_      = kind;
+        self->header_mode_ = header_mode;
         self->delimiter_ = delim_override ? delim_override
                                           : ((kind == DelimKind::CSV) ? ',' : '\t');
         return continue_open(std::move(self), std::move(input),
@@ -5864,13 +5893,16 @@ public:
     // `delim_override` (non-zero) forces the input field separator, overriding
     // the kind's default (used by -d/--in-delimiter); pass kind CSV or TSV so
     // the CSV/TSV code paths — header auto-detect, leading-zero guard — apply.
+    // `header_mode` overrides CSV/TSV header detection (On/Off) or leaves it Auto.
     static std::string open(const std::string& path, DelimKind kind,
                              const std::string& region,
                              std::unique_ptr<DelimitedSource>* out,
-                             char delim_override = 0) {
+                             char delim_override = 0,
+                             HeaderMode header_mode = HeaderMode::Auto) {
         auto self = std::make_unique<DelimitedSource>();
         self->path_      = path;
         self->kind_      = kind;
+        self->header_mode_ = header_mode;
         self->delimiter_ = delim_override ? delim_override
                                           : ((kind == DelimKind::CSV) ? ',' : '\t');
 
@@ -6077,20 +6109,50 @@ private:
         self->reader_ = r.ValueOrDie();
         self->schema_ = self->reader_->schema();
 
-        // For CSV/TSV: if all column names are numeric, the file has no header → retry.
-        // strtod() also accepts "nan", "inf"/"infinity" and "0x…" hex floats —
-        // a column literally named one of those is far more likely a real
-        // header than headerless numeric data, so require a plain decimal /
-        // scientific token (digits, sign, dot, e/E exponent only) and let
-        // strtod confirm it actually parses. (A header of bare numbers like
-        // "1,2,3" is genuinely ambiguous and still treated as headerless data.)
-        if (kind == DelimKind::CSV || kind == DelimKind::TSV) {
-            bool all_numeric = self->schema_->num_fields() > 0;
-            for (int i = 0; i < self->schema_->num_fields() && all_numeric; ++i) {
-                const std::string& nm = self->schema_->field(i)->name();
-                if (!looks_like_plain_number(nm)) all_numeric = false;
+        // Header detection for CSV/TSV without an explicit header (no `#`-line;
+        // Arrow took row 0 as the column names, so schema_ now has row 0's
+        // values as names and the *body* types (rows 1..N) as the column types).
+        //
+        // Decide whether row 0 is actually a header or just the first data row
+        // by testing row 0 against those body types: a column Arrow inferred as
+        // numeric or boolean is "informative"; row 0 *breaks* it when its value
+        // there is not a valid token of that type (a word over a number column
+        // is a label, i.e. a header). Treat the file as headerless only when at
+        // least one informative column exists and row 0 breaks none of them —
+        // then re-read auto-naming the columns f0, f1, …. A row-0 word over a
+        // numeric column (`gene count value`) keeps the header; a clean data row
+        // (`chr1 100 200`) drops it. All-string data gives no signal, so the
+        // header is kept (the safe default). --header on/off forces the choice.
+        // The all-numeric case (every column numeric, row 0 all numbers) falls
+        // out of this as one instance and stays headerless as before.
+        if ((kind == DelimKind::CSV || kind == DelimKind::TSV) &&
+            col_names.empty() && self->header_mode_ != HeaderMode::On) {
+            bool headerless;
+            if (self->header_mode_ == HeaderMode::Off) {
+                headerless = true;                       // user forced --header off
+            } else {                                     // HeaderMode::Auto
+                int informative = 0, broken = 0;
+                for (int i = 0; i < self->schema_->num_fields(); ++i) {
+                    auto id = self->schema_->field(i)->type()->id();
+                    const std::string& nm = self->schema_->field(i)->name();
+                    bool numeric =
+                        id == arrow::Type::INT8   || id == arrow::Type::INT16  ||
+                        id == arrow::Type::INT32  || id == arrow::Type::INT64  ||
+                        id == arrow::Type::UINT8  || id == arrow::Type::UINT16 ||
+                        id == arrow::Type::UINT32 || id == arrow::Type::UINT64 ||
+                        id == arrow::Type::HALF_FLOAT || id == arrow::Type::FLOAT ||
+                        id == arrow::Type::DOUBLE;
+                    if (numeric) {
+                        ++informative;
+                        if (!looks_like_plain_number(nm)) ++broken;
+                    } else if (id == arrow::Type::BOOL) {
+                        ++informative;
+                        if (!is_bool_token(nm)) ++broken;
+                    }
+                }
+                headerless = (informative > 0) && (broken == 0);
             }
-            if (all_numeric) {
+            if (headerless) {
                 std::shared_ptr<arrow::io::ReadableFile>  raw2;
                 std::shared_ptr<arrow::io::InputStream>   input2;
                 if (open_stream(path, is_gz, &raw2, &input2).empty()) {
@@ -6106,6 +6168,8 @@ private:
                     if (r2.ok()) {
                         self->reader_ = r2.ValueOrDie();
                         self->schema_ = self->reader_->schema();
+                        if (self->header_mode_ == HeaderMode::Auto)
+                            self->auto_headerless_ = true;
                     }
                 }
             }
@@ -6313,7 +6377,11 @@ private:
             default:
                 std::string d(1, delimiter_);
                 if (delimiter_ == '\t') d = "tab";
-                return "Format: delimited (separator: " + d + ")";
+                std::string s = "Format: delimited (separator: " + d + ")";
+                if (auto_headerless_)
+                    s += "  |  no header row detected — columns auto-named "
+                         "(--header on to override)";
+                return s;
         }
     }
 
@@ -15450,7 +15518,7 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         DelimKind dk2 = (cfg.in_delimiter == ',') ? DelimKind::CSV : DelimKind::TSV;
         std::unique_ptr<DelimitedSource> src;
         std::string err = DelimitedSource::open(path, dk2, cfg.region, &src,
-                                                cfg.in_delimiter);
+                                                cfg.in_delimiter, cfg.header);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
@@ -15549,7 +15617,7 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         std::unique_ptr<DelimitedSource> src;
         std::string e = DelimitedSource::open_from_stream(
             std::move(input), "-", kind, /*is_gz=*/is_gz, cfg.region, &src,
-            cfg.in_delimiter);
+            cfg.in_delimiter, cfg.header);
         if (!e.empty()) return e;
         *out = std::move(src);
         return "";
@@ -15825,7 +15893,8 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
     }
 
     std::unique_ptr<DelimitedSource> src;
-    std::string err = DelimitedSource::open(path, dk, cfg.region, &src);
+    std::string err = DelimitedSource::open(path, dk, cfg.region, &src,
+                                            /*delim_override=*/0, cfg.header);
     if (!err.empty()) return err;
     // ENCODE peak-family variants ride on top of DelimKind::BED — the
     // dispatch detected them by extension; apply variant-specific naming

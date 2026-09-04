@@ -105,6 +105,35 @@ assert_eq_file_inline "in_delimiter_stdin_pipe" \
 assert_eq_file_inline "in_delimiter_long_char" \
     "$(printf 'p:q\n5:6\n' | "$VV" --tsv --in-delimiter ':' - 2>&1 | sed -n '2p')" "$(printf '5\t6')"
 rm -f "$IND" "$INS"
+
+# Header detection: without an explicit header, decide whether CSV/TSV row 0 is
+# a header or the first data row by testing it against the types of the rows
+# below. A data row over numeric columns (chr1 1000 2000) is headerless → the
+# columns are auto-named f0, f1, …; a label over numeric columns (gene count
+# value) keeps the header; all-string data keeps the header (no signal).
+HNONE="$TMP/hdr_none.tsv"
+printf 'chr1\t1000\t2000\nchr2\t3000\t4000\nchr3\t5000\t6000\n' > "$HNONE"
+assert_eq_file_inline "header_detect_data_row_autonamed" \
+    "$("$VV" --tsv "$HNONE" 2>&1 | head -n 1)" "$(printf 'f0\tf1\tf2')"
+assert_eq_file_inline "header_detect_data_row_keeps_row0" \
+    "$("$VV" --tsv "$HNONE" 2>&1 | sed -n '2p')" "$(printf 'chr1\t1000\t2000')"
+# footer announces the auto-naming
+assert_contains "header_detect_footer_note" \
+    "$("$VV" -n 3 "$HNONE" 2>&1)" "no header row detected"
+HYES="$TMP/hdr_yes.tsv"
+printf 'gene\tcount\tvalue\nBRCA1\t10\t1.5\nTP53\t20\t2.5\n' > "$HYES"
+assert_eq_file_inline "header_detect_label_keeps_header" \
+    "$("$VV" --tsv "$HYES" 2>&1 | head -n 1)" "$(printf 'gene\tcount\tvalue')"
+HSTR="$TMP/hdr_str.tsv"
+printf 'name\tcity\nAlice\tNYC\nBob\tLA\n' > "$HSTR"
+assert_eq_file_inline "header_detect_allstring_keeps_header" \
+    "$("$VV" --tsv "$HSTR" 2>&1 | head -n 1)" "$(printf 'name\tcity')"
+# --header on/off force the decision either way
+assert_eq_file_inline "header_force_on" \
+    "$("$VV" --tsv --header on "$HNONE" 2>&1 | head -n 1)" "$(printf 'chr1\t1000\t2000')"
+assert_eq_file_inline "header_force_off" \
+    "$("$VV" --tsv --header off "$HYES" 2>&1 | head -n 1)" "$(printf 'f0\tf1\tf2')"
+rm -f "$HNONE" "$HYES" "$HSTR"
 # Missing values in string columns: R and pandas write a missing value as an
 # *unquoted* null token and quote a genuine string. vv honours that — an
 # unquoted NA/NULL/empty in a string column becomes null, while a quoted "NA"

@@ -25,6 +25,10 @@
 // the rest at their defaults.
 enum class ColorMode { Auto, Always, Never };
 
+// Whether a CSV/TSV file's first row is a header. Auto = detect by comparing
+// row 0 against the types inferred from the rows below it (see DelimitedSource).
+enum class HeaderMode { Auto, On, Off };
+
 struct Config {
     std::string path;                    // first positional (back-compat)
     std::vector<std::string> paths;      // every positional (multi-file TUI)
@@ -48,6 +52,7 @@ struct Config {
     ColorMode   color          = ColorMode::Auto;
     char        delimiter      = 0;      // 0 = table/interactive; '\t'/','= delimited
     char        in_delimiter   = 0;      // -d/--in-delimiter: input field sep (0 = auto by extension)
+    HeaderMode  header         = HeaderMode::Auto; // --header: is CSV/TSV row 0 a header?
     bool        no_header      = false;
     bool        interactive    = false;  // -i / --interactive
     bool        no_interactive = false;  // --no-interactive
