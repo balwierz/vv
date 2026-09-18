@@ -10175,6 +10175,59 @@ static bool is_group(hid_t parent, const char* name) {
     return info.type == H5O_TYPE_GROUP;
 }
 
+// Why `dset` cannot be read: the first filter in its pipeline that this HDF5
+// build cannot decode (third-party codecs such as LZF or Blosc, which a Python
+// writer registers in its own process), else a generic read failure.
+static std::string h5_read_why(hid_t dset) {
+    std::string why = "read failed";
+    hid_t dcpl = H5Dget_create_plist(dset);
+    if (dcpl < 0) return why;
+    int nf = H5Pget_nfilters(dcpl);
+    for (int i = 0; i < nf; ++i) {
+        unsigned flags = 0, fcfg = 0;
+        size_t nelm = 0;
+        char fname[64] = {0};
+        H5Z_filter_t id = H5Pget_filter2(dcpl, (unsigned)i, &flags, &nelm, nullptr,
+                                         sizeof fname, fname, &fcfg);
+        if (id >= 0 && H5Zfilter_avail(id) <= 0) {
+            why = "compression filter '" + std::string(fname[0] ? fname : "unnamed") +
+                  "' (HDF5 filter id " + std::to_string((int)id) +
+                  ") is not available in this build";
+            break;
+        }
+    }
+    H5Pclose(dcpl);
+    return why;
+}
+
+// "'<dataset path>': cannot read HDF5 dataset: <why>".
+static std::string h5_read_failure(hid_t dset) {
+    std::string name = "?";
+    ssize_t n = H5Iget_name(dset, nullptr, 0);
+    if (n > 0) {
+        std::string s((size_t)n + 1, '\0');
+        H5Iget_name(dset, s.data(), s.size());
+        s.resize((size_t)n);
+        name = s;
+    }
+    return "'" + name + "': cannot read HDF5 dataset: " + h5_read_why(dset);
+}
+
+// First dataset-read failure while building the current tab (see build_table).
+// A failed H5Dread leaves the caller's zero-initialised buffer untouched, so the
+// readers stop and return an error; the failure is also recorded here because
+// several callers treat a failed column read as "skip this column" and the
+// obs/var row labels are read best-effort — build_table then fails the tab
+// instead of showing a table with columns silently zeroed or missing.
+static thread_local std::string t_h5_read_error;
+
+// H5Dread that records the first failure in t_h5_read_error.
+static herr_t h5_read(hid_t dset, hid_t memtype, hid_t ms, hid_t fs, void* buf) {
+    herr_t st = H5Dread(dset, memtype, ms, fs, H5P_DEFAULT, buf);
+    if (st < 0 && t_h5_read_error.empty()) t_h5_read_error = h5_read_failure(dset);
+    return st;
+}
+
 // Human-readable description of an HDF5 datatype.
 static std::string dtype_to_string(hid_t t) {
     H5T_class_t cls = H5Tget_class(t);
@@ -10339,13 +10392,16 @@ static std::string h5_value_to_string(hid_t dset, int max_elems = 10) {
         out = descriptor();
     } else {
         size_t n = (size_t)np;
+        // uns is informational: an entry that cannot be decoded shows why in
+        // its value cell instead of failing the whole tab.
+        herr_t st = 0;
         if (cls == H5T_INTEGER) {
             std::vector<int64_t> buf(n);
-            if (n) H5Dread(dset, H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data());
+            if (n) st = H5Dread(dset, H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data());
             for (size_t i = 0; i < n; ++i) { if (i) out += ", "; out += std::to_string(buf[i]); }
         } else if (cls == H5T_FLOAT) {
             std::vector<double> buf(n);
-            if (n) H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data());
+            if (n) st = H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data());
             for (size_t i = 0; i < n; ++i) {
                 if (i) out += ", ";
                 char tmp[32]; std::snprintf(tmp, sizeof tmp, "%.6g", buf[i]); out += tmp;
@@ -10354,14 +10410,14 @@ static std::string h5_value_to_string(hid_t dset, int max_elems = 10) {
             std::vector<char*> ptrs(n, nullptr);
             hid_t mt = H5Tcopy(H5T_C_S1);
             H5Tset_size(mt, H5T_VARIABLE); H5Tset_cset(mt, H5T_CSET_UTF8);
-            if (n) H5Dread(dset, mt, H5S_ALL, H5S_ALL, H5P_DEFAULT, ptrs.data());
+            if (n) st = H5Dread(dset, mt, H5S_ALL, H5S_ALL, H5P_DEFAULT, ptrs.data());
             for (size_t i = 0; i < n; ++i) { if (i) out += ", "; out += ptrs[i] ? ptrs[i] : ""; }
             if (n) { hid_t ms = H5Dget_space(dset);
                      H5Dvlen_reclaim(mt, ms, H5P_DEFAULT, ptrs.data()); H5Sclose(ms); }
             H5Tclose(mt);
         } else if (cls == H5T_STRING) {
             std::vector<char> buf(n * tsz, '\0');
-            if (n) H5Dread(dset, t, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data());
+            if (n) st = H5Dread(dset, t, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data());
             for (size_t i = 0; i < n; ++i) {
                 if (i) out += ", ";
                 size_t len = strnlen(buf.data() + i * tsz, tsz);
@@ -10370,6 +10426,7 @@ static std::string h5_value_to_string(hid_t dset, int max_elems = 10) {
         } else {
             out = descriptor();
         }
+        if (st < 0) out = descriptor() + "  (unreadable: " + h5_read_why(dset) + ")";
         if (out.empty() && n == 0) out = "(empty)";
     }
     H5Tclose(t);
@@ -10505,6 +10562,9 @@ class Hdf5Source : public WorkbookSource {
     // access (ensure_built). The eager constructor sets built_ = true so its
     // overrides are no-ops; the lazy constructor leaves it false.
     mutable bool built_ = true;
+    // Set when the lazy build fails: the tab then shows a one-cell error table,
+    // and read_status() reports the failure so a scripted export exits non-zero.
+    mutable arrow::Status build_status_;
     // Row cap for DataFrame (obs/var) tabs: the preview cap for the TUI/table
     // view, or -1 (all) / an explicit -n for a delimited dump — set from cfg in
     // open_source and inherited by sibling tabs. Matrix / sparse X ignore it.
@@ -10560,16 +10620,36 @@ class Hdf5Source : public WorkbookSource {
             tbl = arrow::Table::Make(
                 arrow::schema({arrow::field("error", arrow::utf8())}), {a});
             footer = "Format: HDF5 " + spec_.display + "  |  error: " + msg;
+            self->build_status_ = arrow::Status::IOError(msg);
         }
         self->replace_table(std::move(tbl), std::move(footer));
     }
 
-    // Resolve an OpenSpec to a populated arrow::Table.
+    // Resolve an OpenSpec to a populated arrow::Table. A dataset read that
+    // fails anywhere during the build — including a column a reader would
+    // otherwise skip, or the obs/var row labels — fails the whole tab with
+    // that read's message rather than returning a partial or zeroed table.
     static std::string build_table(hid_t file_id,
                                     const OpenSpec& spec,
                                     std::shared_ptr<arrow::Table>* out,
                                     std::string* footer,
                                     int64_t df_row_cap = kDataFrameRowCap) {
+        t_h5_read_error.clear();
+        std::string err = build_table_impl(file_id, spec, out, footer, df_row_cap);
+        std::string read_err;
+        read_err.swap(t_h5_read_error);
+        if (!read_err.empty()) {
+            out->reset();
+            return read_err;
+        }
+        return err;
+    }
+
+    static std::string build_table_impl(hid_t file_id,
+                                         const OpenSpec& spec,
+                                         std::shared_ptr<arrow::Table>* out,
+                                         std::string* footer,
+                                         int64_t df_row_cap) {
         switch (spec.kind) {
             case OpenSpec::Kind::Hierarchy: {
                 *out = build_hierarchy_table(file_id);
@@ -10744,6 +10824,10 @@ public:
     // --tab selector can list/match components without materialising them.
     std::string tab_label() const override { return spec_.display; }
 
+    arrow::Status read_status() const override {
+        ensure_built(); return build_status_;
+    }
+
     // Data accessors force the lazy build first; for an eagerly-built source
     // (built_ == true) ensure_built() is a no-op.
     std::shared_ptr<arrow::Schema> schema() const override {
@@ -10806,12 +10890,13 @@ read_1d_dataset_table(hid_t dset, int64_t row_cap, int64_t* full_rows) {
     // Read the first `n` elements of `dset` into `buf` via a hyperslab; `ms`
     // (the matching memory dataspace) is returned so vlen strings can be
     // reclaimed against it.
+    herr_t rd_st = 0;   // a failed read is reported after the type branches
     auto read_first_n = [&](hid_t memtype, void* buf) -> hid_t {
         hid_t fs = H5Dget_space(dset);
         hsize_t start = 0, count = n;
         H5Sselect_hyperslab(fs, H5S_SELECT_SET, &start, nullptr, &count, nullptr);
         hid_t ms = H5Screate_simple(1, &count, nullptr);
-        if (n > 0) H5Dread(dset, memtype, ms, fs, H5P_DEFAULT, buf);
+        if (n > 0 && h5_read(dset, memtype, ms, fs, buf) < 0) rd_st = -1;
         H5Sclose(fs);
         return ms;   // caller closes
     };
@@ -10901,6 +10986,7 @@ read_1d_dataset_table(hid_t dset, int64_t row_cap, int64_t* full_rows) {
         (void)b.Finish(&arr);
     }
     H5Tclose(t);
+    if (rd_st < 0) return arrow::Status::IOError(h5_read_failure(dset));
     auto sch = arrow::schema(fields);
     return arrow::Table::Make(sch, {arr});
 }
@@ -10947,8 +11033,9 @@ read_2d_dataset_table(hid_t dset, int64_t row_cap, int64_t col_cap,
         hsize_t count[2] = {(hsize_t)n_rows, (hsize_t)n_cols};
         H5Sselect_hyperslab(fs, H5S_SELECT_SET, start, nullptr, count, nullptr);
         hid_t ms = H5Screate_simple(2, count, nullptr);
-        H5Dread(dset, H5T_NATIVE_DOUBLE, ms, fs, H5P_DEFAULT, buf.data());
+        herr_t st = h5_read(dset, H5T_NATIVE_DOUBLE, ms, fs, buf.data());
         H5Sclose(ms); H5Sclose(fs);
+        if (st < 0) return arrow::Status::IOError(h5_read_failure(dset));
         for (int64_t c = 0; c < n_cols; ++c) {
             arrow::DoubleBuilder b;
             for (int64_t r = 0; r < n_rows; ++r)
@@ -10963,8 +11050,9 @@ read_2d_dataset_table(hid_t dset, int64_t row_cap, int64_t col_cap,
         hsize_t count[2] = {(hsize_t)n_rows, (hsize_t)n_cols};
         H5Sselect_hyperslab(fs, H5S_SELECT_SET, start, nullptr, count, nullptr);
         hid_t ms = H5Screate_simple(2, count, nullptr);
-        H5Dread(dset, H5T_NATIVE_INT64, ms, fs, H5P_DEFAULT, buf.data());
+        herr_t st = h5_read(dset, H5T_NATIVE_INT64, ms, fs, buf.data());
         H5Sclose(ms); H5Sclose(fs);
+        if (st < 0) return arrow::Status::IOError(h5_read_failure(dset));
         for (int64_t c = 0; c < n_cols; ++c) {
             arrow::Int64Builder b;
             for (int64_t r = 0; r < n_rows; ++r)
@@ -11345,8 +11433,13 @@ read_sparse_preview(hid_t group, int64_t row_cap) {
         hsize_t start = 0, count = (hsize_t)(n_major + 1);
         H5Sselect_hyperslab(fs, H5S_SELECT_SET, &start, nullptr, &count, nullptr);
         hid_t ms = H5Screate_simple(1, &count, nullptr);
-        H5Dread(indptr_d, H5T_NATIVE_INT64, ms, fs, H5P_DEFAULT, indptr.data());
+        herr_t st = h5_read(indptr_d, H5T_NATIVE_INT64, ms, fs, indptr.data());
         H5Sclose(ms); H5Sclose(fs);
+        if (st < 0) {
+            std::string e = h5_read_failure(indptr_d);
+            H5Dclose(indptr_d); H5Dclose(indices_d); H5Dclose(data_d);
+            return arrow::Status::IOError(e);
+        }
     }
     // indptr values are untrusted too: the read window [front, back) into
     // indices/data must stay inside their actual extent, or the hyperslab
@@ -11360,6 +11453,7 @@ read_sparse_preview(hid_t group, int64_t row_cap) {
 
     std::vector<int64_t> indices((size_t)nnz_span);
     std::vector<double>  data((size_t)nnz_span);
+    std::string nz_err;   // first indices/data read failure
     if (nnz_span > 0) {
         hsize_t start = (hsize_t)front;
         hsize_t count = (hsize_t)nnz_span;
@@ -11367,18 +11461,21 @@ read_sparse_preview(hid_t group, int64_t row_cap) {
             hid_t fs = H5Dget_space(indices_d);
             H5Sselect_hyperslab(fs, H5S_SELECT_SET, &start, nullptr, &count, nullptr);
             hid_t ms = H5Screate_simple(1, &count, nullptr);
-            H5Dread(indices_d, H5T_NATIVE_INT64, ms, fs, H5P_DEFAULT, indices.data());
+            if (h5_read(indices_d, H5T_NATIVE_INT64, ms, fs, indices.data()) < 0 && nz_err.empty())
+                nz_err = h5_read_failure(indices_d);
             H5Sclose(ms); H5Sclose(fs);
         }
         {
             hid_t fs = H5Dget_space(data_d);
             H5Sselect_hyperslab(fs, H5S_SELECT_SET, &start, nullptr, &count, nullptr);
             hid_t ms = H5Screate_simple(1, &count, nullptr);
-            H5Dread(data_d, H5T_NATIVE_DOUBLE, ms, fs, H5P_DEFAULT, data.data());
+            if (h5_read(data_d, H5T_NATIVE_DOUBLE, ms, fs, data.data()) < 0 && nz_err.empty())
+                nz_err = h5_read_failure(data_d);
             H5Sclose(ms); H5Sclose(fs);
         }
     }
     H5Dclose(indptr_d); H5Dclose(indices_d); H5Dclose(data_d);
+    if (!nz_err.empty()) return arrow::Status::IOError(nz_err);
 
     // Densify into a column-major buffer (always rows × cols). Walk each
     // compressed-axis slice and scatter its values: for CSR `m` is a row and
@@ -22532,6 +22629,13 @@ int main(int argc, char** argv) {
                 return 1;
             }
             src = std::move(chosen);
+        }
+        // A component that failed to read (e.g. an HDF5 dataset compressed with
+        // a codec this build lacks) is reported here, before any output mode
+        // would print its error placeholder as if it were data.
+        if (!src->read_status().ok()) {
+            report(cfg.path, shorten_reader_error(src->read_status().ToString()));
+            return 1;
         }
     }
 

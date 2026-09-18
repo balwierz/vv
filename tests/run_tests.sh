@@ -1623,6 +1623,29 @@ if [ -f "$DATA/tiny.nullstr.h5ad" ]; then
     assert_eq_file_inline "filter_is_not_null_matches_describe" "$GOT_NOTNULL" "$DESC_COUNT"
 fi
 
+# An HDF5 dataset compressed with a filter this build cannot decode must fail
+# loudly. H5Dread's status used to be ignored, so the zero-initialised buffers
+# were rendered: numeric obs columns as 0, strings and obs/var names as empty,
+# X as all zeros — exit 0. tiny.badfilter.h5ad's pipelines name filter 32099.
+if [ -f "$DATA/tiny.badfilter.h5ad" ]; then
+    BF="$DATA/tiny.badfilter.h5ad"
+    BF_ERR=$("$VV" --tab obs --tsv "$BF" 2>&1 >/dev/null)
+    assert_contains "h5_bad_filter_named" "$BF_ERR" \
+        "compression filter 'zzz' (HDF5 filter id 32099) is not available"
+    assert_eq_file_inline "h5_bad_filter_no_stdout" \
+        "$("$VV" --tab obs --tsv "$BF" 2>/dev/null | wc -l | tr -d ' ')" "0"
+    # One per reader: DataFrame columns, sparse X, dense 2-D obsm, 1-D index.
+    assert_exit_code "h5_bad_filter_obs_exits_1"  1 "$VV" --tab obs  --tsv "$BF"
+    assert_exit_code "h5_bad_filter_x_exits_1"    1 "$VV" --tab X    --tsv "$BF"
+    assert_exit_code "h5_bad_filter_obsm_exits_1" 1 "$VV" --tab obsm --tsv "$BF"
+    assert_exit_code "h5_bad_filter_var_exits_1"  1 "$VV" --tab var  --tsv "$BF"
+    # The multi-tab view shows the failure in place of the unreadable tabs;
+    # the summary (metadata only) still renders.
+    BF_ALL=$("$VV" --no-interactive --color=never "$BF" 2>&1)
+    assert_contains "h5_bad_filter_shown_in_view" "$BF_ALL" "cannot read HDF5 dataset"
+    assert_contains "h5_bad_filter_summary_intact" "$BF_ALL" "csr_matrix"
+fi
+
 # Word operators are operators only in OPERATOR position, so a column whose
 # name happens to be `in` / `is` / `contains` / `not` stays filterable.
 KW="$TMP/kw.tsv"

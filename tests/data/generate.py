@@ -5,6 +5,7 @@ Run from the repo root: `python3 tests/data/generate.py`.
 """
 from __future__ import annotations
 import gzip
+import re
 import shutil
 import subprocess
 import sys
@@ -1130,6 +1131,89 @@ else:
         var.attrs["column-order"] = np.array(["gene_name"], dtype=object)
         _nsa(var, "_index", ["g0", "g1"], [False, False])
         _nsa(var, "gene_name", ["GENE0", "GENE1"], [False, False])
+
+    # An AnnData written with h5py's LZF compression — HDF5 filter 32000, the
+    # codec `write_h5ad(compression="lzf")` uses. LZF is not part of libhdf5:
+    # h5py registers it in its own process. Values repeat so the chunks
+    # compress; a chunk LZF cannot shrink is stored raw and bypasses the filter
+    # (X/indptr, strictly increasing, is one), so the datasets the tests read
+    # are asserted to be filtered.
+    def _write_lzf_anndata(path):
+        n_obs, n_var = 64, 8
+        sdt = h5py.string_dtype(encoding="utf-8")
+        lzf = dict(compression="lzf")
+        def _df(parent, name, index, cols):
+            g = parent.create_group(name)
+            g.attrs["encoding-type"] = "dataframe"
+            g.attrs["encoding-version"] = "0.2.0"
+            g.attrs["_index"] = "_index"
+            g.attrs.create("column-order", np.array(cols, dtype=object), dtype=sdt)
+            d = g.create_dataset("_index", data=np.array(index, dtype=object),
+                                 dtype=sdt, **lzf)
+            d.attrs["encoding-type"] = "string-array"
+            d.attrs["encoding-version"] = "0.2.0"
+            return g
+        with h5py.File(path, "w") as f:
+            f.attrs["encoding-type"] = "anndata"
+            f.attrs["encoding-version"] = "0.1.0"
+            obs = _df(f, "obs", ["cell%03d" % i for i in range(n_obs)],
+                      ["n_counts", "cell_type"])
+            obs.create_dataset("n_counts",
+                               data=(np.arange(n_obs, dtype="i8") % 5) * 100, **lzf)
+            ct = obs.create_group("cell_type")
+            ct.attrs["encoding-type"] = "categorical"
+            ct.attrs["encoding-version"] = "0.2.0"
+            ct.attrs["ordered"] = False
+            ct.create_dataset("categories", data=np.array(["B", "T"], dtype=object),
+                              dtype=sdt)
+            ct.create_dataset("codes", data=(np.arange(n_obs) % 2).astype("i1"), **lzf)
+            _df(f, "var", ["gene%d" % j for j in range(n_var)], [])
+            # CSR X: row i has 2 nonzeros, value (i % 3) + 1, in columns
+            # i % n_var and (i + 1) % n_var.
+            X = f.create_group("X")
+            X.attrs["encoding-type"] = "csr_matrix"
+            X.attrs["encoding-version"] = "0.1.0"
+            X.attrs["shape"] = np.array([n_obs, n_var])
+            X.create_dataset("indptr", data=np.arange(0, 2 * n_obs + 1, 2, dtype="i4"), **lzf)
+            X.create_dataset("indices", data=np.array(
+                [c for i in range(n_obs) for c in (i % n_var, (i + 1) % n_var)],
+                dtype="i4"), **lzf)
+            X.create_dataset("data", data=np.repeat(
+                (np.arange(n_obs) % 3 + 1).astype("f4"), 2), **lzf)
+            obsm = f.create_group("obsm")
+            obsm.attrs["encoding-type"] = "dict"
+            obsm.attrs["encoding-version"] = "0.1.0"
+            obsm.create_dataset("X_pca", data=np.tile(
+                np.array([[1.5, -2.0]]), (n_obs, 1)), **lzf)
+        filtered = ["obs/_index", "obs/n_counts", "obs/cell_type/codes",
+                    "var/_index", "X/indices", "X/data", "obsm/X_pca"]
+        with h5py.File(path, "r") as f:
+            for name in filtered:
+                assert f[name].id.get_chunk_info(0).filter_mask == 0, \
+                    name + ": chunk stored unfiltered; LZF path not exercised"
+        return filtered
+
+    # tiny.badfilter.h5ad: the LZF AnnData above with each dataset's filter
+    # pipeline re-pointed at an id no HDF5 build registers (32099, name "zzz"),
+    # so reading fails whichever codecs vv carries. vv used to render such
+    # datasets as zeros and empty strings with exit 0.
+    bf_path = HERE / "tiny.badfilter.h5ad"
+    if bf_path.exists():
+        bf_path.unlink()
+    _filtered = _write_lzf_anndata(bf_path)
+    # Filter pipeline message (v1): id u16, name length u16, flags u16,
+    # cd_nelmts u16, then the NUL-padded name. cd_nelmts varies: h5py records
+    # 3 LZF parameters for fixed-size types, and some h5py/HDF5 builds record
+    # none for variable-length strings.
+    _raw = bf_path.read_bytes()
+    _pat = re.compile(rb"\x00\x7d(\x08\x00....)lzf\x00", re.S)
+    _raw, _n = _pat.subn(lambda m: b"\x63\x7d" + m.group(1) + b"zzz\x00", _raw)
+    assert _n >= len(_filtered), "expected an LZF pipeline per dataset, found %d" % _n
+    bf_path.write_bytes(_raw)
+    with h5py.File(bf_path, "r") as f:
+        for name in _filtered:
+            assert f[name].id.get_create_plist().get_filter(0)[0] == 32099, \
+                name + ": filter pipeline not re-pointed"
 
 try:
     import anndata as ad                                     # type: ignore

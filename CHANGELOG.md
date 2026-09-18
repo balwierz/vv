@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **An HDF5 / AnnData dataset that cannot be decoded is reported instead of
+  shown as zeros.** The status of every HDF5 dataset read was ignored, so a
+  dataset compressed with a filter the linked libhdf5 lacks (e.g. LZF, which
+  h5py registers in its own process) left the reader's zero-filled buffer in
+  place: numeric `obs` columns read as `0`, cell/gene names as empty, `X` as
+  all zeros, and categorical columns as their first category — all with exit
+  0. A failed read now fails the tab with the dataset and the missing filter
+  named (`'/obs/_index': cannot read HDF5 dataset: compression filter 'lzf'
+  (HDF5 filter id 32000) is not available in this build`); a scripted export
+  of that tab (`--tab obs --tsv`) prints nothing and exits 1. An unreadable
+  `uns` entry shows the reason in its value cell.
+
 ## [1.22.0] - 2026-09-04
 
 ### Added
