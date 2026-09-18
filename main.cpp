@@ -10877,10 +10877,10 @@ class Hdf5Source : public WorkbookSource {
                           std::to_string((*out)->num_rows()) + " rows";
                 if (!spec.footer_hint.empty())
                     *footer += "  |  " + spec.footer_hint;
-                // Sparse is always X, i.e. genuinely (n_obs x n_var): name
-                // columns by var (genes), prepend obs (cells) row labels.
-                apply_anndata_matrix_labels(file_id, AnnMatrixAxes::ObsByVar,
-                                            spec.key, out);
+                // X and layers/* are (n_obs x n_var): columns named by var
+                // (genes), obs (cells) row labels prepended. A sparse obsm /
+                // varm entry is labelled per its own axes.
+                apply_anndata_matrix_labels(file_id, spec.axes, spec.key, out);
                 return "";
             }
         }
@@ -11845,13 +11845,27 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
             !is_group(file_id, parent_name)) return;
         hid_t g = H5Gopen2(file_id, parent_name, H5P_DEFAULT);
         auto names = list_children(g);
-        H5Gclose(g);
         for (const auto& nm : names) {
-            specs.push_back({k,
-                              std::string("/") + parent_name + "/" + nm,
-                              std::string(parent_name) + "[" + nm + "]",
-                              footer_kind, axes, nm});
+            OpenSpec s{k, std::string("/") + parent_name + "/" + nm,
+                       std::string(parent_name) + "[" + nm + "]",
+                       footer_kind, axes, nm};
+            // A CSR/CSC entry is a group, not a dataset — scanpy writes layers
+            // of a sparse X this way — so read it like a sparse X.
+            if (is_group(g, nm.c_str())) {
+                hid_t eg = H5Gopen2(g, nm.c_str(), H5P_DEFAULT);
+                std::string enc = read_string_attr(eg, "encoding-type");
+                if (enc == "csr_matrix" || enc == "csc_matrix") {
+                    int64_t shape[2] = {0, 0};
+                    read_shape2(eg, "shape", shape);
+                    s.kind = OpenSpec::Kind::Sparse;
+                    s.footer_hint = enc + "  shape: " + std::to_string(shape[0]) +
+                                    " \xc3\x97 " + std::to_string(shape[1]);
+                }
+                H5Gclose(eg);
+            }
+            specs.push_back(std::move(s));
         }
+        H5Gclose(g);
         if (!names.empty())
             add(parent_name, std::to_string(names.size()) + " entries");
     };

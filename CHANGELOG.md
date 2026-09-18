@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (HDF5 filter id 32000) is not available in this build`); a scripted export
   of that tab (`--tab obs --tsv`) prints nothing and exits 1. An unreadable
   `uns` entry shows the reason in its value cell.
+- **AnnData `layers` stored as sparse matrices open.** A `layers` (or `obsm` /
+  `varm`) entry stored as a CSR/CSC group — how scanpy writes the layers of a
+  sparse `X` — was opened as a dense dataset, so its tab showed only `Cannot
+  open dataset /layers/<name>`. Such entries now read like a sparse `X`, with
+  cell row labels and gene columns; a sparse `obsm`/`varm` entry is labelled by
+  its own axes (`X_sp1`, `X_sp2`, …) rather than by gene names.
 
 ## [1.22.0] - 2026-09-04
 
