@@ -1235,6 +1235,56 @@ else:
         fh.seek(_ci.byte_offset)
         fh.write(b"\x20")
 
+    # tiny.sparselayer.h5ad: layers stored as CSR / CSC groups (how scanpy writes
+    # the layers of a sparse X) next to a dense layer, plus a CSR obsm entry.
+    # 3 obs x 4 var, M = [[1,0,2,0],[0,3,0,0],[4,0,0,5]]; X = M, layers/counts
+    # and layers/counts_csc = 10*M, layers/dense = 100*M, obsm/X_sp = a 3 x 2
+    # CSR [[1,0],[0,2],[3,0]].
+    sl_path = HERE / "tiny.sparselayer.h5ad"
+    if sl_path.exists():
+        sl_path.unlink()
+    _sdt = h5py.string_dtype(encoding="utf-8")
+    _M = np.array([[1, 0, 2, 0], [0, 3, 0, 0], [4, 0, 0, 5]], dtype="f4")
+    def _sparse(parent, name, m, fmt):
+        g = parent.create_group(name)
+        g.attrs["encoding-type"] = fmt + "_matrix"
+        g.attrs["encoding-version"] = "0.1.0"
+        g.attrs["shape"] = np.array(m.shape)
+        major = m if fmt == "csr" else m.T
+        indptr, indices, data = [0], [], []
+        for row in major:
+            nz = np.nonzero(row)[0]
+            indices.extend(nz.tolist()); data.extend(row[nz].tolist())
+            indptr.append(len(indices))
+        g.create_dataset("indptr",  data=np.array(indptr,  dtype="i4"))
+        g.create_dataset("indices", data=np.array(indices, dtype="i4"))
+        g.create_dataset("data",    data=np.array(data,    dtype="f4"))
+    def _index_df(parent, name, index):
+        g = parent.create_group(name)
+        g.attrs["encoding-type"] = "dataframe"
+        g.attrs["encoding-version"] = "0.2.0"
+        g.attrs["_index"] = "_index"
+        g.attrs.create("column-order", np.array([], dtype=object), dtype=_sdt)
+        d = g.create_dataset("_index", data=np.array(index, dtype=object), dtype=_sdt)
+        d.attrs["encoding-type"] = "string-array"
+        d.attrs["encoding-version"] = "0.2.0"
+    with h5py.File(sl_path, "w") as f:
+        f.attrs["encoding-type"] = "anndata"
+        f.attrs["encoding-version"] = "0.1.0"
+        _index_df(f, "obs", ["c0", "c1", "c2"])
+        _index_df(f, "var", ["g0", "g1", "g2", "g3"])
+        _sparse(f, "X", _M, "csr")
+        layers = f.create_group("layers")
+        layers.attrs["encoding-type"] = "dict"
+        layers.attrs["encoding-version"] = "0.1.0"
+        _sparse(layers, "counts", _M * 10, "csr")
+        _sparse(layers, "counts_csc", _M * 10, "csc")
+        layers.create_dataset("dense", data=_M * 100)
+        obsm = f.create_group("obsm")
+        obsm.attrs["encoding-type"] = "dict"
+        obsm.attrs["encoding-version"] = "0.1.0"
+        _sparse(obsm, "X_sp", np.array([[1, 0], [0, 2], [3, 0]], dtype="f4"), "csr")
+
 try:
     import anndata as ad                                     # type: ignore
     import numpy as np                                       # type: ignore
