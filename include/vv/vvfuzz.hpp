@@ -27,3 +27,10 @@ decode_colblock(const uint8_t* buf, size_t blen, int codec_id,
 // Parse an untrusted .npy buffer and build its table (the NPY header parser plus
 // slab_to_arrow / build_1d_table / build_2d_table). Compiled only under VV_FUZZ.
 namespace npz { void npy_fuzz_one(const uint8_t* buf, size_t n); }
+
+// Decode an untrusted LZF stream (HDF5 filter 32000) into `out`. Returns the
+// decoded length, or 0 on failure (*out_too_small set if `out` ran out of room).
+namespace h5lzf {
+size_t decode(const uint8_t* in, size_t in_len, uint8_t* out, size_t out_len,
+              bool* out_too_small);
+}

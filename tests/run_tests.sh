@@ -1646,6 +1646,40 @@ if [ -f "$DATA/tiny.badfilter.h5ad" ]; then
     assert_contains "h5_bad_filter_summary_intact" "$BF_ALL" "csr_matrix"
 fi
 
+# LZF (HDF5 filter 32000, h5py's compression="lzf") is not part of libhdf5; vv
+# registers its own decoder. tiny.lzf.h5ad (see generate.py): 64 cells x 8
+# genes; n_counts = (i % 5) * 100, cell_type alternates B/T, X row i holds
+# (i % 3) + 1 in columns i % 8 and (i + 1) % 8, obsm X_pca = (1.5, -2) per row.
+if [ -f "$DATA/tiny.lzf.h5ad" ]; then
+    LZ="$DATA/tiny.lzf.h5ad"
+    LZ_OBS=$("$VV" --tab obs --tsv --no-header "$LZ")
+    assert_eq_file_inline "h5_lzf_obs_row" "$(printf '%s\n' "$LZ_OBS" | sed -n 2p)" \
+        "$(printf 'cell001\tT\t100')"
+    assert_eq_file_inline "h5_lzf_obs_n_counts_sum" \
+        "$(printf '%s\n' "$LZ_OBS" | awk -F'\t' '{s += $3} END {print s}')" "12600"
+    assert_eq_file_inline "h5_lzf_obs_categorical" \
+        "$(printf '%s\n' "$LZ_OBS" | awk -F'\t' '$2 == "T"' | wc -l | tr -d ' ')" "32"
+    assert_eq_file_inline "h5_lzf_var_names" \
+        "$("$VV" --tab var --tsv --no-header "$LZ" | tr '\n' ' ')" \
+        "gene0 gene1 gene2 gene3 gene4 gene5 gene6 gene7 "
+    LZ_X=$("$VV" --tab X --tsv --no-header "$LZ")
+    assert_eq_file_inline "h5_lzf_sparse_x_row" "$(printf '%s\n' "$LZ_X" | sed -n 2p)" \
+        "$(printf 'cell001\t0\t2\t2\t0\t0\t0\t0\t0')"
+    assert_eq_file_inline "h5_lzf_sparse_x_sum" \
+        "$(printf '%s\n' "$LZ_X" | awk -F'\t' '{for (i = 2; i <= NF; i++) s += $i} END {print s}')" "254"
+    assert_eq_file_inline "h5_lzf_dense_obsm_row" \
+        "$("$VV" --tab obsm --tsv --no-header "$LZ" | sed -n 1p)" "$(printf 'cell000\t1.5\t-2')"
+fi
+# A corrupt LZF chunk (a back reference before the start of the output) is a
+# read error, not an out-of-bounds read or garbage values.
+if [ -f "$DATA/tiny.badlzf.h5ad" ]; then
+    assert_exit_code "h5_lzf_corrupt_chunk_exits_1" 1 \
+        "$VV" --tab obs --tsv "$DATA/tiny.badlzf.h5ad"
+    assert_contains "h5_lzf_corrupt_chunk_named" \
+        "$("$VV" --tab obs --tsv "$DATA/tiny.badlzf.h5ad" 2>&1)" \
+        "'/obs/n_counts': cannot read HDF5 dataset"
+fi
+
 # Word operators are operators only in OPERATOR position, so a column whose
 # name happens to be `in` / `is` / `contains` / `not` stays filterable.
 KW="$TMP/kw.tsv"

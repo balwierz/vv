@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **LZF-compressed HDF5 and AnnData files are read.** h5py's
+  `compression="lzf"` — used by `write_h5ad(compression="lzf")` and common in
+  published single-cell datasets — stores chunks with LZF, HDF5 filter 32000,
+  which h5py registers in its own process and libhdf5 does not include. `vv`
+  now registers its own LZF decoder at startup (unless an HDF5 plugin already
+  provides filter 32000), so these files show their real `X`, `obs`, `var`,
+  `obsm` and `layers` values in the CLI, TUI, the Qt viewer and the KDE
+  plugins. A corrupt LZF chunk is reported as a read error.
+
 ### Fixed
 - **An HDF5 / AnnData dataset that cannot be decoded is reported instead of
   shown as zeros.** The status of every HDF5 dataset read was ignored, so a

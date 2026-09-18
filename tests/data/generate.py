@@ -1215,6 +1215,26 @@ else:
             assert f[name].id.get_create_plist().get_filter(0)[0] == 32099, \
                 name + ": filter pipeline not re-pointed"
 
+    # tiny.lzf.h5ad: the same LZF AnnData, unmodified — vv decodes filter 32000.
+    lzf_path = HERE / "tiny.lzf.h5ad"
+    if lzf_path.exists():
+        lzf_path.unlink()
+    _write_lzf_anndata(lzf_path)
+
+    # tiny.badlzf.h5ad: tiny.lzf.h5ad with obs/n_counts' compressed chunk
+    # starting with a back reference (control byte 0x20) — a reference before
+    # the start of the output, which a decoder must reject rather than read out
+    # of bounds.
+    badlzf_path = HERE / "tiny.badlzf.h5ad"
+    if badlzf_path.exists():
+        badlzf_path.unlink()
+    _write_lzf_anndata(badlzf_path)
+    with h5py.File(badlzf_path, "r") as f:
+        _ci = f["obs/n_counts"].id.get_chunk_info(0)
+    with open(badlzf_path, "r+b") as fh:
+        fh.seek(_ci.byte_offset)
+        fh.write(b"\x20")
+
 try:
     import anndata as ad                                     # type: ignore
     import numpy as np                                       # type: ignore
