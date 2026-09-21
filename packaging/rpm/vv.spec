@@ -27,7 +27,7 @@
 %global xlsxio_version 0.2.36
 
 Name:           vv
-Version:        1.22.0
+Version:        1.23.0
 Release:        1%{?dist}
 Summary:        Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)
 License:        MIT
@@ -143,6 +143,11 @@ rm -f  %{buildroot}%{_libdir}/pkgconfig/mimalloc.pc
 %{_datadir}/icons/hicolor/scalable/apps/vv.svg
 
 %changelog
+* Mon Sep 21 2026 Piotr Balwierz <nikt@tuta.com> - 1.23.0-1
+- Update to 1.23.0: LZF-compressed HDF5 / AnnData files (h5py compression="lzf")
+  are read; an HDF5 dataset that cannot be decoded is reported with the
+  missing filter named instead of being shown as zeros; AnnData layers, obsm
+  and varm entries stored as CSR/CSC sparse matrices open.
 * Thu Sep 04 2026 Piotr Balwierz <nikt@tuta.com> - 1.22.0-1
 - Update to 1.22.0: CSV/TSV files written by R's write.table()/write.csv() read
   correctly (unnamed row-names/index column, missing values as null); new

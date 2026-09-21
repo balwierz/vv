@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.23.0] - 2026-09-21
+
 ### Added
 - **LZF-compressed HDF5 and AnnData files are read.** h5py's
   `compression="lzf"` — used by `write_h5ad(compression="lzf")` and common in
