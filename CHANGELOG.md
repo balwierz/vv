@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **LZF-compressed HDF5 and AnnData files are read.** h5py's
+  `compression="lzf"` — used by `write_h5ad(compression="lzf")` and common in
+  published single-cell datasets — stores chunks with LZF, HDF5 filter 32000,
+  which h5py registers in its own process and libhdf5 does not include. `vv`
+  now registers its own LZF decoder at startup (unless an HDF5 plugin already
+  provides filter 32000), so these files show their real `X`, `obs`, `var`,
+  `obsm` and `layers` values in the CLI, TUI, the Qt viewer and the KDE
+  plugins. A corrupt LZF chunk is reported as a read error.
+
 ### Fixed
 - **An HDF5 / AnnData dataset that cannot be decoded is reported instead of
   shown as zeros.** The status of every HDF5 dataset read was ignored, so a
@@ -18,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (HDF5 filter id 32000) is not available in this build`); a scripted export
   of that tab (`--tab obs --tsv`) prints nothing and exits 1. An unreadable
   `uns` entry shows the reason in its value cell.
+- **AnnData `layers` stored as sparse matrices open.** A `layers` (or `obsm` /
+  `varm`) entry stored as a CSR/CSC group — how scanpy writes the layers of a
+  sparse `X` — was opened as a dense dataset, so its tab showed only `Cannot
+  open dataset /layers/<name>`. Such entries now read like a sparse `X`, with
+  cell row labels and gene columns; a sparse `obsm`/`varm` entry is labelled by
+  its own axes (`X_sp1`, `X_sp2`, …) rather than by gene names.
 
 ## [1.22.0] - 2026-09-04
 

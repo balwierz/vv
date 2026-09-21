@@ -10078,6 +10078,57 @@ public:
 // columns become typed (int64 / double / utf8) per HDF5 datatype class,
 // so `--filter`, `--describe`, sort, and search all work out of the box.
 
+// ── LZF (HDF5 filter 32000) ────────────────────────────────────────────────
+//
+// h5py's `compression="lzf"` (used by `write_h5ad(compression="lzf")`) stores
+// chunks with LZF, registered as HDF5 filter 32000 inside h5py's own process.
+// libhdf5 does not include it, so vv registers a decoder for it (decoding only:
+// vv never writes HDF5).
+//
+// LZF stream: a sequence of items, each starting with a control byte `c`.
+//   c < 32   literal run: the next c+1 input bytes are copied to the output.
+//   c >= 32  back reference: length L = c >> 5 (if 7, add the next byte), offset
+//            ((c & 31) << 8) + next byte; copy L+2 bytes starting offset+1 bytes
+//            back in the output (the source may overlap the destination).
+namespace h5lzf {
+
+// Decode `in` into `out`. Returns the decoded length, or 0 on failure: with
+// *out_too_small set when `out` ran out of room, otherwise for a malformed
+// stream (truncated item, or a back reference before the start of the output).
+// Every access is bounds-checked; chunk bytes come from the file.
+size_t decode(const uint8_t* in, size_t in_len, uint8_t* out, size_t out_len,
+              bool* out_too_small) {
+    *out_too_small = false;
+    size_t ip = 0, op = 0;
+    while (ip < in_len) {
+        unsigned ctrl = in[ip++];
+        if (ctrl < 32) {                              // literal run
+            size_t n = (size_t)ctrl + 1;
+            if (in_len - ip < n) return 0;
+            if (out_len - op < n) { *out_too_small = true; return 0; }
+            std::memcpy(out + op, in + ip, n);
+            ip += n; op += n;
+        } else {                                      // back reference
+            size_t len = ctrl >> 5;
+            size_t off = (size_t)(ctrl & 31) << 8;
+            if (ip >= in_len) return 0;
+            if (len == 7) {
+                len += in[ip++];
+                if (ip >= in_len) return 0;
+            }
+            off += in[ip++];
+            len += 2;
+            if (off >= op) return 0;                  // reference before output start
+            if (out_len - op < len) { *out_too_small = true; return 0; }
+            size_t ref = op - off - 1;
+            for (size_t k = 0; k < len; ++k) out[op++] = out[ref++];
+        }
+    }
+    return op;
+}
+
+}  // namespace h5lzf
+
 namespace h5v {
 
 // RAII for HDF5 ids. H5Fclose etc. are idempotent on negative ids, so
@@ -10226,6 +10277,51 @@ static herr_t h5_read(hid_t dset, hid_t memtype, hid_t ms, hid_t fs, void* buf) 
     herr_t st = H5Dread(dset, memtype, ms, fs, H5P_DEFAULT, buf);
     if (st < 0 && t_h5_read_error.empty()) t_h5_read_error = h5_read_failure(dset);
     return st;
+}
+
+// HDF5 filter callback (H5Z_func_t). h5py records the uncompressed chunk size
+// as cd_values[2]; start from it and double the buffer while the chunk decodes
+// larger, up to HDF5's 4 GiB chunk limit. Returns the decoded size, 0 on error
+// (HDF5 then fails the read, which h5_read reports).
+static size_t h5_lzf_filter(unsigned flags, size_t cd_nelmts,
+                            const unsigned cd_values[], size_t nbytes,
+                            size_t* buf_size, void** buf) {
+    if (!(flags & H5Z_FLAG_REVERSE)) return 0;        // no encoder
+    const size_t kMaxChunk = (size_t)0xFFFFFFFFu;
+    size_t cap = (cd_nelmts >= 3 && cd_values[2] != 0) ? (size_t)cd_values[2]
+                                                        : *buf_size;
+    if (cap == 0) cap = nbytes * 2 + 64;
+    for (;;) {
+        void* out = H5allocate_memory(cap, false);
+        if (!out) return 0;
+        bool too_small = false;
+        size_t n = h5lzf::decode(static_cast<const uint8_t*>(*buf), nbytes,
+                                 static_cast<uint8_t*>(out), cap, &too_small);
+        if (n > 0) {
+            H5free_memory(*buf);
+            *buf = out;
+            *buf_size = cap;
+            return n;
+        }
+        H5free_memory(out);
+        if (!too_small || cap >= kMaxChunk) return 0;
+        cap = (cap > kMaxChunk / 2) ? kMaxChunk : cap * 2;
+    }
+}
+
+// Register the LZF decoder with libhdf5 once per process, unless a plugin for
+// filter 32000 is already available (e.g. via HDF5_PLUGIN_PATH).
+static void register_hdf5_filters() {
+    static const bool done = [] {
+        static const H5Z_class2_t lzf = {
+            H5Z_CLASS_T_VERS, (H5Z_filter_t)32000,
+            /*encoder_present=*/0, /*decoder_present=*/1,
+            "lzf", nullptr, nullptr, h5_lzf_filter,
+        };
+        if (H5Zfilter_avail(32000) <= 0) H5Zregister(&lzf);
+        return true;
+    }();
+    (void)done;
 }
 
 // Human-readable description of an HDF5 datatype.
@@ -10781,10 +10877,10 @@ class Hdf5Source : public WorkbookSource {
                           std::to_string((*out)->num_rows()) + " rows";
                 if (!spec.footer_hint.empty())
                     *footer += "  |  " + spec.footer_hint;
-                // Sparse is always X, i.e. genuinely (n_obs x n_var): name
-                // columns by var (genes), prepend obs (cells) row labels.
-                apply_anndata_matrix_labels(file_id, AnnMatrixAxes::ObsByVar,
-                                            spec.key, out);
+                // X and layers/* are (n_obs x n_var): columns named by var
+                // (genes), obs (cells) row labels prepended. A sparse obsm /
+                // varm entry is labelled per its own axes.
+                apply_anndata_matrix_labels(file_id, spec.axes, spec.key, out);
                 return "";
             }
         }
@@ -11749,13 +11845,27 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
             !is_group(file_id, parent_name)) return;
         hid_t g = H5Gopen2(file_id, parent_name, H5P_DEFAULT);
         auto names = list_children(g);
-        H5Gclose(g);
         for (const auto& nm : names) {
-            specs.push_back({k,
-                              std::string("/") + parent_name + "/" + nm,
-                              std::string(parent_name) + "[" + nm + "]",
-                              footer_kind, axes, nm});
+            OpenSpec s{k, std::string("/") + parent_name + "/" + nm,
+                       std::string(parent_name) + "[" + nm + "]",
+                       footer_kind, axes, nm};
+            // A CSR/CSC entry is a group, not a dataset — scanpy writes layers
+            // of a sparse X this way — so read it like a sparse X.
+            if (is_group(g, nm.c_str())) {
+                hid_t eg = H5Gopen2(g, nm.c_str(), H5P_DEFAULT);
+                std::string enc = read_string_attr(eg, "encoding-type");
+                if (enc == "csr_matrix" || enc == "csc_matrix") {
+                    int64_t shape[2] = {0, 0};
+                    read_shape2(eg, "shape", shape);
+                    s.kind = OpenSpec::Kind::Sparse;
+                    s.footer_hint = enc + "  shape: " + std::to_string(shape[0]) +
+                                    " \xc3\x97 " + std::to_string(shape[1]);
+                }
+                H5Gclose(eg);
+            }
+            specs.push_back(std::move(s));
         }
+        H5Gclose(g);
         if (!names.empty())
             add(parent_name, std::to_string(names.size()) + " entries");
     };
@@ -11792,6 +11902,7 @@ std::string Hdf5Source::open_first(const std::string& path,
                                       int64_t df_row_cap) {
     // Silence HDF5's stderr error spew for missing attrs etc.
     H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
+    register_hdf5_filters();
     hid_t fid = H5Fopen(path.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
     if (fid < 0) return "Cannot open '" + path + "' as HDF5";
     H5FilePtr file(new hid_t(fid), [](hid_t* p){

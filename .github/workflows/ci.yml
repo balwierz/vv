@@ -93,9 +93,10 @@ jobs:
           sudo apt-get install -y -V clang
           cmake -S . -B build-fuzz -DVV_BUILD_FUZZERS=ON -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
-          cmake --build build-fuzz -j"$(nproc)" --target fuzz_colblock fuzz_npy
+          cmake --build build-fuzz -j"$(nproc)" --target fuzz_colblock fuzz_npy fuzz_lzf
           ./build-fuzz/fuzz_colblock -max_total_time=40 -seed=1
           ./build-fuzz/fuzz_npy      -max_total_time=40 -seed=1
+          ./build-fuzz/fuzz_lzf      -max_total_time=30 -seed=1
 
       # ── Qt6/KDE GUI (24.04 only) ─────────────────────────────────────────
       # Reuses the shared Arrow / htslib / hdf5 / sqlite / xlsxio stack

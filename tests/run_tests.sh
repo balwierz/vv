@@ -1646,6 +1646,65 @@ if [ -f "$DATA/tiny.badfilter.h5ad" ]; then
     assert_contains "h5_bad_filter_summary_intact" "$BF_ALL" "csr_matrix"
 fi
 
+# LZF (HDF5 filter 32000, h5py's compression="lzf") is not part of libhdf5; vv
+# registers its own decoder. tiny.lzf.h5ad (see generate.py): 64 cells x 8
+# genes; n_counts = (i % 5) * 100, cell_type alternates B/T, X row i holds
+# (i % 3) + 1 in columns i % 8 and (i + 1) % 8, obsm X_pca = (1.5, -2) per row.
+if [ -f "$DATA/tiny.lzf.h5ad" ]; then
+    LZ="$DATA/tiny.lzf.h5ad"
+    LZ_OBS=$("$VV" --tab obs --tsv --no-header "$LZ")
+    assert_eq_file_inline "h5_lzf_obs_row" "$(printf '%s\n' "$LZ_OBS" | sed -n 2p)" \
+        "$(printf 'cell001\tT\t100')"
+    assert_eq_file_inline "h5_lzf_obs_n_counts_sum" \
+        "$(printf '%s\n' "$LZ_OBS" | awk -F'\t' '{s += $3} END {print s}')" "12600"
+    assert_eq_file_inline "h5_lzf_obs_categorical" \
+        "$(printf '%s\n' "$LZ_OBS" | awk -F'\t' '$2 == "T"' | wc -l | tr -d ' ')" "32"
+    assert_eq_file_inline "h5_lzf_var_names" \
+        "$("$VV" --tab var --tsv --no-header "$LZ" | tr '\n' ' ')" \
+        "gene0 gene1 gene2 gene3 gene4 gene5 gene6 gene7 "
+    LZ_X=$("$VV" --tab X --tsv --no-header "$LZ")
+    assert_eq_file_inline "h5_lzf_sparse_x_row" "$(printf '%s\n' "$LZ_X" | sed -n 2p)" \
+        "$(printf 'cell001\t0\t2\t2\t0\t0\t0\t0\t0')"
+    assert_eq_file_inline "h5_lzf_sparse_x_sum" \
+        "$(printf '%s\n' "$LZ_X" | awk -F'\t' '{for (i = 2; i <= NF; i++) s += $i} END {print s}')" "254"
+    assert_eq_file_inline "h5_lzf_dense_obsm_row" \
+        "$("$VV" --tab obsm --tsv --no-header "$LZ" | sed -n 1p)" "$(printf 'cell000\t1.5\t-2')"
+fi
+# A corrupt LZF chunk (a back reference before the start of the output) is a
+# read error, not an out-of-bounds read or garbage values.
+if [ -f "$DATA/tiny.badlzf.h5ad" ]; then
+    assert_exit_code "h5_lzf_corrupt_chunk_exits_1" 1 \
+        "$VV" --tab obs --tsv "$DATA/tiny.badlzf.h5ad"
+    assert_contains "h5_lzf_corrupt_chunk_named" \
+        "$("$VV" --tab obs --tsv "$DATA/tiny.badlzf.h5ad" 2>&1)" \
+        "'/obs/n_counts': cannot read HDF5 dataset"
+fi
+
+# layers/obsm/varm entries stored as CSR/CSC groups (scanpy writes the layers of
+# a sparse X this way) were opened as dense datasets, so each such tab showed
+# only "Cannot open dataset /layers/<name>". tiny.sparselayer.h5ad: 3 x 4
+# M = [[1,0,2,0],[0,3,0,0],[4,0,0,5]]; layers counts (CSR) and counts_csc (CSC)
+# hold 10*M, dense holds 100*M; obsm/X_sp is a 3 x 2 CSR.
+if [ -f "$DATA/tiny.sparselayer.h5ad" ]; then
+    SL="$DATA/tiny.sparselayer.h5ad"
+    SL_CSR=$("$VV" --tab 'layers[counts]' --tsv "$SL" 2>&1)
+    assert_eq_file_inline "anndata_sparse_layer_csr" "$SL_CSR" \
+        "$(printf 'obs\tg0\tg1\tg2\tg3\nc0\t10\t0\t20\t0\nc1\t0\t30\t0\t0\nc2\t40\t0\t0\t50')"
+    assert_eq_file_inline "anndata_sparse_layer_csc_matches_csr" \
+        "$("$VV" --tab 'layers[counts_csc]' --tsv "$SL" 2>&1)" "$SL_CSR"
+    assert_eq_file_inline "anndata_dense_layer_unchanged" \
+        "$("$VV" --tab 'layers[dense]' --tsv --no-header "$SL" | sed -n 1p)" \
+        "$(printf 'c0\t100\t0\t200\t0')"
+    assert_contains "anndata_sparse_layer_footer" \
+        "$("$VV" --no-interactive --color=never --tab 'layers[counts_csc]' "$SL")" \
+        "csc_matrix  shape: 3 × 4"
+    # A sparse obsm entry is labelled per obsm's axes (key-derived dimension
+    # columns), not with gene names.
+    assert_eq_file_inline "anndata_sparse_obsm_labels" \
+        "$("$VV" --tab 'obsm[X_sp]' --tsv "$SL" 2>&1)" \
+        "$(printf 'obs\tX_sp1\tX_sp2\nc0\t1\t0\nc1\t0\t2\nc2\t3\t0')"
+fi
+
 # Word operators are operators only in OPERATOR position, so a column whose
 # name happens to be `in` / `is` / `contains` / `not` stays filterable.
 KW="$TMP/kw.tsv"
