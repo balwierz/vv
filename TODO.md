@@ -276,6 +276,139 @@ user-facing summary).
   LociSSD v4 DICT overflow; it also surfaced + fixed a real bigWig misaligned
   read (aarch64 UB).
 
+## Action plan (2026-09-22)
+
+From a feature analysis run from seven user perspectives (single-cell, genomics,
+data engineering, TUI, vvg, file formats, comparable tools): 49 ideas, merged to 30, each checked
+three ways (does vv already do it; does it fit scope and the static build; value
+vs effort). 29 survived. Order below: owner's priorities first, then the
+analysis ranking. One PR per box; no stacked PRs.
+
+### Priority 1 — single-cell formats
+
+- [ ] **10x sidecars read headerless** (S) — `barcodes.tsv(.gz)`,
+  `features.tsv(.gz)`, `genes.tsv(.gz)` have no header, but all-string data
+  keeps row 0 as the header, so the first barcode becomes the column name and
+  that cell disappears. Match these basenames and read them headerless with fixed names
+  (`barcode`; `id`, `name`, `feature_type`).
+- [ ] **MatrixMarket `.mtx` reader** (S–M) — `vv matrix.mtx.gz` is shown as
+  plain text today. Read the `%%MatrixMarket matrix coordinate
+  integer|real|pattern general` body as a streaming `row, col, value` table
+  (0-based), dims / nnz / field / symmetry in the footer; gz/zst via
+  DelimitedSource. Refuse `array`, `complex` and non-`general` symmetry with a
+  clear message rather than mis-reading them.
+- [ ] **10x matrix directory** (M) — a directory holding `matrix.mtx(.gz)` +
+  `barcodes` + `features`/`genes` opens as tabs (matrix labelled by barcode and
+  feature, barcodes, features) instead of failing dataset concatenation with a
+  schema mismatch. Detect the triplet before DatasetSource; other TSV
+  directories must behave as before.
+- [ ] **Cell Ranger v3 HDF5** (M) — `/matrix/{barcodes,data,indices,indptr,
+  shape,features/*}` today shows as a pile of one-column dataset tabs. Add
+  summary (root attrs, shape, nnz, counts per feature_type), a labelled
+  cells × features preview (10x stores features × cells CSC — state the
+  orientation), barcodes and features tabs. Generalise `read_sparse_preview` to
+  take paths + orientation so the AnnData and 10x paths share it. v2 per-genome
+  layout: fall through to the generic view with a note, not mislabelled.
+- [ ] **Loom** (S + M) — first relax `scan_generic`'s `dims[1] <= 32` rule so
+  wide 2-D datasets get a capped preview instead of disappearing (S). Then
+  `scan_loom`: summary, cells (`/col_attrs`), genes (`/row_attrs`), `matrix`
+  and `layers[...]` as cells × genes labelled by CellID / Gene (with fallbacks
+  for other writers' ID names).
+
+### Priority 2 — KDE / Dolphin file types
+
+- [ ] **Register genomic MIME types** (S) — `.vcf` opens as a vCard,
+  `.bam` in Ark, `.bed` as plain text. Add `vv-formats.xml` entries (VCF
+  told apart from text/vcard by `##fileformat=VCF` magic; CRAM by `CRAM` magic;
+  `.vcf.gz` / `.bed.gz` longer globs), the `.desktop` MimeType line, and the
+  thumbnailer / extractor MIME lists. Verify with `update-mime-database` +
+  `xdg-mime query filetype` that real vCards still resolve to text/vcard.
+- [ ] **Genomic metadata in the Information panel** (M) — contig count,
+  detected assembly, sample count, `@HD SO` via the header-only `--contigs`
+  path. Needs the thumbnailer's time / size budget (Audit item
+  `vvthumbnail.cpp:15`) first so BAM/FASTQ can't stall the preview worker; CRAM
+  must never fetch a reference.
+
+### Priority 3 — vvg export
+
+- [ ] **Copy as vv command** (S) — puts the CLI line that reproduces the
+  active tab (file, region, tags, GT-stats, contigs, filter, sort, visible
+  columns) on the clipboard, shell-quoted.
+- [ ] **File → Export View As…** (M) — writes the active tab's view to
+  Parquet / Arrow / TSV / CSV / JSON by extension, on a worker thread with the
+  existing progress bar and Cancel. Needs one exported entry point in
+  `vvcore.hpp` (`export_source`) wrapping `open_source` + `build_sort` + the
+  existing writers; opens a fresh source (never the tab's). Refuses to
+  overwrite the input.
+
+### Priority 4 — AnnData completeness
+
+- [ ] **`X` export is capped silently** (S, bug) — `--tab X --parquet` /
+  `--tsv` / `--count` stop at the 1000-row / 200-column preview with exit 0.
+  Either export the full matrix (streamed by row blocks) or refuse loudly with
+  the real shape; never write a truncated file silently.
+- [ ] **`raw/` tabs** (S) — `raw.X` preview labelled from `/raw/var`, and
+  `raw.var`; today skipped without mention.
+- [ ] **`obsp` / `varp` listed** (M) — neighbour graphs as streamed edge
+  lists (`obs_i, obs_j, weight`, labelled by obs names); never densified.
+- [ ] **Matrix profile in the summary** (S) — dtype, nnz, density, max and a
+  labelled *sampled* "integer-valued" flag for X and each layer, so raw counts
+  and log-normalised values can be told apart.
+
+### Then — analysis order
+
+Silent-wrong-result bugs found during the analysis are folded in next to the
+work that touches the same code:
+
+- [ ] **TUI search / `:N` move the cell cursor** (S) — `/ n N :N` do nothing
+  past the first screen (the cursor drags the viewport back); fix stale help
+  rows.
+- [ ] **Lossless floats in exports and `--distinct` / `--unique`** (S) — `%.6g`
+  writes `1234567.891` as `1.23457e+06` in `--tsv/--csv/--json` and merges
+  distinct values. Shortest round-trip `to_chars` for exports and identity
+  keys; display unchanged. `--json`: NaN/±Inf as null.
+- [ ] **Integer literal against a float column** (S, bug) —
+  `--filter 'Score > 0'` matches 0 rows on `tiny.parquet`, `Score > 0.0`
+  matches 19.
+- [ ] **Backtick-quoted identifiers in `--filter`** (S) — `` `End)` ``,
+  `` `Sample ID` ``.
+- [ ] **`has` / `lacks` bit-flag operators** (S) — `FLAG lacks
+  UNMAP,SECONDARY,DUP`; unknown flag names are a parse error.
+- [ ] **samtools default read filters for `--pileup`** (S–M) — `--ff
+  UNMAP,SECONDARY,QCFAIL,DUP`, `-Q 13`; overrides `--exclude-flags`,
+  `--require-flags`, `--min-mapq`, `--min-bq`.
+- [ ] **`col in @file`** (S) — set membership from a file (gz/zst); all `in`
+  sets hashed.
+- [ ] **Arrow extension and binary columns** (M) — uuid / json / bool8 via
+  storage, BINARY as hex; fixes broken table boxes, raw bytes to the terminal,
+  `--sort` aborts, `--distinct` merging blobs.
+- [ ] **TUI starts from `--filter` / `--select` / `--sort`** (M) — silently
+  ignored on a TTY today.
+- [ ] **Date / timestamp literals in `--filter`** (M) — resolved against the
+  column type; dates in `--describe`.
+- [ ] **Typed nested `--json` / `--ndjson`** (M).
+- [ ] **Parquet footer depth** (S–M) — `--stats --json`, `--schema --json`
+  format for Parquet, key-value metadata; per-row-group view later.
+- [ ] **Index-free `-r` on unindexed text formats** (M) — scan and filter with
+  a note; also stop htslib's `[E::idx_find_and_load]` line leaking to stderr.
+- [ ] **TUI frequency sheet `F`** (M) — value counts of the cursor column over
+  the filtered rows; Enter filters to the value.
+- [ ] **PLINK `.bed` refusal** (S) — magic `6c 1b 01` → clear error with the
+  plink2 export command; named `.bim/.fam/.pvar/.psam` columns.
+- [ ] **Arrow IPC stream + columnar formats on stdin / pipes** (M).
+- [ ] **idxstats in `--contigs`, index-backed `--count`** (S+).
+- [ ] **`--seq-stats` for FASTA / FASTQ** (S).
+- [ ] **TSV dialects: `.bedpe`, `.pairs`, `.gct`, `.maf`** (S–M).
+- [ ] **UTF-8 and line editing in the TUI `/ & :` bars** (S, then M).
+- [ ] **`--tags` for PAF** (M).
+- [ ] **VCF/BCF per-sample FORMAT fields** (L) — named BCF sample columns
+  first.
+- [ ] **`--flatten` for nested struct paths** (M+).
+- [ ] **vvg accepts vv's view flags** (S–M).
+
+Rejected in this round: `--genes` full-matrix gene lookup (value 2/5; the cap
+it exposed is Priority 4's first item).
+
 ## Feature roadmap (2026-07-25 analysis)
 
 Six independent lenses proposed features; every survivor was verified against
