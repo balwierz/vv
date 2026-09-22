@@ -1776,6 +1776,27 @@ if [ -f "$DATA/tiny.wide2d.h5" ]; then
         "$("$VV" --tab /grp/wide --tsv --no-header "$W2" | sed -n 3p | cut -f1,200)" "$(printf '2000\t2199')"
 fi
 
+# Loom: /matrix and /layers/* (genes × cells) shown cells × genes, labelled by
+# CellID / Gene (a repeated gene name gets its Accession), plus summary, cells
+# (col_attrs) and genes (row_attrs) tabs — instead of raw dataset tabs.
+if [ -f "$DATA/tiny.loom" ]; then
+    LM="$DATA/tiny.loom"
+    assert_eq_file_inline "loom_tabs" "$("$VV" --list-tabs "$LM" | tr '\n' '|')" \
+        "summary|matrix (preview)|cells|genes|layers[spliced]|layers[unspliced]|"
+    assert_eq_file_inline "loom_matrix_transposed_labelled" "$("$VV" --tab matrix --tsv "$LM")" \
+        "$(printf 'CellID\tGeneA (ENS1)\tGeneA (ENS2)\tGeneC\nc0\t1\t0\t5\nc1\t0\t3\t0\nc2\t2\t0\t0\nc3\t0\t4\t6')"
+    assert_eq_file_inline "loom_layer_values" \
+        "$("$VV" --tab 'layers[spliced]' --tsv --no-header "$LM" | sed -n 4p)" "$(printf 'c3\t0\t40\t60')"
+    assert_contains "loom_integer_layer_typed" "$("$VV" --tab 'layers[unspliced]' --schema "$LM")" \
+        "$(printf 'GeneC         int64')"
+    assert_eq_file_inline "loom_cells_tab" "$("$VV" --tab cells --count --filter 'ClusterID == 1' "$LM")" "2"
+    assert_eq_file_inline "loom_genes_tab" "$("$VV" --tab genes --list-columns "$LM" | tr '\n' ' ')" "Accession Gene "
+    LMS=$("$VV" --tab summary --tsv "$LM")
+    assert_contains "loom_summary_version" "$LMS" "$(printf 'spec version\t3.0.0')"
+    assert_contains "loom_summary_shape"   "$LMS" "4 cells × 3 genes (stored genes × cells)"
+    assert_contains "loom_summary_graphs"  "$LMS" "$(printf 'col_graphs\tknn')"
+fi
+
 # Cell Ranger HDF5 (filtered_feature_bc_matrix.h5): the features × barcodes CSC
 # matrix is shown cells × features, labelled by barcode and feature name (a
 # repeated name gets its id), with summary / features / barcodes tabs — instead

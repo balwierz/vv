@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Loom files open as labelled tabs.** vv listed `.loom` as supported but
+  showed it as a generic HDF5 file: the expression matrix and layers had no
+  tab and each cell / gene attribute was its own one-column tab. Loom files
+  (loompy, velocyto, SCope) now open as `summary` (spec version, shape, layers,
+  attributes, graphs), `matrix (preview)` and one `layers[…]` tab per layer —
+  stored genes × cells, shown cells × genes, labelled by `CellID` / `Gene` or
+  the other writers' names (`obs_names` / `var_names`, …) — and `cells` /
+  `genes` attribute tables. Integer layers stay integer-typed.
+
 ### Fixed
 - **Wide 2-D datasets in generic HDF5 files get a tab.** A 2-D dataset with
   more than 32 columns was left out of the tab list without a note, so a

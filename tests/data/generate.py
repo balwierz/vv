@@ -1294,6 +1294,36 @@ else:
         f.create_dataset("grp/wide", data=(np.arange(3)[:, None] * 1000 +
                                             np.arange(250)[None, :]).astype("i8"))
 
+    # tiny.loom: Loom spec 3.0.0 laid out as loompy writes it (h5py only, so
+    # no loompy dependency). /matrix is genes × cells, 3 × 4:
+    #   GeneA/ENS1 [1 0 2 0], GeneA/ENS2 [0 3 0 4], GeneC/ENS3 [5 0 0 6]
+    # (a repeated gene name); layers spliced = 10 × matrix (float) and
+    # unspliced = matrix > 0 (uint16, the integer path).
+    loom_path = HERE / "tiny.loom"
+    if loom_path.exists():
+        loom_path.unlink()
+    _M = np.array([[1, 0, 2, 0], [0, 3, 0, 4], [5, 0, 0, 6]], dtype="f4")
+    _lsdt = h5py.string_dtype(encoding="utf-8")
+    with h5py.File(loom_path, "w") as f:
+        f.create_dataset("matrix", data=_M, chunks=(3, 4), compression="gzip")
+        lay = f.create_group("layers")
+        lay.create_dataset("spliced", data=_M * 10, chunks=(3, 4), compression="gzip")
+        lay.create_dataset("unspliced", data=(_M > 0).astype("u2"), chunks=(3, 4))
+        ra = f.create_group("row_attrs")
+        ra.create_dataset("Gene", data=np.array(["GeneA", "GeneA", "GeneC"], dtype=object), dtype=_lsdt)
+        ra.create_dataset("Accession", data=np.array(["ENS1", "ENS2", "ENS3"], dtype=object), dtype=_lsdt)
+        ca = f.create_group("col_attrs")
+        ca.create_dataset("CellID", data=np.array(["c0", "c1", "c2", "c3"], dtype=object), dtype=_lsdt)
+        ca.create_dataset("ClusterID", data=np.array([0, 1, 0, 1], dtype="i8"))
+        f.create_group("row_graphs")
+        cg = f.create_group("col_graphs")
+        kg = cg.create_group("knn")
+        kg.create_dataset("a", data=np.array([0, 1], dtype="i8"))
+        kg.create_dataset("b", data=np.array([1, 2], dtype="i8"))
+        kg.create_dataset("w", data=np.array([1.0, 1.0], dtype="f4"))
+        at = f.create_group("attrs")
+        at.create_dataset("LOOM_SPEC_VERSION", data="3.0.0", dtype=_lsdt)
+
     # tiny.10x.h5 / tiny.10x_v2.h5: Cell Ranger HDF5 layouts, written the way
     # Cell Ranger writes them (fixed-length byte strings, int32 counts, the
     # matrix stored features × barcodes as CSC). 4 features × 3 barcodes;
