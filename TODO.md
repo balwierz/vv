@@ -326,7 +326,7 @@ analysis ranking. One PR per box; no stacked PRs.
   `.vcf.gz` / `.bed.gz` longer globs), the `.desktop` MimeType line, and the
   thumbnailer / extractor MIME lists. Verify with `update-mime-database` +
   `xdg-mime query filetype` that real vCards still resolve to text/vcard.
-- [ ] **Genomic metadata in the Information panel** (M) — contig count,
+- [x] **Genomic metadata in the Information panel** (M) — `feat/kde-genomic-metadata` — contig count,
   detected assembly, sample count, `@HD SO` via the header-only `--contigs`
   path. The payload budget is in place (`gui/kde/pluginbudget.h`); keep the
   header read within it, and CRAM must never fetch a reference. FASTA stays

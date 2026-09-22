@@ -394,7 +394,11 @@ in the header \(en the \fB@SQ\fR lines of an alignment file, or the
 \fB##contig\fR records of a variant file \(en as a two-column
 (\fBname\fR, \fBlength\fR) table, and name the genome assembly when the
 length of \fBchr1\fR matches a known reference (GRCh38 / hg38, GRCh37 /
-hg19, T2T-CHM13, GRCm39 / mm39, GRCm38 / mm10, and others). Reads only
+hg19, T2T-CHM13, GRCm39 / mm39, GRCm38 / mm10, and others). The footer
+also gives the sort order (\fB@HD SO\fR), the number of read groups and
+their distinct samples (\fB@RG SM\fR, or the VCF sample columns), and the
+distinct programs that produced the file (\fB@PG\fR name and version, or
+VCF \fB##source\fR). Reads only
 the header, no records; \fBlength\fR is null for a VCF \fB##contig\fR
 that carried no \fBlength=\fR. Composes with \fB\-\-tsv\fR, \fB\-\-json\fR,
 \fB\-\-sort\fR, and \fB\-\-filter\fR (the length column is numeric, so

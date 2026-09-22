@@ -423,7 +423,9 @@ bar states plainly that this is a preview of the first 1000 of 4823 rows.*
 On **KDE Plasma**, installing the `vv-gui` package also wires vv into
 Dolphin: double-click (or *Open With*) launches `vvg`, the icon view
 shows **table-snapshot thumbnails**, and the **Information Panel** shows
-row/column counts, schema, codec, and generator. The package registers
+row/column counts, schema, codec, and generator — and for BAM / SAM / VCF /
+BCF the header summary of `--contigs` (reference count, assembly, sort order,
+read groups, samples) with the producing programs. The package registers
 file types for the genomic formats (BAM, CRAM, SAM, VCF/BCF, BED and the
 ENCODE peak formats, bedGraph, GFF/GTF, bigWig/bigBed, FASTA/FASTQ, 2bit,
 PAF, pileup, Matrix Market, and their `.gz` forms), so `.vcf` opens in vv
@@ -543,8 +545,11 @@ Tags    list<element: string>     10      0  [TF]  [promoter]         5
 For BAM / CRAM / SAM and VCF / BCF, list the sequences named in the header
 (the `@SQ` lines, or `##contig` records) as a `name` / `length` table —
 reading no records — and name the genome assembly by the length of `chr1`.
-Answers "which assembly is this aligned to?" at a glance, and composes with
-`--tsv` / `--json` / `--sort` / `--filter`.
+The footer also summarises the rest of the header: sort order (`@HD SO`), the
+number of read groups and their distinct samples (`@RG SM`, or the VCF sample
+columns), and the programs that produced the file (`@PG` name + version, or
+VCF `##source`). Answers "which assembly is this aligned to?" at a glance, and
+composes with `--tsv` / `--json` / `--sort` / `--filter`.
 
 ```
 $ vv --contigs reads.bam
@@ -554,7 +559,7 @@ $ vv --contigs reads.bam
 │ 0 │ chr1 │ 248_956_422 │
 │ 1 │ chr2 │ 242_193_529 │
 ╰───┴──────┴─────────────╯
-Reference sequences: 25  |  Assembly: GRCh38 / hg38 (Homo sapiens)
+Reference sequences: 25  |  Assembly: GRCh38 / hg38 (Homo sapiens)  |  Sorted: coordinate  |  Read groups: 2  |  Samples: NA12878  |  Programs: bwa 0.7.17, samtools 1.19
 ```
 
 ### Genotype summaries — `--gt-stats`

@@ -34,6 +34,22 @@ VvMeta vv_probe_meta(const QString& path) try {
     }
     if (m.cols > show) parts << QStringLiteral("…");
     m.schema = parts.join(QStringLiteral(", "));
+
+    // Alignment / variant files: what the header says (reference, assembly,
+    // sort order, samples, programs). Header only — no records are read.
+    GenomicHeader gh;
+    if (read_genomic_header(cfg.path, std::string(), &gh).empty()) {
+        QStringList fields;
+        for (const auto& [label, value] : genomic_header_fields(gh)) {
+            const QString v = QString::fromStdString(value);
+            if (label == "Programs") {
+                if (m.generator.isEmpty()) m.generator = v;
+            } else {
+                fields << QString::fromStdString(label) + QStringLiteral(": ") + v;
+            }
+        }
+        m.genomic = fields.join(QStringLiteral(" · "));
+    }
     return m;
 } catch (...) {
     return VvMeta{};   // ok=false: corrupt / unsupported input, never abort

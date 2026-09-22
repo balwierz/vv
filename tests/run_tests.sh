@@ -3054,6 +3054,25 @@ CTGSAM="$TMP/grch38.sam"
 CTG_ASM=$("$VV" --contigs --color=never "$CTGSAM" 2>&1)
 assert_contains "contigs_assembly_grch38" "$CTG_ASM" "GRCh38"
 assert_contains "contigs_assembly_species" "$CTG_ASM" "Homo sapiens"
+# The footer also summarises the rest of the header: sort order, read groups,
+# their distinct samples, and the distinct @PG programs (PN + VN, else ID).
+CTGRICH="$TMP/rich.sam"
+{
+    printf '@HD\tVN:1.6\tSO:coordinate\n'
+    printf '@SQ\tSN:chr1\tLN:248956422\n'
+    for i in 1 2 3 4 5; do printf '@RG\tID:rg%s\tSM:S%s\n' "$i" "$i"; done
+    printf '@RG\tID:rg6\tSM:S1\n'
+    printf '@PG\tID:bwa\tPN:bwa\tVN:0.7.17\n'
+    printf '@PG\tID:st\tPN:samtools\tPP:bwa\tVN:1.19\n'
+    printf '@PG\tID:st.1\tPN:samtools\tPP:st\tVN:1.19\n'
+    printf '@PG\tID:markdup\tPP:st.1\n'
+    printf 'r1\t0\tchr1\t100\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n'
+} > "$CTGRICH"
+CTG_RICH=$("$VV" --contigs --color=never "$CTGRICH" 2>&1 | tail -1)
+assert_eq_file_inline "contigs_header_summary" "$CTG_RICH" \
+    "Reference sequences: 1  |  Assembly: GRCh38 / hg38 (Homo sapiens)  |  Sorted: coordinate  |  Read groups: 6  |  Samples: S1, S2, S3, … (5)  |  Programs: bwa 0.7.17, samtools 1.19, markdup"
+CTG_BCF=$("$VV" --contigs --color=never "$DATA/tiny.samples.bcf" 2>&1 | tail -1)
+assert_eq_file_inline "contigs_vcf_samples" "$CTG_BCF" "Reference sequences: 1  |  Samples: S1, S2"
 # Errors: not an alignment/variant file, and combinations that read records.
 assert_exit_code "contigs_non_genomic_exits_1" 1 "$VV" --contigs "$DATA/tiny.parquet"
 CTG_NG_ERR=$("$VV" --contigs "$DATA/tiny.parquet" 2>&1 || true)

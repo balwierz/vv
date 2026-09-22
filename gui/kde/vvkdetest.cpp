@@ -60,11 +60,12 @@ int main(int argc, char** argv) {
     if (!out.isEmpty() && !img.isNull()) img.save(out);
 
     VvMeta m = vv_probe_meta(path);
-    std::printf("meta: ok=%d rows=%lld cols=%d %lld ms\n  schema=%s\n  footer=%s\n  generator=%s\n",
+    std::printf("meta: ok=%d rows=%lld cols=%d %lld ms\n  schema=%s\n  footer=%s\n  generator=%s\n  genomic=%s\n",
                 m.ok, (long long)m.rows, m.cols, (long long)clock.elapsed(),
                 m.schema.toStdString().c_str(),
                 m.footer.toStdString().c_str(),
-                m.generator.toStdString().c_str());
+                m.generator.toStdString().c_str(),
+                m.genomic.toStdString().c_str());
 
     // --allow-empty: reaching here without aborting is the success condition.
     if (allowEmpty) return 0;

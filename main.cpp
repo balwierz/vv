@@ -23399,6 +23399,106 @@ static std::string detect(const std::vector<std::string>& names,
 
 }  // namespace contigs
 
+// Distinct values in first-seen order.
+static void push_distinct(std::vector<std::string>& v, std::string x) {
+    if (!x.empty() && std::find(v.begin(), v.end(), x) == v.end())
+        v.push_back(std::move(x));
+}
+
+std::string read_genomic_header(const std::string& path, const std::string& reference,
+                                GenomicHeader* out) {
+    *out = GenomicHeader{};
+    bool is_aln = fends_ci(path, ".bam") || fends_ci(path, ".cram") ||
+                  fends_ci(path, ".sam");
+    bool is_var = fends_ci(path, ".vcf")   || fends_ci(path, ".vcf.gz") ||
+                  fends_ci(path, ".bcf");
+    if (!is_aln && !is_var)
+        return "'" + path + "': --contigs applies to BAM/CRAM/SAM and VCF/BCF "
+               "(the reference sequences named in the header)";
+
+    htsFile* fp = hts_open(path.c_str(), "r");
+    if (!fp) return "Cannot open '" + path + "'";
+    if (!reference.empty())
+        (void)hts_set_fai_filename(fp, reference.c_str());
+
+    GenomicHeader& g = *out;
+    const htsFormat* fmt = hts_get_format(fp);
+    bool variant = fmt && fmt->category == variant_data;
+
+    if (variant) {
+        bcf_hdr_t* h = bcf_hdr_read(fp);
+        if (!h) { hts_close(fp); return "Cannot read VCF/BCF header from '" + path + "'"; }
+        int n = h->n[BCF_DT_CTG];
+        for (int i = 0; i < n; ++i) {
+            const char* key = h->id[BCF_DT_CTG][i].key;
+            if (!key) continue;
+            g.contig_names.emplace_back(key);
+            // Contig length lives in info[0] of the CTG dictionary entry; 0 when
+            // the ##contig line carried no length=.
+            const bcf_idinfo_t* v = h->id[BCF_DT_CTG][i].val;
+            g.contig_lengths.push_back(v ? (int64_t)v->info[0] : 0);
+        }
+        for (int i = 0; i < bcf_hdr_nsamples(h); ++i)
+            g.samples.emplace_back(h->samples[i]);
+        for (int i = 0; i < h->nhrec; ++i) {
+            const bcf_hrec_t* r = h->hrec[i];
+            if (r->type == BCF_HL_GEN && r->key && r->value &&
+                std::strcmp(r->key, "source") == 0)
+                push_distinct(g.programs, r->value);
+        }
+        bcf_hdr_destroy(h);
+    } else {
+        sam_hdr_t* h = sam_hdr_read(fp);
+        if (!h) { hts_close(fp); return "Cannot read BAM/SAM header from '" + path + "'"; }
+        int n = sam_hdr_nref(h);
+        for (int i = 0; i < n; ++i) {
+            const char* nm = sam_hdr_tid2name(h, i);
+            g.contig_names.emplace_back(nm ? nm : "");
+            g.contig_lengths.push_back((int64_t)sam_hdr_tid2len(h, i));
+        }
+        kstring_t ks = KS_INITIALIZE;
+        if (sam_hdr_find_tag_hd(h, "SO", &ks) == 0) g.sort_order = ks.s;
+        int nrg = sam_hdr_count_lines(h, "RG");
+        g.read_groups = nrg > 0 ? nrg : 0;
+        for (int i = 0; i < nrg; ++i)
+            if (sam_hdr_find_tag_pos(h, "RG", i, "SM", &ks) == 0) push_distinct(g.samples, ks.s);
+        int npg = sam_hdr_count_lines(h, "PG");
+        for (int i = 0; i < npg; ++i) {
+            std::string prog;
+            if (sam_hdr_find_tag_pos(h, "PG", i, "PN", &ks) == 0)      prog = ks.s;
+            else if (sam_hdr_find_tag_pos(h, "PG", i, "ID", &ks) == 0) prog = ks.s;
+            if (!prog.empty() && sam_hdr_find_tag_pos(h, "PG", i, "VN", &ks) == 0)
+                prog += std::string(" ") + ks.s;
+            push_distinct(g.programs, std::move(prog));
+        }
+        ks_free(&ks);
+        sam_hdr_destroy(h);
+    }
+    hts_close(fp);
+    g.assembly = contigs::detect(g.contig_names, g.contig_lengths);
+    return "";
+}
+
+std::vector<std::pair<std::string, std::string>>
+genomic_header_fields(const GenomicHeader& h) {
+    // "a, b, c, … (N)" — the first `show` items, then the total.
+    auto abbreviate = [](const std::vector<std::string>& v, size_t show) {
+        std::string s;
+        for (size_t i = 0; i < v.size() && i < show; ++i)
+            s += (i ? ", " : "") + v[i];
+        if (v.size() > show) s += ", … (" + std::to_string(v.size()) + ")";
+        return s;
+    };
+    std::vector<std::pair<std::string, std::string>> f;
+    f.emplace_back("Reference sequences", std::to_string(h.contig_names.size()));
+    if (!h.assembly.empty())   f.emplace_back("Assembly", h.assembly);
+    if (!h.sort_order.empty()) f.emplace_back("Sorted", h.sort_order);
+    if (h.read_groups > 0)     f.emplace_back("Read groups", std::to_string(h.read_groups));
+    if (!h.samples.empty())    f.emplace_back("Samples", abbreviate(h.samples, 3));
+    if (!h.programs.empty())   f.emplace_back("Programs", abbreviate(h.programs, 4));
+    return f;
+}
+
 // Build the reference-sequence table for --contigs from a genomics file's
 // header alone. Returns an error string when the format has no such dictionary
 // or when --contigs is combined with a flag that operates on the file's data.
@@ -23413,52 +23513,11 @@ static std::string build_contigs(const Config& cfg,
                "records (--pileup / --decode-pileup / --tags / --expand)";
 
     const std::string& path = cfg.path;
-    bool is_aln = fends_ci(path, ".bam") || fends_ci(path, ".cram") ||
-                  fends_ci(path, ".sam");
-    bool is_var = fends_ci(path, ".vcf")   || fends_ci(path, ".vcf.gz") ||
-                  fends_ci(path, ".bcf");
-    if (!is_aln && !is_var)
-        return "'" + path + "': --contigs applies to BAM/CRAM/SAM and VCF/BCF "
-               "(the reference sequences named in the header)";
-
-    htsFile* fp = hts_open(path.c_str(), "r");
-    if (!fp) return "Cannot open '" + path + "'";
-    if (!cfg.pileup_ref.empty())
-        (void)hts_set_fai_filename(fp, cfg.pileup_ref.c_str());
-
-    std::vector<std::string> names;
-    std::vector<int64_t>     lengths;   // <= 0 means "not stated in the header"
-
-    const htsFormat* fmt = hts_get_format(fp);
-    bool variant = fmt && fmt->category == variant_data;
-
-    if (variant) {
-        bcf_hdr_t* h = bcf_hdr_read(fp);
-        if (!h) { hts_close(fp); return "Cannot read VCF/BCF header from '" + path + "'"; }
-        int n = h->n[BCF_DT_CTG];
-        for (int i = 0; i < n; ++i) {
-            const char* key = h->id[BCF_DT_CTG][i].key;
-            if (!key) continue;
-            names.emplace_back(key);
-            // Contig length lives in info[0] of the CTG dictionary entry; 0 when
-            // the ##contig line carried no length=.
-            const bcf_idinfo_t* v = h->id[BCF_DT_CTG][i].val;
-            lengths.push_back(v ? (int64_t)v->info[0] : 0);
-        }
-        bcf_hdr_destroy(h);
-    } else {
-        sam_hdr_t* h = sam_hdr_read(fp);
-        if (!h) { hts_close(fp); return "Cannot read BAM/SAM header from '" + path + "'"; }
-        int n = sam_hdr_nref(h);
-        for (int i = 0; i < n; ++i) {
-            const char* nm = sam_hdr_tid2name(h, i);
-            names.emplace_back(nm ? nm : "");
-            lengths.push_back((int64_t)sam_hdr_tid2len(h, i));
-        }
-        sam_hdr_destroy(h);
-    }
-    hts_close(fp);
-
+    GenomicHeader gh;
+    if (auto err = read_genomic_header(path, cfg.pileup_ref, &gh); !err.empty())
+        return err;
+    const std::vector<std::string>& names   = gh.contig_names;
+    const std::vector<int64_t>&     lengths = gh.contig_lengths;
     if (names.empty())
         return "'" + path + "': the header names no reference sequences";
 
@@ -23477,9 +23536,9 @@ static std::string build_contigs(const Config& cfg,
                                  arrow::field("length", arrow::int64())});
     auto table = arrow::Table::Make(schema, {name_a, len_a});
 
-    std::string footer = "Reference sequences: " + std::to_string(names.size());
-    std::string asm_label = contigs::detect(names, lengths);
-    if (!asm_label.empty()) footer += "  |  Assembly: " + asm_label;
+    std::string footer;
+    for (const auto& [label, value] : genomic_header_fields(gh))
+        footer += (footer.empty() ? "" : "  |  ") + label + ": " + value;
 
     *out = std::make_unique<MemoryTableSource>(table, path, footer);
     return "";
