@@ -85,10 +85,15 @@ being shown as zeros.
 \fB/matrix\fR or v2's per-genome groups) open as \fBsummary\fR (shape, stored
 entries, counts per \fBfeature_type\fR, chemistry), a \fBmatrix\fR preview shown
 cells \(mu features and labelled by barcode and feature name, \fBfeatures\fR
-and \fBbarcodes\fR tabs. Generic
+and \fBbarcodes\fR tabs. Loom files (\fB/matrix\fR + \fB/row_attrs\fR +
+\fB/col_attrs\fR) open as \fBsummary\fR (spec version, shape, layers,
+attributes, graphs), a \fBmatrix\fR and one \fBlayers[...]\fR preview each \(em
+stored genes \(mu cells, shown cells \(mu genes, labelled by the cell and gene
+ID attributes (\fBCellID\fR / \fBGene\fR or the other writers' names) \(em plus
+\fBcells\fR and \fBgenes\fR attribute tables. Generic
 HDF5 files surface a \fBhierarchy\fR tab listing every group / dataset
 with path / kind / shape / dtype, plus one tab per 1-D or 2-D dataset
-(capped at 32 datasets / 32 columns).
+(up to 32 datasets; each previewed at 1000 rows \(mu 200 columns).
 .IP \(bu 2
 \fB.ods\fR \(en OpenDocument Spreadsheet. Each sheet becomes a TUI
 tab. Hand-rolled parser: minizip inflates \fBcontent.xml\fR from the

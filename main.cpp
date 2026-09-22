@@ -10839,6 +10839,10 @@ static std::string build_tenx_table(hid_t file_id, const OpenSpec& spec,
                                     int64_t row_cap,
                                     std::shared_ptr<arrow::Table>* out,
                                     std::string* footer);
+static std::string build_loom_table(hid_t file_id, const OpenSpec& spec,
+                                    int64_t row_cap,
+                                    std::shared_ptr<arrow::Table>* out,
+                                    std::string* footer);
 // Label an AnnData X preview with its obs (row) / var (column) identifiers.
 // Which AnnData axes a dense 2-D tab is indexed by. X and layers/* are
 // (n_obs x n_var), but obsm/* is (n_obs x d) and varm/* is (n_var x d), where
@@ -10854,7 +10858,7 @@ static void apply_anndata_matrix_labels(hid_t file_id, AnnMatrixAxes axes,
 // this tab should view, and how to render it.
 struct OpenSpec {
     enum class Kind { Hierarchy, DataFrame, Matrix2D, Sparse, Dataset1D,
-                      TenxMatrix, TenxFeatures, TenxBarcodes,
+                      TenxMatrix, TenxFeatures, TenxBarcodes, LoomMatrix, LoomAttrs,
                       Dataset2D, Summary, Uns };
     Kind        kind;
     std::string h5_path;     // group / dataset path inside the file
@@ -11099,6 +11103,9 @@ class Hdf5Source : public WorkbookSource {
             case OpenSpec::Kind::TenxFeatures:
             case OpenSpec::Kind::TenxBarcodes:
                 return build_tenx_table(file_id, spec, df_row_cap, out, footer);
+            case OpenSpec::Kind::LoomMatrix:
+            case OpenSpec::Kind::LoomAttrs:
+                return build_loom_table(file_id, spec, df_row_cap, out, footer);
             case OpenSpec::Kind::Sparse: {
                 hid_t g = H5Gopen2(file_id, spec.h5_path.c_str(), H5P_DEFAULT);
                 if (g < 0) return "Cannot open sparse group " + spec.h5_path;
@@ -11997,7 +12004,10 @@ static std::vector<OpenSpec> scan_generic(hid_t file_id) {
                                   std::string("/") + name,
                                   shape_to_string(dims)});
             ++sc->n_dsets;
-        } else if (nd == 2 && dims[1] <= 32) {
+        } else if (nd == 2) {
+            // Any width: the 2-D reader previews the first 1000 rows and 200
+            // columns and says so in the footer. Wider datasets used to get no
+            // tab at all, which hid e.g. a Loom file's expression matrix.
             sc->out->push_back({OpenSpec::Kind::Dataset2D,
                                   std::string("/") + name,
                                   std::string("/") + name,
@@ -12359,6 +12369,199 @@ static std::string build_tenx_table(hid_t file_id, const OpenSpec& spec, int64_t
     return err;
 }
 
+// ── Loom (loompy / velocyto / SCope) ───────────────────────────────────────
+//
+// /matrix is a genes × cells 2-D dataset, /layers/<name> are more of the same
+// shape (velocyto's spliced / unspliced), /row_attrs holds one 1-D dataset per
+// gene attribute and /col_attrs one per cell attribute. Matrices are shown
+// cells × genes, the orientation AnnData and scanpy use, labelled by the cell
+// and gene ID attributes. Writers name those differently, hence the lists.
+
+static const char* const kLoomCellIds[] = {"CellID", "cell_id", "CellIDs", "obs_names",
+                                           "cell_names", "Barcode", "barcode"};
+static const char* const kLoomGeneIds[] = {"Gene", "gene", "Genes", "var_names",
+                                           "gene_names", "gene_symbols", "Accession",
+                                           "gene_ids"};
+
+static bool is_loom(hid_t fid) {
+    if (!link_exists(fid, "matrix") || is_group(fid, "matrix")) return false;
+    if (!link_exists(fid, "row_attrs") || !is_group(fid, "row_attrs")) return false;
+    if (!link_exists(fid, "col_attrs") || !is_group(fid, "col_attrs")) return false;
+    hid_t d = H5Dopen2(fid, "matrix", H5P_DEFAULT);
+    if (d < 0) return false;
+    hid_t sp = H5Dget_space(d);
+    int nd = H5Sget_simple_extent_ndims(sp);
+    H5Sclose(sp); H5Dclose(d);
+    return nd == 2;
+}
+
+// The first attribute in `group` named in `names` that exists, or "".
+template <size_t N>
+static std::string loom_label_attr(hid_t fid, const char* group, const char* const (&names)[N]) {
+    hid_t g = H5Gopen2(fid, group, H5P_DEFAULT);
+    if (g < 0) return "";
+    std::string found;
+    for (const char* n : names)
+        if (link_exists(g, n)) { found = n; break; }
+    H5Gclose(g);
+    return found;
+}
+
+static void loom_dims(hid_t d, int64_t* rows, int64_t* cols) {
+    hid_t sp = H5Dget_space(d);
+    hsize_t dims[2] = {0, 0};
+    if (H5Sget_simple_extent_ndims(sp) == 2) H5Sget_simple_extent_dims(sp, dims, nullptr);
+    H5Sclose(sp);
+    *rows = (int64_t)dims[0]; *cols = (int64_t)dims[1];
+}
+
+static std::string join_names(const std::vector<std::string>& v) {
+    std::string out;
+    for (const auto& x : v) { if (!out.empty()) out += ", "; out += x; }
+    return out.empty() ? "(none)" : out;
+}
+
+static std::vector<OpenSpec> scan_loom(hid_t fid) {
+    std::vector<OpenSpec> specs;
+    std::string summary;
+    auto add = [&](const std::string& k, const std::string& v) {
+        summary += k; summary += '\t'; summary += v; summary += '\n';
+    };
+    add("format", "Loom");
+    std::string ver = read_string_attr(fid, "LOOM_SPEC_VERSION");            // spec v2
+    if (ver.empty() && link_exists(fid, "attrs") &&                           // spec v3:
+        link_exists(fid, "attrs/LOOM_SPEC_VERSION")) {                         // a scalar dataset
+        hid_t d = H5Dopen2(fid, "attrs/LOOM_SPEC_VERSION", H5P_DEFAULT);
+        if (d >= 0) { ver = h5_value_to_string(d); H5Dclose(d); }
+    }
+    if (!ver.empty()) add("spec version", ver);
+    int64_t ng = 0, nc = 0;
+    { hid_t d = H5Dopen2(fid, "matrix", H5P_DEFAULT); loom_dims(d, &ng, &nc); H5Dclose(d); }
+    add("matrix", std::to_string(nc) + " cells \xc3\x97 " + std::to_string(ng) +
+                  " genes (stored genes \xc3\x97 cells)");
+    std::vector<std::string> layers;
+    if (link_exists(fid, "layers") && is_group(fid, "layers")) {
+        hid_t g = H5Gopen2(fid, "layers", H5P_DEFAULT);
+        layers = list_children(g);
+        H5Gclose(g);
+    }
+    add("layers", join_names(layers));
+    for (const char* grp : {"row_attrs", "col_attrs", "row_graphs", "col_graphs"}) {
+        if (!link_exists(fid, grp) || !is_group(fid, grp)) continue;
+        hid_t g = H5Gopen2(fid, grp, H5P_DEFAULT);
+        add(grp, join_names(list_children(g)));
+        H5Gclose(g);
+    }
+    specs.push_back({OpenSpec::Kind::Summary, "/", "summary", summary});
+    specs.push_back({OpenSpec::Kind::LoomMatrix, "/matrix", "matrix (preview)", ""});
+    specs.push_back({OpenSpec::Kind::LoomAttrs, "/col_attrs", "cells", ""});
+    specs.push_back({OpenSpec::Kind::LoomAttrs, "/row_attrs", "genes", ""});
+    for (const auto& l : layers)
+        specs.push_back({OpenSpec::Kind::LoomMatrix, "/layers/" + l, "layers[" + l + "]", ""});
+    return specs;
+}
+
+static std::string build_loom_table(hid_t file_id, const OpenSpec& spec, int64_t row_cap,
+                                    std::shared_ptr<arrow::Table>* out,
+                                    std::string* footer) {
+    if (spec.kind == OpenSpec::Kind::LoomAttrs) {
+        hid_t g = H5Gopen2(file_id, spec.h5_path.c_str(), H5P_DEFAULT);
+        if (g < 0) return "Cannot open group " + spec.h5_path;
+        int64_t full = 0;
+        auto r = read_anndata_dataframe(g, row_cap, &full);
+        H5Gclose(g);
+        if (!r.ok()) return r.status().ToString();
+        *out = *r;
+        int64_t shown = (*out)->num_rows();
+        *footer = "Format: Loom " + spec.display + " (" + spec.h5_path.substr(1) + ")";
+        *footer += shown < full ? "  |  preview: first " + std::to_string(shown) + " of " +
+                                  std::to_string(full) + " rows"
+                                : "  |  Rows: " + std::to_string(shown);
+        return "";
+    }
+
+    // LoomMatrix: read the corner [genes 0..200) × [cells 0..1000) and emit it
+    // transposed — one column per gene, one row per cell.
+    hid_t d = H5Dopen2(file_id, spec.h5_path.c_str(), H5P_DEFAULT);
+    if (d < 0) return "Cannot open dataset " + spec.h5_path;
+    int64_t G = 0, C = 0;
+    loom_dims(d, &G, &C);
+    const int64_t ng = std::min<int64_t>(G, kDense2DColCap);
+    const int64_t nc = std::min<int64_t>(C, kDense2DRowCap);
+    hid_t t = H5Dget_type(d);
+    const bool integral = H5Tget_class(t) == H5T_INTEGER;
+    H5Tclose(t);
+    std::vector<double>  dbuf;
+    std::vector<int64_t> ibuf;
+    if (ng > 0 && nc > 0) {
+        hid_t fs = H5Dget_space(d);
+        hsize_t start[2] = {0, 0}, count[2] = {(hsize_t)ng, (hsize_t)nc};
+        H5Sselect_hyperslab(fs, H5S_SELECT_SET, start, nullptr, count, nullptr);
+        hid_t ms = H5Screate_simple(2, count, nullptr);
+        herr_t st;
+        if (integral) { ibuf.resize((size_t)(ng * nc));
+                        st = h5_read(d, H5T_NATIVE_INT64, ms, fs, ibuf.data()); }
+        else          { dbuf.resize((size_t)(ng * nc));
+                        st = h5_read(d, H5T_NATIVE_DOUBLE, ms, fs, dbuf.data()); }
+        H5Sclose(ms); H5Sclose(fs);
+        if (st < 0) { std::string e = h5_read_failure(d); H5Dclose(d); return e; }
+    }
+    H5Dclose(d);
+
+    // Labels.
+    std::string cell_attr = loom_label_attr(file_id, "col_attrs", kLoomCellIds);
+    std::string gene_attr = loom_label_attr(file_id, "row_attrs", kLoomGeneIds);
+    std::vector<std::string> cells = cell_attr.empty() ? std::vector<std::string>{}
+        : h5_strings(file_id, "col_attrs/" + cell_attr, nc);
+    std::vector<std::string> genes = gene_attr.empty() ? std::vector<std::string>{}
+        : h5_strings(file_id, "row_attrs/" + gene_attr, ng);
+    // A repeated gene label gets a second ID attribute (or its index) appended.
+    std::vector<std::string> alt;
+    for (const char* n : {"Accession", "gene_ids", "var_names"})
+        if (gene_attr != n && link_exists(file_id, ("row_attrs/" + std::string(n)).c_str())) {
+            alt = h5_strings(file_id, "row_attrs/" + std::string(n), ng);
+            break;
+        }
+    std::map<std::string, int> seen;
+    for (const auto& gname : genes) ++seen[gname];
+
+    arrow::FieldVector fields;
+    std::vector<std::shared_ptr<arrow::Array>> cols;
+    arrow::StringBuilder cb;
+    for (int64_t c = 0; c < nc; ++c) {
+        if (c < (int64_t)cells.size()) (void)cb.Append(cells[(size_t)c]); else (void)cb.AppendNull();
+    }
+    std::shared_ptr<arrow::Array> ca;
+    (void)cb.Finish(&ca);
+    fields.push_back(arrow::field(cell_attr.empty() ? "cell" : cell_attr, arrow::utf8()));
+    cols.push_back(ca);
+    for (int64_t gi = 0; gi < ng; ++gi) {
+        std::string name = gi < (int64_t)genes.size() ? genes[(size_t)gi] : "";
+        if (name.empty()) name = "gene" + std::to_string(gi);
+        else if (seen[name] > 1)
+            name += gi < (int64_t)alt.size() ? " (" + alt[(size_t)gi] + ")"
+                                             : " #" + std::to_string(gi);
+        std::shared_ptr<arrow::Array> a;
+        if (integral) {
+            arrow::Int64Builder b;
+            (void)b.AppendValues(ibuf.data() + gi * nc, nc);
+            (void)b.Finish(&a);
+            fields.push_back(arrow::field(name, arrow::int64()));
+        } else {
+            arrow::DoubleBuilder b;
+            (void)b.AppendValues(dbuf.data() + gi * nc, nc);
+            (void)b.Finish(&a);
+            fields.push_back(arrow::field(name, arrow::float64()));
+        }
+        cols.push_back(a);
+    }
+    *out = arrow::Table::Make(arrow::schema(fields), cols, nc);
+    *footer = "Format: Loom " + spec.display + "  |  preview: first " + std::to_string(nc) +
+              " of " + std::to_string(C) + " cells, first " + std::to_string(ng) + " of " +
+              std::to_string(G) + " genes  |  shown cells \xc3\x97 genes (stored genes \xc3\x97 cells)";
+    return "";
+}
+
 // ── Hdf5Source::open_first ──────────────────────────────────────────────────
 
 std::string Hdf5Source::open_first(const std::string& path,
@@ -12400,6 +12603,7 @@ std::string Hdf5Source::open_first(const std::string& path,
     if (!is_anndata) tenx_groups = tenx_matrix_groups(fid, &tenx_v3);
     std::vector<OpenSpec> specs = is_anndata ? scan_anndata(fid)
                                 : !tenx_groups.empty() ? scan_10x(fid, tenx_groups, tenx_v3)
+                                : is_loom(fid) ? scan_loom(fid)
                                 : scan_generic(fid);
     if (specs.empty()) return "'" + path + "': no viewable HDF5 datasets";
 
