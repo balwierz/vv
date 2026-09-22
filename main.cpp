@@ -11997,7 +11997,10 @@ static std::vector<OpenSpec> scan_generic(hid_t file_id) {
                                   std::string("/") + name,
                                   shape_to_string(dims)});
             ++sc->n_dsets;
-        } else if (nd == 2 && dims[1] <= 32) {
+        } else if (nd == 2) {
+            // Any width: the 2-D reader previews the first 1000 rows and 200
+            // columns and says so in the footer. Wider datasets used to get no
+            // tab at all, which hid e.g. a Loom file's expression matrix.
             sc->out->push_back({OpenSpec::Kind::Dataset2D,
                                   std::string("/") + name,
                                   std::string("/") + name,

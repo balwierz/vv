@@ -1765,6 +1765,17 @@ if [ -f "$DATA/tiny.badlzf.h5ad" ]; then
         "'/obs/n_counts': cannot read HDF5 dataset"
 fi
 
+# A 2-D dataset wider than 32 columns got no tab in a generic HDF5 file; it now
+# gets one with the 1000-row x 200-column preview and a footer saying so.
+if [ -f "$DATA/tiny.wide2d.h5" ]; then
+    W2="$DATA/tiny.wide2d.h5"
+    assert_eq_file_inline "h5_wide2d_has_tab" "$("$VV" --list-tabs "$W2" | tr '\n' '|')" "hierarchy|/grp/wide|"
+    assert_contains "h5_wide2d_preview_note" "$("$VV" --tab /grp/wide -n 1 --color=never "$W2")" \
+        "preview: first 200 of 250 cols"
+    assert_eq_file_inline "h5_wide2d_values" \
+        "$("$VV" --tab /grp/wide --tsv --no-header "$W2" | sed -n 3p | cut -f1,200)" "$(printf '2000\t2199')"
+fi
+
 # Cell Ranger HDF5 (filtered_feature_bc_matrix.h5): the features × barcodes CSC
 # matrix is shown cells × features, labelled by barcode and feature name (a
 # repeated name gets its id), with summary / features / barcodes tabs — instead

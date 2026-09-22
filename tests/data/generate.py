@@ -1285,6 +1285,15 @@ else:
         obsm.attrs["encoding-version"] = "0.1.0"
         _sparse(obsm, "X_sp", np.array([[1, 0], [0, 2], [3, 0]], dtype="f4"), "csr")
 
+    # tiny.wide2d.h5: a generic HDF5 file with a 2-D dataset wider than 200
+    # columns (3 x 250, value = 1000*row + col), which used to get no tab.
+    w2_path = HERE / "tiny.wide2d.h5"
+    if w2_path.exists():
+        w2_path.unlink()
+    with h5py.File(w2_path, "w") as f:
+        f.create_dataset("grp/wide", data=(np.arange(3)[:, None] * 1000 +
+                                            np.arange(250)[None, :]).astype("i8"))
+
     # tiny.10x.h5 / tiny.10x_v2.h5: Cell Ranger HDF5 layouts, written the way
     # Cell Ranger writes them (fixed-length byte strings, int32 counts, the
     # matrix stored features × barcodes as CSC). 4 features × 3 barcodes;
