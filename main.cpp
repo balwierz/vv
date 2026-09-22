@@ -5679,6 +5679,7 @@ class DelimitedSource : public TabularSource {
     int                                   mpileup_samples_ = 0; // samtools mpileup samples (>=1)
     HeaderMode                            header_mode_ = HeaderMode::Auto; // -d/--header
     bool                                  auto_headerless_ = false; // Auto-detected: row 0 is data
+    std::string                           format_note_;   // extra footer text (e.g. 10x sidecar)
 
     // Decoded batches in a bounded trailing window: older entries are freed
     // (set null) once retain_all_ is false and the window overflows. Per-batch
@@ -5932,6 +5933,24 @@ public:
     }
 
     // Apply ENCODE peak-family naming on top of the vanilla BED schema.
+    // Name the columns of a 10x Genomics sidecar file read headerless (see
+    // tenx_sidecar_kind): f0, f1, … become barcode / id, name, feature_type,
+    // … ; any extra columns keep their f<i> names. Rewrites schema_ in place.
+    void apply_tenx_sidecar(int kind) {
+        static const char* const kBarcode[]  = {"barcode"};
+        static const char* const kFeatures[] = {"id", "name", "feature_type",
+                                                "chrom", "start", "end"};
+        const char* const* names = (kind == 1) ? kBarcode : kFeatures;
+        const int n_names = (kind == 1) ? 1 : (kind == 3 ? 2 : 6);
+        arrow::FieldVector fields = schema_->fields();
+        for (int i = 0; i < (int)fields.size() && i < n_names; ++i)
+            fields[(size_t)i] = fields[(size_t)i]->WithName(names[i]);
+        schema_ = arrow::schema(fields);
+        format_note_ = std::string("10x Genomics ") +
+                       (kind == 1 ? "barcodes" : kind == 2 ? "features" : "genes") +
+                       " file (no header row)";
+    }
+
     // Called by open_source's BED dispatch when the file extension picks
     // a specific variant (narrowPeak / broadPeak / gappedPeak / bedGraph
     // / tagAlign). Rewrites schema_ in place; safe to call after open().
@@ -6387,6 +6406,7 @@ private:
                 std::string d(1, delimiter_);
                 if (delimiter_ == '\t') d = "tab";
                 std::string s = "Format: delimited (separator: " + d + ")";
+                if (!format_note_.empty()) s += "  |  " + format_note_;
                 if (auto_headerless_)
                     s += "  |  no header row detected — columns auto-named "
                          "(--header on to override)";
@@ -15671,6 +15691,23 @@ public:
     }
 };
 
+// Which 10x Genomics matrix-directory sidecar `path` is, by basename (any
+// directory; optional .gz / .zst / .zstd): 1 = barcodes.tsv, 2 = features.tsv
+// (Cell Ranger v3+: id, name, feature_type[, chrom, start, end]), 3 = genes.tsv
+// (Cell Ranger v2: id, name). 0 = neither.
+static int tenx_sidecar_kind(const std::string& path) {
+    std::string b = std::filesystem::path(path).filename().string();
+    for (char& c : b) c = (char)std::tolower((unsigned char)c);
+    for (const char* sfx : {".gz", ".zstd", ".zst"}) {
+        size_t n = std::strlen(sfx);
+        if (b.size() > n && b.compare(b.size() - n, n, sfx) == 0) { b.resize(b.size() - n); break; }
+    }
+    if (b == "barcodes.tsv") return 1;
+    if (b == "features.tsv") return 2;
+    if (b == "genes.tsv")    return 3;
+    return 0;
+}
+
 static std::string open_source_dispatch(const std::string& path, const Config& cfg,
                                 std::unique_ptr<TabularSource>* out) {
     // ── Determine file kind ──────────────────────────────────────────────────
@@ -16109,10 +16146,18 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         return "";
     }
 
+    // 10x Genomics sidecars (Cell Ranger / STARsolo matrix directories) have no
+    // header row. Their data is all text, so header detection keeps row 0 as the
+    // header and the first barcode / feature would vanish into the column name.
+    // Read them headerless and name the columns, unless --header was given.
+    const int tenx = (dk == DelimKind::TSV && cfg.header == HeaderMode::Auto)
+                         ? tenx_sidecar_kind(path) : 0;
     std::unique_ptr<DelimitedSource> src;
     std::string err = DelimitedSource::open(path, dk, cfg.region, &src,
-                                            /*delim_override=*/0, cfg.header);
+                                            /*delim_override=*/0,
+                                            tenx ? HeaderMode::Off : cfg.header);
     if (!err.empty()) return err;
+    if (tenx) src->apply_tenx_sidecar(tenx);
     // ENCODE peak-family variants ride on top of DelimKind::BED — the
     // dispatch detected them by extension; apply variant-specific naming
     // now that the schema is materialised.
