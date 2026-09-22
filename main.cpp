@@ -674,6 +674,8 @@ static const FormatInfo kFormats[] = {
    true,  true,  false, true,  false, "bgzip + tabix"},
   {"PAF (minimap2)", ".paf", "DelimitedSource",
    true,  false, false, true,  false, ""},
+  {"MatrixMarket (sparse matrix)", ".mtx", "DelimitedSource",
+   true,  false, false, true,  false, ""},
   {"FASTA", ".fa .fasta .fna .faa .ffn .frn", "FastxSource",
    true,  false, false, true,  false, ""},
   {"FASTQ", ".fq .fastq", "FastxSource",
@@ -815,6 +817,7 @@ static void print_usage(const char* prog) {
         "  .fq  .fastq                 sequencing reads (FASTQ, plus .gz)\n"
         "  .bcf                        binary VCF (htslib)\n"
         "  .paf  .paf.gz               minimap2 pairwise alignments\n"
+        "  .mtx  .mtx.gz               MatrixMarket sparse matrix (row, col, value; 0-based)\n"
         "  .json  .ndjson  .jsonl      JSON: an array of objects or newline-delimited\n"
         "                              (plus .gz / .zst; nested → struct/list columns)\n"
         "  .txt  .text  .log           plain text (also .gz / .zst; viewed like less -SN,\n"
@@ -4429,6 +4432,67 @@ public:
     }
 };
 
+// Wraps an InputStream so every line's fields are separated by exactly one
+// space: runs of spaces / tabs collapse to one, leading and trailing whitespace
+// is dropped, and blank lines are skipped. MatrixMarket bodies are "separated by
+// whitespace", which Arrow's single-character CSV delimiter cannot express.
+class CollapseWhitespaceStream : public arrow::io::InputStream {
+    std::shared_ptr<arrow::io::InputStream> inner_;
+    LineReader   lr_;
+    std::string  out_buf_;
+    size_t       out_pos_    = 0;
+    bool         inner_done_ = false;
+
+    bool refill() {
+        out_buf_.clear(); out_pos_ = 0;
+        std::string line;
+        while (out_buf_.empty()) {
+            bool ok = lr_.read_line(&line);
+            if (!ok && line.empty()) { inner_done_ = true; return false; }
+            if (!ok) inner_done_ = true;
+            bool gap = false;
+            for (char c : line) {
+                if (c == ' ' || c == '\t') { gap = !out_buf_.empty(); continue; }
+                if (gap) { out_buf_ += ' '; gap = false; }
+                out_buf_ += c;
+            }
+            if (out_buf_.empty() && inner_done_) return false;
+        }
+        out_buf_ += '\n';
+        return true;
+    }
+
+public:
+    explicit CollapseWhitespaceStream(std::shared_ptr<arrow::io::InputStream> inner)
+        : inner_(inner), lr_(inner) {}
+
+    arrow::Status Close() override { return inner_->Close(); }
+    bool closed() const override { return inner_->closed(); }
+    arrow::Result<int64_t> Tell() const override {
+        return arrow::Status::NotImplemented("CollapseWhitespaceStream::Tell");
+    }
+    arrow::Result<int64_t> Read(int64_t n, void* buf) override {
+        uint8_t* p = static_cast<uint8_t*>(buf);
+        int64_t total = 0;
+        while (n > 0) {
+            if (out_pos_ >= out_buf_.size()) {
+                if (inner_done_ || !refill()) break;
+            }
+            int64_t avail = (int64_t)(out_buf_.size() - out_pos_);
+            int64_t take  = std::min(n, avail);
+            std::memcpy(p, out_buf_.data() + out_pos_, (size_t)take);
+            p += take; out_pos_ += (size_t)take; n -= take; total += take;
+        }
+        return total;
+    }
+    arrow::Result<std::shared_ptr<arrow::Buffer>> Read(int64_t n) override {
+        ARROW_ASSIGN_OR_RAISE(auto buf, arrow::AllocateResizableBuffer(n));
+        ARROW_ASSIGN_OR_RAISE(int64_t actual, Read(n, buf->mutable_data()));
+        ARROW_RETURN_NOT_OK(buf->Resize(actual, false));
+        return std::shared_ptr<arrow::Buffer>(std::move(buf));
+    }
+};
+
 // Turn a top-level JSON array `[ {…}, {…} ]` into the newline-delimited records
 // that Arrow's JSON reader wants: it drops the enclosing `[` / `]` and replaces
 // the commas between elements with newlines, leaving everything else byte for
@@ -5484,7 +5548,7 @@ public:
 
 // ── Delimited source (CSV / TSV / BED / VCF / GFF3+GTF / SAM, plain or gzip) ──
 
-enum class DelimKind { CSV, TSV, BED, VCF, GFF, SAM, PAF, Mpileup };
+enum class DelimKind { CSV, TSV, BED, VCF, GFF, SAM, PAF, Mpileup, Mtx };
 
 // ENCODE peak / signal flavours of BED. Carried alongside DelimKind::BED so
 // the BED reader can apply variant-specific column names (signalValue,
@@ -5677,6 +5741,10 @@ class DelimitedSource : public TabularSource {
     int                                   bed_level_ = 3; // detected BED standard cols (3..9)
     BedVariant                            bed_variant_ = BedVariant::None;
     int                                   mpileup_samples_ = 0; // samtools mpileup samples (>=1)
+    // MatrixMarket (DelimKind::Mtx): banner field (integer / real / pattern) and
+    // the size line. Entries are checked against these as they stream.
+    std::string                           mtx_field_;
+    int64_t                               mtx_rows_ = 0, mtx_cols_ = 0, mtx_nnz_ = 0;
     HeaderMode                            header_mode_ = HeaderMode::Auto; // -d/--header
     bool                                  auto_headerless_ = false; // Auto-detected: row 0 is data
     std::string                           format_note_;   // extra footer text (e.g. 10x sidecar)
@@ -5717,9 +5785,55 @@ class DelimitedSource : public TabularSource {
             all_read_ = true;
             return st;
         }
-        if (!batch) { all_read_ = true; return arrow::Status::OK(); }
+        if (!batch) {
+            all_read_ = true;
+            if (kind_ == DelimKind::Mtx && rows_so_far_ != mtx_nnz_) {
+                read_status_ = arrow::Status::Invalid(
+                    "MatrixMarket size line declares ", mtx_nnz_,
+                    " entries, but the file holds ", rows_so_far_);
+                return read_status_;
+            }
+            return arrow::Status::OK();
+        }
+        if (kind_ == DelimKind::Mtx) {
+            auto shifted = mtx_to_zero_based(batch);
+            if (!shifted.ok()) {
+                read_status_ = shifted.status();
+                all_read_ = true;
+                return read_status_;
+            }
+            batch = *shifted;
+        }
         retain_(std::move(batch));
         return arrow::Status::OK();
+    }
+
+    // MatrixMarket indices are 1-based; present them 0-based (like scipy.io.mmread)
+    // and reject any entry outside the declared shape rather than show it.
+    arrow::Result<std::shared_ptr<arrow::RecordBatch>>
+    mtx_to_zero_based(const std::shared_ptr<arrow::RecordBatch>& b) const {
+        std::vector<std::shared_ptr<arrow::Array>> cols = b->columns();
+        const int64_t limit[2] = {mtx_rows_, mtx_cols_};
+        const char* axis[2] = {"row", "col"};
+        for (int c = 0; c < 2; ++c) {
+            if (cols[(size_t)c]->type_id() != arrow::Type::INT64)
+                return arrow::Status::Invalid("MatrixMarket ", axis[c],
+                                              " index is not an integer");
+            const auto& in = static_cast<const arrow::Int64Array&>(*cols[(size_t)c]);
+            arrow::Int64Builder bld;
+            ARROW_RETURN_NOT_OK(bld.Reserve(in.length()));
+            for (int64_t i = 0; i < in.length(); ++i) {
+                int64_t v = in.IsNull(i) ? 0 : in.Value(i);
+                if (v < 1 || v > limit[c])
+                    return arrow::Status::Invalid(
+                        "MatrixMarket entry ", rows_so_far_ + i + 1, ": ", axis[c],
+                        " index ", in.IsNull(i) ? std::string("missing") : std::to_string(v),
+                        " is outside 1..", limit[c]);
+                bld.UnsafeAppend(v - 1);
+            }
+            ARROW_RETURN_NOT_OK(bld.Finish(&cols[(size_t)c]));
+        }
+        return arrow::RecordBatch::Make(b->schema(), b->num_rows(), cols);
     }
 
     // Open the file as a (possibly gzip-decompressed) InputStream.
@@ -5750,7 +5864,9 @@ class DelimitedSource : public TabularSource {
     make_reader(std::shared_ptr<arrow::io::InputStream> input, char delim,
                 bool autogen_names, const std::vector<std::string>& col_names,
                 const std::vector<std::string>& force_string_cols = {},
-                bool strings_nullable = false) {
+                bool strings_nullable = false,
+                const std::vector<std::pair<std::string, std::shared_ptr<arrow::DataType>>>&
+                    column_types = {}) {
         auto ropts = arrow::csv::ReadOptions::Defaults();
         // 16 MiB blocks + per-block parsing on the CPU pool. The default
         // (~1 MiB) is too small for multi-GB files; raising it amortises
@@ -5780,6 +5896,7 @@ class DelimitedSource : public TabularSource {
         // Force the detected leading-zero-ID columns to utf8 so inference can't
         // drop the zeros ("007" -> 7). Keyed by name (Arrow has no by-index
         // override); a no-op for a column Arrow would have made string anyway.
+        for (const auto& ct : column_types) copts.column_types[ct.first] = ct.second;
         for (const auto& name : force_string_cols)
             copts.column_types[name] = arrow::utf8();
         return arrow::csv::StreamingReader::Make(
@@ -5896,7 +6013,7 @@ public:
         self->kind_      = kind;
         self->header_mode_ = header_mode;
         self->delimiter_ = delim_override ? delim_override
-                                          : ((kind == DelimKind::CSV) ? ',' : '\t');
+                                          : (kind == DelimKind::CSV ? ',' : kind == DelimKind::Mtx ? ' ' : '\t');
         return continue_open(std::move(self), std::move(input),
                              /*raw=*/nullptr, is_gz, kind, region, out);
     }
@@ -5914,7 +6031,7 @@ public:
         self->kind_      = kind;
         self->header_mode_ = header_mode;
         self->delimiter_ = delim_override ? delim_override
-                                          : ((kind == DelimKind::CSV) ? ',' : '\t');
+                                          : (kind == DelimKind::CSV ? ',' : kind == DelimKind::Mtx ? ' ' : '\t');
 
         // "is_gz" means the byte stream is compressed (non-seekable). Both a
         // gzip (.gz) and a zstandard (.zst / .zstd) wrapper qualify; open_stream
@@ -5995,6 +6112,55 @@ public:
         bed_level_ = (int)names.size();
     }
 private:
+    // Validate a MatrixMarket banner (preamble_lines_[0]) and consume the size
+    // line from the front of *put_back. Only the layout vv presents faithfully is
+    // accepted: `matrix coordinate`, field integer / real / pattern, symmetry
+    // general. Symmetric files store one triangle, so a coordinate listing of
+    // them would silently show half the entries.
+    static std::string parse_mtx_header(DelimitedSource* self, std::string* put_back) {
+        if (self->preamble_lines_.empty())
+            return "not a MatrixMarket file (no %%MatrixMarket banner)";
+        std::istringstream bs(self->preamble_lines_.front());
+        std::string tag, object, format, field, symmetry;
+        bs >> tag >> object >> format >> field >> symmetry;
+        auto lc = [](std::string v) {
+            for (char& c : v) c = (char)std::tolower((unsigned char)c);
+            return v;
+        };
+        object = lc(object); format = lc(format); field = lc(field); symmetry = lc(symmetry);
+        if (tag != "%%MatrixMarket" || object != "matrix")
+            return "not a MatrixMarket matrix (banner: '" + self->preamble_lines_.front() + "')";
+        if (format != "coordinate")
+            return "MatrixMarket '" + format + "' (dense) format is not supported; "
+                   "only 'coordinate' (sparse) files are read";
+        if (field != "integer" && field != "real" && field != "pattern")
+            return "MatrixMarket field '" + field + "' is not supported "
+                   "(integer, real and pattern are)";
+        if (symmetry != "general")
+            return "MatrixMarket symmetry '" + symmetry + "' is not supported: the file "
+                   "stores one triangle, so listing its entries would show half the "
+                   "matrix; only 'general' is read";
+        self->mtx_field_ = field;
+        // The size line: the first non-blank line after the banner and comments.
+        std::string& pb = *put_back;
+        for (;;) {
+            size_t nl = pb.find('\n');
+            std::string line = pb.substr(0, nl);
+            pb.erase(0, nl == std::string::npos ? pb.size() : nl + 1);
+            if (line.find_first_not_of(" \t\r") == std::string::npos) {
+                if (pb.empty()) return "MatrixMarket file has no size line";
+                continue;
+            }
+            std::istringstream ls(line);
+            std::string extra;
+            if (!(ls >> self->mtx_rows_ >> self->mtx_cols_ >> self->mtx_nnz_) || (ls >> extra) ||
+                self->mtx_rows_ < 0 || self->mtx_cols_ < 0 || self->mtx_nnz_ < 0)
+                return "malformed MatrixMarket size line '" + line +
+                       "' (expected: rows cols entries)";
+            return "";
+        }
+    }
+
     // Shared body of open() / open_from_stream(). Strips per-format preamble,
     // optionally swaps the data stream for a tabix iterator, builds the
     // streaming CSV reader, and finalises the schema.
@@ -6039,6 +6205,23 @@ private:
                     : std::shared_ptr<arrow::io::InputStream>(
                         std::make_shared<PrependInputStream>(std::move(put_back), input));
                 input = std::make_shared<TruncateFieldsStream>(base, 11);
+                put_back.clear();
+                break;
+            }
+            case DelimKind::Mtx: {
+                // MatrixMarket: `%%MatrixMarket matrix coordinate <field>
+                // <symmetry>`, `%` comment lines, a `rows cols nnz` size line,
+                // then one whitespace-separated `i j [value]` entry per line.
+                self->preamble_lines_ = strip_prefix_preamble(input, '%', &put_back);
+                std::string err = parse_mtx_header(self.get(), &put_back);
+                if (!err.empty()) return err;
+                col_names = {"row", "col"};
+                if (self->mtx_field_ != "pattern") col_names.push_back("value");
+                std::shared_ptr<arrow::io::InputStream> base =
+                    put_back.empty() ? input
+                    : std::shared_ptr<arrow::io::InputStream>(
+                        std::make_shared<PrependInputStream>(std::move(put_back), input));
+                input = std::make_shared<CollapseWhitespaceStream>(base);
                 put_back.clear();
                 break;
             }
@@ -6107,8 +6290,14 @@ private:
             force_string = detect_leading_zero_columns(path, is_gz,
                                                        self->delimiter_, col_names);
         bool strings_nullable = (kind == DelimKind::CSV || kind == DelimKind::TSV);
+        std::vector<std::pair<std::string, std::shared_ptr<arrow::DataType>>> col_types;
+        if (kind == DelimKind::Mtx) {
+            col_types = {{"row", arrow::int64()}, {"col", arrow::int64()}};
+            if (self->mtx_field_ == "integer") col_types.push_back({"value", arrow::int64()});
+            if (self->mtx_field_ == "real")    col_types.push_back({"value", arrow::float64()});
+        }
         auto r = make_reader(input, self->delimiter_, autogen, col_names,
-                             force_string, strings_nullable);
+                             force_string, strings_nullable, col_types);
         if (!r.ok()) {
             // A region query whose window overlaps no records leaves the tabix
             // stream empty, and Arrow's CSV reader rejects empty input with
@@ -6376,6 +6565,11 @@ private:
             case DelimKind::GFF: return "Format: GFF3/GTF";
             case DelimKind::SAM: return "Format: SAM";
             case DelimKind::PAF: return "Format: PAF";
+            case DelimKind::Mtx:
+                return "Format: MatrixMarket coordinate " + mtx_field_ +
+                       "  |  shape: " + std::to_string(mtx_rows_) + " \xc3\x97 " +
+                       std::to_string(mtx_cols_) + "  |  entries: " +
+                       std::to_string(mtx_nnz_) + "  |  row / col are 0-based";
             case DelimKind::Mpileup: {
                 std::string s = "Format: mpileup";
                 if (mpileup_samples_ > 0) {
@@ -16064,6 +16258,10 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         dk = DelimKind::GFF;
     } else if (fends_ci(det, ".sam")) {
         dk = DelimKind::SAM;
+    } else if (fends_ci(det, ".mtx") || fends_ci(det, ".mtx.gz")) {
+        if (!cfg.region.empty())
+            return "-r/--region does not apply to a MatrixMarket file";
+        dk = DelimKind::Mtx;
     } else if (fends_ci(det, ".paf") || fends_ci(det, ".paf.gz")) {
         dk = DelimKind::PAF;
     } else if (fends_ci(det, ".bed")        || fends_ci(det, ".bed.gz")

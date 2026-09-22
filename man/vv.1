@@ -164,6 +164,16 @@ for chromosome-scale references; use \fBtwoBitToFa\fR for that.
 .IP \(bu 2
 \fB.paf\fR, \fB.paf.gz\fR \(en minimap2 pairwise alignments
 .IP \(bu 2
+\fB.mtx\fR, \fB.mtx.gz\fR \(en MatrixMarket sparse matrix (as written by
+Cell Ranger, STARsolo, \fBscipy.io.mmwrite\fR and R \fBMatrix::writeMM\fR),
+listed one stored entry per row as \fBrow\fR, \fBcol\fR, \fBvalue\fR
+(\fBvalue\fR is absent for a \fBpattern\fR matrix). Indices are shown
+0-based, like \fBscipy.io.mmread\fR; the footer gives the shape and entry
+count. Only the \fBcoordinate\fR format with \fBgeneral\fR symmetry is read:
+a symmetric file stores one triangle and a dense \fBarray\fR file is not a
+listing, so both are refused. An index outside the declared shape, or an
+entry count different from the size line, is an error.
+.IP \(bu 2
 \fB.json\fR, \fB.ndjson\fR, \fB.jsonl\fR \(en JSON, as a top-level array of
 objects or as newline-delimited objects (JSON Lines). Records need not share
 a schema \(en Arrow infers the union of fields and fills gaps with nulls;
@@ -192,7 +202,7 @@ previews; \fB-r\fR is not supported on a directory.
 Unknown extensions are sniffed by magic bytes and delimiter heuristics.
 .PP
 The delimited-text formats (VCF, GFF/GTF, BED and the peak family, TSV/CSV,
-mpileup, PAF) and plain text also read a zstandard wrapper: a
+mpileup, PAF, MatrixMarket) and plain text also read a zstandard wrapper: a
 \fB.csv.zst\fR, \fB.bed.zst\fR or bare \fB.zst\fR is decompressed on the fly,
 by content for stdin and text and by suffix otherwise. FASTA/FASTQ
 compression stays gzip-only (bgzf), and range queries (\fB-r\fR) require a

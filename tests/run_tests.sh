@@ -154,6 +154,36 @@ assert_contains "tenx_footer_note" "$("$VV" -n 1 --color=never "$TENX/genes.tsv"
 assert_eq_file_inline "tenx_header_on_overrides" \
     "$("$VV" --header on --list-columns "$TENX/genes.tsv" | head -1)" "ENSG0001"
 rm -rf "$TENX"
+
+# MatrixMarket coordinate files: one stored entry per row (row, col, value),
+# indices shown 0-based like scipy.io.mmread; whitespace between fields may be
+# any run of spaces/tabs. Layouts vv cannot list faithfully are refused.
+MTX="$TMP/mtx"; mkdir -p "$MTX"
+printf '%%%%MatrixMarket matrix coordinate integer general\n%% from a test\n\n4 5  4\n1 2 5\n3\t1   1\n  4 3 7\n4 5 2  \n' > "$MTX/int.mtx"
+gzip -c "$MTX/int.mtx" > "$MTX/int.mtx.gz"
+MTX_WANT=$(printf 'row\tcol\tvalue\n0\t1\t5\n2\t0\t1\n3\t2\t7\n3\t4\t2')
+assert_eq_file_inline "mtx_integer_zero_based" "$("$VV" --tsv "$MTX/int.mtx")"    "$MTX_WANT"
+assert_eq_file_inline "mtx_gzip"               "$("$VV" --tsv "$MTX/int.mtx.gz")" "$MTX_WANT"
+assert_eq_file_inline "mtx_count_is_entries"   "$("$VV" --count "$MTX/int.mtx")"  "4"
+assert_contains "mtx_footer_shape" "$("$VV" -n 2 --color=never "$MTX/int.mtx")" \
+    "MatrixMarket coordinate integer  |  shape: 4 × 5  |  entries: 4"
+printf '%%%%MatrixMarket matrix coordinate real general\n2 2 1\n2 1 -1.25\n' > "$MTX/real.mtx"
+assert_contains "mtx_real_is_double" "$("$VV" --schema "$MTX/real.mtx")" "$(printf 'value   double')"
+printf '%%%%MatrixMarket matrix coordinate pattern general\n2 2 2\n1 1\n2 2\n' > "$MTX/pat.mtx"
+assert_eq_file_inline "mtx_pattern_no_value" \
+    "$("$VV" --list-columns "$MTX/pat.mtx" | tr '\n' ' ')" "row col "
+printf '%%%%MatrixMarket matrix coordinate real symmetric\n2 2 1\n2 1 3\n' > "$MTX/sym.mtx"
+printf '%%%%MatrixMarket matrix array real general\n2 2\n1\n2\n3\n4\n'      > "$MTX/arr.mtx"
+printf '%%%%MatrixMarket matrix coordinate integer general\n3 3 2\n1 1 4\n4 1 9\n' > "$MTX/idx.mtx"
+printf '%%%%MatrixMarket matrix coordinate integer general\n3 3 5\n1 1 4\n2 1 9\n' > "$MTX/nnz.mtx"
+assert_exit_code "mtx_symmetric_refused"   1 "$VV" --tsv "$MTX/sym.mtx"
+assert_contains  "mtx_symmetric_says_why"  "$("$VV" --tsv "$MTX/sym.mtx" 2>&1)" "stores one triangle"
+assert_exit_code "mtx_array_refused"       1 "$VV" --tsv "$MTX/arr.mtx"
+assert_exit_code "mtx_index_out_of_range"  1 "$VV" --tsv "$MTX/idx.mtx"
+assert_contains  "mtx_index_message"       "$("$VV" --tsv "$MTX/idx.mtx" 2>&1)" "row index 4 is outside 1..3"
+assert_exit_code "mtx_entry_count_mismatch" 1 "$VV" --tsv "$MTX/nnz.mtx"
+assert_exit_code "mtx_region_refused"      1 "$VV" -r chr1:1-2 "$MTX/int.mtx"
+rm -rf "$MTX"
 # Missing values in string columns: R and pandas write a missing value as an
 # *unquoted* null token and quote a genuine string. vv honours that — an
 # unquoted NA/NULL/empty in a string column becomes null, while a quoted "NA"

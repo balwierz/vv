@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **MatrixMarket `.mtx` / `.mtx.gz` files open as tables.** The sparse matrix
+  format written by Cell Ranger and STARsolo (`matrix.mtx.gz`),
+  `scipy.io.mmwrite` and R `Matrix::writeMM` was shown as plain text. A
+  `coordinate` file is now listed one stored entry per row as `row`, `col`,
+  `value` (no `value` for a `pattern` matrix), with 0-based indices like
+  `scipy.io.mmread`, typed from the banner (integer → int64, real → double) and
+  streamed, so `--filter`, `--sort`, `--describe` and `--parquet` work on it. The
+  footer shows the shape and entry count. Symmetric files (one triangle stored)
+  and dense `array` files are refused rather than listed misleadingly, and an
+  index outside the declared shape or an entry count that disagrees with the
+  size line is an error.
+
 ### Fixed
 - **10x Genomics `barcodes.tsv`, `features.tsv` and `genes.tsv` keep their
   first row.** These Cell Ranger / STARsolo sidecar files have no header row
