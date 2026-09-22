@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `genes` attribute tables. Integer layers stay integer-typed.
 
 ### Fixed
+- **The Dolphin thumbnailer and the metadata extractor stay within about a
+  second per file.** Each thumbnail cell was laid out in full before being
+  elided, so the cost grew with the longest string in the first rows (a long
+  read's SEQ / QUAL, a large JSON text field): a 244 MB cell took 10.8 s and
+  8.9 GB. Cells are now cut to 256 bytes first (0.18 s). Workbooks and NumPy archives are parsed or inflated whole at open,
+  so their cost grows with the file (a 36 MB `.xlsx` took 2.3 s and 700 MB
+  per plugin call); the plugins now skip `.xlsx`/`.xlsm` above 16 MiB, `.ods`
+  above 8 MiB and `.npz` above 256 MiB, and Dolphin shows the file-type icon
+  for them. Opening such files in `vv` or `vvg` is unchanged.
 - **vvg, the Dolphin thumbnailer and the metadata extractor no longer hang or
   crash on exit after previewing a large text file.** Opening a delimited or
   JSON file (SAM, GFF, PAF, BED, VCF, TSV, NDJSON, …) larger than a few CSV

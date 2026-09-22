@@ -1,4 +1,5 @@
 #include "metaprobe.h"
+#include "pluginbudget.h"
 
 #include <QStringList>
 #include <algorithm>
@@ -11,6 +12,7 @@
 // in libvvcore is not catchable; the source readers validate untrusted input.)
 VvMeta vv_probe_meta(const QString& path) try {
     VvMeta m;
+    if (!vv_within_plugin_budget(path)) return m;
     Config cfg;
     cfg.path = path.toStdString();
     std::unique_ptr<TabularSource> src;

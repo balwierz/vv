@@ -328,14 +328,11 @@ analysis ranking. One PR per box; no stacked PRs.
   `xdg-mime query filetype` that real vCards still resolve to text/vcard.
 - [ ] **Genomic metadata in the Information panel** (M) — contig count,
   detected assembly, sample count, `@HD SO` via the header-only `--contigs`
-  path. Needs the thumbnailer's time / size budget (Audit item
-  `vvthumbnail.cpp:15`) first so BAM/FASTQ can't stall the preview worker; CRAM
-  must never fetch a reference.
-  Budget data point: the thumbnail + metadata payload on a single-record
-  244 MB FASTA takes 10.9 s and 9 GB RSS (the CLI `-n 3` takes 0.9 s / 0.7 GB),
-  most likely from converting and eliding the full sequence cell as a QString.
-  Cap cell text before `QFontMetrics::elidedText` in `thumbrender.cpp`; FASTA
-  and CRAM stay out of the plugin MIME lists until then.
+  path. The payload budget is in place (`gui/kde/pluginbudget.h`); keep the
+  header read within it, and CRAM must never fetch a reference. FASTA stays
+  out of the plugin MIME lists: with thumbnail cells capped it renders a
+  244 MB record in 0.1 s, but FastxSource still holds the whole first record
+  (0.77 GB RSS for 244 MB), so peak memory follows the longest chromosome.
 
 ### Priority 3 — vvg export
 
@@ -656,7 +653,7 @@ be done first: it catches this whole bug class automatically.
 
 **Performance**
 - [ ] `gui/arrowtablemodel.cpp:132` — data() decodes each cell twice when search is active (DisplayRole + BackgroundRole)
-- [ ] `gui/kde/vvthumbnail.cpp:15` — Thumbnailer has no time/size budget — opening a huge or slow file blocks the preview worker
+- [x] `gui/kde/vvthumbnail.cpp:15` — Thumbnailer has no time/size budget — opening a huge or slow file blocks the preview worker — fixed on `fix/kde-thumbnail-budget` (measured every plugin format on large files: all read a bounded prefix and finish in ≤0.9 s except the whole-file readers .xlsx/.xlsm, .ods and .npz, which now have per-format size ceilings of 16 / 8 / 256 MiB in `vv_within_plugin_budget`; thumbnail cells are cut to 256 bytes before elision, which took a 244 MB FASTA record from 10.8 s / 8.9 GB to 0.18 s. No wall-clock timeout: in-process decoding cannot be cancelled safely)
 - [x] `main.cpp:1393` — TabixInputStream allocates and frees a kstring buffer for every record line — already fixed: `ks_` is a member kstring reused across records (tbx_itr_next grows it in place) and freed once in the destructor; there is no per-line alloc/free.
 - [x] `main.cpp:2743` — Region-mode read_chunk re-decodes the same row group once per overlapping window — fixed on `perf/region-rowgroup-cache` (ParquetSource region reads called ReadRowGroups for every slice, so N windows overlapping one row group — and the open() count pass ahead of the output pass — each re-decoded it. Added a small LRU (4-entry) cache keyed by (row_group, projected columns) holding the full row-group decode before the per-slice Slice + BED overlap filter; replaced the dead `filtered_cache_` member. Output byte-identical across single/duplicate/40-window queries on plain Parquet (--region-cols) and LociSSD, and for --count/--select projections. ~1.8x on 40 windows in one 500k-row row group (1.0s→0.55s; the remaining cost is the per-window overlap filter, which is inherent for the whole-row-group plain-Parquet slice and cheaper for LociSSD's manifest-bounded slices). Test parquet_region_two_windows_same_rowgroup.)
 - [x] `main.cpp:5180` — SqliteSource runs an unconditional SELECT COUNT(*) at open, forcing a full table scan even for `-n 10` previews/thumbnails — fixed on `perf/sqlite-lazy-count` (the COUNT(*) moved out of open() into total_rows(), run once on first ask and cached; footer() triggers it for the table/TUI views where the total is wanted, while an `-n` preview or thumbnail (read_first, never asks) skips the scan entirely. A small table fully streamed by open()'s first batch reports rows_so_far_ with no COUNT at all. Covered by the existing sqlite footer "Rows: N" tests, now exercising the lazy path.)

@@ -1,4 +1,5 @@
 #include "thumbrender.h"
+#include "pluginbudget.h"
 
 #include <QColor>
 #include <QFont>
@@ -11,11 +12,25 @@
 #include "vv/vvcore.hpp"
 
 namespace {
+// A thumbnail cell shows a few dozen characters, but a cell can hold far more
+// (a FASTA record is a whole chromosome). Laying out the full text for
+// elidedText() cost 10 s and 9 GB on a 244 MB sequence, so cut it to a prefix
+// first, at a UTF-8 character boundary.
+constexpr size_t kMaxCellBytes = 256;
+
 QString cell_text(const std::shared_ptr<arrow::Table>& tbl, int col, int64_t row) {
     auto ca = tbl->column(col);
     int64_t i = row;
     for (const auto& a : ca->chunks()) {
-        if (i < a->length()) return QString::fromStdString(cell_to_display_string(*a, i));
+        if (i < a->length()) {
+            std::string s = cell_to_display_string(*a, i);
+            if (s.size() > kMaxCellBytes) {
+                size_t cut = kMaxCellBytes;
+                while (cut > 0 && (static_cast<unsigned char>(s[cut]) & 0xC0) == 0x80) --cut;
+                s.resize(cut);
+            }
+            return QString::fromStdString(s);
+        }
         i -= a->length();
     }
     return {};
@@ -29,6 +44,7 @@ QString cell_text(const std::shared_ptr<arrow::Table>& tbl, int col, int64_t row
 // Status would std::abort and is *not* catchable — the source readers validate
 // untrusted input up front to avoid reaching those.)
 QImage vv_render_thumbnail(const QString& path, const QSize& target) try {
+    if (!vv_within_plugin_budget(path)) return {};
     Config cfg;
     cfg.path = path.toStdString();
     std::unique_ptr<TabularSource> src;

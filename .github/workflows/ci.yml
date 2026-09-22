@@ -160,6 +160,24 @@ jobs:
                    paf.gz mpileup mpileup.gz fq fq.gz bw bb 2bit; do
             ./build-gui/gui/kde/vvkdetest "tests/data/tiny.$f" >/dev/null
           done
+          # Thumbnail cells are cut before text layout: one 244 MB FASTA record
+          # took ~10 s and 9 GB to elide when laid out in full.
+          awk 'BEGIN{print ">chr1"; s="ACGTACGTTAGCATCGATCGATCGATGCTAGCTAGCTAGCTAGCTAGCTAGCATGCATGC"; for(i=0;i<4000000;i++) print s}' > "$RUNNER_TEMP/chr.fa"
+          ms=$(timeout 60 ./build-gui/gui/kde/vvkdetest "$RUNNER_TEMP/chr.fa" | sed -n 's/^thumbnail: ok .* \([0-9]*\) ms$/\1/p')
+          echo "single-record FASTA thumbnail: ${ms:-none} ms"
+          test -n "$ms" && test "$ms" -lt 5000
+          # Size budget: a workbook over the 16 MiB .xlsx ceiling (a valid
+          # tiny.xlsx plus a stored 17 MiB member) gets no thumbnail and no
+          # metadata; the plugins must not parse the sheet.
+          python3 - "$RUNNER_TEMP/padded.xlsx" <<'PY'
+          import shutil, sys, zipfile
+          shutil.copy("tests/data/tiny.xlsx", sys.argv[1])
+          with zipfile.ZipFile(sys.argv[1], "a", zipfile.ZIP_STORED) as z:
+              z.writestr("pad.bin", b"\0" * (17 << 20))
+          PY
+          ./build-gui/gui/kde/vvkdetest tests/data/tiny.xlsx >/dev/null
+          out=$(./build-gui/gui/kde/vvkdetest --allow-empty "$RUNNER_TEMP/padded.xlsx")
+          grep -q '^thumbnail: NULL' <<<"$out" && grep -q '^meta: ok=0' <<<"$out"
           # Model path end-to-end through libvvcore. Column sort must actually
           # reorder the rows (not just toggle the header indicator): tiny.parquet
           # column 0 is chr1/chr2, so the ascending and descending first rows
