@@ -78,12 +78,13 @@ jobs:
         run: tests/run_tests.sh
 
       # ── libFuzzer smoke over the binary parsers (24.04 only) ─────────────
-      # Fuzz the LociSSD v4 codec decoder and the NumPy .npy parser + builders
-      # directly under ASan+UBSan for a short, bounded time. A regression that
-      # reintroduces an out-of-bounds read / overflow / misaligned load / null
-      # memcpy fails here. Needs clang (libFuzzer). Deterministic seed; a clean
-      # tree survives far more than this budget's iterations, so it is not flaky.
-      - name: Fuzz smoke (decode_colblock + npy)
+      # Fuzz the LociSSD v4 codec decoder, the NumPy .npy parser + builders and
+      # the LZF decoder behind HDF5 filter 32000 directly under ASan+UBSan for a
+      # short, bounded time. A regression that reintroduces an out-of-bounds
+      # read / overflow / misaligned load / null memcpy fails here. Needs clang
+      # (libFuzzer). Deterministic seed; a clean tree survives far more than this
+      # budget's iterations, so it is not flaky.
+      - name: Fuzz smoke (decode_colblock + npy + lzf)
         if: matrix.os == '24.04'
         env:
           ARROW_DEFAULT_MEMORY_POOL: system

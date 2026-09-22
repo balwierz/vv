@@ -67,13 +67,23 @@ Debian/Ubuntu, \fBbrew install xlsxio\fR on macOS).
 read via libhdf5. AnnData (\fB.h5ad\fR) is detected by the root
 \fBencoding-type\fR attribute (or modern heuristic /obs + /var + X);
 the layout decodes into a summary tab plus \fBobs\fR, \fBvar\fR,
-\fBX\fR (densified first-N-row preview for CSR sparse), and one tab
-per entry under \fBobsm\fR / \fBvarm\fR / \fBlayers\fR. Categoricals
-(\fBcodes\fR / \fBcategories\fR groups) decode back to string columns.
-Generic HDF5 files surface a \fBhierarchy\fR tab listing every
-group / dataset with path / kind / shape / dtype, plus one tab per
-1-D or 2-D dataset (capped at 32 datasets / 32 columns). \fBuns\fR
-(unstructured) decoding and CSC sparse preview are deferred.
+\fBX\fR, one tab per entry under \fBobsm\fR / \fBvarm\fR /
+\fBlayers\fR, and a \fBuns\fR key/value tab (scalars, strings and short
+arrays; nested dicts flattened to dotted keys). \fBX\fR and each
+\fBobsm\fR / \fBvarm\fR / \fBlayers\fR entry may be dense or sparse (CSR
+or CSC); matrices are previewed densified, first 1000 rows by 200
+columns, with cell / gene labels. Categoricals (\fBcodes\fR /
+\fBcategories\fR groups) decode back to string columns, and both the
+plain and the \fBnullable-string-array\fR (anndata \(>= 0.13) string
+encodings are read. Datasets compressed with gzip or with LZF (h5py's
+\fBcompression="lzf"\fR, HDF5 filter 32000, decoded by vv itself) are
+supported. A dataset that cannot be decoded (e.g. its compression filter
+is unavailable) is reported with the dataset and filter named, in place
+of the tab \(em a scripted export of that tab exits 1 \(em instead of
+being shown as zeros. Generic
+HDF5 files surface a \fBhierarchy\fR tab listing every group / dataset
+with path / kind / shape / dtype, plus one tab per 1-D or 2-D dataset
+(capped at 32 datasets / 32 columns).
 .IP \(bu 2
 \fB.ods\fR \(en OpenDocument Spreadsheet. Each sheet becomes a TUI
 tab. Hand-rolled parser: minizip inflates \fBcontent.xml\fR from the
