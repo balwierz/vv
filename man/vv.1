@@ -197,7 +197,12 @@ one format per directory. Files beginning with \fB.\fR or \fB_\fR (Spark's
 an all-integer key is an \fBint64\fR column (so it filters numerically), any
 other stays a string. Every file must share one schema (same column names and
 types). Streaming and forward-only, so a dataset larger than memory still
-previews; \fB-r\fR is not supported on a directory.
+previews; \fB-r\fR is not supported on a directory. A 10x Genomics /
+STARsolo matrix directory (\fBmatrix.mtx\fR, \fBbarcodes.tsv\fR and
+\fBfeatures.tsv\fR or \fBgenes.tsv\fR, each optionally \fB.gz\fR) is not a
+dataset: it opens as \fBmatrix\fR, \fBfeatures\fR and \fBbarcodes\fR tabs, the
+matrix entries labelled with \fBfeature_id\fR, \fBfeature_name\fR,
+\fBfeature_type\fR and \fBbarcode\fR columns.
 .PP
 Unknown extensions are sniffed by magic bytes and delimiter heuristics.
 .PP

@@ -6050,6 +6050,13 @@ public:
     }
 
     // Apply ENCODE peak-family naming on top of the vanilla BED schema.
+    // The MatrixMarket size line (rows, cols); false for any other kind.
+    bool mtx_shape(int64_t* rows, int64_t* cols) const {
+        if (kind_ != DelimKind::Mtx) return false;
+        *rows = mtx_rows_; *cols = mtx_cols_;
+        return true;
+    }
+
     // Name the columns of a 10x Genomics sidecar file read headerless (see
     // tenx_sidecar_kind): f0, f1, … become barcode / id, name, feature_type,
     // … ; any extra columns keep their f<i> names. Rewrites schema_ in place.
@@ -15885,6 +15892,174 @@ public:
     }
 };
 
+static int tenx_sidecar_kind(const std::string& path);
+
+// The files of a 10x Genomics / STARsolo matrix directory, found by basename in
+// `dir` itself (not recursively): matrix.mtx, barcodes.tsv and features.tsv
+// (Cell Ranger v3+) or genes.tsv (v2), each optionally .gz / .zst. False unless
+// the matrix, the barcodes and one feature file are all present.
+struct TenxDirFiles { std::string matrix, barcodes, features; bool v2 = false; };
+static bool find_tenx_dir(const std::string& dir, TenxDirFiles* f) {
+    std::error_code ec;
+    std::string genes;
+    for (const auto& e : std::filesystem::directory_iterator(dir, ec)) {
+        if (!e.is_regular_file(ec)) continue;
+        std::string p = e.path().string();
+        std::string b = e.path().filename().string();
+        for (char& c : b) c = (char)std::tolower((unsigned char)c);
+        if (b == "matrix.mtx" || b == "matrix.mtx.gz" || b == "matrix.mtx.zst" ||
+            b == "matrix.mtx.zstd") { f->matrix = p; continue; }
+        switch (tenx_sidecar_kind(p)) {
+            case 1: f->barcodes = p; break;
+            case 2: f->features = p; break;
+            case 3: genes = p;       break;
+            default: break;
+        }
+    }
+    if (f->features.empty() && !genes.empty()) { f->features = genes; f->v2 = true; }
+    return !f->matrix.empty() && !f->barcodes.empty() && !f->features.empty();
+}
+
+// A 10x Genomics / STARsolo matrix directory opened as one source. The first
+// tab streams matrix.mtx's stored entries (row, col, value — 0-based) with the
+// feature and barcode of each entry appended as label columns (feature_id,
+// feature_name[, feature_type], barcode); features and barcodes are sibling
+// tabs. The sidecars are read in full once — they label the entries and are
+// small next to the matrix. Cell Ranger writes features × barcodes; a matrix
+// written the other way round (barcodes × features) is recognised by its
+// shape. A shape that matches neither is an error rather than wrong labels.
+class TenxDirSource : public TabularSource {
+    std::unique_ptr<TabularSource>             inner_;
+    std::shared_ptr<arrow::Schema>             schema_;
+    int                                        n_inner_ = 0;
+    bool                                       rows_are_features_ = true;
+    std::shared_ptr<arrow::Table>              features_, barcodes_;
+    std::vector<std::shared_ptr<arrow::StringArray>> feat_labels_;  // id, name[, type]
+    std::shared_ptr<arrow::StringArray>        barcode_label_;
+    TenxDirFiles                               files_;
+    std::string                                note_;
+
+    // A sidecar as a sibling tab.
+    class Sidecar : public MemoryTableSource {
+        std::string label_;
+    public:
+        Sidecar(std::shared_ptr<arrow::Table> t, const std::string& path,
+                std::string label, std::string footer)
+            : MemoryTableSource(std::move(t), path, std::move(footer)),
+              label_(std::move(label)) {}
+        std::string tab_label() const override { return label_; }
+    };
+
+    static std::string load_table(const std::string& path, const Config& cfg,
+                                  std::shared_ptr<arrow::Table>* out);
+
+    // A label column as one StringArray (non-string columns rendered as text).
+    static std::shared_ptr<arrow::StringArray>
+    as_strings(const std::shared_ptr<arrow::ChunkedArray>& c) {
+        arrow::StringBuilder b;
+        for (const auto& ch : c->chunks()) {
+            if (ch->type_id() == arrow::Type::STRING) {
+                const auto& s = static_cast<const arrow::StringArray&>(*ch);
+                for (int64_t i = 0; i < s.length(); ++i) {
+                    if (s.IsNull(i)) (void)b.AppendNull(); else (void)b.Append(s.GetView(i));
+                }
+            } else {
+                for (int64_t i = 0; i < ch->length(); ++i) {
+                    if (ch->IsNull(i)) (void)b.AppendNull(); else (void)b.Append(cell_to_string(*ch, i));
+                }
+            }
+        }
+        std::shared_ptr<arrow::Array> a;
+        (void)b.Finish(&a);
+        return std::static_pointer_cast<arrow::StringArray>(a);
+    }
+
+    // Look `lab` up at each (0-based, already range-checked) index in `idx`.
+    static std::shared_ptr<arrow::ChunkedArray>
+    gather(const arrow::StringArray& lab, const arrow::ChunkedArray& idx) {
+        arrow::ArrayVector out;
+        for (const auto& ch : idx.chunks()) {
+            const auto& ix = static_cast<const arrow::Int64Array&>(*ch);
+            arrow::StringBuilder b;
+            for (int64_t i = 0; i < ix.length(); ++i) {
+                int64_t v = ix.Value(i);
+                if (ix.IsNull(i) || v < 0 || v >= lab.length() || lab.IsNull(v))
+                    (void)b.AppendNull();
+                else
+                    (void)b.Append(lab.GetView(v));
+            }
+            std::shared_ptr<arrow::Array> a;
+            (void)b.Finish(&a);
+            out.push_back(a);
+        }
+        return std::make_shared<arrow::ChunkedArray>(out, arrow::utf8());
+    }
+
+public:
+    static std::string open(const TenxDirFiles& files, const Config& cfg,
+                            std::unique_ptr<TabularSource>* out);
+
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    std::string tab_label() const override { return "matrix"; }
+
+    arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
+                             std::shared_ptr<arrow::Table>* out) override {
+        const int n_feat = (int)feat_labels_.size();
+        std::vector<int> inner_req;
+        bool want_labels = false;
+        for (int c : col_indices) {
+            if (c < n_inner_) inner_req.push_back(c); else want_labels = true;
+        }
+        if (want_labels)
+            for (int rc : {0, 1})
+                if (std::find(inner_req.begin(), inner_req.end(), rc) == inner_req.end())
+                    inner_req.push_back(rc);
+        std::shared_ptr<arrow::Table> in_tbl;
+        ARROW_RETURN_NOT_OK(inner_->read_chunk(i, inner_req, &in_tbl));
+        if (!in_tbl) { *out = nullptr; return arrow::Status::OK(); }
+        auto pos_of = [&](int c) {
+            for (size_t k = 0; k < inner_req.size(); ++k) if (inner_req[k] == c) return (int)k;
+            return -1;
+        };
+        const int feat_axis = rows_are_features_ ? 0 : 1;
+        arrow::FieldVector fields;
+        std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
+        for (int c : col_indices) {
+            fields.push_back(schema_->field(c));
+            if (c < n_inner_) { cols.push_back(in_tbl->column(pos_of(c))); continue; }
+            int k = c - n_inner_;
+            if (k < n_feat)
+                cols.push_back(gather(*feat_labels_[(size_t)k], *in_tbl->column(pos_of(feat_axis))));
+            else
+                cols.push_back(gather(*barcode_label_, *in_tbl->column(pos_of(1 - feat_axis))));
+        }
+        *out = arrow::Table::Make(arrow::schema(fields), cols, in_tbl->num_rows());
+        return arrow::Status::OK();
+    }
+
+    int64_t total_rows()      const override { return inner_->total_rows(); }
+    int     num_chunks()      const override { return inner_->num_chunks(); }
+    ChunkMeta chunk_meta(int i) const override { return inner_->chunk_meta(i); }
+    void    ensure(int i)           override { inner_->ensure(i); }
+    void    set_retain_all(bool b)  override { inner_->set_retain_all(b); }
+    bool    evicted_any()     const override { return inner_->evicted_any(); }
+    arrow::Status read_status() const override { return inner_->read_status(); }
+    const std::string& path() const override { return inner_->path(); }
+    std::string footer() const override { return inner_->footer() + "  |  " + note_; }
+
+    std::vector<std::unique_ptr<TabularSource>> expand_tabs() const override {
+        std::vector<std::unique_ptr<TabularSource>> out;
+        out.push_back(std::make_unique<Sidecar>(
+            features_, files_.features, files_.v2 ? "genes" : "features",
+            "10x Genomics " + std::string(files_.v2 ? "genes" : "features") + ": " +
+                std::to_string(features_->num_rows()) + " rows"));
+        out.push_back(std::make_unique<Sidecar>(
+            barcodes_, files_.barcodes, "barcodes",
+            "10x Genomics barcodes: " + std::to_string(barcodes_->num_rows()) + " rows"));
+        return out;
+    }
+};
+
 // Which 10x Genomics matrix-directory sidecar `path` is, by basename (any
 // directory; optional .gz / .zst / .zstd): 1 = barcodes.tsv, 2 = features.tsv
 // (Cell Ranger v3+: id, name, feature_type[, chrom, start, end]), 3 = genes.tsv
@@ -15900,6 +16075,86 @@ static int tenx_sidecar_kind(const std::string& path) {
     if (b == "features.tsv") return 2;
     if (b == "genes.tsv")    return 3;
     return 0;
+}
+
+std::string TenxDirSource::load_table(const std::string& path, const Config& cfg,
+                                      std::shared_ptr<arrow::Table>* out) {
+    std::unique_ptr<TabularSource> src;
+    std::string e = open_source_dispatch(path, cfg, &src);
+    if (!e.empty()) return e;
+    src->set_retain_all(true);
+    std::vector<int> all((size_t)src->schema()->num_fields());
+    std::iota(all.begin(), all.end(), 0);
+    std::vector<std::shared_ptr<arrow::Table>> parts;
+    for (int c = 0;; ++c) {
+        src->ensure(c);
+        if (c >= src->num_chunks()) break;
+        std::shared_ptr<arrow::Table> t;
+        arrow::Status st = src->read_chunk(c, all, &t);
+        if (!st.ok()) return "'" + path + "': " + st.ToString();
+        if (t && t->num_rows() > 0) parts.push_back(std::move(t));
+    }
+    if (!src->read_status().ok()) return "'" + path + "': " + src->read_status().ToString();
+    if (parts.empty()) return "'" + path + "' is empty";
+    auto cat = arrow::ConcatenateTables(parts);
+    if (!cat.ok()) return "'" + path + "': " + cat.status().ToString();
+    auto comb = (*cat)->CombineChunks();
+    if (!comb.ok()) return "'" + path + "': " + comb.status().ToString();
+    *out = *comb;
+    return "";
+}
+
+std::string TenxDirSource::open(const TenxDirFiles& files, const Config& cfg,
+                                std::unique_ptr<TabularSource>* out) {
+    // Sidecars and matrix are read with the defaults that make them parse:
+    // header detection on (the sidecars are recognised by name), no input
+    // delimiter override, no region.
+    Config sub = cfg;
+    sub.header = HeaderMode::Auto;
+    sub.in_delimiter = 0;
+    sub.region.clear();
+    auto self = std::unique_ptr<TenxDirSource>(new TenxDirSource());
+    self->files_ = files;
+    std::string e = load_table(files.features, sub, &self->features_);
+    if (e.empty()) e = load_table(files.barcodes, sub, &self->barcodes_);
+    if (!e.empty()) return e;
+    e = open_source_dispatch(files.matrix, sub, &self->inner_);
+    if (!e.empty()) return e;
+
+    int64_t mr = 0, mc = 0;
+    auto* d = dynamic_cast<DelimitedSource*>(self->inner_.get());
+    if (!d || !d->mtx_shape(&mr, &mc))
+        return "'" + files.matrix + "' did not open as a MatrixMarket matrix";
+    const int64_t nf = self->features_->num_rows(), nb = self->barcodes_->num_rows();
+    if (mr == nf && mc == nb)      self->rows_are_features_ = true;
+    else if (mr == nb && mc == nf) self->rows_are_features_ = false;
+    else
+        return "10x matrix directory does not fit together: " +
+               std::filesystem::path(files.matrix).filename().string() + " is " +
+               std::to_string(mr) + " x " + std::to_string(mc) + ", but " +
+               std::filesystem::path(files.features).filename().string() + " has " +
+               std::to_string(nf) + " rows and " +
+               std::filesystem::path(files.barcodes).filename().string() + " has " +
+               std::to_string(nb);
+
+    static const char* kFeatNames[] = {"feature_id", "feature_name", "feature_type"};
+    const int nfc = std::min(self->features_->num_columns(), files.v2 ? 2 : 3);
+    for (int k = 0; k < nfc; ++k)
+        self->feat_labels_.push_back(as_strings(self->features_->column(k)));
+    self->barcode_label_ = as_strings(self->barcodes_->column(0));
+
+    auto in_schema = self->inner_->schema();
+    self->n_inner_ = in_schema->num_fields();
+    arrow::FieldVector fields = in_schema->fields();
+    for (int k = 0; k < nfc; ++k) fields.push_back(arrow::field(kFeatNames[k], arrow::utf8()));
+    fields.push_back(arrow::field("barcode", arrow::utf8()));
+    self->schema_ = arrow::schema(fields);
+    self->note_ = std::string("10x matrix, ") +
+                  (self->rows_are_features_ ? "features × barcodes" : "barcodes × features") +
+                  "; labels from " + std::filesystem::path(files.features).filename().string() +
+                  " and " + std::filesystem::path(files.barcodes).filename().string();
+    *out = std::move(self);
+    return "";
 }
 
 static std::string open_source_dispatch(const std::string& path, const Config& cfg,
@@ -15939,6 +16194,11 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
             if (!cfg.region.empty())
                 return "'" + path + "': -r/--region is not supported on a "
                        "directory dataset";
+            // A 10x Genomics / STARsolo matrix directory is one matrix with
+            // its labels, not a dataset of like-shaped files.
+            TenxDirFiles tenx;
+            if (find_tenx_dir(path, &tenx))
+                return TenxDirSource::open(tenx, cfg, out);
             std::unique_ptr<DatasetSource> src;
             std::string err = DatasetSource::open(path, cfg, &src);
             if (!err.empty()) return err;

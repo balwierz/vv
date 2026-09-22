@@ -184,6 +184,41 @@ assert_contains  "mtx_index_message"       "$("$VV" --tsv "$MTX/idx.mtx" 2>&1)" 
 assert_exit_code "mtx_entry_count_mismatch" 1 "$VV" --tsv "$MTX/nnz.mtx"
 assert_exit_code "mtx_region_refused"      1 "$VV" -r chr1:1-2 "$MTX/int.mtx"
 rm -rf "$MTX"
+
+# A 10x Genomics / STARsolo matrix directory (matrix.mtx + barcodes.tsv +
+# features.tsv or v2 genes.tsv) opens as matrix / features / barcodes tabs, the
+# matrix entries labelled with their feature and barcode, instead of failing
+# dataset concatenation on mismatched schemas. The matrix is features ×
+# barcodes: here 3 genes × 2 cells, entries (gene, cell, n) = (1,1,5) (3,1,2)
+# (2,2,7).
+TX="$TMP/tenxdir"; mkdir -p "$TX/v3" "$TX/v2" "$TX/tr" "$TX/bad"
+printf '%%%%MatrixMarket matrix coordinate integer general\n3 2 3\n1 1 5\n3 1 2\n2 2 7\n' | gzip > "$TX/v3/matrix.mtx.gz"
+printf 'CELL_A\nCELL_B\n' | gzip > "$TX/v3/barcodes.tsv.gz"
+printf 'G1\tGeneOne\tGene Expression\nG2\tGeneTwo\tGene Expression\nG3\tGeneThree\tAntibody Capture\n' | gzip > "$TX/v3/features.tsv.gz"
+assert_eq_file_inline "tenx_dir_tabs" "$("$VV" --list-tabs "$TX/v3" | tr '\n' ' ')" "matrix features barcodes "
+assert_eq_file_inline "tenx_dir_labelled_entries" "$("$VV" --tsv "$TX/v3")" \
+    "$(printf 'row\tcol\tvalue\tfeature_id\tfeature_name\tfeature_type\tbarcode\n0\t0\t5\tG1\tGeneOne\tGene Expression\tCELL_A\n2\t0\t2\tG3\tGeneThree\tAntibody Capture\tCELL_A\n1\t1\t7\tG2\tGeneTwo\tGene Expression\tCELL_B')"
+assert_eq_file_inline "tenx_dir_filter_by_label" \
+    "$("$VV" --tsv --no-header --select value --filter 'barcode == "CELL_A" AND feature_type == "Gene Expression"' "$TX/v3")" "5"
+assert_contains "tenx_dir_footer" "$("$VV" -n 1 --color=never "$TX/v3")" "10x matrix, features × barcodes"
+assert_eq_file_inline "tenx_dir_barcodes_tab" "$("$VV" --tab barcodes --count "$TX/v3")" "2"
+# v2 (genes.tsv, plain text) and a barcodes × features matrix label the same.
+printf '%%%%MatrixMarket matrix coordinate integer general\n3 2 3\n1 1 5\n3 1 2\n2 2 7\n' > "$TX/v2/matrix.mtx"
+printf 'CELL_A\nCELL_B\n' > "$TX/v2/barcodes.tsv"
+printf 'G1\tGeneOne\nG2\tGeneTwo\nG3\tGeneThree\n' > "$TX/v2/genes.tsv"
+assert_eq_file_inline "tenx_dir_v2_genes" \
+    "$("$VV" --tsv --no-header --select feature_name,barcode,value "$TX/v2" | tr '\n' ' ')" \
+    "$(printf 'GeneOne\tCELL_A\t5 GeneThree\tCELL_A\t2 GeneTwo\tCELL_B\t7 ')"
+printf '%%%%MatrixMarket matrix coordinate integer general\n2 3 3\n1 1 5\n1 3 2\n2 2 7\n' > "$TX/tr/matrix.mtx"
+cp "$TX/v2/barcodes.tsv" "$TX/tr/"; cp "$TX/v2/genes.tsv" "$TX/tr/"
+assert_eq_file_inline "tenx_dir_transposed" \
+    "$("$VV" --tsv --no-header --select feature_name,barcode,value "$TX/tr" | tr '\n' ' ')" \
+    "$(printf 'GeneOne\tCELL_A\t5 GeneThree\tCELL_A\t2 GeneTwo\tCELL_B\t7 ')"
+# A shape that fits neither orientation is refused, not mislabelled.
+cp "$TX/v2/matrix.mtx" "$TX/bad/"; cp "$TX/v2/genes.tsv" "$TX/bad/"; printf 'CELL_A\n' > "$TX/bad/barcodes.tsv"
+assert_exit_code "tenx_dir_shape_mismatch" 1 "$VV" --count "$TX/bad"
+assert_contains "tenx_dir_shape_message" "$("$VV" --count "$TX/bad" 2>&1)" "does not fit together"
+rm -rf "$TX"
 # Missing values in string columns: R and pandas write a missing value as an
 # *unquoted* null token and quote a genuine string. vv honours that — an
 # unquoted NA/NULL/empty in a string column becomes null, while a quoted "NA"

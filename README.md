@@ -244,7 +244,7 @@ against it in CI, so this list cannot drift from the code.
 | Apache Parquet    | `.parquet`                                                 |
 | Arrow IPC, Feather| `.arrow`, `.feather`                                       |
 | LociSSD           | `.lociss` (sorted-interval Parquet; `MaxEndSoFar` auto-hidden) |
-| Sparse matrices   | `.mtx` / `.mtx.gz` (MatrixMarket coordinate, e.g. Cell Ranger / STARsolo `matrix.mtx.gz`), listed as `row`, `col`, `value` with 0-based indices; shape and entry count in the footer. |
+| Sparse matrices   | `.mtx` / `.mtx.gz` (MatrixMarket coordinate, e.g. Cell Ranger / STARsolo `matrix.mtx.gz`), listed as `row`, `col`, `value` with 0-based indices; shape and entry count in the footer. A 10x Genomics / STARsolo matrix directory (`matrix.mtx` + `barcodes.tsv` + `features.tsv`/`genes.tsv`) opens as `matrix` / `features` / `barcodes` tabs, the entries labelled with feature and barcode. |
 | Sequence alignments | `.bam`, `.cram`, `.sam`, `.paf` / `.paf.gz` (minimap2). `--tags NM,AS,RG` adds a typed column per optional aux tag (filterable). |
 | Variant calls     | `.vcf`, `.vcf.gz`, `.bcf` (binary VCF via htslib)          |
 | Genome annotation | `.gff`, `.gff3`, `.gtf` (plus `.gz` / `.zst`)              |
