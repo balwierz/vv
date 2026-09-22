@@ -1,9 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- shared-mime-info definitions for the binary table formats vv opens that
-     the freedesktop database does not already register. Additive: types
-     already known system-wide (sqlite, xlsx, ods) are referenced by the
-     .desktop file but not redefined here. Installed to
-     $DATADIR/mime/packages; run update-mime-database afterwards. -->
+<!-- shared-mime-info definitions for the table and genomic formats vv opens
+     that the freedesktop database does not already register. Additive: types
+     already known system-wide (sqlite, xlsx, ods, csv, tsv) are referenced by
+     the .desktop file but not redefined here. Installed to
+     $DATADIR/mime/packages; run update-mime-database afterwards.
+
+     Globs are case-insensitive, so *.bigwig also matches .bigWig and
+     *.narrowpeak matches .narrowPeak. Two genomic globs collide with older
+     freedesktop types: *.vcf (text/vcard) and *.sam (application/x-amipro).
+     For a glob tie the content magic decides, so a VCF is recognised by its
+     mandatory ##fileformat=VCF line and a SAM file by its header, while vCards
+     (BEGIN:VCARD) keep resolving to text/vcard.
+
+     bgzip / gzip-compressed text formats get their own types, following
+     application/x-compressed-tar: the longer glob (*.vcf.gz) beats *.gz, and
+     sub-class-of application/gzip keeps archive tools in the "Open with"
+     list. BAM and BCF are BGZF files, so they sub-class application/gzip too. -->
 <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
   <mime-type type="application/vnd.apache.parquet">
     <comment>Apache Parquet data</comment>
@@ -38,6 +50,235 @@
     <comment>NumPy compressed array archive</comment>
     <glob pattern="*.npz"/>
     <sub-class-of type="application/zip"/>
+    <icon name="vv"/>
+  </mime-type>
+
+  <!-- ── Alignments ─────────────────────────────────────────────────────── -->
+  <mime-type type="application/x-bam">
+    <comment>BAM sequence alignment</comment>
+    <sub-class-of type="application/gzip"/>
+    <glob pattern="*.bam"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="application/x-cram">
+    <comment>CRAM sequence alignment</comment>
+    <glob pattern="*.cram"/>
+    <magic priority="60">
+      <match type="string" value="CRAM" offset="0"/>
+    </magic>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="text/x-sam">
+    <comment>SAM sequence alignment</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.sam"/>
+    <magic priority="60">
+      <match type="string" value="@HD\t" offset="0"/>
+      <match type="string" value="@SQ\t" offset="0"/>
+      <match type="string" value="@RG\t" offset="0"/>
+      <match type="string" value="@PG\t" offset="0"/>
+      <match type="string" value="@CO\t" offset="0"/>
+    </magic>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="text/x-paf">
+    <comment>PAF pairwise alignment</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.paf"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="application/x-compressed-paf">
+    <comment>PAF pairwise alignment (compressed)</comment>
+    <sub-class-of type="application/gzip"/>
+    <glob pattern="*.paf.gz"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="text/x-mpileup">
+    <comment>samtools pileup</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.pileup"/>
+    <glob pattern="*.mpileup"/>
+    <glob pattern="*.pile"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="application/x-compressed-mpileup">
+    <comment>samtools pileup (compressed)</comment>
+    <sub-class-of type="application/gzip"/>
+    <glob pattern="*.pileup.gz"/>
+    <glob pattern="*.mpileup.gz"/>
+    <glob pattern="*.pile.gz"/>
+    <icon name="vv"/>
+  </mime-type>
+
+  <!-- ── Variants ───────────────────────────────────────────────────────── -->
+  <mime-type type="text/x-vcf">
+    <comment>Variant Call Format</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.vcf"/>
+    <magic priority="60">
+      <match type="string" value="##fileformat=VCF" offset="0"/>
+    </magic>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="application/x-compressed-vcf">
+    <comment>Variant Call Format (compressed)</comment>
+    <sub-class-of type="application/gzip"/>
+    <glob pattern="*.vcf.gz"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="application/x-bcf">
+    <comment>Binary Variant Call Format</comment>
+    <sub-class-of type="application/gzip"/>
+    <glob pattern="*.bcf"/>
+    <icon name="vv"/>
+  </mime-type>
+
+  <!-- ── Intervals and annotation ───────────────────────────────────────── -->
+  <mime-type type="text/x-bed">
+    <comment>BED genomic intervals</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.bed"/>
+    <glob pattern="*.narrowpeak"/>
+    <glob pattern="*.broadpeak"/>
+    <glob pattern="*.gappedpeak"/>
+    <glob pattern="*.tagalign"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="application/x-compressed-bed">
+    <comment>BED genomic intervals (compressed)</comment>
+    <sub-class-of type="application/gzip"/>
+    <glob pattern="*.bed.gz"/>
+    <glob pattern="*.narrowpeak.gz"/>
+    <glob pattern="*.broadpeak.gz"/>
+    <glob pattern="*.gappedpeak.gz"/>
+    <glob pattern="*.tagalign.gz"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="text/x-bedgraph">
+    <comment>bedGraph signal track</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.bedgraph"/>
+    <glob pattern="*.bg"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="application/x-compressed-bedgraph">
+    <comment>bedGraph signal track (compressed)</comment>
+    <sub-class-of type="application/gzip"/>
+    <glob pattern="*.bedgraph.gz"/>
+    <glob pattern="*.bg.gz"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="text/x-gff">
+    <comment>GFF genome annotation</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.gff"/>
+    <glob pattern="*.gff3"/>
+    <magic priority="60">
+      <match type="string" value="##gff-version" offset="0"/>
+    </magic>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="application/x-compressed-gff">
+    <comment>GFF genome annotation (compressed)</comment>
+    <sub-class-of type="application/gzip"/>
+    <glob pattern="*.gff.gz"/>
+    <glob pattern="*.gff3.gz"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="text/x-gtf">
+    <comment>GTF genome annotation</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.gtf"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="application/x-compressed-gtf">
+    <comment>GTF genome annotation (compressed)</comment>
+    <sub-class-of type="application/gzip"/>
+    <glob pattern="*.gtf.gz"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="application/x-bigwig">
+    <comment>bigWig signal track</comment>
+    <glob pattern="*.bw"/>
+    <glob pattern="*.bigwig"/>
+    <magic priority="60">
+      <match type="string" value="\x26\xfc\x8f\x88" offset="0"/>
+      <match type="string" value="\x88\x8f\xfc\x26" offset="0"/>
+    </magic>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="application/x-bigbed">
+    <comment>bigBed genomic intervals</comment>
+    <glob pattern="*.bb"/>
+    <glob pattern="*.bigbed"/>
+    <magic priority="60">
+      <match type="string" value="\xeb\xf2\x89\x87" offset="0"/>
+      <match type="string" value="\x87\x89\xf2\xeb" offset="0"/>
+    </magic>
+    <icon name="vv"/>
+  </mime-type>
+
+  <!-- ── Sequences ──────────────────────────────────────────────────────── -->
+  <mime-type type="text/x-fasta">
+    <comment>FASTA sequences</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.fa"/>
+    <glob pattern="*.fasta"/>
+    <glob pattern="*.fna"/>
+    <glob pattern="*.faa"/>
+    <glob pattern="*.ffn"/>
+    <glob pattern="*.frn"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="application/x-compressed-fasta">
+    <comment>FASTA sequences (compressed)</comment>
+    <sub-class-of type="application/gzip"/>
+    <glob pattern="*.fa.gz"/>
+    <glob pattern="*.fasta.gz"/>
+    <glob pattern="*.fna.gz"/>
+    <glob pattern="*.faa.gz"/>
+    <glob pattern="*.ffn.gz"/>
+    <glob pattern="*.frn.gz"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="text/x-fastq">
+    <comment>FASTQ sequencing reads</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.fq"/>
+    <glob pattern="*.fastq"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="application/x-compressed-fastq">
+    <comment>FASTQ sequencing reads (compressed)</comment>
+    <sub-class-of type="application/gzip"/>
+    <glob pattern="*.fq.gz"/>
+    <glob pattern="*.fastq.gz"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="application/x-2bit">
+    <comment>UCSC 2bit sequences</comment>
+    <glob pattern="*.2bit"/>
+    <magic priority="60">
+      <match type="string" value="\x43\x27\x41\x1a" offset="0"/>
+      <match type="string" value="\x1a\x41\x27\x43" offset="0"/>
+    </magic>
+    <icon name="vv"/>
+  </mime-type>
+
+  <!-- ── Single-cell matrices ───────────────────────────────────────────── -->
+  <mime-type type="text/x-matrix-market">
+    <comment>Matrix Market sparse matrix</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.mtx"/>
+    <magic priority="60">
+      <match type="string" value="%%MatrixMarket" offset="0"/>
+    </magic>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="application/x-compressed-matrix-market">
+    <comment>Matrix Market sparse matrix (compressed)</comment>
+    <sub-class-of type="application/gzip"/>
+    <glob pattern="*.mtx.gz"/>
     <icon name="vv"/>
   </mime-type>
 </mime-info>

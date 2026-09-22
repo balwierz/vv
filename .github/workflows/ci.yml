@@ -110,7 +110,8 @@ jobs:
         run: |
           # Qt6 + ECM are all the Qt GUI (vvg) and the KF6-free plugin cores
           # (vvkde_core / vvkdetest) need, and are always in the 24.04 archive.
-          sudo apt-get install -y -V qt6-base-dev extra-cmake-modules
+          # shared-mime-info: update-mime-database for gui/kde/check-mime.sh.
+          sudo apt-get install -y -V qt6-base-dev extra-cmake-modules shared-mime-info
           # The KF6 dev packages (KIO / CoreAddons / FileMetaData) are NOT in
           # the Ubuntu 24.04 archive — they first appear in 24.10. CMake builds
           # the Dolphin thumbnailer / KFileMetaData .so plugins only when KF6
@@ -150,6 +151,15 @@ jobs:
           # static destruction of Arrow's thread / memory pools.
           awk 'BEGIN{OFS="\t"; print "##gff-version 3"; for(i=0;i<1000000;i++) print "chr1","src","gene",i*10+1,i*10+500,".","+",".","ID=g"i";Name=gene"i";biotype=protein_coding"}' > "$RUNNER_TEMP/big.gff3"
           for i in 1 2 3; do timeout 60 ./build-gui/gui/kde/vvkdetest "$RUNNER_TEMP/big.gff3"; done
+          # MIME registration: vv-formats.xml resolves genomic files (incl. the
+          # *.vcf / text/vcard and *.sam / AmiPro glob collisions), and the
+          # .desktop / thumbnailer / extractor MIME lists agree.
+          gui/kde/check-mime.sh ./build-gui/gui/kde/vvkdetest
+          # Every genomic type the thumbnailer / extractor accept renders and probes.
+          for f in bam bcf vcf vcf.gz bed bed.gz narrowPeak bedGraph gtf paf \
+                   paf.gz mpileup mpileup.gz fq fq.gz bw bb 2bit; do
+            ./build-gui/gui/kde/vvkdetest "tests/data/tiny.$f" >/dev/null
+          done
           # Model path end-to-end through libvvcore. Column sort must actually
           # reorder the rows (not just toggle the header indicator): tiny.parquet
           # column 0 is chr1/chr2, so the ascending and descending first rows

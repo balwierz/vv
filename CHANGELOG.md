@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Genomic file types for KDE / freedesktop desktops.** Without them,
+  `.vcf` files opened as vCards, `.bam` / `.bcf` / `.vcf.gz` in an archive
+  tool, `.sam` as a Lotus AmiPro document, and `.bed`, `.gtf`, `.fa`,
+  `.fastq` and the rest had no type at all. `vv-formats.xml` now defines 27
+  types: BAM, CRAM, SAM, VCF, BCF, BED (with the ENCODE peak formats),
+  bedGraph, GFF, GTF, bigWig, bigBed, FASTA, FASTQ, 2bit, PAF, pileup and
+  Matrix Market, plus a compressed type for each `.gz` text format. VCF and
+  SAM are identified by content where their extensions collide, so real
+  vCards stay `text/vcard`. `vvg` is registered for all of them. The Dolphin
+  thumbnailer and the Information-Panel extractor handle all except CRAM and
+  FASTA.
 - **Loom files open as labelled tabs.** vv listed `.loom` as supported but
   showed it as a generic HDF5 file: the expression matrix and layers had no
   tab and each cell / gene attribute was its own one-column tab. Loom files

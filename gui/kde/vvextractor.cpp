@@ -29,6 +29,33 @@ public:
             QStringLiteral("application/vnd.sqlite3"),
             QStringLiteral("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
             QStringLiteral("application/vnd.oasis.opendocument.spreadsheet"),
+            // Genomic types (vv-formats.xml). Not CRAM (decoding may fetch the
+            // reference over the network) or FASTA (a first record can be a
+            // whole chromosome); the thumbnailer skips the same types.
+            QStringLiteral("application/x-bam"),
+            QStringLiteral("text/x-sam"),
+            QStringLiteral("text/x-paf"),
+            QStringLiteral("application/x-compressed-paf"),
+            QStringLiteral("text/x-mpileup"),
+            QStringLiteral("application/x-compressed-mpileup"),
+            QStringLiteral("text/x-vcf"),
+            QStringLiteral("application/x-compressed-vcf"),
+            QStringLiteral("application/x-bcf"),
+            QStringLiteral("text/x-bed"),
+            QStringLiteral("application/x-compressed-bed"),
+            QStringLiteral("text/x-bedgraph"),
+            QStringLiteral("application/x-compressed-bedgraph"),
+            QStringLiteral("text/x-gff"),
+            QStringLiteral("application/x-compressed-gff"),
+            QStringLiteral("text/x-gtf"),
+            QStringLiteral("application/x-compressed-gtf"),
+            QStringLiteral("application/x-bigwig"),
+            QStringLiteral("application/x-bigbed"),
+            QStringLiteral("text/x-fastq"),
+            QStringLiteral("application/x-compressed-fastq"),
+            QStringLiteral("application/x-2bit"),
+            QStringLiteral("text/x-matrix-market"),
+            QStringLiteral("application/x-compressed-matrix-market"),
         };
     }
 
