@@ -18,7 +18,7 @@ if(NOT DEFINED KDE_INSTALL_PLUGINDIR)
 endif()
 
 # ── KF6-free cores (testable, reused by both plugins) ────────────────────────
-add_library(vvkde_core STATIC thumbrender.cpp metaprobe.cpp)
+add_library(vvkde_core STATIC thumbrender.cpp metaprobe.cpp pluginbudget.cpp)
 set_target_properties(vvkde_core PROPERTIES POSITION_INDEPENDENT_CODE ON AUTOMOC OFF)
 target_include_directories(vvkde_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(vvkde_core PUBLIC vvcore Qt6::Gui)

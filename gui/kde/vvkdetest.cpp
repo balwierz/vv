@@ -11,6 +11,7 @@
 //   --mime-types NAME...: exit 1 unless every NAME is a known MIME type.
 #include <QGuiApplication>
 #include <QImage>
+#include <QElapsedTimer>
 #include <QMimeDatabase>
 #include <cstdio>
 
@@ -50,14 +51,17 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    QElapsedTimer clock;
+    clock.start();
     QImage img = vv_render_thumbnail(path, QSize(320, 240));
-    std::printf("thumbnail: %s (%dx%d)\n",
-                img.isNull() ? "NULL" : "ok", img.width(), img.height());
+    std::printf("thumbnail: %s (%dx%d) %lld ms\n",
+                img.isNull() ? "NULL" : "ok", img.width(), img.height(),
+                (long long)clock.restart());
     if (!out.isEmpty() && !img.isNull()) img.save(out);
 
     VvMeta m = vv_probe_meta(path);
-    std::printf("meta: ok=%d rows=%lld cols=%d\n  schema=%s\n  footer=%s\n  generator=%s\n",
-                m.ok, (long long)m.rows, m.cols,
+    std::printf("meta: ok=%d rows=%lld cols=%d %lld ms\n  schema=%s\n  footer=%s\n  generator=%s\n",
+                m.ok, (long long)m.rows, m.cols, (long long)clock.elapsed(),
                 m.schema.toStdString().c_str(),
                 m.footer.toStdString().c_str(),
                 m.generator.toStdString().c_str());
