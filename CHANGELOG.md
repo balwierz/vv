@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **10x Genomics / STARsolo matrix directories open as labelled tabs.** A
+  directory holding `matrix.mtx(.gz)`, `barcodes.tsv(.gz)` and `features.tsv(.gz)`
+  (or v2 `genes.tsv`) — `filtered_feature_bc_matrix/`, `Solo.out/Gene/filtered/`
+  — failed as a dataset (the three files' schemas differ). It now opens as
+  `matrix`, `features` and `barcodes` tabs: the matrix entries stream with
+  `feature_id`, `feature_name`, `feature_type` and `barcode` columns appended,
+  so `--filter 'feature_name == "CD74"'` or `barcode == "…"` work. A matrix
+  written barcodes × features is recognised by its shape; a matrix whose shape
+  fits neither sidecar is an error rather than mislabelled. vvg's
+  *Open Folder…* gets the same tabs.
+
+### Added
 - **MatrixMarket `.mtx` / `.mtx.gz` files open as tables.** The sparse matrix
   format written by Cell Ranger and STARsolo (`matrix.mtx.gz`),
   `scipy.io.mmwrite` and R `Matrix::writeMM` was shown as plain text. A
