@@ -4372,6 +4372,51 @@ static GenomicCoordCols detect_coord_columns(const arrow::Schema& schema,
     return r;
 }
 
+// Arrow's streaming CSV / JSON readers read ahead on its IO thread pool and parse
+// on the CPU pool. A source that stops reading a large file part-way (a preview,
+// a thumbnail) and is destroyed leaves that pipeline running; at process exit
+// it then races the destruction of Arrow's thread pools and memory pool — a
+// hang or crash in exit(). So each reader is fed through a ReadGate: closing a
+// source flips the gate, which makes further reads return end-of-file, and then
+// drains the reader so the blocks already read ahead finish. Afterwards nothing
+// belonging to that source is left running.
+struct ReadGate { std::atomic<bool> stop{false}; };
+
+class GatedInputStream : public arrow::io::InputStream {
+    std::shared_ptr<arrow::io::InputStream> inner_;
+    std::shared_ptr<ReadGate>               gate_;
+public:
+    GatedInputStream(std::shared_ptr<arrow::io::InputStream> inner,
+                     std::shared_ptr<ReadGate> gate)
+        : inner_(std::move(inner)), gate_(std::move(gate)) {}
+    arrow::Status Close() override { return inner_->Close(); }
+    bool closed() const override { return inner_->closed(); }
+    arrow::Result<int64_t> Tell() const override { return inner_->Tell(); }
+    arrow::Result<int64_t> Read(int64_t n, void* buf) override {
+        if (gate_->stop.load()) return 0;
+        return inner_->Read(n, buf);
+    }
+    arrow::Result<std::shared_ptr<arrow::Buffer>> Read(int64_t n) override {
+        if (gate_->stop.load()) return std::make_shared<arrow::Buffer>(nullptr, 0);
+        return inner_->Read(n);
+    }
+};
+
+// Stop `gate` and drain `reader` (csv or json StreamingReader) until it reports
+// the end of its (now truncated) input or an error, then release it. Bounded:
+// only the blocks already read ahead remain to be parsed.
+template <class Reader>
+static void close_stream_reader(std::shared_ptr<Reader>& reader,
+                                const std::shared_ptr<ReadGate>& gate) {
+    if (!reader) return;
+    if (gate) gate->stop.store(true);
+    for (int i = 0; i < 1024; ++i) {
+        std::shared_ptr<arrow::RecordBatch> b;
+        if (!reader->ReadNext(&b).ok() || !b) break;
+    }
+    reader.reset();
+}
+
 // Wraps an InputStream, truncating each line to at most max_fields tab-separated fields.
 // Used for SAM (variable optional alignment tags) and GFF3 (occasional extra columns).
 class TruncateFieldsStream : public arrow::io::InputStream {
@@ -5770,6 +5815,7 @@ class DelimitedSource : public TabularSource {
     }
 
     mutable std::shared_ptr<arrow::csv::StreamingReader> reader_;
+    std::shared_ptr<ReadGate>             gate_;   // stops reader_'s read-ahead on close
 
     arrow::Status advance() const {
         if (all_read_) return arrow::Status::OK();
@@ -5866,7 +5912,12 @@ class DelimitedSource : public TabularSource {
                 const std::vector<std::string>& force_string_cols = {},
                 bool strings_nullable = false,
                 const std::vector<std::pair<std::string, std::shared_ptr<arrow::DataType>>>&
-                    column_types = {}) {
+                    column_types = {},
+                std::shared_ptr<ReadGate>* gate_out = nullptr) {
+        if (gate_out) {
+            *gate_out = std::make_shared<ReadGate>();
+            input = std::make_shared<GatedInputStream>(std::move(input), *gate_out);
+        }
         auto ropts = arrow::csv::ReadOptions::Defaults();
         // 16 MiB blocks + per-block parsing on the CPU pool. The default
         // (~1 MiB) is too small for multi-GB files; raising it amortises
@@ -6048,6 +6099,9 @@ public:
         return continue_open(std::move(self), std::move(input),
                              std::move(raw), is_gz, kind, region, out);
     }
+
+    // Stop and drain the reader's read-ahead (see ReadGate).
+    ~DelimitedSource() override { close_stream_reader(reader_, gate_); }
 
     // Apply ENCODE peak-family naming on top of the vanilla BED schema.
     // The MatrixMarket size line (rows, cols); false for any other kind.
@@ -6304,7 +6358,7 @@ private:
             if (self->mtx_field_ == "real")    col_types.push_back({"value", arrow::float64()});
         }
         auto r = make_reader(input, self->delimiter_, autogen, col_names,
-                             force_string, strings_nullable, col_types);
+                             force_string, strings_nullable, col_types, &self->gate_);
         if (!r.ok()) {
             // A region query whose window overlaps no records leaves the tabix
             // stream empty, and Arrow's CSV reader rejects empty input with
@@ -6386,10 +6440,13 @@ private:
                     // headerless "007" column loses its zeros (inferred as int).
                     std::vector<std::string> force2 = detect_leading_zero_columns(
                         path, is_gz, self->delimiter_, {}, /*headerless=*/true);
+                    std::shared_ptr<ReadGate> gate2;
                     auto r2 = make_reader(input2, self->delimiter_,
                                           /*autogen=*/true, {}, force2,
-                                          /*strings_nullable=*/true);
+                                          /*strings_nullable=*/true, {}, &gate2);
                     if (r2.ok()) {
+                        close_stream_reader(self->reader_, self->gate_);
+                        self->gate_ = std::move(gate2);
                         self->reader_ = r2.ValueOrDie();
                         self->schema_ = self->reader_->schema();
                         if (self->header_mode_ == HeaderMode::Auto)
@@ -8674,6 +8731,7 @@ class JsonSource : public TabularSource {
     arrow::Compression::type               comp_ = arrow::Compression::UNCOMPRESSED;
 
     mutable std::shared_ptr<arrow::json::StreamingReader> reader_;
+    std::shared_ptr<ReadGate>             gate_ = std::make_shared<ReadGate>();
     mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
     mutable std::vector<int64_t>           batch_first_row_;
     mutable std::vector<int64_t>           batch_num_rows_;
@@ -8702,6 +8760,8 @@ class JsonSource : public TabularSource {
     }
 
 public:
+    ~JsonSource() override { close_stream_reader(reader_, gate_); }
+
     static std::string open(const std::string& path, const Config& /*cfg*/,
                             std::unique_ptr<JsonSource>* out) {
         auto self = std::make_unique<JsonSource>();
@@ -8721,7 +8781,8 @@ public:
             input = ci.ValueOrDie();
         }
         std::shared_ptr<arrow::io::InputStream> unwrapped =
-            std::make_shared<JsonArrayUnwrapStream>(std::move(input));
+            std::make_shared<GatedInputStream>(
+                std::make_shared<JsonArrayUnwrapStream>(std::move(input)), self->gate_);
 
         auto ropts = arrow::json::ReadOptions::Defaults();
         ropts.block_size  = 16 << 20;
@@ -17107,6 +17168,16 @@ static std::string build_contigs(const Config& cfg,
 // future dispatch branch can forget to.
 std::string open_source(const std::string& path, const Config& cfg,
                          std::unique_ptr<TabularSource>* out) {
+    // Arrow's CPU and IO thread pools are function-local statics created on
+    // first use, so they are destroyed at exit in reverse order of creation.
+    // The streaming CSV reader creates the IO pool first; the CPU pool would
+    // then be destroyed first, and a read-ahead still in flight at exit (a
+    // preview that stopped reading a large file) hands its result to a dead
+    // executor — a crash or a hang in exit(). Creating the CPU pool before any
+    // reader exists makes it outlive the IO pool. The CLI already does this by
+    // sizing the pool in main(); the GUI and the KDE plugins reach here first.
+    static const int cpu_pool_first = arrow::GetCpuThreadPoolCapacity();
+    (void)cpu_pool_first;
     // --contigs replaces the data view with the header's reference-sequence
     // table (BAM/CRAM/SAM, VCF/BCF), reading no records.
     if (cfg.contigs) return build_contigs(cfg, out);

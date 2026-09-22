@@ -17,6 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `genes` attribute tables. Integer layers stay integer-typed.
 
 ### Fixed
+- **vvg, the Dolphin thumbnailer and the metadata extractor no longer hang or
+  crash on exit after previewing a large text file.** Opening a delimited or
+  JSON file (SAM, GFF, PAF, BED, VCF, TSV, NDJSON, …) larger than a few CSV
+  blocks and reading only its first rows left Arrow's read-ahead running. At
+  process exit, Arrow's CPU thread pool was destroyed before the IO pool and
+  the default memory pool was destroyed while blocks were still being parsed,
+  so the process hung in `exit()` or crashed (for example, an 82 MB GFF hung or
+  segfaulted 20 of 20 runs). The CPU pool is now created before any reader, and
+  closing a source stops its input stream and drains the reader. The `vv` CLI
+  was not affected.
 - **Wide 2-D datasets in generic HDF5 files get a tab.** A 2-D dataset with
   more than 32 columns was left out of the tab list without a note, so a
   Loom file's expression matrix, for example, could not be viewed at all. Every

@@ -144,6 +144,12 @@ jobs:
           # Crash-safety: a malformed file must be handled gracefully (empty
           # result, exit 0) rather than aborting the Dolphin/Baloo worker.
           ./build-gui/gui/kde/vvkdetest --allow-empty tests/data/tiny.malformed.npz
+          # Exit after a partial read: the payload reads the first rows of an
+          # 82 MB GFF and returns while the CSV reader still has blocks in
+          # flight. The process must exit cleanly rather than hang or crash in
+          # static destruction of Arrow's thread / memory pools.
+          awk 'BEGIN{OFS="\t"; print "##gff-version 3"; for(i=0;i<1000000;i++) print "chr1","src","gene",i*10+1,i*10+500,".","+",".","ID=g"i";Name=gene"i";biotype=protein_coding"}' > "$RUNNER_TEMP/big.gff3"
+          for i in 1 2 3; do timeout 60 ./build-gui/gui/kde/vvkdetest "$RUNNER_TEMP/big.gff3"; done
           # Model path end-to-end through libvvcore. Column sort must actually
           # reorder the rows (not just toggle the header indicator): tiny.parquet
           # column 0 is chr1/chr2, so the ascending and descending first rows
