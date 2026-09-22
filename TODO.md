@@ -125,6 +125,9 @@ user-facing summary).
   follow-up dedicated source class on top of the existing HDF5
   plumbing.
 - Galaxy `.dat` / Galaxy archive — niche but visible.
+- `.bgz` suffix (gnomAD ships `*.vcf.bgz`) — not recognised as a
+  compressed VCF; `vv x.vcf.bgz` falls back to plain text. Once supported,
+  add `*.vcf.bgz` to `application/x-compressed-vcf` in `gui/kde/vv-formats.xml`.
 
 ### Done
 - `vv x.bam --pileup -f ref.fa` — reference-aware pileup (shipped 1.15.0,
@@ -286,30 +289,30 @@ analysis ranking. One PR per box; no stacked PRs.
 
 ### Priority 1 — single-cell formats
 
-- [ ] **10x sidecars read headerless** (S) — `barcodes.tsv(.gz)`,
+- [x] **10x sidecars read headerless** (S) — #196 — `barcodes.tsv(.gz)`,
   `features.tsv(.gz)`, `genes.tsv(.gz)` have no header, but all-string data
   keeps row 0 as the header, so the first barcode becomes the column name and
   that cell disappears. Match these basenames and read them headerless with fixed names
   (`barcode`; `id`, `name`, `feature_type`).
-- [ ] **MatrixMarket `.mtx` reader** (S–M) — `vv matrix.mtx.gz` is shown as
+- [x] **MatrixMarket `.mtx` reader** (S–M) — #197 — `vv matrix.mtx.gz` is shown as
   plain text today. Read the `%%MatrixMarket matrix coordinate
   integer|real|pattern general` body as a streaming `row, col, value` table
   (0-based), dims / nnz / field / symmetry in the footer; gz/zst via
   DelimitedSource. Refuse `array`, `complex` and non-`general` symmetry with a
   clear message rather than mis-reading them.
-- [ ] **10x matrix directory** (M) — a directory holding `matrix.mtx(.gz)` +
+- [x] **10x matrix directory** (M) — #198 — a directory holding `matrix.mtx(.gz)` +
   `barcodes` + `features`/`genes` opens as tabs (matrix labelled by barcode and
   feature, barcodes, features) instead of failing dataset concatenation with a
   schema mismatch. Detect the triplet before DatasetSource; other TSV
   directories must behave as before.
-- [ ] **Cell Ranger v3 HDF5** (M) — `/matrix/{barcodes,data,indices,indptr,
+- [x] **Cell Ranger v3 HDF5** (M) — #199 — `/matrix/{barcodes,data,indices,indptr,
   shape,features/*}` today shows as a pile of one-column dataset tabs. Add
   summary (root attrs, shape, nnz, counts per feature_type), a labelled
   cells × features preview (10x stores features × cells CSC — state the
   orientation), barcodes and features tabs. Generalise `read_sparse_preview` to
   take paths + orientation so the AnnData and 10x paths share it. v2 per-genome
   layout: fall through to the generic view with a note, not mislabelled.
-- [ ] **Loom** (S + M) — first relax `scan_generic`'s `dims[1] <= 32` rule so
+- [x] **Loom** (S + M) — #200 — first relax `scan_generic`'s `dims[1] <= 32` rule so
   wide 2-D datasets get a capped preview instead of disappearing (S). Then
   `scan_loom`: summary, cells (`/col_attrs`), genes (`/row_attrs`), `matrix`
   and `layers[...]` as cells × genes labelled by CellID / Gene (with fallbacks
@@ -317,7 +320,7 @@ analysis ranking. One PR per box; no stacked PRs.
 
 ### Priority 2 — KDE / Dolphin file types
 
-- [ ] **Register genomic MIME types** (S) — `.vcf` opens as a vCard,
+- [x] **Register genomic MIME types** (S) — `feat/kde-genomic-mime` — `.vcf` opens as a vCard,
   `.bam` in Ark, `.bed` as plain text. Add `vv-formats.xml` entries (VCF
   told apart from text/vcard by `##fileformat=VCF` magic; CRAM by `CRAM` magic;
   `.vcf.gz` / `.bed.gz` longer globs), the `.desktop` MimeType line, and the
@@ -328,6 +331,11 @@ analysis ranking. One PR per box; no stacked PRs.
   path. Needs the thumbnailer's time / size budget (Audit item
   `vvthumbnail.cpp:15`) first so BAM/FASTQ can't stall the preview worker; CRAM
   must never fetch a reference.
+  Budget data point: the thumbnail + metadata payload on a single-record
+  244 MB FASTA takes 10.9 s and 9 GB RSS (the CLI `-n 3` takes 0.9 s / 0.7 GB),
+  most likely from converting and eliding the full sequence cell as a QString.
+  Cap cell text before `QFontMetrics::elidedText` in `thumbrender.cpp`; FASTA
+  and CRAM stay out of the plugin MIME lists until then.
 
 ### Priority 3 — vvg export
 

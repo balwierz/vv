@@ -423,7 +423,14 @@ bar states plainly that this is a preview of the first 1000 of 4823 rows.*
 On **KDE Plasma**, installing the `vv-gui` package also wires vv into
 Dolphin: double-click (or *Open With*) launches `vvg`, the icon view
 shows **table-snapshot thumbnails**, and the **Information Panel** shows
-row/column counts, schema, codec, and generator. Build it yourself with
+row/column counts, schema, codec, and generator. The package registers
+file types for the genomic formats (BAM, CRAM, SAM, VCF/BCF, BED and the
+ENCODE peak formats, bedGraph, GFF/GTF, bigWig/bigBed, FASTA/FASTQ, 2bit,
+PAF, pileup, Matrix Market, and their `.gz` forms), so `.vcf` opens in vv
+rather than as a vCard and `.bam` rather than in an archive tool. CRAM and
+FASTA files open in `vvg` but get no thumbnail or Information-Panel entry:
+decoding a CRAM may fetch its reference over the network, and a FASTA
+file's first record can be a whole chromosome. Build it yourself with
 `-DVV_BUILD_GUI=ON` — `vvg` itself needs only Qt6; the KF6 `kio` /
 `kcoreaddons` / `kfilemetadata` modules are optional and, when present,
 add the Dolphin thumbnailer and Information-Panel plugins.

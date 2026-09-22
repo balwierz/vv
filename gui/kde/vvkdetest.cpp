@@ -5,8 +5,13 @@
 //   --allow-empty:  exit 0 as long as both cores RETURN (a null thumbnail / not-ok
 //                   meta is fine) — i.e. a crash-safety check that a malformed file
 //                   is handled gracefully instead of aborting the worker.
+//   --mime FILE...:  print "<file>\t<MIME type>" as QMimeDatabase resolves each
+//                    file (name + content), the lookup Dolphin / KIO use to pick
+//                    the thumbnailer, extractor and "Open with" applications.
+//   --mime-types NAME...: exit 1 unless every NAME is a known MIME type.
 #include <QGuiApplication>
 #include <QImage>
+#include <QMimeDatabase>
 #include <cstdio>
 
 #include "metaprobe.h"
@@ -14,6 +19,24 @@
 
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
+    if (argc >= 2 && (QByteArray(argv[1]) == "--mime" || QByteArray(argv[1]) == "--mime-types")) {
+        const bool byName = QByteArray(argv[1]) == "--mime-types";
+        QMimeDatabase db;
+        int bad = 0;
+        for (int i = 2; i < argc; ++i) {
+            const QString a = QString::fromLocal8Bit(argv[i]);
+            if (byName) {
+                if (!db.mimeTypeForName(a).isValid()) {
+                    std::printf("unknown MIME type: %s\n", argv[i]);
+                    ++bad;
+                }
+            } else {
+                std::printf("%s\t%s\n", argv[i],
+                            db.mimeTypeForFile(a).name().toUtf8().constData());
+            }
+        }
+        return bad ? 1 : 0;
+    }
     bool allowEmpty = false;
     QString path, out;
     for (int i = 1; i < argc; ++i) {
