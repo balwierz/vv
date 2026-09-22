@@ -59,6 +59,7 @@ would need horizontal scrolling.
 | Apache Parquet    | `.parquet`                                                  |
 | Arrow IPC, Feather| `.arrow`, `.feather`                                        |
 | **LociSSD**       | `.lociss` (auto-detected via the `lociSSD_manifest` footer; `MaxEndSoFar` hidden from views) |
+| Sparse matrices   | `.mtx`, `.mtx.gz` — MatrixMarket coordinate files (Cell Ranger / STARsolo `matrix.mtx.gz`, `scipy.io.mmwrite`, R `Matrix::writeMM`). One row per stored entry: `row`, `col`, `value` (no `value` for a `pattern` matrix), indices 0-based like `scipy.io.mmread`. The footer shows the shape and entry count. Only `coordinate` + `general` symmetry is read; symmetric (one triangle stored) and dense `array` files are refused, and an out-of-range index or an entry count that disagrees with the size line is an error. |
 | Sequence alignments | `.bam`, `.cram`, `.sam`, `.paf` / `.paf.gz`. `--tags` surfaces optional aux tags as typed columns (see [`--tags`](#--tags-list-bam--cram--sam-aux-tags)). |
 | Variant calls     | `.vcf`, `.vcf.gz`, `.bcf` (with `.csi` / `.tbi` for range queries) |
 | Genome annotation | `.gff`, `.gff3`, `.gtf` (plus `.gz`)                        |
@@ -280,7 +281,7 @@ other escape sequence (cursor moves, OSC window-title sets) is dropped whole
 Compression is detected by magic rather than by suffix, so `syslog.1.gz` works
 as well as `notes.txt.gz`, and a zstandard-wrapped `dump.zst` works as well as
 `notes.txt.zst`. The delimited-text readers (VCF, GFF/GTF, BED and the peak
-family, TSV/CSV, mpileup, PAF) accept the same `.zst` wrapper. FASTA/FASTQ
+family, TSV/CSV, mpileup, PAF, MatrixMarket) accept the same `.zst` wrapper. FASTA/FASTQ
 compression stays gzip-only (bgzf), and range queries (`-r`) still require a
 bgzipped + tabix-indexed file — so those need gzip, not zstandard.
 
