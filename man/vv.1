@@ -80,7 +80,12 @@ encodings are read. Datasets compressed with gzip or with LZF (h5py's
 supported. A dataset that cannot be decoded (e.g. its compression filter
 is unavailable) is reported with the dataset and filter named, in place
 of the tab \(em a scripted export of that tab exits 1 \(em instead of
-being shown as zeros. Generic
+being shown as zeros.
+10x Genomics Cell Ranger files (\fBfiltered_feature_bc_matrix.h5\fR, v3's
+\fB/matrix\fR or v2's per-genome groups) open as \fBsummary\fR (shape, stored
+entries, counts per \fBfeature_type\fR, chemistry), a \fBmatrix\fR preview shown
+cells \(mu features and labelled by barcode and feature name, \fBfeatures\fR
+and \fBbarcodes\fR tabs. Generic
 HDF5 files surface a \fBhierarchy\fR tab listing every group / dataset
 with path / kind / shape / dtype, plus one tab per 1-D or 2-D dataset
 (capped at 32 datasets / 32 columns).

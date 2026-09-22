@@ -1285,6 +1285,47 @@ else:
         obsm.attrs["encoding-version"] = "0.1.0"
         _sparse(obsm, "X_sp", np.array([[1, 0], [0, 2], [3, 0]], dtype="f4"), "csr")
 
+    # tiny.10x.h5 / tiny.10x_v2.h5: Cell Ranger HDF5 layouts, written the way
+    # Cell Ranger writes them (fixed-length byte strings, int32 counts, the
+    # matrix stored features × barcodes as CSC). 4 features × 3 barcodes;
+    # cells × features: c0 = (f0 1, f2 3), c1 = (f1 2), c2 = (f0 4, f3 5).
+    # Names repeat (GeneA twice) to exercise unique headers; f3 is an antibody.
+    def _tenx(path, v3):
+        cells = [[(0, 1), (2, 3)], [(1, 2)], [(0, 4), (3, 5)]]
+        indptr, indices, data = [0], [], []
+        for c in cells:
+            for f, v in c:
+                indices.append(f); data.append(v)
+            indptr.append(len(indices))
+        ids = np.array([b"ENSG0A", b"ENSG0B", b"ENSG0C", b"CD3_TotalSeqB"])
+        names = np.array([b"GeneA", b"GeneA", b"GeneC", b"CD3"])
+        types = np.array([b"Gene Expression"] * 3 + [b"Antibody Capture"], dtype="S16")
+        with h5py.File(path, "w") as f:
+            g = f.create_group("matrix" if v3 else "GRCh38")
+            if v3:
+                f.attrs["filetype"] = "matrix"
+                f.attrs["chemistry_description"] = "Single Cell 3' v3"
+            g.create_dataset("barcodes", data=np.array([b"AAAC-1", b"AAAG-1", b"AAAT-1"]),
+                             compression="gzip")
+            g.create_dataset("data", data=np.array(data, dtype="i4"), compression="gzip")
+            g.create_dataset("indices", data=np.array(indices, dtype="i8"), compression="gzip")
+            g.create_dataset("indptr", data=np.array(indptr, dtype="i8"), compression="gzip")
+            g.create_dataset("shape", data=np.array([4, 3], dtype="i4"))
+            if v3:
+                fe = g.create_group("features")
+                fe.create_dataset("id", data=ids)
+                fe.create_dataset("name", data=names)
+                fe.create_dataset("feature_type", data=types)
+                fe.create_dataset("genome", data=np.array([b"GRCh38"] * 4))
+                fe.create_dataset("_all_tag_keys", data=np.array([b"genome"]))
+            else:
+                g.create_dataset("genes", data=ids)
+                g.create_dataset("gene_names", data=names)
+    for _name, _v3 in (("tiny.10x.h5", True), ("tiny.10x_v2.h5", False)):
+        if (HERE / _name).exists():
+            (HERE / _name).unlink()
+        _tenx(HERE / _name, _v3)
+
 try:
     import anndata as ad                                     # type: ignore
     import numpy as np                                       # type: ignore

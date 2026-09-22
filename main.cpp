@@ -10831,6 +10831,14 @@ read_1d_dataset_table(hid_t dataset, int64_t row_cap = -1,
                       int64_t* full_rows = nullptr);
 static arrow::Result<std::shared_ptr<arrow::Table>>
 read_sparse_preview(hid_t group, int64_t row_cap);
+static arrow::Result<std::shared_ptr<arrow::Table>>
+read_sparse_preview_as(hid_t group, int64_t n_rows, int64_t n_cols, bool is_csr,
+                       int64_t row_cap);
+struct OpenSpec;
+static std::string build_tenx_table(hid_t file_id, const OpenSpec& spec,
+                                    int64_t row_cap,
+                                    std::shared_ptr<arrow::Table>* out,
+                                    std::string* footer);
 // Label an AnnData X preview with its obs (row) / var (column) identifiers.
 // Which AnnData axes a dense 2-D tab is indexed by. X and layers/* are
 // (n_obs x n_var), but obsm/* is (n_obs x d) and varm/* is (n_var x d), where
@@ -10846,6 +10854,7 @@ static void apply_anndata_matrix_labels(hid_t file_id, AnnMatrixAxes axes,
 // this tab should view, and how to render it.
 struct OpenSpec {
     enum class Kind { Hierarchy, DataFrame, Matrix2D, Sparse, Dataset1D,
+                      TenxMatrix, TenxFeatures, TenxBarcodes,
                       Dataset2D, Summary, Uns };
     Kind        kind;
     std::string h5_path;     // group / dataset path inside the file
@@ -11086,6 +11095,10 @@ class Hdf5Source : public WorkbookSource {
                     *footer += "  |  " + spec.footer_hint;
                 return "";
             }
+            case OpenSpec::Kind::TenxMatrix:
+            case OpenSpec::Kind::TenxFeatures:
+            case OpenSpec::Kind::TenxBarcodes:
+                return build_tenx_table(file_id, spec, df_row_cap, out, footer);
             case OpenSpec::Kind::Sparse: {
                 hid_t g = H5Gopen2(file_id, spec.h5_path.c_str(), H5P_DEFAULT);
                 if (g < 0) return "Cannot open sparse group " + spec.h5_path;
@@ -11713,8 +11726,16 @@ read_sparse_preview(hid_t group, int64_t row_cap) {
     bool is_csc = (enc == "csc_matrix");
     if (!is_csr && !is_csc)
         return arrow::Status::Invalid("not a CSR/CSC sparse group");
+    return read_sparse_preview_as(group, shape[0], shape[1], is_csr, row_cap);
+}
 
-    int64_t n_rows = shape[0], n_cols = shape[1];
+// The same densifying reader for a group holding indptr / indices / data whose
+// shape and orientation come from elsewhere (10x Genomics HDF5 keeps the shape
+// in a dataset and has no encoding-type attribute). `n_rows` × `n_cols` is the
+// logical shape; `is_csr` says indptr runs over rows.
+static arrow::Result<std::shared_ptr<arrow::Table>>
+read_sparse_preview_as(hid_t group, int64_t n_rows, int64_t n_cols, bool is_csr,
+                       int64_t row_cap) {
     if (n_rows < 0) n_rows = 0;          // shape attribute is untrusted
     if (n_cols < 0) n_cols = 0;
     if (row_cap > 0 && row_cap < n_rows) n_rows = row_cap;
@@ -12116,6 +12137,228 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
     return specs;
 }
 
+// ── 10x Genomics Cell Ranger HDF5 (filtered_feature_bc_matrix.h5) ─────────
+//
+// Cell Ranger v3+ keeps one matrix under /matrix: barcodes, data, indices,
+// indptr, shape and a features/ group (id, name, feature_type, genome, …).
+// v2 keeps one such group per reference genome (/GRCh38, /mm10, …) with
+// genes / gene_names instead of features/. Either way the matrix is stored
+// features × barcodes as CSC — indptr runs over barcodes — which is exactly a
+// cells × features CSR, the orientation AnnData and scanpy present, so that
+// is how it is shown. OpenSpec::h5_path is the matrix group; key is "v3"/"v2".
+
+static bool tenx_matrix_group(hid_t parent, const char* name, bool v3) {
+    if (!link_exists(parent, name) || !is_group(parent, name)) return false;
+    hid_t g = H5Gopen2(parent, name, H5P_DEFAULT);
+    if (g < 0) return false;
+    bool ok = true;
+    for (const char* c : {"barcodes", "data", "indices", "indptr", "shape"})
+        ok = ok && link_exists(g, c);
+    ok = ok && (v3 ? (link_exists(g, "features") && is_group(g, "features"))
+                   : (link_exists(g, "genes") && link_exists(g, "gene_names")));
+    H5Gclose(g);
+    return ok;
+}
+
+// Matrix groups of a 10x file: {"/matrix"} for v3, one per genome for v2.
+// Empty when the file is not a 10x matrix file.
+static std::vector<std::string> tenx_matrix_groups(hid_t fid, bool* v3) {
+    std::vector<std::string> out;
+    if (tenx_matrix_group(fid, "matrix", true)) { *v3 = true; return {"/matrix"}; }
+    *v3 = false;
+    for (const auto& c : list_children(fid))
+        if (tenx_matrix_group(fid, c.c_str(), false)) out.push_back("/" + c);
+    return out;
+}
+
+// Up to `cap` (< 0: all) values of a 1-D dataset as text; empty on any error.
+static std::vector<std::string> h5_strings(hid_t loc, const std::string& path,
+                                           int64_t cap, int64_t* full = nullptr) {
+    std::vector<std::string> out;
+    hid_t d = H5Dopen2(loc, path.c_str(), H5P_DEFAULT);
+    if (d < 0) return out;
+    auto t = read_1d_dataset_table(d, cap, full);
+    H5Dclose(d);
+    if (!t.ok() || (*t)->num_columns() == 0) return out;
+    auto col = (*t)->column(0);
+    for (const auto& ch : col->chunks())
+        for (int64_t i = 0; i < ch->length(); ++i) out.push_back(cell_to_string(*ch, i));
+    return out;
+}
+
+// [n_features, n_barcodes] from the matrix group's `shape` dataset.
+static bool tenx_shape(hid_t g, int64_t* nf, int64_t* nb) {
+    hid_t d = H5Dopen2(g, "shape", H5P_DEFAULT);
+    if (d < 0) return false;
+    auto t = read_1d_dataset_table(d, 2);
+    H5Dclose(d);
+    if (!t.ok() || (*t)->num_rows() < 2 ||
+        (*t)->column(0)->type()->id() != arrow::Type::INT64) return false;
+    auto a = std::static_pointer_cast<arrow::Int64Array>((*t)->column(0)->chunk(0));
+    *nf = a->Value(0); *nb = a->Value(1);
+    return *nf >= 0 && *nb >= 0;
+}
+
+static std::vector<OpenSpec> scan_10x(hid_t fid, const std::vector<std::string>& groups,
+                                      bool v3) {
+    std::vector<OpenSpec> specs;
+    std::string summary;
+    auto add = [&](const std::string& k, const std::string& v) {
+        summary += k; summary += '\t'; summary += v; summary += '\n';
+    };
+    add("format", std::string("10x Genomics Cell Ranger HDF5 (") +
+                  (v3 ? "v3+" : "v2, one matrix per genome") + ")");
+    for (const char* a : {"filetype", "version", "software_version",
+                          "chemistry_description"}) {
+        std::string v = read_string_attr(fid, a);
+        if (!v.empty()) add(a, v);
+    }
+    for (const auto& gp : groups) {
+        hid_t g = H5Gopen2(fid, gp.c_str(), H5P_DEFAULT);
+        if (g < 0) continue;
+        std::string tag = v3 ? "" : "[" + gp.substr(1) + "]";
+        int64_t nf = 0, nb = 0;
+        tenx_shape(g, &nf, &nb);
+        hid_t dd = H5Dopen2(g, "data", H5P_DEFAULT);
+        int64_t nnz = dd >= 0 ? h5_len_1d(dd) : -1;
+        if (dd >= 0) H5Dclose(dd);
+        add("matrix" + tag, std::to_string(nb) + " barcodes \xc3\x97 " + std::to_string(nf) +
+                            " features, " + std::to_string(nnz) + " stored entries");
+        if (v3) {
+            std::map<std::string, int64_t> by_type;
+            for (const auto& t : h5_strings(g, "features/feature_type", -1)) ++by_type[t];
+            for (const auto& kv : by_type)
+                add("feature_type: " + kv.first, std::to_string(kv.second));
+        }
+        H5Gclose(g);
+        specs.push_back({OpenSpec::Kind::TenxMatrix, gp, "matrix" + tag + " (preview)", "",
+                         AnnMatrixAxes::ObsByVar, v3 ? "v3" : "v2"});
+        specs.push_back({OpenSpec::Kind::TenxFeatures, gp, v3 ? "features" : "genes" + tag, "",
+                         AnnMatrixAxes::ObsByVar, v3 ? "v3" : "v2"});
+        specs.push_back({OpenSpec::Kind::TenxBarcodes, gp, "barcodes" + tag, "",
+                         AnnMatrixAxes::ObsByVar, v3 ? "v3" : "v2"});
+    }
+    specs.insert(specs.begin(), OpenSpec{OpenSpec::Kind::Summary, "/", "summary", summary});
+    return specs;
+}
+
+static std::string build_tenx_table(hid_t file_id, const OpenSpec& spec, int64_t row_cap,
+                                    std::shared_ptr<arrow::Table>* out,
+                                    std::string* footer) {
+    const bool v3 = spec.key == "v3";
+    hid_t g = H5Gopen2(file_id, spec.h5_path.c_str(), H5P_DEFAULT);
+    if (g < 0) return "Cannot open group " + spec.h5_path;
+    const std::string ids_path   = v3 ? "features/id"   : "genes";
+    const std::string names_path = v3 ? "features/name" : "gene_names";
+    std::string err;
+
+    if (spec.kind == OpenSpec::Kind::TenxMatrix) {
+        int64_t nf = 0, nb = 0;
+        if (!tenx_shape(g, &nf, &nb)) { H5Gclose(g); return spec.h5_path + "/shape: unreadable"; }
+        auto r = read_sparse_preview_as(g, nb, nf, /*is_csr=*/true, 1000);
+        if (!r.ok()) { H5Gclose(g); return r.status().ToString(); }
+        auto t = *r;
+        const int64_t nr = t->num_rows(), nc = t->num_columns();
+        // Columns: feature names; a name that repeats among the shown columns
+        // gets its id appended so every header is unique.
+        auto ids = h5_strings(g, ids_path, nc);
+        auto names = h5_strings(g, names_path, nc);
+        std::map<std::string, int> seen;
+        for (const auto& n : names) ++seen[n];
+        std::vector<std::string> cols;
+        for (int64_t c = 0; c < nc; ++c) {
+            std::string n = c < (int64_t)names.size() ? names[(size_t)c] : "";
+            std::string id = c < (int64_t)ids.size() ? ids[(size_t)c] : "";
+            if (n.empty()) n = id.empty() ? t->field((int)c)->name() : id;
+            else if (seen[n] > 1 && !id.empty()) n += " (" + id + ")";
+            cols.push_back(n);
+        }
+        auto rn = t->RenameColumns(cols);
+        if (rn.ok()) t = *rn;
+        auto bcs = h5_strings(g, "barcodes", nr);
+        arrow::StringBuilder b;
+        for (int64_t i = 0; i < nr; ++i) {
+            if (i < (int64_t)bcs.size()) (void)b.Append(bcs[(size_t)i]); else (void)b.AppendNull();
+        }
+        std::shared_ptr<arrow::Array> a;
+        if (b.Finish(&a).ok()) {
+            auto ac = t->AddColumn(0, arrow::field("barcode", arrow::utf8()),
+                                   std::make_shared<arrow::ChunkedArray>(a));
+            if (ac.ok()) t = *ac;
+        }
+        *out = t;
+        *footer = "Format: 10x Genomics HDF5 matrix  |  preview: first " + std::to_string(nr) +
+                  " of " + std::to_string(nb) + " barcodes, first " + std::to_string(nc) +
+                  " of " + std::to_string(nf) + " features  |  shown cells \xc3\x97 features "
+                  "(stored features \xc3\x97 barcodes)";
+    } else if (spec.kind == OpenSpec::Kind::TenxFeatures) {
+        int64_t full = 0;
+        std::shared_ptr<arrow::Table> t;
+        if (v3) {
+            hid_t fg = H5Gopen2(g, "features", H5P_DEFAULT);
+            auto r = read_anndata_dataframe(fg, row_cap, &full);
+            H5Gclose(fg);
+            if (!r.ok()) err = r.status().ToString(); else t = *r;
+            if (t) {
+                // _all_tag_keys lists the names of the optional feature columns;
+                // it is not per-feature, so it is not a column. Put the
+                // documented columns first.
+                std::vector<int> order;
+                for (const char* want : {"id", "name", "feature_type", "genome"}) {
+                    int i = t->schema()->GetFieldIndex(want);
+                    if (i >= 0) order.push_back(i);
+                }
+                for (int i = 0; i < t->num_columns(); ++i) {
+                    const std::string& n = t->field(i)->name();
+                    if (n == "_all_tag_keys") continue;
+                    if (std::find(order.begin(), order.end(), i) == order.end()) order.push_back(i);
+                }
+                auto sel = t->SelectColumns(order);
+                if (sel.ok()) t = *sel;
+            }
+        } else {
+            int64_t full2 = 0;
+            auto ids = h5_strings(g, ids_path, row_cap, &full);
+            auto names = h5_strings(g, names_path, row_cap, &full2);
+            arrow::StringBuilder bi, bn;
+            for (size_t i = 0; i < ids.size(); ++i) {
+                (void)bi.Append(ids[i]);
+                if (i < names.size()) (void)bn.Append(names[i]); else (void)bn.AppendNull();
+            }
+            std::shared_ptr<arrow::Array> ai, an;
+            (void)bi.Finish(&ai); (void)bn.Finish(&an);
+            t = arrow::Table::Make(arrow::schema({arrow::field("id", arrow::utf8()),
+                                                  arrow::field("name", arrow::utf8())}),
+                                   {ai, an});
+        }
+        if (t) {
+            *out = t;
+            int64_t shown = t->num_rows();
+            *footer = "Format: 10x Genomics features";
+            *footer += shown < full ? "  |  preview: first " + std::to_string(shown) + " of " +
+                                      std::to_string(full) + " rows"
+                                    : "  |  Rows: " + std::to_string(shown);
+        }
+    } else {   // TenxBarcodes
+        hid_t d = H5Dopen2(g, "barcodes", H5P_DEFAULT);
+        int64_t full = 0;
+        auto r = read_1d_dataset_table(d, row_cap, &full);
+        if (d >= 0) H5Dclose(d);
+        if (!r.ok()) err = r.status().ToString();
+        else {
+            auto rn = (*r)->RenameColumns({"barcode"});
+            *out = rn.ok() ? *rn : *r;
+            int64_t shown = (*out)->num_rows();
+            *footer = "Format: 10x Genomics barcodes";
+            *footer += shown < full ? "  |  preview: first " + std::to_string(shown) + " of " +
+                                      std::to_string(full) + " rows"
+                                    : "  |  Rows: " + std::to_string(shown);
+        }
+    }
+    H5Gclose(g);
+    return err;
+}
+
 // ── Hdf5Source::open_first ──────────────────────────────────────────────────
 
 std::string Hdf5Source::open_first(const std::string& path,
@@ -12152,8 +12395,12 @@ std::string Hdf5Source::open_first(const std::string& path,
                ".write_h5ad('out.h5ad')\"`";
     }
 
+    bool tenx_v3 = false;
+    std::vector<std::string> tenx_groups;
+    if (!is_anndata) tenx_groups = tenx_matrix_groups(fid, &tenx_v3);
     std::vector<OpenSpec> specs = is_anndata ? scan_anndata(fid)
-                                                : scan_generic(fid);
+                                : !tenx_groups.empty() ? scan_10x(fid, tenx_groups, tenx_v3)
+                                : scan_generic(fid);
     if (specs.empty()) return "'" + path + "': no viewable HDF5 datasets";
 
     auto all = std::make_shared<std::vector<OpenSpec>>(specs);

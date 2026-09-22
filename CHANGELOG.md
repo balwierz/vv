@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Cell Ranger HDF5 (`filtered_feature_bc_matrix.h5`) opens as labelled
+  tabs.** vv showed these files as a generic hierarchy with one tab per raw
+  dataset (`/matrix/data`, `/matrix/indices`, …). v3 files (the `/matrix`
+  group) and v2 files (one group per genome) now open as `summary` (shape,
+  stored entries, counts per `feature_type`, chemistry), a `matrix` preview
+  shown cells × features and labelled by barcode and feature name (a repeated
+  name gets its id appended), `features` (`id`, `name`, `feature_type`,
+  `genome`, …) and `barcodes`.
+
+### Added
 - **10x Genomics / STARsolo matrix directories open as labelled tabs.** A
   directory holding `matrix.mtx(.gz)`, `barcodes.tsv(.gz)` and `features.tsv(.gz)`
   (or v2 `genes.tsv`) — `filtered_feature_bc_matrix/`, `Solo.out/Gene/filtered/`

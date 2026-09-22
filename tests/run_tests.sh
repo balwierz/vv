@@ -1765,6 +1765,35 @@ if [ -f "$DATA/tiny.badlzf.h5ad" ]; then
         "'/obs/n_counts': cannot read HDF5 dataset"
 fi
 
+# Cell Ranger HDF5 (filtered_feature_bc_matrix.h5): the features × barcodes CSC
+# matrix is shown cells × features, labelled by barcode and feature name (a
+# repeated name gets its id), with summary / features / barcodes tabs — instead
+# of one tab per raw dataset. tiny.10x.h5 is v3 (matrix/features/…); v2 keeps
+# one matrix group per genome. See generate.py for the values.
+if [ -f "$DATA/tiny.10x.h5" ]; then
+    TXH="$DATA/tiny.10x.h5"
+    assert_eq_file_inline "tenx_h5_tabs" "$("$VV" --list-tabs "$TXH" | tr '\n' '|')" \
+        "summary|matrix (preview)|features|barcodes|"
+    assert_eq_file_inline "tenx_h5_matrix" "$("$VV" --tab matrix --tsv "$TXH")" \
+        "$(printf 'barcode\tGeneA (ENSG0A)\tGeneA (ENSG0B)\tGeneC\tCD3\nAAAC-1\t1\t0\t3\t0\nAAAG-1\t0\t2\t0\t0\nAAAT-1\t4\t0\t0\t5')"
+    # _all_tag_keys (the list of optional column names) is not a feature column.
+    assert_eq_file_inline "tenx_h5_features_columns" \
+        "$("$VV" --tab features --list-columns "$TXH" | tr '\n' ' ')" "id name feature_type genome "
+    assert_eq_file_inline "tenx_h5_feature_type_filter" \
+        "$("$VV" --tab features --tsv --no-header --select name --filter 'feature_type == "Antibody Capture"' "$TXH")" "CD3"
+    assert_eq_file_inline "tenx_h5_barcodes" "$("$VV" --tab barcodes --tsv --no-header "$TXH" | tr '\n' ' ')" \
+        "AAAC-1 AAAG-1 AAAT-1 "
+    TXS=$("$VV" --tab summary --tsv "$TXH")
+    assert_contains "tenx_h5_summary_shape" "$TXS" "3 barcodes × 4 features, 5 stored entries"
+    assert_contains "tenx_h5_summary_types" "$TXS" "$(printf 'feature_type: Antibody Capture\t1')"
+fi
+if [ -f "$DATA/tiny.10x_v2.h5" ]; then
+    assert_eq_file_inline "tenx_h5_v2_tabs" "$("$VV" --list-tabs "$DATA/tiny.10x_v2.h5" | tr '\n' '|')" \
+        "summary|matrix[GRCh38] (preview)|genes[GRCh38]|barcodes[GRCh38]|"
+    assert_eq_file_inline "tenx_h5_v2_matrix_matches_v3" \
+        "$("$VV" --tab matrix --tsv "$DATA/tiny.10x_v2.h5")" "$("$VV" --tab matrix --tsv "$DATA/tiny.10x.h5")"
+fi
+
 # layers/obsm/varm entries stored as CSR/CSC groups (scanpy writes the layers of
 # a sparse X this way) were opened as dense datasets, so each such tab showed
 # only "Cannot open dataset /layers/<name>". tiny.sparselayer.h5ad: 3 x 4
