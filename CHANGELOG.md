@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **10x Genomics `barcodes.tsv`, `features.tsv` and `genes.tsv` keep their
+  first row.** These Cell Ranger / STARsolo sidecar files have no header row
+  and hold only text, so header detection kept row 0 as the header: the first
+  barcode or feature became the column name and dropped out of the data
+  (`--count` one short). Files with these basenames (plus `.gz` / `.zst`) are
+  now read headerless with named columns — `barcode`; `id`, `name`,
+  `feature_type` (plus `chrom`, `start`, `end` for multiome); `id`, `name` for
+  v2 `genes.tsv` — and the footer says so. `--header on` still overrides.
+
 ## [1.23.0] - 2026-09-21
 
 ### Added

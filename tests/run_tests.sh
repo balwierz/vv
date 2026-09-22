@@ -134,6 +134,26 @@ assert_eq_file_inline "header_force_on" \
 assert_eq_file_inline "header_force_off" \
     "$("$VV" --tsv --header off "$HYES" 2>&1 | head -n 1)" "$(printf 'f0\tf1\tf2')"
 rm -f "$HNONE" "$HYES" "$HSTR"
+
+# 10x Genomics matrix-directory sidecars have no header row and all-text data, so
+# header detection would keep row 0 as the header and the first barcode /
+# feature would vanish into a column name. They are matched by basename, read
+# headerless and named; --header on still overrides.
+TENX="$TMP/tenx"; mkdir -p "$TENX"
+printf 'AAACCTGAGAAACCAT-1\nAAACCTGAGAAACCGC-1\nAAACCTGAGAAACCTA-1\n' | gzip > "$TENX/barcodes.tsv.gz"
+printf 'ENSG0001\tGENE1\tGene Expression\nENSG0002\tGENE2\tGene Expression\n' > "$TENX/features.tsv"
+printf 'ENSG0001\tGENE1\nENSG0002\tGENE2\n' > "$TENX/genes.tsv"
+assert_eq_file_inline "tenx_barcodes_count"   "$("$VV" --count "$TENX/barcodes.tsv.gz")" "3"
+assert_eq_file_inline "tenx_barcodes_columns" "$("$VV" --list-columns "$TENX/barcodes.tsv.gz")" "barcode"
+assert_eq_file_inline "tenx_features_columns" \
+    "$("$VV" --list-columns "$TENX/features.tsv" | tr '\n' ' ')" "id name feature_type "
+assert_eq_file_inline "tenx_features_first_row" \
+    "$("$VV" --tsv --no-header "$TENX/features.tsv" | head -1)" "$(printf 'ENSG0001\tGENE1\tGene Expression')"
+assert_eq_file_inline "tenx_genes_v2_count"   "$("$VV" --count "$TENX/genes.tsv")" "2"
+assert_contains "tenx_footer_note" "$("$VV" -n 1 --color=never "$TENX/genes.tsv")" "10x Genomics genes file (no header row)"
+assert_eq_file_inline "tenx_header_on_overrides" \
+    "$("$VV" --header on --list-columns "$TENX/genes.tsv" | head -1)" "ENSG0001"
+rm -rf "$TENX"
 # Missing values in string columns: R and pandas write a missing value as an
 # *unquoted* null token and quote a genuine string. vv honours that — an
 # unquoted NA/NULL/empty in a string column becomes null, while a quoted "NA"
