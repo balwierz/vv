@@ -348,10 +348,14 @@ analysis ranking. One PR per box; no stacked PRs.
 
 ### Priority 4 — AnnData completeness
 
-- [ ] **`X` export is capped silently** (S, bug) — `--tab X --parquet` /
+- [x] **`X` export is capped silently** (S, bug) — `fix/anndata-x-export-cap` (refuses with the real shape; streaming the full matrix remains open below) — `--tab X --parquet` /
   `--tsv` / `--count` stop at the 1000-row / 200-column preview with exit 0.
   Either export the full matrix (streamed by row blocks) or refuse loudly with
   the real shape; never write a truncated file silently.
+- [ ] **Stream a whole matrix on export** (M) — `--tab X --parquet` now
+  refuses a capped preview. Writing the full matrix needs a chunked source
+  reading row blocks (dense hyperslabs; CSR by indptr ranges; CSC needs a
+  transpose pass), with dense and long (`cell, gene, value`) output shapes.
 - [ ] **`raw/` tabs** (S) — `raw.X` preview labelled from `/raw/var`, and
   `raw.var`; today skipped without mention.
 - [ ] **`obsp` / `varp` listed** (M) — neighbour graphs as streamed edge

@@ -1772,8 +1772,14 @@ if [ -f "$DATA/tiny.wide2d.h5" ]; then
     assert_eq_file_inline "h5_wide2d_has_tab" "$("$VV" --list-tabs "$W2" | tr '\n' '|')" "hierarchy|/grp/wide|"
     assert_contains "h5_wide2d_preview_note" "$("$VV" --tab /grp/wide -n 1 --color=never "$W2")" \
         "preview: first 200 of 250 cols"
-    assert_eq_file_inline "h5_wide2d_values" \
-        "$("$VV" --tab /grp/wide --tsv --no-header "$W2" | sed -n 3p | cut -f1,200)" "$(printf '2000\t2199')"
+    # The preview holds the right cells (row 3, column 200 = 2199)...
+    assert_contains "h5_wide2d_values" \
+        "$("$VV" --tab /grp/wide --vertical -n 3 --color=never "$W2")" "│ col199 │ 199 │ 1_199 │ 2_199 │"
+    # ...but an export would drop 50 of the 250 columns, so it is refused
+    # (exit 1, the real shape named) rather than written as the whole matrix.
+    assert_exit_code "h5_wide2d_export_refused" 1 "$VV" --tab /grp/wide --tsv "$W2"
+    assert_contains "h5_wide2d_export_refused_msg" \
+        "$("$VV" --tab /grp/wide --tsv "$W2" 2>&1)" "is a 3 × 200 preview of a 3 × 250"
 fi
 
 # Loom: /matrix and /layers/* (genes × cells) shown cells × genes, labelled by
@@ -2587,6 +2593,22 @@ if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
     # -n still limits the export.
     BIG_N=$("$VV" --tab obs --tsv --no-header -n 100 "$DATA/tiny.bigobs.h5ad" | wc -l | tr -d ' ')
     assert_eq_file_inline "h5ad_obs_export_head_limit" "$(echo $BIG_N)" "100"
+    # obs / var are read in full for an export; a matrix tab is only ever a
+    # preview (here 3 cells × the first 200 of 250 genes). Exporting it is
+    # refused rather than written as the whole matrix; --count needs only the
+    # rows, which the preview has in full; the table view is unaffected.
+    if [ -f "$DATA/tiny.dense.h5ad" ]; then
+        DX="$DATA/tiny.dense.h5ad"
+        for m in --tsv --csv --json --ndjson --md --describe; do
+            assert_exit_code "h5ad_x_export_refused_${m#--}" 1 "$VV" --tab X "$m" "$DX"
+        done
+        assert_contains "h5ad_x_export_refused_msg" "$("$VV" --tab X --tsv "$DX" 2>&1)" \
+            "tab 'X' is a 3 × 200 preview of a 3 × 250 (rows × columns) matrix; --tsv"
+        assert_exit_code "h5ad_x_export_refused_n" 1 "$VV" --tab X -n 1 --csv "$DX"
+        assert_eq_file_inline "h5ad_x_count_allowed" "$("$VV" --tab X --count "$DX")" "3"
+        assert_contains "h5ad_x_table_view" \
+            "$("$VV" --tab X -n 1 --no-interactive --color=never "$DX")" "preview: first 200 of 250 cols"
+    fi
     # Categorical obs columns decode to their string labels, not integer codes.
     # The dictionary cap (VV_CATEGORY_DICT_CAP, default 1,000,000 — raised from
     # 65536, which wrongly coded real high-cardinality columns like CRISPR
@@ -2649,14 +2671,16 @@ if [ -f "$DATA/tiny.malformed.h5ad" ]; then
         "$VV" --no-interactive --color=never "$DATA/tiny.malformed.h5ad"
 fi
 
-# Generic HDF5 1-D dataset preview cap: a 1500-element 1-D dataset must render
-# the first 1000 rows only (so a multi-million-element array can't OOM/stall the
-# reader), with the real length reported in the footer.
+# Generic HDF5 1-D dataset preview cap: the table view of a 1500-element 1-D
+# dataset shows the first 1000 rows (so a multi-million-element array can't
+# OOM/stall the viewer), with the real length in the footer. Like an obs / var
+# column, a mode that needs every row reads it in full.
 if [ -f "$DATA/tiny.big1d.h5" ]; then
     BIG1D=$("$VV" --no-interactive --color=never --tab /big "$DATA/tiny.big1d.h5" 2>&1)
     assert_contains "hdf5_1d_preview_cap_note" "$BIG1D" "first 1000 of 1500 rows"
     BIG1D_ROWS=$("$VV" --tsv --no-header --tab /big "$DATA/tiny.big1d.h5" 2>/dev/null | wc -l | tr -d ' ')
-    assert_eq_file_inline "hdf5_1d_preview_cap_rows" "$(echo $BIG1D_ROWS)" "1000"
+    assert_eq_file_inline "hdf5_1d_export_full_rows" "$(echo $BIG1D_ROWS)" "1500"
+    assert_eq_file_inline "hdf5_1d_count_full" "$("$VV" --count --tab /big "$DATA/tiny.big1d.h5")" "1500"
 fi
 
 # Enum column whose base integer type is 32 bytes wide. H5Tget_member_value
@@ -2709,6 +2733,13 @@ if [ -f "$DATA/tiny.wide.npz" ]; then
     assert_contains "npz_wide_col_cap_footer" "$NPZ_WIDE" \
         "showing first 4096 of 5000 columns"
     refute_contains "npz_wide_no_overflow_col" "$NPZ_WIDE" "c4096"
+    # Exporting it would drop 904 columns silently: refused, exit 1.
+    assert_exit_code "npz_wide_export_refused" 1 "$VV" --tab wide --tsv "$DATA/tiny.wide.npz"
+    assert_contains "npz_wide_export_refused_msg" \
+        "$("$VV" --tab wide --parquet "$TMP/wide.parquet" "$DATA/tiny.wide.npz" 2>&1)" \
+        "is a 2 × 4096 preview of a 2 × 5000"
+    assert_eq_file_inline "npz_wide_export_refused_no_file" \
+        "$([ -e "$TMP/wide.parquet" ] && echo written || echo none)" "none"
 fi
 # Shape whose sub-products overflow int64 while the array itself is empty.
 # A single zero dimension makes the total element count zero, so the

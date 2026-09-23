@@ -195,6 +195,17 @@ ColStats compute_col_stats(TabularSource& src, int src_col);
 // ── Source interface ─────────────────────────────────────────────────────────
 struct ChunkMeta { int64_t first_row; int64_t num_rows; };
 
+// The shown and full shape of a tab that holds only a bounded preview of a
+// larger dataset (see TabularSource::preview_limit). Columns count the data
+// columns, not added row labels.
+struct PreviewLimit {
+    int64_t shown_rows = 0, full_rows = 0;
+    int64_t shown_cols = 0, full_cols = 0;
+    bool rows_capped() const { return shown_rows < full_rows; }
+    bool cols_capped() const { return shown_cols < full_cols; }
+    bool capped() const { return rows_capped() || cols_capped(); }
+};
+
 // Abstract interface over every supported format. Frontends drive it
 // chunk-by-chunk: total_rows() (−1 while a streaming source is not fully
 // scanned), num_chunks()/chunk_meta(i), read_chunk(i, cols, &out) for lazy
@@ -302,6 +313,12 @@ public:
     // vertical-head, TUI). Delimited and Parquet output keep all columns.
     // Used e.g. to hide the derived `MaxEndSoFar` column in LociSSD files.
     virtual std::vector<std::string> hidden_for_display() const { return {}; }
+    // A tab that holds only a preview of a larger dataset — an HDF5 / AnnData /
+    // Loom / 10x matrix read as its first rows × columns, or a NumPy array
+    // wider than the column cap — reports its shown and full shape. Modes that
+    // write or aggregate every row refuse such a tab (preview_refusal) rather
+    // than present the preview as the whole dataset.
+    virtual PreviewLimit preview_limit() const { return {}; }
     // Sibling "tabs" for multi-tab containers (xlsx/ods sheets, sqlite
     // tables, hdf5/npz datasets). Returns the OTHER tabs beyond this one,
     // each a ready-to-read source sharing the underlying file handle.

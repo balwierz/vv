@@ -365,6 +365,12 @@ CLI reach the data components that are otherwise only navigable in the
 interactive TUI, e.g. \fBvv cells.h5ad \-\-tab obs \-n 20\fR. Matching is
 case-insensitive; an unknown name lists the available tabs. Large
 components are shown as a capped preview (the footer notes the full size).
+Tables (\fBobs\fR, \fBvar\fR, 1-D datasets) are read in full by the modes
+that need every row (export, \fB\-\-count\fR, \fB\-\-describe\fR, ...).
+A matrix (\fBX\fR, layers, 2-D datasets, a NumPy array wider than 4096
+columns) is only ever a preview, so exporting or aggregating a capped one
+exits 1 with its real shape instead of writing the preview; \fB\-\-count\fR
+works when every row is in the preview.
 .TP
 .B \-\-describe
 Per-column statistics: count, nulls, min, max, mean (numeric),
