@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **vvg: Copy as vv command** (Edit menu, table right-click menu,
+  Ctrl+Alt+C). Copies the shell-quoted `vv` command line that reproduces the
+  active tab: the file (absolute path), `--tab` for a sheet / dataset other
+  than the first, the session's region options (`-r`, `--coords NCBI`,
+  `--slop`), `--pileup`, `--tags`, `--gt-stats`, `--contigs`, the applied
+  `--filter`, the `--sort` column and direction, and `--select` with the
+  visible columns when any are hidden. A column name that `--select` cannot
+  take literally (containing a comma, or with leading / trailing spaces) is
+  given by its position. The NPZ slice position has no CLI equivalent and is
+  not included.
 - **Header summary for alignment and variant files.** `--contigs` now also
   reports the sort order (`@HD SO`), the number of read groups, the distinct
   samples (`@RG SM`, or the VCF sample columns) and the distinct programs that

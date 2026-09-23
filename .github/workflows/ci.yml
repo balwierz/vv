@@ -218,6 +218,17 @@ jobs:
           # Background (off-UI-thread) filter returns the same rows as the CLI.
           VVG_WINTEST=1 VVG_AFILTER='Score > 0.2' ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -q 'afilter .* rows=16'
+          # Copy as vv command: the copied line reproduces the tab in the CLI
+          # (same rows, visible columns and order) and survives shell quoting of
+          # a path with a space and an apostrophe; a sibling tab adds --tab.
+          cp tests/data/tiny.parquet "$RUNNER_TEMP/it's a file.parquet"
+          out=$(VVG_WINTEST=1 VVG_COPYCMD=1 VVG_AFILTER='Score > 0.2' VVG_SORT='Score:desc' \
+                VVG_HIDE='Tags,End' ./build-gui/gui/vvg "$RUNNER_TEMP/it's a file.parquet")
+          cmd=$(sed -n 's/^cmd=//p' <<<"$out"); echo "$cmd"
+          test "$(eval "./build-gui/vv ${cmd#vv } --count")" = 16
+          test "$(eval "./build-gui/vv ${cmd#vv } --tsv" | head -2 | tr '\t\n' ',;')" = 'Chr,Start,Score;chr2,7100,0.95;'
+          out=$(VVG_WINTEST=1 VVG_COPYCMD=1 VVG_TAB=2 ./build-gui/gui/vvg tests/data/tiny.dense.h5ad)
+          grep -q "^cmd=vv --tab obs $PWD/tests/data/tiny.dense.h5ad\$" <<<"$out"
           # The session toolbar exposes the new open-time options through the same
           # reopen path as region/pileup. --tags adds a column per aux tag (11 SAM
           # columns + NM,AS = 13); --gt-stats adds 9 genotype columns to the BCF's
