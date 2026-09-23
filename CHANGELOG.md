@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **vvg: File → Export View As…** (Ctrl+E). Writes the active tab's view —
+  filter, sort, visible columns, and the session's region / pileup / tags /
+  GT-stats / contigs options — to Parquet, Arrow IPC, TSV, CSV, JSON or
+  NDJSON by extension. The export runs through the CLI's writers via a new
+  `export_view()` in `vvcore.hpp`, which opens its own source, so the file is
+  identical to `vv <copied options> --parquet/--arrow/--tsv/…` output. It runs
+  on a worker thread with a live row count and Cancel, writes to
+  `<file>.part` and renames on success (removing it on error or cancel, so an
+  existing file is left as it was), and refuses to write over the input file
+  or into an input dataset directory.
 - **vvg: Copy as vv command** (Edit menu, table right-click menu,
   Ctrl+Alt+C). Copies the shell-quoted `vv` command line that reproduces the
   active tab: the file (absolute path), `--tab` for a sheet / dataset other

@@ -6,6 +6,8 @@
 #include <QString>
 #include <QStringList>
 
+#include "vv/vvcore.hpp"
+
 struct VvCommandSpec {
     QString     path;                 // the file (or dataset directory)
     QString     tab;                  // component tab label; empty = the first tab
@@ -29,3 +31,7 @@ QString shellQuote(const QString& word);
 
 // "vv [options] FILE", each word shell-quoted.
 QString vvCommandLine(const VvCommandSpec& spec);
+
+// The same options as a reader Config (for export_view), so an export writes
+// exactly what the copied command would.
+Config vvCommandConfig(const VvCommandSpec& spec);

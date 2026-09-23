@@ -45,3 +45,26 @@ QString vvCommandLine(const VvCommandSpec& s) {
     w << shellQuote(s.path);
     return w.join(QLatin1Char(' '));
 }
+
+Config vvCommandConfig(const VvCommandSpec& s) {
+    Config cfg;
+    cfg.path = s.path.toStdString();
+    cfg.tab  = s.tab.toStdString();
+    if (s.contigs) {
+        cfg.contigs = true;
+    } else {
+        if (!s.region.isEmpty()) {
+            cfg.region           = s.region.toStdString();
+            cfg.coords_one_based = s.ncbi;
+            cfg.slop             = s.slop;
+        }
+        cfg.pileup   = s.pileup;
+        cfg.bam_tags = s.tags.toStdString();
+        cfg.gt_stats = s.gtStats;
+    }
+    cfg.filter_expr = s.filter.toStdString();
+    cfg.sort_col    = s.sortColumn.toStdString();
+    cfg.sort_desc   = s.sortDesc;
+    cfg.select_cols = s.select.join(QLatin1Char(',')).toStdString();
+    return cfg;
+}

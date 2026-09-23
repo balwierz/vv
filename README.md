@@ -426,6 +426,14 @@ bar states plainly that this is a preview of the first 1000 of 4823 rows.*
   the applied `--filter`, the `--sort`, and `--select` for the visible columns
   when some are hidden — shell-quoted, e.g.
   `vv --filter 'AF > 0.05' --sort POS:desc --select CHROM,POS,AF /data/calls.vcf.gz`.
+- **File → Export View As…** (**Ctrl+E**) — writes the active tab's view (its
+  filter, sort, visible columns and the session's region / tag / GT-stats
+  options) to Parquet, Arrow / Feather, TSV, CSV, JSON or NDJSON, chosen by
+  extension. It runs the CLI's own writers, so the file is exactly what the
+  copied `vv … --parquet` / `--tsv` / … command would write; every row is
+  written, not just the ones on screen. Runs in the background with a live
+  row count and **Cancel**; refuses to overwrite the input, and a canceled or
+  failed export leaves any existing file untouched.
 
 On **KDE Plasma**, installing the `vv-gui` package also wires vv into
 Dolphin: double-click (or *Open With*) launches `vvg`, the icon view

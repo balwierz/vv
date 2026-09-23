@@ -19,7 +19,11 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFileDialog>
+#include <QDir>
 #include <QFileInfo>
+#include <QFutureWatcher>
+#include <QTimer>
+#include <QtConcurrent/QtConcurrentRun>
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QItemSelectionModel>
@@ -346,6 +350,13 @@ private:
         recentMenu_ = file->addMenu(tr("Open &Recent"));
         rebuildRecentMenu();
         file->addSeparator();
+        exportAction_ = new QAction(tr("&Export View As…"), this);
+        exportAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+E")));
+        exportAction_->setToolTip(tr("Write this tab's rows — with its filter, sort and "
+                                     "visible columns — to Parquet, Arrow, TSV, CSV or JSON"));
+        connect(exportAction_, &QAction::triggered, this, [this]{ exportViewDialog(); });
+        file->addAction(exportAction_);
+        file->addSeparator();
         QAction* close = new QAction(tr("&Close Tab"), this);
         close->setShortcut(QKeySequence::Close);
         connect(close, &QAction::triggered, this, [this]{ closeTab(tabs_->currentIndex()); });
@@ -392,6 +403,7 @@ private:
                    "Region:  the Region bar — chr1:1000-2000 (UCSC) / NCBI; Pileup for BAM\n"
                    "Copy:    Ctrl+C the selection, Ctrl+Shift+C a whole row; right-click for both\n"
                    "Command: Ctrl+Alt+C copies the vv command line for this tab\n"
+                   "Export:  Ctrl+E writes this tab's view (filter, sort, visible columns) to a file\n"
                    "Slice:   ◀ / ▶ steps the leading axis of NPZ 3-D+ arrays\n"
                    "Go to:   Ctrl+G jumps to a row; View ▸ Columns shows/hides columns"));
         });
@@ -854,10 +866,17 @@ private:
     // Returns "" when no tab is open.
 public:
     QString commandForActiveTab() const {
+        VvCommandSpec s;
+        return specForActiveTab(&s) ? vvCommandLine(s) : QString();
+    }
+    // The active tab's state as command options (file, tab, session region
+    // options, filter, sort, visible columns). False when no tab is open.
+    bool specForActiveTab(VvCommandSpec* out) const {
         auto* m = activeModel();
         auto* v = activeView();
-        if (!m || !v) return {};
-        VvCommandSpec s;
+        if (!m || !v) return false;
+        VvCommandSpec& s = *out;
+        s = VvCommandSpec{};
         const TabOrigin o = tabOrigin_.value(m);
         s.path = QFileInfo(o.path).absoluteFilePath();
         if (!o.primary) s.tab = QString::fromStdString(m->source()->tab_label());
@@ -890,7 +909,27 @@ public:
             }
         }
         if (anyHidden) s.select = visible;
-        return vvCommandLine(s);
+        return true;
+    }
+    // Headless export (VVG_WINTEST + VVG_EXPORT): start the export of the
+    // active tab and pump the event loop until it finishes; with
+    // cancelAfterRows >= 0, cancel once more rows than that are written.
+    // Returns "" or the error, and the rows written.
+    QString exportActiveForTest(const QString& out, qint64* rows,
+                                qint64 cancelAfterRows = -1) {
+        VvCommandSpec s;
+        if (!specForActiveTab(&s)) return QStringLiteral("no tab");
+        ExportFormat f;
+        if (!exportFormatForPath(out, &f)) return QStringLiteral("unknown extension");
+        startExport(s, out, f);
+        while (exportWatcher_) {
+            if (cancelAfterRows >= 0 && exportProgress_ &&
+                exportProgress_->rows.load() > cancelAfterRows)
+                exportProgress_->cancel = true;          // as the Cancel button
+            QCoreApplication::processEvents(QEventLoop::WaitForMoreEvents, 50);
+        }
+        *rows = lastExportRows_;
+        return lastExportError_;
     }
     // Test hooks (VVG_WINTEST): sort / hide on the active tab, as the header
     // click and View > Columns do.
@@ -918,6 +957,109 @@ public:
     }
     void selectTabForTest(int i) { tabs_->setCurrentIndex(i); }
 private:
+    // Output format from the file extension (.parquet/.pq, .arrow/.feather/
+    // .ipc, .tsv/.tab/.txt, .csv, .json, .ndjson/.jsonl).
+    static bool exportFormatForPath(const QString& path, ExportFormat* f) {
+        const QString ext = QFileInfo(path).suffix().toLower();
+        if (ext == QLatin1String("parquet") || ext == QLatin1String("pq")) *f = ExportFormat::Parquet;
+        else if (ext == QLatin1String("arrow") || ext == QLatin1String("feather") ||
+                 ext == QLatin1String("ipc"))                            *f = ExportFormat::Arrow;
+        else if (ext == QLatin1String("tsv") || ext == QLatin1String("tab") ||
+                 ext == QLatin1String("txt"))                            *f = ExportFormat::Tsv;
+        else if (ext == QLatin1String("csv"))                             *f = ExportFormat::Csv;
+        else if (ext == QLatin1String("json"))                            *f = ExportFormat::Json;
+        else if (ext == QLatin1String("ndjson") || ext == QLatin1String("jsonl")) *f = ExportFormat::Ndjson;
+        else return false;
+        return true;
+    }
+
+    void exportViewDialog() {
+        if (exportWatcher_) return;                 // one export at a time
+        VvCommandSpec s;
+        if (!specForActiveTab(&s)) return;
+        struct Choice { QString filter, ext; };
+        const Choice choices[] = {
+            {tr("Parquet (*.parquet)"),          QStringLiteral("parquet")},
+            {tr("Arrow IPC / Feather (*.arrow)"), QStringLiteral("arrow")},
+            {tr("Tab-separated (*.tsv)"),         QStringLiteral("tsv")},
+            {tr("Comma-separated (*.csv)"),       QStringLiteral("csv")},
+            {tr("JSON array (*.json)"),           QStringLiteral("json")},
+            {tr("JSON lines (*.ndjson)"),         QStringLiteral("ndjson")},
+        };
+        QStringList filters;
+        for (const auto& c : choices) filters << c.filter;
+        QString chosen = filters.first();
+        const QString base = QFileInfo(s.path).completeBaseName()
+                             + (s.tab.isEmpty() ? QString() : QLatin1Char('.') + s.tab);
+        QString out = QFileDialog::getSaveFileName(
+            this, tr("Export view"),
+            QDir(lastDir_.isEmpty() ? QDir::currentPath() : lastDir_)
+                .filePath(base + QStringLiteral(".parquet")),
+            filters.join(QStringLiteral(";;")), &chosen);
+        if (out.isEmpty()) return;
+        ExportFormat f;
+        if (!exportFormatForPath(out, &f)) {   // no / unknown extension: the chosen filter's
+            for (const auto& c : choices)
+                if (c.filter == chosen) { out += QLatin1Char('.') + c.ext; break; }
+            if (!exportFormatForPath(out, &f)) return;
+        }
+        startExport(s, out, f);
+    }
+
+    // Run export_view on a worker thread; the status bar shows the rows written
+    // and the Cancel button stops it (the partial file is removed).
+    void startExport(const VvCommandSpec& spec, const QString& out, ExportFormat f) {
+        exportProgress_ = std::make_shared<ExportProgress>();
+        exportPath_ = out;
+        const Config cfg = vvCommandConfig(spec);
+        const std::string outPath = out.toStdString();
+        auto prog = exportProgress_;
+        exportWatcher_ = new QFutureWatcher<QString>(this);
+        connect(exportWatcher_, &QFutureWatcher<QString>::finished, this, [this]{ onExportDone(); });
+        exportWatcher_->setFuture(QtConcurrent::run([cfg, outPath, f, prog] {
+            return QString::fromStdString(export_view(cfg, outPath, f, prog.get()));
+        }));
+        if (exportAction_) exportAction_->setEnabled(false);
+        progress_->setVisible(true);
+        cancelBtn_->setVisible(true);
+        if (!exportTimer_) {
+            exportTimer_ = new QTimer(this);
+            exportTimer_->setInterval(250);
+            connect(exportTimer_, &QTimer::timeout, this, [this]{
+                if (exportProgress_)
+                    statusBar()->showMessage(tr("Exporting to %1 … %L2 rows")
+                        .arg(exportPath_).arg((qlonglong)exportProgress_->rows.load()));
+            });
+        }
+        exportTimer_->start();
+        statusBar()->showMessage(tr("Exporting to %1 …").arg(exportPath_));
+    }
+
+    void onExportDone() {
+        lastExportError_ = exportWatcher_->result();
+        lastExportRows_  = exportProgress_ ? exportProgress_->rows.load() : 0;
+        exportWatcher_->deleteLater();
+        exportWatcher_ = nullptr;
+        exportProgress_.reset();
+        if (exportTimer_) exportTimer_->stop();
+        if (exportAction_) exportAction_->setEnabled(true);
+        if (!computingModel_) {
+            progress_->setVisible(false);
+            cancelBtn_->setVisible(false);
+        }
+        if (lastExportError_.isEmpty()) {
+            statusBar()->showMessage(tr("Exported %L1 rows to %2")
+                                     .arg(lastExportRows_).arg(exportPath_), 8000);
+        } else if (lastExportError_ == QLatin1String("canceled")) {
+            statusBar()->showMessage(tr("Export canceled"), 4000);
+        } else if (headless_) {
+            std::fprintf(stderr, "vvg export: %s\n", lastExportError_.toStdString().c_str());
+        } else {
+            statusBar()->clearMessage();
+            QMessageBox::warning(this, tr("vvg — export"), lastExportError_);
+        }
+    }
+
     void copyCommand() {
         const QString cmd = commandForActiveTab();
         if (cmd.isEmpty()) return;
@@ -958,7 +1100,8 @@ private:
         cancelBtn_ = new QPushButton(tr("Cancel"), this);
         cancelBtn_->setVisible(false);
         connect(cancelBtn_, &QPushButton::clicked, this, [this]{
-            if (computingModel_) computingModel_->cancelRecompute();
+            if (exportProgress_) exportProgress_->cancel = true;
+            else if (computingModel_) computingModel_->cancelRecompute();
         });
         statusBar()->addPermanentWidget(progress_);
         statusBar()->addPermanentWidget(cancelBtn_);
@@ -1019,6 +1162,23 @@ private:
     struct TabOrigin { QString path; bool primary = true; };
     QMap<ArrowTableModel*, TabOrigin>     tabOrigin_;    // file + first-tab flag
     QMap<ArrowTableModel*, QString>       filterText_;   // applied --filter text
+    // Export View As…: one export at a time, on a worker thread.
+    QAction*                              exportAction_   = nullptr;
+    QFutureWatcher<QString>*              exportWatcher_  = nullptr;
+    std::shared_ptr<ExportProgress>       exportProgress_;
+    QTimer*                               exportTimer_    = nullptr;
+    QString                               exportPath_;
+    QString                               lastExportError_;
+    qint64                                lastExportRows_ = 0;
+public:
+    // Closing the window mid-export stops the worker (the partial file is
+    // removed) before the window's state goes away.
+    ~MainWindow() override {
+        if (exportWatcher_) {
+            if (exportProgress_) exportProgress_->cancel = true;
+            exportWatcher_->waitForFinished();
+        }
+    }
 };
 
 // Deterministic, font-free self-check of the shared column-width planner. Run
@@ -1292,6 +1452,14 @@ int main(int argc, char** argv) {
             for (const QString& c : QString::fromLocal8Bit(hd).split(QLatin1Char(',')))
                 if (!win.hideActiveColumnForTest(c))
                     std::fprintf(stderr, "vvg: no column '%s' to hide\n", c.toLocal8Bit().constData());
+        if (const char* ex = std::getenv("VVG_EXPORT"); ex && *ex) {
+            qint64 rows = 0;
+            const char* ec = std::getenv("VVG_EXPORT_CANCEL_AFTER");
+            QString err = win.exportActiveForTest(QString::fromLocal8Bit(ex), &rows,
+                                                  ec && *ec ? std::atoll(ec) : -1);
+            if (err.isEmpty()) std::printf("export -> rows=%lld\n", (long long)rows);
+            else               std::printf("export -> error: %s\n", err.toStdString().c_str());
+        }
         if (const char* cc = std::getenv("VVG_COPYCMD"); cc && *cc && *cc != '0')
             std::printf("cmd=%s\n", win.commandForActiveTab().toLocal8Bit().constData());
         return 0;
