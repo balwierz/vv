@@ -2593,6 +2593,24 @@ if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
     # -n still limits the export.
     BIG_N=$("$VV" --tab obs --tsv --no-header -n 100 "$DATA/tiny.bigobs.h5ad" | wc -l | tr -d ' ')
     assert_eq_file_inline "h5ad_obs_export_head_limit" "$(echo $BIG_N)" "100"
+    # .raw (scanpy keeps the raw counts over all genes beside a normalised,
+    # gene-subset X): a raw.X tab labelled by obs × raw/var — not var — and a
+    # raw.var table, for a CSR and a dense raw/X; X keeps its 2-gene subset.
+    for RF in tiny.raw.h5ad tiny.rawdense.h5ad; do
+        [ -f "$DATA/$RF" ] || continue
+        RN=${RF%.h5ad}; RN=${RN#tiny.}
+        RAWX=$(if [ "$RF" = tiny.raw.h5ad ]; then echo 'raw.X (preview)'; else echo raw.X; fi)
+        assert_eq_file_inline "h5ad_${RN}_tabs" "$("$VV" --list-tabs "$DATA/$RF" | tr '\n' '|')" \
+            "summary|X|obs|var|$RAWX|raw.var|"
+        assert_eq_file_inline "h5ad_${RN}_x" "$("$VV" --tab raw.X --tsv "$DATA/$RF" | tr '\t\n' ',;')" \
+            "obs,g0,g1,g2,g3,g4;c0,1,0,3,0,5;c1,0,2,0,4,0;c2,6,0,0,0,7;"
+        assert_eq_file_inline "h5ad_${RN}_var" "$("$VV" --tab raw.var --tsv "$DATA/$RF" | tr '\t\n' ',;')" \
+            "_index,gene_ids;g0,ENSG0000;g1,ENSG0001;g2,ENSG0002;g3,ENSG0003;g4,ENSG0004;"
+        assert_eq_file_inline "h5ad_${RN}_x_subset" "$("$VV" --tab X --tsv "$DATA/$RF" | head -1 | tr '\t' ',')" \
+            "obs,g1,g3"
+        assert_contains "h5ad_${RN}_summary" "$("$VV" --tab summary --tsv "$DATA/$RF")" \
+            "$(printf 'raw.var\t5 rows, 2 columns')"
+    done
     # obs / var are read in full for an export; a matrix tab is only ever a
     # preview (here 3 cells × the first 200 of 250 genes). Exporting it is
     # refused rather than written as the whole matrix; --count needs only the

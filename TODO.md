@@ -356,7 +356,7 @@ analysis ranking. One PR per box; no stacked PRs.
   refuses a capped preview. Writing the full matrix needs a chunked source
   reading row blocks (dense hyperslabs; CSR by indptr ranges; CSC needs a
   transpose pass), with dense and long (`cell, gene, value`) output shapes.
-- [ ] **`raw/` tabs** (S) — `raw.X` preview labelled from `/raw/var`, and
+- [x] **`raw/` tabs** (S) — `feat/anndata-raw-tabs` — `raw.X` preview labelled from `/raw/var`, and
   `raw.var`; today skipped without mention.
 - [ ] **`obsp` / `varp` listed** (M) — neighbour graphs as streamed edge
   lists (`obs_i, obs_j, weight`, labelled by obs names); never densified.

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **AnnData `.raw` tabs.** A file that keeps `.raw` (scanpy's raw counts
+  over every gene beside a normalised, gene-subset `X`) opens with a
+  `raw.X` tab — cells × raw genes, labelled by obs and by `raw/var`'s index
+  rather than `var`'s — and a `raw.var` table; CSR, CSC and dense `raw/X`
+  are read. The summary lists both. `raw/` was skipped without mention.
 - **vvg: File → Export View As…** (Ctrl+E). Writes the active tab's view —
   filter, sort, visible columns, and the session's region / pileup / tags /
   GT-stats / contigs options — to Parquet, Arrow IPC, TSV, CSV, JSON or
