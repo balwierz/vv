@@ -68,7 +68,9 @@ read via libhdf5. AnnData (\fB.h5ad\fR) is detected by the root
 \fBencoding-type\fR attribute (or modern heuristic /obs + /var + X);
 the layout decodes into a summary tab plus \fBobs\fR, \fBvar\fR,
 \fBX\fR, one tab per entry under \fBobsm\fR / \fBvarm\fR /
-\fBlayers\fR, and a \fBuns\fR key/value tab (scalars, strings and short
+\fBlayers\fR, \fBraw.X\fR and \fBraw.var\fR when the file keeps \fB.raw\fR
+(\fBraw.X\fR columns are labelled from \fBraw/var\fR, which usually lists more
+genes than \fBvar\fR), and a \fBuns\fR key/value tab (scalars, strings and short
 arrays; nested dicts flattened to dotted keys). \fBX\fR and each
 \fBobsm\fR / \fBvarm\fR / \fBlayers\fR entry may be dense or sparse (CSR
 or CSC); matrices are previewed densified, first 1000 rows by 200

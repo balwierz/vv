@@ -10943,7 +10943,8 @@ static std::string build_loom_table(hid_t file_id, const OpenSpec& spec,
 // (n_obs x n_var), but obsm/* is (n_obs x d) and varm/* is (n_var x d), where
 // d is an embedding dimension — not a gene. Labelling all three the same way
 // put gene names on UMAP coordinates.
-enum class AnnMatrixAxes { ObsByVar, ObsByDim, VarByDim };
+enum class AnnMatrixAxes { ObsByVar, ObsByDim, VarByDim,
+                           ObsByRawVar };   // raw/X: genes from raw/var
 
 static void apply_anndata_matrix_labels(hid_t file_id, AnnMatrixAxes axes,
                                         const std::string& key,
@@ -12048,11 +12049,14 @@ static void apply_anndata_matrix_labels(hid_t file_id, AnnMatrixAxes axes,
 
     // ── Columns ─────────────────────────────────────────────────────────────
     std::vector<std::string> col_names;
-    if (axes == AnnMatrixAxes::ObsByVar) {
-        // Gene identifiers, from the var index.
+    if (axes == AnnMatrixAxes::ObsByVar || axes == AnnMatrixAxes::ObsByRawVar) {
+        // Gene identifiers, from the var index — raw/var's for raw/X, which
+        // usually keeps more genes than X (X is often subset to the highly
+        // variable ones).
         std::string var_idx_name;
-        read_anndata_index_labels(file_id, "/var", ncols, &col_names,
-                                  &var_idx_name);
+        read_anndata_index_labels(file_id,
+                                  axes == AnnMatrixAxes::ObsByRawVar ? "/raw/var" : "/var",
+                                  ncols, &col_names, &var_idx_name);
     } else {
         // Embedding dimensions. Derived from the key so the header says where
         // the numbers came from; falls back to the existing generated names if
@@ -12251,6 +12255,54 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
                       AnnMatrixAxes::VarByDim);
     add_subgroup_tabs("layers", OpenSpec::Kind::Matrix2D, "layer",
                       AnnMatrixAxes::ObsByVar);
+
+    // raw: the unfiltered matrix scanpy keeps beside a processed X (raw
+    // counts over every gene, while X is normalised and subset). raw/X is
+    // cells × raw genes, labelled by obs and raw/var; raw/var is a DataFrame.
+    if (link_exists(file_id, "raw") && is_group(file_id, "raw")) {
+        hid_t rg = H5Gopen2(file_id, "raw", H5P_DEFAULT);
+        int64_t raw_cols = 0;   // raw/X columns = raw/var rows
+        if (link_exists(rg, "X")) {
+            if (is_group(rg, "X")) {
+                hid_t g = H5Gopen2(rg, "X", H5P_DEFAULT);
+                std::string xenc = read_string_attr(g, "encoding-type");
+                if (xenc == "csr_matrix" || xenc == "csc_matrix") {
+                    int64_t shape[2] = {0, 0};
+                    read_shape2(g, "shape", shape);
+                    raw_cols = shape[1];
+                    const std::string dims = std::to_string(shape[0]) + " \xc3\x97 " +
+                                             std::to_string(shape[1]);
+                    add("raw.X", xenc + "  (" + dims + ")");
+                    specs.push_back({OpenSpec::Kind::Sparse, "/raw/X", "raw.X (preview)",
+                                     xenc + "  shape: " + dims,
+                                     AnnMatrixAxes::ObsByRawVar, ""});
+                }
+                H5Gclose(g);
+            } else {
+                hid_t d = H5Dopen2(rg, "X", H5P_DEFAULT);
+                hid_t sp = H5Dget_space(d);
+                hsize_t dims[2] = {0, 0};
+                const int nd = H5Sget_simple_extent_ndims(sp);
+                if (nd == 2) H5Sget_simple_extent_dims(sp, dims, nullptr);
+                H5Sclose(sp); H5Dclose(d);
+                if (nd == 2) {
+                    raw_cols = (int64_t)dims[1];
+                    add("raw.X", "dense  (" + std::to_string(dims[0]) + " \xc3\x97 " +
+                                 std::to_string(dims[1]) + ")");
+                    specs.push_back({OpenSpec::Kind::Matrix2D, "/raw/X", "raw.X", "dense",
+                                     AnnMatrixAxes::ObsByRawVar, ""});
+                }
+            }
+        }
+        if (link_exists(rg, "var") && is_group(rg, "var")) {
+            hid_t g = H5Gopen2(rg, "var", H5P_DEFAULT);
+            add("raw.var", std::to_string(raw_cols) + " rows, " +
+                           std::to_string(anndata_column_count(g)) + " columns");
+            H5Gclose(g);
+            specs.push_back({OpenSpec::Kind::DataFrame, "/raw/var", "raw.var", ""});
+        }
+        H5Gclose(rg);
+    }
 
     // uns (unstructured): one key/value tab surfacing scalars, strings and
     // small arrays (nested dicts flattened with dotted keys). Previously skipped.

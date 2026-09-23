@@ -1490,6 +1490,27 @@ else:
     bvar = pd.DataFrame(index=[f"gene{i}" for i in range(4)])
     ad.AnnData(X=Xb, obs=bobs, var=bvar).write_h5ad(big_path)
 
+    # tiny.raw.h5ad / tiny.rawdense.h5ad: AnnData with `.raw` — the raw counts
+    # over all 5 genes (raw/X, raw/var with a gene_ids column) kept beside a
+    # log-normalised X subset to 2 genes (g1, g3), the scanpy layout after
+    # highly-variable-gene selection. raw/X is CSR in one, dense in the other.
+    # raw.X columns must be labelled from raw/var, not var.
+    for raw_name, raw_sparse in (("tiny.raw.h5ad", True), ("tiny.rawdense.h5ad", False)):
+        raw_path = HERE / raw_name
+        if raw_path.exists():
+            raw_path.unlink()
+        counts = np.array([[1, 0, 3, 0, 5], [0, 2, 0, 4, 0], [6, 0, 0, 0, 7]],
+                          dtype=np.float32)
+        full = ad.AnnData(
+            X=sparse.csr_matrix(counts) if raw_sparse else counts,
+            obs=pd.DataFrame(index=["c0", "c1", "c2"]),
+            var=pd.DataFrame({"gene_ids": [f"ENSG{i:04d}" for i in range(5)]},
+                             index=[f"g{i}" for i in range(5)]))
+        full.raw = full
+        sub = full[:, ["g1", "g3"]].copy()
+        sub.X = np.log1p(counts[:, [1, 3]])
+        sub.write_h5ad(raw_path)
+
     # tiny.uns.h5ad: a populated uns (unstructured) dict — string/int/float
     # scalars, a string array, and a nested dict — to exercise the uns key/value
     # tab. Fixed values so the test can assert them (incl. the dotted key from
