@@ -2022,21 +2022,46 @@ static void draw_row(const std::vector<Column>& cols,
 
 // RFC 4180 quoting: wrap in double-quotes if the value contains the delimiter,
 // a double-quote, or a newline; escape embedded quotes by doubling them.
+// ── Export sink ──────────────────────────────────────────────────────────────
+// The CLI's writers print to stdout (TSV / CSV / JSON) or to a path (Parquet /
+// Arrow). export_view() runs the same writers on a frontend's worker thread
+// and installs an ExportSink for that thread: the text writers then print to
+// its file instead of stdout, every writer adds the rows it writes to
+// progress->rows and stops between chunks once progress->cancel is set, and
+// the CLI's "[N rows → path]" stderr summary is left out. With no sink (the
+// CLI), the writers behave exactly as before.
+struct ExportSink {
+    FILE*           out      = nullptr;   // text writers' output; null = stdout
+    ExportProgress* progress = nullptr;
+};
+static thread_local ExportSink* t_export = nullptr;
+static FILE* out_stream() {
+    return (t_export && t_export->out) ? t_export->out : stdout;
+}
+static bool export_canceled() {
+    return t_export && t_export->progress && t_export->progress->cancel.load();
+}
+static void export_count(int64_t rows) {
+    if (t_export && t_export->progress) t_export->progress->rows += rows;
+}
+static constexpr const char kExportCanceled[] = "canceled";
+
 static void write_csv_field(const std::string& val, char sep) {
+    FILE* out = out_stream();
     bool needs_quote = val.find(sep)  != std::string::npos ||
                        val.find('"')  != std::string::npos ||
                        val.find('\n') != std::string::npos ||
                        val.find('\r') != std::string::npos;
     if (!needs_quote) {
-        std::fputs(val.c_str(), stdout);
+        std::fputs(val.c_str(), out);
         return;
     }
-    std::putchar('"');
+    std::fputc('"', out);
     for (char c : val) {
-        if (c == '"') std::putchar('"');   // double the quote
-        std::putchar(c);
+        if (c == '"') std::fputc('"', out);   // double the quote
+        std::fputc(c, out);
     }
-    std::putchar('"');
+    std::fputc('"', out);
 }
 
 // Suffix-match helper shared by DelimitedSource::open and open_source.
@@ -17501,6 +17526,7 @@ static std::string render_heatmap(TabularSource& src, const Config& cfg) {
 // report() and exits non-zero instead of printing to stderr and exiting 0.
 static std::string write_delimited(TabularSource& src, const Config& cfg) {
     char sep = cfg.delimiter;
+    FILE* out = out_stream();
     // In delimiter mode default to all rows; honour -n if explicitly given.
     int64_t rows_left = (cfg.head_rows <= 0) ? INT64_MAX : (int64_t)cfg.head_rows;
 
@@ -17529,10 +17555,10 @@ static std::string write_delimited(TabularSource& src, const Config& cfg) {
 
     if (!cfg.no_header) {
         for (int ci = 0; ci < show_cols; ++ci) {
-            if (ci) std::putchar(sep);
+            if (ci) std::fputc(sep, out);
             write_csv_field(src.schema()->field(requested[ci])->name(), sep);
         }
-        std::putchar('\n');
+        std::fputc('\n', out);
     }
 
     struct ChunkCursor {
@@ -17555,13 +17581,13 @@ static std::string write_delimited(TabularSource& src, const Config& cfg) {
             cursors.push_back({table.column(req_in_read[ci]).get()});
         for (int64_t r = 0; r < n_rows; ++r) {
             for (int ci = 0; ci < show_cols; ++ci) {
-                if (ci) std::putchar(sep);
+                if (ci) std::fputc(sep, out);
                 auto& cur = cursors[ci];
                 std::string val = cell_to_string(cur.current(), cur.row_in_chunk);
                 if (val != NULL_SYMBOL) write_csv_field(val, sep);
                 cur.advance();
             }
-            std::putchar('\n');
+            std::fputc('\n', out);
         }
     };
 
@@ -17573,12 +17599,14 @@ static std::string write_delimited(TabularSource& src, const Config& cfg) {
         std::shared_ptr<arrow::Table> table;
         if (src.read_first(rows_left, col_indices, &table).ok() && table) {
             print_rows(*table, std::min(table->num_rows(), rows_left));
+            export_count(std::min(table->num_rows(), rows_left));
             return "";
         }
         // Fall through to streaming path on error.
     }
 
     for (int c = 0; rows_left > 0; ++c) {
+        if (export_canceled()) return kExportCanceled;
         src.ensure(c);
         if (c >= src.num_chunks()) break;
 
@@ -17596,6 +17624,7 @@ static std::string write_delimited(TabularSource& src, const Config& cfg) {
         rows_left -= rg_rows;
 
         print_rows(*table, rg_rows);
+        export_count(rg_rows);
     }
     return "";
 }
@@ -17811,6 +17840,12 @@ static std::string write_parquet(TabularSource& src, const Config& cfg) {
     int64_t rows_left = (cfg.head_rows <= 0) ? INT64_MAX : (int64_t)cfg.head_rows;
     int64_t total = 0;
     for (int c = 0; rows_left > 0; ++c) {
+        if (export_canceled()) {
+            (void)writer->Close();
+            (void)sink->Close();
+            if (to_stdout) ::unlink(out_path.c_str());
+            return kExportCanceled;
+        }
         src.ensure(c);
         if (c >= src.num_chunks()) break;
         std::shared_ptr<arrow::Table> table;
@@ -17830,6 +17865,7 @@ static std::string write_parquet(TabularSource& src, const Config& cfg) {
         if (!st.ok()) return "WriteTable failed: " + st.ToString();
         total += take;
         rows_left -= take;
+        export_count(take);
     }
 
     auto cs = writer->Close();
@@ -17869,7 +17905,7 @@ static std::string write_parquet(TabularSource& src, const Config& cfg) {
         std::fprintf(stderr, "%s[%lld rows → stdout, %s]%s\n",
                      g_color.meta_key, (long long)total,
                      cfg.compression.c_str(), g_color.reset);
-    } else {
+    } else if (!t_export) {
         std::fprintf(stderr, "%s[%lld rows → %s, %s]%s\n",
                      g_color.meta_key, (long long)total,
                      cfg.parquet_out.c_str(), cfg.compression.c_str(),
@@ -17950,6 +17986,12 @@ static std::string write_arrow(TabularSource& src, const Config& cfg) {
     int64_t rows_left = (cfg.head_rows <= 0) ? INT64_MAX : (int64_t)cfg.head_rows;
     int64_t total = 0;
     for (int c = 0; rows_left > 0; ++c) {
+        if (export_canceled()) {
+            (void)writer->Close();
+            (void)sink->Close();
+            if (to_stdout) ::unlink(out_path.c_str());
+            return kExportCanceled;
+        }
         src.ensure(c);
         if (c >= src.num_chunks()) break;
         std::shared_ptr<arrow::Table> table;
@@ -17971,6 +18013,7 @@ static std::string write_arrow(TabularSource& src, const Config& cfg) {
         }
         total += take;
         rows_left -= take;
+        export_count(take);
     }
 
     auto cs = writer->Close();
@@ -18009,7 +18052,7 @@ static std::string write_arrow(TabularSource& src, const Config& cfg) {
         ::unlink(out_path.c_str());
         std::fprintf(stderr, "%s[%lld rows → stdout, %s]%s\n",
                      g_color.meta_key, (long long)total, clabel, g_color.reset);
-    } else {
+    } else if (!t_export) {
         std::fprintf(stderr, "%s[%lld rows → %s, %s]%s\n",
                      g_color.meta_key, (long long)total,
                      cfg.arrow_out.c_str(), clabel, g_color.reset);
@@ -18021,22 +18064,23 @@ static std::string write_arrow(TabularSource& src, const Config& cfg) {
 
 // Quote a string as a JSON string literal.
 static void json_emit_string(const std::string& v) {
-    std::putchar('"');
+    FILE* out = out_stream();
+    std::fputc('"', out);
     for (unsigned char c : v) {
         switch (c) {
-            case '"':  std::printf("\\\""); break;
-            case '\\': std::printf("\\\\"); break;
-            case '\b': std::printf("\\b");  break;
-            case '\f': std::printf("\\f");  break;
-            case '\n': std::printf("\\n");  break;
-            case '\r': std::printf("\\r");  break;
-            case '\t': std::printf("\\t");  break;
+            case '"':  std::fputs("\\\"", out); break;
+            case '\\': std::fputs("\\\\", out); break;
+            case '\b': std::fputs("\\b", out);  break;
+            case '\f': std::fputs("\\f", out);  break;
+            case '\n': std::fputs("\\n", out);  break;
+            case '\r': std::fputs("\\r", out);  break;
+            case '\t': std::fputs("\\t", out);  break;
             default:
-                if (c < 0x20) std::printf("\\u%04x", c);
-                else          std::putchar((int)c);
+                if (c < 0x20) std::fprintf(out, "\\u%04x", c);
+                else          std::fputc((int)c, out);
         }
     }
-    std::putchar('"');
+    std::fputc('"', out);
 }
 
 // Emit one Arrow cell as a JSON value. Numbers go bare, strings are
@@ -18045,11 +18089,12 @@ static void json_emit_string(const std::string& v) {
 // JSON string so the output stays parseable (good-enough v1; structured
 // nesting is a follow-up).
 static void json_emit_cell(const arrow::Array& arr, int64_t row) {
-    if (arr.IsNull(row)) { std::printf("null"); return; }
+    FILE* out = out_stream();
+    if (arr.IsNull(row)) { std::fputs("null", out); return; }
     switch (arr.type_id()) {
         case arrow::Type::BOOL:
-            std::printf(static_cast<const arrow::BooleanArray&>(arr).Value(row)
-                        ? "true" : "false");
+            std::fputs(static_cast<const arrow::BooleanArray&>(arr).Value(row)
+                       ? "true" : "false", out);
             return;
         case arrow::Type::INT8: case arrow::Type::INT16: case arrow::Type::INT32:
         case arrow::Type::INT64: case arrow::Type::UINT8: case arrow::Type::UINT16:
@@ -18057,7 +18102,7 @@ static void json_emit_cell(const arrow::Array& arr, int64_t row) {
         case arrow::Type::FLOAT: case arrow::Type::DOUBLE:
             // cell_to_string already produces a decimal representation
             // suitable for JSON for these types.
-            std::printf("%s", cell_to_string(arr, row).c_str());
+            std::fputs(cell_to_string(arr, row).c_str(), out);
             return;
         case arrow::Type::STRING: case arrow::Type::LARGE_STRING:
             json_emit_string(cell_to_string(arr, row));
@@ -18086,18 +18131,19 @@ static std::string write_json(TabularSource& src, const Config& cfg) {
     std::vector<int> read_set = have_filter
         ? union_with_filter(requested, fx) : requested;
 
+    FILE* out = out_stream();
     int64_t rows_left = (cfg.head_rows <= 0) ? INT64_MAX : (int64_t)cfg.head_rows;
     bool first_row = true;
-    if (cfg.json_array) std::putchar('[');
+    if (cfg.json_array) std::fputc('[', out);
 
     auto emit_row = [&](const arrow::Table& tbl, int64_t r) {
-        if (!first_row) std::printf(cfg.json_array ? ",\n" : "\n");
+        if (!first_row) std::fputs(cfg.json_array ? ",\n" : "\n", out);
         first_row = false;
-        std::putchar('{');
+        std::fputc('{', out);
         for (size_t k = 0; k < requested.size(); ++k) {
-            if (k) std::printf(", ");
+            if (k) std::fputs(", ", out);
             json_emit_string(src.schema()->field(requested[k])->name());
-            std::printf(": ");
+            std::fputs(": ", out);
             // Find the column position in `tbl` (it was loaded as read_set).
             int p = -1;
             for (size_t j = 0; j < read_set.size(); ++j)
@@ -18109,10 +18155,11 @@ static std::string write_json(TabularSource& src, const Config& cfg) {
                 off -= ch->length();
             }
         }
-        std::putchar('}');
+        std::fputc('}', out);
     };
 
     for (int c = 0; rows_left > 0; ++c) {
+        if (export_canceled()) return kExportCanceled;
         src.ensure(c);
         if (c >= src.num_chunks()) break;
         std::shared_ptr<arrow::Table> chunk;
@@ -18122,9 +18169,10 @@ static std::string write_json(TabularSource& src, const Config& cfg) {
         int64_t take = std::min(chunk->num_rows(), rows_left);
         for (int64_t r = 0; r < take; ++r) emit_row(*chunk, r);
         rows_left -= take;
+        export_count(take);
     }
-    if (cfg.json_array) std::printf("]\n");
-    else if (!first_row) std::putchar('\n');
+    if (cfg.json_array) std::fputs("]\n", out);
+    else if (!first_row) std::fputc('\n', out);
     return "";
 }
 
@@ -23357,6 +23405,118 @@ static std::string shorten_reader_error(std::string msg) {
     return msg;
 }
 
+// --tab NAME: replace `src` with its component tab NAME (AnnData obs/var/X, a
+// workbook sheet, …). Matching is case-insensitive: exact, or a prefix at a
+// word boundary so `--tab X` selects "X (preview)". Tabs are enumerated by
+// label without building them (lazy), so only the selected component is read.
+// Returns "" or an error listing the available tabs.
+static std::string select_tab(std::unique_ptr<TabularSource>& src,
+                              const std::string& tab) {
+    auto lc = [](std::string s) {
+        for (char& c : s) c = (char)std::tolower((unsigned char)c);
+        return s;
+    };
+    const std::string want = lc(tab);
+    auto matches = [&](const std::string& label) {
+        std::string a = lc(label);
+        if (a == want) return true;
+        return a.size() > want.size() &&
+               a.compare(0, want.size(), want) == 0 &&
+               (a[want.size()] == ' ' || a[want.size()] == '(' ||
+                a[want.size()] == '[');
+    };
+    std::vector<std::string> avail{ src->tab_label() };
+    if (matches(src->tab_label())) return "";
+    std::unique_ptr<TabularSource> chosen;
+    for (auto& sib : src->expand_tabs()) {
+        avail.push_back(sib->tab_label());
+        if (!chosen && matches(sib->tab_label())) chosen = std::move(sib);
+    }
+    if (!chosen) {
+        std::string list;
+        for (auto& a : avail) { if (!list.empty()) list += ", "; list += a; }
+        return "no tab named '" + tab + "'; available: " + list;
+    }
+    src = std::move(chosen);
+    return "";
+}
+
+std::string export_view(const Config& cfg_in, const std::string& out_path,
+                        ExportFormat format, ExportProgress* progress) {
+    namespace fs = std::filesystem;
+    Config cfg = cfg_in;
+    if (out_path.empty()) return "no output file";
+    std::error_code ec;
+    const fs::path in_p(cfg.path), out_p(out_path);
+    if (fs::exists(out_p, ec) && fs::equivalent(in_p, out_p, ec))
+        return "'" + out_path + "' is the input file; choose another name";
+    if (fs::is_directory(in_p, ec)) {
+        // A dataset directory is re-read on every open; a file written into it
+        // would join the dataset.
+        const fs::path dir  = fs::weakly_canonical(in_p, ec);
+        const fs::path dest = fs::weakly_canonical(out_p, ec).parent_path();
+        auto d = dest.begin(), r = dir.begin();
+        for (; r != dir.end() && d != dest.end() && *r == *d; ++r, ++d) {}
+        if (r == dir.end())
+            return "'" + out_path + "' is inside the input dataset directory; "
+                   "choose another location";
+    }
+
+    if (auto err = apply_region_modifiers(cfg); !err.empty()) return err;
+    std::unique_ptr<TabularSource> src;
+    if (auto err = open_source(cfg.path, cfg, &src); !err.empty() || !src)
+        return err.empty() ? "cannot open '" + cfg.path + "'" : err;
+    if (!cfg.tab.empty())
+        if (auto err = select_tab(src, cfg.tab); !err.empty()) return err;
+    if (!src->read_status().ok())
+        return shorten_reader_error(src->read_status().ToString());
+    if (!cfg.sort_col.empty()) {
+        if (auto err = build_sort(src, cfg); !err.empty()) return err;
+        cfg.filter_expr.clear();   // applied during the sort's materialisation
+    }
+    cfg.head_rows = 0; cfg.head_rows_set = false;
+    cfg.no_header = false;
+
+    const std::string part = out_path + ".part";
+    ExportSink sink;
+    sink.progress = progress;
+    FILE* f = nullptr;
+    if (format != ExportFormat::Parquet && format != ExportFormat::Arrow) {
+        f = std::fopen(part.c_str(), "wb");
+        if (!f) return "cannot write '" + part + "': " + std::strerror(errno);
+        sink.out = f;
+    }
+    std::string err;
+    t_export = &sink;
+    switch (format) {
+        case ExportFormat::Parquet: cfg.parquet_out = part; err = write_parquet(*src, cfg); break;
+        case ExportFormat::Arrow:   cfg.arrow_out   = part; err = write_arrow(*src, cfg);   break;
+        case ExportFormat::Tsv:     cfg.delimiter = '\t';   err = write_delimited(*src, cfg); break;
+        case ExportFormat::Csv:     cfg.delimiter = ',';    err = write_delimited(*src, cfg); break;
+        case ExportFormat::Json:    cfg.json_array = true;  err = write_json(*src, cfg);  break;
+        case ExportFormat::Ndjson:  cfg.json_lines = true;  err = write_json(*src, cfg);  break;
+    }
+    t_export = nullptr;
+    if (f) {
+        const bool bad = std::ferror(f) != 0;
+        if (std::fclose(f) != 0 || bad)
+            if (err.empty()) err = "write to '" + part + "' failed: " + std::strerror(errno);
+    }
+    if (err.empty() && !src->read_status().ok())
+        err = shorten_reader_error(src->read_status().ToString());
+    if (err.empty() && progress && progress->cancel.load()) err = kExportCanceled;
+    if (!err.empty()) {
+        std::remove(part.c_str());
+        return err;
+    }
+    fs::rename(part, out_p, ec);
+    if (ec) {
+        std::remove(part.c_str());
+        return "cannot rename '" + part + "' to '" + out_path + "': " + ec.message();
+    }
+    return "";
+}
+
 // ── --contigs: reference-sequence dictionary + assembly detection ─────────────
 //
 // Lists the sequences a genomics file is aligned / called against — the @SQ
@@ -23796,34 +23956,9 @@ int main(int argc, char** argv) {
     // selects "X (preview)". Tabs are enumerated by label without building
     // them (lazy), so only the selected component is read.
     if (!cfg.tab.empty()) {
-        auto lc = [](std::string s) {
-            for (char& c : s) c = (char)std::tolower((unsigned char)c);
-            return s;
-        };
-        const std::string want = lc(cfg.tab);
-        auto matches = [&](const std::string& label) {
-            std::string a = lc(label);
-            if (a == want) return true;
-            return a.size() > want.size() &&
-                   a.compare(0, want.size(), want) == 0 &&
-                   (a[want.size()] == ' ' || a[want.size()] == '(' ||
-                    a[want.size()] == '[');
-        };
-        std::vector<std::string> avail{ src->tab_label() };
-        if (!matches(src->tab_label())) {
-            std::unique_ptr<TabularSource> chosen;
-            for (auto& sib : src->expand_tabs()) {
-                avail.push_back(sib->tab_label());
-                if (!chosen && matches(sib->tab_label())) chosen = std::move(sib);
-            }
-            if (!chosen) {
-                std::string list;
-                for (auto& a : avail) { if (!list.empty()) list += ", "; list += a; }
-                report(cfg.path, "no tab named '" + cfg.tab +
-                                 "'; available: " + list);
-                return 1;
-            }
-            src = std::move(chosen);
+        if (auto terr = select_tab(src, cfg.tab); !terr.empty()) {
+            report(cfg.path, terr);
+            return 1;
         }
         // A component that failed to read (e.g. an HDF5 dataset compressed with
         // a codec this build lacks) is reported here, before any output mode

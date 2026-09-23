@@ -11,6 +11,7 @@
 // them only through the TabularSource base returned by open_source().
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -325,6 +326,29 @@ std::string open_source(const std::string& path, const Config& cfg,
 // are coordinate-agnostic. A frontend offering region queries calls this once
 // before open_source(). Returns "" on success or a human-readable error.
 std::string apply_region_modifiers(Config& cfg);
+
+// ── Export ───────────────────────────────────────────────────────────────────
+// Write the view `cfg` describes — the same options the CLI takes: --tab,
+// region options, --pileup / --tags / --gt-stats / --contigs, --filter,
+// --sort, --select — of cfg.path to `out_path`, through the CLI's own writers,
+// so the file equals `vv <options> --parquet/--arrow/--tsv/--csv/--json/
+// --ndjson`. Opens its own source (never a frontend's). Every row is written
+// (cfg.head_rows is ignored).
+//
+// Safe to run on a worker thread: `progress` (may be null) receives the
+// number of rows written so far, and setting progress->cancel stops the
+// export between chunks. The output is written to "<out_path>.part" and
+// renamed on success; on error or cancel it is removed and an existing
+// out_path is left untouched. Refuses an out_path that is the input file, or
+// that lies inside an input dataset directory. Returns "" on success,
+// "canceled", or a human-readable error.
+enum class ExportFormat { Parquet, Arrow, Tsv, Csv, Json, Ndjson };
+struct ExportProgress {
+    std::atomic<bool>    cancel{false};
+    std::atomic<int64_t> rows{0};
+};
+std::string export_view(const Config& cfg, const std::string& out_path,
+                        ExportFormat format, ExportProgress* progress);
 
 // ── Genomics header summary ──────────────────────────────────────────────────
 // What a BAM / CRAM / SAM or VCF / BCF header says about the file, read from

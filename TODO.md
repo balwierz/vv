@@ -339,7 +339,7 @@ analysis ranking. One PR per box; no stacked PRs.
 - [x] **Copy as vv command** (S) — `feat/vvg-copy-command` — puts the CLI line that reproduces the
   active tab (file, region, tags, GT-stats, contigs, filter, sort, visible
   columns) on the clipboard, shell-quoted.
-- [ ] **File → Export View As…** (M) — writes the active tab's view to
+- [x] **File → Export View As…** (M) — `feat/vvg-export-view` — writes the active tab's view to
   Parquet / Arrow / TSV / CSV / JSON by extension, on a worker thread with the
   existing progress bar and Cancel. Needs one exported entry point in
   `vvcore.hpp` (`export_source`) wrapping `open_source` + `build_sort` + the
