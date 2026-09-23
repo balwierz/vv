@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `genes` attribute tables. Integer layers stay integer-typed.
 
 ### Fixed
+- **vvg shows no rows for a filter that matches nothing.** The table model
+  used an empty row order to mean "unfiltered", so a filter with no matching
+  rows displayed the whole table (`Score > 1` on a file whose scores are all
+  below 1 showed 20 of 20 rows; the CLI returns 0), and Find searched those
+  rows. The view now shows zero rows, and the status bar reports `0 / 20`.
 - **The Dolphin thumbnailer and the metadata extractor stay within about a
   second per file.** Each thumbnail cell was laid out in full before being
   elided, so the cost grew with the longest string in the first rows (a long

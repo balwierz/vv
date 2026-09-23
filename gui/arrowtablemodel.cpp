@@ -91,7 +91,7 @@ int64_t ArrowTableModel::sourceTotal() const {
 }
 
 int64_t ArrowTableModel::viewRows() const {
-    if (!order_.empty()) return (int64_t)order_.size();
+    if (!identity_) return (int64_t)order_.size();
     return src_->total_rows() >= 0 ? src_->total_rows() : loaded_rows_;
 }
 
@@ -209,12 +209,12 @@ QVariant ArrowTableModel::headerData(int section, Qt::Orientation o, int role) c
 }
 
 bool ArrowTableModel::canFetchMore(const QModelIndex& parent) const {
-    if (parent.isValid() || computing_ || !order_.empty()) return false;
+    if (parent.isValid() || computing_ || !identity_) return false;
     return !fully_loaded_;
 }
 
 void ArrowTableModel::fetchMore(const QModelIndex& parent) {
-    if (parent.isValid() || computing_ || fully_loaded_ || !order_.empty()) return;
+    if (parent.isValid() || computing_ || fully_loaded_ || !identity_) return;
     int known = src_->num_chunks();
     src_->ensure(known);
     int now = src_->num_chunks();
@@ -303,6 +303,7 @@ std::vector<int64_t> ArrowTableModel::computeOrderVec(
 
 void ArrowTableModel::rebuildOrder() {
     order_ = computeOrderVec(filter_, hasFilter_, sortCol_, sortOrder_, nullptr);
+    identity_ = !hasFilter_ && order_.empty();
 }
 
 void ArrowTableModel::sortByDisplayColumn(int displayCol, Qt::SortOrder order) {
@@ -361,6 +362,7 @@ void ArrowTableModel::startRecompute() {
     auto cf = std::make_shared<std::atomic<bool>>(false);
     cancel_ = cf;
     pendingJob_ = Job::Order;
+    pendingHasFilter_ = hasFilter_;
     FilterExpr  fsnap = filter_;
     bool        hf    = hasFilter_;
     int         sc    = sortCol_;
@@ -389,6 +391,7 @@ void ArrowTableModel::onRecomputeDone() {
     }
     beginResetModel();
     order_ = watcher_->result();
+    identity_ = !pendingHasFilter_ && order_.empty();
     cache_.clear(); lru_.clear();
     invalidateFind();                        // match positions are view-relative
     computing_ = false;
@@ -478,8 +481,8 @@ ArrowTableModel::computeFindPos(QRegularExpression re,
     std::vector<int64_t> pos;
     if (cols == 0 || re.pattern().isEmpty()) return pos;
 
-    // Map source row -> view row. Empty order_ == identity (view == source).
-    const bool identity = order_.empty();
+    // Map source row -> view row (identity_: view == source).
+    const bool identity = identity_;
     std::unordered_map<int64_t, int64_t> inv;
     if (!identity) {
         inv.reserve(order_.size());
@@ -551,7 +554,7 @@ bool ArrowTableModel::stepSlice(int delta) {
     if (!src_->change_slice(delta, /*absolute=*/false, 0)) return false;
     beginResetModel();
     cache_.clear(); lru_.clear(); chunkFirstRow_.clear();   // source rebuilt
-    order_.clear(); sortCol_ = -1;
+    order_.clear(); identity_ = true; sortCol_ = -1;
     hasFilter_ = false; filter_ = FilterExpr{};
     invalidateFind();
     schema_ = src_->schema();
