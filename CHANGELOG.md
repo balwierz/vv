@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **vvg unpacks GFF/GTF attributes and VCF INFO.** A new **Expand**
+  toolbar toggle, on by default, opens GFF/GTF files with their `attributes`
+  column and VCF/BCF files with their `INFO` column unpacked into one column
+  per key, as the CLI's `--expand` does (a GENCODE v50 GFF3 opens with 19
+  attribute columns — `gene_id`, `gene_name`, `transcript_type`, `tag`, … —
+  beside the original 9). The expanded columns can be sorted and filtered;
+  Copy as vv Command and Export View As… include `--expand`. The column
+  comes from the new `packed_column_for()` in `vvcore.hpp`. `--expand` was
+  CLI-only: vvg had no way to set it.
 - **AnnData `.raw` tabs.** A file that keeps `.raw` (scanpy's raw counts
   over every gene beside a normalised, gene-subset `X`) opens with a
   `raw.X` tab — cells × raw genes, labelled by obs and by `raw/var`'s index

@@ -344,6 +344,12 @@ std::string open_source(const std::string& path, const Config& cfg,
 // before open_source(). Returns "" on success or a human-readable error.
 std::string apply_region_modifiers(Config& cfg);
 
+// The packed key=value column a file of this kind carries, for --expand:
+// "attributes" for GFF / GTF, "INFO" for VCF / BCF, "" for anything else.
+// Decided from the extension (a .gz / .zst wrapper is looked through), the
+// same way open_source() picks the reader, so no file is opened.
+std::string packed_column_for(const std::string& path);
+
 // ── Export ───────────────────────────────────────────────────────────────────
 // Write the view `cfg` describes — the same options the CLI takes: --tab,
 // region options, --pileup / --tags / --gt-stats / --contigs, --filter,

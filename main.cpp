@@ -23513,6 +23513,18 @@ static std::string shorten_reader_error(std::string msg) {
     return msg;
 }
 
+std::string packed_column_for(const std::string& path) {
+    std::string det = path;
+    if      (fends_ci(det, ".zstd")) det.resize(det.size() - 5);
+    else if (fends_ci(det, ".zst"))  det.resize(det.size() - 4);
+    if (fends_ci(det, ".gz")) det.resize(det.size() - 3);
+    if (fends_ci(det, ".gff") || fends_ci(det, ".gff3") || fends_ci(det, ".gtf"))
+        return "attributes";
+    if (fends_ci(det, ".vcf") || fends_ci(det, ".bcf"))
+        return "INFO";
+    return "";
+}
+
 // Why `mode` (e.g. "--tsv") must not run on `src`, or "" when it may. A mode
 // that writes or aggregates every row would otherwise present a capped preview
 // (an HDF5 / AnnData matrix, a wide NumPy array) as the whole dataset and exit
