@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **AnnData `obsp` / `varp` graphs as edge lists.** Each sparse (CSR / CSC)
+  pairwise graph — scanpy's neighbour `connectivities` and `distances`, a
+  `varp` gene graph — opens as a tab with one row per stored edge: `i`, `j`,
+  their obs (or var) names, and `weight`. It is streamed in 1M-edge chunks
+  straight from `indices` / `data`, never densified, so counts, filters,
+  sorts and exports cover every edge (a 3M-edge kNN graph: `--count` 0.04 s,
+  full TSV 1.2 s, 143 MB). The summary lists the graphs; a dense entry is
+  listed as not shown. `obsp` / `varp` were skipped without mention.
 - **vvg unpacks GFF/GTF attributes and VCF INFO.** A new **Expand**
   toolbar toggle, on by default, opens GFF/GTF files with their `attributes`
   column and VCF/BCF files with their `INFO` column unpacked into one column

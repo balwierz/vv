@@ -2611,6 +2611,30 @@ if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
         assert_contains "h5ad_${RN}_summary" "$("$VV" --tab summary --tsv "$DATA/$RF")" \
             "$(printf 'raw.var\t5 rows, 2 columns')"
     done
+    # obsp / varp graphs open as streamed edge lists (i, j, names, weight):
+    # CSR row-major, CSC with its axes swapped back, varp labelled by var.
+    if [ -f "$DATA/tiny.obsp.h5ad" ]; then
+        OP="$DATA/tiny.obsp.h5ad"
+        assert_eq_file_inline "h5ad_obsp_tabs" "$("$VV" --list-tabs "$OP" | tr '\n' '|')" \
+            "summary|X|obs|var|obsp[connectivities]|obsp[distances]|varp[corr]|"
+        assert_eq_file_inline "h5ad_obsp_csr" "$("$VV" --tab 'obsp[connectivities]' --tsv "$OP" | tr '\t\n' ',;')" \
+            "i,j,obs_i,obs_j,weight;0,1,cell0,cell1,0.5;0,2,cell0,cell2,0.25;1,0,cell1,cell0,0.5;3,2,cell3,cell2,1;"
+        assert_eq_file_inline "h5ad_obsp_csc" "$("$VV" --tab 'obsp[distances]' --tsv --no-header "$OP" | tr '\t\n' ',;')" \
+            "0,1,cell0,cell1,2;2,3,cell2,cell3,3;"
+        assert_eq_file_inline "h5ad_varp" "$("$VV" --tab 'varp[corr]' --tsv "$OP" | tr '\t\n' ',;')" \
+            "i,j,var_i,var_j,weight;2,0,gC,gA,0.9;"
+        assert_eq_file_inline "h5ad_obsp_count" "$("$VV" --tab 'obsp[connectivities]' --count "$OP")" "4"
+        assert_eq_file_inline "h5ad_obsp_filter_sort" \
+            "$("$VV" --tab 'obsp[connectivities]' --filter 'weight >= 0.5' --sort weight:desc --tsv --no-header --select obs_i,obs_j "$OP" | tr '\t\n' ',;')" \
+            "cell3,cell2;cell0,cell1;cell1,cell0;"
+        assert_contains "h5ad_obsp_summary" "$("$VV" --tab summary --tsv "$OP")" \
+            "$(printf 'obsp\tconnectivities, distances')"
+    fi
+    if [ -f "$DATA/tiny.badobsp.h5ad" ]; then
+        assert_eq_file_inline "h5ad_badobsp_bounded" \
+            "$("$VV" --tab 'obsp[connectivities]' --tsv --no-header "$DATA/tiny.badobsp.h5ad" | tr '\t\n' ',;')" \
+            "0,1,cell0,cell1,1;0,99,cell0,,2;0,-3,cell0,,3;"
+    fi
     # obs / var are read in full for an export; a matrix tab is only ever a
     # preview (here 3 cells × the first 200 of 250 genes). Exporting it is
     # refused rather than written as the whole matrix; --count needs only the
