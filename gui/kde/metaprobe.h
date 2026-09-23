@@ -12,7 +12,10 @@ struct VvMeta {
     int         cols = 0;
     QString     schema;           // "name:type, name:type, …" (capped)
     QString     footer;           // source footer (codec, row groups, …)
-    QString     generator;        // created_by(), if any
+    QString     generator;        // created_by(), or the header's programs
+                                  // (@PG / ##source) for BAM / SAM / VCF / BCF
+    QString     genomic;          // BAM / SAM / VCF / BCF header summary:
+                                  // "Reference sequences: 25 · Assembly: …"
 };
 
 VvMeta vv_probe_meta(const QString& path);

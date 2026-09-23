@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Header summary for alignment and variant files.** `--contigs` now also
+  reports the sort order (`@HD SO`), the number of read groups, the distinct
+  samples (`@RG SM`, or the VCF sample columns) and the distinct programs that
+  produced the file (`@PG` name and version, or VCF `##source`), still from the
+  header alone. Dolphin's Information panel shows the same summary for BAM,
+  SAM, VCF and BCF files as their description, and the programs as the
+  generator, in place of their fixed column list.
 - **Genomic file types for KDE / freedesktop desktops.** Without them,
   `.vcf` files opened as vCards, `.bam` / `.bcf` / `.vcf.gz` in an archive
   tool, `.sam` as a Lotus AmiPro document, and `.bed`, `.gtf`, `.fa`,

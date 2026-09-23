@@ -178,6 +178,17 @@ jobs:
           ./build-gui/gui/kde/vvkdetest tests/data/tiny.xlsx >/dev/null
           out=$(./build-gui/gui/kde/vvkdetest --allow-empty "$RUNNER_TEMP/padded.xlsx")
           grep -q '^thumbnail: NULL' <<<"$out" && grep -q '^meta: ok=0' <<<"$out"
+          # Information panel for alignment / variant files: the header summary
+          # (reference, assembly, sort order, read groups, samples) and the
+          # producing programs (@PG PN+VN / ##source) as the generator.
+          printf '@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr1\tLN:248956422\n@RG\tID:rg1\tSM:NA12878\n@PG\tID:bwa\tPN:bwa\tVN:0.7.17\nr1\t0\tchr1\t100\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n' > "$RUNNER_TEMP/hdr.sam"
+          out=$(./build-gui/gui/kde/vvkdetest "$RUNNER_TEMP/hdr.sam")
+          grep -qxF '  genomic=Reference sequences: 1 · Assembly: GRCh38 / hg38 (Homo sapiens) · Sorted: coordinate · Read groups: 1 · Samples: NA12878' <<<"$out"
+          grep -qxF '  generator=bwa 0.7.17' <<<"$out"
+          printf '##fileformat=VCFv4.2\n##source=HaplotypeCaller\n##contig=<ID=chr1,length=248956422>\n##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tA\tB\nchr1\t10\t.\tA\tG\t50\tPASS\t.\tGT\t0/1\t1/1\n' > "$RUNNER_TEMP/hc.vcf"
+          out=$(./build-gui/gui/kde/vvkdetest "$RUNNER_TEMP/hc.vcf")
+          grep -qxF '  genomic=Reference sequences: 1 · Assembly: GRCh38 / hg38 (Homo sapiens) · Samples: A, B' <<<"$out"
+          grep -qxF '  generator=HaplotypeCaller' <<<"$out"
           # Model path end-to-end through libvvcore. Column sort must actually
           # reorder the rows (not just toggle the header indicator): tiny.parquet
           # column 0 is chr1/chr2, so the ascending and descending first rows

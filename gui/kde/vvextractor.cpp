@@ -67,8 +67,13 @@ public:
             result->add(Property::LineCount, (qlonglong)m.rows);
         if (!m.generator.isEmpty())
             result->add(Property::Generator, m.generator);
-        QString desc = QString::number(m.cols) + QStringLiteral(" columns");
-        if (!m.schema.isEmpty()) desc += QStringLiteral(" — ") + m.schema;
+        // Alignment / variant files have a fixed column layout; their header
+        // summary (reference, assembly, samples, …) says more than the schema.
+        QString desc = m.genomic;
+        if (desc.isEmpty()) {
+            desc = QString::number(m.cols) + QStringLiteral(" columns");
+            if (!m.schema.isEmpty()) desc += QStringLiteral(" — ") + m.schema;
+        }
         result->add(Property::Description, desc);
         if (!m.footer.isEmpty())
             result->add(Property::Comment, m.footer);

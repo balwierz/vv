@@ -15,6 +15,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <utility>
 
 #include <arrow/api.h>
 #include <arrow/type.h>
@@ -324,6 +325,32 @@ std::string open_source(const std::string& path, const Config& cfg,
 // are coordinate-agnostic. A frontend offering region queries calls this once
 // before open_source(). Returns "" on success or a human-readable error.
 std::string apply_region_modifiers(Config& cfg);
+
+// ── Genomics header summary ──────────────────────────────────────────────────
+// What a BAM / CRAM / SAM or VCF / BCF header says about the file, read from
+// the header alone (no records, so a CRAM never needs its reference). Backs
+// `--contigs` and the KDE metadata extractor.
+struct GenomicHeader {
+    std::vector<std::string> contig_names;    // @SQ SN / ##contig ID, in order
+    std::vector<int64_t>     contig_lengths;  // <= 0: not stated in the header
+    std::string              assembly;        // e.g. "GRCh38 / hg38 (Homo sapiens)"
+    std::string              sort_order;      // @HD SO (alignments)
+    int64_t                  read_groups = 0; // @RG lines (alignments)
+    std::vector<std::string> samples;         // distinct @RG SM / VCF sample columns
+    std::vector<std::string> programs;        // distinct @PG "PN VN" / VCF ##source
+};
+
+// Read `path`'s header into `out`. `reference` is an optional FASTA for CRAM
+// (may be empty). Returns "" on success or a human-readable error, including
+// for files that are not BAM / CRAM / SAM / VCF / BCF.
+std::string read_genomic_header(const std::string& path, const std::string& reference,
+                                GenomicHeader* out);
+
+// The header summary as ordered (label, value) pairs, omitting what the header
+// does not state: "Reference sequences", "Assembly", "Sorted", "Read groups",
+// "Samples", "Programs". Long sample / program lists are abbreviated.
+std::vector<std::pair<std::string, std::string>>
+genomic_header_fields(const GenomicHeader& h);
 
 // ── Column-width planning ────────────────────────────────────────────────────
 // Frontend-agnostic width heuristic shared by the TUI and the Qt GUI. Works in
