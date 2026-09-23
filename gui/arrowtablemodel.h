@@ -122,7 +122,7 @@ private:
     // forward for streaming sources. Returns -1 if the row is out of range.
     int                chunkIndexForRow(int64_t srcRow) const;
     int64_t   sourceRow(int viewRow) const {
-        return order_.empty() ? (int64_t)viewRow : order_[viewRow];
+        return identity_ ? (int64_t)viewRow : order_[viewRow];
     }
     QString   cellText(int viewRow, int dispCol) const;
     QString   rawCellText(int viewRow, int dispCol) const;
@@ -161,7 +161,11 @@ private:
     // so it is cleared only when the source rebuilds (stepSlice / re-open).
     mutable std::vector<int64_t>       chunkFirstRow_;
 
-    std::vector<int64_t> order_;          // display row -> source row; empty = identity
+    std::vector<int64_t> order_;          // display row -> source row (unless identity_)
+    // The view is the source as-is (no filter, no sort), and order_ is unused.
+    // Kept separately from order_.empty(): a filter that matches nothing also
+    // leaves order_ empty, and that view has zero rows, not all of them.
+    bool                 identity_  = true;
     int                  sortCol_   = -1;
     Qt::SortOrder        sortOrder_ = Qt::AscendingOrder;
     FilterExpr           filter_;
@@ -177,6 +181,7 @@ private:
     std::shared_ptr<std::atomic<bool>>    cancel_;   // worker holds a copy
     bool                                  computing_ = false;
     Job                                   pendingJob_ = Job::None;
+    bool                                  pendingHasFilter_ = false;  // for Job::Order
     QRegularExpression                    pendingRe_;     // for Job::Find
 
     // Precomputed match positions (viewRow*cols + col), ascending. Valid for

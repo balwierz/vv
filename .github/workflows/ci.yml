@@ -229,6 +229,12 @@ jobs:
           test "$(eval "./build-gui/vv ${cmd#vv } --tsv" | head -2 | tr '\t\n' ',;')" = 'Chr,Start,Score;chr2,7100,0.95;'
           out=$(VVG_WINTEST=1 VVG_COPYCMD=1 VVG_TAB=2 ./build-gui/gui/vvg tests/data/tiny.dense.h5ad)
           grep -q "^cmd=vv --tab obs $PWD/tests/data/tiny.dense.h5ad\$" <<<"$out"
+          # A filter that matches nothing leaves zero rows (not the whole
+          # table), both off-thread and inline, and find sees none of them.
+          VVG_WINTEST=1 VVG_AFILTER='Score > 1' VVG_AFIND='chr' ./build-gui/gui/vvg tests/data/tiny.parquet \
+            | tr '\n' ' ' | grep -q "afilter 'Score > 1' -> rows=0 afind 'chr' -> matches=0"
+          VVG_SELFTEST=1 VVG_FILTER='Score > 1' ./build-gui/gui/vvg tests/data/tiny.parquet \
+            | grep -q "filter 'Score > 1' -> 0/20 rows"
           # The session toolbar exposes the new open-time options through the same
           # reopen path as region/pileup. --tags adds a column per aux tag (11 SAM
           # columns + NM,AS = 13); --gt-stats adds 9 genotype columns to the BCF's
@@ -428,6 +434,12 @@ jobs:
             | grep -q 'rows=3'
           VVG_WINTEST=1 VVG_AFILTER='Score > 0.2' ./build/gui/vvg tests/data/tiny.parquet \
             | grep -q 'afilter .* rows=16'
+          # A filter that matches nothing leaves zero rows (not the whole
+          # table), both off-thread and inline, and find sees none of them.
+          VVG_WINTEST=1 VVG_AFILTER='Score > 1' VVG_AFIND='chr' ./build/gui/vvg tests/data/tiny.parquet \
+            | tr '\n' ' ' | grep -q "afilter 'Score > 1' -> rows=0 afind 'chr' -> matches=0"
+          VVG_SELFTEST=1 VVG_FILTER='Score > 1' ./build/gui/vvg tests/data/tiny.parquet \
+            | grep -q "filter 'Score > 1' -> 0/20 rows"
           VVG_WINTEST=1 VVG_AFIND='chr1' ./build/gui/vvg tests/data/tiny.parquet \
             | grep -q 'afind .* matches=12'
           if [ -f tests/data/tiny.dense.h5ad ]; then
