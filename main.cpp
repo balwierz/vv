@@ -10578,6 +10578,14 @@ static std::string h5_read_failure(hid_t dset) {
 // obs/var row labels are read best-effort — build_table then fails the tab
 // instead of showing a table with columns silently zeroed or missing.
 static thread_local std::string t_h5_read_error;
+// Set by a tab builder that reads only part of a dataset (the preview caps):
+// the shown and full shape. Collected by Hdf5Source::build_table, the same way
+// as t_h5_read_error, so the cap sites need no extra parameters.
+static thread_local PreviewLimit t_h5_preview;
+static void h5_note_preview(int64_t shown_rows, int64_t full_rows,
+                            int64_t shown_cols, int64_t full_cols) {
+    t_h5_preview = PreviewLimit{shown_rows, full_rows, shown_cols, full_cols};
+}
 
 // H5Dread that records the first failure in t_h5_read_error.
 static herr_t h5_read(hid_t dset, hid_t memtype, hid_t ms, hid_t fs, void* buf) {
@@ -10917,6 +10925,7 @@ read_1d_dataset_table(hid_t dataset, int64_t row_cap = -1,
                       int64_t* full_rows = nullptr);
 static arrow::Result<std::shared_ptr<arrow::Table>>
 read_sparse_preview(hid_t group, int64_t row_cap);
+static int64_t h5_len_1d(hid_t d);
 static arrow::Result<std::shared_ptr<arrow::Table>>
 read_sparse_preview_as(hid_t group, int64_t n_rows, int64_t n_cols, bool is_csr,
                        int64_t row_cap);
@@ -10985,6 +10994,8 @@ class Hdf5Source : public WorkbookSource {
     // view, or -1 (all) / an explicit -n for a delimited dump — set from cfg in
     // open_source and inherited by sibling tabs. Matrix / sparse X ignore it.
     int64_t df_row_cap_ = kDataFrameRowCap;
+    // The shown / full shape when this tab is a capped preview (preview_limit).
+    mutable PreviewLimit limit_;
 
     Hdf5Source(std::shared_ptr<arrow::Table> tbl,
                 std::string path,
@@ -11025,7 +11036,8 @@ class Hdf5Source : public WorkbookSource {
         auto* self = const_cast<Hdf5Source*>(this);
         std::shared_ptr<arrow::Table> tbl;
         std::string footer;
-        std::string err = build_table(*file_, spec_, &tbl, &footer, df_row_cap_);
+        std::string err = build_table(*file_, spec_, &tbl, &footer, df_row_cap_,
+                                      &self->limit_);
         if (!err.empty() || !tbl) {
             // Surface the failure as a one-cell table instead of crashing a
             // null-table access (matches the eager path's graceful skip).
@@ -11049,9 +11061,12 @@ class Hdf5Source : public WorkbookSource {
                                     const OpenSpec& spec,
                                     std::shared_ptr<arrow::Table>* out,
                                     std::string* footer,
-                                    int64_t df_row_cap = kDataFrameRowCap) {
+                                    int64_t df_row_cap = kDataFrameRowCap,
+                                    PreviewLimit* limit = nullptr) {
         t_h5_read_error.clear();
+        t_h5_preview = PreviewLimit{};
         std::string err = build_table_impl(file_id, spec, out, footer, df_row_cap);
+        if (limit) *limit = t_h5_preview;
         std::string read_err;
         read_err.swap(t_h5_read_error);
         if (!read_err.empty()) {
@@ -11122,6 +11137,7 @@ class Hdf5Source : public WorkbookSource {
                 int64_t ncol  = *out ? (*out)->num_columns() : 0;
                 *footer = "Format: AnnData " + spec.display +
                           "  |  Cols: " + std::to_string(ncol);
+                h5_note_preview(shown, full, ncol, ncol);
                 if (shown < full)   // preview note so the cap isn't read as the real size
                     *footer += "  |  preview: first " + std::to_string(shown) +
                                " of " + std::to_string(full) + " rows";
@@ -11144,6 +11160,7 @@ class Hdf5Source : public WorkbookSource {
                 // real shape.
                 int64_t sr = *out ? (*out)->num_rows() : 0;
                 int64_t sc = *out ? (*out)->num_columns() : 0;
+                h5_note_preview(sr, fr, sc, fc);
                 if (sr < fr || sc < fc) {
                     std::string note = "preview: ";
                     if (sr < fr)
@@ -11166,16 +11183,18 @@ class Hdf5Source : public WorkbookSource {
             case OpenSpec::Kind::Dataset1D: {
                 hid_t d = H5Dopen2(file_id, spec.h5_path.c_str(), H5P_DEFAULT);
                 if (d < 0) return "Cannot open dataset " + spec.h5_path;
-                // Cap the read: a generic HDF5 1-D dataset can be millions of
-                // elements (e.g. a per-read array), and reading it in full
-                // stalls / OOMs. Preview the head; report the real length.
+                // Cap the read like an obs/var column (df_row_cap): a generic
+                // HDF5 1-D dataset can be millions of elements (e.g. a per-read
+                // array), so the TUI / table view previews the head, while a
+                // mode that needs every row reads it all (see open_source).
                 int64_t full = 0;
-                auto r = read_1d_dataset_table(d, kDense2DRowCap, &full);
+                auto r = read_1d_dataset_table(d, df_row_cap, &full);
                 H5Dclose(d);
                 if (!r.ok()) return r.status().ToString();
                 *out = *r;
                 *footer = "Format: HDF5 1D " + spec.display;
                 int64_t shown = *out ? (*out)->num_rows() : 0;
+                h5_note_preview(shown, full, 1, 1);
                 if (shown < full)   // preview note so the cap isn't read as the real size
                     *footer += "  |  preview: first " + std::to_string(shown) +
                                " of " + std::to_string(full) + " rows";
@@ -11196,9 +11215,22 @@ class Hdf5Source : public WorkbookSource {
                 hid_t g = H5Gopen2(file_id, spec.h5_path.c_str(), H5P_DEFAULT);
                 if (g < 0) return "Cannot open sparse group " + spec.h5_path;
                 auto r = read_sparse_preview(g, 1000);
+                // The full shape for preview_limit: the `shape` attribute,
+                // with the compressed axis clamped to what indptr can describe
+                // (the attribute is untrusted; the reader clamps the same way).
+                int64_t shape[2] = {0, 0};
+                read_shape2(g, "shape", shape);
+                const bool csr = read_string_attr(g, "encoding-type") == "csr_matrix";
+                if (hid_t ip = H5Dopen2(g, "indptr", H5P_DEFAULT); ip >= 0) {
+                    int64_t& major = csr ? shape[0] : shape[1];
+                    major = std::min<int64_t>(major, std::max<int64_t>(0, h5_len_1d(ip) - 1));
+                    H5Dclose(ip);
+                }
                 H5Gclose(g);
                 if (!r.ok()) return r.status().ToString();
                 *out = *r;
+                h5_note_preview((*out)->num_rows(), std::max<int64_t>(shape[0], (*out)->num_rows()),
+                                (*out)->num_columns(), std::max<int64_t>(shape[1], (*out)->num_columns()));
                 *footer = "Format: AnnData " + spec.display +
                           "  |  preview: first " +
                           std::to_string((*out)->num_rows()) + " rows";
@@ -11223,7 +11255,8 @@ class Hdf5Source : public WorkbookSource {
                                   int64_t df_row_cap = kDataFrameRowCap) {
         std::shared_ptr<arrow::Table> tbl;
         std::string footer;
-        std::string err = build_table(*file, spec, &tbl, &footer, df_row_cap);
+        PreviewLimit limit;
+        std::string err = build_table(*file, spec, &tbl, &footer, df_row_cap, &limit);
         if (!err.empty()) return err;
         if (!tbl)
             return "'" + spec.h5_path + "': decoded to empty table";
@@ -11235,6 +11268,7 @@ class Hdf5Source : public WorkbookSource {
                                     std::move(file), std::move(spec),
                                     std::move(all), std::move(siblings),
                                     df_row_cap));
+        (*out)->limit_ = limit;
         return "";
     }
 
@@ -11274,6 +11308,9 @@ public:
     }
     std::vector<std::string> hidden_for_display() const override {
         ensure_built(); return MemoryTableSource::hidden_for_display();
+    }
+    PreviewLimit preview_limit() const override {
+        ensure_built(); return limit_;
     }
 
     std::vector<std::unique_ptr<TabularSource>>
@@ -12383,6 +12420,7 @@ static std::string build_tenx_table(hid_t file_id, const OpenSpec& spec, int64_t
             if (ac.ok()) t = *ac;
         }
         *out = t;
+        h5_note_preview(nr, nb, nc, nf);
         *footer = "Format: 10x Genomics HDF5 matrix  |  preview: first " + std::to_string(nr) +
                   " of " + std::to_string(nb) + " barcodes, first " + std::to_string(nc) +
                   " of " + std::to_string(nf) + " features  |  shown cells \xc3\x97 features "
@@ -12430,6 +12468,7 @@ static std::string build_tenx_table(hid_t file_id, const OpenSpec& spec, int64_t
         if (t) {
             *out = t;
             int64_t shown = t->num_rows();
+            h5_note_preview(shown, full, t->num_columns(), t->num_columns());
             *footer = "Format: 10x Genomics features";
             *footer += shown < full ? "  |  preview: first " + std::to_string(shown) + " of " +
                                       std::to_string(full) + " rows"
@@ -12445,6 +12484,7 @@ static std::string build_tenx_table(hid_t file_id, const OpenSpec& spec, int64_t
             auto rn = (*r)->RenameColumns({"barcode"});
             *out = rn.ok() ? *rn : *r;
             int64_t shown = (*out)->num_rows();
+            h5_note_preview(shown, full, 1, 1);
             *footer = "Format: 10x Genomics barcodes";
             *footer += shown < full ? "  |  preview: first " + std::to_string(shown) + " of " +
                                       std::to_string(full) + " rows"
@@ -12559,6 +12599,7 @@ static std::string build_loom_table(hid_t file_id, const OpenSpec& spec, int64_t
         if (!r.ok()) return r.status().ToString();
         *out = *r;
         int64_t shown = (*out)->num_rows();
+        h5_note_preview(shown, full, (*out)->num_columns(), (*out)->num_columns());
         *footer = "Format: Loom " + spec.display + " (" + spec.h5_path.substr(1) + ")";
         *footer += shown < full ? "  |  preview: first " + std::to_string(shown) + " of " +
                                   std::to_string(full) + " rows"
@@ -12642,6 +12683,7 @@ static std::string build_loom_table(hid_t file_id, const OpenSpec& spec, int64_t
         cols.push_back(a);
     }
     *out = arrow::Table::Make(arrow::schema(fields), cols, nc);
+    h5_note_preview(nc, C, ng, G);   // shown cells × genes (stored genes × cells)
     *footer = "Format: Loom " + spec.display + "  |  preview: first " + std::to_string(nc) +
               " of " + std::to_string(C) + " cells, first " + std::to_string(ng) + " of " +
               std::to_string(G) + " genes  |  shown cells \xc3\x97 genes (stored genes \xc3\x97 cells)";
@@ -13182,6 +13224,7 @@ class NpzSource : public WorkbookSource {
     std::shared_ptr<std::vector<Entry>> archive_;   // shared across siblings
     OpenSpec    spec_;
     std::vector<OpenSpec> siblings_;
+    PreviewLimit limit_;   // set when a 2-D / sliced array exceeds kNpzMaxCols
 
     NpzSource(std::shared_ptr<arrow::Table> table,
                std::string path,
@@ -13206,7 +13249,9 @@ class NpzSource : public WorkbookSource {
     static std::string build_table(const std::vector<Entry>& a,
                                     const OpenSpec& spec,
                                     std::shared_ptr<arrow::Table>* tbl,
-                                    std::string* footer) {
+                                    std::string* footer,
+                                    PreviewLimit* limit = nullptr) {
+        if (limit) *limit = PreviewLimit{};
         if (spec.is_summary) {
             arrow::StringBuilder nb, sb, db, kb;
             for (const auto& e : a) {
@@ -13278,6 +13323,9 @@ class NpzSource : public WorkbookSource {
                       "  |  Array: " + e->name +
                       "  |  " + shape_str(h.shape) +
                       "  |  dtype: " + h.dtype_str;
+            if (limit)
+                *limit = PreviewLimit{(*tbl)->num_rows(), (*tbl)->num_rows(),
+                                      (*tbl)->num_columns(), full_c};
             if ((*tbl)->num_columns() < full_c)
                 *footer += "  |  showing first " +
                            std::to_string((*tbl)->num_columns()) + " of " +
@@ -13326,6 +13374,9 @@ class NpzSource : public WorkbookSource {
                   "  |  slice " + slice_desc +
                   " (" + std::to_string(idx + 1) + "/" + std::to_string(leading)
                   + ")  |  [ / ] step slice  •  :slice N jumps";
+        if (limit)
+            *limit = PreviewLimit{(*tbl)->num_rows(), (*tbl)->num_rows(),
+                                  (*tbl)->num_columns(), full_c};
         if ((*tbl)->num_columns() < full_c)
             *footer += "  |  showing first " +
                        std::to_string((*tbl)->num_columns()) + " of " +
@@ -13340,7 +13391,8 @@ class NpzSource : public WorkbookSource {
                                    std::unique_ptr<NpzSource>* out) {
         std::shared_ptr<arrow::Table> tbl;
         std::string footer;
-        std::string err = build_table(*archive, spec, &tbl, &footer);
+        PreviewLimit limit;
+        std::string err = build_table(*archive, spec, &tbl, &footer, &limit);
         if (!err.empty()) return err;
         if (!siblings.empty())
             footer += "  |  +" + std::to_string(siblings.size()) +
@@ -13348,6 +13400,7 @@ class NpzSource : public WorkbookSource {
         out->reset(new NpzSource(std::move(tbl), path, std::move(footer),
                                    std::move(archive), std::move(spec),
                                    std::move(siblings)));
+        (*out)->limit_ = limit;
         return "";
     }
 
@@ -13419,6 +13472,7 @@ public:
     std::string tab_label() const override {
         return spec_.is_summary ? std::string("summary") : spec_.entry_name;
     }
+    PreviewLimit preview_limit() const override { return limit_; }
 
     std::vector<std::unique_ptr<TabularSource>>
     open_sibling_sheets() const override {
@@ -13451,9 +13505,11 @@ public:
         // Rebuild the underlying table + footer in place.
         std::shared_ptr<arrow::Table> tbl;
         std::string footer;
-        std::string err = build_table(*archive_, spec_, &tbl, &footer);
+        PreviewLimit limit;
+        std::string err = build_table(*archive_, spec_, &tbl, &footer, &limit);
         if (!err.empty()) return false;
         replace_table(std::move(tbl), std::move(footer));
+        limit_ = limit;
         return true;
     }
 };
@@ -23405,6 +23461,28 @@ static std::string shorten_reader_error(std::string msg) {
     return msg;
 }
 
+// Why `mode` (e.g. "--tsv") must not run on `src`, or "" when it may. A mode
+// that writes or aggregates every row would otherwise present a capped preview
+// (an HDF5 / AnnData matrix, a wide NumPy array) as the whole dataset and exit
+// 0. `rows_wanted`: how many rows the mode reads (-n), or -1 for all — a row
+// cap matters only when the mode wants more rows than the preview holds.
+// `cols_matter`: false for a mode that only counts rows (--count).
+static std::string preview_refusal(const TabularSource& src, const std::string& mode,
+                                   int64_t rows_wanted = -1, bool cols_matter = true) {
+    const PreviewLimit l = src.preview_limit();
+    const bool rows_short = l.rows_capped() &&
+                            (rows_wanted < 0 || rows_wanted > l.shown_rows);
+    if (!rows_short && !(cols_matter && l.cols_capped())) return "";
+    auto shape = [](int64_t r, int64_t c) {
+        return std::to_string(r) + " \xc3\x97 " + std::to_string(c);
+    };
+    return "tab '" + src.tab_label() + "' is a " + shape(l.shown_rows, l.shown_cols) +
+           " preview of a " + shape(l.full_rows, l.full_cols) +
+           " (rows \xc3\x97 columns) matrix; " + mode +
+           " would give the preview as if it were the whole matrix. vv reads "
+           "matrices only as previews; use the TUI or the table view to look at it";
+}
+
 // --tab NAME: replace `src` with its component tab NAME (AnnData obs/var/X, a
 // workbook sheet, …). Matching is case-insensitive: exact, or a prefix at a
 // word boundary so `--tab X` selects "X (preview)". Tabs are enumerated by
@@ -23462,6 +23540,19 @@ std::string export_view(const Config& cfg_in, const std::string& out_path,
                    "choose another location";
     }
 
+    // The output mode is set before the source opens: readers size their
+    // previews by it (an AnnData obs / var is read in full only when every row
+    // will be written).
+    const std::string part = out_path + ".part";
+    const char* mode = "";
+    switch (format) {
+        case ExportFormat::Parquet: cfg.parquet_out = part; mode = "a Parquet export"; break;
+        case ExportFormat::Arrow:   cfg.arrow_out   = part; mode = "an Arrow export";  break;
+        case ExportFormat::Tsv:     cfg.delimiter = '\t';   mode = "a TSV export";     break;
+        case ExportFormat::Csv:     cfg.delimiter = ',';    mode = "a CSV export";     break;
+        case ExportFormat::Json:    cfg.json_array = true;  mode = "a JSON export";    break;
+        case ExportFormat::Ndjson:  cfg.json_lines = true;  mode = "an NDJSON export"; break;
+    }
     if (auto err = apply_region_modifiers(cfg); !err.empty()) return err;
     std::unique_ptr<TabularSource> src;
     if (auto err = open_source(cfg.path, cfg, &src); !err.empty() || !src)
@@ -23470,6 +23561,7 @@ std::string export_view(const Config& cfg_in, const std::string& out_path,
         if (auto err = select_tab(src, cfg.tab); !err.empty()) return err;
     if (!src->read_status().ok())
         return shorten_reader_error(src->read_status().ToString());
+    if (auto err = preview_refusal(*src, mode); !err.empty()) return err;
     if (!cfg.sort_col.empty()) {
         if (auto err = build_sort(src, cfg); !err.empty()) return err;
         cfg.filter_expr.clear();   // applied during the sort's materialisation
@@ -23477,7 +23569,6 @@ std::string export_view(const Config& cfg_in, const std::string& out_path,
     cfg.head_rows = 0; cfg.head_rows_set = false;
     cfg.no_header = false;
 
-    const std::string part = out_path + ".part";
     ExportSink sink;
     sink.progress = progress;
     FILE* f = nullptr;
@@ -23489,12 +23580,12 @@ std::string export_view(const Config& cfg_in, const std::string& out_path,
     std::string err;
     t_export = &sink;
     switch (format) {
-        case ExportFormat::Parquet: cfg.parquet_out = part; err = write_parquet(*src, cfg); break;
-        case ExportFormat::Arrow:   cfg.arrow_out   = part; err = write_arrow(*src, cfg);   break;
-        case ExportFormat::Tsv:     cfg.delimiter = '\t';   err = write_delimited(*src, cfg); break;
-        case ExportFormat::Csv:     cfg.delimiter = ',';    err = write_delimited(*src, cfg); break;
-        case ExportFormat::Json:    cfg.json_array = true;  err = write_json(*src, cfg);  break;
-        case ExportFormat::Ndjson:  cfg.json_lines = true;  err = write_json(*src, cfg);  break;
+        case ExportFormat::Parquet: err = write_parquet(*src, cfg);   break;
+        case ExportFormat::Arrow:   err = write_arrow(*src, cfg);     break;
+        case ExportFormat::Tsv:
+        case ExportFormat::Csv:     err = write_delimited(*src, cfg); break;
+        case ExportFormat::Json:
+        case ExportFormat::Ndjson:  err = write_json(*src, cfg);      break;
     }
     t_export = nullptr;
     if (f) {
@@ -23967,6 +24058,36 @@ int main(int argc, char** argv) {
             report(cfg.path, shorten_reader_error(src->read_status().ToString()));
             return 1;
         }
+    }
+
+    // A capped preview (an HDF5 / AnnData matrix, a wide NumPy array) is fine
+    // to look at, but an export or an aggregate over it would present the
+    // preview as the whole dataset. Refuse those modes up front.
+    {
+        std::string mode;
+        bool cols_matter = true, honours_n = true;
+        if      (!cfg.parquet_out.empty())        mode = "--parquet";
+        else if (!cfg.arrow_out.empty())          mode = "--arrow";
+        else if (cfg.json_array)                  mode = "--json";
+        else if (cfg.json_lines)                  mode = "--ndjson";
+        else if (cfg.md)                          mode = "--md";
+        else if (cfg.delimiter == '\t')           mode = "--tsv";
+        else if (cfg.delimiter == ',')            mode = "--csv";
+        else if (cfg.delimiter)                   mode = "--delimiter";
+        else if (cfg.describe)                  { mode = "--describe"; honours_n = false; }
+        else if (!cfg.unique_cols.empty())      { mode = "--unique";   honours_n = false; }
+        else if (cfg.sample_n > 0)              { mode = "--sample";   honours_n = false; }
+        else if (cfg.tail_rows_set)             { mode = "--tail";     honours_n = false; }
+        else if (cfg.count) { mode = "--count"; honours_n = false; cols_matter = false; }
+        // An export honours -n: `-n 10 --tsv` of a 1000-row preview is complete.
+        const int64_t rows_wanted = (honours_n && cfg.head_rows_set && cfg.head_rows > 0)
+                                    ? (int64_t)cfg.head_rows : -1;
+        if (!mode.empty())
+            if (auto perr = preview_refusal(*src, mode, rows_wanted, cols_matter);
+                !perr.empty()) {
+                report(cfg.path, perr);
+                return 1;
+            }
     }
 
     // --list-columns: one name per line — the shape a shell completion or an

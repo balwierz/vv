@@ -55,6 +55,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `genes` attribute tables. Integer layers stay integer-typed.
 
 ### Fixed
+- **Matrix previews are no longer exported as if they were the whole
+  matrix.** HDF5 / AnnData / Loom / 10x matrices (`X`, layers, 2-D datasets)
+  are read as a 1000-row × 200-column preview, and a NumPy array as its first
+  4096 columns. `--tsv` / `--csv` / `--json` / `--ndjson` / `--md` /
+  `--parquet` / `--arrow`, `--describe`, `--unique`, `--sample` and `--tail`
+  on such a tab wrote or summarised the preview and exited 0 — `--tab X --tsv`
+  of a 787 × 36,601 AnnData wrote 200 genes. They now exit 1 naming the real
+  shape (`tab 'X (preview)' is a 787 × 200 preview of a 787 × 36601 … matrix`).
+  `--count` still answers when every row is in the preview, and `-n N` with
+  N within the preview's rows is allowed for a matrix capped only in rows.
+  Generic 1-D HDF5 datasets are now read in full by those modes, like obs /
+  var columns (a 1,500-element dataset exported 1,000 rows). vvg's Export
+  View As… applies the same rules, and exports an obs / var tab in full
+  (it wrote the 1,000-row preview).
 - **vvg shows no rows for a filter that matches nothing.** The table model
   used an empty row order to mean "unfiltered", so a filter with no matching
   rows displayed the whole table (`Score > 1` on a file whose scores are all
