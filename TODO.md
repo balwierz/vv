@@ -360,7 +360,7 @@ analysis ranking. One PR per box; no stacked PRs.
   `raw.var`; today skipped without mention.
 - [x] **`obsp` / `varp` listed** (M) — `feat/anndata-obsp-edges` — neighbour graphs as streamed edge
   lists (`obs_i, obs_j, weight`, labelled by obs names); never densified.
-- [ ] **Matrix profile in the summary** (S) — dtype, nnz, density, max and a
+- [x] **Matrix profile in the summary** (S) — `feat/anndata-matrix-profile` — dtype, nnz, density, max and a
   labelled *sampled* "integer-valued" flag for X and each layer, so raw counts
   and log-normalised values can be told apart.
 
