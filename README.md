@@ -419,6 +419,13 @@ bar states plainly that this is a preview of the first 1000 of 4823 rows.*
 - **View menu** — show/hide columns, go-to-row, and a shortcuts/filter-DSL
   help overlay. **Σ Stats** per column, a **row-detail** dock, **Ctrl+C**
   copy-as-TSV, and **◀/▶ slice** stepping for 3-D NumPy arrays.
+- **Copy as vv command** (Edit menu, right-click, **Ctrl+Alt+C**) — puts the
+  `vv` command line that reproduces the active tab on the clipboard: the file,
+  `--tab` for a sheet / dataset other than the first, the session's region /
+  `--coords` / `--slop` / `--pileup` / `--tags` / `--gt-stats` / `--contigs`,
+  the applied `--filter`, the `--sort`, and `--select` for the visible columns
+  when some are hidden — shell-quoted, e.g.
+  `vv --filter 'AF > 0.05' --sort POS:desc --select CHROM,POS,AF /data/calls.vcf.gz`.
 
 On **KDE Plasma**, installing the `vv-gui` package also wires vv into
 Dolphin: double-click (or *Open With*) launches `vvg`, the icon view

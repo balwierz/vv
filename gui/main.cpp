@@ -53,6 +53,7 @@
 #include <vector>
 
 #include "arrowtablemodel.h"
+#include "vvcommand.h"
 #include "vv/vvcore.hpp"
 
 // Open every path through libvvcore (using a shared base Config so a later
@@ -62,6 +63,8 @@
 // produced at least one source (for the recent-files list).
 struct LoadResult {
     std::vector<std::unique_ptr<TabularSource>> sources;
+    std::vector<QString>                        origins;   // per source: the path it came from
+    std::vector<bool>                           primary;   // per source: first tab of its file
     QStringList                                 opened;
     QStringList                                 errors;
 };
@@ -79,7 +82,13 @@ static LoadResult loadSources(const Config& base, const QStringList& paths) {
         }
         auto siblings = src->expand_tabs();
         r.sources.push_back(std::move(src));
-        for (auto& s : siblings) r.sources.push_back(std::move(s));
+        r.origins.push_back(p);
+        r.primary.push_back(true);
+        for (auto& s : siblings) {
+            r.sources.push_back(std::move(s));
+            r.origins.push_back(p);
+            r.primary.push_back(false);
+        }
         r.opened << p;
     }
     return r;
@@ -112,7 +121,10 @@ public:
         new QShortcut(QKeySequence::Copy, this, [this]{ copySelection(); });
         new QShortcut(QKeySequence::FindNext, this, [this]{ doFind(true); });
 
-        for (auto& src : sources) addSourceTab(std::move(src));
+        for (auto& src : sources) {
+            QString origin = QString::fromStdString(src->path());
+            addSourceTab(std::move(src), origin, true);
+        }
 
         resize(1100, 760);
         refreshStatus();
@@ -125,7 +137,8 @@ public:
         if (paths.isEmpty()) return;
         lastDir_ = QFileInfo(paths.first()).absolutePath();
         LoadResult r = loadWithSession(paths);
-        for (auto& s : r.sources) addSourceTab(std::move(s));
+        for (size_t i = 0; i < r.sources.size(); ++i)
+            addSourceTab(std::move(r.sources[i]), r.origins[i], r.primary[i]);
         for (const QString& p : r.opened) { addRecent(p); openedPaths_ << p; }
         reportLoadErrors(r, quiet, tr("vvg — open"));
         if (!r.opened.isEmpty())
@@ -153,6 +166,7 @@ public:
         FilterExpr fx; std::string e;
         if (!parse_filter_expr(expr.toStdString(), *m->source()->schema(), &fx, &e))
             return -2;
+        filterText_[m] = expr;
         m->setFilterAsync(fx);
         for (int guard = 0; m->isComputing() && guard < 2000000; ++guard)
             QCoreApplication::processEvents();
@@ -242,8 +256,10 @@ private:
     }
 
     // Build one model+view tab from a source and wire sort + detail-pane.
-    void addSourceTab(std::unique_ptr<TabularSource> src) {
+    void addSourceTab(std::unique_ptr<TabularSource> src, const QString& origin,
+                      bool primary) {
         auto* model = new ArrowTableModel(std::move(src), this);
+        tabOrigin_[model] = TabOrigin{origin, primary};
         auto* view  = new QTableView(tabs_);
         view->setModel(model);
         view->setAlternatingRowColors(true);
@@ -304,7 +320,7 @@ private:
             views_.erase(views_.begin() + i);
             models_.erase(models_.begin() + i);
         }
-        if (m) sortOrder_.remove(m);
+        if (m) { sortOrder_.remove(m); tabOrigin_.remove(m); filterText_.remove(m); }
         if (m == pendingFindModel_) pendingFindModel_ = nullptr;
         if (m == computingModel_) {   // its worker is cancelled+joined in ~ArrowTableModel
             computingModel_ = nullptr;
@@ -349,6 +365,14 @@ private:
         cpRow->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+C")));
         connect(cpRow, &QAction::triggered, this, [this]{ copyRows(); });
         edit->addAction(cpRow);
+        edit->addSeparator();
+        QAction* cpCmd = new QAction(tr("Copy as &vv Command"), this);
+        cpCmd->setShortcut(QKeySequence(QStringLiteral("Ctrl+Alt+C")));
+        cpCmd->setToolTip(tr("Copy the vv command line that reproduces this tab: "
+                             "file, tab, region options, filter, sort and the "
+                             "visible columns"));
+        connect(cpCmd, &QAction::triggered, this, [this]{ copyCommand(); });
+        edit->addAction(cpCmd);
 
         auto* view = menuBar()->addMenu(tr("&View"));
         QAction* go = new QAction(tr("&Go to Row…"), this);
@@ -367,6 +391,7 @@ private:
                    "Find:    the Find bar (regex); Ctrl+F / F3 for next match\n"
                    "Region:  the Region bar — chr1:1000-2000 (UCSC) / NCBI; Pileup for BAM\n"
                    "Copy:    Ctrl+C the selection, Ctrl+Shift+C a whole row; right-click for both\n"
+                   "Command: Ctrl+Alt+C copies the vv command line for this tab\n"
                    "Slice:   ◀ / ▶ steps the leading axis of NPZ 3-D+ arrays\n"
                    "Go to:   Ctrl+G jumps to a row; View ▸ Columns shows/hides columns"));
         });
@@ -568,7 +593,8 @@ private:
             return;
         }
         while (tabs_->count() > 0) closeTab(0);
-        for (auto& s : r.sources) addSourceTab(std::move(s));
+        for (size_t i = 0; i < r.sources.size(); ++i)
+            addSourceTab(std::move(r.sources[i]), r.origins[i], r.primary[i]);
         reportLoadErrors(r, /*quiet=*/false, tr("vvg — region"));
         refreshStatus();
     }
@@ -684,6 +710,7 @@ private:
         QString text = filterEdit_->text().trimmed();
         if (text.isEmpty()) {
             filterEdit_->setStyleSheet({});
+            filterText_.remove(m);
             m->clearFilterAsync();   // status updates on recomputeFinished
             return;
         }
@@ -696,6 +723,7 @@ private:
             return;
         }
         filterEdit_->setStyleSheet({});
+        filterText_[m] = text;
         m->setFilterAsync(fx);       // runs off the UI thread; result on finish
     }
 
@@ -822,6 +850,81 @@ private:
         statusBar()->showMessage(tr("Copied %1 row(s)").arg((int)rows.size()), 2000);
     }
 
+    // The vv command line that reproduces the active tab (see vvcommand.h).
+    // Returns "" when no tab is open.
+public:
+    QString commandForActiveTab() const {
+        auto* m = activeModel();
+        auto* v = activeView();
+        if (!m || !v) return {};
+        VvCommandSpec s;
+        const TabOrigin o = tabOrigin_.value(m);
+        s.path = QFileInfo(o.path).absoluteFilePath();
+        if (!o.primary) s.tab = QString::fromStdString(m->source()->tab_label());
+        s.region  = QString::fromStdString(sessionCfg_.region);
+        s.ncbi    = sessionCfg_.coords_one_based;
+        s.slop    = (int)sessionCfg_.slop;
+        s.pileup  = sessionCfg_.pileup;
+        s.tags    = QString::fromStdString(sessionCfg_.bam_tags);
+        s.gtStats = sessionCfg_.gt_stats;
+        s.contigs = sessionCfg_.contigs;
+        if (m->hasFilter()) s.filter = filterText_.value(m);
+        if (m->sortColumn() >= 0) {
+            s.sortColumn = m->columnName(m->sortColumn());
+            s.sortDesc   = sortOrder_.value(m, Qt::AscendingOrder) == Qt::DescendingOrder;
+        }
+        // Hidden columns: name the visible ones. --select takes an exact name
+        // as-is, but splits on commas and trims spaces, so such a name is
+        // given by its 1-based source position ("N-N") instead.
+        const int ncols = m->displayColumnCount();
+        QStringList visible;
+        bool anyHidden = false;
+        for (int c = 0; c < ncols; ++c) {
+            if (v->isColumnHidden(c)) { anyHidden = true; continue; }
+            const QString name = m->columnName(c);
+            if (name.contains(QLatin1Char(',')) || name.trimmed() != name || name.isEmpty()) {
+                const int pos = m->sourceColumn(c) + 1;
+                visible << QStringLiteral("%1-%1").arg(pos);
+            } else {
+                visible << name;
+            }
+        }
+        if (anyHidden) s.select = visible;
+        return vvCommandLine(s);
+    }
+    // Test hooks (VVG_WINTEST): sort / hide on the active tab, as the header
+    // click and View > Columns do.
+    bool sortActiveForTest(const QString& column, bool desc) {
+        auto* m = activeModel();
+        if (!m) return false;
+        for (int c = 0; c < m->displayColumnCount(); ++c)
+            if (m->columnName(c) == column) {
+                const Qt::SortOrder ord = desc ? Qt::DescendingOrder : Qt::AscendingOrder;
+                sortOrder_[m] = ord;
+                m->sortAsyncByDisplayColumn(c, ord);
+                for (int g = 0; m->isComputing() && g < 2000000; ++g)
+                    QCoreApplication::processEvents();
+                return true;
+            }
+        return false;
+    }
+    bool hideActiveColumnForTest(const QString& column) {
+        auto* m = activeModel();
+        auto* v = activeView();
+        if (!m || !v) return false;
+        for (int c = 0; c < m->displayColumnCount(); ++c)
+            if (m->columnName(c) == column) { v->setColumnHidden(c, true); return true; }
+        return false;
+    }
+    void selectTabForTest(int i) { tabs_->setCurrentIndex(i); }
+private:
+    void copyCommand() {
+        const QString cmd = commandForActiveTab();
+        if (cmd.isEmpty()) return;
+        QApplication::clipboard()->setText(cmd);
+        statusBar()->showMessage(tr("Copied: %1").arg(cmd), 4000);
+    }
+
     // Right-click menu on the grid: Copy (cell/selection) and Copy Row.
     void showTableContextMenu(QTableView* view, const QPoint& pos) {
         QModelIndex idx = view->indexAt(pos);
@@ -836,6 +939,9 @@ private:
         connect(copyCell, &QAction::triggered, this, [this]{ copySelection(); });
         QAction* copyRow = menu.addAction(tr("Copy &Row"));
         connect(copyRow, &QAction::triggered, this, [this]{ copyRows(); });
+        menu.addSeparator();
+        QAction* copyCmd = menu.addAction(tr("Copy as &vv Command"));
+        connect(copyCmd, &QAction::triggered, this, [this]{ copyCommand(); });
         menu.exec(view->viewport()->mapToGlobal(pos));
     }
 
@@ -910,6 +1016,9 @@ private:
     std::vector<QTableView*>       views_;
     std::vector<ArrowTableModel*>  models_;
     QMap<ArrowTableModel*, Qt::SortOrder> sortOrder_;
+    struct TabOrigin { QString path; bool primary = true; };
+    QMap<ArrowTableModel*, TabOrigin>     tabOrigin_;    // file + first-tab flag
+    QMap<ArrowTableModel*, QString>       filterText_;   // applied --filter text
 };
 
 // Deterministic, font-free self-check of the shared column-width planner. Run
@@ -952,6 +1061,42 @@ static bool checkWidthPlan() {
     return ok;
 }
 
+// Deterministic check of the Copy-as-vv-command quoting and assembly. Run from
+// VVG_SELFTEST. Returns true on success.
+static bool checkVvCommand() {
+    bool ok = true;
+    auto eq = [&](const QString& got, const char* want) {
+        if (got != QString::fromUtf8(want)) {
+            std::fprintf(stderr, "vvcommand FAIL: got [%s], want [%s]\n",
+                         got.toUtf8().constData(), want);
+            ok = false;
+        }
+    };
+    eq(shellQuote(QStringLiteral("/data/x.bam")), "/data/x.bam");
+    eq(shellQuote(QStringLiteral("")), "''");
+    eq(shellQuote(QStringLiteral("a b")), "'a b'");
+    eq(shellQuote(QStringLiteral("it's")), "'it'\\''s'");
+    eq(shellQuote(QStringLiteral("$HOME*")), "'$HOME*'");
+    VvCommandSpec s;
+    s.path = QStringLiteral("/d/my file.vcf.gz");
+    eq(vvCommandLine(s), "vv '/d/my file.vcf.gz'");
+    s.region = QStringLiteral("chr1:100-200");
+    s.ncbi = true; s.slop = 50; s.gtStats = true;
+    s.filter = QStringLiteral("AF > 0.05 and FILTER == \"PASS\"");
+    s.sortColumn = QStringLiteral("POS"); s.sortDesc = true;
+    s.select = QStringList{QStringLiteral("CHROM"), QStringLiteral("POS"), QStringLiteral("AF")};
+    eq(vvCommandLine(s), "vv -r chr1:100-200 --coords NCBI --slop 50 --gt-stats "
+                         "--filter 'AF > 0.05 and FILTER == \"PASS\"' --sort POS:desc "
+                         "--select CHROM,POS,AF '/d/my file.vcf.gz'");
+    VvCommandSpec t;
+    t.path = QStringLiteral("a.h5ad"); t.tab = QStringLiteral("obs");
+    t.sortColumn = QStringLiteral("t:0");
+    eq(vvCommandLine(t), "vv --tab obs --sort t:0:asc a.h5ad");
+    t.contigs = true; t.region = QStringLiteral("chr1"); t.sortColumn.clear();
+    eq(vvCommandLine(t), "vv --tab obs --contigs a.h5ad");
+    return ok;
+}
+
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
     // Identity + icon. On Wayland the compositor picks the taskbar/dock icon by
@@ -974,6 +1119,7 @@ int main(int argc, char** argv) {
 
     if (const char* st = std::getenv("VVG_SELFTEST"); st && *st && *st != '0') {
         if (!checkWidthPlan()) return 1;
+        if (!checkVvCommand()) return 1;
         // App identity: the desktop file name must match the installed .desktop
         // (Wayland taskbar icon), and the window icon must resolve — the themed
         // "vv" or, uninstalled, the copy embedded via vvg.qrc.
@@ -983,7 +1129,7 @@ int main(int argc, char** argv) {
         if (app.windowIcon().isNull()) {
             std::fprintf(stderr, "vvg: window icon did not resolve\n"); return 1;
         }
-        std::printf("widthplan=ok icon=ok\n");
+        std::printf("widthplan=ok vvcommand=ok icon=ok\n");
         // Model-level self-test (CI path): needs a file on the command line.
         if (paths.isEmpty()) { std::fprintf(stderr, "usage: vvg <file>\n"); return 2; }
         Config cfg;
@@ -1130,6 +1276,24 @@ int main(int argc, char** argv) {
             qint64 n = win.findAsyncForTest(QString::fromLocal8Bit(fa));
             std::printf("afind '%s' -> matches=%lld\n", fa, (long long)n);
         }
+        // Optional tab / sort / hidden-column setup and the Copy-as-vv-command
+        // result: VVG_TAB=<index>, VVG_SORT="COL[:desc]", VVG_HIDE="A,B",
+        // VVG_COPYCMD=1 prints "cmd=<command line>".
+        if (const char* ti = std::getenv("VVG_TAB"); ti && *ti)
+            win.selectTabForTest(std::atoi(ti));
+        if (const char* so = std::getenv("VVG_SORT"); so && *so) {
+            QString spec = QString::fromLocal8Bit(so);
+            bool desc = spec.endsWith(QStringLiteral(":desc"));
+            if (desc) spec.chop(5);
+            if (!win.sortActiveForTest(spec, desc))
+                std::fprintf(stderr, "vvg: no column '%s' to sort\n", so);
+        }
+        if (const char* hd = std::getenv("VVG_HIDE"); hd && *hd)
+            for (const QString& c : QString::fromLocal8Bit(hd).split(QLatin1Char(',')))
+                if (!win.hideActiveColumnForTest(c))
+                    std::fprintf(stderr, "vvg: no column '%s' to hide\n", c.toLocal8Bit().constData());
+        if (const char* cc = std::getenv("VVG_COPYCMD"); cc && *cc && *cc != '0')
+            std::printf("cmd=%s\n", win.commandForActiveTab().toLocal8Bit().constData());
         return 0;
     }
 

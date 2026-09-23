@@ -336,7 +336,7 @@ analysis ranking. One PR per box; no stacked PRs.
 
 ### Priority 3 — vvg export
 
-- [ ] **Copy as vv command** (S) — puts the CLI line that reproduces the
+- [x] **Copy as vv command** (S) — `feat/vvg-copy-command` — puts the CLI line that reproduces the
   active tab (file, region, tags, GT-stats, contigs, filter, sort, visible
   columns) on the clipboard, shell-quoted.
 - [ ] **File → Export View As…** (M) — writes the active tab's view to

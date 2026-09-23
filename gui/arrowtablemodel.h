@@ -104,6 +104,7 @@ public:
     QString columnName(int displayCol) const;
     QString columnType(int displayCol) const;
     int     displayColumnCount() const { return (int)displayCols_.size(); }
+    int     sourceColumn(int displayCol) const { return displayCols_[(size_t)displayCol]; }
     int64_t sourceTotal() const;          // total source rows (drains streaming)
     int64_t viewRows() const;             // rows after filter
     TabularSource* source() const { return src_.get(); }

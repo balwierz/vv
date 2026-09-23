@@ -10,6 +10,7 @@ set(CMAKE_AUTORCC ON)   # compile vvg.qrc (the embedded app icon)
 add_executable(vvg
     main.cpp
     arrowtablemodel.cpp
+    vvcommand.cpp
     vvg.qrc
 )
 target_include_directories(vvg PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
