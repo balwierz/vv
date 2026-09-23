@@ -68,15 +68,21 @@
 struct LoadResult {
     std::vector<std::unique_ptr<TabularSource>> sources;
     std::vector<QString>                        origins;   // per source: the path it came from
+    std::vector<QString>                        expands;   // per source: its --expand column
     std::vector<bool>                           primary;   // per source: first tab of its file
     QStringList                                 opened;
     QStringList                                 errors;
 };
-static LoadResult loadSources(const Config& base, const QStringList& paths) {
+// `expand`: unpack each file's packed key=value column (GFF/GTF attributes,
+// VCF/BCF INFO — see packed_column_for) into real columns, as --expand does.
+static LoadResult loadSources(const Config& base, const QStringList& paths,
+                              bool expand = false) {
     LoadResult r;
     for (const QString& p : paths) {
         Config cfg = base;
         cfg.path = p.toStdString();
+        if (expand && !cfg.contigs && cfg.expand_col.empty())
+            cfg.expand_col = packed_column_for(cfg.path);
         std::unique_ptr<TabularSource> src;
         std::string err = open_source(cfg.path, cfg, &src);
         if (!err.empty() || !src) {
@@ -86,11 +92,14 @@ static LoadResult loadSources(const Config& base, const QStringList& paths) {
         }
         auto siblings = src->expand_tabs();
         r.sources.push_back(std::move(src));
+        const QString ex = QString::fromStdString(cfg.expand_col);
         r.origins.push_back(p);
+        r.expands.push_back(ex);
         r.primary.push_back(true);
         for (auto& s : siblings) {
             r.sources.push_back(std::move(s));
             r.origins.push_back(p);
+            r.expands.push_back(ex);
             r.primary.push_back(false);
         }
         r.opened << p;
@@ -142,7 +151,7 @@ public:
         lastDir_ = QFileInfo(paths.first()).absolutePath();
         LoadResult r = loadWithSession(paths);
         for (size_t i = 0; i < r.sources.size(); ++i)
-            addSourceTab(std::move(r.sources[i]), r.origins[i], r.primary[i]);
+            addSourceTab(std::move(r.sources[i]), r.origins[i], r.primary[i], r.expands[i]);
         for (const QString& p : r.opened) { addRecent(p); openedPaths_ << p; }
         reportLoadErrors(r, quiet, tr("vvg — open"));
         if (!r.opened.isEmpty())
@@ -261,9 +270,9 @@ private:
 
     // Build one model+view tab from a source and wire sort + detail-pane.
     void addSourceTab(std::unique_ptr<TabularSource> src, const QString& origin,
-                      bool primary) {
+                      bool primary, const QString& expand = QString()) {
         auto* model = new ArrowTableModel(std::move(src), this);
-        tabOrigin_[model] = TabOrigin{origin, primary};
+        tabOrigin_[model] = TabOrigin{origin, primary, expand};
         auto* view  = new QTableView(tabs_);
         view->setModel(model);
         view->setAlternatingRowColors(true);
@@ -401,6 +410,7 @@ private:
                    "Filter:  the Filter bar — e.g.  score > 5 and chrom == \"chr1\"\n"
                    "Find:    the Find bar (regex); Ctrl+F / F3 for next match\n"
                    "Region:  the Region bar — chr1:1000-2000 (UCSC) / NCBI; Pileup for BAM\n"
+                   "Expand:  GFF/GTF attributes and VCF INFO open as one column per key (toolbar toggle)\n"
                    "Copy:    Ctrl+C the selection, Ctrl+Shift+C a whole row; right-click for both\n"
                    "Command: Ctrl+Alt+C copies the vv command line for this tab\n"
                    "Export:  Ctrl+E writes this tab's view (filter, sort, visible columns) to a file\n"
@@ -501,7 +511,7 @@ private:
         if (!err.empty()) {
             LoadResult r; r.errors << QString::fromStdString(err); return r;
         }
-        return loadSources(base, paths);
+        return loadSources(base, paths, expandAction_ && expandAction_->isChecked());
     }
     void reportLoadErrors(const LoadResult& r, bool quiet, const QString& title) {
         if (r.errors.isEmpty()) return;
@@ -573,6 +583,18 @@ private:
             tr("BAM/CRAM/SAM, VCF/BCF: list the reference sequences "
                "(name, length) and detect the assembly"));
         connect(contigsAction_, &QAction::toggled, this, [this](bool){ applyRegion(); });
+
+        // GFF/GTF attributes and VCF/BCF INFO pack every key=value field into
+        // one column; unpack them into real columns (the original is kept),
+        // as the CLI's --expand does. On by default: the packed column is hard
+        // to read.
+        expandAction_ = tb->addAction(tr("Expand"));
+        expandAction_->setCheckable(true);
+        expandAction_->setChecked(true);
+        expandAction_->setToolTip(
+            tr("GFF/GTF, VCF/BCF: unpack the key=value attributes / INFO column "
+               "into one column per key"));
+        connect(expandAction_, &QAction::toggled, this, [this](bool){ reopenAll(); });
     }
 
     void applyRegion() {
@@ -606,7 +628,7 @@ private:
         }
         while (tabs_->count() > 0) closeTab(0);
         for (size_t i = 0; i < r.sources.size(); ++i)
-            addSourceTab(std::move(r.sources[i]), r.origins[i], r.primary[i]);
+            addSourceTab(std::move(r.sources[i]), r.origins[i], r.primary[i], r.expands[i]);
         reportLoadErrors(r, /*quiet=*/false, tr("vvg — region"));
         refreshStatus();
     }
@@ -887,6 +909,7 @@ public:
         s.tags    = QString::fromStdString(sessionCfg_.bam_tags);
         s.gtStats = sessionCfg_.gt_stats;
         s.contigs = sessionCfg_.contigs;
+        s.expand  = o.expand;
         if (m->hasFilter()) s.filter = filterText_.value(m);
         if (m->sortColumn() >= 0) {
             s.sortColumn = m->columnName(m->sortColumn());
@@ -956,6 +979,7 @@ public:
         return false;
     }
     void selectTabForTest(int i) { tabs_->setCurrentIndex(i); }
+    void setExpandForTest(bool on) { if (expandAction_) expandAction_->setChecked(on); }
 private:
     // Output format from the file extension (.parquet/.pq, .arrow/.feather/
     // .ipc, .tsv/.tab/.txt, .csv, .json, .ndjson/.jsonl).
@@ -1143,6 +1167,7 @@ private:
     QLineEdit*                     tagsEdit_   = nullptr;
     QAction*                       gtStatsAction_ = nullptr;
     QAction*                       contigsAction_ = nullptr;
+    QAction*                       expandAction_  = nullptr;
     QMenu*                         recentMenu_  = nullptr;
     QMenu*                         columnsMenu_ = nullptr;
     QProgressBar*                  progress_   = nullptr;
@@ -1159,7 +1184,7 @@ private:
     std::vector<QTableView*>       views_;
     std::vector<ArrowTableModel*>  models_;
     QMap<ArrowTableModel*, Qt::SortOrder> sortOrder_;
-    struct TabOrigin { QString path; bool primary = true; };
+    struct TabOrigin { QString path; bool primary = true; QString expand; };
     QMap<ArrowTableModel*, TabOrigin>     tabOrigin_;    // file + first-tab flag
     QMap<ArrowTableModel*, QString>       filterText_;   // applied --filter text
     // Export View As…: one export at a time, on a worker thread.
@@ -1253,7 +1278,12 @@ static bool checkVvCommand() {
     t.sortColumn = QStringLiteral("t:0");
     eq(vvCommandLine(t), "vv --tab obs --sort t:0:asc a.h5ad");
     t.contigs = true; t.region = QStringLiteral("chr1"); t.sortColumn.clear();
+    t.expand = QStringLiteral("INFO");      // --contigs takes no --expand
     eq(vvCommandLine(t), "vv --tab obs --contigs a.h5ad");
+    VvCommandSpec g;
+    g.path = QStringLiteral("genes.gff3.gz"); g.expand = QStringLiteral("attributes");
+    g.filter = QStringLiteral("gene_type == \"lncRNA\"");
+    eq(vvCommandLine(g), "vv --expand attributes --filter 'gene_type == \"lncRNA\"' genes.gff3.gz");
     return ok;
 }
 
@@ -1403,6 +1433,8 @@ int main(int argc, char** argv) {
     if (const char* wt = std::getenv("VVG_WINTEST"); wt && *wt && *wt != '0') {
         MainWindow win;
         win.setHeadless(true);
+        if (const char* ex = std::getenv("VVG_EXPAND"); ex && *ex == '0')
+            win.setExpandForTest(false);
         win.openPaths(paths, /*quiet=*/true);
         std::printf("win_tabs=%d\n", win.tabCount());
         // Optional per-tab dimension dump: VVG_TABDIMS=1 (verifies dense 2-D

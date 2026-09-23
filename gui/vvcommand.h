@@ -18,6 +18,7 @@ struct VvCommandSpec {
     QString     tags;                 // BAM aux tags, comma-separated
     bool        gtStats  = false;
     bool        contigs  = false;
+    QString     expand;               // --expand column (attributes / INFO); empty = none
     QString     filter;               // --filter expression, as applied
     QString     sortColumn;           // empty = unsorted
     bool        sortDesc = false;

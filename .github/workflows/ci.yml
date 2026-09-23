@@ -266,11 +266,21 @@ jobs:
           # The session toolbar exposes the new open-time options through the same
           # reopen path as region/pileup. --tags adds a column per aux tag (11 SAM
           # columns + NM,AS = 13); --gt-stats adds 9 genotype columns to the BCF's
-          # 9 (= 18); a directory opens as a dataset.
+          # 9, and the default Expand adds its INFO key AF (= 19); a directory
+          # opens as a dataset.
           VVG_WINTEST=1 VVG_TAGS='NM,AS' ./build-gui/gui/vvg tests/data/tiny.bam \
             | grep -q "tags='NM,AS'.*cols=13"
           VVG_WINTEST=1 VVG_GTSTATS=1 ./build-gui/gui/vvg tests/data/tiny.samples.bcf 2>/dev/null \
-            | grep -q 'gtstats=1.*cols=18'
+            | grep -q 'gtstats=1.*cols=19'
+          # Expand (on by default) unpacks GFF/GTF attributes into one column
+          # per key (tiny.gtf: 9 + 8), can be filtered on, and is carried into
+          # the copied command; VVG_EXPAND=0 (the toggle off) keeps 9 columns.
+          out=$(VVG_WINTEST=1 VVG_TABDIMS=1 VVG_COPYCMD=1 VVG_AFILTER='gene_type == "pseudogene"' \
+                ./build-gui/gui/vvg tests/data/tiny.gtf)
+          grep -q "rows=4 cols=17 footer=.*expanded attributes → 8 columns" <<<"$out"
+          grep -q "afilter .* -> rows=1$" <<<"$out"
+          grep -q "^cmd=vv --expand attributes --filter 'gene_type == \"pseudogene\"' " <<<"$out"
+          VVG_WINTEST=1 VVG_TABDIMS=1 VVG_EXPAND=0 ./build-gui/gui/vvg tests/data/tiny.gtf | grep -q "rows=4 cols=9 "
           # --contigs replaces the alignment/variant view with the header's
           # reference-sequence table (name, length) — 2 columns.
           VVG_WINTEST=1 VVG_CONTIGS=1 ./build-gui/gui/vvg tests/data/tiny.bam \

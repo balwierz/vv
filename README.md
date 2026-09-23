@@ -409,6 +409,12 @@ bar states plainly that this is a preview of the first 1000 of 4823 rows.*
 - **Genomic region bar** — type `chr1:1000-2000` (UCSC or NCBI coordinates,
   optional slop) to re-open the file(s) over a tabix/`.csi`-indexed range; a
   **Pileup** toggle renders BAM/CRAM as mpileup rows. Mirrors the CLI `-r`.
+- **Expand** (toolbar toggle, on by default) — GFF/GTF `attributes` and
+  VCF/BCF `INFO` open unpacked into one column per key (`gene_id`,
+  `gene_name`, `transcript_type`, …; the original column is kept), so they
+  can be sorted and filtered (`gene_type == "lncRNA"`). The same as the CLI's
+  `--expand attributes` / `--expand INFO`, and carried into Copy as vv
+  Command and Export View As….
 - **Responsive on big files** — filtering, sorting and find run **off the UI
   thread** with a progress bar and a **Cancel** button, so the window never
   freezes while a multi-GB file is scanned.

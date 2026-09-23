@@ -33,6 +33,7 @@ QString vvCommandLine(const VvCommandSpec& s) {
         if (s.pileup)            w << QStringLiteral("--pileup");
         if (!s.tags.isEmpty())   opt("--tags", s.tags);
         if (s.gtStats)           w << QStringLiteral("--gt-stats");
+        if (!s.expand.isEmpty()) opt("--expand", s.expand);
     }
     if (!s.filter.isEmpty())     opt("--filter", s.filter);
     // --sort reads a trailing :asc / :desc as the direction, so a name that
@@ -61,6 +62,7 @@ Config vvCommandConfig(const VvCommandSpec& s) {
         cfg.pileup   = s.pileup;
         cfg.bam_tags = s.tags.toStdString();
         cfg.gt_stats = s.gtStats;
+        cfg.expand_col = s.expand.toStdString();
     }
     cfg.filter_expr = s.filter.toStdString();
     cfg.sort_col    = s.sortColumn.toStdString();
