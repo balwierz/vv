@@ -1511,6 +1511,43 @@ else:
         sub.X = np.log1p(counts[:, [1, 3]])
         sub.write_h5ad(raw_path)
 
+    # tiny.obsp.h5ad: pairwise graphs — obsp/connectivities (CSR) and
+    # obsp/distances (CSC, so the axis swap is exercised) over 4 cells, and
+    # varp/corr (CSR) over 3 genes. Each opens as a streamed edge-list tab
+    # (i, j, obs_i/var_i, obs_j/var_j, weight). Fixed values for assertions.
+    obsp_path = HERE / "tiny.obsp.h5ad"
+    if obsp_path.exists():
+        obsp_path.unlink()
+    conn = sparse.csr_matrix((np.array([0.5, 0.25, 0.5, 1.0], dtype=np.float32),
+                              (np.array([0, 0, 1, 3]), np.array([1, 2, 0, 2]))),
+                             shape=(4, 4))
+    dist = sparse.csc_matrix((np.array([2.0, 3.0], dtype=np.float64),
+                              (np.array([0, 2]), np.array([1, 3]))), shape=(4, 4))
+    corr = sparse.csr_matrix((np.array([0.9], dtype=np.float64),
+                              (np.array([2]), np.array([0]))), shape=(3, 3))
+    ad.AnnData(X=np.zeros((4, 3), dtype=np.float32),
+               obs=pd.DataFrame(index=[f"cell{i}" for i in range(4)]),
+               var=pd.DataFrame(index=["gA", "gB", "gC"]),
+               obsp={"connectivities": conn, "distances": dist},
+               varp={"corr": corr}).write_h5ad(obsp_path)
+
+    # tiny.badobsp.h5ad: tiny.obsp.h5ad with a HOSTILE obsp/connectivities —
+    # indptr runs backwards and past the 3 stored entries, the shape attribute
+    # claims 1000 × 1000, and two column indices are out of range. The edge
+    # list must stay inside indices / data (3 rows) with null names for the
+    # out-of-range columns — no out-of-bounds read.
+    import h5py                                               # type: ignore
+    badobsp_path = HERE / "tiny.badobsp.h5ad"
+    shutil.copy(obsp_path, badobsp_path)
+    with h5py.File(badobsp_path, "r+") as bf:
+        bg = bf["obsp/connectivities"]
+        for k in ("indptr", "indices", "data"):
+            del bg[k]
+        bg["indptr"] = np.array([0, 5, 2, 100, 7], dtype=np.int64)
+        bg["indices"] = np.array([1, 99, -3], dtype=np.int64)
+        bg["data"] = np.array([1.0, 2.0, 3.0])
+        bg.attrs["shape"] = np.array([1000, 1000])
+
     # tiny.uns.h5ad: a populated uns (unstructured) dict — string/int/float
     # scalars, a string array, and a nested dict — to exercise the uns key/value
     # tab. Fixed values so the test can assert them (incl. the dotted key from

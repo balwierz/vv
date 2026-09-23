@@ -272,6 +272,9 @@ jobs:
             | grep -q "tags='NM,AS'.*cols=13"
           VVG_WINTEST=1 VVG_GTSTATS=1 ./build-gui/gui/vvg tests/data/tiny.samples.bcf 2>/dev/null \
             | grep -q 'gtstats=1.*cols=19'
+          # AnnData obsp / varp graphs open as streamed edge-list tabs.
+          VVG_WINTEST=1 VVG_TABDIMS=1 ./build-gui/gui/vvg tests/data/tiny.obsp.h5ad \
+            | grep -q "tab 'obsp\[connectivities\]' rows=4 cols=5 "
           # Expand (on by default) unpacks GFF/GTF attributes into one column
           # per key (tiny.gtf: 9 + 8), can be filtered on, and is carried into
           # the copied command; VVG_EXPAND=0 (the toggle off) keeps 9 columns.

@@ -10955,7 +10955,8 @@ static void apply_anndata_matrix_labels(hid_t file_id, AnnMatrixAxes axes,
 struct OpenSpec {
     enum class Kind { Hierarchy, DataFrame, Matrix2D, Sparse, Dataset1D,
                       TenxMatrix, TenxFeatures, TenxBarcodes, LoomMatrix, LoomAttrs,
-                      Dataset2D, Summary, Uns };
+                      Dataset2D, Summary, Uns,
+                      EdgeList };   // obsp / varp graph: streamed (i, j, weight)
     Kind        kind;
     std::string h5_path;     // group / dataset path inside the file
     std::string display;     // tab label
@@ -10963,8 +10964,15 @@ struct OpenSpec {
     // Matrix2D only: how to label the axes, and the obsm/varm key whose name
     // the dimension columns are derived from ("X_umap" -> X_umap1, X_umap2).
     AnnMatrixAxes axes = AnnMatrixAxes::ObsByVar;
-    std::string   key;
+    std::string   key;       // EdgeList: the labelled axis, "obs" or "var"
 };
+
+// An obsp / varp graph tab streams its edges from the sparse matrix rather than
+// materialising a table, so it is a separate source class (H5EdgeListSource,
+// defined below); Hdf5Source creates it for Kind::EdgeList siblings.
+static std::unique_ptr<TabularSource> make_edge_list_source(const std::string& path,
+                                                            H5FilePtr file,
+                                                            const OpenSpec& spec);
 
 // Read the AnnData layout and produce one OpenSpec per visible tab.
 static std::vector<OpenSpec> scan_anndata(hid_t file_id);
@@ -11212,6 +11220,8 @@ class Hdf5Source : public WorkbookSource {
             case OpenSpec::Kind::LoomMatrix:
             case OpenSpec::Kind::LoomAttrs:
                 return build_loom_table(file_id, spec, df_row_cap, out, footer);
+            case OpenSpec::Kind::EdgeList:   // streamed by H5EdgeListSource
+                return "graph '" + spec.h5_path + "' is read as an edge list";
             case OpenSpec::Kind::Sparse: {
                 hid_t g = H5Gopen2(file_id, spec.h5_path.c_str(), H5P_DEFAULT);
                 if (g < 0) return "Cannot open sparse group " + spec.h5_path;
@@ -11320,9 +11330,14 @@ public:
         // Construct each sibling lazily: its table is read only when the tab is
         // first viewed (ensure_built), so opening a 14-component AnnData file
         // over a slow mount doesn't read every component up-front.
-        for (const auto& sp : siblings_)
+        for (const auto& sp : siblings_) {
+            if (sp.kind == OpenSpec::Kind::EdgeList) {
+                result.push_back(make_edge_list_source(path(), file_, sp));
+                continue;
+            }
             result.push_back(std::unique_ptr<TabularSource>(
                 new Hdf5Source(path(), file_, sp, all_specs_, df_row_cap_)));
+        }
         return result;
     }
 };
@@ -12256,6 +12271,41 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
     add_subgroup_tabs("layers", OpenSpec::Kind::Matrix2D, "layer",
                       AnnMatrixAxes::ObsByVar);
 
+    // obsp / varp: pairwise graphs over cells / genes (scanpy's neighbour
+    // connectivities and distances), n × n and sparse. Each becomes an edge-list
+    // tab (i, j, <axis>_i, <axis>_j, weight) streamed from the sparse matrix, so
+    // a 4.7M-cell kNN graph is never densified. A dense entry is listed in the
+    // summary only.
+    for (const char* grp : {"obsp", "varp"}) {
+        if (!link_exists(file_id, grp) || !is_group(file_id, grp)) continue;
+        const std::string axis = std::string(grp).substr(0, 3);   // obs / var
+        hid_t g = H5Gopen2(file_id, grp, H5P_DEFAULT);
+        std::vector<std::string> listed;
+        for (const auto& nm : list_children(g)) {
+            std::string enc;
+            if (is_group(g, nm.c_str())) {
+                hid_t eg = H5Gopen2(g, nm.c_str(), H5P_DEFAULT);
+                enc = read_string_attr(eg, "encoding-type");
+                H5Gclose(eg);
+            }
+            if (enc == "csr_matrix" || enc == "csc_matrix") {
+                OpenSpec sp{OpenSpec::Kind::EdgeList, std::string("/") + grp + "/" + nm,
+                            std::string(grp) + "[" + nm + "]", enc};
+                sp.key = axis;
+                specs.push_back(std::move(sp));
+                listed.push_back(nm);
+            } else {
+                listed.push_back(nm + " (dense, not shown)");
+            }
+        }
+        H5Gclose(g);
+        if (!listed.empty()) {
+            std::string v;
+            for (const auto& l : listed) v += (v.empty() ? "" : ", ") + l;
+            add(grp, v);
+        }
+    }
+
     // raw: the unfiltered matrix scanpy keeps beside a processed X (raw
     // counts over every gene, while X is normalised and subset). raw/X is
     // cells × raw genes, labelled by obs and raw/var; raw/var is a DataFrame.
@@ -12320,6 +12370,182 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
     OpenSpec sum_spec{OpenSpec::Kind::Summary, "/", "summary", summary};
     specs.insert(specs.begin(), sum_spec);
     return specs;
+}
+
+// ── obsp / varp: a sparse graph as a streamed edge list ─────────────────────
+//
+// One row per stored entry of an n × n CSR / CSC matrix: its row and column
+// (0-based), their obs / var names, and the value. Chunks are fixed runs of
+// kEdgesPerChunk entries read as hyperslabs of indices / data, so memory is
+// bounded by one chunk plus indptr and the names; nothing is densified. The
+// file is read on first access, not at construction, so listing tabs is free.
+class H5EdgeListSource : public TabularSource {
+    static constexpr int64_t kEdgesPerChunk = 1 << 20;
+    std::string path_;
+    H5FilePtr   file_;
+    OpenSpec    spec_;
+    std::shared_ptr<arrow::Schema> schema_;
+    mutable bool          init_ = false;
+    mutable arrow::Status status_;
+    mutable bool          csr_ = true;
+    mutable int64_t       n_ = 0;          // matrix is n × n (the axis length)
+    mutable int64_t       first_ = 0;      // indptr[0]: offset of the first entry
+    mutable int64_t       nnz_ = 0;        // entries listed
+    mutable std::vector<int64_t>     indptr_;   // monotone, clamped
+    mutable std::vector<std::string> names_;
+    mutable std::string   footer_;
+
+    void init() const {
+        if (init_) return;
+        init_ = true;
+        hid_t g = H5Gopen2(*file_, spec_.h5_path.c_str(), H5P_DEFAULT);
+        if (g < 0) { status_ = arrow::Status::IOError("cannot open ", spec_.h5_path); return; }
+        csr_ = read_string_attr(g, "encoding-type") != "csc_matrix";
+        int64_t shape[2] = {0, 0};
+        read_shape2(g, "shape", shape);
+        hid_t ip = H5Dopen2(g, "indptr", H5P_DEFAULT);
+        hid_t ix = H5Dopen2(g, "indices", H5P_DEFAULT);
+        hid_t dt = H5Dopen2(g, "data", H5P_DEFAULT);
+        if (ip < 0 || ix < 0 || dt < 0) {
+            if (ip >= 0) H5Dclose(ip);
+            if (ix >= 0) H5Dclose(ix);
+            if (dt >= 0) H5Dclose(dt);
+            H5Gclose(g);
+            status_ = arrow::Status::IOError(spec_.h5_path, ": missing indptr / indices / data");
+            return;
+        }
+        // The shape attribute and indptr are untrusted: the listed entries
+        // must stay inside indices / data, and indptr must not run backwards.
+        const int64_t avail = std::min(h5_len_1d(ix), h5_len_1d(dt));
+        const int64_t len = h5_len_1d(ip);
+        int64_t major = std::max<int64_t>(0, std::min<int64_t>(csr_ ? shape[0] : shape[1], len - 1));
+        indptr_.assign((size_t)major + 1, 0);
+        if (major >= 0 && len > 0) {
+            hid_t fs = H5Dget_space(ip);
+            hsize_t start = 0, count = (hsize_t)(major + 1);
+            H5Sselect_hyperslab(fs, H5S_SELECT_SET, &start, nullptr, &count, nullptr);
+            hid_t ms = H5Screate_simple(1, &count, nullptr);
+            if (h5_read(ip, H5T_NATIVE_INT64, ms, fs, indptr_.data()) < 0)
+                status_ = arrow::Status::IOError(h5_read_failure(ip));
+            H5Sclose(ms); H5Sclose(fs);
+        }
+        H5Dclose(ip); H5Dclose(ix); H5Dclose(dt);
+        H5Gclose(g);
+        if (!status_.ok()) return;
+        for (size_t k = 0; k < indptr_.size(); ++k) {
+            int64_t lo = k ? indptr_[k - 1] : 0;
+            indptr_[k] = std::min(std::max(indptr_[k], lo), avail);
+        }
+        first_ = indptr_.front();
+        nnz_ = indptr_.back() - first_;
+        n_ = std::max(shape[0], shape[1]);
+        std::string idx_name;
+        read_anndata_index_labels(*file_, spec_.key == "var" ? "/var" : "/obs", n_,
+                                  &names_, &idx_name);
+        footer_ = "Format: AnnData " + spec_.display + "  |  " + spec_.footer_hint +
+                  "  " + std::to_string(shape[0]) + " \xc3\x97 " + std::to_string(shape[1]) +
+                  "  |  " + std::to_string(nnz_) + (nnz_ == 1 ? " edge" : " edges");
+    }
+
+public:
+    H5EdgeListSource(std::string path, H5FilePtr file, OpenSpec spec)
+        : path_(std::move(path)), file_(std::move(file)), spec_(std::move(spec)) {
+        const std::string a = spec_.key == "var" ? "var" : "obs";
+        schema_ = arrow::schema({arrow::field("i", arrow::int64()),
+                                 arrow::field("j", arrow::int64()),
+                                 arrow::field(a + "_i", arrow::utf8()),
+                                 arrow::field(a + "_j", arrow::utf8()),
+                                 arrow::field("weight", arrow::float64())});
+    }
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    int64_t total_rows() const override { init(); return status_.ok() ? nnz_ : 0; }
+    int num_chunks() const override {
+        init();
+        return status_.ok() ? (int)((nnz_ + kEdgesPerChunk - 1) / kEdgesPerChunk) : 0;
+    }
+    ChunkMeta chunk_meta(int i) const override {
+        const int64_t first = (int64_t)i * kEdgesPerChunk;
+        return {first, std::max<int64_t>(0, std::min(kEdgesPerChunk, nnz_ - first))};
+    }
+    arrow::Status read_status() const override { init(); return status_; }
+    const std::string& path() const override { return path_; }
+    std::string tab_label() const override { return spec_.display; }
+    std::string footer() const override { init(); return footer_; }
+
+    arrow::Status read_chunk(int c, const std::vector<int>& cols,
+                             std::shared_ptr<arrow::Table>* out) override {
+        init();
+        ARROW_RETURN_NOT_OK(status_);
+        const ChunkMeta m = chunk_meta(c);
+        const int64_t p0 = first_ + m.first_row, count = m.num_rows;
+        std::vector<int64_t> idx((size_t)count);
+        std::vector<double>  val((size_t)count);
+        if (count > 0) {
+            hid_t g = H5Gopen2(*file_, spec_.h5_path.c_str(), H5P_DEFAULT);
+            if (g < 0) return arrow::Status::IOError("cannot open ", spec_.h5_path);
+            std::string err;
+            for (int pass = 0; pass < 2; ++pass) {
+                hid_t d = H5Dopen2(g, pass ? "data" : "indices", H5P_DEFAULT);
+                hid_t fs = H5Dget_space(d);
+                hsize_t start = (hsize_t)p0, cnt = (hsize_t)count;
+                H5Sselect_hyperslab(fs, H5S_SELECT_SET, &start, nullptr, &cnt, nullptr);
+                hid_t ms = H5Screate_simple(1, &cnt, nullptr);
+                herr_t st = pass ? h5_read(d, H5T_NATIVE_DOUBLE, ms, fs, val.data())
+                                 : h5_read(d, H5T_NATIVE_INT64, ms, fs, idx.data());
+                if (st < 0 && err.empty()) err = h5_read_failure(d);
+                H5Sclose(ms); H5Sclose(fs); H5Dclose(d);
+            }
+            H5Gclose(g);
+            if (!err.empty()) return arrow::Status::IOError(err);
+        }
+        // The compressed-axis index of each entry: the slice k with
+        // indptr[k] <= p < indptr[k+1].
+        arrow::Int64Builder ib, jb;
+        arrow::StringBuilder nib, njb;
+        arrow::DoubleBuilder wb;
+        ARROW_RETURN_NOT_OK(ib.Reserve(count));
+        ARROW_RETURN_NOT_OK(jb.Reserve(count));
+        ARROW_RETURN_NOT_OK(wb.Reserve(count));
+        size_t k = (size_t)(std::upper_bound(indptr_.begin(), indptr_.end(), p0) - indptr_.begin());
+        k = k ? k - 1 : 0;
+        auto name = [&](arrow::StringBuilder& b, int64_t x) {
+            if (x >= 0 && x < (int64_t)names_.size()) (void)b.Append(names_[(size_t)x]);
+            else                                      (void)b.AppendNull();
+        };
+        for (int64_t e = 0; e < count; ++e) {
+            const int64_t p = p0 + e;
+            while (k + 1 < indptr_.size() && indptr_[k + 1] <= p) ++k;
+            const int64_t major = (int64_t)k, minor = idx[(size_t)e];
+            const int64_t i = csr_ ? major : minor, j = csr_ ? minor : major;
+            ib.UnsafeAppend(i);
+            jb.UnsafeAppend(j);
+            name(nib, i);
+            name(njb, j);
+            wb.UnsafeAppend(val[(size_t)e]);
+        }
+        std::shared_ptr<arrow::Array> ai, aj, ani, anj, aw;
+        ARROW_RETURN_NOT_OK(ib.Finish(&ai));
+        ARROW_RETURN_NOT_OK(jb.Finish(&aj));
+        ARROW_RETURN_NOT_OK(nib.Finish(&ani));
+        ARROW_RETURN_NOT_OK(njb.Finish(&anj));
+        ARROW_RETURN_NOT_OK(wb.Finish(&aw));
+        const std::vector<std::shared_ptr<arrow::Array>> all{ai, aj, ani, anj, aw};
+        arrow::FieldVector fields;
+        std::vector<std::shared_ptr<arrow::Array>> arrays;
+        for (int ci : cols) {
+            if (ci < 0 || ci >= (int)all.size()) continue;
+            fields.push_back(schema_->field(ci));
+            arrays.push_back(all[(size_t)ci]);
+        }
+        *out = arrow::Table::Make(arrow::schema(fields), arrays, count);
+        return arrow::Status::OK();
+    }
+};
+
+static std::unique_ptr<TabularSource> make_edge_list_source(const std::string& path,
+                                                            H5FilePtr file,
+                                                            const OpenSpec& spec) {
+    return std::make_unique<H5EdgeListSource>(path, std::move(file), spec);
 }
 
 // ── 10x Genomics Cell Ranger HDF5 (filtered_feature_bc_matrix.h5) ─────────

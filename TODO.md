@@ -358,7 +358,7 @@ analysis ranking. One PR per box; no stacked PRs.
   transpose pass), with dense and long (`cell, gene, value`) output shapes.
 - [x] **`raw/` tabs** (S) — `feat/anndata-raw-tabs` — `raw.X` preview labelled from `/raw/var`, and
   `raw.var`; today skipped without mention.
-- [ ] **`obsp` / `varp` listed** (M) — neighbour graphs as streamed edge
+- [x] **`obsp` / `varp` listed** (M) — `feat/anndata-obsp-edges` — neighbour graphs as streamed edge
   lists (`obs_i, obs_j, weight`, labelled by obs names); never densified.
 - [ ] **Matrix profile in the summary** (S) — dtype, nnz, density, max and a
   labelled *sampled* "integer-valued" flag for X and each layer, so raw counts
