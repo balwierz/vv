@@ -4,8 +4,12 @@
 #
 #   gui/kde/check-mime.sh <path/to/vvkdetest>
 #
-# Builds a private MIME database from vv-formats.xml (update-mime-database into
-# a temporary XDG_DATA_HOME, on top of the system database) and checks:
+# Builds a private MIME database the way a package install does — the system's
+# shared-mime-info packages plus vv-formats.xml compiled into ONE database —
+# and points Qt at it alone. (A separate database layered over the system one
+# is not equivalent: Qt 6.4 settles a glob tie across two databases without
+# consulting the other's magic, so a vCard named .vcf resolved to text/x-vcf
+# there while a real install resolves it to text/vcard.) Then checks:
 #   1. real files resolve to the expected type by name + content, including the
 #      glob collisions with text/vcard (*.vcf) and application/x-amipro (*.sam);
 #   2. every type the .desktop entry, thumbnailer or extractor lists is known;
@@ -21,11 +25,14 @@ data=$(cd "$here/../../tests/data" && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-mkdir -p "$tmp/share/mime/packages"
+mkdir -p "$tmp/share/mime/packages" "$tmp/home"
+sysmime=/usr/share/mime/packages
+[[ -f $sysmime/freedesktop.org.xml ]] || { echo "check-mime: $sysmime/freedesktop.org.xml missing (install shared-mime-info)"; exit 1; }
+cp "$sysmime"/*.xml "$tmp/share/mime/packages/"
 cp "$here/vv-formats.xml" "$tmp/share/mime/packages/"
 update-mime-database "$tmp/share/mime" >/dev/null 2>&1
-export XDG_DATA_HOME="$tmp/share"
-export XDG_DATA_DIRS="${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+export XDG_DATA_HOME="$tmp/home"      # no mime/ here
+export XDG_DATA_DIRS="$tmp/share"
 export QT_QPA_PLATFORM=offscreen
 
 fail=0
