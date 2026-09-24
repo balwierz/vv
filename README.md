@@ -682,7 +682,9 @@ $ vv --heatmap --image-mode ascii embedding.npy > grid.txt
   `endswith`, `in (a, b, c)` / `not in (…)`, and `is null` / `is not null`
   — the rows `--describe` counts but nothing could previously select.
   The word operators are operators only in operator position, so a column
-  genuinely named `in` or `is` stays filterable. The same grammar drives
+  genuinely named `in` or `is` stays filterable. A column name with spaces
+  or operator characters goes in backticks: `` `Sample ID` == "S1" ``,
+  `` `End)` > 100 `` (a doubled backtick inside for a literal one). The same grammar drives
   the TUI live-filter (`&`) and the Qt filter box.
 - **`--expand COL`** — unpack a packed `key=value` column into real columns.
   VCF `INFO` and GFF/GTF `attributes` carry the actual payload of those

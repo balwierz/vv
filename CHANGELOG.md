@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Backtick-quoted column names in `--filter`.** A column whose name has a
+  space or operator characters could not be filtered: `Sample ID == "S1"`
+  split into two tokens and `End) > 100` lexed `)` as punctuation. Such a
+  name is now written in backticks — `` `Sample ID` == "S1" ``,
+  `` `End)` > 100 `` — with a doubled backtick for a literal one, as in SQL
+  and pandas `query()`. An unknown bare word that starts a longer column name
+  suggests the backticked form; an unterminated backtick, or a backticked
+  name in value position, is an error. Applies to `--filter`, the TUI `&`
+  filter and vvg's filter bar.
 - **AnnData matrix profiles in the summary.** The summary tab gains a
   `X profile`, `layers[…] profile` and `raw.X profile` row: the dtype, how
   much of a sparse matrix is stored (`2962007 stored of 787 × 36601

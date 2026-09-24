@@ -874,6 +874,8 @@ static void print_usage(const char* prog) {
         "                        contains startswith endswith\n"
         "                        in (a, b, c)      set membership; `not in` too\n"
         "                        is null / is not null\n"
+        "                      a column name with spaces or symbols goes in\n"
+        "                      backticks: `Sample ID` == \"S1\"  (`` for a `)\n"
         "                      e.g. --filter 'Score > 0.5'\n"
         "                           --filter 'FILTER is null OR Gene ~ \"^BRCA\"'\n"
         "  --schema            print schema + file metadata and exit\n"
@@ -2696,6 +2698,17 @@ static void resolve_region_chroms(std::vector<Region>& ws, HavePred have,
 // schema field index (resolved at parse time from the column name).
 // (FilterAtom + FilterExpr are defined in vv/vvcore.hpp, included near the top.)
 
+// Token for a backtick-quoted name with no closing backtick.
+static constexpr const char kFilterBadBacktick[] = "\x01`";
+
+// A column-name token: a bare word, or `name` with its backticks removed.
+static bool filter_is_backticked(const std::string& t) {
+    return t.size() >= 2 && t.front() == '`' && t.back() == '`';
+}
+static std::string filter_column_name(const std::string& t) {
+    return filter_is_backticked(t) ? t.substr(1, t.size() - 2) : t;
+}
+
 static std::vector<std::string> filter_tokenize(const std::string& s) {
     std::vector<std::string> toks;
     size_t i = 0;
@@ -2707,6 +2720,22 @@ static std::vector<std::string> filter_tokenize(const std::string& s) {
             while (i < s.size() && s[i] != q) lit += s[i++];
             if (i < s.size()) lit += s[i++];  // closing quote
             toks.push_back(lit);
+            continue;
+        }
+        // `name`: a column name that is not a bare word — it has a space or
+        // operator characters (`Sample ID`, `End)`). A doubled backtick
+        // stands for one inside it. The token keeps the backticks so the
+        // parser can tell it from a word; an unterminated one is lexed as
+        // kFilterBadBacktick.
+        if (s[i] == '`') {
+            std::string name = "`";
+            bool closed = false;
+            for (++i; i < s.size(); ++i) {
+                if (s[i] != '`') { name += s[i]; continue; }
+                if (i + 1 < s.size() && s[i + 1] == '`') { name += '`'; ++i; continue; }
+                ++i; closed = true; break;
+            }
+            toks.push_back(closed ? name + "`" : std::string(kFilterBadBacktick));
             continue;
         }
         // `in (...)` punctuation, each its own token.
@@ -2728,7 +2757,7 @@ static std::vector<std::string> filter_tokenize(const std::string& s) {
         // `Gene~` and `in("A","B")` as a single token.
         std::string w;
         while (i < s.size() && !std::isspace((unsigned char)s[i])
-               && s[i]!='"' && s[i]!='\''
+               && s[i]!='"' && s[i]!='\'' && s[i]!='`'
                && s[i]!='=' && s[i]!='!' && s[i]!='<' && s[i]!='>'
                && s[i]!='~' && s[i]!='(' && s[i]!=')' && s[i]!=',')
             w += s[i++];
@@ -2774,6 +2803,11 @@ bool parse_filter_expr(const std::string& expr,
     out->groups.clear();
     auto toks = filter_tokenize(expr);
     if (toks.empty()) { *err = "empty filter expression"; return false; }
+    for (const auto& t : toks)
+        if (t == kFilterBadBacktick) {
+            *err = "unterminated `name` (a column name opened with ` needs a closing `)";
+            return false;
+        }
     auto eq_ci = [](const std::string& a, const char* b) {
         if (a.size() != std::strlen(b)) return false;
         for (size_t k = 0; k < a.size(); ++k)
@@ -2789,9 +2823,20 @@ bool parse_filter_expr(const std::string& expr,
             return false;
         }
         FilterAtom a;
-        a.col_idx = schema.GetFieldIndex(toks[i]);
+        const std::string col = filter_column_name(toks[i]);
+        a.col_idx = schema.GetFieldIndex(col);
         if (a.col_idx < 0) {
-            *err = "unknown column '" + toks[i] + "' in filter";
+            *err = "unknown column '" + col + "' in filter";
+            // A name with a space or operator characters splits into several
+            // tokens; say how to write it.
+            if (!filter_is_backticked(toks[i]) && i + 1 < toks.size())
+                for (int f = 0; f < schema.num_fields(); ++f) {
+                    const std::string& n = schema.field(f)->name();
+                    if (n.rfind(col, 0) == 0 && n.size() > col.size()) {
+                        *err += " (for a name like '" + n + "', write `" + n + "`)";
+                        break;
+                    }
+                }
             return false;
         }
         // Word operators are operators only in operator position, so a column
@@ -2802,6 +2847,11 @@ bool parse_filter_expr(const std::string& expr,
         auto need_literal = [&](size_t at, std::string* dst) {
             if (at >= toks.size()) {
                 *err = "expected a value after '" + opt + "'";
+                return false;
+            }
+            if (filter_is_backticked(toks[at])) {
+                *err = toks[at] + " names a column; a value is a number or a "
+                       "quoted string";
                 return false;
             }
             *dst = filter_unquote(toks[at]);
@@ -2836,6 +2886,10 @@ bool parse_filter_expr(const std::string& expr,
             ++p;
             while (p < toks.size() && toks[p] != ")") {
                 if (toks[p] == ",") { ++p; continue; }
+                if (filter_is_backticked(toks[p])) {
+                    *err = toks[p] + " names a column; 'in' takes values";
+                    return false;
+                }
                 a.set_lits.push_back(filter_unquote(toks[p]));
                 ++p;
             }
@@ -2857,6 +2911,10 @@ bool parse_filter_expr(const std::string& expr,
                 return false;
             }
             const std::string& lit = toks[i+2];
+            if (filter_is_backticked(lit)) {
+                *err = lit + " names a column; a value is a number or a quoted string";
+                return false;
+            }
             if (a.op == FilterAtom::Match || a.op == FilterAtom::NotMatch) {
                 // The pattern is always text, never a number.
                 a.kind  = FilterAtom::K_String;

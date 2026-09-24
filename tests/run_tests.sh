@@ -3197,6 +3197,25 @@ assert_eq_file_inline "gt_stats_filter_af" "$GT_HIAF" "100 "
 GT_SORT=$("$VV" --tsv --no-header --gt-stats --select POS --sort n_missing:desc "$GTVCF" | head -1)
 assert_eq_file_inline "gt_stats_sort_missing" "$GT_SORT" "100"
 
+# Backtick-quoted column names in --filter: names with spaces or operator
+# characters, a column literally named `in`, and a doubled backtick. Errors:
+# unterminated backtick, a backticked name in value position, and a hint for
+# an unquoted multi-word name.
+BT="$TMP/backtick.csv"
+printf 'Sample ID,End),in,a`b,v\nS1,5,x,p,1.5\nS2,15,y,q,2.5\nS3,25,z,r,3.5\n' > "$BT"
+for bc in '`Sample ID` == "S2"|S2 ' '`End)` > 10 and `Sample ID` != "S3"|S2 ' \
+          '`in` == "z"|S3 ' '`a``b` == "q"|S2 ' '`Sample ID` in ("S1","S3")|S1 S3 ' \
+          '`Sample ID`=="S1"|S1 '; do
+    be=${bc%|*}; bw=${bc##*|}
+    assert_eq_file_inline "filter_backtick: $be" \
+        "$("$VV" --tsv --no-header --select 'Sample ID' --filter "$be" "$BT" | tr '\n' ' ')" "$bw"
+done
+assert_exit_code "filter_backtick_unterminated" 1 "$VV" --count --filter '`Sample ID == "S2"' "$BT"
+assert_contains "filter_backtick_value_position" \
+    "$("$VV" --count --filter 'v == `Sample ID`' "$BT" 2>&1)" "names a column"
+assert_contains "filter_backtick_hint" \
+    "$("$VV" --count --filter 'Sample ID == "S2"' "$BT" 2>&1)" "write \`Sample ID\`"
+
 # An integer literal against a float column compares as a number, not after
 # truncating the cell: tiny.parquet's Score is 0, 0.05, ..., 0.95, so
 # `Score > 0` matched nothing and `Score == 0` matched all 20 rows.

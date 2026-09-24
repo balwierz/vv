@@ -356,6 +356,9 @@ the rows \fB\-\-describe\fR counts but nothing could previously select.
 .IP
 The word operators are operators only in operator position, so a column
 genuinely named \fBin\fR, \fBis\fR or \fBcontains\fR stays filterable.
+A column name that is not a bare word \(en it has a space or operator
+characters \(en is written in backticks: \fB`Sample ID` == "S1"\fR,
+\fB`End)` > 100\fR; a doubled backtick stands for one inside the name.
 Values: integer, float, single- or double-quoted string. Example:
 \fB\-\-filter 'Chromosome == "chr1" AND Score > 0.5'\fR. Evaluated
 per row after the source's own pruning (tabix region, LociSSD
