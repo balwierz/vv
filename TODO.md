@@ -381,7 +381,7 @@ work that touches the same code:
   matches 19.
 - [x] **Backtick-quoted identifiers in `--filter`** (S) — `feat/filter-backtick-identifiers` — `` `End)` ``,
   `` `Sample ID` ``.
-- [ ] **`has` / `lacks` bit-flag operators** (S) — `FLAG lacks
+- [x] **`has` / `lacks` bit-flag operators** (S) — `feat/filter-flag-has-lacks` — `FLAG lacks
   UNMAP,SECONDARY,DUP`; unknown flag names are a parse error.
 - [ ] **samtools default read filters for `--pileup`** (S–M) — `--ff
   UNMAP,SECONDARY,QCFAIL,DUP`, `-Q 13`; overrides `--exclude-flags`,

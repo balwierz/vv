@@ -3197,6 +3197,28 @@ assert_eq_file_inline "gt_stats_filter_af" "$GT_HIAF" "100 "
 GT_SORT=$("$VV" --tsv --no-header --gt-stats --select POS --sort n_missing:desc "$GTVCF" | head -1)
 assert_eq_file_inline "gt_stats_sort_missing" "$GT_SORT" "100"
 
+# has / lacks: bit tests on an integer column, with SAM FLAG names (any case)
+# or numbers. 99 = PAIRED|PROPER_PAIR|MREVERSE|READ1; 147 adds REVERSE|READ2;
+# 355 / 1123 / 2147 are 99 + SECONDARY / DUP / SUPPLEMENTARY.
+FL="$TMP/flags.csv"
+printf 'id,FLAG,name\nprimary_fwd,99,a\nmate_rev,147,b\nunmapped,4,c\nsecondary,355,d\ndup,1123,e\nsuppl,2147,f\nsingle,0,g\n' > "$FL"
+for fc in 'FLAG lacks UNMAP,SECONDARY,DUP|primary_fwd mate_rev suppl single ' \
+          'FLAG has PAIRED,PROPER_PAIR|primary_fwd mate_rev secondary dup suppl ' \
+          'FLAG has REVERSE|mate_rev ' 'FLAG lacks 0x904|primary_fwd mate_rev dup single ' \
+          'FLAG has read1 and FLAG lacks secondary|primary_fwd dup suppl ' \
+          'FLAG has DUP or FLAG has UNMAP|unmapped dup '; do
+    fe=${fc%|*}; fw=${fc##*|}
+    assert_eq_file_inline "filter_flags: $fe" \
+        "$("$VV" --tsv --no-header --select id --filter "$fe" "$FL" | tr '\n' ' ')" "$fw"
+done
+assert_eq_file_inline "filter_flags_bam" \
+    "$("$VV" --tsv --no-header --select QNAME --filter 'FLAG has REVERSE' "$DATA/tiny.bam")" "r2"
+assert_exit_code "filter_flags_unknown_name" 1 "$VV" --count --filter 'FLAG has BOGUS' "$FL"
+assert_contains "filter_flags_unknown_msg" \
+    "$("$VV" --count --filter 'FLAG has BOGUS' "$FL" 2>&1)" "unknown flag 'BOGUS'"
+assert_contains "filter_flags_non_integer" \
+    "$("$VV" --count --filter 'name has DUP' "$FL" 2>&1)" "tests bits of an integer column"
+
 # Backtick-quoted column names in --filter: names with spaces or operator
 # characters, a column literally named `in`, and a doubled backtick. Errors:
 # unterminated backtick, a backticked name in value position, and a hint for

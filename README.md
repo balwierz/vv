@@ -679,8 +679,10 @@ $ vv --heatmap --image-mode ascii embedding.npy > grid.txt
 - **Value filter** — `--filter 'Chromosome == "chr1" AND Score > 0.5'`.
   Grammar: `<col> <op> <value>` joined by `AND` / `OR`. Operators:
   `== != < <= > >=`, regex `~` / `!~`, `contains` / `startswith` /
-  `endswith`, `in (a, b, c)` / `not in (…)`, and `is null` / `is not null`
-  — the rows `--describe` counts but nothing could previously select.
+  `endswith`, `in (a, b, c)` / `not in (…)`, `is null` / `is not null`
+  — the rows `--describe` counts but nothing could previously select — and
+  `has` / `lacks` for bit flags: `FLAG lacks UNMAP,SECONDARY,DUP` (samtools
+  `-F 0x504`), `FLAG has PAIRED,READ1`, or numbers (`FLAG lacks 0x904`).
   The word operators are operators only in operator position, so a column
   genuinely named `in` or `is` stays filterable. A column name with spaces
   or operator characters goes in backticks: `` `Sample ID` == "S1" ``,

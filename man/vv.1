@@ -262,7 +262,7 @@ BAM / CRAM / SAM only. Add one column per named optional (aux) tag,
 \fILIST\fR being a comma-separated list of two-character SAM tags
 (e.g. \fB\-\-tags NM,AS,RG\fR). Each column's Arrow type follows the
 tag's SAM type code \(en integer tags (\fBi\fR and friends) become
-\fBint64\fR, \fBf\fR becomes \fBdouble\fR, and \fBA\fR / \fBZ\fR /
+\fBint64\fR, \fBf\fR becomes \fBfloat\fR (htslib's \fBd\fR \fBdouble\fR), and \fBA\fR / \fBZ\fR /
 \fBH\fR / \fBB\fR become strings \(en so \fB\-\-filter 'NM <= 2'\fR
 compares numbers, not text. A read that lacks the tag is null. The
 type is resolved from the first records that carry each tag. A plain
@@ -351,7 +351,15 @@ silently-empty result;
 membership. On a numeric column the members are compared numerically;
 .IP \(bu 2
 \fBis null\fR and \fBis not null\fR \(en match the column's actual nulls,
-the rows \fB\-\-describe\fR counts but nothing could previously select.
+the rows \fB\-\-describe\fR counts but nothing could previously select;
+.IP \(bu 2
+\fBhas \fIF\fB,\fIG\fR and \fBlacks \fIF\fB,\fIG\fR \(en bits of an integer
+column: every listed bit set / none set. Members are numbers (\fB4\fR,
+\fB0x904\fR) or SAM FLAG names as samtools spells them: \fBPAIRED\fR,
+\fBPROPER_PAIR\fR, \fBUNMAP\fR, \fBMUNMAP\fR, \fBREVERSE\fR, \fBMREVERSE\fR,
+\fBREAD1\fR, \fBREAD2\fR, \fBSECONDARY\fR, \fBQCFAIL\fR, \fBDUP\fR,
+\fBSUPPLEMENTARY\fR (any case). \fB\-\-filter 'FLAG lacks UNMAP,SECONDARY,DUP'\fR
+is \fBsamtools view \-F 0x504\fR. An unknown name is an error.
 .RE
 .IP
 The word operators are operators only in operator position, so a column

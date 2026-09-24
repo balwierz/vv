@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`has` / `lacks` bit-flag operators in `--filter`.** `FLAG lacks
+  UNMAP,SECONDARY,DUP` keeps rows with none of those bits set (samtools
+  `view -F 0x504`), `FLAG has PAIRED,READ1` rows with all of them. Members
+  are the SAM FLAG names as samtools spells them (any case) or numbers
+  (`FLAG lacks 0x904`); an unknown name is a parse error that lists the
+  valid ones, and the operators refuse a non-integer column. Bits could only
+  be tested before by arithmetic the grammar does not have. Applies to
+  `--filter`, the TUI `&` filter and vvg's filter bar.
 - **Backtick-quoted column names in `--filter`.** A column whose name has a
   space or operator characters could not be filtered: `Sample ID == "S1"`
   split into two tokens and `End) > 100` lexed `)` as punctuation. Such a
