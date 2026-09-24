@@ -874,10 +874,15 @@ static void print_usage(const char* prog) {
         "                        contains startswith endswith\n"
         "                        in (a, b, c)      set membership; `not in` too\n"
         "                        is null / is not null\n"
+        "                        has / lacks F,G   bits of an integer column:\n"
+        "                                          all set / none set. SAM FLAG\n"
+        "                                          names (UNMAP, SECONDARY, DUP,\n"
+        "                                          PAIRED, READ1, …) or numbers\n"
         "                      a column name with spaces or symbols goes in\n"
         "                      backticks: `Sample ID` == \"S1\"  (`` for a `)\n"
         "                      e.g. --filter 'Score > 0.5'\n"
         "                           --filter 'FILTER is null OR Gene ~ \"^BRCA\"'\n"
+        "                           --filter 'FLAG lacks UNMAP,SECONDARY,DUP'\n"
         "  --schema            print schema + file metadata and exit\n"
         "                      (with --json: machine-readable; `rows` is null\n"
         "                      when the file has not been fully scanned)\n"
@@ -2778,6 +2783,14 @@ static bool filter_parse_op(const std::string& t, FilterAtom::Op* op) {
     return false;
 }
 
+// SAM FLAG bit names, as samtools flags / view -f / -F spell them.
+static const std::pair<const char*, int> kSamFlagNames[] = {
+    {"PAIRED", 0x1},      {"PROPER_PAIR", 0x2}, {"UNMAP", 0x4},
+    {"MUNMAP", 0x8},      {"REVERSE", 0x10},    {"MREVERSE", 0x20},
+    {"READ1", 0x40},      {"READ2", 0x80},      {"SECONDARY", 0x100},
+    {"QCFAIL", 0x200},    {"DUP", 0x400},       {"SUPPLEMENTARY", 0x800},
+};
+
 // Case-insensitive token compare, used for the word operators and AND / OR.
 static bool filter_tok_is(const std::string& a, const char* b) {
     if (a.size() != std::strlen(b)) return false;
@@ -2858,7 +2871,46 @@ bool parse_filter_expr(const std::string& expr,
             return true;
         };
 
-        if (filter_tok_is(opt, "is")) {
+        if (filter_tok_is(opt, "has") || filter_tok_is(opt, "lacks")) {
+            // has / lacks NAME[,NAME…] — bits of an integer column (SAM FLAG):
+            // has = every listed bit set, lacks = none set. A member is a
+            // flag name or a number (4, 0x904).
+            a.op = filter_tok_is(opt, "has") ? FilterAtom::Has : FilterAtom::Lacks;
+            a.kind = FilterAtom::K_Int;
+            if (!is_integer_type(schema.field(a.col_idx)->type()->id())) {
+                *err = "'" + opt + "' tests bits of an integer column; '" + col +
+                       "' is " + schema.field(a.col_idx)->type()->ToString();
+                return false;
+            }
+            size_t p = i + 2;
+            int64_t mask = 0;
+            for (;;) {
+                if (p >= toks.size()) { *err = "expected a flag after '" + opt + "'"; return false; }
+                const std::string& t = toks[p];
+                int64_t bit = -1;
+                for (const auto& [nm, v] : kSamFlagNames)
+                    if (filter_tok_is(t, nm)) { bit = v; break; }
+                if (bit < 0) {
+                    try {
+                        size_t used = 0;
+                        long long v = std::stoll(t, &used, 0);   // 4, 0x904
+                        if (used == t.size() && v >= 0) bit = v;
+                    } catch (...) {}
+                }
+                if (bit < 0) {
+                    std::string names;
+                    for (const auto& [nm, v] : kSamFlagNames) names += std::string(names.empty() ? "" : " ") + nm;
+                    *err = "unknown flag '" + t + "' after '" + opt +
+                           "' (a number, or one of: " + names + ")";
+                    return false;
+                }
+                mask |= bit;
+                if (p + 1 < toks.size() && toks[p + 1] == ",") { p += 2; continue; }
+                break;
+            }
+            a.i_lit = mask;
+            next = p + 1;
+        } else if (filter_tok_is(opt, "is")) {
             // is null | is not null
             if (i + 2 < toks.size() && filter_tok_is(toks[i+2], "null")) {
                 a.op = FilterAtom::IsNull; a.kind = FilterAtom::K_None;
@@ -2941,7 +2993,7 @@ bool parse_filter_expr(const std::string& expr,
             next = i + 3;
         } else {
             *err = "expected an operator (== != < <= > >= ~ !~ contains "
-                   "startswith endswith in 'is null'), got '" + opt + "'";
+                   "startswith endswith in 'is null' has lacks), got '" + opt + "'";
             return false;
         }
 
@@ -3148,6 +3200,13 @@ static bool eval_atom(const arrow::Table& tbl, int64_t row, const FilterAtom& a,
         int64_t off = 0;
         const arrow::Array* arr = locate_cell(tbl, tcol, row, &off);
         return arr && !arr->IsNull(off);
+    }
+
+    if (a.op == FilterAtom::Has || a.op == FilterAtom::Lacks) {
+        int64_t v;
+        if (!cell_as_int(tbl, tcol, row, &v)) return false;   // null: no match
+        return a.op == FilterAtom::Has ? (v & a.i_lit) == a.i_lit
+                                       : (v & a.i_lit) == 0;
     }
 
     // String / set predicates read the cell as text whatever the literal
