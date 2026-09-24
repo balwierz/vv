@@ -369,7 +369,7 @@ analysis ranking. One PR per box; no stacked PRs.
 Silent-wrong-result bugs found during the analysis are folded in next to the
 work that touches the same code:
 
-- [ ] **TUI search / `:N` move the cell cursor** (S) — `/ n N :N` do nothing
+- [x] **TUI search / `:N` move the cell cursor** (S) — `fix/tui-search-goto-cursor` — `/ n N :N` do nothing
   past the first screen (the cursor drags the viewport back); fix stale help
   rows.
 - [ ] **Lossless floats in exports and `--distinct` / `--unique`** (S) — `%.6g`

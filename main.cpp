@@ -20475,15 +20475,16 @@ class TableTUI {
         return -1;
     }
 
-    // Commit a search: find the first match, update state, scroll to it.
+    // Commit a search: find the next match from the cursor, and move the cell
+    // cursor onto it (ensure_cursor_visible() then scrolls the view). Moving
+    // only the viewport did nothing: the next draw scrolled back to the cursor.
     void do_search(bool forward) {
         if (search_query_.empty()) return;
-        int64_t start;
-        if (search_row_ >= 0) {
-            start = forward ? search_row_ + 1 : search_row_ - 1;
-        } else {
-            start = forward ? top_row_ : top_row_ + data_lines() - 1;
-        }
+        // A fresh search includes the cursor's row; n / N step past it. The
+        // cursor, not the last match, is the anchor, so moving it between
+        // searches continues from where the user is.
+        int64_t start = (search_row_ >= 0) ? (forward ? cur_row_ + 1 : cur_row_ - 1)
+                                           : cur_row_;
         int64_t found = find_next(start, forward);
         // Wrap around if not found
         if (found < 0) {
@@ -20496,7 +20497,15 @@ class TableTUI {
         if (found >= 0) {
             search_row_  = found;
             search_fail_ = false;
-            // Scroll so the match is visible
+            cur_row_     = found;
+            // Put the cursor on a matching cell: keep its column if that cell
+            // matches, else the first column that does.
+            auto vals = load_full_row(found);
+            const std::string& q = search_query_lc_;
+            if (cur_col_ < 0 || cur_col_ >= (int)vals.size() || !cell_matches(vals[cur_col_], q))
+                for (int c = 0; c < (int)vals.size(); ++c)
+                    if (cell_matches(vals[c], q)) { cur_col_ = c; break; }
+            // Bring a match that is off screen to the top of the view.
             int dl = data_lines();
             if (found < top_row_ || found >= top_row_ + dl) {
                 int64_t tr = total_rows();
@@ -21972,6 +21981,7 @@ private:
                 int dl = data_lines();
                 int64_t mt = (tr >= 0) ? std::max<int64_t>(0, tr - dl) : r;
                 top_row_     = std::min(r, mt);
+                cur_row_     = r;   // the cursor, or the next draw scrolls back to it
                 search_row_  = -1;
                 copy_status_.clear();
             } catch (...) {
@@ -22174,7 +22184,7 @@ private:
         static const Row rows[] = {
             {"q  Esc",       "quit  (Esc clears search / closes overlays)"},
             {"↑↓  j k",      "move the cell cursor one row"},
-            {"PgUp PgDn  ␣ b","scroll one page"},
+            {"PgUp PgDn  ␣ b","move the cell cursor one page"},
             {"g  G  Home End","first / last row"},
             {"←→  h l",      "move the cell cursor one column"},
             {",  .",          "narrow / widen the cursor's column"},
@@ -22185,17 +22195,17 @@ private:
             {"s",             "sort by the cursor's column (toggle asc/desc; u to clear)"},
             {"&",             "live filter: hide non-matching rows; empty input clears"},
             {"c",             "show / hide columns (overlay)"},
-            {"y",             "copy the top-left visible cell to the clipboard (OSC52)"},
+            {"y",             "copy the cursor's cell to the clipboard (OSC52)"},
             {"T",             "pick a color theme (saved to ~/.config/vv/config)"},
             {":",             "command line: :N (jump), :q, :theme NAME, :slice N"},
             {"Tab  Shift-Tab","next / previous tab (with multiple files)"},
             {"[  ]",          "step slice axis (NPZ 3-D+ arrays only)"},
-            {"Enter",         "open detail pane for the top-visible row"},
+            {"Enter",         "open detail pane for the cursor's row"},
             {"mouse wheel",   "scroll rows"},
-            {"mouse click",   "header → sort by column; row → scroll to top"},
+            {"mouse click",   "header → sort by column; cell → move the cursor there"},
             {"mouse 2-click", "row → open detail pane"},
             {"Shift+drag",    "select text for OS clipboard (terminal-side)"},
-            {"?  F1  H",      "toggle this help"},
+            {"H  F1",         "toggle this help"},
         };
         const int n = (int)(sizeof(rows) / sizeof(rows[0]));
         // Compute panel size.
@@ -22953,7 +22963,7 @@ public:
 
             switch (ch) {
                 case 'q': case 'Q': quit = true; break;
-                case '\n': case '\r': case KEY_ENTER:  // Open detail pane for top-visible row
+                case '\n': case '\r': case KEY_ENTER:  // Open detail pane for the cursor's row
                     detail_row_    = cur_row_;
                     detail_scroll_ = 0;
                     break;
@@ -23108,10 +23118,9 @@ public:
                     cmd_err_.clear();
                     break;
                 case 'y': {
-                    // Copy the "active cell" — the cell at the top-left of
-                    // the visible window — to the system clipboard via
-                    // OSC52. The user picks the cell by scrolling: h/l/,/.
-                    // for the column, j/k/PgUp/PgDn for the row, then `y`.
+                    // Copy the cell under the cursor to the system clipboard
+                    // via OSC52 (h/l, j/k, PgUp/PgDn, a search or :N move
+                    // the cursor there first).
                     if (left_col_ < 0 || left_col_ >= num_cols_) break;
                     auto vals = load_full_row(cur_row_);
                     if (cur_col_ >= (int)vals.size()) break;

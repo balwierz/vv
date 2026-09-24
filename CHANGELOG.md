@@ -87,6 +87,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `genes` attribute tables. Integer layers stay integer-typed.
 
 ### Fixed
+- **TUI: `/` search, `n` / `N` and `:N` reach rows past the first screen.**
+  They moved only the viewport; the next redraw scrolled back to the cell
+  cursor, so a match or a row off the first screen was never shown and the
+  keys appeared to do nothing. They now move the cursor: onto the matching
+  row, and onto a matching cell of it (so `y` copies the match), or onto row
+  N. `n` / `N` continue from the cursor. The help overlay no longer says `y`
+  copies "the top-left visible cell", that Enter opens "the top-visible row",
+  that a click scrolls a row to the top, or that `?` toggles help (`?` is
+  backward search; help is `H` / F1).
 - **Matrix previews are no longer exported as if they were the whole
   matrix.** HDF5 / AnnData / Loom / 10x matrices (`X`, layers, 2-D datasets)
   are read as a 1000-row × 200-column preview, and a NumPy array as its first
