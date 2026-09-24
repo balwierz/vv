@@ -66,7 +66,10 @@ Debian/Ubuntu, \fBbrew install xlsxio\fR on macOS).
 \fB.h5ad\fR, \fB.h5\fR, \fB.hdf5\fR, \fB.loom\fR \(en HDF5 containers
 read via libhdf5. AnnData (\fB.h5ad\fR) is detected by the root
 \fBencoding-type\fR attribute (or modern heuristic /obs + /var + X);
-the layout decodes into a summary tab plus \fBobs\fR, \fBvar\fR,
+the layout decodes into a summary tab (shapes, and for \fBX\fR, each
+layer and \fBraw.X\fR a profile: dtype, stored fraction, and the max of
+a labelled sample with whether its values are whole numbers, so raw
+counts can be told from normalised values) plus \fBobs\fR, \fBvar\fR,
 \fBX\fR, one tab per entry under \fBobsm\fR / \fBvarm\fR /
 \fBlayers\fR, \fBraw.X\fR and \fBraw.var\fR when the file keeps \fB.raw\fR
 (\fBraw.X\fR columns are labelled from \fBraw/var\fR, which usually lists more

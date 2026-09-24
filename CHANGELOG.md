@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **AnnData matrix profiles in the summary.** The summary tab gains a
+  `X profile`, `layers[…] profile` and `raw.X profile` row: the dtype, how
+  much of a sparse matrix is stored (`2962007 stored of 787 × 36601
+  (10.3%)`), and over a labelled sample — the first 100,000 stored values, or
+  a dense matrix's leading rows — the max, the zero share (dense) and
+  whether the values are whole numbers ("all non-negative whole numbers
+  (looks like raw counts)" / "not whole numbers (e.g. 2.5)" / "all zero").
+  Raw counts and normalised or log values can be told apart without opening
+  the matrix. The sample is one read per matrix; opening a 787 × 36,601
+  AnnData with three matrices takes the same ~0.1 s as before.
 - **AnnData `obsp` / `varp` graphs as edge lists.** Each sparse (CSR / CSC)
   pairwise graph — scanpy's neighbour `connectivities` and `distances`, a
   `varp` gene graph — opens as a tab with one row per stored edge: `i`, `j`,

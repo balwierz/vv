@@ -12163,6 +12163,117 @@ static std::vector<OpenSpec> scan_generic(hid_t file_id) {
     return specs;
 }
 
+// One summary line profiling an AnnData matrix (X, a layer, raw/X): its dtype,
+// how much of it is stored (sparse) and a sample of its values — the max and
+// whether they are whole numbers — so raw counts can be told from normalised or
+// log values without opening the matrix. The sample is the first 100,000
+// stored values (sparse data) or the leading rows (dense); the line says so.
+// "" when `path` is not a 2-D dataset or a CSR / CSC group.
+static std::string matrix_profile(hid_t file_id, const std::string& path) {
+    constexpr int64_t kSample = 100000;
+    int64_t rows = 0, cols = 0, stored = -1;
+    bool sparse = false;
+    hid_t d = -1;
+    if (is_group(file_id, path.c_str())) {
+        hid_t g = H5Gopen2(file_id, path.c_str(), H5P_DEFAULT);
+        if (g < 0) return "";
+        const std::string enc = read_string_attr(g, "encoding-type");
+        if (enc == "csr_matrix" || enc == "csc_matrix") {
+            int64_t shape[2] = {0, 0};
+            read_shape2(g, "shape", shape);
+            rows = shape[0]; cols = shape[1];
+            if (link_exists(g, "data")) d = H5Dopen2(g, "data", H5P_DEFAULT);
+            sparse = true;
+        }
+        H5Gclose(g);
+        if (d < 0) return "";
+        stored = h5_len_1d(d);
+    } else {
+        d = H5Dopen2(file_id, path.c_str(), H5P_DEFAULT);
+        if (d < 0) return "";
+        hid_t sp = H5Dget_space(d);
+        hsize_t dims[2] = {0, 0};
+        const bool two_d = H5Sget_simple_extent_ndims(sp) == 2;
+        if (two_d) H5Sget_simple_extent_dims(sp, dims, nullptr);
+        H5Sclose(sp);
+        if (!two_d) { H5Dclose(d); return ""; }
+        rows = (int64_t)dims[0]; cols = (int64_t)dims[1];
+    }
+    hid_t t = H5Dget_type(d);
+    const std::string dtype = dtype_to_string(t);
+    const H5T_class_t cls = H5Tget_class(t);
+    H5Tclose(t);
+    if (cls != H5T_INTEGER && cls != H5T_FLOAT) { H5Dclose(d); return dtype; }
+
+    // The sample: a leading run of stored values (sparse) or leading rows.
+    std::vector<double> v;
+    std::string err;
+    {
+        hid_t fs = H5Dget_space(d);
+        hid_t ms = -1;
+        if (sparse) {
+            hsize_t start = 0, count = (hsize_t)std::max<int64_t>(0, std::min(stored, kSample));
+            v.resize((size_t)count);
+            if (count) {
+                H5Sselect_hyperslab(fs, H5S_SELECT_SET, &start, nullptr, &count, nullptr);
+                ms = H5Screate_simple(1, &count, nullptr);
+            }
+        } else if (rows > 0 && cols > 0) {
+            const int64_t sc = std::min(cols, kSample);
+            const int64_t sr = std::max<int64_t>(1, std::min(rows, kSample / sc));
+            hsize_t start[2] = {0, 0}, count[2] = {(hsize_t)sr, (hsize_t)sc};
+            v.resize((size_t)(sr * sc));
+            H5Sselect_hyperslab(fs, H5S_SELECT_SET, start, nullptr, count, nullptr);
+            ms = H5Screate_simple(2, count, nullptr);
+        }
+        if (ms >= 0) {
+            if (h5_read(d, H5T_NATIVE_DOUBLE, ms, fs, v.data()) < 0) err = h5_read_failure(d);
+            H5Sclose(ms);
+        }
+        H5Sclose(fs);
+    }
+    H5Dclose(d);
+
+    auto num = [](double x) { char b[32]; std::snprintf(b, sizeof b, "%g", x); return std::string(b); };
+    auto pct = [](double x) { char b[32]; std::snprintf(b, sizeof b, "%.3g%%", x); return std::string(b); };
+    std::string out = dtype;
+    const double cells = (double)rows * (double)cols;
+    if (sparse) {
+        out += "  |  " + std::to_string(stored) + " stored of " + std::to_string(rows) +
+               " \xc3\x97 " + std::to_string(cols);
+        if (cells > 0) out += " (" + pct(100.0 * (double)stored / cells) + ")";
+    } else {
+        out += "  |  dense " + std::to_string(rows) + " \xc3\x97 " + std::to_string(cols);
+    }
+    if (!err.empty()) return out + "  |  sample unreadable: " + err;
+    if (v.empty()) return out;
+
+    double mx = v[0], mn = v[0], example = 0;
+    bool whole = true;
+    int64_t zeros = 0;
+    for (double x : v) {
+        mx = std::max(mx, x);
+        mn = std::min(mn, x);
+        if (x == 0) ++zeros;
+        if (whole && (!std::isfinite(x) || x != std::floor(x))) { whole = false; example = x; }
+    }
+    const int64_t total = sparse ? stored : rows * cols;
+    out += "  |  " + std::string((int64_t)v.size() == total ? "all " : "first ") +
+           std::to_string(v.size()) + " values: max " + num(mx);
+    if (!sparse) out += ", " + pct(100.0 * (double)zeros / (double)v.size()) + " zero";
+    if (mx == 0 && mn == 0)
+        out += ", all zero";
+    else if (cls == H5T_INTEGER)
+        out += ", integer dtype";
+    else if (whole && mn >= 0)
+        out += ", all non-negative whole numbers (looks like raw counts)";
+    else if (whole)
+        out += ", all whole numbers";
+    else
+        out += ", not whole numbers (e.g. " + num(example) + ")";
+    return out;
+}
+
 static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
     std::vector<OpenSpec> specs;
 
@@ -12190,6 +12301,7 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
                 x_rows = shape[0]; x_cols = shape[1];
                 add("X", xenc + "  (" + std::to_string(x_rows) +
                           " \xc3\x97 " + std::to_string(x_cols) + ")");
+                add("X profile", matrix_profile(file_id, "/X"));
                 // Both CSR and CSC densify to the same rows × columns preview.
                 specs.push_back({OpenSpec::Kind::Sparse, "/X",
                                   "X (preview)",
@@ -12209,6 +12321,7 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
                 x_rows = (int64_t)dims[0]; x_cols = (int64_t)dims[1];
                 add("X", "dense  (" + std::to_string(x_rows) +
                           " \xc3\x97 " + std::to_string(x_cols) + ")");
+                add("X profile", matrix_profile(file_id, "/X"));
                 specs.push_back({OpenSpec::Kind::Matrix2D, "/X",
                                   "X", "dense"});
             }
@@ -12262,6 +12375,12 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
         H5Gclose(g);
         if (!names.empty())
             add(parent_name, std::to_string(names.size()) + " entries");
+        // layers mirror X: profile each, so raw counts stored as a layer show.
+        if (axes == AnnMatrixAxes::ObsByVar)
+            for (const auto& nm : names)
+                if (auto pr = matrix_profile(file_id, std::string("/") + parent_name + "/" + nm);
+                    !pr.empty())
+                    add(std::string(parent_name) + "[" + nm + "] profile", pr);
     };
     // layers/* mirror X's shape, so they keep gene columns; obsm/varm do not.
     add_subgroup_tabs("obsm",   OpenSpec::Kind::Matrix2D, "obsm",
@@ -12323,6 +12442,7 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
                     const std::string dims = std::to_string(shape[0]) + " \xc3\x97 " +
                                              std::to_string(shape[1]);
                     add("raw.X", xenc + "  (" + dims + ")");
+                    add("raw.X profile", matrix_profile(file_id, "/raw/X"));
                     specs.push_back({OpenSpec::Kind::Sparse, "/raw/X", "raw.X (preview)",
                                      xenc + "  shape: " + dims,
                                      AnnMatrixAxes::ObsByRawVar, ""});
@@ -12339,6 +12459,7 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
                     raw_cols = (int64_t)dims[1];
                     add("raw.X", "dense  (" + std::to_string(dims[0]) + " \xc3\x97 " +
                                  std::to_string(dims[1]) + ")");
+                    add("raw.X profile", matrix_profile(file_id, "/raw/X"));
                     specs.push_back({OpenSpec::Kind::Matrix2D, "/raw/X", "raw.X", "dense",
                                      AnnMatrixAxes::ObsByRawVar, ""});
                 }

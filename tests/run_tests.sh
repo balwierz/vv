@@ -2611,6 +2611,23 @@ if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
         assert_contains "h5ad_${RN}_summary" "$("$VV" --tab summary --tsv "$DATA/$RF")" \
             "$(printf 'raw.var\t5 rows, 2 columns')"
     done
+    # Matrix profile rows in the summary: dtype, stored fraction (sparse) and a
+    # labelled sample (max; whole numbers or not), so raw counts can be told
+    # from log-normalised values without opening the matrix.
+    if [ -f "$DATA/tiny.raw.h5ad" ]; then
+        PSUM=$("$VV" --tab summary --tsv "$DATA/tiny.raw.h5ad")
+        assert_contains "h5ad_profile_x_lognorm" "$PSUM" \
+            "$(printf 'X profile\tfloat32  |  dense 3 × 2  |  all 6 values: max 1.60944, 66.7%% zero, not whole numbers (e.g. 1.09861)')"
+        assert_contains "h5ad_profile_raw_counts" "$PSUM" \
+            "$(printf 'raw.X profile\tfloat32  |  7 stored of 3 × 5 (46.7%%)  |  all 7 values: max 7, all non-negative whole numbers (looks like raw counts)')"
+    fi
+    if [ -f "$DATA/tiny.sparselayer.h5ad" ]; then
+        LSUM=$("$VV" --tab summary --tsv "$DATA/tiny.sparselayer.h5ad")
+        assert_contains "h5ad_profile_sparse_layer" "$LSUM" \
+            "$(printf 'layers[counts_csc] profile\tfloat32  |  5 stored of 3 × 4 (41.7%%)  |  all 5 values: max 50')"
+        assert_contains "h5ad_profile_dense_layer" "$LSUM" \
+            "$(printf 'layers[dense] profile\tfloat32  |  dense 3 × 4  |  all 12 values: max 500, 58.3%% zero')"
+    fi
     # obsp / varp graphs open as streamed edge lists (i, j, names, weight):
     # CSR row-major, CSC with its axes swapped back, varp labelled by var.
     if [ -f "$DATA/tiny.obsp.h5ad" ]; then
