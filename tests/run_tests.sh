@@ -3497,6 +3497,20 @@ else
     echo "  skip  tui_cell_cursor (python3 not found)"
 fi
 
+# `/` search, n / N and :N move the cell cursor to their target. They used to
+# move only the viewport, which the next draw scrolled back to the cursor, so
+# nothing past the first screen was reachable. Verified discriminating: on the
+# previous build every check fails (row 150 / 250 never shown; y copies r0).
+if command -v python3 >/dev/null 2>&1; then
+    if run_with_timeout 120 python3 "$HERE/tui_search_goto_check.py" "$VV" "$TMP"; then
+        PASS=$((PASS+1)); echo "  ok    tui_search_goto_cursor"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_search_goto_cursor"
+    fi
+else
+    echo "  skip  tui_search_goto_cursor (python3 not found)"
+fi
+
 # A full-file pass (sort / filter / search / stats) that runs after a
 # forward-only stream has released batches can only see part of the file. It
 # used to report that partial answer as if it were complete — evicted_any()
