@@ -87,6 +87,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `genes` attribute tables. Integer layers stay integer-typed.
 
 ### Fixed
+- **Floats are exported without rounding.** `--tsv` / `--csv` / `--json` /
+  `--ndjson` / `--md` (and vvg's Export View) wrote every float with 6
+  significant digits: 1234567.891 and 1234567.892 both came out as
+  `1.23457e+06`, and `--distinct` / `--unique` merged them into one value. They
+  now write the shortest text that reads back as the same number
+  (`1234567.891`; a float32 as the float it is, `16777216`). The table view,
+  TUI and vvg grid keep 6 digits. `--json` / `--ndjson` write NaN and ±Inf as
+  `null` (they wrote `nan` / `inf`, which is not JSON). A 20M-row TSV export
+  with a double column takes 2.5 s (was 3.4 s).
+- **BAM `--tags` columns of SAM type `f` are float32.** The single-precision
+  value was widened into a float64 column, so an exact export printed 0.9 as
+  `0.8999999761581421`; it prints `0.9`. htslib's `d` type stays float64.
 - **TUI: `/` search, `n` / `N` and `:N` reach rows past the first screen.**
   They moved only the viewport; the next redraw scrolled back to the cell
   cursor, so a match or a row off the first screen was never shown and the

@@ -372,7 +372,7 @@ work that touches the same code:
 - [x] **TUI search / `:N` move the cell cursor** (S) — `fix/tui-search-goto-cursor` — `/ n N :N` do nothing
   past the first screen (the cursor drags the viewport back); fix stale help
   rows.
-- [ ] **Lossless floats in exports and `--distinct` / `--unique`** (S) — `%.6g`
+- [x] **Lossless floats in exports and `--distinct` / `--unique`** (S) — `fix/lossless-float-export` — `%.6g`
   writes `1234567.891` as `1.23457e+06` in `--tsv/--csv/--json` and merges
   distinct values. Shortest round-trip `to_chars` for exports and identity
   keys; display unchanged. `--json`: NaN/±Inf as null.

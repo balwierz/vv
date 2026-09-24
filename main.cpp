@@ -1764,6 +1764,39 @@ static int nearest_256(int r, int g, int b) {
     return 16 + 36 * q(r) + 6 * q(g) + q(b);
 }
 
+// Float text precision. The table / TUI show 6 significant digits; an export
+// or an identity key (--distinct, --unique) must not: `%.6g` wrote 1234567.891
+// and 1234567.892 both as "1.23457e+06", and merged them. While an ExactFloats
+// guard is alive on this thread, cell_to_string writes the shortest decimal
+// that reads back as the same value (to_chars would, but its floating-point
+// overloads are missing from older macOS runtimes, so search the precision).
+static thread_local bool t_exact_floats = false;
+struct ExactFloats {
+    bool prev;
+    ExactFloats() : prev(t_exact_floats) { t_exact_floats = true; }
+    ~ExactFloats() { t_exact_floats = prev; }
+    ExactFloats(const ExactFloats&) = delete;
+    ExactFloats& operator=(const ExactFloats&) = delete;
+};
+static std::string exact_float_text(double v, bool single) {
+    char buf[40];
+    if (std::isnan(v)) return "nan";
+    if (std::isinf(v)) return v < 0 ? "-inf" : "inf";
+#if defined(__cpp_lib_to_chars) || (defined(_GLIBCXX_RELEASE) && _GLIBCXX_RELEASE >= 11)
+    // Shortest round-trip form (Ryu): 2.5x faster than the search below on a
+    // column of random doubles, which need all 17 digits.
+    auto r = single ? std::to_chars(buf, buf + sizeof buf - 1, (float)v)
+                    : std::to_chars(buf, buf + sizeof buf - 1, v);
+    if (r.ec == std::errc()) return std::string(buf, r.ptr);
+#endif
+    for (int p = single ? 6 : 15; p <= (single ? 9 : 17); ++p) {
+        std::snprintf(buf, sizeof buf, "%.*g", p, v);
+        if (single ? std::strtof(buf, nullptr) == (float)v : std::strtod(buf, nullptr) == v)
+            break;
+    }
+    return buf;
+}
+
 std::string cell_to_string(const arrow::Array& arr, int64_t row) {
     if (arr.IsNull(row)) return NULL_SYMBOL;
 
@@ -1787,15 +1820,17 @@ std::string cell_to_string(const arrow::Array& arr, int64_t row) {
         case arrow::Type::UINT64:
             return std::to_string(static_cast<const arrow::UInt64Array&>(arr).Value(row));
         case arrow::Type::FLOAT: {
+            const float v = static_cast<const arrow::FloatArray&>(arr).Value(row);
+            if (t_exact_floats) return exact_float_text(v, /*single=*/true);
             char buf[32];
-            std::snprintf(buf, sizeof(buf), "%.6g",
-                (double)static_cast<const arrow::FloatArray&>(arr).Value(row));
+            std::snprintf(buf, sizeof(buf), "%.6g", (double)v);
             return buf;
         }
         case arrow::Type::DOUBLE: {
+            const double v = static_cast<const arrow::DoubleArray&>(arr).Value(row);
+            if (t_exact_floats) return exact_float_text(v, /*single=*/false);
             char buf[32];
-            std::snprintf(buf, sizeof(buf), "%.6g",
-                static_cast<const arrow::DoubleArray&>(arr).Value(row));
+            std::snprintf(buf, sizeof(buf), "%.6g", v);
             return buf;
         }
         case arrow::Type::STRING:
@@ -6778,14 +6813,19 @@ private:
 // the tag's SAM type code, so a numeric tag stays numeric and `--filter 'NM<=2'`
 // compares numbers rather than strings.
 
-enum class BamTagKind { Int, Double, Str };
+// Float: SAM type 'f' (single precision) — a float32 column, so the stored
+// value (0.9f) prints as 0.9, not as its widened double 0.8999999761581421.
+// Double: htslib's 'd' extension.
+enum class BamTagKind { Int, Float, Double, Str };
 
 // SAM type code (the first byte a bam_aux_get() pointer addresses) → column kind.
 static BamTagKind bam_tag_kind_from_code(char c) {
     switch (c) {
         case 'c': case 'C': case 's': case 'S': case 'i': case 'I':
             return BamTagKind::Int;
-        case 'f': case 'd':
+        case 'f':
+            return BamTagKind::Float;
+        case 'd':
             return BamTagKind::Double;
         default:   // 'A' (char), 'Z' (string), 'H' (hex), 'B' (array)
             return BamTagKind::Str;
@@ -6903,6 +6943,7 @@ class BamSource : public TabularSource {
         for (BamTagKind kind : tag_kinds_) {
             std::shared_ptr<arrow::DataType> dt =
                 kind == BamTagKind::Int    ? arrow::int64()
+              : kind == BamTagKind::Float  ? arrow::float32()
               : kind == BamTagKind::Double ? arrow::float64()
                                            : arrow::utf8();
             std::unique_ptr<arrow::ArrayBuilder> bld;
@@ -7010,6 +7051,15 @@ class BamSource : public TabularSource {
                         if (bam_tag_is_int_code(t))
                             ARROW_RETURN_NOT_OK(static_cast<arrow::Int64Builder*>(bld)
                                                     ->Append(bam_aux2i(aux)));
+                        else ARROW_RETURN_NOT_OK(bld->AppendNull());
+                        break;
+                    case BamTagKind::Float:
+                        if (t == 'f' || t == 'd')
+                            ARROW_RETURN_NOT_OK(static_cast<arrow::FloatBuilder*>(bld)
+                                                    ->Append((float)bam_aux2f(aux)));
+                        else if (bam_tag_is_int_code(t))
+                            ARROW_RETURN_NOT_OK(static_cast<arrow::FloatBuilder*>(bld)
+                                                    ->Append((float)bam_aux2i(aux)));
                         else ARROW_RETURN_NOT_OK(bld->AppendNull());
                         break;
                     case BamTagKind::Double:
@@ -7199,6 +7249,7 @@ public:
             for (size_t k = 0; k < self->tag_names_.size(); ++k) {
                 std::shared_ptr<arrow::DataType> dt =
                     self->tag_kinds_[k] == BamTagKind::Int    ? arrow::int64()
+                  : self->tag_kinds_[k] == BamTagKind::Float  ? arrow::float32()
                   : self->tag_kinds_[k] == BamTagKind::Double ? arrow::float64()
                                                               : arrow::utf8();
                 fields.push_back(arrow::field(self->tag_names_[k], dt));
@@ -17980,6 +18031,7 @@ static std::string render_heatmap(TabularSource& src, const Config& cfg) {
 // write_json / write_parquet, so a bad --select or --filter reaches main()'s
 // report() and exits non-zero instead of printing to stderr and exiting 0.
 static std::string write_delimited(TabularSource& src, const Config& cfg) {
+    ExactFloats exact;   // an export writes every digit a float has
     char sep = cfg.delimiter;
     FILE* out = out_stream();
     // In delimiter mode default to all rows; honour -n if explicitly given.
@@ -18107,6 +18159,7 @@ static std::string md_escape_cell(const std::string& s) {
 
 // Returns "" on success, an error message otherwise (see write_delimited).
 static std::string write_markdown(TabularSource& src, const Config& cfg) {
+    ExactFloats exact;   // an export writes every digit a float has
     int64_t rows_left = (cfg.head_rows <= 0) ? INT64_MAX : (int64_t)cfg.head_rows;
 
     std::vector<std::string> unknown;
@@ -18551,10 +18604,19 @@ static void json_emit_cell(const arrow::Array& arr, int64_t row) {
             std::fputs(static_cast<const arrow::BooleanArray&>(arr).Value(row)
                        ? "true" : "false", out);
             return;
+        case arrow::Type::FLOAT: case arrow::Type::DOUBLE: {
+            // JSON has no NaN / Infinity literal: write null, as JSON.stringify
+            // and pandas' to_json do, rather than an unparseable `nan`.
+            const double v = arr.type_id() == arrow::Type::FLOAT
+                ? (double)static_cast<const arrow::FloatArray&>(arr).Value(row)
+                : static_cast<const arrow::DoubleArray&>(arr).Value(row);
+            if (!std::isfinite(v)) { std::fputs("null", out); return; }
+            std::fputs(cell_to_string(arr, row).c_str(), out);
+            return;
+        }
         case arrow::Type::INT8: case arrow::Type::INT16: case arrow::Type::INT32:
         case arrow::Type::INT64: case arrow::Type::UINT8: case arrow::Type::UINT16:
         case arrow::Type::UINT32: case arrow::Type::UINT64:
-        case arrow::Type::FLOAT: case arrow::Type::DOUBLE:
             // cell_to_string already produces a decimal representation
             // suitable for JSON for these types.
             std::fputs(cell_to_string(arr, row).c_str(), out);
@@ -18570,6 +18632,7 @@ static void json_emit_cell(const arrow::Array& arr, int64_t row) {
 }
 
 static std::string write_json(TabularSource& src, const Config& cfg) {
+    ExactFloats exact;   // an export writes every digit a float has
     std::vector<std::string> unknown;
     std::vector<int> requested = select_field_indices(src, cfg, &unknown, true);
     if (!unknown.empty()) return unknown_columns_error(src, unknown);
@@ -19356,6 +19419,7 @@ static std::string print_stats_only(TabularSource& src, const Config& /*cfg*/) {
 
 // ── --unique: distinct value counts per column ───────────────────────────────
 static std::string print_unique(TabularSource& src, const Config& cfg) {
+    ExactFloats exact;   // values are identity keys: never merge by rounding
     if (cfg.unique_cols.empty()) return "--unique needs a comma-separated column list";
     auto schema = src.schema();
     std::vector<int> cols;
@@ -19766,6 +19830,7 @@ static std::string build_sort(std::unique_ptr<TabularSource>& src,
 // --filter, which it has already applied.
 static std::string build_distinct(std::unique_ptr<TabularSource>& src,
                                   Config& cfg) {
+    ExactFloats exact;   // the row key must not merge floats by rounding
     // The columns to compare on (and to keep) are the ones the output would
     // show: --select if given, else the visible set.
     std::vector<std::string> unknown;

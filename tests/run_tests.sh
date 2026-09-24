@@ -3070,7 +3070,8 @@ if [ -f "$DATA/tiny.bam" ]; then
     TAGS_SCH=$("$VV" --schema --tags NM,BC,Xf "$DATA/tiny.bam" 2>&1)
     assert_contains "bam_tags_int_type"    "$TAGS_SCH" "$(printf 'NM      int64')"
     assert_contains "bam_tags_string_type" "$TAGS_SCH" "$(printf 'BC      string')"
-    assert_contains "bam_tags_float_type"  "$TAGS_SCH" "$(printf 'Xf      double')"
+    # SAM type 'f' is single precision: a float column, so 0.9 exports as 0.9.
+    assert_contains "bam_tags_float_type"  "$TAGS_SCH" "$(printf 'Xf      float')"
     # Typed column means a numeric --filter compares numbers, not text.
     TAGS_FILTER=$("$VV" --tsv --no-header --tags NM --select QNAME \
         --filter 'NM <= 0' "$DATA/tiny.bam" | tr '\n' ' ')
@@ -3189,12 +3190,32 @@ GTVCF="$TMP/gt.vcf"
 GT_OUT=$("$VV" --tsv --no-header --gt-stats \
     --select POS,n_called,n_het,n_hom_ref,n_hom_alt,n_missing,AC,AN,AF,call_rate "$GTVCF")
 assert_eq_file_inline "gt_stats_vcf_rows" "$GT_OUT" "$(printf \
-'100\t2\t1\t0\t1\t1\t3\t4\t0.75\t0.666667\n200\t3\t1\t1\t1\t0\t3\t6\t0.5\t1\n300\t3\t1\t1\t1\t0\t4\t6\t0.666667\t1')"
+'100\t2\t1\t0\t1\t1\t3\t4\t0.75\t0.6666666666666666\n200\t3\t1\t1\t1\t0\t3\t6\t0.5\t1\n300\t3\t1\t1\t1\t0\t4\t6\t0.6666666666666666\t1')"
 # Numeric filter and sort work on the computed columns.
 GT_HIAF=$("$VV" --tsv --no-header --gt-stats --select POS --filter 'AF >= 0.75' "$GTVCF" | tr '\n' ' ')
 assert_eq_file_inline "gt_stats_filter_af" "$GT_HIAF" "100 "
 GT_SORT=$("$VV" --tsv --no-header --gt-stats --select POS --sort n_missing:desc "$GTVCF" | head -1)
 assert_eq_file_inline "gt_stats_sort_missing" "$GT_SORT" "100"
+
+# Floats in exports and identity keys are lossless: the shortest text that
+# reads back as the same value, not the 6-digit display form. `%.6g` wrote
+# 1234567.891 and .892 both as 1.23457e+06 in --tsv / --csv / --json / --md
+# and merged them in --distinct / --unique. JSON writes NaN / ±Inf as null.
+# The table view keeps 6 digits.
+LF="$TMP/lossless.csv"
+printf 'id,v\na,1234567.891\nb,1234567.892\nc,0.1\nd,1e-300\ne,nan\nf,inf\ng,-inf\n' > "$LF"
+assert_eq_file_inline "float_export_tsv" "$("$VV" --tsv --no-header --select v "$LF" | tr '\n' ' ')" \
+    "1234567.891 1234567.892 0.1 1e-300  inf -inf "
+assert_eq_file_inline "float_distinct_keeps_apart" "$("$VV" --distinct --select v --count "$LF")" "7"
+assert_contains "float_unique_keeps_apart" "$("$VV" --unique v "$LF")" "7 distinct value(s) (of 7)"
+if command -v python3 >/dev/null 2>&1; then
+    assert_eq_file_inline "float_json_valid_nonfinite" \
+        "$("$VV" --json --select v "$LF" | python3 -c 'import json,sys; print([r["v"] for r in json.load(sys.stdin)])')" \
+        "[1234567.891, 1234567.892, 0.1, 1e-300, None, None, None]"
+fi
+assert_contains "float_table_view_rounds" "$("$VV" --no-interactive --color=never "$LF")" "1.23457e+06"
+assert_eq_file_inline "float32_export" \
+    "$("$VV" --tsv --no-header --select Score -n 3 "$DATA/tiny.parquet" | tr '\n' ' ')" "0 0.05 0.1 "
 # Haploid genotypes (chrY): "1" is hom-alt, "0" hom-ref, "." missing.
 GTHAP="$TMP/gthap.vcf"
 {
