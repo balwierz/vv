@@ -379,7 +379,7 @@ work that touches the same code:
 - [x] **Integer literal against a float column** (S, bug) — `fix/filter-int-literal-float-col` —
   `--filter 'Score > 0'` matches 0 rows on `tiny.parquet`, `Score > 0.0`
   matches 19.
-- [ ] **Backtick-quoted identifiers in `--filter`** (S) — `` `End)` ``,
+- [x] **Backtick-quoted identifiers in `--filter`** (S) — `feat/filter-backtick-identifiers` — `` `End)` ``,
   `` `Sample ID` ``.
 - [ ] **`has` / `lacks` bit-flag operators** (S) — `FLAG lacks
   UNMAP,SECONDARY,DUP`; unknown flag names are a parse error.
