@@ -87,6 +87,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `genes` attribute tables. Integer layers stay integer-typed.
 
 ### Fixed
+- **An integer literal in `--filter` compares correctly against a float
+  column.** The float cell was truncated to an integer first, so on a column
+  of 0, 0.05, …, 0.95 `Score > 0` matched 0 rows (not 19), `Score == 0`
+  matched all 20 (not 1) and `Score != 0` matched none; `Score > 0.0` was
+  right. Float cells are now compared as doubles whatever the literal looks
+  like. Applies to `--filter`, the TUI `&` filter and vvg's filter bar.
 - **Floats are exported without rounding.** `--tsv` / `--csv` / `--json` /
   `--ndjson` / `--md` (and vvg's Export View) wrote every float with 6
   significant digits: 1234567.891 and 1234567.892 both came out as
