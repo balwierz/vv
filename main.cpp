@@ -2944,6 +2944,8 @@ static bool resolve_dict_cell(const arrow::Array& a, int64_t r,
     return true;
 }
 
+// An integer-typed cell as int64; false for null, a non-integer type (floats
+// included), or a uint64 beyond int64.
 static bool cell_as_int(const arrow::Table& tbl, int col, int64_t row,
                          int64_t* out) {
     auto chunked = tbl.column(col);
@@ -2958,8 +2960,17 @@ static bool cell_as_int(const arrow::Table& tbl, int col, int64_t row,
                 case arrow::Type::INT16:  *out = static_cast<const arrow::Int16Array&>(*a).Value(i);  return true;
                 case arrow::Type::INT8:   *out = static_cast<const arrow::Int8Array&>(*a).Value(i);   return true;
                 case arrow::Type::UINT32: *out = (int64_t)static_cast<const arrow::UInt32Array&>(*a).Value(i); return true;
-                case arrow::Type::FLOAT:  *out = (int64_t)static_cast<const arrow::FloatArray&>(*a).Value(i);  return true;
-                case arrow::Type::DOUBLE: *out = (int64_t)static_cast<const arrow::DoubleArray&>(*a).Value(i); return true;
+                case arrow::Type::UINT16: *out = static_cast<const arrow::UInt16Array&>(*a).Value(i); return true;
+                case arrow::Type::UINT8:  *out = static_cast<const arrow::UInt8Array&>(*a).Value(i);  return true;
+                case arrow::Type::UINT64: {
+                    const uint64_t u = static_cast<const arrow::UInt64Array&>(*a).Value(i);
+                    if (u > (uint64_t)INT64_MAX) return false;   // compare as double
+                    *out = (int64_t)u;
+                    return true;
+                }
+                // FLOAT / DOUBLE are not integers: truncating them made
+                // `Score > 0` compare 0.05 as 0 and match nothing. The caller
+                // compares them as doubles.
                 default: return false;
             }
         }

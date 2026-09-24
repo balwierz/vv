@@ -3197,6 +3197,16 @@ assert_eq_file_inline "gt_stats_filter_af" "$GT_HIAF" "100 "
 GT_SORT=$("$VV" --tsv --no-header --gt-stats --select POS --sort n_missing:desc "$GTVCF" | head -1)
 assert_eq_file_inline "gt_stats_sort_missing" "$GT_SORT" "100"
 
+# An integer literal against a float column compares as a number, not after
+# truncating the cell: tiny.parquet's Score is 0, 0.05, ..., 0.95, so
+# `Score > 0` matched nothing and `Score == 0` matched all 20 rows.
+for fc in 'Score > 0|19' 'Score > 0.0|19' 'Score == 0|1' 'Score != 0|19' 'Score <= 0|1' \
+          'Score < 1|20' 'Score >= 1|0' 'Start == 100|2' 'Start > 100.5|18'; do
+    fe=${fc%|*}; fw=${fc##*|}
+    assert_eq_file_inline "filter_int_literal_float_col: $fe" \
+        "$("$VV" --count --filter "$fe" "$DATA/tiny.parquet")" "$fw"
+done
+
 # Floats in exports and identity keys are lossless: the shortest text that
 # reads back as the same value, not the 6-digit display form. `%.6g` wrote
 # 1234567.891 and .892 both as 1.23457e+06 in --tsv / --csv / --json / --md

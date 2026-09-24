@@ -376,7 +376,7 @@ work that touches the same code:
   writes `1234567.891` as `1.23457e+06` in `--tsv/--csv/--json` and merges
   distinct values. Shortest round-trip `to_chars` for exports and identity
   keys; display unchanged. `--json`: NaN/±Inf as null.
-- [ ] **Integer literal against a float column** (S, bug) —
+- [x] **Integer literal against a float column** (S, bug) — `fix/filter-int-literal-float-col` —
   `--filter 'Score > 0'` matches 0 rows on `tiny.parquet`, `Score > 0.0`
   matches 19.
 - [ ] **Backtick-quoted identifiers in `--filter`** (S) — `` `End)` ``,
