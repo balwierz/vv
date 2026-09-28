@@ -150,9 +150,12 @@ struct FilterAtom {
     // Eq..Ge are the ordering comparisons. The rest are string / set / null
     // predicates: Match/NotMatch take an ECMAScript regex, Contains/StartsWith/
     // EndsWith a substring, In/NotIn a set, IsNull/NotNull no literal at all.
+    // Has/Lacks test bits of an integer column against the mask in i_lit (all
+    // set / none set) — `FLAG lacks UNMAP,SECONDARY,DUP`.
     enum Op { Eq, Ne, Lt, Le, Gt, Ge,
               Match, NotMatch, Contains, NotContains,
-              StartsWith, EndsWith, In, NotIn, IsNull, NotNull } op = Eq;
+              StartsWith, EndsWith, In, NotIn, IsNull, NotNull,
+              Has, Lacks } op = Eq;
     // K_None: the operator takes no literal (IsNull / NotNull).
     enum Kind { K_Int, K_Double, K_String, K_None } kind = K_String;
     int64_t  i_lit = 0;
