@@ -359,7 +359,10 @@ silently-empty result;
 \fBcontains\fR, \fBstartswith\fR, \fBendswith\fR \(en substring tests;
 .IP \(bu 2
 \fBin (\fIa\fB, \fIb\fB, \fIc\fB)\fR and \fBnot in (\...)\fR \(en set
-membership. On a numeric column the members are compared numerically;
+membership. On a numeric column the members are compared numerically.
+\fBin @\fIfile\fR (or \fBin @"\fIpath with spaces\fB"\fR) reads the members
+from a file: one per line, the line's first tab-separated field, trimmed;
+blank lines are skipped; a gzip or zstd file is decompressed;
 .IP \(bu 2
 \fBis null\fR and \fBis not null\fR \(en match the column's actual nulls,
 the rows \fB\-\-describe\fR counts but nothing could previously select;

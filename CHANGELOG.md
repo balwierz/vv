@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`col in @file` in `--filter`.** The members of an `in` set can come from
+  a file — `--filter 'gene_id in @genes.txt'`, `not in @…`, or `in @"path
+  with spaces"` — one value per line (the line's first tab-separated field,
+  trimmed; blank lines skipped; gzip / zstd decompressed). Every `in` set is
+  now hashed once at parse time, so a row costs one lookup rather than a
+  scan of the members (and, on a numeric column, a number parse per
+  member): a 100,000-member set filters 20M rows in 1.25 s. Applies to
+  `--filter`, the TUI `&` filter and vvg's filter bar.
 - **`--pileup` applies samtools mpileup's default filters.** vv's pileup
   used every read and every base, so it matched `samtools mpileup --ff 0
   -Q 0 -A -x`, not plain `samtools mpileup`: duplicates, secondary, QC-fail
