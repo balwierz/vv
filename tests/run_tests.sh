@@ -3317,13 +3317,16 @@ refute_contains "region_supported_no_warn" "$REGOK" "no region index"
 if [ -f "$DATA/tiny.noseq.bam" ]; then
     assert_exit_code "bam_pileup_noseq_exit" 0 \
         "$VV" --tsv --no-header --pileup "$DATA/tiny.noseq.bam"
-    NOSEQ5=$("$VV" --tsv --no-header --pileup "$DATA/tiny.noseq.bam" | head -1 | cut -f5)
+    # --min-bq 0: a read with no SEQ / QUAL has base quality 0, which the
+    # default -Q 13 filter drops (as samtools does); keep it to reach the
+    # rendering path under test.
+    NOSEQ5=$("$VV" --tsv --no-header --pileup --min-bq 0 "$DATA/tiny.noseq.bam" | head -1 | cut -f5)
     assert_eq_file_inline "bam_pileup_noseq_base_n" "$NOSEQ5" '^]N'
 fi
 if [ -f "$DATA/tiny.noseqins.bam" ]; then
     assert_exit_code "bam_pileup_noseqins_exit" 0 \
         "$VV" --tsv --no-header --pileup "$DATA/tiny.noseqins.bam"
-    NOSEQI5=$("$VV" --tsv --no-header --pileup "$DATA/tiny.noseqins.bam" | head -1 | cut -f5)
+    NOSEQI5=$("$VV" --tsv --no-header --pileup --min-bq 0 "$DATA/tiny.noseqins.bam" | head -1 | cut -f5)
     # inserted bases with no query sequence render as N: "^]N+20000NNN..."
     assert_contains "bam_pileup_noseqins_ins_n" "$NOSEQI5" "+20000N"
 fi
@@ -3581,6 +3584,39 @@ if command -v python3 >/dev/null 2>&1; then
     fi
 else
     echo "  skip  tui_search_goto_cursor (python3 not found)"
+fi
+
+# --pileup applies samtools mpileup's default read / base filters: --ff
+# UNMAP,SECONDARY,QCFAIL,DUP, -Q 13, orphans dropped (-A), mate-overlap
+# quality merging (-x); overridable with --exclude-flags/--ff,
+# --require-flags/--rf, --min-mapq, --min-bq, --count-orphans,
+# --ignore-overlaps. tiny.pileupfilters.bam has one read per filter; the
+# expected text is samtools 1.24's output.
+PF="$DATA/tiny.pileupfilters.bam"
+if [ -f "$PF" ]; then
+    assert_eq_file_inline "pileup_default_filters" \
+        "$("$VV" --pileup --tsv --no-header "$PF" | head -10)" \
+        "$(printf 'chr1\t100\tN\t1\t^]A\tI\nchr1\t101\tN\t2\tC^&G\tII\nchr1\t102\tN\t2\tGG\tII\nchr1\t103\tN\t3\tTG^]A\tIII\nchr1\t104\tN\t3\tAGA\tIII\nchr1\t105\tN\t4\tCTGA\tIII]\nchr1\t106\tN\t4\tGTGA\tIII]\nchr1\t107\tN\t4\tT$T$GA\tIII]\nchr1\t108\tN\t2\tG$A$\tI]\nchr1\t109\tN\t1\ta\t5')"
+    assert_eq_file_inline "pileup_filters_off" \
+        "$("$VV" --pileup --tsv --no-header --ff 0 --min-bq 0 --count-orphans --ignore-overlaps "$PF" | head -1)" \
+        "$(printf 'chr1\t100\tN\t5\t^]A^]A^]A^]A^]T\tIIII+')"
+    assert_eq_file_inline "pileup_min_mapq" \
+        "$("$VV" --pileup --tsv --no-header --min-mapq 20 "$PF" | sed -n 2p)" \
+        "$(printf 'chr1\t101\tN\t1\tC\tI')"
+    # A position whose every base is filtered: depth 0 and `*`, like samtools.
+    assert_contains "pileup_all_filtered_star" \
+        "$("$VV" --pileup --tsv --no-header --min-bq 30 "$PF")" "$(printf 'chr1\t199\tN\t0\t*\t*')"
+    assert_exit_code "pileup_bad_flag_name" 2 "$VV" --pileup --ff BOGUS "$PF"
+    if command -v samtools >/dev/null 2>&1; then
+        for pv in '|' '--ff 0 -Q 0 -A -x|--ff 0 --min-bq 0 --count-orphans --ignore-overlaps' \
+                  '-Q 30|--min-bq 30' '-q 20|--min-mapq 20' \
+                  '--rf PAIRED|--require-flags PAIRED' '--ff UNMAP,DUP|--exclude-flags UNMAP,DUP'; do
+            so=${pv%|*}; vo=${pv#*|}
+            # shellcheck disable=SC2086
+            assert_eq_file_inline "pileup_vs_samtools [$so]" \
+                "$("$VV" --pileup --tsv --no-header $vo "$PF")" "$(samtools mpileup $so "$PF" 2>/dev/null)"
+        done
+    fi
 fi
 
 # A full-file pass (sort / filter / search / stats) that runs after a

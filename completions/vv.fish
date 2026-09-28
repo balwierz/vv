@@ -15,7 +15,8 @@ end
 function __vv_file
     set -l valopts n w c @ threads decode-threads delimiter in-delimiter d header color theme box r region \
         window regions-file region-cols slop coords tail sort tags expand parquet arrow \
-        feather compression image-mode f fasta select cols filter tab unique sample
+        feather compression image-mode f fasta select cols filter tab unique sample \
+        exclude-flags ff require-flags rf min-mapq min-bq
     set -l toks (commandline -opc)
     set -l i 2
     while test $i -le (count $toks)
@@ -130,6 +131,15 @@ complete -c vv -c vh -l markdown           -d 'Alias of --md'
 complete -c vv -c vh -l validate           -d 'Check LociSSD invariants and exit'
 complete -c vv -c vh -l decode-pileup      -d 'mpileup: explode bases into A/C/G/T/N + ins/del + strand + mean_qual columns'
 complete -c vv -c vh -l pileup             -d 'BAM/CRAM: emit mpileup-style per-base rows via htslib bam_plp'
+set -l __vv_flags PAIRED PROPER_PAIR UNMAP MUNMAP REVERSE MREVERSE READ1 READ2 SECONDARY QCFAIL DUP SUPPLEMENTARY
+complete -c vv -c vh -l exclude-flags -x -a "$__vv_flags" -d '--pileup: skip reads with any of these flags (default UNMAP,SECONDARY,QCFAIL,DUP)'
+complete -c vv -c vh -l ff -x -a "$__vv_flags" -d 'Alias of --exclude-flags'
+complete -c vv -c vh -l require-flags -x -a "$__vv_flags" -d '--pileup: keep only reads with all of these flags'
+complete -c vv -c vh -l rf -x -a "$__vv_flags" -d 'Alias of --require-flags'
+complete -c vv -c vh -l min-mapq -x        -d '--pileup: skip reads below this mapping quality (default 0)'
+complete -c vv -c vh -l min-bq -x          -d '--pileup: drop bases below this base quality (default 13)'
+complete -c vv -c vh -l count-orphans      -d '--pileup: keep paired reads that are not properly paired'
+complete -c vv -c vh -l ignore-overlaps    -d '--pileup: no mate-overlap quality merging'
 complete -c vv -c vh -l tags -x            -d 'BAM/CRAM/SAM: add a typed column per aux tag (comma-separated, e.g. NM,AS,RG)'
 complete -c vv -c vh -s f -l fasta -r -F   -d 'reference FASTA (.fai): --pileup ref column + ./, notation, or CRAM decoding'
 complete -c vv -c vh -l select -x -a '(__vv_columns_csv)' -d 'Project columns: names, globs, N-M ranges, @types, !exclusions'

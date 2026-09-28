@@ -87,6 +87,7 @@ extern "C" {
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <strings.h>
 #include <clocale>
 #include <cstdint>
 #include <cstdio>
@@ -926,8 +927,16 @@ static void print_usage(const char* prog) {
         "  --validate          check LociSSD invariants (sort order, MaxEndSoFar,\n"
         "                      manifest vs. data); exit non-zero on failure\n"
         "  --pileup            BAM/CRAM only: emit mpileup-style per-base rows\n"
-        "                      from the alignments via htslib's bam_plp engine\n"
-        "                      (equivalent to `samtools mpileup`, no BAQ)\n"
+        "                      from the alignments via htslib's pileup engine\n"
+        "                      (equivalent to `samtools mpileup`, no BAQ), with\n"
+        "                      its default read / base filters, overridable:\n"
+        "    --exclude-flags L (--ff) skip reads with any flag in L\n"
+        "                      (default UNMAP,SECONDARY,QCFAIL,DUP; 0 = none)\n"
+        "    --require-flags L (--rf) keep only reads with every flag in L\n"
+        "    --min-mapq N      skip reads below mapping quality N (default 0)\n"
+        "    --min-bq N        drop bases below base quality N (default 13)\n"
+        "    --count-orphans   keep paired reads not properly paired (-A)\n"
+        "    --ignore-overlaps no mate-overlap quality merging (-x)\n"
         "  -f, --fasta <ref>   reference FASTA (needs .fai). With --pileup it\n"
         "                      fills the ref column and renders matches as\n"
         "                      . / , like `samtools mpileup -f`; on a CRAM\n"
@@ -1016,7 +1025,49 @@ static bool fends_ci(const std::string& s, const std::string& sfx);
 // but must not fail `vh notes.md` on a flag nobody asked for.
 static bool g_vertical_from_argv0 = false;
 
+// SAM FLAG bit names, as samtools flags / view -f / -F spell them.
+static const std::pair<const char*, int> kSamFlagNames[] = {
+    {"PAIRED", 0x1},      {"PROPER_PAIR", 0x2}, {"UNMAP", 0x4},
+    {"MUNMAP", 0x8},      {"REVERSE", 0x10},    {"MREVERSE", 0x20},
+    {"READ1", 0x40},      {"READ2", 0x80},      {"SECONDARY", 0x100},
+    {"QCFAIL", 0x200},    {"DUP", 0x400},       {"SUPPLEMENTARY", 0x800},
+};
+
+// A SAM flag list as samtools --ff / --rf take it: comma-separated names
+// (any case) and / or numbers (4, 0x704), OR'ed together. Sets *err and returns
+// 0 on an unknown member.
+static int parse_sam_flag_list(const std::string& list, std::string* err) {
+    int mask = 0;
+    size_t p = 0;
+    while (p <= list.size()) {
+        size_t c = list.find(',', p);
+        std::string t = list.substr(p, c == std::string::npos ? std::string::npos : c - p);
+        while (!t.empty() && std::isspace((unsigned char)t.front())) t.erase(0, 1);
+        while (!t.empty() && std::isspace((unsigned char)t.back()))  t.pop_back();
+        if (t.empty()) { *err = "empty member in flag list '" + list + "'"; return 0; }
+        int bit = -1;
+        for (const auto& [nm, v] : kSamFlagNames)
+            if (strcasecmp(t.c_str(), nm) == 0) { bit = v; break; }
+        if (bit < 0) {
+            char* end = nullptr;
+            long v = std::strtol(t.c_str(), &end, 0);
+            if (end && !*end && v >= 0 && v <= 0xffff) bit = (int)v;
+        }
+        if (bit < 0) {
+            std::string names;
+            for (const auto& [nm, v] : kSamFlagNames) names += std::string(names.empty() ? "" : " ") + nm;
+            *err = "unknown flag '" + t + "' (a number, or one of: " + names + ")";
+            return 0;
+        }
+        mask |= bit;
+        if (c == std::string::npos) break;
+        p = c + 1;
+    }
+    return mask;
+}
+
 static Config parse_args(int argc, char** argv) {
+    const char* pileup_opt = nullptr;   // a --pileup filter option, if given
     Config cfg;
     // If invoked as `vh` (a symlink/copy of vv), default to vertical-head mode:
     // a "head"-style preview transposed so wide tables fit without horizontal
@@ -1161,6 +1212,37 @@ static Config parse_args(int argc, char** argv) {
             cfg.validate = true;
         } else if (!std::strcmp(argv[i], "--decode-pileup")) {
             cfg.decode_pileup = true;
+        } else if ((!std::strcmp(argv[i], "--exclude-flags") || !std::strcmp(argv[i], "--ff") ||
+                    !std::strcmp(argv[i], "--require-flags") || !std::strcmp(argv[i], "--rf"))
+                   && i + 1 < argc) {
+            // A flag list: SAM FLAG names (UNMAP,SECONDARY,…) or numbers (0x704).
+            const bool excl = argv[i][2] == 'e' || argv[i][2] == 'f';
+            pileup_opt = argv[i];
+            std::string err;
+            int mask = parse_sam_flag_list(argv[++i], &err);
+            if (!err.empty()) {
+                std::fprintf(stderr, "vv: %s: %s\n", argv[i - 1], err.c_str());
+                std::exit(2);
+            }
+            (excl ? cfg.pileup_excl_flags : cfg.pileup_incl_flags) = mask;
+        } else if ((!std::strcmp(argv[i], "--min-mapq") || !std::strcmp(argv[i], "--min-bq"))
+                   && i + 1 < argc) {
+            const bool mq = argv[i][6] == 'm';
+            pileup_opt = argv[i];
+            char* end = nullptr;
+            long v = std::strtol(argv[++i], &end, 10);
+            if (!end || *end || v < 0 || v > 255) {
+                std::fprintf(stderr, "vv: %s takes a number 0-255, got '%s'\n",
+                             argv[i - 1], argv[i]);
+                std::exit(2);
+            }
+            (mq ? cfg.pileup_min_mapq : cfg.pileup_min_bq) = (int)v;
+        } else if (!std::strcmp(argv[i], "--count-orphans")) {
+            cfg.pileup_count_orphans = true;
+            pileup_opt = argv[i];
+        } else if (!std::strcmp(argv[i], "--ignore-overlaps")) {
+            cfg.pileup_ignore_overlaps = true;
+            pileup_opt = argv[i];
         } else if (!std::strcmp(argv[i], "--pileup")) {
             cfg.pileup = true;
         } else if ((!std::strcmp(argv[i], "-f") ||
@@ -1254,6 +1336,8 @@ static Config parse_args(int argc, char** argv) {
                 "--expand",
                 "--delimiter", "--in-delimiter", "-d", "--header",
                 "-f", "--fasta", "--box",
+                "--exclude-flags", "--ff", "--require-flags", "--rf",
+                "--min-mapq", "--min-bq",
             };
             if (needs_arg.count(argv[i])) {
                 std::fprintf(stderr, "Option %s requires an argument.\n", argv[i]);
@@ -1293,6 +1377,12 @@ static Config parse_args(int argc, char** argv) {
         std::fprintf(stderr, "-f/--fasta applies to --pileup "
                      "(reference-aware pileup) or to a CRAM input "
                      "(reference resolution)\n");
+        std::exit(2);
+    }
+    // The read / base filters shape --pileup's rows; on any other view they
+    // would be silently ignored.
+    if (pileup_opt && !cfg.pileup) {
+        std::fprintf(stderr, "vv: %s applies to --pileup\n", pileup_opt);
         std::exit(2);
     }
     return cfg;
@@ -2783,13 +2873,6 @@ static bool filter_parse_op(const std::string& t, FilterAtom::Op* op) {
     return false;
 }
 
-// SAM FLAG bit names, as samtools flags / view -f / -F spell them.
-static const std::pair<const char*, int> kSamFlagNames[] = {
-    {"PAIRED", 0x1},      {"PROPER_PAIR", 0x2}, {"UNMAP", 0x4},
-    {"MUNMAP", 0x8},      {"REVERSE", 0x10},    {"MREVERSE", 0x20},
-    {"READ1", 0x40},      {"READ2", 0x80},      {"SECONDARY", 0x100},
-    {"QCFAIL", 0x200},    {"DUP", 0x400},       {"SUPPLEMENTARY", 0x800},
-};
 
 // Case-insensitive token compare, used for the word operators and AND / OR.
 static bool filter_tok_is(const std::string& a, const char* b) {
@@ -7511,7 +7594,9 @@ class BamPileupSource : public TabularSource {
     sam_hdr_t*                               hdr_  = nullptr;
     hts_idx_t*                               idx_  = nullptr;   // optional
     hts_itr_multi_t*                         iter_ = nullptr;   // optional
-    bam_plp_t                                plp_  = nullptr;
+    // htslib's multi-file pileup engine over this one file: only the mplp API
+    // has read-pair overlap detection (bam_mplp_init_overlaps).
+    bam_mplp_t                               plp_  = nullptr;
     bam1_t*                                  rec_  = nullptr;   // scratch for callback
 
     // Reference FASTA for -f/--pileup (ref column + ./, match notation). The
@@ -7558,24 +7643,41 @@ class BamPileupSource : public TabularSource {
 
     static constexpr int BATCH_ROWS = 16384;
 
-    // Per-pileup-iterator state. We give one of these to bam_plp_init so
+    // Per-pileup-iterator state. We give one of these to bam_mplp_init so
     // the read-callback knows where to pull alignments from. last_rc records
-    // the most recent underlying read return: bam_plp_auto() returns nullptr
-    // on both EOF and error, so this is how advance() tells them apart.
+    // the most recent underlying read return: bam_mplp_auto() returns 0 on
+    // both EOF and error, so this is how advance() tells them apart.
     struct PlpData {
         samFile*           fp;
         sam_hdr_t*         hdr;
         hts_itr_multi_t*   iter;     // nullptr → full-file scan
         int                last_rc = 0;  // >=0 record, -1 EOF, <-1 read error
+        // Read filters (samtools mpileup's: --ff / --rf / -q / -A).
+        int                excl_flags = 0, incl_flags = 0, min_mapq = 0;
+        bool               count_orphans = false;
     };
     PlpData plp_data_;
+    int     min_bq_ = 0;   // bases below this quality are dropped (-Q)
 
+    // Feed the pileup engine the next read that passes the read filters, as
+    // samtools mpileup does: skip any excluded flag bit, a missing required
+    // bit, a mapping quality below the minimum, and — unless orphans are
+    // counted — a paired read that is not properly paired.
     static int plp_callback(void* data, bam1_t* b) {
         auto* d = static_cast<PlpData*>(data);
-        int rc = d->iter ? sam_itr_multi_next(d->fp, d->iter, b)
-                         : sam_read1(d->fp, d->hdr, b);
-        d->last_rc = rc;
-        return rc;
+        for (;;) {
+            int rc = d->iter ? sam_itr_multi_next(d->fp, d->iter, b)
+                             : sam_read1(d->fp, d->hdr, b);
+            d->last_rc = rc;
+            if (rc < 0) return rc;
+            const uint16_t f = b->core.flag;
+            if (f & d->excl_flags) continue;
+            if ((f & d->incl_flags) != d->incl_flags) continue;
+            if (b->core.qual < d->min_mapq) continue;
+            if (!d->count_orphans && (f & BAM_FPAIRED) && !(f & BAM_FPROPER_PAIR))
+                continue;
+            return rc;
+        }
     }
 
     // Render one position's bases / quals strings from the bam_pileup1_t
@@ -7585,14 +7687,24 @@ class BamPileupSource : public TabularSource {
     // the reference — matching `samtools mpileup -f`. Without one, bases are the
     // literal letters (uppercase forward, lowercase reverse) and there is no
     // match notation.
-    static void format_pileup_row(const bam_pileup1_t* plp, int n,
-                                   std::string& bases, std::string& quals,
-                                   const char* ref, hts_pos_t ref_len,
-                                   hts_pos_t pos) {
+    // Entries whose base quality (at qpos, as samtools reads it — also for a
+    // deletion or skip) is below `min_bq` are left out entirely, markers
+    // included; returns how many were written, which is the depth column.
+    static int format_pileup_row(const bam_pileup1_t* plp, int n,
+                                  std::string& bases, std::string& quals,
+                                  const char* ref, hts_pos_t ref_len,
+                                  hts_pos_t pos, int min_bq) {
         bases.clear();
         quals.clear();
+        int shown = 0;
         for (int i = 0; i < n; ++i) {
             const bam_pileup1_t* p = &plp[i];
+            if (min_bq > 0) {
+                const int bq = (p->qpos < p->b->core.l_qseq)
+                                   ? bam_get_qual(p->b)[p->qpos] : 0;
+                if (bq < min_bq) continue;
+            }
+            ++shown;
             // Read-start marker: ^<mapq+33> precedes the base.
             if (p->is_head) {
                 bases += '^';
@@ -7675,6 +7787,10 @@ class BamPileupSource : public TabularSource {
             }
             if (p->is_tail) bases += '$';
         }
+        // Every entry filtered out: samtools prints the row with depth 0 and
+        // `*` for both columns.
+        if (shown == 0 && n > 0) { bases = "*"; quals = "*"; }
+        return shown;
     }
 
     arrow::Status advance() const {
@@ -7683,11 +7799,11 @@ class BamPileupSource : public TabularSource {
         arrow::Int64Builder  b_pos, b_depth;
 
         int count = 0;
-        int tid, pos, n_plp;
-        const bam_pileup1_t* plp_arr;
+        int tid, pos, n_plp = 0;
+        const bam_pileup1_t* plp_arr = nullptr;
         std::string bases_str, quals_str;
         while (count < BATCH_ROWS &&
-               (plp_arr = bam_plp_auto(plp_, &tid, &pos, &n_plp)) != nullptr) {
+               bam_mplp_auto(plp_, &tid, &pos, &n_plp, &plp_arr) > 0) {
             if (tid < 0) continue;
             // Match `samtools mpileup`'s region-trimming: bam_plp_auto
             // returns every position covered by the iterator-fetched
@@ -7703,8 +7819,8 @@ class BamPileupSource : public TabularSource {
                 if (!in_any) continue;
             }
             const char* ref = ref_for(tid);   // nullptr without -f
-            format_pileup_row(plp_arr, n_plp, bases_str, quals_str,
-                              ref, ref_cache_len_, pos);
+            const int depth = format_pileup_row(plp_arr, n_plp, bases_str, quals_str,
+                                                ref, ref_cache_len_, pos, min_bq_);
             const char* chrom = sam_hdr_tid2name(hdr_, tid);
             ARROW_RETURN_NOT_OK(b_chrom.Append(chrom ? chrom : "*"));
             ARROW_RETURN_NOT_OK(b_pos.Append((int64_t)pos + 1));  // 1-based
@@ -7712,12 +7828,12 @@ class BamPileupSource : public TabularSource {
             // 'N' where there's no reference.
             char rb = (ref && pos < ref_cache_len_) ? ref[pos] : 'N';
             ARROW_RETURN_NOT_OK(b_ref.Append(std::string(1, rb)));
-            ARROW_RETURN_NOT_OK(b_depth.Append(n_plp));
+            ARROW_RETURN_NOT_OK(b_depth.Append(depth));
             ARROW_RETURN_NOT_OK(b_bases.Append(bases_str));
             ARROW_RETURN_NOT_OK(b_quals.Append(quals_str));
             ++count;
         }
-        // bam_plp_auto() returned nullptr for one of two reasons: clean EOF
+        // bam_mplp_auto() stopped for one of two reasons: clean EOF
         // (last_rc == -1) or a read error (< -1, e.g. a truncated/corrupt BAM).
         // Record the latter stickily so the CLI reports a truncated file rather
         // than silently emitting a partial pileup with exit 0.
@@ -7747,7 +7863,7 @@ class BamPileupSource : public TabularSource {
 
 public:
     ~BamPileupSource() {
-        if (plp_)  { bam_plp_destroy(plp_);  plp_  = nullptr; }
+        if (plp_)  { bam_mplp_destroy(plp_);  plp_  = nullptr; }
         if (iter_) { hts_itr_multi_destroy(iter_); iter_ = nullptr; }
         if (rec_)  { bam_destroy1(rec_);     rec_  = nullptr; }
         if (idx_)  { hts_idx_destroy(idx_);  idx_  = nullptr; }
@@ -7834,12 +7950,21 @@ public:
         self->plp_data_.fp   = self->fp_;
         self->plp_data_.hdr  = self->hdr_;
         self->plp_data_.iter = self->iter_;
-        self->plp_ = bam_plp_init(&BamPileupSource::plp_callback,
-                                    &self->plp_data_);
+        self->plp_data_.excl_flags    = cfg.pileup_excl_flags;
+        self->plp_data_.incl_flags    = cfg.pileup_incl_flags;
+        self->plp_data_.min_mapq      = cfg.pileup_min_mapq;
+        self->plp_data_.count_orphans = cfg.pileup_count_orphans;
+        self->min_bq_ = cfg.pileup_min_bq;
+        void* plp_data = &self->plp_data_;
+        self->plp_ = bam_mplp_init(1, &BamPileupSource::plp_callback, &plp_data);
         if (!self->plp_) return "Out of memory initialising pileup iterator";
-        // Match `samtools mpileup` default behaviour (no max-depth cap;
-        // INT_MAX yields the full per-position depth).
-        bam_plp_set_maxcnt(self->plp_, INT_MAX);
+        // Overlapping mates: htslib keeps one base with the summed quality
+        // (or both halved on a mismatch) and zeroes the other, which the base
+        // quality filter then drops — samtools mpileup's default (-x disables).
+        if (!cfg.pileup_ignore_overlaps) bam_mplp_init_overlaps(self->plp_);
+        // No per-position depth cap: the depth column is the true depth.
+        // (samtools mpileup caps at -d 8000 reads per file by default.)
+        bam_mplp_set_maxcnt(self->plp_, INT_MAX);
 
         self->rec_ = bam_init1();
 

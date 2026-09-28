@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`--pileup` applies samtools mpileup's default filters.** vv's pileup
+  used every read and every base, so it matched `samtools mpileup --ff 0
+  -Q 0 -A -x`, not plain `samtools mpileup`: duplicates, secondary, QC-fail
+  and unmapped reads, bases below quality 13 and anomalous pairs were all
+  counted, and overlapping mates counted twice. It now skips reads with
+  `UNMAP,SECONDARY,QCFAIL,DUP` set and paired reads that are not properly
+  paired, drops bases below quality 13 (the depth column counts what is
+  shown; a fully filtered position prints depth 0 and `*`), and merges
+  overlapping mates' qualities. Each is overridable: `--exclude-flags` /
+  `--ff`, `--require-flags` / `--rf` (flag names or numbers), `--min-mapq`,
+  `--min-bq`, `--count-orphans`, `--ignore-overlaps`. Output is
+  byte-identical to samtools 1.24 under each default and override. The
+  options without `--pileup` are an error. As before, there is no `-d`
+  depth cap.
 - **`has` / `lacks` bit-flag operators in `--filter`.** `FLAG lacks
   UNMAP,SECONDARY,DUP` keeps rows with none of those bits set (samtools
   `view -F 0x504`), `FLAG has PAIRED,READ1` rows with all of them. Members
