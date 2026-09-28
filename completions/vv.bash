@@ -24,7 +24,8 @@ _vv_input_file() {
     local val_opts=' -n -w -c -@ --threads --decode-threads --delimiter --in-delimiter -d --header --color
         --theme --box -r --region --window --regions-file --region-cols --slop --coords
         --tail --sort --tags --expand --parquet --arrow --feather --compression --image-mode
-        -f --fasta --select --cols --filter --tab --unique --sample '
+        -f --fasta --select --cols --filter --tab --unique --sample
+        --exclude-flags --ff --require-flags --rf --min-mapq --min-bq '
     for (( i = 1; i < ${#words[@]}; i++ )); do
         tok=${words[i]}
         (( i == cword )) && continue          # the word being completed
@@ -130,6 +131,17 @@ _vv() {
                 COMPREPLY=( $(compgen -W "$(_vv_run --list-tabs "$_f")" -- "$cur") )
             return
             ;;
+        --exclude-flags|--ff|--require-flags|--rf)
+            # A comma-separated SAM flag list; complete the current member.
+            local pre='' seg=$cur
+            [[ $cur == *,* ]] && { pre=${cur%,*},; seg=${cur##*,}; }
+            COMPREPLY=( $(compgen -P "$pre" -W 'PAIRED PROPER_PAIR UNMAP MUNMAP REVERSE MREVERSE READ1 READ2 SECONDARY QCFAIL DUP SUPPLEMENTARY' -- "$seg") )
+            (( ${#COMPREPLY[@]} )) && compopt -o nospace 2>/dev/null
+            return
+            ;;
+        --min-mapq|--min-bq)
+            return
+            ;;
         --slop|--sample|--tail|--unique)
             # Numeric / free-form argument — no completion
             return
@@ -177,6 +189,7 @@ _vv() {
                 --json --ndjson --md --markdown
                 --select --cols --filter
                 --schema --describe --count --stats --contigs --gt-stats --validate --decode-pileup --pileup --text
+                --exclude-flags --ff --require-flags --rf --min-mapq --min-bq --count-orphans --ignore-overlaps
                 --in-delimiter --header
                 --expand --formats --list-columns --list-tabs
                 -f --fasta

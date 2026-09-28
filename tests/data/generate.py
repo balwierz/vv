@@ -723,6 +723,40 @@ else:
             bf.write(r)
     pysam.index(str(bam_path))
 
+    # tiny.pileupfilters.bam: one read per samtools mpileup default filter —
+    # a duplicate, a secondary, a QC-fail and a placed unmapped read (excluded
+    # by --ff UNMAP,SECONDARY,QCFAIL,DUP), a read with base qualities below 13
+    # (dropped by -Q 13), a MAPQ 5 read (kept; -q 20 drops it), an orphan
+    # (paired, not proper; dropped unless -A), an overlapping proper pair
+    # (overlap removal merges their qualities), a deletion, a spliced read and
+    # a stretch covered only by low-quality bases (depth 0, `*`). The --pileup
+    # tests compare vv against samtools' output on it.
+    pf_path = HERE / "tiny.pileupfilters.bam"
+    for stale in (pf_path, HERE / "tiny.pileupfilters.bam.bai"):
+        if stale.exists():
+            stale.unlink()
+    pf_sam = HERE / "_pileupfilters.sam"
+    pf_sam.write_text(
+        "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr1\tLN:1000\n"
+        "ok\t0\tchr1\t100\t60\t8M\t*\t0\t0\tACGTACGT\tIIIIIIII\n"
+        "dup\t1024\tchr1\t100\t60\t8M\t*\t0\t0\tACGTACGT\tIIIIIIII\n"
+        "sec\t256\tchr1\t100\t60\t8M\t*\t0\t0\tACGTACGT\tIIIIIIII\n"
+        "qc\t512\tchr1\t100\t60\t8M\t*\t0\t0\tACGTACGT\tIIIIIIII\n"
+        "unmap\t4\tchr1\t100\t0\t*\t*\t0\t0\tACGTACGT\tIIIIIIII\n"
+        "lowbq\t0\tchr1\t100\t60\t8M\t*\t0\t0\tTTTTTTTT\t+++++III\n"
+        "lowmq\t0\tchr1\t101\t5\t8M\t*\t0\t0\tGGGGGGGG\tIIIIIIII\n"
+        "orphan\t65\tchr1\t102\t60\t8M\t*\t500\t0\tCCCCCCCC\tIIIIIIII\n"
+        "pairA\t99\tchr1\t103\t60\t6M\t=\t105\t8\tAAAAAA\tIIIIII\n"
+        "pairA\t147\tchr1\t105\t60\t6M\t=\t103\t-8\tAAAAAA\t555555\n"
+        "del2\t16\tchr1\t199\t60\t8M\t*\t0\t0\tGGGGGGGG\t5555+555\n"
+        "del\t0\tchr1\t200\t60\t3M2D3M\t*\t0\t0\tACGTAC\tI+III+\n"
+        "spl\t0\tchr1\t300\t60\t3M10N3M\t*\t0\t0\tACGACG\tIII+II\n"
+        "spl2\t0\tchr1\t305\t60\t6M\t*\t0\t0\tTTTTTT\t++++++\n"
+        "onlylow\t0\tchr1\t400\t60\t4M\t*\t0\t0\tAAAA\t++++\n")
+    pysam.sort("-o", str(pf_path), str(pf_sam))
+    pysam.index(str(pf_path))
+    pf_sam.unlink()
+
     # Reference FASTA for reference-aware pileup (`vv --pileup -f`). chr1 is all
     # T over the covered region 100-119 EXCEPT it keeps T at pos 105 — where the
     # reads carry a G — so that column shows a mismatch (G/g) while every other

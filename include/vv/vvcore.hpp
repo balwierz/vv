@@ -101,6 +101,17 @@ struct Config {
                                          // mpileup-style per-base rows via
                                          // htslib's bam_plp_auto engine
                                          // instead of alignment records
+    // --pileup read / base filters, samtools mpileup's defaults: skip reads with
+    // any pileup_excl_flags bit (UNMAP|SECONDARY|QCFAIL|DUP), without every
+    // pileup_incl_flags bit, below pileup_min_mapq, or paired but not properly
+    // paired (unless pileup_count_orphans); drop bases below pileup_min_bq;
+    // merge overlapping mates' qualities (unless pileup_ignore_overlaps).
+    int         pileup_excl_flags = 0x704;   // --exclude-flags / --ff
+    int         pileup_incl_flags = 0;       // --require-flags / --rf
+    int         pileup_min_mapq   = 0;       // --min-mapq
+    int         pileup_min_bq     = 13;      // --min-bq
+    bool        pileup_count_orphans  = false;   // --count-orphans
+    bool        pileup_ignore_overlaps = false;  // --ignore-overlaps
     std::string pileup_ref;              // -f/--fasta: reference FASTA for
                                          // --pileup; enables ref column + the
                                          // ./, match notation (samtools -f)

@@ -121,8 +121,19 @@ qualities with typed per-allele counts: \fBA\fR, \fBC\fR, \fBG\fR,
 \fBfwd\fR, \fBrev\fR, \fBmean_qual\fR (Phred mean). Multi-sample
 files get the same set suffixed per sample. Pass \fB--pileup\fR on
 a BAM/CRAM to walk the alignments through htslib's
-\fBbam_plp_auto\fR engine and emit the same mpileup rows directly,
-without a separate \fBsamtools mpileup\fR step. Range queries
+pileup engine and emit the same mpileup rows directly, without a
+separate \fBsamtools mpileup\fR step, applying its default filters:
+reads with any of \fBUNMAP\fR, \fBSECONDARY\fR, \fBQCFAIL\fR, \fBDUP\fR
+set are skipped (\fB\-\-exclude\-flags\fR / \fB\-\-ff\fR \fIlist\fR, \fB0\fR
+for none), as are paired reads that are not properly paired
+(\fB\-\-count\-orphans\fR keeps them); bases below quality 13 are dropped
+(\fB\-\-min\-bq\fR \fIN\fR); overlapping mates' qualities are merged
+(\fB\-\-ignore\-overlaps\fR turns it off). \fB\-\-require\-flags\fR /
+\fB\-\-rf\fR \fIlist\fR keeps only reads carrying every listed flag, and
+\fB\-\-min\-mapq\fR \fIN\fR drops reads below that mapping quality. A flag
+list is SAM FLAG names (\fBPAIRED\fR, \fBDUP\fR, ...) or numbers
+(\fB0x904\fR). The depth column counts the bases shown after filtering;
+unlike samtools there is no \fB\-d\fR depth cap. Range queries
 require an index (\fB.bai\fR / \fB.csi\fR / \fB.crai\fR). Pass
 \fB\-f\fR / \fB\-\-fasta\fR \fIref.fa\fR (which needs a \fB.fai\fR
 index) to fill the ref column from the reference and render bases

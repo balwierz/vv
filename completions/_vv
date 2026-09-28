@@ -25,7 +25,7 @@ _vv_file_arg() {
              -r --region --window --regions-file --region-cols --slop --coords
              --tail --sort --tags --expand --parquet --arrow --feather --compression
              --image-mode -f --fasta --select --cols --filter --tab --unique
-             --sample)
+             --sample --exclude-flags --ff --require-flags --rf --min-mapq --min-bq)
     local i tok
     for (( i = 2; i < CURRENT; i++ )); do
         tok=$words[i]
@@ -146,6 +146,12 @@ _vv() {
         '--list-tabs[Print component tab names and exit]' \
         '--decode-pileup[mpileup: explode bases into per-allele counts]' \
         '--pileup[BAM/CRAM: emit mpileup-style per-base rows]' \
+        '(--exclude-flags --ff)'{--exclude-flags,--ff}'+[--pileup: skip reads with any of these flags]:flags:_sequence compadd - PAIRED PROPER_PAIR UNMAP MUNMAP REVERSE MREVERSE READ1 READ2 SECONDARY QCFAIL DUP SUPPLEMENTARY' \
+        '(--require-flags --rf)'{--require-flags,--rf}'+[--pileup: keep only reads with all of these flags]:flags:_sequence compadd - PAIRED PROPER_PAIR UNMAP MUNMAP REVERSE MREVERSE READ1 READ2 SECONDARY QCFAIL DUP SUPPLEMENTARY' \
+        '--min-mapq+[--pileup: minimum mapping quality (default 0)]:mapq:' \
+        '--min-bq+[--pileup: minimum base quality (default 13)]:bq:' \
+        '--count-orphans[--pileup: keep paired reads that are not properly paired]' \
+        '--ignore-overlaps[--pileup: no mate-overlap quality merging]' \
         '(-f --fasta)'{-f,--fasta}'[reference FASTA: --pileup ref column + ./, notation, or CRAM decoding]:fasta:_files' \
         '(--select --cols)'{--select,--cols}'+[Project columns: names, globs, N-M ranges, @types, !exclusions]:terms:_vv_columns' \
         '--filter+[Row predicate]:expr:_vv_column' \

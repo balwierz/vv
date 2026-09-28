@@ -383,7 +383,7 @@ work that touches the same code:
   `` `Sample ID` ``.
 - [x] **`has` / `lacks` bit-flag operators** (S) — `feat/filter-flag-has-lacks` — `FLAG lacks
   UNMAP,SECONDARY,DUP`; unknown flag names are a parse error.
-- [ ] **samtools default read filters for `--pileup`** (S–M) — `--ff
+- [x] **samtools default read filters for `--pileup`** (S–M) — `feat/pileup-default-filters` — `--ff
   UNMAP,SECONDARY,QCFAIL,DUP`, `-Q 13`; overrides `--exclude-flags`,
   `--require-flags`, `--min-mapq`, `--min-bq`.
 - [ ] **`col in @file`** (S) — set membership from a file (gz/zst); all `in`
