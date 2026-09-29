@@ -1863,6 +1863,29 @@ static int nearest_256(int r, int g, int b) {
     return 16 + 36 * q(r) + 6 * q(g) + q(b);
 }
 
+// Binary cell text. Bytes that are printable UTF-8 (older Parquet writers store
+// strings as BINARY with no UTF8 annotation) are shown as that text; anything
+// else — control bytes, invalid UTF-8 — as 0x + hex, so raw bytes never reach
+// the terminal and distinct blobs render distinctly.
+static std::string binary_cell_text(const uint8_t* p, int64_t n) {
+    bool text = true;
+    for (int64_t i = 0; i < n && text;) {
+        const uint8_t c = p[i];
+        if (c < 0x20 || c == 0x7f) { text = false; break; }
+        int len = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xe ? 3 : (c >> 3) == 0x1e ? 4 : 0;
+        if (!len || i + len > n) { text = false; break; }
+        for (int k = 1; k < len; ++k)
+            if ((p[i + k] & 0xc0) != 0x80) { text = false; break; }
+        i += len;
+    }
+    if (text) return std::string(reinterpret_cast<const char*>(p), (size_t)n);
+    static const char* hex = "0123456789abcdef";
+    std::string out = "0x";
+    out.reserve(2 + 2 * (size_t)n);
+    for (int64_t i = 0; i < n; ++i) { out += hex[p[i] >> 4]; out += hex[p[i] & 15]; }
+    return out;
+}
+
 // Float text precision. The table / TUI show 6 significant digits; an export
 // or an identity key (--distinct, --unique) must not: `%.6g` wrote 1234567.891
 // and 1234567.892 both as "1.23457e+06", and merged them. While an ExactFloats
@@ -1937,12 +1960,46 @@ std::string cell_to_string(const arrow::Array& arr, int64_t row) {
         case arrow::Type::LARGE_STRING:
             return static_cast<const arrow::LargeStringArray&>(arr).GetString(row);
         case arrow::Type::BINARY: {
-            auto& a = static_cast<const arrow::BinaryArray&>(arr);
-            return "<binary " + std::to_string(a.value_length(row)) + "B>";
+            auto v = static_cast<const arrow::BinaryArray&>(arr).GetView(row);
+            return binary_cell_text(reinterpret_cast<const uint8_t*>(v.data()), (int64_t)v.size());
         }
         case arrow::Type::LARGE_BINARY: {
-            auto& a = static_cast<const arrow::LargeBinaryArray&>(arr);
-            return "<binary " + std::to_string(a.value_length(row)) + "B>";
+            auto v = static_cast<const arrow::LargeBinaryArray&>(arr).GetView(row);
+            return binary_cell_text(reinterpret_cast<const uint8_t*>(v.data()), (int64_t)v.size());
+        }
+        case arrow::Type::FIXED_SIZE_BINARY: {
+            auto& a = static_cast<const arrow::FixedSizeBinaryArray&>(arr);
+            return binary_cell_text(a.GetValue(row), a.byte_width());
+        }
+        case arrow::Type::BINARY_VIEW: {
+            auto v = static_cast<const arrow::BinaryViewArray&>(arr).GetView(row);
+            return binary_cell_text(reinterpret_cast<const uint8_t*>(v.data()), (int64_t)v.size());
+        }
+        case arrow::Type::STRING_VIEW:
+            return std::string(static_cast<const arrow::StringViewArray&>(arr).GetView(row));
+        case arrow::Type::EXTENSION: {
+            // An extension type renders as its storage (arrow.json: the JSON
+            // text), except where the storage alone reads badly: arrow.uuid
+            // (16 raw bytes) in canonical 8-4-4-4-12 form, arrow.bool8 (int8)
+            // as true / false.
+            auto& ea = static_cast<const arrow::ExtensionArray&>(arr);
+            const std::string name =
+                static_cast<const arrow::ExtensionType&>(*arr.type()).extension_name();
+            const auto& st = *ea.storage();
+            if (name == "arrow.uuid" && st.type_id() == arrow::Type::FIXED_SIZE_BINARY &&
+                static_cast<const arrow::FixedSizeBinaryArray&>(st).byte_width() == 16) {
+                const uint8_t* b = static_cast<const arrow::FixedSizeBinaryArray&>(st).GetValue(row);
+                static const char* hex = "0123456789abcdef";
+                std::string u;
+                for (int i = 0; i < 16; ++i) {
+                    if (i == 4 || i == 6 || i == 8 || i == 10) u += '-';
+                    u += hex[b[i] >> 4]; u += hex[b[i] & 15];
+                }
+                return u;
+            }
+            if (name == "arrow.bool8" && st.type_id() == arrow::Type::INT8)
+                return static_cast<const arrow::Int8Array&>(st).Value(row) ? "true" : "false";
+            return cell_to_string(st, row);
         }
         case arrow::Type::LIST: {
             auto& la = static_cast<const arrow::ListArray&>(arr);
@@ -2020,8 +2077,22 @@ std::string cell_to_string(const arrow::Array& arr, int64_t row) {
             return NULL_SYMBOL;
         }
         default: {
+            // Arrow's scalar ToString can span lines ("[\n  1\n]"); a cell is
+            // one line, so fold the breaks and their indentation to a space.
             auto res = arr.GetScalar(row);
-            return res.ok() ? res.ValueOrDie()->ToString() : "?";
+            if (!res.ok()) return "?";
+            std::string t = res.ValueOrDie()->ToString(), out;
+            out.reserve(t.size());
+            for (size_t k = 0; k < t.size(); ++k) {
+                if (t[k] == '\n' || t[k] == '\r') {
+                    while (k + 1 < t.size() && (t[k + 1] == ' ' || t[k + 1] == '\n')) ++k;
+                    if (!out.empty() && out.back() != ' ' && out.back() != '[' && out.back() != '{')
+                        out += ' ';
+                    continue;
+                }
+                out += t[k];
+            }
+            return out;
         }
     }
 }
@@ -18925,6 +18996,11 @@ static void json_emit_string(const std::string& v) {
 static void json_emit_cell(const arrow::Array& arr, int64_t row) {
     FILE* out = out_stream();
     if (arr.IsNull(row)) { std::fputs("null", out); return; }
+    if (arr.type_id() == arrow::Type::EXTENSION &&
+        static_cast<const arrow::ExtensionType&>(*arr.type()).extension_name() == "arrow.bool8") {
+        std::fputs(cell_to_string(arr, row) == "true" ? "true" : "false", out);
+        return;
+    }
     switch (arr.type_id()) {
         case arrow::Type::BOOL:
             std::fputs(static_cast<const arrow::BooleanArray&>(arr).Value(row)
@@ -20048,6 +20124,26 @@ std::vector<int64_t> stable_sort_order(const arrow::Array& key, bool descending)
     return order;
 }
 
+// Rows `idx` of `a`, in that order, via the builder's AppendArraySlice (a plain
+// builder method, not a compute kernel, so it survives --gc-sections). Arrow
+// has no builder for an extension type: gather its storage and re-wrap it.
+static arrow::Result<std::shared_ptr<arrow::Array>>
+gather_rows(const std::shared_ptr<arrow::Array>& a, const std::vector<int64_t>& idx) {
+    if (a->type_id() == arrow::Type::EXTENSION) {
+        auto& ea = static_cast<const arrow::ExtensionArray&>(*a);
+        ARROW_ASSIGN_OR_RAISE(auto st, gather_rows(ea.storage(), idx));
+        return arrow::ExtensionType::WrapArray(a->type(), st);
+    }
+    std::unique_ptr<arrow::ArrayBuilder> b;
+    ARROW_RETURN_NOT_OK(arrow::MakeBuilder(arrow::default_memory_pool(), a->type(), &b));
+    if (!idx.empty()) ARROW_RETURN_NOT_OK(b->Reserve((int64_t)idx.size()));
+    arrow::ArraySpan span(*a->data());
+    for (int64_t i : idx) ARROW_RETURN_NOT_OK(b->AppendArraySlice(span, i, 1));
+    std::shared_ptr<arrow::Array> out;
+    ARROW_RETURN_NOT_OK(b->Finish(&out));
+    return out;
+}
+
 // --sort COL[:asc|:desc]: fully materialise the (filtered) source, stable-sort
 // its rows by one column, and replace `src` with a MemoryTableSource so every
 // downstream view / export renders the sorted result identically. Sorting needs
@@ -20117,24 +20213,12 @@ static std::string build_sort(std::unique_ptr<TabularSource>& src,
 
     std::vector<int64_t> order = stable_sort_order(*flat[sort_idx], cfg.sort_desc);
 
-    // Gather every column into the sorted order (AppendArraySlice is a plain
-    // builder method — not a compute kernel — so it survives --gc-sections).
+    // Gather every column into the sorted order.
     arrow::ArrayVector sorted_cols((size_t)n_fields);
     for (int c = 0; c < n_fields; ++c) {
-        std::unique_ptr<arrow::ArrayBuilder> b;
-        auto mk = arrow::MakeBuilder(arrow::default_memory_pool(),
-                                     flat[c]->type(), &b);
-        if (!mk.ok()) return "--sort: builder failed: " + mk.ToString();
-        if (N) { auto r = b->Reserve(N); if (!r.ok()) return "--sort: " + r.ToString(); }
-        arrow::ArraySpan span(*flat[c]->data());
-        for (int64_t idx : order) {
-            auto as = b->AppendArraySlice(span, idx, 1);
-            if (!as.ok()) return "--sort: gather failed: " + as.ToString();
-        }
-        std::shared_ptr<arrow::Array> out_arr;
-        auto fs = b->Finish(&out_arr);
-        if (!fs.ok()) return "--sort: finish failed: " + fs.ToString();
-        sorted_cols[(size_t)c] = out_arr;
+        auto g = gather_rows(flat[c], order);
+        if (!g.ok()) return "--sort: gather failed: " + g.status().ToString();
+        sorted_cols[(size_t)c] = *g;
     }
     auto sorted = arrow::Table::Make(schema, sorted_cols, N);
 
@@ -20247,18 +20331,9 @@ static std::string build_distinct(std::unique_ptr<TabularSource>& src,
     // Gather the kept rows for each projected column.
     arrow::ArrayVector out_cols((size_t)np);
     for (int k = 0; k < np; ++k) {
-        std::unique_ptr<arrow::ArrayBuilder> b;
-        auto mk = arrow::MakeBuilder(arrow::default_memory_pool(),
-                                     flat[(size_t)k]->type(), &b);
-        if (!mk.ok()) return "--distinct: builder failed: " + mk.ToString();
-        if (M) { auto r = b->Reserve(M); if (!r.ok()) return "--distinct: " + r.ToString(); }
-        arrow::ArraySpan span(*flat[(size_t)k]->data());
-        for (int64_t idx : keep) {
-            auto as = b->AppendArraySlice(span, idx, 1);
-            if (!as.ok()) return "--distinct: gather failed: " + as.ToString();
-        }
-        auto fs = b->Finish(&out_cols[(size_t)k]);
-        if (!fs.ok()) return "--distinct: finish failed: " + fs.ToString();
+        auto g = gather_rows(flat[(size_t)k], keep);
+        if (!g.ok()) return "--distinct: gather failed: " + g.status().ToString();
+        out_cols[(size_t)k] = *g;
     }
     auto distinct = arrow::Table::Make(proj_schema, out_cols, M);
 

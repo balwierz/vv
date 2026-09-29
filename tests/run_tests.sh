@@ -3197,6 +3197,34 @@ assert_eq_file_inline "gt_stats_filter_af" "$GT_HIAF" "100 "
 GT_SORT=$("$VV" --tsv --no-header --gt-stats --select POS --sort n_missing:desc "$GTVCF" | head -1)
 assert_eq_file_inline "gt_stats_sort_missing" "$GT_SORT" "100"
 
+# Binary and extension columns: BINARY as its text when printable UTF-8, else
+# 0x-hex (never raw bytes: they broke the table and reached the terminal);
+# arrow.uuid as 8-4-4-4-12, arrow.json as its text, arrow.bool8 as true /
+# false (a JSON boolean in --json). --sort gathered rows with a builder Arrow
+# cannot make for an extension type, so any sort of such a table aborted;
+# --distinct merged blobs of equal length ("<binary 4B>").
+for EXT in "$DATA/tiny.ext.arrow" "$DATA/tiny.ext.parquet"; do
+    [ -f "$EXT" ] || continue
+    en=$(basename "$EXT")
+    assert_eq_file_inline "ext_tsv [$en]" "$("$VV" --tsv --no-header "$EXT" | tr '\t\n' '|;')" \
+        '1|0x00016162|0x780079|0x00000000|00000000-0000-0000-0000-000000000000|"{""a"": 1}"|true;2|0xfffe0a09||0x01020304|00000000-0000-0000-0000-000000001111|[1,2]|false;3|plain||abcd|00000000-0000-0000-0000-000000002222||;'
+    assert_eq_file_inline "ext_table_no_raw_bytes [$en]" \
+        "$("$VV" --no-interactive --color=never -w 40 "$EXT" | LC_ALL=C grep -c "$(printf '[\001-\010\016-\037]')")" "0"
+    for sc in bin fsb uuid js b8; do
+        assert_exit_code "ext_sort_$sc [$en]" 0 "$VV" --sort "$sc" --count "$EXT"
+    done
+    assert_eq_file_inline "ext_sort_uuid_desc [$en]" \
+        "$("$VV" --sort uuid:desc --tsv --no-header --select id "$EXT" | tr '\n' ' ')" "3 2 1 "
+    assert_eq_file_inline "ext_distinct_blobs [$en]" "$("$VV" --distinct --select bin --count "$EXT")" "3"
+done
+if [ -f "$DATA/tiny.ext.arrow" ] && command -v python3 >/dev/null 2>&1; then
+    assert_eq_file_inline "ext_json_bool8" \
+        "$("$VV" --json --select b8 "$DATA/tiny.ext.arrow" | python3 -c 'import json,sys; print([r["b8"] for r in json.load(sys.stdin)])')" \
+        "[True, False, None]"
+    "$VV" --distinct --select uuid,b8 --arrow "$TMP/ext_distinct.arrow" "$DATA/tiny.ext.arrow" 2>/dev/null
+    assert_contains "ext_distinct_keeps_type" "$("$VV" --schema "$TMP/ext_distinct.arrow")" "extension<arrow.uuid>"
+fi
+
 # `in @file`: set members from a file — one per line, first tab field,
 # trimmed, blank lines skipped, gzip / zstd by magic. tiny.parquet has 12 chr1
 # and 8 chr2 rows; Start 100 and 1100 appear on 4 rows.
