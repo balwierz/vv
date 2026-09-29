@@ -395,7 +395,8 @@ work that touches the same code:
   ignored on a TTY today.
 - [x] **Date / timestamp literals in `--filter`** (M) — `feat/filter-date-literals` — resolved against the
   column type; dates in `--describe`.
-- [ ] **Typed nested `--json` / `--ndjson`** (M).
+- [x] **Typed nested `--json` / `--ndjson`** (M) — `feat/json-typed-nested` — lists / structs / maps /
+  dictionaries as JSON arrays and objects.
 - [ ] **Parquet footer depth** (S–M) — `--stats --json`, `--schema --json`
   format for Parquet, key-value metadata; per-row-group view later.
 - [ ] **Index-free `-r` on unindexed text formats** (M) — scan and filter with

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Nested values in `--json` / `--ndjson` are JSON.** List, struct, map and
+  fixed-size-list cells were written as a quoted string of their display form
+  (`"Tags": "[enhancer, open]"`), which a consumer had to re-parse and which
+  lost the element types. They are now written recursively: a list or
+  fixed-size list is an array, a struct an object, a map an object keyed by
+  the map key as text (`{"1": "one"}` for an integer key), and a dictionary
+  cell its decoded value; elements are typed like top-level cells (numbers,
+  booleans, null). Dates, decimals, binary and extension columns remain
+  strings.
 - **Date and timestamp literals in `--filter`; dates in `--describe`.** A
   quoted date against a date or timestamp column compared the column's raw
   day / millisecond count as text and matched nothing (`d > "2024-01-01"`

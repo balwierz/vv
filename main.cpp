@@ -19153,8 +19153,78 @@ static void json_emit_cell(const arrow::Array& arr, int64_t row) {
         case arrow::Type::STRING: case arrow::Type::LARGE_STRING:
             json_emit_string(cell_to_string(arr, row));
             return;
+        // Nested values as JSON, recursively (each element typed like a
+        // top-level cell): a list as an array, a struct as an object, a map as
+        // an object whose keys are the keys' text.
+        case arrow::Type::LIST: case arrow::Type::LARGE_LIST: {
+            int64_t off, len;
+            std::shared_ptr<arrow::Array> values;
+            if (arr.type_id() == arrow::Type::LIST) {
+                auto& la = static_cast<const arrow::ListArray&>(arr);
+                off = la.value_offset(row); len = la.value_length(row); values = la.values();
+            } else {
+                auto& la = static_cast<const arrow::LargeListArray&>(arr);
+                off = la.value_offset(row); len = la.value_length(row); values = la.values();
+            }
+            std::fputc('[', out);
+            for (int64_t i = 0; i < len; ++i) {
+                if (i) std::fputs(", ", out);
+                json_emit_cell(*values, off + i);
+            }
+            std::fputc(']', out);
+            return;
+        }
+        case arrow::Type::FIXED_SIZE_LIST: {
+            auto& la = static_cast<const arrow::FixedSizeListArray&>(arr);
+            const int32_t n = la.list_type()->list_size();
+            const int64_t off = la.value_offset(row);
+            std::fputc('[', out);
+            for (int32_t i = 0; i < n; ++i) {
+                if (i) std::fputs(", ", out);
+                json_emit_cell(*la.values(), off + i);
+            }
+            std::fputc(']', out);
+            return;
+        }
+        case arrow::Type::STRUCT: {
+            auto& sa = static_cast<const arrow::StructArray&>(arr);
+            const auto& st = static_cast<const arrow::StructType&>(*arr.type());
+            std::fputc('{', out);
+            for (int f = 0; f < st.num_fields(); ++f) {
+                if (f) std::fputs(", ", out);
+                json_emit_string(st.field(f)->name());
+                std::fputs(": ", out);
+                json_emit_cell(*sa.field(f), row);   // field() is offset-adjusted
+            }
+            std::fputc('}', out);
+            return;
+        }
+        case arrow::Type::MAP: {
+            auto& ma = static_cast<const arrow::MapArray&>(arr);
+            const int64_t off = ma.value_offset(row), len = ma.value_length(row);
+            std::fputc('{', out);
+            for (int64_t i = 0; i < len; ++i) {
+                if (i) std::fputs(", ", out);
+                json_emit_string(cell_to_string(*ma.keys(), off + i));
+                std::fputs(": ", out);
+                json_emit_cell(*ma.items(), off + i);
+            }
+            std::fputc('}', out);
+            return;
+        }
+        case arrow::Type::DICTIONARY: {
+            // The decoded value, typed (a dictionary of ints stays a number).
+            auto& da = static_cast<const arrow::DictionaryArray&>(arr);
+            const int64_t k = da.GetValueIndex(row);
+            if (k < 0 || k >= da.dictionary()->length()) { std::fputs("null", out); return; }
+            json_emit_cell(*da.dictionary(), k);
+            return;
+        }
+        case arrow::Type::NA:
+            std::fputs("null", out);
+            return;
         default:
-            // Nested or unsupported types — emit their canonical string form.
+            // Other types (dates, decimals, binary, …): their text form.
             json_emit_string(cell_to_string(arr, row));
             return;
     }

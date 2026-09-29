@@ -628,6 +628,15 @@ $ vv --ndjson reads.fastq.gz | jq 'select(.seq | length > 50)' | head -1
 {"name": "read_3142", "comment": "", "seq": "ACGT…", "qual": "IIII…"}
 ```
 
+Nested columns come out as JSON, not as their display text: a list is an
+array, a struct an object, a map an object keyed by the map key:
+
+```sh
+$ vv --ndjson --select Chr,Tags -n 2 peaks.parquet
+{"Chr": "chr1", "Tags": ["promoter"]}
+{"Chr": "chr1", "Tags": ["enhancer", "open"]}
+```
+
 ### Parquet output — `--parquet`
 
 Convert any supported input into a Parquet file (BED → Parquet,
