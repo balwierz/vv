@@ -393,7 +393,7 @@ work that touches the same code:
   `--sort` aborts, `--distinct` merging blobs.
 - [x] **TUI starts from `--filter` / `--select` / `--sort`** (M) — `feat/tui-start-filter-select-sort` — silently
   ignored on a TTY today.
-- [ ] **Date / timestamp literals in `--filter`** (M) — resolved against the
+- [x] **Date / timestamp literals in `--filter`** (M) — `feat/filter-date-literals` — resolved against the
   column type; dates in `--describe`.
 - [ ] **Typed nested `--json` / `--ndjson`** (M).
 - [ ] **Parquet footer depth** (S–M) — `--stats --json`, `--schema --json`

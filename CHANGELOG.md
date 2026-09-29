@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Date and timestamp literals in `--filter`; dates in `--describe`.** A
+  quoted date against a date or timestamp column compared the column's raw
+  day / millisecond count as text and matched nothing (`d > "2024-01-01"`
+  gave 0 rows). The literal is now a point in time in the column's own unit:
+  `YYYY-MM-DD`, optionally ` HH:MM[:SS[.fraction]]` (or `T`) and a zone (`Z`,
+  `±HH:MM`; converted to UTC); a date alone is midnight. Temporal columns are
+  compared as exact integers (a nanosecond timestamp keeps its precision).
+  A literal that is not a date, or is out of the unit's range, is an error.
+  `--describe` shows a date / timestamp column's min / max / mean as dates
+  (`2023-12-31`, `2024-06-15 12:30:00.000Z`) instead of epoch counts; the
+  `--json` form keeps the counts.
 - **vvg scrolls smoothly.** The grid scrolled one whole column horizontally
   and one row vertically per step, so the leftmost visible column stayed
   aligned to the window edge (except when scrolled fully right). It now

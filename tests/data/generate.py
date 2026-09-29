@@ -190,6 +190,22 @@ if all(hasattr(pa, t) for t in ("uuid", "json_", "bool8")):
 else:
     print("warn: pyarrow < 18 (no uuid/json/bool8); skipping tiny.ext.*", file=sys.stderr)
 
+# tiny.dates.parquet: date32, timestamp (s -> stored as ms by Parquet), a
+# timezone-aware timestamp and a microsecond timestamp, with a null row. A
+# quoted date literal in --filter compares as a point in time in the column's
+# unit; --describe shows the min / max / mean as dates.
+import datetime as _dt
+_d = [_dt.date(2023, 12, 31), _dt.date(2024, 1, 1), _dt.date(2024, 6, 15), None]
+_ts = [_dt.datetime(2023, 12, 31, 23, 59, 59), _dt.datetime(2024, 1, 1),
+       _dt.datetime(2024, 6, 15, 12, 30), None]
+pq.write_table(pa.table({
+    "id": pa.array([1, 2, 3, 4]),
+    "d": pa.array(_d, pa.date32()),
+    "ts": pa.array(_ts, pa.timestamp("s")),
+    "tsz": pa.array(_ts, pa.timestamp("ms", tz="UTC")),
+    "tus": pa.array(_ts, pa.timestamp("us")),
+}), HERE / "tiny.dates.parquet")
+
 # tiny.empty.arrow: a valid Arrow IPC with a schema but zero record batches.
 # The reader seeds a zero-row batch so the schema renders, but num_chunks()
 # used to report 0 (num_record_batches_) and the table view drew nothing.
