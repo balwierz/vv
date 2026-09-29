@@ -24,3 +24,5 @@ MaxEndSoFar  int32   yes
 File: /home/piotr/Sources/ParquetViewer/tests/data/tiny.lociss
 Format: LociSSD  |  Row groups: 3  |  Compressed: 1.7 KiB
 Created by: parquet-cpp-arrow version 22.0.0
+Metadata:
+  lociSSD_manifest = {"format_version": 2, "writer_version": "vv tests/data/generate.py", …} (470 B)

@@ -397,8 +397,9 @@ work that touches the same code:
   column type; dates in `--describe`.
 - [x] **Typed nested `--json` / `--ndjson`** (M) — `feat/json-typed-nested` — lists / structs / maps /
   dictionaries as JSON arrays and objects.
-- [ ] **Parquet footer depth** (S–M) — `--stats --json`, `--schema --json`
-  format for Parquet, key-value metadata; per-row-group view later.
+- [x] **Parquet footer depth** (S–M) — `feat/parquet-footer-json` — `--stats --json`, `--schema --json`
+  format for Parquet, key-value metadata.
+- [ ] **Per-row-group `--stats` view** (S) — row counts, sizes and min / max per row group.
 - [ ] **Index-free `-r` on unindexed text formats** (M) — scan and filter with
   a note; also stop htslib's `[E::idx_find_and_load]` line leaking to stderr.
 - [ ] **TUI frequency sheet `F`** (M) — value counts of the cursor column over

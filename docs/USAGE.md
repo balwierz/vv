@@ -651,10 +651,16 @@ MaxEndSoFar  int32   yes
 File: tests/data/tiny.lociss
 Format: LociSSD  |  Row groups: 3  |  Compressed: 1.7 KiB
 Created by: parquet-cpp-arrow version 24.0.0
+Metadata:
+  lociSSD_manifest = {"format_version": 2, "writer_version": "vv tests/data/generate.py", …} (470 B)
 ```
 
 Prints column names, Arrow types, nullability, and the file-info
-footer; reads no data.
+footer; reads no data. `Metadata:` lists the key-value metadata a Parquet
+or Arrow IPC writer stored beside the data (pandas' index description, an
+assembly name, a manifest), one line per key, each value cut to about 80
+characters. `--schema --json` gives the same as an object, with the full
+values under `metadata`.
 
 ## `--describe`
 
@@ -696,7 +702,15 @@ MaxEndSoFar  int32   zstd        284 B         230 B  0.809x      0
 ```
 
 Reads no data — just the Parquet footer. Use it on inherited
-multi-GB files to find out how they were written.
+multi-GB files to find out how they were written. The file's key-value
+metadata, if any, follows `Created by:` as in `--schema`.
+
+`--stats --json` writes the same as one JSON object: `format`, `rows`,
+`row_groups`, `compressed_bytes`, `uncompressed_bytes`, `created_by`,
+`metadata`, and per column `name`, `type`, `codecs`, `compressed_bytes`,
+`uncompressed_bytes` and `nulls` (null where the writer stored no null
+count). On a file that is not Parquet it is an error; `--schema --json`
+gives that file's columns.
 
 ## `--contigs` (reference sequences & assembly)
 

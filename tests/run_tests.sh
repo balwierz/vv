@@ -2080,6 +2080,43 @@ STATS_OUT=$("$VV" --stats "$DATA/tiny.lociss")
 assert_contains "stats_has_row_groups" "$STATS_OUT" "Row groups:"
 assert_contains "stats_has_codec_column" "$STATS_OUT" "zstd"
 
+# Key-value metadata (what the writer stored beside the data) is shown by
+# --schema, --stats and the table footer, one line per key cut to ~80
+# characters; the --json forms carry the full values. --stats --json is the
+# footer rollup as JSON (it printed the text table); --schema --json named no
+# format for Parquet ("format": "").
+KVP="$DATA/tiny.kvmeta.parquet"
+if [ -f "$KVP" ]; then
+    KV_SCHEMA=$("$VV" --schema --color=never "$KVP")
+    assert_contains "kv_schema_short_value" "$KV_SCHEMA" "  genome = GRCh38"
+    assert_contains "kv_schema_newline_escaped" "$KV_SCHEMA" '  note = line one\nline two'
+    assert_contains "kv_schema_long_value_cut" "$KV_SCHEMA" "x… (200 B)"
+    assert_contains "kv_arrow_schema" "$("$VV" --schema --color=never "$DATA/tiny.kvmeta.arrow")" "  genome = GRCh38"
+    assert_contains "kv_stats_text" "$("$VV" --stats --color=never "$KVP")" "  genome = GRCh38"
+    if command -v python3 >/dev/null 2>&1; then
+        assert_eq_file_inline "stats_json" "$("$VV" --stats --json "$KVP" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+cols = d["columns"]
+assert d["format"] == "Parquet" and d["rows"] == 4 and d["row_groups"] == 2, d
+assert sum(c["compressed_bytes"] for c in cols) == d["compressed_bytes"], d
+assert sum(c["uncompressed_bytes"] for c in cols) == d["uncompressed_bytes"], d
+print([(c["name"], c["type"], c["codecs"], c["nulls"]) for c in cols],
+      d["metadata"]["note"] == "line one\nline two", len(d["metadata"]["long"]))')" \
+            "[('id', 'int64', ['snappy'], 0), ('name', 'string', ['zstd'], 1)] True 200"
+        assert_eq_file_inline "schema_json_metadata" "$("$VV" --schema --json "$KVP" | python3 -c '
+import json, sys; d = json.load(sys.stdin); print(d["format"], sorted(d["metadata"]))')" \
+            "Parquet ['genome', 'long', 'note']"
+        assert_eq_file_inline "schema_json_no_metadata" "$("$VV" --schema --json "$DATA/tiny.parquet" | python3 -c '
+import json, sys; d = json.load(sys.stdin); print(d["format"], d["metadata"])')" "Parquet {}"
+    fi
+fi
+# --stats on a file without a Parquet footer: the text form notes it (naming
+# the format, not pasting the whole footer); --json is an error.
+assert_contains "stats_nonparquet_note" "$("$VV" --stats --color=never "$DATA/tiny.bam")" \
+    "Parquet-only; this file is a BAM source."
+assert_exit_code "stats_json_nonparquet_exit" 1 "$VV" --stats --json "$DATA/tiny.bam"
+
 # --unique: distinct value counts.
 UNIQ_OUT=$("$VV" --unique Chromosome "$DATA/tiny.lociss")
 assert_contains "unique_lists_chr1" "$UNIQ_OUT" "chr1"
