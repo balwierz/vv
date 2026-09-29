@@ -18,7 +18,7 @@ Col 1-5/5, no sort indicator).
 Usage: tui_start_view_check.py <vv-binary> <tiny.parquet>
 Exit 0 on success, 1 on failure.
 """
-import os, re, sys
+import os, re, subprocess, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tui_cursor_check import run  # noqa: E402
@@ -61,7 +61,12 @@ def main():
     if hung or "sort:Score" not in st:
         fail("--sort did not open as the live sort: %r" % st)
     else:
-        first = re.search(r"─\s+(\d+)\s+chr", txt[txt.rfind("list<"):])
+        # The first data row after the last header repaint. Match on the row
+        # index + chrom, not the frame: without a UTF-8 locale (CI) the
+        # frame is ASCII.
+        heads = list(re.finditer(r"Score\s+Tags", txt))
+        tail = txt[heads[-1].end():] if heads else ""
+        first = re.search(r"\b(\d+)\s+chr[12]\b", tail)
         if not first or first.group(1) != "19":
             fail("--sort Score:desc does not start at row 19 (got %r)"
                  % (first.group(1) if first else None))
@@ -71,10 +76,15 @@ def main():
     if hung or "sort:" in status(txt):
         fail("u did not clear the --sort: %r" % status(txt))
 
-    # 5. A bad filter is an error, not a silently unfiltered view.
-    txt, _raw, _hung = run(vv, ["--filter", "Nope > 1", data], [])
-    if "unknown column 'Nope'" not in txt:
-        fail("a bad --filter was not reported")
+    # 5. A bad filter is an error, not a silently unfiltered view. -i takes
+    # the viewer path without a terminal; vv must exit before starting it
+    # (driving this through the pty would write to a closed terminal, which
+    # macOS reports as EIO).
+    p = subprocess.run([vv, "-i", "--filter", "Nope > 1", data],
+                       stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                       timeout=30)
+    if p.returncode != 1 or "unknown column 'Nope'" not in p.stderr:
+        fail("a bad --filter was not reported (exit %d: %r)" % (p.returncode, p.stderr[-200:]))
 
     return rc
 
