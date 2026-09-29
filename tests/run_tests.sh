@@ -3197,6 +3197,30 @@ assert_eq_file_inline "gt_stats_filter_af" "$GT_HIAF" "100 "
 GT_SORT=$("$VV" --tsv --no-header --gt-stats --select POS --sort n_missing:desc "$GTVCF" | head -1)
 assert_eq_file_inline "gt_stats_sort_missing" "$GT_SORT" "100"
 
+# `in @file`: set members from a file — one per line, first tab field,
+# trimmed, blank lines skipped, gzip / zstd by magic. tiny.parquet has 12 chr1
+# and 8 chr2 rows; Start 100 and 1100 appear on 4 rows.
+printf 'chr1\n\n  chr3 \nchrX\textra\n' > "$TMP/in_ids.txt"
+gzip -c "$TMP/in_ids.txt" > "$TMP/in_ids.txt.gz"
+printf '100\n1100\n' > "$TMP/in_pos.txt"
+cp "$TMP/in_ids.txt" "$TMP/in ids spaced.txt"
+for ic in "Chr in @$TMP/in_ids.txt|12" "Chr in @$TMP/in_ids.txt.gz|12" \
+          "Chr not in @$TMP/in_ids.txt|8" "Start in @$TMP/in_pos.txt|4" \
+          "Chr in @\"$TMP/in ids spaced.txt\" and Start > 1000|11" \
+          'Chr in ("chr2")|8' 'Start in (100, 1100)|4'; do
+    ie=${ic%|*}; iw=${ic##*|}
+    assert_eq_file_inline "filter_in_file: ${ie#*@}" "$("$VV" --count --filter "$ie" "$DATA/tiny.parquet")" "$iw"
+done
+if command -v zstd >/dev/null 2>&1; then
+    zstd -qf "$TMP/in_ids.txt" -o "$TMP/in_ids.txt.zst"
+    assert_eq_file_inline "filter_in_file_zst" \
+        "$("$VV" --count --filter "Chr in @$TMP/in_ids.txt.zst" "$DATA/tiny.parquet")" "12"
+fi
+assert_exit_code "filter_in_file_missing" 1 "$VV" --count --filter "Chr in @$TMP/nope.txt" "$DATA/tiny.parquet"
+: > "$TMP/in_empty.txt"
+assert_contains "filter_in_file_empty" \
+    "$("$VV" --count --filter "Chr in @$TMP/in_empty.txt" "$DATA/tiny.parquet" 2>&1)" "lists no values"
+
 # has / lacks: bit tests on an integer column, with SAM FLAG names (any case)
 # or numbers. 99 = PAIRED|PROPER_PAIR|MREVERSE|READ1; 147 adds REVERSE|READ2;
 # 355 / 1123 / 2147 are 99 + SECONDARY / DUP / SUPPLEMENTARY.

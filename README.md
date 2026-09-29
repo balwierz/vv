@@ -679,7 +679,9 @@ $ vv --heatmap --image-mode ascii embedding.npy > grid.txt
 - **Value filter** — `--filter 'Chromosome == "chr1" AND Score > 0.5'`.
   Grammar: `<col> <op> <value>` joined by `AND` / `OR`. Operators:
   `== != < <= > >=`, regex `~` / `!~`, `contains` / `startswith` /
-  `endswith`, `in (a, b, c)` / `not in (…)`, `is null` / `is not null`
+  `endswith`, `in (a, b, c)` / `not in (…)` — or `in @ids.txt`, members
+  read from a file (one per line; first tab field; `.gz` / `.zst` too) —
+  `is null` / `is not null`
   — the rows `--describe` counts but nothing could previously select — and
   `has` / `lacks` for bit flags: `FLAG lacks UNMAP,SECONDARY,DUP` (samtools
   `-F 0x504`), `FLAG has PAIRED,READ1`, or numbers (`FLAG lacks 0x904`).

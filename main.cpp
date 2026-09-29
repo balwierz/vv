@@ -874,6 +874,8 @@ static void print_usage(const char* prog) {
         "                        ~  !~             regex (ECMAScript), unanchored\n"
         "                        contains startswith endswith\n"
         "                        in (a, b, c)      set membership; `not in` too\n"
+        "                        in @ids.txt       members from a file, one per\n"
+        "                                          line (first tab field; .gz/.zst)\n"
         "                        is null / is not null\n"
         "                        has / lacks F,G   bits of an integer column:\n"
         "                                          all set / none set. SAM FLAG\n"
@@ -2891,6 +2893,67 @@ static std::string filter_unquote(const std::string& lit) {
     return lit;
 }
 
+// The members of `col in @path`: one value per line — the line's first
+// tab-separated field, trimmed; blank lines skipped. A gzip or zstd file
+// (detected by its magic bytes) is decompressed. Returns "" or an error.
+static std::string read_filter_set_file(const std::string& path,
+                                        std::vector<std::string>* out) {
+    auto rf = arrow::io::ReadableFile::Open(path);
+    if (!rf.ok()) return "cannot open '" + path + "' for 'in @': " + rf.status().message();
+    std::shared_ptr<arrow::io::InputStream> in = *rf;
+    auto head = (*rf)->ReadAt(0, 4);
+    if (auto st = (*rf)->Seek(0); !st.ok()) return path + ": " + st.message();
+    if (head.ok() && (*head)->size() >= 2) {
+        const uint8_t* b = (*head)->data();
+        std::optional<arrow::Compression::type> comp;
+        if (b[0] == 0x1f && b[1] == 0x8b) comp = arrow::Compression::GZIP;
+        else if ((*head)->size() >= 4 && b[0] == 0x28 && b[1] == 0xb5 && b[2] == 0x2f && b[3] == 0xfd)
+            comp = arrow::Compression::ZSTD;
+        if (comp) {
+            auto codec = arrow::util::Codec::Create(*comp);
+            if (!codec.ok()) return path + ": " + codec.status().message();
+            auto ci = arrow::io::CompressedInputStream::Make(codec->get(), *rf);
+            if (!ci.ok()) return path + ": " + ci.status().message();
+            in = *ci;
+        }
+    }
+    std::string text;
+    for (;;) {
+        auto buf = in->Read(1 << 20);
+        if (!buf.ok()) return path + ": " + buf.status().message();
+        if ((*buf)->size() == 0) break;
+        text.append(reinterpret_cast<const char*>((*buf)->data()), (size_t)(*buf)->size());
+    }
+    size_t p = 0;
+    while (p < text.size()) {
+        size_t nl = text.find('\n', p);
+        std::string line = text.substr(p, (nl == std::string::npos ? text.size() : nl) - p);
+        p = (nl == std::string::npos) ? text.size() : nl + 1;
+        if (auto tab = line.find('\t'); tab != std::string::npos) line.resize(tab);
+        while (!line.empty() && std::isspace((unsigned char)line.back())) line.pop_back();
+        size_t lead = 0;
+        while (lead < line.size() && std::isspace((unsigned char)line[lead])) ++lead;
+        if (lead) line.erase(0, lead);
+        if (!line.empty()) out->push_back(std::move(line));
+    }
+    return "";
+}
+
+// Hash an In / NotIn atom's members once, so a row costs one lookup instead
+// of a scan of the list (and, on a numeric column, a stod per member).
+static void hash_filter_set(FilterAtom* a) {
+    auto text = std::make_shared<std::unordered_set<std::string>>(a->set_lits.begin(),
+                                                                   a->set_lits.end());
+    auto num = std::make_shared<std::unordered_set<double>>();
+    for (const auto& m : a->set_lits) {
+        char* end = nullptr;
+        double d = std::strtod(m.c_str(), &end);
+        if (end && end != m.c_str() && !*end) num->insert(d);
+    }
+    a->set_text = std::move(text);
+    a->set_num = std::move(num);
+}
+
 // Parse the user's `--filter` expression. Returns true on success and
 // populates `out`. On failure, writes a human-readable reason to `err`.
 bool parse_filter_expr(const std::string& expr,
@@ -3009,28 +3072,43 @@ bool parse_filter_expr(const std::string& expr,
         } else if (filter_tok_is(opt, "in") ||
                    (filter_tok_is(opt, "not") && i + 2 < toks.size() &&
                     filter_tok_is(toks[i+2], "in"))) {
-            // in (a, b, c) | not in (a, b, c)
+            // in (a, b, c) | not in (a, b, c) | [not] in @file
             bool negate = filter_tok_is(opt, "not");
             size_t p = i + (negate ? 3 : 2);
             a.op   = negate ? FilterAtom::NotIn : FilterAtom::In;
             a.kind = FilterAtom::K_String;
-            if (p >= toks.size() || toks[p] != "(") {
-                *err = "expected '(' after 'in'";
-                return false;
-            }
-            ++p;
-            while (p < toks.size() && toks[p] != ")") {
-                if (toks[p] == ",") { ++p; continue; }
-                if (filter_is_backticked(toks[p])) {
-                    *err = toks[p] + " names a column; 'in' takes values";
+            // in (a, b, c), or in @path / in @"path with spaces": the members
+            // come from a file (read_filter_set_file).
+            if (p < toks.size() && !toks[p].empty() && toks[p][0] == '@') {
+                std::string path = toks[p].substr(1);
+                if (path.empty() && p + 1 < toks.size()) path = filter_unquote(toks[++p]);
+                if (path.empty()) { *err = "expected a file after 'in @'"; return false; }
+                if (auto ferr = read_filter_set_file(path, &a.set_lits); !ferr.empty()) {
+                    *err = ferr;
                     return false;
                 }
-                a.set_lits.push_back(filter_unquote(toks[p]));
+                if (a.set_lits.empty()) { *err = "'" + path + "' lists no values for 'in @'"; return false; }
+                next = p + 1;
+            } else {
+                if (p >= toks.size() || toks[p] != "(") {
+                    *err = "expected '(' or '@file' after 'in'";
+                    return false;
+                }
                 ++p;
+                while (p < toks.size() && toks[p] != ")") {
+                    if (toks[p] == ",") { ++p; continue; }
+                    if (filter_is_backticked(toks[p])) {
+                        *err = toks[p] + " names a column; 'in' takes values";
+                        return false;
+                    }
+                    a.set_lits.push_back(filter_unquote(toks[p]));
+                    ++p;
+                }
+                if (p >= toks.size()) { *err = "unterminated 'in (' list"; return false; }
+                if (a.set_lits.empty()) { *err = "'in ()' needs at least one value"; return false; }
+                next = p + 1;                      // past ')'
             }
-            if (p >= toks.size()) { *err = "unterminated 'in (' list"; return false; }
-            if (a.set_lits.empty()) { *err = "'in ()' needs at least one value"; return false; }
-            next = p + 1;                      // past ')'
+            hash_filter_set(&a);
         } else if (filter_tok_is(opt, "contains") ||
                    filter_tok_is(opt, "startswith") ||
                    filter_tok_is(opt, "endswith")) {
@@ -3327,20 +3405,15 @@ static bool eval_atom(const arrow::Table& tbl, int64_t row, const FilterAtom& a,
         case FilterAtom::NotIn: {
             std::string s;
             if (!cell_as_string(tbl, tcol, row, &s)) {
-                // Numeric column: compare the rendered value instead, so
-                // `Start in (100, 200)` behaves as written.
+                // Numeric column: compare as numbers, so `Start in (100, 200)`
+                // behaves as written.
                 double d;
                 if (!cell_as_double(tbl, tcol, row, &d)) return false;
-                for (const auto& m : a.set_lits) {
-                    try { if (std::stod(m) == d)
-                              return a.op == FilterAtom::In; }
-                    catch (...) {}
-                }
-                return a.op == FilterAtom::NotIn;
+                const bool hit = a.set_num && a.set_num->count(d);
+                return a.op == FilterAtom::In ? hit : !hit;
             }
-            for (const auto& m : a.set_lits)
-                if (m == s) return a.op == FilterAtom::In;
-            return a.op == FilterAtom::NotIn;
+            const bool hit = a.set_text && a.set_text->count(s);
+            return a.op == FilterAtom::In ? hit : !hit;
         }
         default: break;   // fall through to the ordering comparisons
     }

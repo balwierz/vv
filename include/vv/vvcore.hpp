@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 #include <utility>
 
@@ -173,6 +174,11 @@ struct FilterAtom {
     double   f_lit = 0.0;
     std::string s_lit;                    // literal, substring, or regex source
     std::vector<std::string> set_lits;    // In / NotIn members
+    // In / NotIn members hashed at parse time: as text, and the ones that
+    // parse as numbers (for a numeric column). Shared, so copying an atom is
+    // cheap even for a set read from a file (`col in @ids.txt`).
+    std::shared_ptr<const std::unordered_set<std::string>> set_text;
+    std::shared_ptr<const std::unordered_set<double>>      set_num;
 };
 struct FilterExpr {
     // OR of AND clauses; row matches iff some clause's atoms all match.

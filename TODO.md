@@ -386,7 +386,7 @@ work that touches the same code:
 - [x] **samtools default read filters for `--pileup`** (S–M) — `feat/pileup-default-filters` — `--ff
   UNMAP,SECONDARY,QCFAIL,DUP`, `-Q 13`; overrides `--exclude-flags`,
   `--require-flags`, `--min-mapq`, `--min-bq`.
-- [ ] **`col in @file`** (S) — set membership from a file (gz/zst); all `in`
+- [x] **`col in @file`** (S) — `feat/filter-in-file` — set membership from a file (gz/zst); all `in`
   sets hashed.
 - [ ] **Arrow extension and binary columns** (M) — uuid / json / bool8 via
   storage, BINARY as hex; fixes broken table boxes, raw bytes to the terminal,
