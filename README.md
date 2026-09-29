@@ -422,7 +422,10 @@ bar states plainly that this is a preview of the first 1000 of 4823 rows.*
   *name + type* headers. **Filter bar** using the same grammar as `--filter`
   (`score > 5 and chrom == "chr1"`), and a **regex find** bar with match
   highlighting.
-- **View menu** — show/hide columns, go-to-row, and a shortcuts/filter-DSL
+- **View menu** — show/hide columns, go-to-row, **Smooth Scrolling** (on by
+  default: the grid scrolls by pixels in both directions; off, it steps whole
+  columns / rows, keeping the leftmost column and top row aligned to the
+  edge — saved as `smoothScroll` in vvg's settings), and a shortcuts/filter-DSL
   help overlay. **Σ Stats** per column, a **row-detail** dock, **Ctrl+C**
   copy-as-TSV, and **◀/▶ slice** stepping for 3-D NumPy arrays.
 - **Copy as vv command** (Edit menu, right-click, **Ctrl+Alt+C**) — puts the

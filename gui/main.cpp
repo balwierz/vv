@@ -39,6 +39,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScrollBar>
 #include <QSettings>
 #include <QShortcut>
 #include <QSpinBox>
@@ -125,6 +126,8 @@ public:
                 updateDetail(v->selectionModel()->currentIndex());
         });
 
+        smoothScroll_ = QSettings(QStringLiteral("vv"), QStringLiteral("vvg"))
+                            .value(QStringLiteral("smoothScroll"), true).toBool();
         buildMenus();
         buildDetailDock();
         buildToolbar();
@@ -268,6 +271,15 @@ private:
             hh->resizeSection(c, w[(size_t)c]);
     }
 
+    // Per-pixel scrolling (the default), or Qt's per-item stepping, which
+    // snaps the leftmost column and top row to the viewport edge.
+    void applyScrollMode(QTableView* view) const {
+        const auto mode = smoothScroll_ ? QAbstractItemView::ScrollPerPixel
+                                        : QAbstractItemView::ScrollPerItem;
+        view->setHorizontalScrollMode(mode);
+        view->setVerticalScrollMode(mode);
+    }
+
     // Build one model+view tab from a source and wire sort + detail-pane.
     void addSourceTab(std::unique_ptr<TabularSource> src, const QString& origin,
                       bool primary, const QString& expand = QString()) {
@@ -276,6 +288,7 @@ private:
         auto* view  = new QTableView(tabs_);
         view->setModel(model);
         view->setAlternatingRowColors(true);
+        applyScrollMode(view);
         // Size columns to their content once, now. Nothing resizes them again,
         // so a later manual drag is preserved for the life of the tab.
         autosizeColumns(view, model);
@@ -402,6 +415,19 @@ private:
         view->addSeparator();
         columnsMenu_ = view->addMenu(tr("&Columns"));
         refreshColumnsMenu();
+        view->addSeparator();
+        // Smooth (per-pixel) scrolling in both directions; off = Qt's default
+        // per-item stepping, which keeps the leftmost column / top row aligned
+        // to the edge. Saved in vvg's settings (key smoothScroll).
+        QAction* smooth = view->addAction(tr("&Smooth Scrolling"));
+        smooth->setCheckable(true);
+        smooth->setChecked(smoothScroll_);
+        connect(smooth, &QAction::toggled, this, [this](bool on) {
+            smoothScroll_ = on;
+            QSettings(QStringLiteral("vv"), QStringLiteral("vvg"))
+                .setValue(QStringLiteral("smoothScroll"), on);
+            for (auto* v : views_) applyScrollMode(v);
+        });
 
         auto* help = menuBar()->addMenu(tr("&Help"));
         connect(help->addAction(tr("&Shortcuts && Syntax")), &QAction::triggered, this, [this]{
@@ -415,7 +441,9 @@ private:
                    "Command: Ctrl+Alt+C copies the vv command line for this tab\n"
                    "Export:  Ctrl+E writes this tab's view (filter, sort, visible columns) to a file\n"
                    "Slice:   ◀ / ▶ steps the leading axis of NPZ 3-D+ arrays\n"
-                   "Go to:   Ctrl+G jumps to a row; View ▸ Columns shows/hides columns"));
+                   "Go to:   Ctrl+G jumps to a row; View ▸ Columns shows/hides columns\n"
+                   "Scroll:  smooth (per-pixel) by default; View ▸ Smooth Scrolling off\n"
+                   "         steps whole columns / rows"));
         });
         connect(help->addAction(tr("&About vvg")), &QAction::triggered, this, [this]{
             QMessageBox::about(this, tr("vvg"),
@@ -979,6 +1007,23 @@ public:
         return false;
     }
     void selectTabForTest(int i) { tabs_->setCurrentIndex(i); }
+    // Set the horizontal scroll bar and read it back: per-pixel keeps any
+    // offset (mid-column); per-item scroll bars count whole columns.
+    int hscrollForTest(int value) {
+        auto* v = activeView();
+        if (!v) return -1;
+        v->resize(400, 300);                       // narrower than the table
+        QCoreApplication::processEvents();
+        v->horizontalScrollBar()->setValue(value);
+        return v->horizontalScrollBar()->value();
+    }
+    const char* scrollModeForTest() const {
+        auto* v = activeView();
+        if (!v) return "none";
+        const bool px = v->horizontalScrollMode() == QAbstractItemView::ScrollPerPixel &&
+                        v->verticalScrollMode()   == QAbstractItemView::ScrollPerPixel;
+        return px ? "pixel" : "item";
+    }
     void setExpandForTest(bool on) { if (expandAction_) expandAction_->setChecked(on); }
 private:
     // Output format from the file extension (.parquet/.pq, .arrow/.feather/
@@ -1168,6 +1213,7 @@ private:
     QAction*                       gtStatsAction_ = nullptr;
     QAction*                       contigsAction_ = nullptr;
     QAction*                       expandAction_  = nullptr;
+    bool                           smoothScroll_  = true;   // per-pixel scrolling
     QMenu*                         recentMenu_  = nullptr;
     QMenu*                         columnsMenu_ = nullptr;
     QProgressBar*                  progress_   = nullptr;
@@ -1437,6 +1483,10 @@ int main(int argc, char** argv) {
             win.setExpandForTest(false);
         win.openPaths(paths, /*quiet=*/true);
         std::printf("win_tabs=%d\n", win.tabCount());
+        if (const char* sm = std::getenv("VVG_SCROLLMODE"); sm && *sm && *sm != '0')
+            std::printf("scroll=%s\n", win.scrollModeForTest());
+        if (const char* hs = std::getenv("VVG_HSCROLL"); hs && *hs)
+            std::printf("hscroll=%d\n", win.hscrollForTest(std::atoi(hs)));
         // Optional per-tab dimension dump: VVG_TABDIMS=1 (verifies dense 2-D
         // matrix previews are capped, not fully densified).
         if (const char* td = std::getenv("VVG_TABDIMS"); td && *td && *td != '0')

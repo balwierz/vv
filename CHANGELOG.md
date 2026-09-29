@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **vvg scrolls smoothly.** The grid scrolled one whole column horizontally
+  and one row vertically per step, so the leftmost visible column stayed
+  aligned to the window edge (except when scrolled fully right). It now
+  scrolls by pixels in both directions. View ▸ Smooth Scrolling turns it off
+  for the per-item stepping; the choice is saved (`smoothScroll` in
+  `~/.config/vv/vvg.conf`).
 - **The TUI opens with `--filter`, `--select` and `--sort` applied.** On a
   terminal the interactive viewer ignored `--filter` and `--select`, and
   `--sort` was baked into a materialised copy it could not undo (no sort

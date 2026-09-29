@@ -272,6 +272,15 @@ jobs:
             | grep -q "tags='NM,AS'.*cols=13"
           VVG_WINTEST=1 VVG_GTSTATS=1 ./build-gui/gui/vvg tests/data/tiny.samples.bcf 2>/dev/null \
             | grep -q 'gtstats=1.*cols=19'
+          # Smooth (per-pixel) scrolling is the default: a horizontal offset of
+          # 37 px stays mid-column. smoothScroll=false in vvg's settings
+          # restores per-item stepping, where the scroll bar counts columns.
+          cfg="$RUNNER_TEMP/vvgcfg"; mkdir -p "$cfg/vv"
+          XDG_CONFIG_HOME="$cfg" VVG_WINTEST=1 VVG_SCROLLMODE=1 VVG_HSCROLL=37 ./build-gui/gui/vvg tests/data/tiny.ext.arrow \
+            | tr '\n' ' ' | grep -q "scroll=pixel hscroll=37"
+          printf '[General]\nsmoothScroll=false\n' > "$cfg/vv/vvg.conf"
+          XDG_CONFIG_HOME="$cfg" VVG_WINTEST=1 VVG_SCROLLMODE=1 VVG_HSCROLL=37 ./build-gui/gui/vvg tests/data/tiny.ext.arrow \
+            | tr '\n' ' ' | grep -q "scroll=item hscroll=5"
           # AnnData obsp / varp graphs open as streamed edge-list tabs.
           VVG_WINTEST=1 VVG_TABDIMS=1 ./build-gui/gui/vvg tests/data/tiny.obsp.h5ad \
             | grep -q "tab 'obsp\[connectivities\]' rows=4 cols=5 "
