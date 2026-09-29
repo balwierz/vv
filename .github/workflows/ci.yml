@@ -272,15 +272,23 @@ jobs:
             | grep -q "tags='NM,AS'.*cols=13"
           VVG_WINTEST=1 VVG_GTSTATS=1 ./build-gui/gui/vvg tests/data/tiny.samples.bcf 2>/dev/null \
             | grep -q 'gtstats=1.*cols=19'
-          # Smooth (per-pixel) scrolling is the default: a horizontal offset of
-          # 37 px stays mid-column. smoothScroll=false in vvg's settings
-          # restores per-item stepping, where the scroll bar counts columns.
+          # Smooth (per-pixel) scrolling is the default: the horizontal scroll
+          # bar ranges over pixels (well past the 7 columns) and keeps an
+          # offset of 3 px, mid-column. smoothScroll=false in vvg's settings
+          # restores per-item stepping, where the bar ranges over columns.
+          # Font-independent: the pixel width varies with the fonts installed.
           cfg="$RUNNER_TEMP/vvgcfg"; mkdir -p "$cfg/vv"
-          XDG_CONFIG_HOME="$cfg" VVG_WINTEST=1 VVG_SCROLLMODE=1 VVG_HSCROLL=37 ./build-gui/gui/vvg tests/data/tiny.ext.arrow \
-            | tr '\n' ' ' | grep -q "scroll=pixel hscroll=37"
+          out=$(XDG_CONFIG_HOME="$cfg" VVG_WINTEST=1 VVG_SCROLLMODE=1 VVG_HSCROLL=3 ./build-gui/gui/vvg tests/data/tiny.ext.arrow)
+          echo "$out"
+          grep -q '^scroll=pixel$' <<<"$out"
+          max=$(sed -n 's/^hscroll=\([0-9]*\) max=\([0-9]*\)$/\2/p' <<<"$out")
+          test "$max" -gt 7 && grep -q '^hscroll=3 max=' <<<"$out"
           printf '[General]\nsmoothScroll=false\n' > "$cfg/vv/vvg.conf"
-          XDG_CONFIG_HOME="$cfg" VVG_WINTEST=1 VVG_SCROLLMODE=1 VVG_HSCROLL=37 ./build-gui/gui/vvg tests/data/tiny.ext.arrow \
-            | tr '\n' ' ' | grep -q "scroll=item hscroll=5"
+          out=$(XDG_CONFIG_HOME="$cfg" VVG_WINTEST=1 VVG_SCROLLMODE=1 VVG_HSCROLL=3 ./build-gui/gui/vvg tests/data/tiny.ext.arrow)
+          echo "$out"
+          grep -q '^scroll=item$' <<<"$out"
+          max=$(sed -n 's/^hscroll=\([0-9]*\) max=\([0-9]*\)$/\2/p' <<<"$out")
+          test "$max" -le 7
           # AnnData obsp / varp graphs open as streamed edge-list tabs.
           VVG_WINTEST=1 VVG_TABDIMS=1 ./build-gui/gui/vvg tests/data/tiny.obsp.h5ad \
             | grep -q "tab 'obsp\[connectivities\]' rows=4 cols=5 "

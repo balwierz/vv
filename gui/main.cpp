@@ -1007,15 +1007,20 @@ public:
         return false;
     }
     void selectTabForTest(int i) { tabs_->setCurrentIndex(i); }
-    // Set the horizontal scroll bar and read it back: per-pixel keeps any
-    // offset (mid-column); per-item scroll bars count whole columns.
-    int hscrollForTest(int value) {
+    // Set the horizontal scroll bar and read it back, with its maximum:
+    // per-pixel scroll bars range over the table's pixel width and keep any
+    // offset (mid-column); per-item bars range over the columns.
+    std::pair<int, int> hscrollForTest(int value) {
         auto* v = activeView();
-        if (!v) return -1;
-        v->resize(400, 300);                       // narrower than the table
+        if (!v) return {-1, -1};
+        // Fixed geometry, so the result does not depend on the fonts
+        // installed: 100-px columns in a 200-px view.
+        for (int c = 0; c < v->model()->columnCount(); ++c)
+            v->horizontalHeader()->resizeSection(c, 100);
+        v->resize(200, 300);
         QCoreApplication::processEvents();
         v->horizontalScrollBar()->setValue(value);
-        return v->horizontalScrollBar()->value();
+        return {v->horizontalScrollBar()->value(), v->horizontalScrollBar()->maximum()};
     }
     const char* scrollModeForTest() const {
         auto* v = activeView();
@@ -1486,7 +1491,10 @@ int main(int argc, char** argv) {
         if (const char* sm = std::getenv("VVG_SCROLLMODE"); sm && *sm && *sm != '0')
             std::printf("scroll=%s\n", win.scrollModeForTest());
         if (const char* hs = std::getenv("VVG_HSCROLL"); hs && *hs)
-            std::printf("hscroll=%d\n", win.hscrollForTest(std::atoi(hs)));
+            {
+                auto [val, max] = win.hscrollForTest(std::atoi(hs));
+                std::printf("hscroll=%d max=%d\n", val, max);
+            }
         // Optional per-tab dimension dump: VVG_TABDIMS=1 (verifies dense 2-D
         // matrix previews are capped, not fully densified).
         if (const char* td = std::getenv("VVG_TABDIMS"); td && *td && *td != '0')
