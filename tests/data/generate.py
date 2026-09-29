@@ -164,6 +164,32 @@ else:
     print("warn: could not locate batch 1 framing; skipping tiny.corrupt.arrow",
           file=sys.stderr)
 
+# tiny.ext.arrow / tiny.ext.parquet: binary and extension columns — BINARY
+# with control / non-UTF-8 bytes, printable BINARY (a legacy string), empty and
+# null large_binary, fixed_size_binary, and the canonical arrow.uuid /
+# arrow.json / arrow.bool8 extension types (pyarrow >= 18). vv must render
+# binary as text or 0x-hex (never raw bytes), uuid as 8-4-4-4-12, json as its
+# text, bool8 as true / false, and sort / distinct over them.
+if all(hasattr(pa, t) for t in ("uuid", "json_", "bool8")):
+    import uuid as _uuid
+    _ext = pa.table({
+        "id": pa.array([1, 2, 3]),
+        "bin": pa.array([b"\x00\x01ab", b"\xff\xfe\n\t", b"plain"], pa.binary()),
+        "lbin": pa.array([b"x\x00y", b"", None], pa.large_binary()),
+        "fsb": pa.array([b"\x00" * 4, b"\x01\x02\x03\x04", b"abcd"], pa.binary(4)),
+        "uuid": pa.ExtensionArray.from_storage(
+            pa.uuid(), pa.array([_uuid.UUID(int=i * 0x1111).bytes for i in range(3)],
+                                pa.binary(16))),
+        "js": pa.ExtensionArray.from_storage(pa.json_(), pa.array(['{"a": 1}', "[1,2]", None])),
+        "b8": pa.ExtensionArray.from_storage(pa.bool8(), pa.array([1, 0, None], pa.int8())),
+    })
+    with pa.OSFile(str(HERE / "tiny.ext.arrow"), "wb") as f:
+        with ipc.new_file(f, _ext.schema) as w:
+            w.write_table(_ext)
+    pq.write_table(_ext, HERE / "tiny.ext.parquet")
+else:
+    print("warn: pyarrow < 18 (no uuid/json/bool8); skipping tiny.ext.*", file=sys.stderr)
+
 # tiny.empty.arrow: a valid Arrow IPC with a schema but zero record batches.
 # The reader seeds a zero-row batch so the schema renders, but num_chunks()
 # used to report 0 (num_record_batches_) and the table view drew nothing.

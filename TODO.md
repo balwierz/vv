@@ -388,7 +388,7 @@ work that touches the same code:
   `--require-flags`, `--min-mapq`, `--min-bq`.
 - [x] **`col in @file`** (S) — `feat/filter-in-file` — set membership from a file (gz/zst); all `in`
   sets hashed.
-- [ ] **Arrow extension and binary columns** (M) — uuid / json / bool8 via
+- [x] **Arrow extension and binary columns** (M) — `fix/binary-extension-columns` — uuid / json / bool8 via
   storage, BINARY as hex; fixes broken table boxes, raw bytes to the terminal,
   `--sort` aborts, `--distinct` merging blobs.
 - [ ] **TUI starts from `--filter` / `--select` / `--sort`** (M) — silently

@@ -126,6 +126,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `genes` attribute tables. Integer layers stay integer-typed.
 
 ### Fixed
+- **Binary and Arrow extension columns render, sort and deduplicate.**
+  - BINARY / LARGE_BINARY showed only `<binary 4B>`, so distinct blobs of
+    one length looked the same and `--distinct` merged them; FIXED_SIZE_BINARY
+    wrote its raw bytes (control characters, NULs) into the table and the
+    terminal. Binary now renders as its text when it is printable UTF-8 (older
+    Parquet writers store strings as BINARY) and as `0x` + hex otherwise.
+  - Extension columns fell back to Arrow's multi-line `ToString`, splitting
+    table rows: `arrow.uuid` now renders as `8-4-4-4-12`, `arrow.json` as its
+    text, `arrow.bool8` as `true` / `false` (a JSON boolean in `--json`), any
+    other extension type as its storage.
+  - `--sort` and `--distinct` built their output with an Arrow builder, which
+    Arrow cannot make for an extension type, so sorting any table with an
+    extension column failed ("cannot construct builder for type
+    extension<arrow.uuid>"). They now gather the storage and re-wrap it; the
+    extension type is kept in `--parquet` / `--arrow` output.
 - **An integer literal in `--filter` compares correctly against a float
   column.** The float cell was truncated to an integer first, so on a column
   of 0, 0.05, …, 0.95 `Score > 0` matched 0 rows (not 19), `Score == 0`
