@@ -391,7 +391,7 @@ work that touches the same code:
 - [x] **Arrow extension and binary columns** (M) — `fix/binary-extension-columns` — uuid / json / bool8 via
   storage, BINARY as hex; fixes broken table boxes, raw bytes to the terminal,
   `--sort` aborts, `--distinct` merging blobs.
-- [ ] **TUI starts from `--filter` / `--select` / `--sort`** (M) — silently
+- [x] **TUI starts from `--filter` / `--select` / `--sort`** (M) — `feat/tui-start-filter-select-sort` — silently
   ignored on a TTY today.
 - [ ] **Date / timestamp literals in `--filter`** (M) — resolved against the
   column type; dates in `--describe`.

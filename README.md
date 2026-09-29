@@ -689,7 +689,9 @@ $ vv --heatmap --image-mode ascii embedding.npy > grid.txt
   genuinely named `in` or `is` stays filterable. A column name with spaces
   or operator characters goes in backticks: `` `Sample ID` == "S1" ``,
   `` `End)` > 100 `` (a doubled backtick inside for a literal one). The same grammar drives
-  the TUI live-filter (`&`) and the Qt filter box.
+  the TUI live-filter (`&`) and the Qt filter box. On a terminal the TUI opens
+  with `--filter`, `--select` and `--sort` as its live filter, columns and
+  sort, so `&`, Esc, `c` and `u` can change them.
 - **`--expand COL`** — unpack a packed `key=value` column into real columns.
   VCF `INFO` and GFF/GTF `attributes` carry the actual payload of those
   formats as one opaque string; expanded, the keys work everywhere a column

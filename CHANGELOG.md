@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **The TUI opens with `--filter`, `--select` and `--sort` applied.** On a
+  terminal the interactive viewer ignored `--filter` and `--select`, and
+  `--sort` was baked into a materialised copy it could not undo (no sort
+  indicator, `u` did nothing). They now set the viewer's opening state: the
+  live `&` filter (Esc clears it), the visible columns in `--select` order
+  (`c` changes them) and the `s` sort (`u` clears it). A bad `--filter` or
+  `--select` is reported before the viewer starts. A `--sort` column that
+  `--select` leaves out is still applied to the rows before the viewer opens.
 - **`col in @file` in `--filter`.** The members of an `in` set can come from
   a file — `--filter 'gene_id in @genes.txt'`, `not in @…`, or `in @"path
   with spaces"` — one value per line (the line's first tab-separated field,
