@@ -882,6 +882,8 @@ static void print_usage(const char* prog) {
         "                                          all set / none set. SAM FLAG\n"
         "                                          names (UNMAP, SECONDARY, DUP,\n"
         "                                          PAIRED, READ1, …) or numbers\n"
+        "                      a date / timestamp column takes a quoted date:\n"
+        "                        day > \"2024-01-01\", ts < \"2024-06-15 12:30Z\"\n"
         "                      a column name with spaces or symbols goes in\n"
         "                      backticks: `Sample ID` == \"S1\"  (`` for a `)\n"
         "                      e.g. --filter 'Score > 0.5'\n"
@@ -3011,13 +3013,113 @@ static std::string read_filter_set_file(const std::string& path,
     return "";
 }
 
+// Days from 1970-01-01 to y-m-d (proleptic Gregorian; Howard Hinnant's
+// days_from_civil).
+static int64_t days_from_civil(int64_t y, unsigned m, unsigned d) {
+    y -= m <= 2;
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + (int64_t)doe - 719468;
+}
+
+// A date / time literal as a temporal column stores it: days (date32),
+// milliseconds (date64) or the timestamp's unit since the epoch. Accepts
+// YYYY-MM-DD, optionally followed by [ T]HH:MM[:SS[.fraction]] and a zone
+// (Z or ±HH:MM / ±HHMM); a date alone is midnight. A literal with a zone is
+// converted to UTC (how Arrow stores a timestamp); one without is taken as
+// written. False if `lit` is not such a literal or `type` is not a date /
+// timestamp.
+static bool parse_temporal_literal(const std::string& lit, const arrow::DataType& type,
+                                   int64_t* out) {
+    int Y, M, D, h = 0, mi = 0, sec = 0, n = 0;
+    if (std::sscanf(lit.c_str(), "%4d-%2d-%2d%n", &Y, &M, &D, &n) != 3 || n != 10) return false;
+    if (M < 1 || M > 12 || D < 1 || D > 31) return false;
+    size_t p = 10;
+    int64_t frac_ns = 0, offset_s = 0;
+    if (p < lit.size() && (lit[p] == ' ' || lit[p] == 'T')) {
+        int m2 = 0;
+        if (std::sscanf(lit.c_str() + p + 1, "%2d:%2d%n", &h, &mi, &m2) != 2 || m2 != 5) return false;
+        p += 1 + 5;
+        if (p < lit.size() && lit[p] == ':') {
+            int m3 = 0;
+            if (std::sscanf(lit.c_str() + p + 1, "%2d%n", &sec, &m3) != 1 || m3 != 2) return false;
+            p += 3;
+            if (p < lit.size() && lit[p] == '.') {
+                ++p;
+                int digits = 0;
+                while (p < lit.size() && std::isdigit((unsigned char)lit[p])) {
+                    if (digits < 9) { frac_ns = frac_ns * 10 + (lit[p] - '0'); ++digits; }
+                    ++p;
+                }
+                if (digits == 0) return false;
+                for (; digits < 9; ++digits) frac_ns *= 10;
+            }
+        }
+        if (h > 23 || mi > 59 || sec > 60) return false;
+    }
+    if (p < lit.size()) {
+        if (lit[p] == 'Z' && p + 1 == lit.size()) {
+            ++p;
+        } else if ((lit[p] == '+' || lit[p] == '-')) {
+            int oh = 0, om = 0, m4 = 0;
+            const char* z = lit.c_str() + p + 1;
+            if (std::sscanf(z, "%2d:%2d%n", &oh, &om, &m4) == 2 && m4 == 5) {}
+            else if (std::sscanf(z, "%2d%2d%n", &oh, &om, &m4) == 2 && m4 == 4) {}
+            else return false;
+            offset_s = (lit[p] == '+' ? 1 : -1) * (oh * 3600 + om * 60);
+            p += 1 + m4;
+        }
+        if (p != lit.size()) return false;
+    }
+    const int64_t days = days_from_civil(Y, (unsigned)M, (unsigned)D);
+    const int64_t secs = days * 86400 + h * 3600 + mi * 60 + sec - offset_s;
+    switch (type.id()) {
+        case arrow::Type::DATE32:
+            if (days < INT32_MIN || days > INT32_MAX) return false;
+            *out = days;
+            return true;
+        case arrow::Type::DATE64:
+            return !__builtin_mul_overflow(days, (int64_t)86400000, out);
+        case arrow::Type::TIMESTAMP: {
+            // A literal outside the unit's int64 range (year 2262+ in ns) is
+            // not representable: reject it rather than overflow.
+            int64_t scale = 1, frac = 0;
+            switch (static_cast<const arrow::TimestampType&>(type).unit()) {
+                case arrow::TimeUnit::SECOND: break;
+                case arrow::TimeUnit::MILLI:  scale = 1000;       frac = frac_ns / 1000000; break;
+                case arrow::TimeUnit::MICRO:  scale = 1000000;    frac = frac_ns / 1000;    break;
+                case arrow::TimeUnit::NANO:   scale = 1000000000; frac = frac_ns;           break;
+            }
+            int64_t v;
+            if (__builtin_mul_overflow(secs, scale, &v) || __builtin_add_overflow(v, frac, &v))
+                return false;
+            *out = v;
+            return true;
+        }
+        default: return false;
+    }
+}
+
+static bool is_date_or_timestamp(const arrow::DataType& t) {
+    return t.id() == arrow::Type::DATE32 || t.id() == arrow::Type::DATE64 ||
+           t.id() == arrow::Type::TIMESTAMP;
+}
+
 // Hash an In / NotIn atom's members once, so a row costs one lookup instead
 // of a scan of the list (and, on a numeric column, a stod per member).
-static void hash_filter_set(FilterAtom* a) {
+static void hash_filter_set(FilterAtom* a, const arrow::DataType* col_type = nullptr) {
     auto text = std::make_shared<std::unordered_set<std::string>>(a->set_lits.begin(),
                                                                    a->set_lits.end());
     auto num = std::make_shared<std::unordered_set<double>>();
     for (const auto& m : a->set_lits) {
+        // On a date / timestamp column a date literal is its stored count.
+        int64_t t;
+        if (col_type && is_date_or_timestamp(*col_type) && parse_temporal_literal(m, *col_type, &t)) {
+            num->insert((double)t);
+            continue;
+        }
         char* end = nullptr;
         double d = std::strtod(m.c_str(), &end);
         if (end && end != m.c_str() && !*end) num->insert(d);
@@ -3180,7 +3282,7 @@ bool parse_filter_expr(const std::string& expr,
                 if (a.set_lits.empty()) { *err = "'in ()' needs at least one value"; return false; }
                 next = p + 1;                      // past ')'
             }
-            hash_filter_set(&a);
+            hash_filter_set(&a, schema.field(a.col_idx)->type().get());
         } else if (filter_tok_is(opt, "contains") ||
                    filter_tok_is(opt, "startswith") ||
                    filter_tok_is(opt, "endswith")) {
@@ -3214,6 +3316,21 @@ bool parse_filter_expr(const std::string& expr,
                        lit.front() == lit.back()) {
                 a.kind  = FilterAtom::K_String;
                 a.s_lit = lit.substr(1, lit.size() - 2);
+                // A date / timestamp column compares a date literal as a
+                // point in time, in the column's own unit; any other text
+                // against such a column is an error, not an empty match.
+                const auto& ct = *schema.field(a.col_idx)->type();
+                if (is_date_or_timestamp(ct)) {
+                    int64_t t;
+                    if (!parse_temporal_literal(a.s_lit, ct, &t)) {
+                        *err = "'" + a.s_lit + "' is not a date / time (YYYY-MM-DD[ HH:MM[:SS[.fff]]]"
+                               "[Z|±HH:MM]) within the range of " + ct.ToString() +
+                               " column '" + col + "'";
+                        return false;
+                    }
+                    a.kind  = FilterAtom::K_Int;
+                    a.i_lit = t;
+                }
             } else if (lit.find_first_of(".eE") != std::string::npos) {
                 try { a.f_lit = std::stod(lit); }
                 catch (...) { *err = "bad number '" + lit + "'"; return false; }
@@ -3311,6 +3428,15 @@ static bool cell_as_int(const arrow::Table& tbl, int col, int64_t row,
                     *out = (int64_t)u;
                     return true;
                 }
+                // Temporal columns are integers underneath (days, ms, us,
+                // ns since the epoch): read the count exactly, so a
+                // nanosecond timestamp compares without double rounding.
+                case arrow::Type::DATE32: *out = static_cast<const arrow::Date32Array&>(*a).Value(i); return true;
+                case arrow::Type::DATE64: *out = static_cast<const arrow::Date64Array&>(*a).Value(i); return true;
+                case arrow::Type::TIMESTAMP: *out = static_cast<const arrow::TimestampArray&>(*a).Value(i); return true;
+                case arrow::Type::TIME32: *out = static_cast<const arrow::Time32Array&>(*a).Value(i); return true;
+                case arrow::Type::TIME64: *out = static_cast<const arrow::Time64Array&>(*a).Value(i); return true;
+                case arrow::Type::DURATION: *out = static_cast<const arrow::DurationArray&>(*a).Value(i); return true;
                 // FLOAT / DOUBLE are not integers: truncating them made
                 // `Score > 0` compare 0.05 as 0 and match nothing. The caller
                 // compares them as doubles.
@@ -19474,6 +19600,7 @@ static std::string print_describe(TabularSource& src, const Config& cfg) {
     struct ColStat {
         std::string  name;
         std::string  type;
+        std::shared_ptr<arrow::DataType> dtype;
         bool         is_num = false;
         int64_t      count  = 0;
         int64_t      nulls  = 0;
@@ -19489,6 +19616,7 @@ static std::string print_describe(TabularSource& src, const Config& cfg) {
         auto f = src.schema()->field(requested[k]);
         stats[k].name   = f->name();
         stats[k].type   = f->type()->ToString();
+        stats[k].dtype  = f->type();
         stats[k].is_num = is_numeric_type(f->type()->id());
     }
 
@@ -19595,6 +19723,20 @@ static std::string print_describe(TabularSource& src, const Config& cfg) {
         std::snprintf(buf, sizeof(buf), "%.6g", v);
         return std::string(buf);
     };
+    // A date / timestamp statistic (a count of days / ms / … since the epoch)
+    // as the column shows its values: 2024-06-15, 2024-06-15 12:30:00.000.
+    auto fmt_temporal = [](double v, const std::shared_ptr<arrow::DataType>& t) -> std::string {
+        std::shared_ptr<arrow::Scalar> sc;
+        const int64_t n = (int64_t)std::llround(v);
+        switch (t->id()) {
+            case arrow::Type::DATE32:    sc = std::make_shared<arrow::Date32Scalar>((int32_t)n); break;
+            case arrow::Type::DATE64:    sc = std::make_shared<arrow::Date64Scalar>(n); break;
+            case arrow::Type::TIMESTAMP: sc = std::make_shared<arrow::TimestampScalar>(n, t); break;
+            default: return "";
+        }
+        auto arr = arrow::MakeArrayFromScalar(*sc, 1);
+        return arr.ok() ? cell_to_string(**arr, 0) : "";
+    };
     auto width = [](const std::string& s) { return (int)display_width(s); };
 
     int wN = 6, wT = 4, wC = 5, wL = 5, wMin = 3, wMax = 3, wMean = 4, wD = 8;
@@ -19604,6 +19746,10 @@ static std::string print_describe(TabularSource& src, const Config& cfg) {
         std::string mn, mx, me;
         if (cs.count == 0) {
             mn = "-"; mx = "-"; me = "-";
+        } else if (cs.is_num && is_date_or_timestamp(*cs.dtype)) {
+            mn = fmt_temporal(cs.d_min, cs.dtype);
+            mx = fmt_temporal(cs.d_max, cs.dtype);
+            me = fmt_temporal((double)(cs.sum / (long double)cs.count), cs.dtype);
         } else if (cs.is_num) {
             mn = fmt_num(cs.d_min);
             mx = fmt_num(cs.d_max);

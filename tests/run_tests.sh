@@ -1098,9 +1098,9 @@ if [ -f "$DATA/tiny.temporal.parquet" ]; then
     # decimal128(10,2) min/max with scale honoured.
     assert_contains "describe_decimal_min_scaled" "$TEMP_DESC" "0.01"
     assert_contains "describe_decimal_max_scaled" "$TEMP_DESC" "99.99"
-    # date32(2024-01-01) = 19723 days since the epoch — proves the date column
-    # now yields a numeric value instead of a blank min/max.
-    assert_contains "describe_date_extracts" "$TEMP_DESC" "19723"
+    # date32(2024-01-01) (19723 days since the epoch): the date column yields
+    # a min/max, shown as the date rather than the day count.
+    assert_contains "describe_date_extracts" "$TEMP_DESC" "2024-01-01"
     # --heatmap must treat date/timestamp/decimal as plottable numeric columns.
     TEMP_HM=$("$VV" --heatmap --image-mode ascii "$DATA/tiny.temporal.parquet" 2>&1)
     refute_contains "heatmap_accepts_temporal_cols" "$TEMP_HM" "no numeric columns"
@@ -3289,6 +3289,28 @@ assert_contains "filter_backtick_value_position" \
     "$("$VV" --count --filter 'v == `Sample ID`' "$BT" 2>&1)" "names a column"
 assert_contains "filter_backtick_hint" \
     "$("$VV" --count --filter 'Sample ID == "S2"' "$BT" 2>&1)" "write \`Sample ID\`"
+
+# Date / timestamp literals in --filter: a quoted literal against a date or
+# timestamp column is a point in time in the column's unit (it compared the
+# column's raw day / ms count as text and matched nothing). A zone offset is
+# converted to UTC; a date alone is midnight. --describe shows temporal
+# min / max / mean as dates.
+DT="$DATA/tiny.dates.parquet"
+if [ -f "$DT" ]; then
+    for dc in 'd > "2024-01-01"|1' 'd >= "2024-01-01"|2' 'd == "2024-06-15"|1' \
+              'ts >= "2024-01-01"|2' 'ts > "2024-01-01 00:00:00"|1' \
+              'ts < "2024-01-01 00:00:00.5"|2' 'tsz < "2024-01-01T00:00:00Z"|1' \
+              'tsz < "2024-01-01T01:00:00+01:00"|1' 'tus == "2024-06-15 12:30:00.000000"|1' \
+              'd in ("2024-01-01","2024-06-15")|2' 'd > 19723|1'; do
+        de=${dc%|*}; dw=${dc##*|}
+        assert_eq_file_inline "filter_date: $de" "$("$VV" --count --filter "$de" "$DT")" "$dw"
+    done
+    assert_exit_code "filter_date_bad_literal" 1 "$VV" --count --filter 'd > "Jan 1"' "$DT"
+    DDESC=$("$VV" --describe "$DT")
+    assert_contains "describe_date_minmax" "$DDESC" "2023-12-31"
+    assert_contains "describe_date_mean" "$DDESC" "2024-02-25"
+    assert_contains "describe_timestamp_tz" "$DDESC" "2024-06-15 12:30:00.000Z"
+fi
 
 # An integer literal against a float column compares as a number, not after
 # truncating the cell: tiny.parquet's Score is 0, 0.05, ..., 0.95, so
