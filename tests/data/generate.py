@@ -94,6 +94,38 @@ pq.write_table(pa.table({
     "End":   pa.array([200], pa.int64()),
 }), HERE / "tiny.nested.parquet")
 
+# tiny.jsonvals.{arrow,parquet}: struct / map / list / fixed-size-list /
+# dictionary columns with nulls at every nesting level, for --json / --ndjson,
+# which writes nested values as JSON arrays and objects. 2-row batches / row
+# groups put later rows at non-zero list offsets. The Parquet copy has no null
+# fixed-size-list (pyarrow 22 cannot read one back from Parquet).
+_jv_st = pa.struct([("a", pa.int64()), ("b", pa.list_(pa.string()))])
+_jv_ls = pa.list_(pa.struct([("p", pa.float64()), ("q", pa.bool_())]))
+_jv_fl = pa.list_(pa.float64(), 2)
+_jv = pa.table({
+    "id": pa.array([1, 2, 3, 4, 5, 6], pa.int64()),
+    "st": pa.array([{"a": 1, "b": ["x", "y"]}, None, {"a": None, "b": None},
+                    {"a": 4, "b": []}, {"a": 5, "b": [None, 'q"uote']},
+                    {"a": -6, "b": ["z"]}], _jv_st),
+    "ms": pa.array([[("k1", 1), ("k2", 2)], None, [], [("k", None)],
+                    [("tab\t", 5)], [("z", 6)]], pa.map_(pa.string(), pa.int64())),
+    "mi": pa.array([[(1, "one")], [(2, None)], None, [(-4, "minus")], [],
+                    [(6, "six"), (7, "seven")]], pa.map_(pa.int32(), pa.string())),
+    "ls": pa.array([[{"p": 1.5, "q": True}], [], None,
+                    [None, {"p": None, "q": False}], [{"p": 0.1, "q": None}],
+                    [{"p": -2.0, "q": True}, {"p": 1e300, "q": False}]], _jv_ls),
+    "fl": pa.array([[1.0, 2.0], None, [3.5, None], [4.0, 5.0], [6.0, 7.0],
+                    [8.0, 9.25]], _jv_fl),
+    "dc": pa.array(["a", "b", None, "a", "c", "b"]).dictionary_encode(),
+    "li": pa.array([[1, 2, 3], [None], None, [], [4], [5, 6]], pa.list_(pa.int32())),
+})
+with pa.OSFile(str(HERE / "tiny.jsonvals.arrow"), "wb") as f:
+    with ipc.new_file(f, _jv.schema) as w:
+        w.write_table(_jv, max_chunksize=2)
+_jv = _jv.set_column(_jv.schema.get_field_index("fl"), "fl", pa.array(
+    [[1.0, 2.0], [None, None], [3.5, None], [4.0, 5.0], [6.0, 7.0], [8.0, 9.25]], _jv_fl))
+pq.write_table(_jv, HERE / "tiny.jsonvals.parquet", row_group_size=2)
+
 # ── Arrow IPC ────────────────────────────────────────────────────────────────
 with pa.OSFile(str(HERE / "tiny.arrow"), "wb") as f:
     with ipc.new_file(f, schema) as w:

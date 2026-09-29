@@ -3225,6 +3225,33 @@ if [ -f "$DATA/tiny.ext.arrow" ] && command -v python3 >/dev/null 2>&1; then
     assert_contains "ext_distinct_keeps_type" "$("$VV" --schema "$TMP/ext_distinct.arrow")" "extension<arrow.uuid>"
 fi
 
+# --json / --ndjson write nested values as JSON: list / fixed-size list →
+# array, struct → object, map → object with the key as text, dictionary →
+# its decoded value; nulls at any level → null. They were quoted strings of
+# the display form ("[x, y]"), so a consumer had to re-parse them.
+JV_ARROW="$DATA/tiny.jsonvals.arrow"
+if [ -f "$JV_ARROW" ]; then
+    assert_eq_file_inline "json_nested_values" "$("$VV" --ndjson "$JV_ARROW")" \
+'{"id": 1, "st": {"a": 1, "b": ["x", "y"]}, "ms": {"k1": 1, "k2": 2}, "mi": {"1": "one"}, "ls": [{"p": 1.5, "q": true}], "fl": [1, 2], "dc": "a", "li": [1, 2, 3]}
+{"id": 2, "st": null, "ms": null, "mi": {"2": null}, "ls": [], "fl": null, "dc": "b", "li": [null]}
+{"id": 3, "st": {"a": null, "b": null}, "ms": {}, "mi": null, "ls": null, "fl": [3.5, null], "dc": null, "li": null}
+{"id": 4, "st": {"a": 4, "b": []}, "ms": {"k": null}, "mi": {"-4": "minus"}, "ls": [null, {"p": null, "q": false}], "fl": [4, 5], "dc": "a", "li": []}
+{"id": 5, "st": {"a": 5, "b": [null, "q\"uote"]}, "ms": {"tab\t": 5}, "mi": {}, "ls": [{"p": 0.1, "q": null}], "fl": [6, 7], "dc": "c", "li": [4]}
+{"id": 6, "st": {"a": -6, "b": ["z"]}, "ms": {"z": 6}, "mi": {"6": "six", "7": "seven"}, "ls": [{"p": -2, "q": true}, {"p": 1e+300, "q": false}], "fl": [8, 9.25], "dc": "b", "li": [5, 6]}'
+    # Rows past the first batch / row group sit at non-zero list offsets.
+    for f in "$JV_ARROW" "$DATA/tiny.jsonvals.parquet"; do
+        assert_eq_file_inline "json_nested_offsets [$(basename "$f")]" \
+            "$("$VV" --ndjson --select id,st,ls,li --filter 'id >= 5' "$f")" \
+'{"id": 5, "st": {"a": 5, "b": [null, "q\"uote"]}, "ls": [{"p": 0.1, "q": null}], "li": [4]}
+{"id": 6, "st": {"a": -6, "b": ["z"]}, "ls": [{"p": -2, "q": true}, {"p": 1e+300, "q": false}], "li": [5, 6]}'
+    done
+    if command -v python3 >/dev/null 2>&1; then
+        assert_eq_file_inline "json_nested_parses" \
+            "$("$VV" --json --sort id:desc "$DATA/tiny.jsonvals.parquet" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(len(r), r[0]["ls"][1]["p"], r[1]["ms"], r[4]["fl"])')" \
+            "6 1e+300 {'tab\\t': 5} [None, None]"
+    fi
+fi
+
 # `in @file`: set members from a file — one per line, first tab field,
 # trimmed, blank lines skipped, gzip / zstd by magic. tiny.parquet has 12 chr1
 # and 8 chr2 rows; Start 100 and 1100 appear on 4 rows.

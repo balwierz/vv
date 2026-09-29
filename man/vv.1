@@ -617,7 +617,10 @@ Stream comma-separated values to stdout.
 Custom single-character field separator.
 .TP
 .B \-\-json
-Write a JSON array of row objects to stdout.
+Write a JSON array of row objects to stdout. Nested values are JSON:
+a list or fixed-size list is an array, a struct an object, a map an
+object keyed by the map key as text; dictionary columns write their
+decoded value. Dates, decimals and binary columns are strings.
 .TP
 .B \-\-ndjson
 Write one JSON object per line (JSON Lines / NDJSON). Pipe-friendly
