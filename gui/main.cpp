@@ -134,8 +134,6 @@ public:
         buildSearchBar();
         buildRegionBar();
         buildProgressUI();
-        new QShortcut(QKeySequence::Copy, this, [this]{ copySelection(); });
-        new QShortcut(QKeySequence::FindNext, this, [this]{ doFind(true); });
 
         for (auto& src : sources) {
             QString origin = QString::fromStdString(src->path());
@@ -406,6 +404,14 @@ private:
                              "visible columns"));
         connect(cpCmd, &QAction::triggered, this, [this]{ copyCommand(); });
         edit->addAction(cpCmd);
+        edit->addSeparator();
+        // F3 alone: QKeySequence::FindNext also carries Ctrl+G on GNOME /
+        // generic themes, which would collide with Go to Row. Two window
+        // shortcuts on one key are ambiguous and Qt runs neither.
+        QAction* findNext = new QAction(tr("Find &Next"), this);
+        findNext->setShortcut(QKeySequence(Qt::Key_F3));
+        connect(findNext, &QAction::triggered, this, [this]{ doFind(true); });
+        edit->addAction(findNext);
 
         auto* view = menuBar()->addMenu(tr("&View"));
         QAction* go = new QAction(tr("&Go to Row…"), this);
@@ -434,7 +440,7 @@ private:
             QMessageBox::information(this, tr("vvg — help"),
                 tr("Sort:    click a column header (toggles ascending/descending)\n"
                    "Filter:  the Filter bar — e.g.  score > 5 and chrom == \"chr1\"\n"
-                   "Find:    the Find bar (regex); Ctrl+F / F3 for next match\n"
+                   "Find:    the Find bar (regex); F3 for the next match\n"
                    "Region:  the Region bar — chr1:1000-2000 (UCSC) / NCBI; Pileup for BAM\n"
                    "Expand:  GFF/GTF attributes and VCF INFO open as one column per key (toolbar toggle)\n"
                    "Copy:    Ctrl+C the selection, Ctrl+Shift+C a whole row; right-click for both\n"
@@ -1030,6 +1036,28 @@ public:
         return px ? "pixel" : "item";
     }
     void setExpandForTest(bool on) { if (expandAction_) expandAction_->setChecked(on); }
+    // Every window-level shortcut key with the actions bound to it, and the
+    // number of keys bound more than once (Qt treats those as ambiguous and
+    // triggers none of the actions).
+    int dumpShortcutsForTest() const {
+        QMap<QString, QStringList> byKey;
+        for (auto* a : findChildren<QAction*>()) {
+            if (a->shortcutContext() == Qt::WidgetShortcut) continue;
+            for (const auto& k : a->shortcuts())
+                byKey[k.toString()] << a->text().remove(QLatin1Char('&'));
+        }
+        for (auto* sc : findChildren<QShortcut*>())
+            for (const auto& k : sc->keys())
+                byKey[k.toString()] << QStringLiteral("<QShortcut>");
+        int conflicts = 0;
+        for (auto it = byKey.cbegin(); it != byKey.cend(); ++it) {
+            std::printf("shortcut %s -> %s\n", qPrintable(it.key()),
+                        qPrintable(it.value().join(QStringLiteral(" | "))));
+            if (it.value().size() > 1) ++conflicts;
+        }
+        std::printf("shortcut_conflicts=%d\n", conflicts);
+        return conflicts;
+    }
 private:
     // Output format from the file extension (.parquet/.pq, .arrow/.feather/
     // .ipc, .tsv/.tab/.txt, .csv, .json, .ndjson/.jsonl).
@@ -1490,6 +1518,10 @@ int main(int argc, char** argv) {
         std::printf("win_tabs=%d\n", win.tabCount());
         if (const char* sm = std::getenv("VVG_SCROLLMODE"); sm && *sm && *sm != '0')
             std::printf("scroll=%s\n", win.scrollModeForTest());
+        // Optional shortcut dump: VVG_SHORTCUTS=1 lists each key and its
+        // action(s), then shortcut_conflicts=N.
+        if (const char* sk = std::getenv("VVG_SHORTCUTS"); sk && *sk && *sk != '0')
+            win.dumpShortcutsForTest();
         if (const char* hs = std::getenv("VVG_HSCROLL"); hs && *hs)
             {
                 auto [val, max] = win.hscrollForTest(std::atoi(hs));

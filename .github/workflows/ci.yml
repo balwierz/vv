@@ -289,6 +289,15 @@ jobs:
           grep -q '^scroll=item$' <<<"$out"
           max=$(sed -n 's/^hscroll=\([0-9]*\) max=\([0-9]*\)$/\2/p' <<<"$out")
           test "$max" -le 7
+          # No key is bound to two window shortcuts: Qt treats such a key as
+          # ambiguous and runs neither (Ctrl+C was bound to both Edit ▸ Copy and
+          # a QShortcut, so it copied nothing).
+          out=$(VVG_WINTEST=1 VVG_SHORTCUTS=1 ./build-gui/gui/vvg tests/data/tiny.parquet)
+          echo "$out"
+          grep -q '^shortcut_conflicts=0$' <<<"$out"
+          grep -q '^shortcut Ctrl+C -> Copy$' <<<"$out"
+          grep -q '^shortcut Ctrl+G -> Go to Row…$' <<<"$out"
+          grep -q '^shortcut F3 -> Find Next$' <<<"$out"
           # AnnData obsp / varp graphs open as streamed edge-list tabs.
           VVG_WINTEST=1 VVG_TABDIMS=1 ./build-gui/gui/vvg tests/data/tiny.obsp.h5ad \
             | grep -q "tab 'obsp\[connectivities\]' rows=4 cols=5 "

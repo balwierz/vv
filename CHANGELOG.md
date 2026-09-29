@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **vvg: Ctrl+C copies the selection.** Ctrl+C was bound both to Edit ▸ Copy
+  and to a separate window shortcut. Qt treats a key with two window
+  shortcuts as ambiguous and runs neither, so Ctrl+C copied nothing; the
+  right-click Copy worked. The duplicate is removed. Find Next is now an Edit
+  menu action on F3 only: the platform Find Next binding also includes
+  Ctrl+G on GNOME and generic Qt themes, which made Go to Row (Ctrl+G) and
+  Find Next both unresponsive there.
+
 ## [1.24.0] - 2026-09-29
 
 ### Added
