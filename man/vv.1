@@ -244,7 +244,12 @@ bgzipped + tabix-indexed file, so they need gzip rather than zstandard.
 .SS Display
 .TP
 .B \-i, \-\-interactive
-Force the ncurses row browser even when stdout is not a terminal.
+Force the ncurses row browser even when stdout is not a terminal. The
+browser opens with \fB\-\-filter\fR, \fB\-\-select\fR and \fB\-\-sort\fR as
+its live filter, visible columns (in the given order) and sort, so \fB&\fR,
+Esc, \fBc\fR and \fBu\fR can change or clear them. A \fB\-\-sort\fR column
+that \fB\-\-select\fR leaves out is applied to the rows before the browser
+opens.
 .TP
 .B \-t, \-\-table
 Force plain ASCII table output even on a terminal. \fB\-\-no\-interactive\fR

@@ -3624,6 +3624,20 @@ else
     echo "  skip  tui_cell_cursor (python3 not found)"
 fi
 
+# The TUI opens with --filter / --select / --sort as its live filter, column
+# layout and sort (so & / Esc / u work on them). On a terminal --filter and
+# --select were ignored and --sort was baked in. Verified discriminating: on
+# the previous build the filter / select / sort / bad-filter checks fail.
+if command -v python3 >/dev/null 2>&1; then
+    if run_with_timeout 120 python3 "$HERE/tui_start_view_check.py" "$VV" "$DATA/tiny.parquet"; then
+        PASS=$((PASS+1)); echo "  ok    tui_start_view"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_start_view"
+    fi
+else
+    echo "  skip  tui_start_view (python3 not found)"
+fi
+
 # `/` search, n / N and :N move the cell cursor to their target. They used to
 # move only the viewport, which the next draw scrolled back to the cursor, so
 # nothing past the first screen was reachable. Verified discriminating: on the

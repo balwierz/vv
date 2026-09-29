@@ -833,7 +833,8 @@ static void print_usage(const char* prog) {
         "  (unknown extensions: identified by magic bytes, else sniffed as text;\n"
         "   binary files are refused — vv has no hex view)\n"
         "\nInteractive viewer (default when stdout is a terminal):\n"
-        "  -i / --interactive  open the ncurses row browser\n"
+        "  -i / --interactive  open the ncurses row browser; --filter, --select and\n"
+        "                      --sort set its opening view (& / Esc / u change it)\n"
         "  --table / -t        force plain table output (also --no-interactive)\n"        "  --text              read the file as plain text whatever its extension\n"
         "  -d, --in-delimiter <sep>\n"
         "                      read the input with this field separator, overriding\n"
@@ -20529,6 +20530,16 @@ struct CachedRG {
     bool ok = false;  // false if read_chunk failed
 };
 
+// The view the TUI opens with, from --select / --filter / --sort, applied as
+// its own live state (the column layout, the `&` filter, the `s` sort) so it
+// can be changed or cleared in the viewer. Applies to the first file.
+struct TuiStart {
+    std::vector<int> select;     // source field indices, in --select order; empty = all
+    std::string      filter;     // --filter text; empty = none
+    std::string      sort_col;   // --sort column; empty = none
+    bool             sort_desc = false;
+};
+
 class TableTUI {
     // Multiple files become tabs. `src_` always points at the currently
     // active tab's source; `sources_` owns them. The snapshot vector
@@ -20657,6 +20668,8 @@ class TableTUI {
     bool                       col_picker_open_     = false;
     int                        col_picker_cursor_   = 0;
     std::vector<bool>          col_visible_;        // [virt_col] — true = shown
+    std::vector<int>           start_select_;       // --select for the first file
+    TuiStart                   start_;              // --filter / --sort, until run()
 
     // ── Theme picker (`T`) ───────────────────────────────────────────────────
     bool                       theme_picker_open_   = false;
@@ -22921,7 +22934,8 @@ private:
     }
 
 public:
-    TableTUI(std::vector<std::unique_ptr<TabularSource>> sources, const Config& cfg)
+    TableTUI(std::vector<std::unique_ptr<TabularSource>> sources, const Config& cfg,
+             const TuiStart& start = {})
         : sources_(std::move(sources)),
           src_(sources_.empty() ? nullptr : sources_[0].get()),
           max_col_w_(cfg.max_col_w),
@@ -22937,7 +22951,34 @@ public:
             tabs_[i].path  = sources_[i]->path();
             tabs_[i].label = sources_[i]->tab_label();
         }
+        start_select_ = start.select;
         if (!sources_.empty()) setup_for_active_source();
+        start_select_.clear();   // the first file only
+        start_ = start;          // filter / sort: applied in run(), with curses up
+    }
+
+    // --filter / --sort as the live filter and sort, so `&` shows the
+    // expression and Esc / u clear them. main() has validated both. Runs once
+    // the screen exists: the full-file pass draws its progress line.
+    void apply_start_view() {
+        if (sources_.empty()) return;
+        FilterExpr fx;
+        std::string ferr;
+        if (!start_.filter.empty() &&
+            parse_filter_expr(start_.filter, *src_->schema(), &fx, &ferr)) {
+            filter_fx_       = std::move(fx);
+            filter_expr_str_ = start_.filter;
+            filter_active_   = true;
+        }
+        if (!start_.sort_col.empty())
+            for (int vc = 0; vc < num_cols_; ++vc)
+                if (col_names_[vc] == start_.sort_col && virt_info_key_[vc].empty()) {
+                    sort_col_  = vc;
+                    sort_desc_ = start_.sort_desc;
+                    break;
+                }
+        if (filter_active_ || sort_col_ >= 0) rebuild_display_order();
+        start_ = TuiStart{};
     }
 
     // (Re)compute every per-tab field from the currently-active source.
@@ -22946,7 +22987,7 @@ public:
     void setup_for_active_source() {
         auto& src = *src_;
         text_view_ = src.is_text();
-        num_cols_ = (max_cols_cfg_ > 0)
+        num_cols_ = (max_cols_cfg_ > 0 && start_select_.empty())
                     ? std::min(max_cols_cfg_, src.schema()->num_fields())
                     : src.schema()->num_fields();
 
@@ -22987,8 +23028,13 @@ public:
         std::vector<std::string>        v_info;
         std::vector<arrow::Type::type>  v_types;
         std::vector<bool>               v_is_bool;
-        for (int sc = 0; sc < src_num_cols_; ++sc) {
-            if (hidden.count(src.schema()->field(sc)->name())) continue;
+        // --select (first file): its columns, in its order; a column hidden
+        // for display is shown when named. Otherwise every column.
+        std::vector<int> order = start_select_;
+        if (order.empty())
+            for (int sc = 0; sc < src_num_cols_; ++sc) order.push_back(sc);
+        for (int sc : order) {
+            if (start_select_.empty() && hidden.count(src.schema()->field(sc)->name())) continue;
             if (sc == info_col_idx && !info_fields.empty()) {
                 for (auto& [k, t] : info_fields) {
                     v_names.push_back(k);
@@ -23094,6 +23140,7 @@ public:
         // 200 ms is long enough for an unhurried double-click but short
         // enough that a deliberate pair-of-clicks isn't mistaken for one.
         mouseinterval(200);
+        apply_start_view();
 
         // A late terminal reply must not read as keystrokes. detect_term_bg()
         // sends an OSC 11 background query before ncurses starts and waits
@@ -25125,12 +25172,45 @@ int main(int argc, char** argv) {
         cfg.head_rows = 0; cfg.head_rows_set = false;
     }
 
+    // The TUI opens with --select / --filter / --sort as its own live state
+    // (TuiStart) rather than a baked-in view; validate them here so a typo is
+    // reported instead of silently ignored.
+    TuiStart tui_start;
+    const bool tui_view = tui_wanted(cfg) && !src->is_text();
+    if (tui_view) {
+        if (!cfg.select_cols.empty()) {
+            std::vector<std::string> unknown;
+            tui_start.select = select_field_indices(*src, cfg, &unknown, true);
+            if (!unknown.empty()) { report(cfg.path, unknown_columns_error(*src, unknown)); return 1; }
+        }
+        if (!cfg.filter_expr.empty()) {
+            FilterExpr fx; std::string ferr;
+            if (!parse_filter_expr(cfg.filter_expr, *src->schema(), &fx, &ferr)) {
+                report(cfg.path, std::string("--filter: ") + ferr); return 1;
+            }
+        }
+    }
+    // The TUI sorts by an on-screen column; a --sort column left out by
+    // --select is materialised as before.
+    bool tui_sorts = false;
+    if (tui_view && !cfg.sort_col.empty()) {
+        const int si = src->schema()->GetFieldIndex(cfg.sort_col);
+        tui_sorts = si >= 0 && (tui_start.select.empty() ||
+                                std::find(tui_start.select.begin(), tui_start.select.end(), si)
+                                    != tui_start.select.end());
+        if (si < 0) { report(cfg.path, "--sort: unknown column '" + cfg.sort_col + "'"); return 1; }
+    }
+
     // --sort COL: materialise + stable-sort the rows, then fall through to the
     // normal view / export path (which now sees a pre-sorted MemoryTableSource).
-    if (!cfg.sort_col.empty()) {
+    if (!cfg.sort_col.empty() && !tui_sorts) {
         std::string err = build_sort(src, cfg);
         if (!err.empty()) { report(cfg.path, err); return 1; }
         cfg.filter_expr.clear();   // applied during the sort's materialisation
+    }
+    if (tui_view) {
+        tui_start.filter = cfg.filter_expr;
+        if (tui_sorts) { tui_start.sort_col = cfg.sort_col; tui_start.sort_desc = cfg.sort_desc; }
     }
 
     // --json / --ndjson: stream JSON rows to stdout.
@@ -25208,9 +25288,16 @@ int main(int argc, char** argv) {
             // tui.run() fails (e.g. unsupported terminal), reclaim the
             // first source so the non-interactive fall-through paths
             // below can still use *src.
-            TableTUI tui(std::move(tab_srcs), cfg);
+            TableTUI tui(std::move(tab_srcs), cfg, tui_start);
             if (tui.run()) return 0;
             src = tui.take_first_source();
+            // Falling back to a non-interactive view: apply a sort the TUI
+            // was going to do.
+            if (tui_sorts) {
+                std::string err = build_sort(src, cfg);
+                if (!err.empty()) { report(cfg.path, err); return 1; }
+                cfg.filter_expr.clear();
+            }
             // The TUI could not start. With an explicit -i that is an error;
             // for auto-launch (a TTY, no -i) it used to fall through silently,
             // so the user saw a static table with no hint the interactive
