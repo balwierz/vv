@@ -614,7 +614,7 @@ static int effective_decode_threads(const Config& cfg) {
     return effective_threads(cfg);
 }
 
-static constexpr const char* kVersion = "1.23.0";
+static constexpr const char* kVersion = "1.24.0";
 
 // ── Format registry ──────────────────────────────────────────────────────────
 //

@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.24.0] - 2026-09-29
+
 ### Added
 - **Nested values in `--json` / `--ndjson` are JSON.** List, struct, map and
   fixed-size-list cells were written as a quoted string of their display form
@@ -158,6 +160,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   stored genes × cells, shown cells × genes, labelled by `CellID` / `Gene` or
   the other writers' names (`obs_names` / `var_names`, …) — and `cells` /
   `genes` attribute tables. Integer layers stay integer-typed.
+- **Cell Ranger HDF5 (`filtered_feature_bc_matrix.h5`) opens as labelled
+  tabs.** vv showed these files as a generic hierarchy with one tab per raw
+  dataset (`/matrix/data`, `/matrix/indices`, …). v3 files (the `/matrix`
+  group) and v2 files (one group per genome) now open as `summary` (shape,
+  stored entries, counts per `feature_type`, chemistry), a `matrix` preview
+  shown cells × features and labelled by barcode and feature name (a repeated
+  name gets its id appended), `features` (`id`, `name`, `feature_type`,
+  `genome`, …) and `barcodes`.
+- **10x Genomics / STARsolo matrix directories open as labelled tabs.** A
+  directory holding `matrix.mtx(.gz)`, `barcodes.tsv(.gz)` and `features.tsv(.gz)`
+  (or v2 `genes.tsv`) — `filtered_feature_bc_matrix/`, `Solo.out/Gene/filtered/`
+  — failed as a dataset (the three files' schemas differ). It now opens as
+  `matrix`, `features` and `barcodes` tabs: the matrix entries stream with
+  `feature_id`, `feature_name`, `feature_type` and `barcode` columns appended,
+  so `--filter 'feature_name == "CD74"'` or `barcode == "…"` work. A matrix
+  written barcodes × features is recognised by its shape; a matrix whose shape
+  fits neither sidecar is an error rather than mislabelled. vvg's
+  *Open Folder…* gets the same tabs.
+- **MatrixMarket `.mtx` / `.mtx.gz` files open as tables.** The sparse matrix
+  format written by Cell Ranger and STARsolo (`matrix.mtx.gz`),
+  `scipy.io.mmwrite` and R `Matrix::writeMM` was shown as plain text. A
+  `coordinate` file is now listed one stored entry per row as `row`, `col`,
+  `value` (no `value` for a `pattern` matrix), with 0-based indices like
+  `scipy.io.mmread`, typed from the banner (integer → int64, real → double) and
+  streamed, so `--filter`, `--sort`, `--describe` and `--parquet` work on it. The
+  footer shows the shape and entry count. Symmetric files (one triangle stored)
+  and dense `array` files are refused rather than listed misleadingly, and an
+  index outside the declared shape or an entry count that disagrees with the
+  size line is an error.
 
 ### Fixed
 - **Binary and Arrow extension columns render, sort and deduplicate.**
@@ -245,43 +276,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Loom file's expression matrix, for example, could not be viewed at all. Every
   2-D dataset now gets a tab with the usual first 1000 rows × 200 columns
   preview, and the footer says when the preview is capped.
-
-### Added
-- **Cell Ranger HDF5 (`filtered_feature_bc_matrix.h5`) opens as labelled
-  tabs.** vv showed these files as a generic hierarchy with one tab per raw
-  dataset (`/matrix/data`, `/matrix/indices`, …). v3 files (the `/matrix`
-  group) and v2 files (one group per genome) now open as `summary` (shape,
-  stored entries, counts per `feature_type`, chemistry), a `matrix` preview
-  shown cells × features and labelled by barcode and feature name (a repeated
-  name gets its id appended), `features` (`id`, `name`, `feature_type`,
-  `genome`, …) and `barcodes`.
-
-### Added
-- **10x Genomics / STARsolo matrix directories open as labelled tabs.** A
-  directory holding `matrix.mtx(.gz)`, `barcodes.tsv(.gz)` and `features.tsv(.gz)`
-  (or v2 `genes.tsv`) — `filtered_feature_bc_matrix/`, `Solo.out/Gene/filtered/`
-  — failed as a dataset (the three files' schemas differ). It now opens as
-  `matrix`, `features` and `barcodes` tabs: the matrix entries stream with
-  `feature_id`, `feature_name`, `feature_type` and `barcode` columns appended,
-  so `--filter 'feature_name == "CD74"'` or `barcode == "…"` work. A matrix
-  written barcodes × features is recognised by its shape; a matrix whose shape
-  fits neither sidecar is an error rather than mislabelled. vvg's
-  *Open Folder…* gets the same tabs.
-
-### Added
-- **MatrixMarket `.mtx` / `.mtx.gz` files open as tables.** The sparse matrix
-  format written by Cell Ranger and STARsolo (`matrix.mtx.gz`),
-  `scipy.io.mmwrite` and R `Matrix::writeMM` was shown as plain text. A
-  `coordinate` file is now listed one stored entry per row as `row`, `col`,
-  `value` (no `value` for a `pattern` matrix), with 0-based indices like
-  `scipy.io.mmread`, typed from the banner (integer → int64, real → double) and
-  streamed, so `--filter`, `--sort`, `--describe` and `--parquet` work on it. The
-  footer shows the shape and entry count. Symmetric files (one triangle stored)
-  and dense `array` files are refused rather than listed misleadingly, and an
-  index outside the declared shape or an entry count that disagrees with the
-  size line is an error.
-
-### Fixed
 - **10x Genomics `barcodes.tsv`, `features.tsv` and `genes.tsv` keep their
   first row.** These Cell Ranger / STARsolo sidecar files have no header row
   and hold only text, so header detection kept row 0 as the header: the first

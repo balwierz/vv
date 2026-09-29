@@ -27,7 +27,7 @@
 %global xlsxio_version 0.2.36
 
 Name:           vv
-Version:        1.23.0
+Version:        1.24.0
 Release:        1%{?dist}
 Summary:        Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)
 License:        MIT
@@ -143,6 +143,14 @@ rm -f  %{buildroot}%{_libdir}/pkgconfig/mimalloc.pc
 %{_datadir}/icons/hicolor/scalable/apps/vv.svg
 
 %changelog
+* Tue Sep 29 2026 Piotr Balwierz <nikt@tuta.com> - 1.24.0-1
+- Update to 1.24.0: Cell Ranger HDF5, 10x / STARsolo matrix directories,
+  MatrixMarket .mtx, Loom and AnnData .raw / obsp / varp open as labelled
+  tabs; --filter gains date literals, `in @file`, has / lacks bit flags and
+  backtick-quoted names; --pileup applies samtools mpileup's default filters;
+  --json writes nested values as JSON; the TUI opens with --filter / --select /
+  --sort applied; floats export without rounding; vvg gains export, smooth
+  scrolling and attribute expansion; KDE / freedesktop MIME types.
 * Mon Sep 21 2026 Piotr Balwierz <nikt@tuta.com> - 1.23.0-1
 - Update to 1.23.0: LZF-compressed HDF5 / AnnData files (h5py compression="lzf")
   are read; an HDF5 dataset that cannot be decoded is reported with the
