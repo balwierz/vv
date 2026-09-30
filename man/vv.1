@@ -881,6 +881,15 @@ clears the filter, and \fBEsc\fR in normal mode also clears an
 active filter before quitting. Composes with \fBs\fR (sort) and
 \fB/\fR (search).
 .TP
+.B editing in the / ? & : bars
+The input bars edit at a cursor, in whole UTF-8 characters (a filter
+literal such as \fBname == "café"\fR can be typed): \fBLeft\fR /
+\fBRight\fR (\fBCtrl-B\fR / \fBCtrl-F\fR) move, \fBHome\fR / \fBEnd\fR
+(\fBCtrl-A\fR / \fBCtrl-E\fR) jump to the ends, \fBBackspace\fR and
+\fBDelete\fR (\fBCtrl-D\fR) remove a character, \fBCtrl-U\fR / \fBCtrl-K\fR
+delete to the start / end, \fBCtrl-W\fR deletes the word before the
+cursor. Text wider than the screen scrolls with the cursor.
+.TP
 .B mouse wheel
 Scroll three rows up / down.
 .TP
