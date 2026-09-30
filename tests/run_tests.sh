@@ -853,6 +853,17 @@ python3 -c "print('name,txt'); print('r,' + '中'*40)" > "$CJKF"
 refute_contains "truncation_marker_dimmed_wide_char" \
     "$("$VV" -n 2 --color=always "$CJKF" 2>&1)" "中…"
 rm -f "$ELLF" "$LONGF" "$CJKF"
+# A datum ending in "…" that fills the column width exactly (-w 9) is not a
+# truncation either: only a value truncate() shortened has its marker dimmed.
+FULLF="$TMP/ellipsis_full.tsv"
+printf 'a\tb\nabcdefghij\tabcdefgh…\n' > "$FULLF"
+FULL_OUT=$("$VV" -n 2 -w 9 --color=always --no-interactive "$FULLF" 2>&1)
+assert_contains "trailing_ellipsis_at_width_not_dimmed" "$FULL_OUT" "abcdefgh… "
+# ...while column a, cut to the same text, keeps its dimmed marker: one
+# contiguous "abcdefgh…" (column b), not two.
+assert_eq_file_inline "truncation_marker_at_width_dimmed" \
+    "$(printf '%s\n' "$FULL_OUT" | grep -o 'abcdefgh…' | wc -l | tr -d ' ')" "1"
+rm -f "$FULLF"
 # display_width must count terminal columns (wide CJK / Hangul = 2 cols), not
 # codepoints, so a table mixing wide and narrow cells stays aligned. Render one
 # and confirm every box-drawing line has the same display width — computed

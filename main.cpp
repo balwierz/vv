@@ -1734,6 +1734,11 @@ static size_t utf8_prefix_for_width(const std::string& s, int max_cols) {
     return i;
 }
 
+// Does truncate(s, max_w) shorten s?
+static bool truncate_cuts(const std::string& s, int max_w) {
+    return (int)display_width(s) > std::max(2, max_w);
+}
+
 std::string truncate(const std::string& s, int max_w) {
     if (max_w < 2) max_w = 2;
     if (display_width(s) <= max_w) return s;
@@ -2170,6 +2175,7 @@ struct Column {
     bool                     is_bool  = false;
     bool                     is_rgb   = false;
     std::vector<std::string> cells;
+    std::vector<bool>        cut;      // cells[i] was shortened by truncate()
     int                      width;
 };
 
@@ -2196,11 +2202,10 @@ static void draw_separator(const std::vector<Column>& cols,
 
 // Emit one cell with color, proper padding, but no border characters.
 // Returns nothing; writes directly to stdout.
-// `trunc_width` is the width cells were truncated to (cfg.max_col_w); a value is
-// the truncation marker only if it both ends in the ellipsis glyph and fills
-// that width — otherwise a datum that genuinely ends in "…" would be dimmed.
+// `cut`: truncate() shortened the value, so its trailing ellipsis is the
+// truncation marker (dimmed); a datum that itself ends in "…" is not.
 static void emit_cell(const Column& col, const std::string& val,
-                      bool right_align, bool is_header, int trunc_width) {
+                      bool right_align, bool is_header, bool cut) {
     int pad = col.width - display_width(val);
 
     // Choose foreground color for the content
@@ -2221,14 +2226,9 @@ static void emit_cell(const Column& col, const std::string& val,
 
     // For truncated values, render the body normally and the marker dimmed.
     // Both "…" and the ASCII "..." are 3 bytes, so the body is val.size()-3 bytes
-    // regardless of style; only the marker glyph differs (g_box->ell). A value
-    // ending in the ellipsis is the marker only if it (nearly) fills trunc_width:
-    // truncate() cuts to that width, though a trailing wide (2-column) glyph can
-    // leave it one short, so allow trunc_width-1. A clearly shorter value ending
-    // in "…" is genuine data and its ellipsis must not be dimmed.
-    bool truncated = !is_header && val.size() >= 3 &&
-                     val.compare(val.size() - 3, 3, g_box->ell) == 0 &&
-                     (int)display_width(val) >= trunc_width - 1;
+    // regardless of style; only the marker glyph differs (g_box->ell).
+    bool truncated = cut && !is_header && val.size() >= 3 &&
+                     val.compare(val.size() - 3, 3, g_box->ell) == 0;
 
     if (right_align) {
         std::printf(" %*s", pad, "");   // leading spaces (no color)
@@ -2252,10 +2252,11 @@ static void emit_cell(const Column& col, const std::string& val,
     }
 }
 
+// `cut[i]`: vals[i] was shortened by truncate() (empty for a header row).
 static void draw_row(const std::vector<Column>& cols,
                      const std::vector<std::string>& vals,
                      const std::vector<bool>& right_align,
-                     int trunc_width,
+                     const std::vector<bool>& cut,
                      bool is_header = false) {
     for (std::size_t i = 0; i < cols.size(); ++i) {
         std::printf("%s%s%s", g_color.border, g_box->vline, g_color.reset);
@@ -2265,7 +2266,8 @@ static void draw_row(const std::vector<Column>& cols,
             // Truecolor background bar using ANSI 24-bit escape; width = col.width + 2
             std::printf(" \033[48;2;%d;%d;%dm%*s\033[0m ", r, gv, b, cols[i].width, "");
         } else {
-            emit_cell(cols[i], vals[i], right_align[i], is_header, trunc_width);
+            emit_cell(cols[i], vals[i], right_align[i], is_header,
+                      i < cut.size() && cut[i]);
             std::printf(" ");
         }
     }
@@ -26203,6 +26205,8 @@ static std::string print_vertical_table(TabularSource& src, const Config& cfg) {
     // Pre-render every cell into rendered[record][field].
     std::vector<std::vector<std::string>> rendered(n_records,
         std::vector<std::string>(show_fields));
+    std::vector<std::vector<bool>> rendered_cut(n_records,
+        std::vector<bool>((size_t)show_fields, false));
     for (int f = 0; f < show_fields; ++f) {
         int f_src    = col_indices[f];
         auto arr_col = data->column(f);
@@ -26211,7 +26215,10 @@ static std::string print_vertical_table(TabularSource& src, const Config& cfg) {
             for (int64_t r = 0; r < chunk->length(); ++r, ++row) {
                 std::string val = src.format_cell(f_src,
                     cell_to_display_string(*chunk, r));
-                if (!field_is_int[f]) val = truncate(std::move(val), cfg.max_col_w);
+                if (!field_is_int[f] && truncate_cuts(val, cfg.max_col_w)) {
+                    val = truncate(std::move(val), cfg.max_col_w);
+                    rendered_cut[row][f] = true;
+                }
                 rendered[row][f] = std::move(val);
             }
         }
@@ -26238,6 +26245,7 @@ static std::string print_vertical_table(TabularSource& src, const Config& cfg) {
         c.right_align = false;               // mixed types per cell — see ra below
         c.width      = (int)display_width(c.header);
         c.cells.resize(show_fields);
+        c.cut = rendered_cut[r];
         for (int f = 0; f < show_fields; ++f) {
             c.cells[f] = rendered[r][f];
             int w = (int)display_width(c.cells[f]);
@@ -26274,19 +26282,20 @@ static std::string print_vertical_table(TabularSource& src, const Config& cfg) {
     {
         std::vector<std::string> hdr; std::vector<bool> ra;
         for (auto& c : columns) { hdr.push_back(c.header); ra.push_back(false); }
-        draw_row(columns, hdr, ra, cfg.max_col_w, /*is_header=*/true);
+        draw_row(columns, hdr, ra, {}, /*is_header=*/true);
     }
     draw_separator(columns, SepKind::Middle);
     for (int f = 0; f < show_fields; ++f) {
         std::vector<std::string> row;
-        std::vector<bool> ra;
+        std::vector<bool> ra, cut;
         // Field-name column: left-aligned. Record columns: right-aligned
         // for every type, so values line up against the next field's column.
         for (size_t i = 0; i < columns.size(); ++i) {
             row.push_back(columns[i].cells[f]);
             ra.push_back(i != 0);
+            cut.push_back((size_t)f < columns[i].cut.size() && columns[i].cut[(size_t)f]);
         }
-        draw_row(columns, row, ra, cfg.max_col_w);
+        draw_row(columns, row, ra, cut);
     }
     draw_separator(columns, SepKind::Bottom);
 
@@ -26399,9 +26408,11 @@ static std::string print_table(TabularSource& src, const Config& cfg,
             for (int64_t r = 0; r < chunk->length(); ++r) {
                 std::string val = src.format_cell(ci_src, cell_to_display_string(*chunk, r));
                 // Integer columns must show every digit — skip max_col_w clipping.
-                if (!is_int) val = truncate(std::move(val), cfg.max_col_w);
+                const bool cut = !is_int && truncate_cuts(val, cfg.max_col_w);
+                if (cut) val = truncate(std::move(val), cfg.max_col_w);
                 if (display_width(val) > col.width) col.width = display_width(val);
                 col.cells.push_back(std::move(val));
+                col.cut.push_back(cut);
             }
         if (!is_int) col.width = std::min(col.width, cfg.max_col_w);
         col.header = truncate(col.header, cfg.max_col_w);
@@ -26416,12 +26427,15 @@ static std::string print_table(TabularSource& src, const Config& cfg,
     draw_separator(columns, SepKind::Top);
     { std::vector<std::string> hdr; std::vector<bool> ra;
       for (auto& c : columns) { hdr.push_back(c.header); ra.push_back(false); }
-      draw_row(columns, hdr, ra, cfg.max_col_w, true); }
+      draw_row(columns, hdr, ra, {}, true); }
     draw_separator(columns, SepKind::Middle);
     for (int64_t r = 0; r < n_display; ++r) {
-        std::vector<std::string> row; std::vector<bool> ra;
-        for (auto& c : columns) { row.push_back(c.cells[r]); ra.push_back(c.right_align); }
-        draw_row(columns, row, ra, cfg.max_col_w);
+        std::vector<std::string> row; std::vector<bool> ra, cut;
+        for (auto& c : columns) {
+            row.push_back(c.cells[r]); ra.push_back(c.right_align);
+            cut.push_back((size_t)r < c.cut.size() && c.cut[(size_t)r]);
+        }
+        draw_row(columns, row, ra, cut);
     }
     draw_separator(columns, SepKind::Bottom);
 
