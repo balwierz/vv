@@ -1570,6 +1570,38 @@ else:
                               20, dtype=np.float64).reshape(5, 4)})
     adata.write_h5ad(h5ad_path)
 
+    # tiny.chunked.h5ad: a CSR X with a known storage layout for the summary
+    # tab's storage rows — data chunked by 30 with shuffle + gzip 5, indices
+    # chunked by 30 with gzip 5, indptr contiguous. 10 rows × 8 columns, 40
+    # stored values (4 per row), so one data chunk spans about 8 rows.
+    import h5py                                               # type: ignore
+    import scipy.sparse as sp                                 # type: ignore
+    _ck = HERE / "tiny.chunked.h5ad"
+    if _ck.exists():
+        _ck.unlink()
+    _ckX = sp.csr_matrix((np.arange(1, 41, dtype=np.float64),
+                          np.tile(np.array([0, 2, 4, 6], dtype=np.int32), 10),
+                          np.arange(0, 41, 4, dtype=np.int32)), shape=(10, 8))
+    with h5py.File(_ck, "w") as h:
+        h.attrs["encoding-type"] = "anndata"
+        h.attrs["encoding-version"] = "0.1.0"
+        g = h.create_group("X")
+        g.attrs["encoding-type"] = "csr_matrix"
+        g.attrs["encoding-version"] = "0.1.0"
+        g.attrs["shape"] = np.array(_ckX.shape)
+        g.create_dataset("data", data=_ckX.data, chunks=(30,), compression="gzip",
+                         compression_opts=5, shuffle=True)
+        g.create_dataset("indices", data=_ckX.indices, chunks=(30,), compression="gzip",
+                         compression_opts=5)
+        g.create_dataset("indptr", data=_ckX.indptr)
+        for grp, n in (("obs", 10), ("var", 8)):
+            gg = h.create_group(grp)
+            gg.attrs["encoding-type"] = "dataframe"
+            gg.attrs["encoding-version"] = "0.2.0"
+            gg.attrs["_index"] = "_index"
+            gg.attrs["column-order"] = np.array([], dtype="S")
+            gg.create_dataset("_index", data=np.array([f"{grp}{i}" for i in range(n)], dtype="S"))
+
     # tiny.cattypes.h5ad: obs columns whose on-disk types vv collapsed to
     # `string` — a bool column (an HDF5 enum {FALSE, TRUE}), a categorical of
     # bools, a categorical of strings (with a missing value, code -1) and an

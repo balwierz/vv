@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **AnnData storage layout in the summary tab.** How `X`, `raw.X` and each
+  layer are stored, read from HDF5 metadata alone (milliseconds even on a
+  network mount): file size; encoding and version, stored values per row,
+  bytes on disk against raw size; for each of `data` / `indices` / `indptr`
+  the dtype, chunk length and bytes (or contiguous) and the filter pipeline
+  (`shuffle + gzip 5`, `lzf`, `zstd`, …); and for a sparse matrix how many
+  rows one `data` chunk spans and the least any row slice decompresses,
+  marked `(large chunks)` above 64 MiB. The rows follow the existing summary
+  rows, so a preview of the summary still starts with the matrix and obs /
+  var.
 - **BEDPE, 4DN pairs, GCT and MAF files open as tables.** These tab-separated
   layouts were shown as plain text (unknown extension), and renamed to
   `.tsv` they lost rows or failed. `.bedpe` gets bedtools' column names (no
