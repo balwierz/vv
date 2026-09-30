@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **AnnData storage layout in the summary tab.** How `X`, `raw.X` and each
+  layer are stored, read from HDF5 metadata alone (milliseconds even on a
+  network mount): file size; encoding and version, stored values per row,
+  bytes on disk against raw size; for each of `data` / `indices` / `indptr`
+  the dtype, chunk length and bytes (or contiguous) and the filter pipeline
+  (`shuffle + gzip 5`, `lzf`, `zstd`, …); and for a sparse matrix how many
+  rows one `data` chunk spans and the least any row slice decompresses,
+  marked `(large chunks)` above 64 MiB. The rows follow the existing summary
+  rows, so a preview of the summary still starts with the matrix and obs /
+  var.
 - **`--seq-stats` for FASTA / FASTQ.** One pass, one row, like `seqkit stats
   -a`: record count, total / min / mean / max length, N50, GC % (over
   A/C/G/T/U, N excluded) and, for FASTQ, the share of bases at Q20 and Q30;

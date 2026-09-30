@@ -13439,17 +13439,219 @@ static std::string matrix_profile(hid_t file_id, const std::string& path) {
     return out;
 }
 
+// ── Storage layout of an AnnData matrix (summary tab) ───────────────────────
+//
+// How a matrix is laid out in the file — encoding, chunking, compression,
+// bytes on disk — read from HDF5 metadata alone (no array data), so it costs
+// milliseconds even on a network mount. Chunking decides what a row slice
+// costs: HDF5 decompresses whole chunks, so a slice of a sparse matrix reads
+// at least one full chunk of `data` and of `indices`.
+
+static std::string h5_size_label(double bytes) {
+    char buf[32];
+    if      (bytes < 1024)               std::snprintf(buf, sizeof buf, "%.0f B", bytes);
+    else if (bytes < 1024.0 * 1024)      std::snprintf(buf, sizeof buf, "%.1f KiB", bytes / 1024);
+    else if (bytes < 1024.0 * 1024 * 1024) std::snprintf(buf, sizeof buf, "%.1f MiB", bytes / (1024.0 * 1024));
+    else                                 std::snprintf(buf, sizeof buf, "%.2f GiB", bytes / (1024.0 * 1024 * 1024));
+    return buf;
+}
+
+static std::string h5_count_label(int64_t n) { return digits_with_sep(std::to_string(n)); }
+
+// The filter pipeline of a dataset: "gzip 4 + shuffle", "lzf", "none", …
+static std::string h5_filters_label(hid_t dcpl) {
+    std::string out;
+    const int nf = H5Pget_nfilters(dcpl);
+    for (int i = 0; i < nf; ++i) {
+        unsigned flags = 0, cfg = 0;
+        size_t nelm = 8;
+        unsigned cd[8] = {0};
+        char name[64] = {0};
+        const H5Z_filter_t id = H5Pget_filter2(dcpl, (unsigned)i, &flags, &nelm, cd,
+                                               sizeof name, name, &cfg);
+        std::string f;
+        switch (id) {
+            case H5Z_FILTER_DEFLATE:     f = "gzip " + std::to_string(nelm ? cd[0] : 0); break;
+            case H5Z_FILTER_SHUFFLE:     f = "shuffle"; break;
+            case H5Z_FILTER_FLETCHER32:  f = "fletcher32"; break;
+            case H5Z_FILTER_SZIP:        f = "szip"; break;
+            case H5Z_FILTER_NBIT:        f = "nbit"; break;
+            case H5Z_FILTER_SCALEOFFSET: f = "scaleoffset"; break;
+            case 32000: f = "lzf"; break;
+            case 32001: f = "blosc"; break;
+            case 32004: f = "lz4"; break;
+            case 32008: f = "bitshuffle"; break;
+            case 32015: f = "zstd"; break;
+            default:    f = name[0] ? std::string(name) : "filter " + std::to_string(id); break;
+        }
+        out += (out.empty() ? "" : " + ") + f;
+    }
+    return out.empty() ? "no compression" : out;
+}
+
+struct H5Layout {
+    std::string dtype;
+    int64_t     n = 0;             // elements
+    size_t      itemsize = 0;
+    bool        chunked = false;
+    std::vector<hsize_t> chunk;    // chunk dims when chunked
+    int64_t     chunk_elems = 0;
+    std::string filters;
+    hsize_t     stored = 0;        // bytes allocated in the file
+};
+
+static bool h5_layout(hid_t loc, const char* name, H5Layout* out) {
+    if (!link_exists(loc, name)) return false;
+    hid_t d = H5Dopen2(loc, name, H5P_DEFAULT);
+    if (d < 0) return false;
+    hid_t t = H5Dget_type(d), sp = H5Dget_space(d), dcpl = H5Dget_create_plist(d);
+    out->dtype = dtype_to_string(t);
+    out->itemsize = H5Tget_size(t);
+    out->n = (int64_t)H5Sget_simple_extent_npoints(sp);
+    const int rank = H5Sget_simple_extent_ndims(sp);
+    if (H5Pget_layout(dcpl) == H5D_CHUNKED && rank > 0) {
+        out->chunked = true;
+        out->chunk.assign((size_t)rank, 0);
+        H5Pget_chunk(dcpl, rank, out->chunk.data());
+        out->chunk_elems = 1;
+        for (auto c : out->chunk) out->chunk_elems *= (int64_t)c;
+    }
+    out->filters = h5_filters_label(dcpl);
+    out->stored = H5Dget_storage_size(d);
+    H5Pclose(dcpl); H5Sclose(sp); H5Tclose(t); H5Dclose(d);
+    return true;
+}
+
+static std::string h5_layout_label(const H5Layout& l) {
+    std::string s = l.dtype + "  |  ";
+    if (l.chunked) {
+        std::string dims;
+        for (size_t i = 0; i < l.chunk.size(); ++i)
+            dims += (i ? " \xc3\x97 " : "") + h5_count_label((int64_t)l.chunk[i]);
+        s += "chunks of " + dims + " (" +
+             h5_size_label((double)l.chunk_elems * (double)l.itemsize) + ")";
+    } else {
+        s += "contiguous";
+    }
+    s += "  |  " + l.filters + "  |  " + h5_size_label((double)l.stored) + " on disk";
+    return s;
+}
+
+// The last element of a 1-D integer dataset (a sparse matrix's indptr[-1],
+// its stored-value count); -1 when unreadable.
+static int64_t h5_last_int(hid_t loc, const char* name) {
+    hid_t d = H5Dopen2(loc, name, H5P_DEFAULT);
+    if (d < 0) return -1;
+    hid_t sp = H5Dget_space(d);
+    int64_t v = -1;
+    hsize_t n = 0;
+    if (H5Sget_simple_extent_ndims(sp) == 1 && H5Sget_simple_extent_dims(sp, &n, nullptr) == 1 && n > 0) {
+        hsize_t start = n - 1, count = 1;
+        H5Sselect_hyperslab(sp, H5S_SELECT_SET, &start, nullptr, &count, nullptr);
+        hid_t ms = H5Screate_simple(1, &count, nullptr);
+        if (H5Dread(d, H5T_NATIVE_INT64, ms, sp, H5P_DEFAULT, &v) < 0) v = -1;
+        H5Sclose(ms);
+    }
+    H5Sclose(sp); H5Dclose(d);
+    return v;
+}
+
+// Summary rows for the matrix at `path` (X, raw/X, layers/<name>), labelled
+// `label`: encoding, stored values, bytes on disk, and each component's
+// chunking and compression. For a sparse matrix, also how many rows one
+// chunk of `data` spans — flagged when a chunk is over 64 MiB, since every
+// row slice then decompresses at least that much of `data` and of `indices`.
+template <typename Add>
+static void matrix_storage_rows(hid_t file_id, const std::string& path, const std::string& label,
+                                Add&& add) {
+    if (!link_exists(file_id, path.c_str() + 1)) return;
+    if (is_group(file_id, path.c_str() + 1)) {
+        hid_t g = H5Gopen2(file_id, path.c_str() + 1, H5P_DEFAULT);
+        const std::string enc = read_string_attr(g, "encoding-type");
+        if (enc != "csr_matrix" && enc != "csc_matrix") { H5Gclose(g); return; }
+        const std::string ver = read_string_attr(g, "encoding-version");
+        int64_t shape[2] = {0, 0};
+        read_shape2(g, "shape", shape);
+        const bool csr = enc == "csr_matrix";
+        const int64_t major = csr ? shape[0] : shape[1];
+        const int64_t nnz = h5_last_int(g, "indptr");
+        H5Layout parts[3];
+        const char* names[3] = {"data", "indices", "indptr"};
+        hsize_t stored = 0;
+        double raw = 0;
+        for (int i = 0; i < 3; ++i)
+            if (h5_layout(g, names[i], &parts[i])) {
+                stored += parts[i].stored;
+                raw += (double)parts[i].n * (double)parts[i].itemsize;
+            }
+        H5Gclose(g);
+        std::string s = enc + (ver.empty() ? "" : " " + ver);
+        if (nnz >= 0) {
+            s += "  |  " + h5_count_label(nnz) + " stored values";
+            if (major > 0) {
+                char per[64];
+                std::snprintf(per, sizeof per, " (%s per %s)",
+                              h5_count_label((int64_t)std::llround((double)nnz / (double)major)).c_str(),
+                              csr ? "row" : "column");
+                s += per;
+            }
+        }
+        s += "  |  " + h5_size_label((double)stored) + " on disk";
+        if (stored > 0) {
+            char r[48];
+            std::snprintf(r, sizeof r, " for %s raw (%.1f\xc3\x97)", h5_size_label(raw).c_str(),
+                          raw / (double)stored);
+            s += r;
+        }
+        add(label + " storage", s);
+        for (int i = 0; i < 3; ++i)
+            if (!parts[i].dtype.empty()) add(label + "/" + names[i], h5_layout_label(parts[i]));
+        const H5Layout& data = parts[0];
+        const H5Layout& idx = parts[1];
+        if (nnz > 0 && major > 0 && data.chunked && data.chunk_elems > 0) {
+            const double per_major = (double)nnz / (double)major;
+            const double chunk_bytes = (double)data.chunk_elems * (double)data.itemsize;
+            const double idx_bytes = idx.chunked ? (double)idx.chunk_elems * (double)idx.itemsize
+                                                 : (double)idx.n * (double)idx.itemsize;
+            std::string note = "one data chunk \xe2\x89\x88 " +
+                h5_count_label((int64_t)std::llround((double)data.chunk_elems / per_major)) +
+                (csr ? " rows" : " columns") + "; a slice decompresses at least " +
+                h5_size_label(chunk_bytes) + " of data and " + h5_size_label(idx_bytes) +
+                " of indices";
+            if (chunk_bytes > 64.0 * 1024 * 1024) note += "  (large chunks)";
+            add(label + (csr ? " row slice" : " column slice"), note);
+        }
+        return;
+    }
+    // Dense: one dataset.
+    H5Layout d;
+    const std::string parent = path.substr(0, path.rfind('/'));
+    const std::string leaf = path.substr(path.rfind('/') + 1);
+    hid_t loc = parent.empty() ? file_id : H5Gopen2(file_id, parent.c_str(), H5P_DEFAULT);
+    if (loc < 0) return;
+    const bool ok = h5_layout(loc, leaf.c_str(), &d);
+    if (loc != file_id) H5Gclose(loc);
+    if (ok) add(label + " storage", "dense " + h5_layout_label(d));
+}
+
 static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
     std::vector<OpenSpec> specs;
 
-    // Summary tab (key/value rows).
-    std::string summary;
+    // Summary tab (key/value rows). The storage-layout rows are collected
+    // apart and appended last, so a preview of the summary's first rows still
+    // shows the matrix, obs / var and the other entries.
+    std::string summary, storage;
     auto add = [&](const std::string& k, const std::string& v) {
         summary += k; summary += '\t'; summary += v; summary += '\n';
+    };
+    auto add_storage = [&](const std::string& k, const std::string& v) {
+        storage += k; storage += '\t'; storage += v; storage += '\n';
     };
     add("format", "AnnData");
     std::string enc = read_string_attr(file_id, "encoding-type");
     if (!enc.empty()) add("root-encoding", enc);
+    if (hsize_t fsz = 0; H5Fget_filesize(file_id, &fsz) >= 0)
+        add_storage("file size", h5_size_label((double)fsz));
 
     // X (matrix). Either a dataset (dense) or a group with
     // encoding-type ∈ {csr_matrix, csc_matrix}.
@@ -13467,6 +13669,7 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
                 add("X", xenc + "  (" + std::to_string(x_rows) +
                           " \xc3\x97 " + std::to_string(x_cols) + ")");
                 add("X profile", matrix_profile(file_id, "/X"));
+                matrix_storage_rows(file_id, "/X", "X", add_storage);
                 // Both CSR and CSC densify to the same rows × columns preview.
                 specs.push_back({OpenSpec::Kind::Sparse, "/X",
                                   "X (preview)",
@@ -13487,6 +13690,7 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
                 add("X", "dense  (" + std::to_string(x_rows) +
                           " \xc3\x97 " + std::to_string(x_cols) + ")");
                 add("X profile", matrix_profile(file_id, "/X"));
+                matrix_storage_rows(file_id, "/X", "X", add_storage);
                 specs.push_back({OpenSpec::Kind::Matrix2D, "/X",
                                   "X", "dense"});
             }
@@ -13542,10 +13746,13 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
             add(parent_name, std::to_string(names.size()) + " entries");
         // layers mirror X: profile each, so raw counts stored as a layer show.
         if (axes == AnnMatrixAxes::ObsByVar)
-            for (const auto& nm : names)
+            for (const auto& nm : names) {
                 if (auto pr = matrix_profile(file_id, std::string("/") + parent_name + "/" + nm);
                     !pr.empty())
                     add(std::string(parent_name) + "[" + nm + "] profile", pr);
+                matrix_storage_rows(file_id, std::string("/") + parent_name + "/" + nm,
+                                    std::string(parent_name) + "[" + nm + "]", add_storage);
+            }
     };
     // layers/* mirror X's shape, so they keep gene columns; obsm/varm do not.
     add_subgroup_tabs("obsm",   OpenSpec::Kind::Matrix2D, "obsm",
@@ -13608,6 +13815,7 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
                                              std::to_string(shape[1]);
                     add("raw.X", xenc + "  (" + dims + ")");
                     add("raw.X profile", matrix_profile(file_id, "/raw/X"));
+                    matrix_storage_rows(file_id, "/raw/X", "raw.X", add_storage);
                     specs.push_back({OpenSpec::Kind::Sparse, "/raw/X", "raw.X (preview)",
                                      xenc + "  shape: " + dims,
                                      AnnMatrixAxes::ObsByRawVar, ""});
@@ -13625,6 +13833,7 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
                     add("raw.X", "dense  (" + std::to_string(dims[0]) + " \xc3\x97 " +
                                  std::to_string(dims[1]) + ")");
                     add("raw.X profile", matrix_profile(file_id, "/raw/X"));
+                    matrix_storage_rows(file_id, "/raw/X", "raw.X", add_storage);
                     specs.push_back({OpenSpec::Kind::Matrix2D, "/raw/X", "raw.X", "dense",
                                      AnnMatrixAxes::ObsByRawVar, ""});
                 }
@@ -13653,6 +13862,7 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
     }
 
     // Prepend the summary tab.
+    summary += storage;
     OpenSpec sum_spec{OpenSpec::Kind::Summary, "/", "summary", summary};
     specs.insert(specs.begin(), sum_spec);
     return specs;

@@ -4562,6 +4562,28 @@ if [ -f "$DATA/tiny.h5ad" ]; then
     assert_contains    "anndata_x_rows_are_obs"       "$XHDR" "obs"
 fi
 
+# ── AnnData storage layout in the summary tab ────────────────────────────────
+# How X (and each layer) is stored, from HDF5 metadata alone: encoding, stored
+# values per row, bytes on disk, and per component the chunk length / bytes
+# and the filter pipeline; for a sparse matrix, how many rows one data chunk
+# spans and what any row slice must decompress. tiny.chunked.h5ad: data in
+# chunks of 30 with shuffle + gzip 5, indices chunks of 30 with gzip 5,
+# indptr contiguous; 40 values over 10 rows.
+CK="$DATA/tiny.chunked.h5ad"
+if [ -f "$CK" ]; then
+    CKS=$("$VV" --tab summary --tsv --no-header "$CK")
+    assert_contains "h5ad_storage_file_size" "$CKS" "$(printf 'file size\t')"
+    assert_contains "h5ad_storage_x" "$CKS" "$(printf 'X storage\tcsr_matrix 0.1.0  |  40 stored values (4 per row)  |  ')"
+    assert_contains "h5ad_storage_data" "$CKS" \
+        "$(printf 'X/data\tfloat64  |  chunks of 30 (240 B)  |  shuffle + gzip 5  |  ')"
+    assert_contains "h5ad_storage_indices" "$CKS" \
+        "$(printf 'X/indices\tint32  |  chunks of 30 (120 B)  |  gzip 5  |  ')"
+    assert_contains "h5ad_storage_indptr_contiguous" "$CKS" \
+        "$(printf 'X/indptr\tint32  |  contiguous  |  no compression  |  ')"
+    assert_contains "h5ad_storage_row_slice" "$CKS" \
+        "$(printf 'X row slice\tone data chunk \xe2\x89\x88 8 rows; a slice decompresses at least 240 B of data and 120 B of indices')"
+fi
+
 # ── anndata < 0.8 categoricals (integer codes + __categories) ───────────────
 # The legacy encoding stores a categorical as a plain integer code array whose
 # `categories` attribute is an HDF5 object reference into a `__categories`
