@@ -927,14 +927,17 @@ static void print_usage(const char* prog) {
         "  --describe          per-column statistics and exit (add --json /\n"
         "                      --ndjson for machine-readable stats)\n"
         "  --count             print the row count and exit (honours -r and\n"
-        "                      --filter)\n"
+        "                      --filter). An indexed BAM / BCF / VCF.gz is\n"
+        "                      counted from its index when nothing filters\n"
         "  --stats             print Parquet metadata footer (row groups, codecs,\n"
         "                      per-column sizes, key-value metadata) without\n"
         "                      reading data; exit (add --json for JSON)\n"
         "  --contigs           BAM/CRAM/SAM, VCF/BCF: list the reference sequences\n"
         "                      (name, length) from the header and name the assembly\n"
         "                      (GRCh38, mm10, …). Reads no records; composes with\n"
-        "                      --tsv / --json / --sort / --filter\n"
+        "                      --tsv / --json / --sort / --filter. With an index:\n"
+        "                      mapped / unmapped reads (BAM) or records (VCF / BCF)\n"
+        "                      per sequence, as samtools idxstats\n"
         "  --gt-stats          VCF/BCF: add per-variant genotype summary columns\n"
         "                      over the samples — n_called/n_het/n_hom_ref/\n"
         "                      n_hom_alt/n_missing, AC/AN/AF, call_rate. A fixed\n"
@@ -25936,6 +25939,79 @@ genomic_header_fields(const GenomicHeader& h) {
     return f;
 }
 
+// Record counts held in a BAM (.bai / .csi), BCF (.csi) or bgzipped VCF
+// (.tbi / .csi) index, per reference sequence — what `samtools idxstats` and
+// `bcftools index --stats` print, read without touching the records. A CRAM
+// index (.crai) holds none. `names` is the index's own sequence order (a
+// tabix index lists only sequences that have records).
+struct IndexStats {
+    bool                     variant = false;
+    std::vector<std::string> names;
+    std::vector<uint64_t>    mapped, unmapped;   // unmapped: alignments only
+    uint64_t                 no_coor = 0;        // unplaced unmapped reads
+    uint64_t total() const {
+        uint64_t n = no_coor;
+        for (size_t i = 0; i < mapped.size(); ++i) n += mapped[i] + unmapped[i];
+        return n;
+    }
+};
+static bool read_index_stats(const std::string& path, IndexStats* out) {
+    struct stat st;
+    if (path == "-" || ::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
+    const int level = hts_get_log_level();
+    hts_set_log_level(HTS_LOG_OFF);      // a missing index is expected here
+    bool ok = false;
+    htsFile* fp = hts_open(path.c_str(), "r");
+    if (fp) {
+        const htsFormat* f = hts_get_format(fp);
+        IndexStats s;
+        auto collect = [&](hts_idx_t* idx, int n, auto name_of) {
+            if (!idx || hts_idx_fmt(idx) == HTS_FMT_CRAI) return false;
+            for (int i = 0; i < n; ++i) {
+                uint64_t m = 0, u = 0;
+                if (hts_idx_get_stat(idx, i, &m, &u) < 0) m = u = 0;   // no records
+                const char* nm = name_of(i);
+                s.names.emplace_back(nm ? nm : "");
+                s.mapped.push_back(m);
+                s.unmapped.push_back(s.variant ? 0 : u);
+            }
+            s.no_coor = s.variant ? 0 : hts_idx_get_n_no_coor(idx);
+            return true;
+        };
+        if (f->format == bam) {
+            if (sam_hdr_t* h = sam_hdr_read(fp)) {
+                if (hts_idx_t* idx = sam_index_load(fp, path.c_str())) {
+                    ok = collect(idx, sam_hdr_nref(h), [&](int i) { return sam_hdr_tid2name(h, i); });
+                    hts_idx_destroy(idx);
+                }
+                sam_hdr_destroy(h);
+            }
+        } else if (f->format == bcf) {
+            s.variant = true;
+            if (bcf_hdr_t* h = bcf_hdr_read(fp)) {
+                if (hts_idx_t* idx = bcf_index_load(path.c_str())) {
+                    ok = collect(idx, h->n[BCF_DT_CTG], [&](int i) { return bcf_hdr_id2name(h, i); });
+                    hts_idx_destroy(idx);
+                }
+                bcf_hdr_destroy(h);
+            }
+        } else if (f->format == vcf && f->compression == bgzf) {
+            s.variant = true;
+            if (tbx_t* tbx = tbx_index_load(path.c_str())) {
+                int n = 0;
+                const char** seqs = tbx_seqnames(tbx, &n);
+                ok = collect(tbx->idx, n, [&](int i) { return seqs[i]; });
+                free(seqs);
+                tbx_destroy(tbx);
+            }
+        }
+        if (ok) *out = std::move(s);
+        hts_close(fp);
+    }
+    hts_set_log_level((htsLogLevel)level);
+    return ok;
+}
+
 // Build the reference-sequence table for --contigs from a genomics file's
 // header alone. Returns an error string when the format has no such dictionary
 // or when --contigs is combined with a flag that operates on the file's data.
@@ -25958,24 +26034,59 @@ static std::string build_contigs(const Config& cfg,
     if (names.empty())
         return "'" + path + "': the header names no reference sequences";
 
-    arrow::StringBuilder name_b;
-    arrow::Int64Builder  len_b;
-    for (size_t i = 0; i < names.size(); ++i) {
-        auto s1 = name_b.Append(names[i]);
-        (void)s1;
-        if (lengths[i] > 0) (void)len_b.Append(lengths[i]);
-        else                (void)len_b.AppendNull();
+    // With an index that counts records, add them per sequence (matched by
+    // name: a tabix index has its own sequence list). A sequence the index
+    // has but the header does not name is appended with no length.
+    IndexStats ix;
+    const bool have_ix = read_index_stats(path, &ix);
+    std::vector<std::string> all_names = names;
+    std::vector<int64_t>     all_lengths = lengths;
+    std::map<std::string, size_t> ix_row;
+    if (have_ix) {
+        for (size_t i = 0; i < ix.names.size(); ++i) ix_row[ix.names[i]] = i;
+        std::set<std::string> in_header(names.begin(), names.end());
+        for (const auto& n : ix.names)
+            if (!in_header.count(n)) { all_names.push_back(n); all_lengths.push_back(0); }
     }
-    std::shared_ptr<arrow::Array> name_a, len_a;
-    if (!name_b.Finish(&name_a).ok() || !len_b.Finish(&len_a).ok())
+
+    arrow::StringBuilder name_b;
+    arrow::Int64Builder  len_b, mapped_b, unmapped_b;
+    for (size_t i = 0; i < all_names.size(); ++i) {
+        auto s1 = name_b.Append(all_names[i]);
+        (void)s1;
+        if (all_lengths[i] > 0) (void)len_b.Append(all_lengths[i]);
+        else                    (void)len_b.AppendNull();
+        if (!have_ix) continue;
+        auto it = ix_row.find(all_names[i]);
+        (void)mapped_b.Append(it == ix_row.end() ? 0 : (int64_t)ix.mapped[it->second]);
+        (void)unmapped_b.Append(it == ix_row.end() ? 0 : (int64_t)ix.unmapped[it->second]);
+    }
+    std::shared_ptr<arrow::Array> name_a, len_a, mapped_a, unmapped_a;
+    if (!name_b.Finish(&name_a).ok() || !len_b.Finish(&len_a).ok() ||
+        !mapped_b.Finish(&mapped_a).ok() || !unmapped_b.Finish(&unmapped_a).ok())
         return "'" + path + "': failed to build the contig table";
-    auto schema = arrow::schema({arrow::field("name",   arrow::utf8()),
-                                 arrow::field("length", arrow::int64())});
-    auto table = arrow::Table::Make(schema, {name_a, len_a});
+    arrow::FieldVector fields = {arrow::field("name",   arrow::utf8()),
+                                 arrow::field("length", arrow::int64())};
+    std::vector<std::shared_ptr<arrow::Array>> cols = {name_a, len_a};
+    if (have_ix && ix.variant) {
+        fields.push_back(arrow::field("records", arrow::int64()));
+        cols.push_back(mapped_a);
+    } else if (have_ix) {
+        fields.push_back(arrow::field("mapped", arrow::int64()));
+        fields.push_back(arrow::field("unmapped", arrow::int64()));
+        cols.push_back(mapped_a);
+        cols.push_back(unmapped_a);
+    }
+    auto table = arrow::Table::Make(arrow::schema(fields), cols);
 
     std::string footer;
     for (const auto& [label, value] : genomic_header_fields(gh))
         footer += (footer.empty() ? "" : "  |  ") + label + ": " + value;
+    if (have_ix) {
+        footer += "  |  Counts: from the index";
+        if (!ix.variant)
+            footer += "  |  Unmapped without a position: " + std::to_string(ix.no_coor);
+    }
 
     *out = std::make_unique<MemoryTableSource>(table, path, footer);
     return "";
@@ -26352,7 +26463,13 @@ int main(int argc, char** argv) {
     // total_rows()); with --filter, counts the matching rows via a scan.
     if (cfg.count) {
         int64_t total = 0;
-        if (cfg.filter_expr.empty()) {
+        IndexStats ix;
+        // Nothing narrows the rows: an index that counts records answers
+        // without reading them (samtools idxstats / bcftools index --stats).
+        if (cfg.filter_expr.empty() && cfg.region.empty() && !cfg.distinct &&
+            !cfg.pileup && !cfg.contigs && cfg.tab.empty() && read_index_stats(cfg.path, &ix)) {
+            total = (int64_t)ix.total();
+        } else if (cfg.filter_expr.empty()) {
             while (src->total_rows() < 0) src->ensure(src->num_chunks());
             total = src->total_rows();
         } else {

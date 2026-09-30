@@ -454,7 +454,10 @@ numeric columns omit \fBdistinct\fR, all-null columns report
 Print the number of rows and exit. Reflects a \fB\-r\fR region
 (taken from the source's row count, so it is instant on formats
 that carry a count in metadata) and, when \fB\-\-filter\fR is
-given, counts only the matching rows (a scan).
+given, counts only the matching rows (a scan). An indexed BAM (\fB.bai\fR /
+\fB.csi\fR), BCF or bgzipped VCF (\fB.tbi\fR / \fB.csi\fR) with no
+\fB\-\-filter\fR, \fB\-r\fR or \fB\-\-distinct\fR is counted from the record
+totals its index holds (as \fBsamtools idxstats\fR), reading no records.
 .TP
 .B \-\-stats
 Print Parquet metadata (row groups, compressed / uncompressed sizes,
@@ -482,7 +485,13 @@ the header, no records; \fBlength\fR is null for a VCF \fB##contig\fR
 that carried no \fBlength=\fR. Composes with \fB\-\-tsv\fR, \fB\-\-json\fR,
 \fB\-\-sort\fR, and \fB\-\-filter\fR (the length column is numeric, so
 \fB\-\-filter 'length > 1000000'\fR works). Answers "which assembly is
-this BAM aligned to?" without a full \fBsamtools view -H\fR read.
+this BAM aligned to?" without a full \fBsamtools view -H\fR read. When the
+file has an index that counts records, the table adds them per sequence:
+\fBmapped\fR and \fBunmapped\fR reads for a BAM (\fB.bai\fR / \fB.csi\fR,
+the numbers \fBsamtools idxstats\fR prints; the footer gives the unmapped
+reads without a position), or \fBrecords\fR for a BCF or bgzipped VCF, as
+\fBbcftools index \-\-stats\fR; a sequence with records but no header line
+is added with a null length. A CRAM index holds no counts.
 .TP
 .B \-\-gt\-stats
 For a VCF / BCF with genotypes, append per-variant summary columns

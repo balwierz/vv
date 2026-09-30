@@ -745,6 +745,14 @@ $ vv --contigs reads.bam
 Reference sequences: 25  |  Assembly: GRCh38 / hg38 (Homo sapiens)
 ```
 
+* **Index counts.** When the file has an index that counts records, the
+  table adds them per sequence: `mapped` and `unmapped` reads for a BAM
+  (`.bai` / `.csi` — the numbers `samtools idxstats` prints; the footer
+  gives the unmapped reads without a position), or `records` for a BCF or
+  bgzipped VCF (`.tbi` / `.csi`, as `bcftools index --stats`). A sequence
+  with records but no `##contig` line is added with a null length. A CRAM
+  index holds no counts, so CRAM keeps the two columns. The same totals make
+  `--count` on such a file instant when nothing filters the rows.
 * **Header only.** The contigs come from the `@SQ` lines of an alignment
   header or the `##contig` records of a variant header. No alignment or
   variant records are read, so it is instant even on a multi-GB BAM — a

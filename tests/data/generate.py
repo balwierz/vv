@@ -941,6 +941,33 @@ else:
             bf.write(r)
         # Whole-file --pileup does not need an index, so none is written.
 
+    # tiny.unmapped.bam: mapped, placed-unmapped (flag 4 with a position, as a
+    # mate's) and unplaced unmapped reads, coordinate-sorted and indexed, for
+    # the index record counts of --contigs / --count. samtools idxstats:
+    #   chr1 1000 3 0 / chr2 1000 1 2 / * 0 0 3   (9 records)
+    _um = HERE / "tiny.unmapped.bam"
+    _um_reads = [  # (name, flag, ref_id, pos0, cigar)
+        ("m1", 0,   0, 10,  "4M"), ("m2", 16,  0, 20, "4M"), ("m3", 256, 0, 30, "4M"),
+        ("m4", 0,   1, 5,   "4M"), ("p1", 4,   1, 50, None), ("p2", 4,   1, 60, None),
+        ("u1", 4,  -1, -1,  None), ("u2", 4,  -1, -1, None), ("u3", 4,  -1, -1, None),
+    ]
+    with pysam.AlignmentFile(str(_um), "wb", header=bam_header) as bf:
+        for (qn, flag, ref, pos0, cig) in _um_reads:
+            r = pysam.AlignedSegment(header=bf.header)
+            r.query_name = qn
+            r.flag = flag
+            r.reference_id = ref
+            r.reference_start = pos0
+            r.mapping_quality = 60 if cig else 0
+            if cig:
+                r.cigarstring = cig
+            r.query_sequence = "ACGT"
+            r.query_qualities = pysam.qualitystring_to_array("IIII")
+            r.next_reference_id = -1
+            r.next_reference_start = -1
+            bf.write(r)
+    pysam.index(str(_um))
+
 # ── samtools mpileup (single-sample + two-sample fixtures) ──────────────────
 # Real samtools mpileup output. Six columns for single-sample; the
 # two-sample variant has 3 + 3*2 = 9 columns.

@@ -312,9 +312,10 @@ jobs:
           grep -q "^cmd=vv --expand attributes --filter 'gene_type == \"pseudogene\"' " <<<"$out"
           VVG_WINTEST=1 VVG_TABDIMS=1 VVG_EXPAND=0 ./build-gui/gui/vvg tests/data/tiny.gtf | grep -q "rows=4 cols=9 "
           # --contigs replaces the alignment/variant view with the header's
-          # reference-sequence table (name, length) — 2 columns.
+          # reference-sequence table (name, length), plus the index's mapped /
+          # unmapped read counts for an indexed BAM — 4 columns.
           VVG_WINTEST=1 VVG_CONTIGS=1 ./build-gui/gui/vvg tests/data/tiny.bam \
-            | grep -q 'contigs=1.*cols=2'
+            | grep -q 'contigs=1.*cols=4'
           d=$(mktemp -d); mkdir -p "$d/k=a"; printf 'id,v\n1,2\n' > "$d/k=a/p.csv"
           VVG_SELFTEST=1 ./build-gui/gui/vvg "$d" | grep -q 'footer=Format: dataset'; rm -rf "$d"
           # Background (off-UI-thread) find returns the same match count as a

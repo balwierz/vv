@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Index record counts in `--contigs` and `--count`.** An index that counts
+  records now fills in per-sequence counts in `--contigs`: `mapped` and
+  `unmapped` reads for a BAM (`.bai` / `.csi`, as `samtools idxstats`, with
+  the unmapped reads without a position in the footer), `records` for a BCF
+  or bgzipped VCF (`.tbi` / `.csi`, as `bcftools index --stats`; a sequence
+  with records but no `##contig` line is added). `--count` on such a file,
+  with no `--filter`, `-r` or `--distinct`, takes the total from the index
+  instead of reading every record. A CRAM index holds no counts.
 - **Arrow IPC stream format.** The footer-less stream format (`.arrows`, as
   written by `pyarrow.ipc.new_stream` or Arrow Flight dumps) was refused as a
   binary file. It is read front to back, one record batch per chunk, so it
