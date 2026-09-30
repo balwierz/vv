@@ -54,8 +54,8 @@ install -d "$root/usr/share/doc/vv"
 # The static binary still links the C/C++ runtimes dynamically; declare only
 # what `ldd` actually reports so the package installs on any modern Debian.
 deps="libc6 (>= 2.28)"
-ldd "$BIN" 2>/dev/null | grep -q 'libstdc++' && deps="$deps, libstdc++6"
-ldd "$BIN" 2>/dev/null | grep -q 'libgcc_s'  && deps="$deps, libgcc-s1"
+ldd "$BIN" 2>/dev/null | grep 'libstdc++' >/dev/null && deps="$deps, libstdc++6"
+ldd "$BIN" 2>/dev/null | grep 'libgcc_s' >/dev/null  && deps="$deps, libgcc-s1"
 
 instkb="$(du -sk "$root" | cut -f1)"
 install -d "$root/DEBIAN"

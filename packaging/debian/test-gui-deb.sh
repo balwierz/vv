@@ -21,7 +21,7 @@ apt-get install -y -q "$deb"
 # If the package carries the KF6 plugins (the Debian 13 flavor does; Ubuntu
 # 24.04 has no KF6 to build them against), the install must have placed them
 # and their KF6 library deps must resolve.
-if dpkg-deb -c "$deb" | grep -q 'thumbcreator/vvthumbnail.so'; then
+if dpkg-deb -c "$deb" | grep 'thumbcreator/vvthumbnail.so' >/dev/null; then
     for plug in 'thumbcreator/vvthumbnail.so' 'kfilemetadata/vvextractor.so'; do
         path="$(dpkg -L vv-gui | grep "$plug")"
         test -f "$path"
@@ -39,7 +39,7 @@ if ldd /usr/bin/vvg | grep 'not found'; then
     echo "error: unresolved libraries after install" >&2
     exit 1
 fi
-ldd /usr/bin/vvg | grep -q '/usr/lib/vv-gui/'
+ldd /usr/bin/vvg | grep '/usr/lib/vv-gui/' >/dev/null
 
 # End-to-end through libvvcore, headless: the model path, then the app-shell
 # path the menus and drag-drop use (mirrors ci.yml's "Verify GUI artifacts").

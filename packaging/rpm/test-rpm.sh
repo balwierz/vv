@@ -20,8 +20,8 @@ dnf install -y "$cli_rpm" "$gui_rpm"
 rpm -q vv vv-gui
 # The Dolphin/KFileMetaData plugins must be in the gui package — this is the
 # first prebuilt artifact that carries them at all.
-rpm -ql vv-gui | grep -q 'thumbcreator/vvthumbnail.so'
-rpm -ql vv-gui | grep -q 'kfilemetadata/vvextractor.so'
+rpm -ql vv-gui | grep 'thumbcreator/vvthumbnail.so' >/dev/null
+rpm -ql vv-gui | grep 'kfilemetadata/vvextractor.so' >/dev/null
 
 # CLI end-to-end: version, and an actual read through the Arrow reader core.
 vv --version
