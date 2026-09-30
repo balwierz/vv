@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **PLINK files.** A PLINK 1 `.bed` genotype file was read as a BED with one
+  column of hex bytes. It is recognised by its magic bytes (`6c 1b`) and
+  refused, as is a PLINK 2 `.pgen`, with the command that exports the
+  genotypes to a VCF (`plink2 --bfile NAME --export vcf bgz --out NAME`). The
+  variant and sample tables, shown as plain text before, open as tables with
+  PLINK 2's column names: `.bim` (`CHROM ID CM POS ALT REF`) and `.fam`
+  (`FID IID PAT MAT SEX PHENO1`, space- or tab-separated) without a header
+  row, `.pvar` / `.psam` from their `#` header line (or in `.bim` / `.fam`
+  order without one).
 - **TUI value counts (`F`).** `F` lists how often each value of the
   cursor's column occurs among the rows the live filter keeps, most frequent
   first with its share; Enter narrows the filter to that value (`col ==
