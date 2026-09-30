@@ -576,7 +576,11 @@ The footer also summarises the rest of the header: sort order (`@HD SO`), the
 number of read groups and their distinct samples (`@RG SM`, or the VCF sample
 columns), and the programs that produced the file (`@PG` name + version, or
 VCF `##source`). Answers "which assembly is this aligned to?" at a glance, and
-composes with `--tsv` / `--json` / `--sort` / `--filter`.
+composes with `--tsv` / `--json` / `--sort` / `--filter`. With an index that
+counts records, it adds them per sequence — `mapped` / `unmapped` reads for a
+BAM (`samtools idxstats`), `records` for a BCF / bgzipped VCF (`bcftools index
+--stats`) — and `--count` on such a file reads the total from the index
+instead of the records.
 
 ```
 $ vv --contigs reads.bam

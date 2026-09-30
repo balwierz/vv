@@ -3298,11 +3298,11 @@ fi
 if [ -f "$DATA/tiny.bam" ]; then
     BAM_CTG=$("$VV" --contigs --tsv "$DATA/tiny.bam")
     assert_eq_file_inline "contigs_bam" "$BAM_CTG" \
-        "$(printf 'name\tlength\nchr1\t1000\nchr2\t1000')"
+        "$(printf 'name\tlength\tmapped\tunmapped\nchr1\t1000\t3\t0\nchr2\t1000\t0\t0')"
     assert_eq_file_inline "contigs_bam_count" "$("$VV" --contigs --count "$DATA/tiny.bam")" "2"
     # JSON form for machine consumers.
     BAM_CTG_JSON=$("$VV" --contigs --ndjson "$DATA/tiny.bam" | head -1)
-    assert_eq_file_inline "contigs_ndjson" "$BAM_CTG_JSON" '{"name": "chr1", "length": 1000}'
+    assert_eq_file_inline "contigs_ndjson" "$BAM_CTG_JSON" '{"name": "chr1", "length": 1000, "mapped": 3, "unmapped": 0}'
     # Composes with --filter on the numeric length column.
     BAM_CTG_F=$("$VV" --contigs --tsv --no-header --select name --filter 'length >= 1000' "$DATA/tiny.bam" | tr '\n' ' ')
     assert_eq_file_inline "contigs_filter_length" "$BAM_CTG_F" "chr1 chr2 "
@@ -3316,6 +3316,33 @@ if [ -f "$DATA/tiny.vcf.gz" ]; then
     VCF_CTG=$("$VV" --contigs --tsv --no-header "$DATA/tiny.vcf.gz" 2>/dev/null | cut -f1 | tr '\n' ' ')
     assert_eq_file_inline "contigs_vcf" "$VCF_CTG" "chr1 chr2 "
 fi
+# With an index that counts records (.bai / .csi, .tbi), --contigs adds them
+# per sequence — mapped / unmapped for alignments (samtools idxstats), records
+# for variants (bcftools index --stats) — and --count with nothing narrowing
+# the rows takes the index total instead of reading every record. A CRAM
+# index holds no counts, so CRAM keeps the two columns. tiny.unmapped.bam has
+# 3 + 1 mapped, 2 placed-unmapped and 3 unplaced reads (samtools: 9 records).
+UMB="$DATA/tiny.unmapped.bam"
+if [ -f "$UMB" ]; then
+    assert_eq_file_inline "contigs_index_counts" "$("$VV" --contigs --tsv "$UMB")" \
+        "$(printf 'name\tlength\tmapped\tunmapped\nchr1\t1000\t3\t0\nchr2\t1000\t1\t2')"
+    assert_contains "contigs_unplaced_unmapped" "$("$VV" --contigs --color=never "$UMB")" \
+        "Unmapped without a position: 3"
+    assert_eq_file_inline "count_from_index"        "$("$VV" --count "$UMB")" "9"
+    assert_eq_file_inline "count_filter_still_reads" "$("$VV" --count --filter 'FLAG has UNMAP' "$UMB")" "5"
+    assert_eq_file_inline "count_region_still_reads" "$("$VV" --count -r chr2 "$UMB")" "3"
+fi
+if [ -f "$DATA/tiny.cram" ]; then
+    assert_eq_file_inline "contigs_cram_no_counts" \
+        "$("$VV" --contigs --list-columns "$DATA/tiny.cram" | tr '\n' ' ')" "name length "
+fi
+if [ -f "$DATA/tiny.vcf.gz.tbi" ]; then
+    assert_eq_file_inline "contigs_vcf_records" \
+        "$("$VV" --contigs --tsv --no-header --select name,records "$DATA/tiny.vcf.gz" 2>/dev/null | tr '\t\n' ':,')" \
+        "chr1:3,chr2:1,"
+    assert_eq_file_inline "count_vcf_from_index" "$("$VV" --count "$DATA/tiny.vcf.gz" 2>/dev/null)" "4"
+fi
+
 # Assembly detection keys on the length of chr1 (a distinctive per-assembly
 # value); a synthetic GRCh38-length header is recognised.
 CTGSAM="$TMP/grch38.sam"
@@ -3346,7 +3373,7 @@ CTG_RICH=$("$VV" --contigs --color=never "$CTGRICH" 2>&1 | tail -1)
 assert_eq_file_inline "contigs_header_summary" "$CTG_RICH" \
     "Reference sequences: 1  |  Assembly: GRCh38 / hg38 (Homo sapiens)  |  Sorted: coordinate  |  Read groups: 6  |  Samples: S1, S2, S3, … (5)  |  Programs: bwa 0.7.17, samtools 1.19, markdup"
 CTG_BCF=$("$VV" --contigs --color=never "$DATA/tiny.samples.bcf" 2>&1 | tail -1)
-assert_eq_file_inline "contigs_vcf_samples" "$CTG_BCF" "Reference sequences: 1  |  Samples: S1, S2"
+assert_eq_file_inline "contigs_vcf_samples" "$CTG_BCF" "Reference sequences: 1  |  Samples: S1, S2  |  Counts: from the index"
 # Errors: not an alignment/variant file, and combinations that read records.
 assert_exit_code "contigs_non_genomic_exits_1" 1 "$VV" --contigs "$DATA/tiny.parquet"
 CTG_NG_ERR=$("$VV" --contigs "$DATA/tiny.parquet" 2>&1 || true)

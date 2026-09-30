@@ -412,7 +412,7 @@ work that touches the same code:
   stdin, read as it arrives): `feat/arrow-ipc-stream`.
 - [ ] **Text formats on stdin** (S) — FASTA / FASTQ / SAM / VCF piped as plain
   text are read as TSV; sniff them as the file readers would.
-- [ ] **idxstats in `--contigs`, index-backed `--count`** (S+).
+- [x] **idxstats in `--contigs`, index-backed `--count`** (S+) — `feat/index-stats`.
 - [ ] **`--seq-stats` for FASTA / FASTQ** (S).
 - [ ] **TSV dialects: `.bedpe`, `.pairs`, `.gct`, `.maf`** (S–M).
 - [ ] **UTF-8 and line editing in the TUI `/ & :` bars** (S, then M).
