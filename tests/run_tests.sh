@@ -905,6 +905,32 @@ if require "feather interop" python3 && python3 -c "import pyarrow.feather" 2>/d
     assert_eq_file_inline "arrow_pyarrow_reads" "$PA" "$("$VV" --count "$DATA/tiny.tsv")"
 fi
 
+# The Arrow IPC stream format (.arrows: no footer, read front to back) was
+# refused as a binary file. It streams like the text readers — also from stdin
+# or a pipe, with no temporary copy — and a stream saved as .arrow is
+# recognised by its 0xFFFFFFFF marker. tiny.arrows holds tiny.parquet's rows.
+ARS="$DATA/tiny.arrows"
+if [ -f "$ARS" ]; then
+    assert_eq_file_inline "arrows_matches_parquet" "$("$VV" --tsv --no-header "$ARS")" \
+        "$("$VV" --tsv --no-header "$DATA/tiny.parquet")"
+    cp "$ARS" "$TMP/stream.arrow"
+    cp "$ARS" "$TMP/stream_noext"
+    assert_eq_file_inline "arrows_saved_as_arrow" "$("$VV" --count "$TMP/stream.arrow")" "20"
+    assert_eq_file_inline "arrows_no_extension"   "$("$VV" --count "$TMP/stream_noext")" "20"
+    assert_eq_file_inline "arrows_procsub"        "$("$VV" --count <(cat "$ARS"))" "20"
+    assert_eq_file_inline "arrows_stdin"          "$("$VV" --count - < "$ARS" 2>&1)" "20"
+    assert_eq_file_inline "arrows_tail"  "$("$VV" --tsv --no-header --tail 1 --select Score "$ARS")" "0.95"
+    assert_eq_file_inline "arrows_sort"  "$("$VV" --tsv --no-header -n 1 --sort Score:desc --select Score "$ARS")" "0.95"
+    if command -v python3 >/dev/null 2>&1; then
+        assert_eq_file_inline "arrows_schema_json" "$("$VV" --schema --json "$ARS" | python3 -c '
+import json, sys; d = json.load(sys.stdin); print(d["format"], d["rows"], len(d["columns"]))')" \
+            "Arrow IPC stream None 5"
+    fi
+    head -c 2000 "$ARS" > "$TMP/trunc.arrows"
+    assert_exit_code "arrows_truncated_exit1" 1 "$VV" --count "$TMP/trunc.arrows"
+    rm -f "$TMP/stream.arrow" "$TMP/stream_noext" "$TMP/trunc.arrows"
+fi
+
 echo
 echo '── Stdin (-) ──────────────────────────────────────────'
 "$VV" --tsv --no-header - < "$DATA/tiny.tsv" > "$TMP/stdin_tsv.out"

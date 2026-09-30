@@ -58,6 +58,7 @@ would need horizontal scrolling.
 |-------------------|-------------------------------------------------------------|
 | Apache Parquet    | `.parquet`                                                  |
 | Arrow IPC, Feather| `.arrow`, `.feather`                                        |
+| Arrow IPC stream  | `.arrows` — the footer-less stream format, read front to back as it arrives, so it works from stdin or a pipe with no temporary copy. A stream saved as `.arrow`, or under an unknown extension, is recognised by its leading 0xFFFFFFFF marker. |
 | **LociSSD**       | `.lociss` (auto-detected via the `lociSSD_manifest` footer; `MaxEndSoFar` hidden from views) |
 | PLINK             | `.bim`, `.fam`, `.pvar`, `.psam` (plus `.gz` / `.zst`). `.bim` and `.fam` have no header row and are named with PLINK 2's columns: `CHROM ID CM POS ALT REF` (allele 1 is `ALT`, as plink2 reads it) and `FID IID PAT MAT SEX PHENO1`; a space-separated `.fam` (PLINK 1) is read too. `.pvar` / `.psam` take their `#CHROM` / `#FID` / `#IID` header line, and without one use the `.bim` / `.fam` order. The genotypes — a PLINK 1 `.bed`, recognised by its magic bytes `6c 1b`, or a PLINK 2 `.pgen` — are binary and refused with the command that exports them: `plink2 --bfile NAME --export vcf bgz --out NAME` (`--pfile` for `.pgen`). A text BED is unaffected. |
 | Sparse matrices   | `.mtx`, `.mtx.gz` — MatrixMarket coordinate files (Cell Ranger / STARsolo `matrix.mtx.gz`, `scipy.io.mmwrite`, R `Matrix::writeMM`). One row per stored entry: `row`, `col`, `value` (no `value` for a `pattern` matrix), indices 0-based like `scipy.io.mmread`. The footer shows the shape and entry count. Only `coordinate` + `general` symmetry is read; symmetric (one triangle stored) and dense `array` files are refused, and an out-of-range index or an entry count that disagrees with the size line is an error. A 10x Genomics / STARsolo matrix directory (`matrix.mtx(.gz)` + `barcodes.tsv(.gz)` + `features.tsv(.gz)` or v2 `genes.tsv`) opens as `matrix`, `features` and `barcodes` tabs; the matrix entries stream with `feature_id`, `feature_name`, `feature_type` and `barcode` appended, so `vv filtered_feature_bc_matrix/ --filter 'feature_name == "CD74"'` works. A shape that fits neither orientation of the sidecars is an error. |
@@ -84,8 +85,8 @@ would need horizontal scrolling.
 | JSON / NDJSON     | `.json`, `.ndjson`, `.jsonl` (plus `.gz` / `.zst`) via Arrow's streaming JSON reader. Two shapes are accepted: a top-level array of objects `[{…},{…}]` (pretty-printed or compact), and newline-delimited / concatenated objects (JSON Lines). The array form is unwrapped into records by a small stream filter — it drops the enclosing `[` `]` and turns the commas between elements into newlines, tracking string and nesting state so structural characters inside a value are left alone — before Arrow parses it; NDJSON passes straight through. Records need not share a schema: `unexpected_field_behavior = InferType` means Arrow infers the union of all fields and fills the gaps with nulls. Nested objects become `struct` columns and nested arrays become `list` columns, rendered by the same cell formatters as Parquet. Streaming and forward-only, so a file larger than memory still previews. An empty array, an array of scalars, or a field whose type changes between rows is not tabular and errors with a pointer to `--text`, which shows the raw JSON source instead. |
 | Stdin             | `vv -` reads text from stdin as it streams in (auto-decompresses gzip / zstd); a binary format (Parquet, Arrow, BAM, BCF, HDF5, SQLite, xlsx, …) is copied to a temporary file first. Process substitution (`vv <(zcat x.parquet.gz)`) works the same way |
 
-Unknown extensions are auto-detected by magic bytes (Parquet, Arrow IPC,
-Feather, BAM/BCF/CRAM) or delimiter heuristic (TSV vs. CSV).
+Unknown extensions are auto-detected by magic bytes (Parquet, Arrow IPC file
+and stream, Feather, BAM/BCF/CRAM) or delimiter heuristic (TSV vs. CSV).
 
 # Output modes
 
@@ -1072,6 +1073,7 @@ $ vv -@ 4 -n 1000 alignments.bam            # multi-threaded BAM decode
 | BAM / CRAM     | `hts_set_threads(N)`                                 |
 | FASTA / FASTQ  | `bgzf_mt(fp, N, 256)`                                |
 | Arrow IPC      | lazy: footer only at open; batches decoded on demand |
+| Arrow IPC stream | forward-only: one record batch per chunk, bounded window |
 
 `--threads 0` (default) auto-picks `min(8, max(2, cores/2))`.
 
