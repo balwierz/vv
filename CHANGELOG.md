@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`.bgz` files.** bgzip's `.bgz` suffix (gnomAD ships `*.vcf.bgz`) was not
+  recognised and the file was shown as plain text. It is now read like `.gz`
+  — `x.vcf.bgz`, `x.bed.bgz`, `x.fq.bgz` open as VCF / BED / FASTQ, and `-r`
+  uses the `.tbi` beside them. The KDE MIME type for compressed VCF lists
+  `*.vcf.bgz`.
 - **Line editing and UTF-8 in the TUI's `/ ? & :` bars.** The input bars
   took ASCII only (a UTF-8 character was dropped), appended at the end, and
   Backspace removed one byte. They now edit at a cursor in whole UTF-8

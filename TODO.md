@@ -125,11 +125,9 @@ user-facing summary).
   follow-up dedicated source class on top of the existing HDF5
   plumbing.
 - Galaxy `.dat` / Galaxy archive — niche but visible.
-- `.bgz` suffix (gnomAD ships `*.vcf.bgz`) — not recognised as a
-  compressed VCF; `vv x.vcf.bgz` falls back to plain text. Once supported,
-  add `*.vcf.bgz` to `application/x-compressed-vcf` in `gui/kde/vv-formats.xml`.
 
 ### Done
+- `.bgz` suffix read as `.gz` (VCF / BED / FASTQ / FASTA, `-r` via the `.tbi`); `*.vcf.bgz` in the KDE MIME package.
 - `vv x.bam --pileup -f ref.fa` — reference-aware pileup (shipped 1.15.0,
   #73). Fills the `ref` column from an indexed FASTA and renders matches as
   `.` / `,`, byte-identical to `samtools mpileup -B -f`. Extended in 1.16.0

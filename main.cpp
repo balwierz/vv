@@ -6984,7 +6984,7 @@ public:
     // The first line of `path` that does not start with "##" (decompressed
     // for .gz / .zst); "" when there is none or the file cannot be read.
     static std::string first_line_after_meta(const std::string& path) {
-        const bool is_gz = fends_ci(path, ".gz") || fends_ci(path, ".zst") ||
+        const bool is_gz = fends_ci(path, ".gz") || fends_ci(path, ".bgz") || fends_ci(path, ".zst") ||
                            fends_ci(path, ".zstd");
         std::shared_ptr<arrow::io::ReadableFile> raw;
         std::shared_ptr<arrow::io::InputStream>  input;
@@ -6999,7 +6999,7 @@ public:
     }
     // The first line of `path` (decompressed for .gz / .zst); "" if unreadable.
     static std::string first_line_after_meta_raw(const std::string& path) {
-        const bool is_gz = fends_ci(path, ".gz") || fends_ci(path, ".zst") ||
+        const bool is_gz = fends_ci(path, ".gz") || fends_ci(path, ".bgz") || fends_ci(path, ".zst") ||
                            fends_ci(path, ".zstd");
         std::shared_ptr<arrow::io::ReadableFile> raw;
         std::shared_ptr<arrow::io::InputStream>  input;
@@ -7059,7 +7059,7 @@ public:
         // "is_gz" means the byte stream is compressed (non-seekable). Both a
         // gzip (.gz) and a zstandard (.zst / .zstd) wrapper qualify; open_stream
         // selects the matching codec.
-        bool is_gz = fends_ci(path, ".gz") ||
+        bool is_gz = fends_ci(path, ".gz") || fends_ci(path, ".bgz") ||
                      fends_ci(path, ".zst") || fends_ci(path, ".zstd");
 
         std::shared_ptr<arrow::io::ReadableFile>  raw;
@@ -18079,6 +18079,17 @@ public:
 // member files, and defined further down with the directory branch that reaches
 // DatasetSource. A member file is never itself a directory, so there is no
 // recursion.
+// A FASTA / FASTQ extension, plain or .gz / .bgz (checked on `det`, where
+// .bgz reads as .gz). The reader decompresses through BGZF, which handles
+// gzip but not zstandard, so a .zst wrapper does not count.
+static bool fastx_ext(const std::string& path, const std::string& det,
+                      std::initializer_list<const char*> exts) {
+    if (fends_ci(path, ".zst") || fends_ci(path, ".zstd")) return false;
+    for (const char* e : exts)
+        if (fends_ci(det, e) || fends_ci(det, (std::string(e) + ".gz").c_str())) return true;
+    return false;
+}
+
 static std::string open_source_dispatch(const std::string& path, const Config& cfg,
                                         std::unique_ptr<TabularSource>* out);
 
@@ -18729,6 +18740,8 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
     std::string det = path;
     if      (fends_ci(det, ".zstd")) det.resize(det.size() - 5);
     else if (fends_ci(det, ".zst"))  det.resize(det.size() - 4);
+    // `.bgz` (gnomAD's *.vcf.bgz) is the bgzip suffix: read it as `.gz`.
+    if (fends_ci(det, ".bgz")) det = det.substr(0, det.size() - 4) + ".gz";
 
     // --tags names aux-tag columns and applies only to the alignment formats
     // read through htslib (BamSource). Reject it elsewhere rather than let it be
@@ -19051,19 +19064,13 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
-    } else if (fends_ci(path, ".fa")    || fends_ci(path, ".fa.gz")    ||
-               fends_ci(path, ".fasta") || fends_ci(path, ".fasta.gz") ||
-               fends_ci(path, ".fna")   || fends_ci(path, ".fna.gz")   ||
-               fends_ci(path, ".faa")   || fends_ci(path, ".faa.gz")   ||
-               fends_ci(path, ".ffn")   || fends_ci(path, ".ffn.gz")   ||
-               fends_ci(path, ".frn")   || fends_ci(path, ".frn.gz")) {
+    } else if (fastx_ext(path, det, {".fa", ".fasta", ".fna", ".faa", ".ffn", ".frn"})) {
         std::unique_ptr<FastxSource> src;
         std::string err = FastxSource::open(path, /*is_fastq=*/false, cfg, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
-    } else if (fends_ci(path, ".fq")    || fends_ci(path, ".fq.gz")    ||
-               fends_ci(path, ".fastq") || fends_ci(path, ".fastq.gz")) {
+    } else if (fastx_ext(path, det, {".fq", ".fastq"})) {
         std::unique_ptr<FastxSource> src;
         std::string err = FastxSource::open(path, /*is_fastq=*/true, cfg, &src);
         if (!err.empty()) return err;

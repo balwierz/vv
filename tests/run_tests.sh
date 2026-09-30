@@ -185,6 +185,17 @@ assert_exit_code "mtx_entry_count_mismatch" 1 "$VV" --tsv "$MTX/nnz.mtx"
 assert_exit_code "mtx_region_refused"      1 "$VV" -r chr1:1-2 "$MTX/int.mtx"
 rm -rf "$MTX"
 
+# .bgz is bgzip's suffix (gnomAD ships *.vcf.bgz); it read as plain text.
+# It is now read like .gz: VCF / BED / FASTQ, and -r through the .tbi.
+BGZ="$TMP/bgz"; mkdir -p "$BGZ"
+cp "$DATA/tiny.vcf.gz" "$BGZ/g.vcf.bgz"; cp "$DATA/tiny.vcf.gz.tbi" "$BGZ/g.vcf.bgz.tbi"
+cp "$DATA/tiny.bed.gz" "$BGZ/g.bed.bgz"; cp "$DATA/tiny.fq.gz" "$BGZ/r.fq.bgz"
+assert_eq_file_inline "bgz_vcf_count"  "$("$VV" --count "$BGZ/g.vcf.bgz" 2>/dev/null)" "4"
+assert_eq_file_inline "bgz_vcf_region" "$("$VV" --count -r chr1:0-200 "$BGZ/g.vcf.bgz" 2>/dev/null)" "1"
+assert_eq_file_inline "bgz_bed_count"  "$("$VV" --count "$BGZ/g.bed.bgz")" "20"
+assert_eq_file_inline "bgz_fastq_count" "$("$VV" --count "$BGZ/r.fq.bgz")" "3"
+rm -rf "$BGZ"
+
 # Genomics TSV layouts, shown as plain text before: .bedpe (no header row →
 # bedtools names), 4DN .pairs (names from "#columns:"), GenePattern .gct (the
 # version and dimensions lines, and 1.3's column-metadata rows, are not data)

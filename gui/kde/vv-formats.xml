@@ -124,6 +124,7 @@
     <comment>Variant Call Format (compressed)</comment>
     <sub-class-of type="application/gzip"/>
     <glob pattern="*.vcf.gz"/>
+    <glob pattern="*.vcf.bgz"/>
     <icon name="vv"/>
   </mime-type>
   <mime-type type="application/x-bcf">
