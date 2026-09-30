@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Flat OpenDocument (`.fods`).** A `.fods` is the `content.xml` of an
+  `.ods` as a single XML file (LibreOffice's *Flat XML ODF Spreadsheet*); it
+  was refused with a conversion hint and now opens like an `.ods` — one tab
+  per sheet, same cell typing.
 - **Whole-matrix export.** `--tab X --parquet` (or `--tsv`, `--csv`, `--json`,
   `--describe`, vvg's *Export*) on an AnnData / HDF5 matrix larger than the
   1000 × 200 preview exited 1; it now streams every row and column — dense

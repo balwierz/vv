@@ -1715,7 +1715,6 @@ allow = {'.gz', '.zst', '.zstd', '.bai', '.csi', '.crai', '.tbi', '.fai', '.gzi'
          # Recognised ONLY to produce a better error than the generic one.
          # Deliberately absent from the registry: advertising a format vv
          # cannot open is the thing this check exists to prevent.
-         '.fods',
          # A PLINK 2 genotype file: refused with the plink2 export command.
          '.pgen'}
 seen = re.findall(r'fends_ci\([^,]+,\s*"([^"]+)"', src)
@@ -2801,6 +2800,16 @@ if [ -f "$DATA/tiny.ods" ]; then
     assert_contains "ods_type_real"                 "$OD_SCH" "double"
     OD_FLT=$("$VV" --tsv --no-header --filter 'score > 5.0' "$DATA/tiny.ods" | wc -l | tr -d ' ')
     assert_eq_file_inline "ods_filter_by_real"      "$OD_FLT" "2"
+fi
+# Flat OpenDocument (.fods): the same workbook as one XML document (no zip)
+# reads the same sheets and cells as the .ods.
+if [ -f "$DATA/tiny.fods" ] && [ -f "$DATA/tiny.ods" ]; then
+    assert_eq_file_inline "fods_matches_ods" \
+        "$("$VV" --tsv "$DATA/tiny.fods" | md5sum)" "$("$VV" --tsv "$DATA/tiny.ods" | md5sum)"
+    assert_eq_file_inline "fods_second_sheet" \
+        "$("$VV" --tab samples --tsv --no-header "$DATA/tiny.fods" | tr '\t\n' ',;')" \
+        "1,sampleA,12.5;2,sampleB,8.7;3,sampleC,15.1;"
+    assert_contains "fods_footer" "$("$VV" --schema "$DATA/tiny.fods" 2>&1)" "Format: ODS  |  Sheet: peaks"
 fi
 
 # Ragged workbooks: a data row wider than the 3-column header. The sheet must

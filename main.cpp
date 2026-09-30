@@ -707,7 +707,7 @@ static const FormatInfo kFormats[] = {
    false, false, true,  true,  false, ""},
   {"Excel workbook", ".xlsx .xlsm", "XlsxSource",
    false, false, true,  false, false, ""},
-  {"OpenDocument spreadsheet", ".ods", "OdsSource",
+  {"OpenDocument spreadsheet", ".ods .fods", "OdsSource",
    false, false, true,  false, false, ""},
   {"HDF5 / AnnData / Loom", ".h5ad .h5 .hdf5 .loom", "Hdf5Source",
    false, false, true,  false, false, ""},
@@ -822,8 +822,8 @@ static void print_usage(const char* prog) {
         "  .2bit                       UCSC 2bit (sequence index: name/length/blocks)\n"
         "  .sqlite  .sqlite3  .db      SQLite database (each table → one TUI tab)\n"
         "  .xlsx  .xlsm                Excel spreadsheet (each sheet → one TUI tab)\n"
-        "  .ods                OpenDocument spreadsheet (each sheet → one\n"
-        "                              TUI tab)\n"
+        "  .ods  .fods                 OpenDocument spreadsheet, zipped or flat\n"
+        "                              XML (each sheet → one TUI tab)\n"
         "  .h5ad                       AnnData (single-cell) — obs / var / X / obsm tabs\n"
         "  .h5  .hdf5  .loom           generic HDF5 — hierarchy tab + per-dataset tabs\n"
         "  .npz                        NumPy archive — summary tab + per-array tabs (3-D+ scrubs via [/])\n"
@@ -11876,10 +11876,21 @@ class OdsSource : public WorkbookSource {
     }
 
 public:
+    // `flat`: a flat OpenDocument file (.fods) — the same office:spreadsheet
+    // body as an .ods's content.xml, as one uncompressed XML document.
     static std::string open_first(const std::string& path,
-                                   std::unique_ptr<OdsSource>* out) {
+                                   std::unique_ptr<OdsSource>* out,
+                                   bool flat = false) {
         std::string xml;
-        std::string err = ods_unzip_content_xml(path, &xml);
+        std::string err;
+        if (flat) {
+            std::ifstream in(path, std::ios::binary);
+            if (!in) return "Cannot open '" + path + "'";
+            xml.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+            if (in.bad()) return "'" + path + "': read error";
+        } else {
+            err = ods_unzip_content_xml(path, &xml);
+        }
         if (!err.empty()) return err;
 
         auto all = std::make_shared<std::vector<std::pair<std::string,
@@ -19633,17 +19644,10 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
-    } else if (fends_ci(path, ".fods")) {
-        // Flat ODF is a single uncompressed XML document, not a zip container,
-        // so OdsSource (minizip -> content.xml -> expat) can never read it.
-        // It was advertised in the registry and in --help regardless, and the
-        // failure was the unhelpful "Cannot open as ODS (zip)".
-        return "'" + path + "': flat OpenDocument (.fods) is a single XML "
-               "document, not a zipped .ods, and is not supported. Convert it: "
-               "`libreoffice --headless --convert-to ods \"" + path + "\"`.";
-    } else if (fends_ci(path, ".ods")) {
+    } else if (fends_ci(path, ".ods") || fends_ci(path, ".fods")) {
+        // .fods (flat ODF) is the .ods content.xml as a plain XML file.
         std::unique_ptr<OdsSource> src;
-        std::string err = OdsSource::open_first(path, &src);
+        std::string err = OdsSource::open_first(path, &src, fends_ci(path, ".fods"));
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";

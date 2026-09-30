@@ -1046,6 +1046,18 @@ else:
     ])
     ods.save(str(ods_path))
 
+    # tiny.fods: the same workbook as flat OpenDocument — content.xml as a
+    # standalone XML document (root office:document instead of
+    # office:document-content), the way `soffice --convert-to fods` stores it.
+    import zipfile
+    with zipfile.ZipFile(ods_path) as z:
+        content = z.read("content.xml").decode("utf-8")
+    content = content.replace(
+        "<office:document-content",
+        '<office:document office:mimetype="application/vnd.oasis.opendocument.spreadsheet"', 1)
+    content = content.replace("</office:document-content>", "</office:document>")
+    (HERE / "tiny.fods").write_text(content, encoding="utf-8")
+
 # ── Ragged ODS: a row wider than the header (.ods) ───────────────────────────
 # A 3-column header followed by a 4-column data row. The reader used to lock the
 # width to the header and Arrow's CSV reader then rejected the whole sheet

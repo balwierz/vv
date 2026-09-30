@@ -106,9 +106,10 @@ HDF5 files surface a \fBhierarchy\fR tab listing every group / dataset
 with path / kind / shape / dtype, plus one tab per 1-D or 2-D dataset
 (up to 32 datasets; each previewed at 1000 rows \(mu 200 columns).
 .IP \(bu 2
-\fB.ods\fR \(en OpenDocument Spreadsheet. Each sheet becomes a TUI
-tab. Hand-rolled parser: minizip inflates \fBcontent.xml\fR from the
-\&.ods ZIP, expat SAX-parses the SpreadsheetML payload. Cells with a
+\fB.ods\fR, \fB.fods\fR \(en OpenDocument Spreadsheet, zipped or flat
+XML. Each sheet becomes a TUI tab. Hand-rolled parser: minizip inflates
+\fBcontent.xml\fR from the \&.ods ZIP (a \&.fods is that document as a
+plain file), expat SAX-parses the SpreadsheetML payload. Cells with a
 typed \fBoffice:value\fR (numeric / date / boolean) use that
 canonical value; string cells use the rendered text. Empty runs
 collapsed via \fBtable:number-columns-repeated\fR are honoured.
