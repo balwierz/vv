@@ -417,7 +417,7 @@ work that touches the same code:
 - [x] **`--tags` for PAF** (M).
 - [ ] **VCF/BCF per-sample FORMAT fields** (L) — named BCF sample columns
   first.
-- [ ] **`--flatten` for nested struct paths** (M+).
+- [x] **`--flatten` for nested struct paths** (M+).
 - [x] **vvg accepts vv's view flags** (S–M).
 
 Rejected in this round: `--genes` full-matrix gene lookup (value 2/5; the cap

@@ -355,6 +355,13 @@ LociSSD's \fBMaxEndSoFar\fR) stay hidden; in export modes
 (\fB\-\-tsv\fR / \fB\-\-csv\fR / \fB\-\-json\fR / \fB\-\-parquet\fR)
 the explicit list is honoured exactly.
 .TP
+.B \-\-flatten
+Replace each struct column (Parquet, Arrow, JSON nesting) with one column
+per leaf, named by its path: \fBst.a\fR, \fBst.b.c\fR. A null struct makes
+its leaves null. Lists and maps keep their shape. The leaves work with
+\fB\-\-select\fR, \fB\-\-filter\fR, \fB\-\-sort\fR and the exports like any
+column (\fB\-\-filter 'st.a > 3'\fR).
+.TP
 .BI \-\-expand " col"
 Unpack a packed \fBkey=value\fR column into real columns, appended to the
 schema. Written for VCF \fBINFO\fR and GFF/GTF \fBattributes\fR, which carry

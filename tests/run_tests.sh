@@ -220,6 +220,19 @@ assert_eq_file_inline "bgz_bed_count"  "$("$VV" --count "$BGZ/g.bed.bgz")" "20"
 assert_eq_file_inline "bgz_fastq_count" "$("$VV" --count "$BGZ/r.fq.bgz")" "3"
 rm -rf "$BGZ"
 
+# --flatten: struct columns become one column per leaf named by path; a
+# null struct makes its leaves null; lists / maps are kept.
+FL="$TMP/flatten.ndjson"
+printf '{"a":{"b":{"c":1},"d":"x"},"e":3}\n{"a":{"b":{"c":5},"d":"y"},"e":4}\n{"a":null,"e":5}\n' > "$FL"
+assert_eq_file_inline "flatten_columns" "$("$VV" --flatten --list-columns "$FL" | tr '\n' ' ')" "a.b.c a.d e "
+assert_eq_file_inline "flatten_values"  "$("$VV" --flatten --tsv --no-header "$FL" | tr '\t\n' ',;')" "1,x,3;5,y,4;,,5;"
+assert_eq_file_inline "flatten_filter"  "$("$VV" --flatten --count --filter 'a.b.c > 2' "$FL")" "1"
+assert_eq_file_inline "flatten_parquet_struct" \
+    "$("$VV" --flatten --list-columns "$DATA/tiny.jsonvals.parquet" | head -3 | tr '\n' ' ')" "id st.a st.b "
+assert_eq_file_inline "flatten_no_struct_unchanged" "$("$VV" --flatten --list-columns "$DATA/tiny.parquet" | tr '\n' ' ')" \
+    "$("$VV" --list-columns "$DATA/tiny.parquet" | tr '\n' ' ')"
+rm -f "$FL"
+
 # --tags on PAF: minimap2's optional TAG:type:value fields become columns
 # typed by the tag's type (i -> int64, f -> double, else text); a record
 # without the tag is null. --tags applied only to BAM / CRAM / SAM. tiny.paf:

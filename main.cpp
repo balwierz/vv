@@ -933,6 +933,8 @@ static void print_usage(const char* prog) {
         "                      GFF/GTF declares nothing, so keys are taken\n"
         "                      from the first chunk: a -n preview and a full\n"
         "                      scan CAN disagree on the column set.\n"
+        "  --flatten           struct columns become one column per leaf, named\n"
+        "                      by path (st.a, st.b.c); lists and maps are kept\n"
         "  --list-columns      column names, one per line\n"
         "  --list-tabs         component tab labels, one per line\n"
         "  --formats           the supported-format table (add --json)\n"
@@ -1231,6 +1233,8 @@ static Config parse_args(int argc, char** argv) {
             cfg.contigs = true;
         } else if (!std::strcmp(argv[i], "--seq-stats")) {
             cfg.seq_stats = true;
+        } else if (!std::strcmp(argv[i], "--flatten")) {
+            cfg.flatten = true;
         } else if (!std::strcmp(argv[i], "--gt-stats")) {
             cfg.gt_stats = true;
         } else if (!std::strcmp(argv[i], "--distinct")) {
@@ -17871,6 +17875,109 @@ public:
     }
 };
 
+// ── --flatten: struct columns as one column per leaf ────────────────────────
+//
+// A struct column (Parquet / Arrow / JSON nesting) becomes one column per
+// leaf, named with the path ("st.a", "st.b.c"), recursively. Lists and maps
+// keep their shape; other columns pass through. A struct that is null makes
+// its leaves null (StructArray::GetFlattenedField merges the validity), so
+// --filter / --sort / --describe / the TUI work on the leaves like any column.
+class FlattenSource : public TabularSource {
+    struct Flat { int inner; std::vector<int> path; };
+    std::unique_ptr<TabularSource> inner_;
+    std::shared_ptr<arrow::Schema> schema_;
+    std::vector<Flat>              flat_;
+
+    void add(const std::shared_ptr<arrow::Field>& f, const std::string& prefix, int inner,
+             std::vector<int> path, arrow::FieldVector* out) {
+        const std::string name = prefix.empty() ? f->name() : prefix + "." + f->name();
+        if (f->type()->id() == arrow::Type::STRUCT) {
+            for (int k = 0; k < f->type()->num_fields(); ++k) {
+                auto p = path; p.push_back(k);
+                add(f->type()->field(k), name, inner, std::move(p), out);
+            }
+            return;
+        }
+        out->push_back(f->WithName(name)->WithNullable(true));
+        flat_.push_back({inner, std::move(path)});
+    }
+
+public:
+    // Wrap `inner`; a schema without a struct column is returned unwrapped.
+    static void open(std::unique_ptr<TabularSource> inner, std::unique_ptr<TabularSource>* out) {
+        auto sch = inner->schema();
+        bool any = false;
+        for (const auto& f : sch->fields()) any |= f->type()->id() == arrow::Type::STRUCT;
+        if (!any) { *out = std::move(inner); return; }
+        auto self = std::make_unique<FlattenSource>();
+        arrow::FieldVector fields;
+        for (int i = 0; i < sch->num_fields(); ++i) self->add(sch->field(i), "", i, {}, &fields);
+        self->schema_ = arrow::schema(fields);
+        self->inner_ = std::move(inner);
+        *out = std::move(self);
+    }
+
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
+                             std::shared_ptr<arrow::Table>* out) override {
+        std::vector<int> need;                       // inner columns, first use order
+        for (int c : col_indices)
+            if (std::find(need.begin(), need.end(), flat_[(size_t)c].inner) == need.end())
+                need.push_back(flat_[(size_t)c].inner);
+        std::shared_ptr<arrow::Table> in;
+        ARROW_RETURN_NOT_OK(inner_->read_chunk(i, need, &in));
+        if (!in) { *out = nullptr; return arrow::Status::OK(); }
+        arrow::FieldVector fields;
+        std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
+        for (int c : col_indices) {
+            const Flat& fl = flat_[(size_t)c];
+            const int pos = (int)(std::find(need.begin(), need.end(), fl.inner) - need.begin());
+            arrow::ArrayVector parts;
+            for (const auto& ch : in->column(pos)->chunks()) {
+                std::shared_ptr<arrow::Array> a = ch;
+                for (int k : fl.path) {
+                    ARROW_ASSIGN_OR_RAISE(a, static_cast<const arrow::StructArray&>(*a)
+                                                 .GetFlattenedField(k));
+                }
+                parts.push_back(std::move(a));
+            }
+            fields.push_back(schema_->field(c));
+            cols.push_back(std::make_shared<arrow::ChunkedArray>(parts, schema_->field(c)->type()));
+        }
+        *out = arrow::Table::Make(arrow::schema(fields), cols, in->num_rows());
+        return arrow::Status::OK();
+    }
+    int64_t total_rows()      const override { return inner_->total_rows(); }
+    int     num_chunks()      const override { return inner_->num_chunks(); }
+    ChunkMeta chunk_meta(int i) const override { return inner_->chunk_meta(i); }
+    void    ensure(int i)           override { inner_->ensure(i); }
+    void    set_retain_all(bool b)  override { inner_->set_retain_all(b); }
+    bool    evicted_any()     const override { return inner_->evicted_any(); }
+    arrow::Status read_status() const override { return inner_->read_status(); }
+    bool    region_applied()  const override { return inner_->region_applied(); }
+    const std::string& path() const override { return inner_->path(); }
+    std::string tab_label()   const override { return inner_->tab_label(); }
+    std::string created_by()  const override { return inner_->created_by(); }
+    std::string top_banner()  const override { return inner_->top_banner(); }
+    std::vector<std::string> preamble_above() const override { return inner_->preamble_above(); }
+    std::vector<std::string> preamble_below() const override { return inner_->preamble_below(); }
+    std::vector<std::string> hidden_for_display() const override {
+        return inner_->hidden_for_display();
+    }
+    std::string format_cell(int col_idx, std::string val) const override {
+        const Flat& fl = flat_[(size_t)col_idx];
+        return fl.path.empty() ? inner_->format_cell(fl.inner, std::move(val)) : val;
+    }
+    int min_col_width(int col_idx) const override {
+        const Flat& fl = flat_[(size_t)col_idx];
+        return fl.path.empty() ? inner_->min_col_width(fl.inner) : 4;
+    }
+    std::string footer() const override {
+        return inner_->footer() + "  |  structs flattened \xe2\x86\x92 " +
+               std::to_string(schema_->num_fields()) + " columns";
+    }
+};
+
 // ── VCF genotype aggregates (--gt-stats) ──────────────────────────────────────
 //
 // Per-variant summaries over the per-sample GT field. A cohort VCF/BCF carries
@@ -19574,6 +19681,11 @@ std::string open_source(const std::string& path, const Config& cfg,
         std::unique_ptr<TabularSource> wrapped;
         err = ExpandedSource::open(std::move(*out), cfg.expand_col, &wrapped);
         if (!err.empty()) return err;
+        *out = std::move(wrapped);
+    }
+    if (cfg.flatten) {
+        std::unique_ptr<TabularSource> wrapped;
+        FlattenSource::open(std::move(*out), &wrapped);
         *out = std::move(wrapped);
     }
     if (cfg.gt_stats) {

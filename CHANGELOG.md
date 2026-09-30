@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`--flatten`.** Struct columns (Parquet / Arrow / JSON nesting) become one
+  column per leaf, named by path — `st.a`, `st.b.c` — recursively; a null
+  struct makes its leaves null, lists and maps keep their shape. The leaves
+  work with `--select`, `--filter 'st.a > 3'`, `--sort` and the exports.
 - **vvg takes vv's view flags.** `vvg --filter … --select … --sort … --tab …
   -r … file` opens the file in that view (region / session options, tab,
   columns in the given order, filter, sort), so a `vv` command line can be
