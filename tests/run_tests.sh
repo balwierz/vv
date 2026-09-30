@@ -185,6 +185,36 @@ assert_exit_code "mtx_entry_count_mismatch" 1 "$VV" --tsv "$MTX/nnz.mtx"
 assert_exit_code "mtx_region_refused"      1 "$VV" -r chr1:1-2 "$MTX/int.mtx"
 rm -rf "$MTX"
 
+# Genomics TSV layouts, shown as plain text before: .bedpe (no header row →
+# bedtools names), 4DN .pairs (names from "#columns:"), GenePattern .gct (the
+# version and dimensions lines, and 1.3's column-metadata rows, are not data)
+# and mutation .maf ("#version" lines, then a header). A UCSC alignment .maf
+# ("##maf") stays plain text.
+DL="$TMP/dialects"; mkdir -p "$DL"
+printf 'chr1\t100\t200\tchr5\t500\t600\tp1\t10\t+\t-\nchr2\t50\t80\tchr2\t900\t950\tp2\t3\t-\t+\n' > "$DL/a.bedpe"
+printf '## pairs format v1.0\n#sorted: chr1-chr2-pos1-pos2\n#chromsize: chr1 1000\n#columns: readID chr1 pos1 chr2 pos2 strand1 strand2 pair_type\nr1\tchr1\t10\tchr1\t500\t+\t-\tUU\nr2\tchr1\t20\tchr2\t30\t-\t+\tUU\n' > "$DL/a.pairs"
+gzip -c "$DL/a.pairs" > "$DL/b.pairs.gz"
+printf '#1.2\n2\t3\nName\tDescription\tS1\tS2\tS3\nTP53\tna\t1.5\t2.0\t0.1\nEGFR\tna\t3.2\t0.4\t1.1\n' > "$DL/a.gct"
+printf '#1.3\n2\t3\t1\t2\nid\tgene\tS1\tS2\tS3\ntissue\tna\tliver\tlung\tbrain\ndose\tna\t1\t2\t3\nr1\tTP53\t1.5\t2.0\t0.1\nr2\tEGFR\t3.2\t0.4\t1.1\n' > "$DL/b.gct"
+printf '#version 2.4\nHugo_Symbol\tChromosome\tStart_Position\tTumor_Sample_Barcode\nTP53\t17\t7673802\tS1\nKRAS\t12\t25245350\tS2\n' > "$DL/a.maf"
+printf '##maf version=1\na score=100\ns hg38.chr1 100 10 + 248956422 ACGTACGTAC\n' > "$DL/aln.maf"
+for c in "a.bedpe|chrom1 start1 end1 chrom2 start2 end2 name score strand1 strand2 |2" \
+         "a.pairs|readID chr1 pos1 chr2 pos2 strand1 strand2 pair_type |2" \
+         "b.pairs.gz|readID chr1 pos1 chr2 pos2 strand1 strand2 pair_type |2" \
+         "a.gct|Name Description S1 S2 S3 |2" "b.gct|id gene S1 S2 S3 |2" \
+         "a.maf|Hugo_Symbol Chromosome Start_Position Tumor_Sample_Barcode |2"; do
+    IFS='|' read -r f cols n <<<"$c"
+    assert_eq_file_inline "dialect_columns [$f]" "$("$VV" --list-columns "$DL/$f" | tr '\n' ' ')" "$cols"
+    assert_eq_file_inline "dialect_rows [$f]"    "$("$VV" --count "$DL/$f")" "$n"
+done
+assert_eq_file_inline "dialect_gct13_values" \
+    "$("$VV" --tsv --no-header --select S3 "$DL/b.gct" | tr '\n' ' ')" "0.1 1.1 "
+assert_contains "dialect_gct13_meta_in_header" "$("$VV" --schema --color=never "$DL/b.gct")" "tissue"
+assert_contains "dialect_gct_footer" "$("$VV" --schema --color=never "$DL/a.gct")" "GenePattern GCT 1.2"
+assert_eq_file_inline "dialect_bedpe_filter" "$("$VV" --count --filter 'start2 > 700' "$DL/a.bedpe")" "1"
+assert_eq_file_inline "dialect_alignment_maf_is_text" "$("$VV" --list-columns "$DL/aln.maf")" "line"
+rm -rf "$DL"
+
 # PLINK. A PLINK 1 .bed (magic 6c 1b) was read as a one-column BED of hex
 # bytes; it and a PLINK 2 .pgen are refused with the plink2 export command.
 # The variant / sample tables open with PLINK 2's column names: .bim / .fam

@@ -682,6 +682,8 @@ static const FormatInfo kFormats[] = {
    true,  false, false, true,  false, ""},
   {"PLINK variant / sample tables", ".bim .fam .pvar .psam", "DelimitedSource",
    true,  false, false, true,  false, ""},
+  {"Genomics TSV layouts", ".bedpe .pairs .gct .maf", "DelimitedSource",
+   true,  false, false, true,  false, ""},
   {"FASTA", ".fa .fasta .fna .faa .ffn .frn", "FastxSource",
    true,  false, false, true,  false, ""},
   {"FASTQ", ".fq .fastq", "FastxSource",
@@ -825,6 +827,8 @@ static void print_usage(const char* prog) {
         "  .bcf                        binary VCF (htslib)\n"
         "  .paf  .paf.gz               minimap2 pairwise alignments\n"
         "  .mtx  .mtx.gz               MatrixMarket sparse matrix (row, col, value; 0-based)\n"
+        "  .bedpe  .pairs  .gct  .maf  BEDPE, 4DN pairs, GenePattern GCT, mutation MAF\n"
+        "                              (TSV with their own headers; plus .gz / .zst)\n"
         "  .bim  .fam  .pvar  .psam    PLINK variant / sample tables (a PLINK .bed /\n"
         "                              .pgen genotype file is refused, with the\n"
         "                              plink2 command that exports it to VCF)\n"
@@ -2659,6 +2663,73 @@ static std::vector<std::string> strip_prefix_preamble(
             break;
         }
     }
+    return preamble;
+}
+
+// GCT (GenePattern): "#1.2" / "#1.3", a dimensions line (rows, columns[,
+// row-metadata columns, column-metadata rows]), the header, then — in 1.3 —
+// one row per column-metadata field before the data. The version, dimensions
+// and metadata rows are returned as preamble; the header fills *col_names.
+static std::vector<std::string> strip_gct_preamble(
+    const std::shared_ptr<arrow::io::InputStream>& input,
+    std::string* put_back, std::vector<std::string>* col_names)
+{
+    std::vector<std::string> preamble;
+    LineReader lr(input);
+    std::string line;
+    if (!lr.read_line(&line) && line.empty()) return preamble;
+    preamble.push_back(line);                        // #1.2 / #1.3
+    if (!lr.read_line(&line) && line.empty()) return preamble;
+    preamble.push_back(line);                        // dimensions
+    std::istringstream dims(line);
+    long long nrow = 0, ncol = 0, nrowmeta = 0, ncolmeta = 0;
+    dims >> nrow >> ncol >> nrowmeta >> ncolmeta;
+    bool more = lr.read_line(&line);
+    if (!more && line.empty()) return preamble;
+    col_names->clear();                              // header
+    for (size_t a = 0;;) {
+        size_t b = line.find('\t', a);
+        col_names->push_back(line.substr(a, b == std::string::npos ? b : b - a));
+        if (b == std::string::npos) break;
+        a = b + 1;
+    }
+    for (long long k = 0; k < ncolmeta && more; ++k) {
+        more = lr.read_line(&line);
+        if (!line.empty()) preamble.push_back(line); // column-metadata row
+    }
+    *put_back = lr.leftover();
+    return preamble;
+}
+
+// 4DN .pairs: "## pairs format v1.0", then "#" header lines, one of which is
+// "#columns: readID chrom1 pos1 chrom2 pos2 strand1 strand2 …" naming the
+// data columns (the first seven are mandatory; without the line, those seven
+// names are used). The header lines are returned as preamble.
+static std::vector<std::string> strip_pairs_preamble(
+    const std::shared_ptr<arrow::io::InputStream>& input,
+    std::string* put_back, std::vector<std::string>* col_names)
+{
+    std::vector<std::string> preamble;
+    LineReader lr(input);
+    for (;;) {
+        std::string line;
+        bool ok = lr.read_line(&line);
+        if (!ok && line.empty()) break;
+        if (!line.empty() && line[0] == '#') {
+            preamble.push_back(line);
+            if (line.rfind("#columns:", 0) == 0) {
+                col_names->clear();
+                std::istringstream names(line.substr(9));
+                for (std::string w; names >> w;) col_names->push_back(w);
+            }
+            if (!ok) break;
+        } else {
+            *put_back = line + "\n" + lr.leftover();
+            break;
+        }
+    }
+    if (col_names->empty())
+        *col_names = {"readID", "chrom1", "pos1", "chrom2", "pos2", "strand1", "strand2"};
     return preamble;
 }
 
@@ -6442,6 +6513,8 @@ public:
 // ── Delimited source (CSV / TSV / BED / VCF / GFF3+GTF / SAM, plain or gzip) ──
 
 enum class DelimKind { CSV, TSV, BED, VCF, GFF, SAM, PAF, Mpileup, Mtx };
+// TSV layouts read by DelimKind::TSV with their own header handling.
+enum class TsvDialect { None, Bedpe, Pairs, Gct, Maf };
 
 // ENCODE peak / signal flavours of BED. Carried alongside DelimKind::BED so
 // the BED reader can apply variant-specific column names (signalValue,
@@ -6629,6 +6702,7 @@ class DelimitedSource : public TabularSource {
     std::string                           path_;
     char                                  delimiter_;
     DelimKind                             kind_;
+    TsvDialect                            dialect_ = TsvDialect::None;
     std::shared_ptr<arrow::Schema>        schema_;
     std::vector<std::string>              preamble_lines_;
     int                                   bed_level_ = 3; // detected BED standard cols (3..9)
@@ -6912,6 +6986,18 @@ public:
             if (!ok) return "";
         }
     }
+    // The first line of `path` (decompressed for .gz / .zst); "" if unreadable.
+    static std::string first_line_after_meta_raw(const std::string& path) {
+        const bool is_gz = fends_ci(path, ".gz") || fends_ci(path, ".zst") ||
+                           fends_ci(path, ".zstd");
+        std::shared_ptr<arrow::io::ReadableFile> raw;
+        std::shared_ptr<arrow::io::InputStream>  input;
+        if (!open_stream(path, is_gz, &raw, &input).empty()) return "";
+        LineReader lr(input);
+        std::string line;
+        lr.read_line(&line);
+        return line;
+    }
     // Give the leading columns of a file read headerless their names (the
     // rest keep f<i>) and note in the footer what the file is.
     void apply_column_names(const std::vector<std::string>& names, std::string note) {
@@ -6949,10 +7035,12 @@ public:
                              const std::string& region,
                              std::unique_ptr<DelimitedSource>* out,
                              char delim_override = 0,
-                             HeaderMode header_mode = HeaderMode::Auto) {
+                             HeaderMode header_mode = HeaderMode::Auto,
+                             TsvDialect dialect = TsvDialect::None) {
         auto self = std::make_unique<DelimitedSource>();
         self->path_      = path;
         self->kind_      = kind;
+        self->dialect_   = dialect;
         self->header_mode_ = header_mode;
         self->delimiter_ = delim_override ? delim_override
                                           : (kind == DelimKind::CSV ? ',' : kind == DelimKind::Mtx ? ' ' : '\t');
@@ -7171,8 +7259,19 @@ private:
             }
             case DelimKind::CSV:
             case DelimKind::TSV:
-                self->preamble_lines_ = strip_tsv_csv_preamble(
-                    input, self->delimiter_, &put_back, &col_names);
+                if (self->dialect_ == TsvDialect::Gct) {
+                    self->preamble_lines_ = strip_gct_preamble(input, &put_back, &col_names);
+                    self->format_note_ = "GenePattern GCT" +
+                        (self->preamble_lines_.empty() ? std::string()
+                                                       : " " + self->preamble_lines_[0].substr(1));
+                } else if (self->dialect_ == TsvDialect::Pairs) {
+                    self->preamble_lines_ = strip_pairs_preamble(input, &put_back, &col_names);
+                    self->format_note_ = "4DN pairs";
+                } else {
+                    if (self->dialect_ == TsvDialect::Maf) self->format_note_ = "mutation annotation format (MAF)";
+                    self->preamble_lines_ = strip_tsv_csv_preamble(
+                        input, self->delimiter_, &put_back, &col_names);
+                }
                 break;
             default:
                 break;
@@ -18252,6 +18351,19 @@ static PlinkTable plink_table_kind(const std::string& det) {
     return PlinkTable::None;
 }
 
+// The TSV layout a file's extension names (.gz allowed): .bedpe, .pairs
+// (4DN), .gct (GenePattern), .maf (mutation annotation format).
+static TsvDialect tsv_dialect_of(const std::string& det) {
+    auto is = [&](const char* ext) {
+        return fends_ci(det, ext) || fends_ci(det, (std::string(ext) + ".gz").c_str());
+    };
+    if (is(".bedpe")) return TsvDialect::Bedpe;
+    if (is(".pairs")) return TsvDialect::Pairs;
+    if (is(".gct"))   return TsvDialect::Gct;
+    if (is(".maf"))   return TsvDialect::Maf;
+    return TsvDialect::None;
+}
+
 // True when `path` starts with PLINK 1's .bed magic 0x6c 0x1b (then 0x01,
 // variant-major, or 0x00, sample-major). A text BED cannot start with it:
 // 0x1b is ESC.
@@ -18751,6 +18863,13 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         return plink_genotype_refusal(path, /*pgen=*/false);
     } else if (plink_table_kind(det) != PlinkTable::None) {
         dk = DelimKind::TSV;
+    } else if (tsv_dialect_of(det) != TsvDialect::None) {
+        // A UCSC multiple-alignment file shares .maf with the mutation
+        // annotation format; it starts with "##maf" and is not a table.
+        if (tsv_dialect_of(det) == TsvDialect::Maf &&
+            DelimitedSource::first_line_after_meta_raw(path).rfind("##maf", 0) == 0)
+            return open_text(path, cfg, out);
+        dk = DelimKind::TSV;
     } else if (fends_ci(det, ".bed")        || fends_ci(det, ".bed.gz")
             || fends_ci(det, ".narrowPeak") || fends_ci(det, ".narrowPeak.gz")
             || fends_ci(det, ".broadPeak")  || fends_ci(det, ".broadPeak.gz")
@@ -18874,10 +18993,19 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         }
     }
     const bool headerless = tenx || (!plink_names.empty() && cfg.header == HeaderMode::Auto);
+    const TsvDialect dialect = dk == DelimKind::TSV ? tsv_dialect_of(det) : TsvDialect::None;
     std::unique_ptr<DelimitedSource> src;
     std::string err = DelimitedSource::open(path, dk, cfg.region, &src, delim_override,
-                                            headerless ? HeaderMode::Off : cfg.header);
+                                            headerless ? HeaderMode::Off : cfg.header, dialect);
     if (!err.empty()) return err;
+    // BEDPE has no header row unless it starts with a "#chrom1 …" line (read
+    // as the header); without one, name the bedtools columns.
+    if (dialect == TsvDialect::Bedpe &&
+        static_cast<TabularSource&>(*src).schema()->num_fields() > 0 &&
+        static_cast<TabularSource&>(*src).schema()->field(0)->name() == "f0")
+        src->apply_column_names({"chrom1", "start1", "end1", "chrom2", "start2", "end2",
+                                 "name", "score", "strand1", "strand2"},
+                                "BEDPE (no header row)");
     if (tenx) src->apply_tenx_sidecar(tenx);
     if (headerless && !plink_names.empty()) src->apply_column_names(plink_names, plink_note);
     // ENCODE peak-family variants ride on top of DelimKind::BED — the

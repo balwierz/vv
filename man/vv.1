@@ -196,6 +196,15 @@ for chromosome-scale references; use \fBtwoBitToFa\fR for that.
 .IP \(bu 2
 \fB.paf\fR, \fB.paf.gz\fR \(en minimap2 pairwise alignments
 .IP \(bu 2
+\fB.bedpe\fR, \fB.pairs\fR, \fB.gct\fR, \fB.maf\fR \(en tab-separated
+layouts with their own headers: BEDPE (no header row; named \fBchrom1\fR
+\fBstart1\fR \fBend1\fR \fBchrom2\fR \fBstart2\fR \fBend2\fR \fBname\fR
+\fBscore\fR \fBstrand1\fR \fBstrand2\fR), 4DN pairs (column names from the
+\fB#columns:\fR line), GenePattern GCT 1.2 / 1.3 (the version and dimensions
+lines and 1.3's column-metadata rows are shown above the schema, not as
+data) and the mutation annotation format (MAF); a UCSC alignment
+\fB.maf\fR (\fB##maf\fR) is shown as text
+.IP \(bu 2
 \fB.bim\fR, \fB.fam\fR, \fB.pvar\fR, \fB.psam\fR \(en PLINK variant and
 sample tables, with PLINK 2's column names: \fB.bim\fR as \fBCHROM ID CM
 POS ALT REF\fR and \fB.fam\fR as \fBFID IID PAT MAT SEX PHENO1\fR (no

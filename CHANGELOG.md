@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **BEDPE, 4DN pairs, GCT and MAF files open as tables.** These tab-separated
+  layouts were shown as plain text (unknown extension), and renamed to
+  `.tsv` they lost rows or failed. `.bedpe` gets bedtools' column names (no
+  header row); `.pairs` takes its names from the `#columns:` line; `.gct`
+  (GenePattern 1.2 / 1.3) keeps the version, dimensions and 1.3
+  column-metadata lines out of the data, so sample columns stay numeric;
+  `.maf` (mutation annotation) skips its `#version` lines. A UCSC alignment
+  `.maf` (`##maf`) is still shown as text. Plus `.gz` / `.zst`.
 - **`--seq-stats` for FASTA / FASTQ.** One pass, one row, like `seqkit stats
   -a`: record count, total / min / mean / max length, N50, GC % (over
   A/C/G/T/U, N excluded) and, for FASTQ, the share of bases at Q20 and Q30;
