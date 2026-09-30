@@ -700,11 +700,18 @@ Supported on:
 .RS
 .IP \(bu 2
 indexed \fB.bam\fR / \fB.cram\fR (needs \fB.bai\fR, \fB.csi\fR or
-\fB.crai\fR from \fBsamtools index\fR); a plain \fB.sam\fR has no
-index and is rejected;
+\fB.crai\fR from \fBsamtools index\fR);
 .IP \(bu 2
 tabix-indexed \fB.vcf.gz\fR, \fB.bed.gz\fR, \fB.gff.gz\fR, and
 \fB.tsv.gz\fR (via htslib's tabix iterator);
+.IP \(bu 2
+BED (and its peak / signal variants), VCF, GFF / GTF, SAM, PAF and
+mpileup text without an index: the whole file is read and each line
+kept when it overlaps a window, as a tabix query would decide (BED
+start / end; GFF start \- 1 / end; VCF \fBPOS\fR \- 1 plus the
+\fBREF\fR length, or \fBINFO\fR \fBEND=\fR; SAM \fBPOS\fR \- 1 plus
+the reference length of the \fBCIGAR\fR; the PAF target span). A note
+on standard error says so. Unindexed CSV / TSV still need an index;
 .IP \(bu 2
 \fB.lociss\fR (LociSSD Parquet \(en pruning uses the manifest plus
 Parquet row-group statistics on the \fBStart\fR and \fBMaxEndSoFar\fR
