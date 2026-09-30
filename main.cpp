@@ -884,6 +884,8 @@ static void print_usage(const char* prog) {
         "                                          PAIRED, READ1, …) or numbers\n"
         "                      a date / timestamp column takes a quoted date:\n"
         "                        day > \"2024-01-01\", ts < \"2024-06-15 12:30Z\"\n"
+        "                      a boolean column takes true / false; a float32\n"
+        "                      column compares at float32 precision\n"
         "                      a column name with spaces or symbols goes in\n"
         "                      backticks: `Sample ID` == \"S1\"  (`` for a `)\n"
         "                      e.g. --filter 'Score > 0.5'\n"
@@ -3304,6 +3306,7 @@ static void hash_filter_set(FilterAtom* a, const arrow::DataType* col_type = nul
         }
         char* end = nullptr;
         double d = std::strtod(m.c_str(), &end);
+        if (col_type && col_type->id() == arrow::Type::FLOAT) d = (float)d;   // as the cells
         if (end && end != m.c_str() && !*end) num->insert(d);
     }
     a->set_text = std::move(text);
@@ -3493,6 +3496,18 @@ bool parse_filter_expr(const std::string& expr,
                     *err = "bad regex '" + a.s_lit + "': " + e.what();
                     return false;
                 }
+            } else if (schema.field(a.col_idx)->type()->id() == arrow::Type::BOOL) {
+                // A boolean column compares with true / false (bare or
+                // quoted, any case) as 1 / 0; text never equalled a bool cell
+                // and a bare `true` was rejected as a bad number.
+                const std::string v = filter_unquote(lit);
+                if (eq_ci(v, "true"))       a.i_lit = 1;
+                else if (eq_ci(v, "false")) a.i_lit = 0;
+                else {
+                    *err = "boolean column '" + col + "' compares with true or false, not '" + v + "'";
+                    return false;
+                }
+                a.kind = FilterAtom::K_Int;
             } else if (lit.size() >= 2 &&
                        (lit.front() == '"' || lit.front() == '\'') &&
                        lit.front() == lit.back()) {
@@ -3619,6 +3634,7 @@ static bool cell_as_int(const arrow::Table& tbl, int col, int64_t row,
                 case arrow::Type::TIME32: *out = static_cast<const arrow::Time32Array&>(*a).Value(i); return true;
                 case arrow::Type::TIME64: *out = static_cast<const arrow::Time64Array&>(*a).Value(i); return true;
                 case arrow::Type::DURATION: *out = static_cast<const arrow::DurationArray&>(*a).Value(i); return true;
+                case arrow::Type::BOOL: *out = static_cast<const arrow::BooleanArray&>(*a).Value(i) ? 1 : 0; return true;
                 // FLOAT / DOUBLE are not integers: truncating them made
                 // `Score > 0` compare 0.05 as 0 and match nothing. The caller
                 // compares them as doubles.
@@ -3660,8 +3676,23 @@ static bool array_value_as_double(const arrow::Array& a, int64_t r, double* out)
         case arrow::Type::DURATION:  *out = (double)static_cast<const arrow::DurationArray&>(a).Value(r);  return true;
         case arrow::Type::DECIMAL128: {
             const auto& arr = static_cast<const arrow::Decimal128Array&>(a);
-            *out = arrow::Decimal128(arr.GetValue(r)).ToDouble(
-                static_cast<const arrow::Decimal128Type&>(*a.type()).scale());
+            const arrow::Decimal128 v(arr.GetValue(r));
+            const int scale = static_cast<const arrow::Decimal128Type&>(*a.type()).scale();
+            // Decimal128::ToDouble is not correctly rounded (99.99 at scale 2
+            // came out 99.99000000000001, so `dec == 99.99` matched nothing).
+            // An unscaled value and power of ten that are both exact doubles
+            // divide to the nearest double, the value strtod gives the text.
+            static constexpr double kPow10[] = {1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7,
+                1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19,
+                1e20, 1e21, 1e22};
+            const int64_t hi = v.high_bits();
+            const uint64_t lo = v.low_bits();
+            const bool fits = (hi == 0 && lo < (1ULL << 53)) ||
+                              (hi == -1 && lo >= (uint64_t)-(int64_t)(1LL << 53) && lo != 0);
+            if (fits && scale >= 0 && scale <= 22)
+                *out = (double)(int64_t)lo / kPow10[scale];
+            else
+                *out = v.ToDouble(scale);
             return true;
         }
         case arrow::Type::DECIMAL256: {
@@ -3828,6 +3859,7 @@ static bool eval_atom(const arrow::Table& tbl, int64_t row, const FilterAtom& a,
         double d;
         if (!cell_as_double(tbl, tcol, row, &d)) return false;
         double L = (double)a.i_lit;
+        if (tbl.column(tcol)->type()->id() == arrow::Type::FLOAT) L = (float)L;
         switch (a.op) {
             case FilterAtom::Eq: return d == L;
             case FilterAtom::Ne: return d != L;
@@ -3840,13 +3872,18 @@ static bool eval_atom(const arrow::Table& tbl, int64_t row, const FilterAtom& a,
     } else {
         double d;
         if (!cell_as_double(tbl, tcol, row, &d)) return false;
+        // A float32 cell is compared with the literal rounded to float32:
+        // the column holds 0.05f (0.0500000007…), which `Score == 0.05`
+        // never equalled and `Score > 0.05` wrongly matched.
+        double L = a.f_lit;
+        if (tbl.column(tcol)->type()->id() == arrow::Type::FLOAT) L = (float)L;
         switch (a.op) {
-            case FilterAtom::Eq: return d == a.f_lit;
-            case FilterAtom::Ne: return d != a.f_lit;
-            case FilterAtom::Lt: return d <  a.f_lit;
-            case FilterAtom::Le: return d <= a.f_lit;
-            case FilterAtom::Gt: return d >  a.f_lit;
-            case FilterAtom::Ge: return d >= a.f_lit;
+            case FilterAtom::Eq: return d == L;
+            case FilterAtom::Ne: return d != L;
+            case FilterAtom::Lt: return d <  L;
+            case FilterAtom::Le: return d <= L;
+            case FilterAtom::Gt: return d >  L;
+            case FilterAtom::Ge: return d >= L;
             default: break;   // handled above
         }
     }

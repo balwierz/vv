@@ -28,6 +28,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   printed the text table; on a non-Parquet file it exits 1.
 
 ### Fixed
+- **`--filter` `==` on float32, decimal and boolean columns.** A float32 cell
+  was compared with the literal as a double: the column holds 0.05f
+  (0.0500000007…), so `Score == 0.05` matched nothing, `Score in (0.05, 0.1)`
+  matched nothing and `Score > 0.05` included the row showing 0.05. The
+  literal is now rounded to float32 first (as NumPy 2 compares a Python float
+  with a float32 array). A decimal was converted to a double with rounding
+  error (99.99 at scale 2 became 99.99000000000001, so `dec == 99.99` matched
+  nothing); it is now the double nearest its text. A boolean column never
+  equalled any literal (`b == "true"` matched nothing, `b == true` was "bad
+  number"); it now takes `true` / `false`, bare or quoted.
 - **`--schema --json` names Parquet.** `format` was `""` for a plain Parquet
   file; it is `"Parquet"`. The non-Parquet `--stats` note names the format
   (`this file is a BAM source`) instead of repeating the whole footer.
