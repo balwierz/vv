@@ -264,6 +264,9 @@ jobs:
             | tr '\n' ' ' | grep -q "afilter 'Score > 1' -> rows=0 afind 'chr' -> matches=0"
           VVG_SELFTEST=1 VVG_FILTER='Score > 1' ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -q "filter 'Score > 1' -> 0/20 rows"
+          # Search highlights the matching cell and not the others.
+          VVG_SELFTEST=1 VVG_FIND='chr2' ./build-gui/gui/vvg tests/data/tiny.parquet \
+            | grep -q "^find 'chr2' -> row 12 col 0 = chr2 highlight=1 first=0$"
           # The session toolbar exposes the new open-time options through the same
           # reopen path as region/pileup. --tags adds a column per aux tag (11 SAM
           # columns + NM,AS = 13); --gt-stats adds 9 genotype columns to the BCF's
@@ -516,6 +519,9 @@ jobs:
             | tr '\n' ' ' | grep -q "afilter 'Score > 1' -> rows=0 afind 'chr' -> matches=0"
           VVG_SELFTEST=1 VVG_FILTER='Score > 1' ./build/gui/vvg tests/data/tiny.parquet \
             | grep -q "filter 'Score > 1' -> 0/20 rows"
+          # Search highlights the matching cell and not the others.
+          VVG_SELFTEST=1 VVG_FIND='chr2' ./build/gui/vvg tests/data/tiny.parquet \
+            | grep -q "^find 'chr2' -> row 12 col 0 = chr2 highlight=1 first=0$"
           VVG_WINTEST=1 VVG_AFIND='chr1' ./build/gui/vvg tests/data/tiny.parquet \
             | grep -q 'afind .* matches=12'
           out=$(VVG_WINTEST=1 VVG_COPYCMD=1 ./build/gui/vvg --filter 'Score > 0.5' --sort Score:desc \

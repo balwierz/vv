@@ -2,6 +2,7 @@
 
 #include <QBrush>
 #include <QColor>
+#include <QLocale>
 #include <QString>
 #include <QtConcurrent>
 #include <algorithm>
@@ -46,6 +47,10 @@ ArrowTableModel::ArrowTableModel(std::unique_ptr<TabularSource> src,
     connect(watcher_, &QFutureWatcher<std::vector<int64_t>>::finished,
             this, &ArrowTableModel::onRecomputeDone);
     reseedRowCount();
+    auto forget = [this] { lastCellRow_ = lastCellCol_ = -1; lastCellText_.clear(); };
+    connect(this, &QAbstractItemModel::modelAboutToBeReset, this, forget);
+    connect(this, &QAbstractItemModel::layoutAboutToBeChanged, this, forget);
+    connect(this, &QAbstractItemModel::dataChanged, this, forget);
 }
 
 ArrowTableModel::~ArrowTableModel() {
@@ -169,11 +174,23 @@ QString ArrowTableModel::rawCellText(int viewRow, int dispCol) const {
     return QString::fromStdString(raw);
 }
 
+const QString& ArrowTableModel::displayText(int viewRow, int dispCol) const {
+    if (viewRow != lastCellRow_ || dispCol != lastCellCol_) {
+        lastCellText_ = cellText(viewRow, dispCol);
+        lastCellRow_ = viewRow; lastCellCol_ = dispCol;
+    }
+    return lastCellText_;
+}
+
+// Qt's views count rows in int: a larger table shows its first
+// kMaxViewRows rows, and footer() says so.
+static constexpr int64_t kMaxViewRows = 2'000'000'000LL;
+
 int ArrowTableModel::rowCount(const QModelIndex& parent) const {
     if (parent.isValid()) return 0;
     if (computing_) return 0;   // blanked while a worker recomputes order_
     int64_t n = viewRows();
-    return (n > 2'000'000'000LL) ? 2'000'000'000 : (int)n;
+    return (int)std::min(n, kMaxViewRows);
 }
 
 int ArrowTableModel::columnCount(const QModelIndex& parent) const {
@@ -184,12 +201,11 @@ int ArrowTableModel::columnCount(const QModelIndex& parent) const {
 QVariant ArrowTableModel::data(const QModelIndex& index, int role) const {
     if (!index.isValid() || computing_) return {};
     if (role == Qt::DisplayRole || role == Qt::ToolTipRole)
-        return cellText(index.row(), index.column());
+        return displayText(index.row(), index.column());
     if (role == RawTextRole)
         return rawCellText(index.row(), index.column());
     if (role == Qt::BackgroundRole && hasSearch_) {
-        QString v = cellText(index.row(), index.column());
-        if (searchRe_.match(v).hasMatch())
+        if (searchRe_.match(displayText(index.row(), index.column())).hasMatch())
             return QBrush(QColor(255, 235, 130));   // soft yellow highlight
     }
     return {};
@@ -565,7 +581,12 @@ bool ArrowTableModel::stepSlice(int delta) {
 
 QString ArrowTableModel::footer() const {
     if (computing_) return QStringLiteral("Working…");
-    return QString::fromStdString(src_->footer());
+    QString f = QString::fromStdString(src_->footer());
+    if (const int64_t n = viewRows(); n > kMaxViewRows)
+        f += QStringLiteral("  |  the window shows the first %1 of %2 rows; an export writes all")
+                 .arg(QLocale().toString((qlonglong)kMaxViewRows))
+                 .arg(QLocale().toString((qlonglong)n));
+    return f;
 }
 QString ArrowTableModel::columnName(int c) const {
     return (c >= 0 && c < (int)colNames_.size()) ? colNames_[c] : QString();

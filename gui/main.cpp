@@ -1587,11 +1587,17 @@ int main(int argc, char** argv) {
         if (const char* se = std::getenv("VVG_FIND"); se && *se) {
             m.setSearch(QRegularExpression(se, QRegularExpression::CaseInsensitiveOption));
             QModelIndex hit = m.findNext(QModelIndex(), true);
-            if (hit.isValid())
-                std::printf("find '%s' -> row %d col %d = %s\n", se,
+            if (hit.isValid()) {
+                // The hit is highlighted, row 0 / column 0 only if it matches.
+                auto lit = [&](const QModelIndex& i) {
+                    m.data(i, Qt::DisplayRole);
+                    return m.data(i, Qt::BackgroundRole).isValid() ? 1 : 0;
+                };
+                std::printf("find '%s' -> row %d col %d = %s highlight=%d first=%d\n", se,
                             hit.row(), hit.column(),
-                            m.data(hit, Qt::DisplayRole).toString().toStdString().c_str());
-            else
+                            m.data(hit, Qt::DisplayRole).toString().toStdString().c_str(),
+                            lit(hit), lit(m.index(0, 0)));
+            } else
                 std::printf("find '%s' -> no match\n", se);
         }
         // Optional stats check: VVG_STATS=<displayColIndex>.

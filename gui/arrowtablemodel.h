@@ -160,6 +160,12 @@ private:
     // rows → chunks; invariant under sort/filter (those only permute order_),
     // so it is cleared only when the source rebuilds (stepSlice / re-open).
     mutable std::vector<int64_t>       chunkFirstRow_;
+    // The last cell decoded by data(): a view asks for DisplayRole and then
+    // BackgroundRole (search highlight) of the same cell. Cleared on every
+    // reset / layout / data change.
+    mutable int     lastCellRow_ = -1, lastCellCol_ = -1;
+    mutable QString lastCellText_;
+    const QString& displayText(int viewRow, int dispCol) const;
 
     std::vector<int64_t> order_;          // display row -> source row (unless identity_)
     // The view is the source as-is (no filter, no sort), and order_ is unused.
