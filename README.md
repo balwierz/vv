@@ -243,6 +243,7 @@ against it in CI, so this list cannot drift from the code.
 |-------------------|------------------------------------------------------------|
 | Apache Parquet    | `.parquet`                                                 |
 | Arrow IPC, Feather| `.arrow`, `.feather`                                       |
+| Arrow IPC stream  | `.arrows` (or a stream saved as `.arrow`), read as it arrives — also from stdin / a pipe |
 | LociSSD           | `.lociss` (sorted-interval Parquet; `MaxEndSoFar` auto-hidden) |
 | PLINK             | `.bim`, `.fam`, `.pvar`, `.psam` (plus `.gz` / `.zst`) — variant and sample tables with PLINK 2's column names (`.bim`: `CHROM ID CM POS ALT REF`; `.fam`: `FID IID PAT MAT SEX PHENO1`; `.pvar` / `.psam` from their `#` header). A PLINK 1 `.bed` (by its magic bytes) or PLINK 2 `.pgen` genotype file is refused with the `plink2 --export vcf bgz` command that converts it. |
 | Sparse matrices   | `.mtx` / `.mtx.gz` (MatrixMarket coordinate, e.g. Cell Ranger / STARsolo `matrix.mtx.gz`), listed as `row`, `col`, `value` with 0-based indices; shape and entry count in the footer. A 10x Genomics / STARsolo matrix directory (`matrix.mtx` + `barcodes.tsv` + `features.tsv`/`genes.tsv`) opens as `matrix` / `features` / `barcodes` tabs, the entries labelled with feature and barcode. |
@@ -272,8 +273,8 @@ against it in CI, so this list cannot drift from the code.
 
 </details>
 
-Unknown extensions are auto-detected by magic bytes (Parquet, Arrow IPC,
-Feather, BAM/BCF) or delimiter heuristic (TSV vs. CSV).
+Unknown extensions are auto-detected by magic bytes (Parquet, Arrow IPC file
+and stream, Feather, BAM/BCF) or delimiter heuristic (TSV vs. CSV).
 
 ## Output modes
 

@@ -676,6 +676,8 @@ static const FormatInfo kFormats[] = {
    true,  true,  false, true,  false, "bgzip + tabix"},
   {"PAF (minimap2)", ".paf", "DelimitedSource",
    true,  false, false, true,  false, ""},
+  {"Arrow IPC stream", ".arrows", "IpcStreamSource",
+   false, false, false, true,  true,  ""},
   {"MatrixMarket (sparse matrix)", ".mtx", "DelimitedSource",
    true,  false, false, true,  false, ""},
   {"PLINK variant / sample tables", ".bim .fam .pvar .psam", "DelimitedSource",
@@ -791,6 +793,7 @@ static void print_usage(const char* prog) {
         "\nSupported formats:\n"
         "  .parquet\n"
         "  .arrow  .feather          Arrow IPC / Feather (v1 and v2)\n"
+        "  .arrows                   Arrow IPC stream (streamed; also on stdin / a pipe)\n"
         "  .lociss                     LociSSD sorted-interval — v3 Parquet (manifest\n"
         "                              in KV) or v4 \"colblock\" binary; dispatched by magic\n"
         "  .bam  .cram                  binary/compressed sequence alignments (htslib)\n"
@@ -10475,6 +10478,91 @@ public:
 // passes -DARROW_ORC=ON to the arrow-build stage. Local dev builds need
 // the same flag — without it `vv file.orc` reports a build-time message.
 
+// ── Arrow IPC stream format (.arrows, or a stream on stdin / a pipe) ────────
+//
+// The stream format is the IPC file format without the footer: a schema
+// message, then record batches, read front to back. There is nothing to seek
+// to, so it streams like the text readers — each record batch is one chunk,
+// kept through the shared bounded-window helper — and works on a pipe
+// without the temporary copy the footer-based formats need.
+class IpcStreamSource : public TabularSource {
+    std::string                                          path_;
+    std::shared_ptr<arrow::Schema>                       schema_;
+    mutable std::shared_ptr<arrow::ipc::RecordBatchReader> reader_;
+    mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
+    mutable std::vector<int64_t>                         batch_first_row_;
+    mutable std::vector<int64_t>                         batch_num_rows_;
+    mutable int64_t                                      rows_so_far_ = 0;
+    mutable bool                                         all_read_    = false;
+    mutable bool                                         retain_all_  = false;
+    mutable bool                                         evicted_any_ = false;
+    mutable arrow::Status                                read_status_;
+
+    void advance() const {
+        if (all_read_) return;
+        std::shared_ptr<arrow::RecordBatch> b;
+        auto st = reader_->ReadNext(&b);
+        if (!st.ok()) { read_status_ = st; all_read_ = true; return; }
+        if (!b) { all_read_ = true; return; }
+        stream_retain(batches_, batch_first_row_, batch_num_rows_, rows_so_far_,
+                      retain_all_, evicted_any_, std::move(b));
+    }
+
+public:
+    // True when `head` starts like an IPC stream: the 0xFFFFFFFF continuation
+    // marker, then a metadata length.
+    static bool looks_like_stream(const uint8_t* m, size_t n) {
+        if (n < 8 || m[0] != 0xff || m[1] != 0xff || m[2] != 0xff || m[3] != 0xff) return false;
+        const uint32_t len = (uint32_t)m[4] | ((uint32_t)m[5] << 8) |
+                             ((uint32_t)m[6] << 16) | ((uint32_t)m[7] << 24);
+        return len > 0 && len < (1u << 26);
+    }
+
+    static std::string open_stream(const std::string& label,
+                                   std::shared_ptr<arrow::io::InputStream> in,
+                                   std::unique_ptr<IpcStreamSource>* out) {
+        auto self = std::make_unique<IpcStreamSource>();
+        self->path_ = label;
+        auto r = arrow::ipc::RecordBatchStreamReader::Open(std::move(in));
+        if (!r.ok()) return "Not a valid Arrow IPC stream: " + r.status().ToString();
+        self->reader_ = r.ValueOrDie();
+        self->schema_ = self->reader_->schema();
+        self->advance();
+        if (!self->read_status_.ok() && self->batches_.empty())
+            return "Error reading Arrow IPC stream: " + self->read_status_.ToString();
+        *out = std::move(self);
+        return "";
+    }
+    static std::string open(const std::string& path, std::unique_ptr<IpcStreamSource>* out) {
+        auto f = arrow::io::ReadableFile::Open(path);
+        if (!f.ok()) return "Cannot open '" + path + "': " + f.status().ToString();
+        return open_stream(path, f.ValueOrDie(), out);
+    }
+
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    int64_t total_rows() const override { return all_read_ ? rows_so_far_ : -1; }
+    int     num_chunks() const override { return (int)batches_.size(); }
+    ChunkMeta chunk_meta(int i) const override { return {batch_first_row_[i], batch_num_rows_[i]}; }
+    void set_retain_all(bool b) override { retain_all_ = b; }
+    bool evicted_any() const override { return evicted_any_; }
+    void ensure(int i) override {
+        while (!all_read_ && (int)batches_.size() <= i) advance();
+    }
+    arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
+                             std::shared_ptr<arrow::Table>* out) override {
+        ensure(i);
+        if (i >= (int)batches_.size())
+            return arrow::Status::IndexError("chunk ", i, " out of range");
+        if (!batches_[i])
+            return arrow::Status::CapacityError("chunk ", i, " was released by the streaming window");
+        *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
+        return arrow::Status::OK();
+    }
+    arrow::Status read_status() const override { return read_status_; }
+    const std::string& path() const override { return path_; }
+    std::string footer() const override { return "Format: Arrow IPC stream"; }
+};
+
 #if VV_HAVE_ORC
 class OrcSource : public TabularSource {
     std::string                                              path_;
@@ -10764,6 +10852,13 @@ static std::string human_bytes(int64_t sz) {
     else if (sz < 1024LL * 1024 * 1024) std::snprintf(buf, sizeof(buf), "%.1f MiB", sz / (1024.0 * 1024));
     else                            std::snprintf(buf, sizeof(buf), "%.2f GiB", sz / (1024.0 * 1024 * 1024));
     return buf;
+}
+
+// True when the regular file at `path` begins like an Arrow IPC stream.
+static bool file_is_ipc_stream(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    uint8_t m[8] = {0};
+    return f.read(reinterpret_cast<char*>(m), 8) && IpcStreamSource::looks_like_stream(m, 8);
 }
 
 // True for a path that names a pipe, FIFO, socket or character device —
@@ -18350,6 +18445,16 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
             return sniff.size() >= l && std::memcmp(sniff.data(), m, l) == 0;
         };
 
+        // An Arrow IPC stream needs no seeking: read it as it arrives.
+        if (IpcStreamSource::looks_like_stream((const uint8_t*)sniff.data(), sniff.size())) {
+            std::shared_ptr<arrow::io::InputStream> in = std::make_shared<PrependInputStream>(
+                std::move(sniff), std::make_shared<FdInputStream>(fd));
+            std::unique_ptr<IpcStreamSource> src;
+            std::string e = IpcStreamSource::open_stream(path, std::move(in), &src);
+            if (!e.empty()) return e;
+            *out = std::move(src);
+            return "";
+        }
         const std::string bin_ext = pipe_binary_ext(sniff);
         if (!bin_ext.empty()) {
             std::string tmp;
@@ -18434,6 +18539,13 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
 
     if (fends_ci(path, ".parquet")) {
         is_parquet = true;
+    } else if (fends_ci(path, ".arrows") || (fends_ci(path, ".arrow") && file_is_ipc_stream(path))) {
+        // The IPC stream format: .arrows, or a stream saved as .arrow.
+        std::unique_ptr<IpcStreamSource> src;
+        std::string err = IpcStreamSource::open(path, &src);
+        if (!err.empty()) return err;
+        *out = std::move(src);
+        return "";
     } else if (fends_ci(path, ".arrow")) {
         std::unique_ptr<IpcSource> src;
         std::string err = IpcSource::open(path, false, &src);
@@ -18674,6 +18786,13 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
                           m[4]=='W' && m[5]=='1' && m[6]==0   && m[7]==0);
             is_feather = ((*buf)->size() >= 4 &&
                           m[0]=='F' && m[1]=='E' && m[2]=='A' && m[3]=='1');
+        }
+        if (buf.ok() && IpcStreamSource::looks_like_stream((*buf)->data(), (size_t)(*buf)->size())) {
+            std::unique_ptr<IpcStreamSource> src;
+            std::string err = IpcStreamSource::open(path, &src);
+            if (!err.empty()) return err;
+            *out = std::move(src);
+            return "";
         }
         if (is_ipc || is_feather) {
             std::unique_ptr<IpcSource> src;

@@ -17,6 +17,10 @@ Supported formats:
 .IP \(bu 2
 \fB.arrow\fR, \fB.feather\fR \(en Arrow IPC and Feather v2
 .IP \(bu 2
+\fB.arrows\fR \(en Arrow IPC stream format, read front to back as it
+arrives (also from stdin or a pipe, without a temporary copy); a stream
+saved as \fB.arrow\fR is recognised by its leading 0xFFFFFFFF marker
+.IP \(bu 2
 \fB.lociss\fR \(en LociSSD sorted-interval; either v3 Parquet (auto-detected via
 the \fBlociSSD_manifest\fR key in the Parquet footer; the derived
 \fBMaxEndSoFar\fR column is hidden from human-facing views but kept in

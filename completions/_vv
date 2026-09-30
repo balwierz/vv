@@ -67,7 +67,7 @@ _vv_tabs() {
 _vv() {
     local -a opts file_exts
     file_exts=(
-        '*.parquet' '*.arrow' '*.feather' '*.lociss'
+        '*.parquet' '*.arrow' '*.arrows' '*.feather' '*.lociss'
         '*.bam' '*.cram' '*.sam'
         '*.vcf' '*.vcf.gz' '*.vcf.zst' '*.bcf'
         '*.gff' '*.gff.gz' '*.gff.zst' '*.gff3' '*.gff3.gz' '*.gff3.zst' '*.gtf' '*.gtf.gz' '*.gtf.zst'

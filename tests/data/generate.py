@@ -147,6 +147,12 @@ with pa.OSFile(str(HERE / "tiny.arrow"), "wb") as f:
         w.write_batch(table.slice(0, 10).to_batches()[0])
         w.write_batch(table.slice(10, 10).to_batches()[0])
 
+# tiny.arrows: the same rows in the Arrow IPC *stream* format (no footer; read
+# front to back), in three record batches of 7 / 7 / 6 rows.
+with pa.OSFile(str(HERE / "tiny.arrows"), "wb") as f:
+    with ipc.new_stream(f, schema) as w:
+        w.write_table(table, max_chunksize=7)
+
 # tiny.dict.arrow: an Arrow IPC file that carries dictionary (categorical)
 # encoding through to the reader. The filter / stats accessors handled only
 # plain String / Int / Double arrays, so a predicate on a dictionary column

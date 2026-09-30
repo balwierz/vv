@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Arrow IPC stream format.** The footer-less stream format (`.arrows`, as
+  written by `pyarrow.ipc.new_stream` or Arrow Flight dumps) was refused as a
+  binary file. It is read front to back, one record batch per chunk, so it
+  streams like the text readers and works from stdin or a pipe without a
+  temporary copy (`producer | vv -`). A stream saved as `.arrow` or under an
+  unknown extension is recognised by its leading 0xFFFFFFFF marker; a stream
+  cut off mid-batch reports the error and exits 1.
 - **PLINK files.** A PLINK 1 `.bed` genotype file was read as a BED with one
   column of hex bytes. It is recognised by its magic bytes (`6c 1b`) and
   refused, as is a PLINK 2 `.pgen`, with the command that exports the
