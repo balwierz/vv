@@ -116,6 +116,7 @@ extern "C" {
 #include <sys/ioctl.h>
 #include <cerrno>
 #include <sys/stat.h>
+#include <fcntl.h>
 
 // The ncurses TUI is the CLI frontend only. libvvcore (VV_CORE_LIB) is the
 // headless reader core shared with the Qt GUI / KDE plugins and must not pull
@@ -829,7 +830,11 @@ static void print_usage(const char* prog) {
         "  .txt  .text  .log           plain text (also .gz / .zst; viewed like less -SN,\n"
         "                              not tabulated). The fallback for any file\n"
         "                              no other format claims.\n"
-        "  -                           read text format from stdin (auto-decompress gzip/zstd)\n"
+        "  -                           read from stdin (auto-decompress gzip/zstd). Text\n"
+        "                              streams in; a binary format (Parquet, Arrow,\n"
+        "                              BAM, …) is copied to a temporary file first.\n"
+        "                              Process substitution works the same:\n"
+        "                              vv <(zcat x.parquet.gz)\n"
         "  DIR/                        a directory: concatenate the data files under\n"
         "                              it (Parquet/Arrow/ORC/CSV/TSV/JSON). Hive\n"
         "                              key=value/ path parts become columns\n"
@@ -10608,12 +10613,12 @@ public:
 // Open any supported file.  Returns empty string on success; error message otherwise.
 // Read up to `n` bytes from stdin into a buffer. Used to sniff format magic
 // bytes and the first line for delimiter detection.
-static std::string sniff_stdin(size_t n, std::string* out_buf) {
+static std::string sniff_fd(int fd, size_t n, std::string* out_buf) {
     out_buf->clear();
     out_buf->resize(n);
     size_t total = 0;
     while (total < n) {
-        ssize_t got = ::read(STDIN_FILENO, out_buf->data() + total, n - total);
+        ssize_t got = ::read(fd, out_buf->data() + total, n - total);
         if (got == 0) break;            // EOF
         if (got < 0) {
             if (errno == EINTR) continue;
@@ -10623,6 +10628,150 @@ static std::string sniff_stdin(size_t n, std::string* out_buf) {
     }
     out_buf->resize(total);
     return "";
+}
+
+// ── Binary input on a pipe ───────────────────────────────────────────────────
+//
+// Stdin and process substitution (`vv <(zcat x.parquet.gz)`) are pipes: they
+// cannot seek, and every binary format vv reads needs to (a Parquet footer, an
+// Arrow IPC footer, a BAM index, an HDF5 superblock). Such input is copied to a
+// temporary file, named with the format's extension so the normal dispatch
+// opens it, and the file is removed when vv exits — normally, or on SIGINT /
+// SIGTERM / SIGHUP (the TUI's handler calls remove_spooled_files too).
+static char                  g_spooled[8][4096];
+static volatile sig_atomic_t g_n_spooled = 0;
+
+void remove_spooled_files() {             // async-signal-safe: unlink only
+    for (int i = 0; i < g_n_spooled; ++i) ::unlink(g_spooled[i]);
+}
+static void spool_signal(int sig) {
+    remove_spooled_files();
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+static void spool_register(const std::string& path) {
+    if (g_n_spooled == 0) {
+        std::atexit(remove_spooled_files);
+        for (int sig : {SIGINT, SIGTERM, SIGHUP}) {
+            auto prev = signal(sig, spool_signal);
+            if (prev != SIG_DFL) signal(sig, prev);   // someone else handles it
+        }
+    }
+    if (g_n_spooled < 8 && path.size() < sizeof g_spooled[0]) {
+        std::memcpy(g_spooled[g_n_spooled], path.c_str(), path.size() + 1);
+        g_n_spooled = g_n_spooled + 1;
+    }
+}
+
+// The extension of the binary format `head` (the first bytes of the input)
+// starts with, for the formats whose magic is unambiguous; "bgzf" for a BGZF
+// stream (BAM, BCF or bgzipped text — decided after copying); "" otherwise.
+static std::string pipe_binary_ext(const std::string& head) {
+    auto at = [&](size_t off, const char* m, size_t n) {
+        return head.size() >= off + n && std::memcmp(head.data() + off, m, n) == 0;
+    };
+    if (at(0, "PAR1", 4))                       return ".parquet";
+    if (at(0, "ARROW1\0\0", 8))                 return ".arrow";
+    if (at(0, "FEA1", 4))                       return ".feather";
+    if (at(0, "ORC", 3))                        return ".orc";
+    if (at(0, "LSB1", 4))                       return ".lociss";
+    if (at(0, "CRAM", 4))                       return ".cram";
+    if (at(0, "SQLite format 3\0", 16))         return ".sqlite";
+    if (at(0, "\x89HDF\r\n\x1a\n", 8))           return ".h5";
+    if (at(0, "\x93NUMPY", 6))                  return ".npy";
+    if (at(0, "\x26\xfc\x8f\x88", 4))            return ".bw";     // 0x888FFC26 LE
+    if (at(0, "\xeb\xf2\x89\x87", 4))            return ".bb";     // 0x8789F2EB LE
+    if (at(0, "\x43\x27\x41\x1a", 4))            return ".2bit";   // 0x1A412743 LE
+    if (at(0, "\x1f\x8b\x08\x04", 4))            return "bgzf";
+    if (at(0, "PK\x03\x04", 4) && head.size() >= 30) {
+        // A zip: the first entry names the container.
+        const uint16_t n = (uint8_t)head[26] | ((uint8_t)head[27] << 8);
+        const std::string first = head.substr(30, n);
+        if (first == "mimetype")                  return ".ods";
+        if (first.size() > 4 && first.compare(first.size() - 4, 4, ".npy") == 0)
+                                                  return ".npz";
+        if (first == "[Content_Types].xml" || first.rfind("xl/", 0) == 0 ||
+            first.rfind("_rels/", 0) == 0 || first.rfind("docProps/", 0) == 0)
+                                                  return ".xlsx";
+    }
+    return "";
+}
+
+// Copy `head` and then the rest of `fd` into a new temporary file, and return
+// its path (renamed to end in `ext`, or, for "bgzf", in the extension htslib's
+// content detection gives: .bam, .bcf, .cram, .vcf.gz, .bed.gz, .fq.gz, .fa.gz,
+// else .tsv.gz). The file is removed at exit.
+static std::string spool_pipe(int fd, const std::string& head, std::string ext,
+                              std::string* path_out, int64_t* bytes_out) {
+    const char* tmpdir = std::getenv("TMPDIR");
+    std::string tmpl = std::string(tmpdir && *tmpdir ? tmpdir : "/tmp") + "/vv-pipe-XXXXXX";
+    std::vector<char> name(tmpl.begin(), tmpl.end());
+    name.push_back('\0');
+    int out = ::mkstemp(name.data());
+    if (out < 0) return "cannot create a temporary file in " + tmpl.substr(0, tmpl.rfind('/')) +
+                        ": " + std::strerror(errno) + " (set TMPDIR)";
+    std::string path(name.data());
+    spool_register(path);
+    int64_t total = 0;
+    auto put = [&](const char* p, size_t n) -> bool {
+        while (n) {
+            ssize_t w = ::write(out, p, n);
+            if (w < 0) { if (errno == EINTR) continue; return false; }
+            p += w; n -= (size_t)w; total += w;
+        }
+        return true;
+    };
+    std::string err;
+    if (!put(head.data(), head.size())) err = std::strerror(errno);
+    std::vector<char> buf(1 << 20);
+    while (err.empty()) {
+        ssize_t r = ::read(fd, buf.data(), buf.size());
+        if (r == 0) break;
+        if (r < 0) { if (errno == EINTR) continue; err = std::strerror(errno); break; }
+        if (!put(buf.data(), (size_t)r)) err = std::strerror(errno);
+    }
+    ::close(out);
+    if (!err.empty()) return "copying the input to " + path + " failed: " + err;
+    if (ext == "bgzf") {
+        ext = ".tsv.gz";
+        if (htsFile* hf = hts_open(path.c_str(), "r")) {
+            switch (hts_get_format(hf)->format) {
+                case bam:          ext = ".bam";    break;
+                case bcf:          ext = ".bcf";    break;
+                case cram:         ext = ".cram";   break;
+                case vcf:          ext = ".vcf.gz"; break;
+                case bed:          ext = ".bed.gz"; break;
+                case fastq_format: ext = ".fq.gz";  break;
+                case fasta_format: ext = ".fa.gz";  break;
+                default: break;
+            }
+            hts_close(hf);
+        }
+    }
+    const std::string named = path + ext;
+    if (::rename(path.c_str(), named.c_str()) != 0)
+        return "renaming " + path + " failed: " + std::strerror(errno);
+    spool_register(named);
+    *path_out = named;
+    *bytes_out = total;
+    return "";
+}
+
+static std::string human_bytes(int64_t sz) {
+    char buf[32];
+    if      (sz < 1024)             std::snprintf(buf, sizeof(buf), "%lld B", (long long)sz);
+    else if (sz < 1024 * 1024)      std::snprintf(buf, sizeof(buf), "%.1f KiB", sz / 1024.0);
+    else if (sz < 1024LL * 1024 * 1024) std::snprintf(buf, sizeof(buf), "%.1f MiB", sz / (1024.0 * 1024));
+    else                            std::snprintf(buf, sizeof(buf), "%.2f GiB", sz / (1024.0 * 1024 * 1024));
+    return buf;
+}
+
+// True for a path that names a pipe, FIFO, socket or character device —
+// process substitution's /dev/fd/N — rather than a regular file.
+static bool path_is_pipe(const std::string& path) {
+    struct stat st;
+    if (::stat(path.c_str(), &st) != 0) return false;
+    return S_ISFIFO(st.st_mode) || S_ISCHR(st.st_mode) || S_ISSOCK(st.st_mode);
 }
 
 // ── In-memory adapter: wrap an Arrow Table as a TabularSource ────────────────
@@ -18179,41 +18328,46 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         return "";
     }
 
-    // ── Stdin (`-`): text formats only ───────────────────────────────────────
-    if (path == "-") {
-        if (isatty(STDIN_FILENO))
-            return "Refusing to read from a terminal on stdin. "
-                   "Did you mean to pipe data in (`cat foo.tsv | vv -`)?";
+    // ── Stdin (`-`) and pipes (`vv <(zcat x.gz)`, FIFOs) ─────────────────────
+    // A pipe cannot seek. Text (plain, gzip, zstd) is read as it streams in;
+    // a binary format is copied to a temporary file first (spool_pipe).
+    if (path == "-" || path_is_pipe(path)) {
+        int fd = STDIN_FILENO;
+        if (path == "-") {
+            if (isatty(STDIN_FILENO))
+                return "Refusing to read from a terminal on stdin. "
+                       "Did you mean to pipe data in (`cat foo.tsv | vv -`)?";
+        } else {
+            fd = ::open(path.c_str(), O_RDONLY);
+            if (fd < 0) return "Cannot open '" + path + "': " + std::strerror(errno);
+            if (isatty(fd)) { ::close(fd); return "'" + path + "' is a terminal, not a file"; }
+        }
 
         std::string sniff;
-        std::string err = sniff_stdin(8, &sniff);
+        std::string err = sniff_fd(fd, 64, &sniff);
         if (!err.empty()) return err;
-
-        // Reject binary formats that need a seekable file.
         auto starts_with = [&](const char* m, size_t l) {
             return sniff.size() >= l && std::memcmp(sniff.data(), m, l) == 0;
         };
-        if (starts_with("PAR1", 4))
-            return "Parquet requires a seekable file; pipe to a temp file or use "
-                   "process substitution: `vv <(zcat foo.parquet.gz)`";
-        if (starts_with("ARROW1\0\0", 8))
-            return "Arrow IPC requires a seekable file; pipe to a temp file or use "
-                   "process substitution: `vv <(zcat foo.arrow.gz)`";
-        if (starts_with("FEA1", 4))
-            return "Feather requires a seekable file; pipe to a temp file or use "
-                   "process substitution: `vv <(zcat foo.feather.gz)`";
-        // BAM and BCF both share the BGZF magic 1f 8b 08 04 — treat them as
-        // binary too (we have no way to tell BAM/BCF apart from a gzip stream
-        // without seeking).
-        if (starts_with("\x1f\x8b\x08\x04", 4))
-            return "BAM/BCF/CRAM require seekable input; pipe to a temp file or use "
-                   "process substitution: `vv <(samtools view -b foo.sam)`";
 
-        // Wrap stdin as a sequential-only InputStream that reads via read(2).
-        // Avoid arrow::io::StdinStream — it uses std::cin which conflicts
-        // with the preceding raw read(2) sniff.
+        const std::string bin_ext = pipe_binary_ext(sniff);
+        if (!bin_ext.empty()) {
+            std::string tmp;
+            int64_t bytes = 0;
+            std::string serr = spool_pipe(fd, sniff, bin_ext, &tmp, &bytes);
+            if (fd != STDIN_FILENO) ::close(fd);
+            if (!serr.empty()) return serr;
+            std::fprintf(stderr, "vv: %s: binary input needs random access; copied it to %s "
+                         "(%s), removed when vv exits\n",
+                         path.c_str(), tmp.c_str(), human_bytes(bytes).c_str());
+            return open_source_dispatch(tmp, cfg, out);
+        }
+
+        // Wrap the pipe as a sequential-only InputStream that reads via
+        // read(2). Avoid arrow::io::StdinStream — it uses std::cin which
+        // conflicts with the preceding raw read(2) sniff.
         std::shared_ptr<arrow::io::InputStream> input =
-            std::make_shared<FdInputStream>(STDIN_FILENO);
+            std::make_shared<FdInputStream>(fd);
 
         // Compressed stdin: gzip (1f 8b) or zstandard (28 b5 2f fd). BGZF (BAM/
         // BCF) shares the gzip magic but was already rejected above by its
@@ -18244,7 +18398,7 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
             head.resize((size_t)*got);
             TextSniffResult tr = sniff_text(head.data(), head.size());
             if (tr != TextSniffResult::Text)
-                return text_binary_error("stdin", tr);
+                return text_binary_error(path == "-" ? "stdin" : path, tr);
             input = std::make_shared<PrependInputStream>(std::move(head), input);
         }
 
@@ -18257,7 +18411,7 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         // straight in.
         if (cfg.force_text) {
             std::unique_ptr<TextSource> tsrc;
-            std::string terr = TextSource::open_stream("-", std::move(input), &tsrc);
+            std::string terr = TextSource::open_stream(path, std::move(input), &tsrc);
             if (!terr.empty()) return terr;
             *out = std::move(tsrc);
             return "";
@@ -18271,7 +18425,7 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
             (cfg.in_delimiter == 0 && cfg.delimiter == ',')) kind = DelimKind::CSV;
         std::unique_ptr<DelimitedSource> src;
         std::string e = DelimitedSource::open_from_stream(
-            std::move(input), "-", kind, /*is_gz=*/is_gz, cfg.region, &src,
+            std::move(input), path, kind, /*is_gz=*/is_gz, cfg.region, &src,
             cfg.in_delimiter, cfg.header);
         if (!e.empty()) return e;
         *out = std::move(src);
@@ -21165,8 +21319,10 @@ static std::vector<AnsiRun> ansi_runs(const std::string& in) {
 // mid-allocation. getch() is reliably interrupted there, which the
 // set-a-flag-and-poll approach can't guarantee (ncurses restarts on EINTR).
 static volatile sig_atomic_t g_tui_active = 0;
+void remove_spooled_files();
 static void tui_signal_restore(int sig) {
     if (g_tui_active) { g_tui_active = 0; endwin(); }
+    remove_spooled_files();
     signal(sig, SIG_DFL);
     raise(sig);
 }

@@ -221,7 +221,14 @@ one array per TUI tab. 1-D and 2-D arrays become rows and columns; 3-D+
 arrays are sliced along the leading axis, navigable with \fB[\fR / \fB]\fR
 in the viewer.
 .IP \(bu 2
-\fB-\fR \(en read text format from stdin (auto-detects gzip and zstandard)
+\fB-\fR \(en read from stdin (auto-detects gzip and zstandard). Text is read as
+it streams in. A binary format recognised by its magic bytes (Parquet,
+Arrow IPC, Feather, ORC, LociSSD, BAM, BCF, CRAM, SQLite, HDF5 / AnnData,
+NumPy, xlsx, ods, bigWig / bigBed, 2bit) needs random access, so it is
+copied to a temporary file in \fB$TMPDIR\fR (default \fB/tmp\fR) and opened
+from there; a note on standard error names the file, which is removed
+when vv exits or is interrupted. A pipe path such as process substitution
+(\fBvv <(zcat x.parquet.gz)\fR) or a FIFO is read the same way.
 .IP \(bu 2
 \fIDIR/\fR \(en a directory is read as one dataset: the data files under it
 (recursively, in filename order) are concatenated into a single table.

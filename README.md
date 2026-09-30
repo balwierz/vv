@@ -266,7 +266,7 @@ against it in CI, so this list cannot drift from the code.
 | Delimited text    | `.tsv`, `.csv` (plus `.gz` / `.zst`)                       |
 | JSON / NDJSON     | `.json`, `.ndjson`, `.jsonl` (plus `.gz` / `.zst`) — a top-level array of objects `[{…},{…}]` or newline-delimited objects. Records need not share a schema: Arrow infers the union of fields and fills gaps with nulls, and nested objects / arrays become struct / list columns. A non-tabular JSON file (an array of scalars, mismatched types) errors with a pointer to `--text`, which shows the raw source. |
 | Plain text        | `.txt`, `.text`, `.log` (plus `.gz` / `.zst`) — and **any file no other format claims**, if its content sniffs as text. Viewed in the TUI like `less -SN`: line-number gutter, long lines chopped with `h`/`l` scrolling sideways, `/` search, `&` filter, tabs across several files. In a pipe it is written back verbatim, so `vv f.log > copy` round-trips byte for byte. Binary is **refused**, not dumped — vv has no hex view. `--text` forces text mode whatever the extension. |
-| Stdin             | `vv -` reads any text format from stdin (auto-decompresses gzip / zstd) |
+| Stdin             | `vv -` reads text from stdin as it streams in (auto-decompresses gzip / zstd); a binary format (Parquet, Arrow, BAM, BCF, HDF5, SQLite, xlsx, …) is copied to a temporary file first. Process substitution (`vv <(zcat x.parquet.gz)`) works the same way |
 | Directory / dataset | `vv DIR/` concatenates the data files under a directory (recursively, filename order) into one table — Parquet / Arrow / ORC / CSV / TSV / JSON, one format per directory, `_SUCCESS` / `.crc` / hidden files skipped. Hive-style `key=value/` path components become columns (constant within each file; an all-integer key becomes an `int64` column, so `--filter 'year == 2020'` compares numbers). Every file must share one schema. Streaming, so a dataset larger than memory still previews. |
 
 
@@ -749,8 +749,11 @@ $ vv --heatmap --image-mode ascii embedding.npy > grid.txt
   individual columns; BED `itemRgb` renders as a colored bar; TSV/CSV
   with `##` headers (CADD, dbSNP) handled; CADD-style numeric headers
   detected and auto-numbered.
-- **Stdin** — `vv -` reads any text format from stdin (auto-gunzips).
-  Binary formats require seekable files and are rejected with a hint.
+- **Stdin and pipes** — `vv -` reads text from stdin as it streams in
+  (auto-gunzips). Binary formats need random access, so they are copied to
+  a temporary file (in `$TMPDIR`, removed when vv exits) and opened from
+  there. Process substitution — `vv <(zcat x.parquet.gz)` — and FIFOs work
+  the same way.
 - **One binary, zero runtime deps** — the static Linux build links
   Arrow + Parquet + htslib + ncurses + the compression stack
   statically. ~14 MB stripped, glibc ≥ 2.28.

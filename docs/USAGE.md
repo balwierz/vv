@@ -82,7 +82,7 @@ would need horizontal scrolling.
 | Sequencing reads  | `.fq`, `.fastq` (plus `.gz`)                                |
 | Delimited text    | `.tsv`, `.csv` (plus `.gz`)                                 |
 | JSON / NDJSON     | `.json`, `.ndjson`, `.jsonl` (plus `.gz` / `.zst`) via Arrow's streaming JSON reader. Two shapes are accepted: a top-level array of objects `[{…},{…}]` (pretty-printed or compact), and newline-delimited / concatenated objects (JSON Lines). The array form is unwrapped into records by a small stream filter — it drops the enclosing `[` `]` and turns the commas between elements into newlines, tracking string and nesting state so structural characters inside a value are left alone — before Arrow parses it; NDJSON passes straight through. Records need not share a schema: `unexpected_field_behavior = InferType` means Arrow infers the union of all fields and fills the gaps with nulls. Nested objects become `struct` columns and nested arrays become `list` columns, rendered by the same cell formatters as Parquet. Streaming and forward-only, so a file larger than memory still previews. An empty array, an array of scalars, or a field whose type changes between rows is not tabular and errors with a pointer to `--text`, which shows the raw JSON source instead. |
-| Stdin             | `vv -` reads any text format from stdin (auto-decompresses gzip / zstd) |
+| Stdin             | `vv -` reads text from stdin as it streams in (auto-decompresses gzip / zstd); a binary format (Parquet, Arrow, BAM, BCF, HDF5, SQLite, xlsx, …) is copied to a temporary file first. Process substitution (`vv <(zcat x.parquet.gz)`) works the same way |
 
 Unknown extensions are auto-detected by magic bytes (Parquet, Arrow IPC,
 Feather, BAM/BCF/CRAM) or delimiter heuristic (TSV vs. CSV).
@@ -919,11 +919,17 @@ $ cat tests/data/tiny.tsv | vv -                 # interactive on TTY
 $ zcat huge.tsv.gz | vv --tsv --no-header -      # plain text pipeline
 ```
 
-* Bare `-` reads stdin.
-* Text formats only — Parquet / Arrow IPC / BAM / BCF need seekable
-  files, so `vv -` rejects them with a hint pointing at process
-  substitution (`vv <(zcat foo.bam)`).
-* Auto-detects gzip via magic bytes.
+* Bare `-` reads stdin; a pipe path — process substitution
+  (`vv <(zcat foo.parquet.gz)`) or a FIFO — is read the same way.
+* Text streams in. A binary format recognised by its magic bytes (Parquet,
+  Arrow IPC, Feather, ORC, LociSSD, BAM, BCF, CRAM, SQLite, HDF5 / AnnData,
+  NumPy, xlsx, ods, bigWig / bigBed, 2bit) needs random access, so it is
+  copied to a temporary file in `$TMPDIR` (default `/tmp`) first; stderr
+  names the file, and it is removed when vv exits or is interrupted. A
+  bgzipped stream is identified by content (BAM, BCF, VCF, BED, FASTQ,
+  FASTA).
+* Auto-detects gzip and zstandard via magic bytes. Other text on stdin is
+  read as TSV / CSV (a FASTA or FASTQ is not recognised there yet).
 
 # Directories and partitioned datasets
 

@@ -406,7 +406,12 @@ work that touches the same code:
   the filtered rows; Enter filters to the value.
 - [x] **PLINK `.bed` refusal** (S) — `feat/plink-files` — magic `6c 1b 01` → clear error with the
   plink2 export command; named `.bim/.fam/.pvar/.psam` columns.
-- [ ] **Arrow IPC stream + columnar formats on stdin / pipes** (M).
+- [~] **Arrow IPC stream + columnar formats on stdin / pipes** (M). Binary
+  formats on stdin / pipes: `fix/pipes-and-process-substitution` (copied to a
+  temporary file). Still open: the Arrow IPC *stream* format (`.arrows`, and
+  a stream on stdin), read as it arrives.
+- [ ] **Text formats on stdin** (S) — FASTA / FASTQ / SAM / VCF piped as plain
+  text are read as TSV; sniff them as the file readers would.
 - [ ] **idxstats in `--contigs`, index-backed `--count`** (S+).
 - [ ] **`--seq-stats` for FASTA / FASTQ** (S).
 - [ ] **TSV dialects: `.bedpe`, `.pairs`, `.gct`, `.maf`** (S–M).

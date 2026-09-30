@@ -44,6 +44,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   printed the text table; on a non-Parquet file it exits 1.
 
 ### Fixed
+- **Binary files on stdin and through process substitution.** Stdin refused
+  Parquet, Arrow IPC, Feather and BAM / BCF ("requires a seekable file; ...
+  use process substitution"), and process substitution failed for every
+  format, text included (`vv <(cat x.tsv)`: "/dev/fd/63: lseek failed"). A
+  pipe path (process substitution, a FIFO) is now read like stdin: text
+  streams in, and a binary format recognised by its magic bytes (Parquet,
+  Arrow, Feather, ORC, LociSSD, BAM, BCF, CRAM, SQLite, HDF5 / AnnData,
+  NumPy, xlsx, ods, bigWig / bigBed, 2bit) is copied to a temporary file in
+  `$TMPDIR` and opened from there; stderr names the file, which is removed
+  at exit and on SIGINT / SIGTERM / SIGHUP. A bgzipped stream is identified
+  by content (BAM, BCF, VCF, BED, FASTQ, FASTA).
 - **`--filter` `==` on float32, decimal and boolean columns.** A float32 cell
   was compared with the literal as a double: the column holds 0.05f
   (0.0500000007…), so `Score == 0.05` matched nothing, `Score in (0.05, 0.1)`
