@@ -911,8 +911,39 @@ echo '── Stdin (-) ───────────────────
 assert_eq_file "stdin_tsv_matches_file" "$TMP/stdin_tsv.out" "$GOLDEN/tsv_tsv.expected"
 gzip -c "$DATA/tiny.tsv" | "$VV" --tsv --no-header - > "$TMP/stdin_gz.out"
 assert_eq_file "stdin_tsv_gz_matches_file" "$TMP/stdin_gz.out" "$GOLDEN/tsv_tsv.expected"
-PARQUET_REJECT=$("$VV" - < "$DATA/tiny.parquet" 2>&1 || true)
-assert_contains "stdin_rejects_parquet" "$PARQUET_REJECT" "seekable"
+# Binary input on stdin or a pipe (process substitution) is copied to a
+# temporary file and opened from there; text streams in. Both failed: stdin
+# refused Parquet / Arrow / BAM ("requires a seekable file; ... use process
+# substitution"), and process substitution failed for every format
+# ("/dev/fd/63: lseek failed"). The counts must equal the file's.
+SPOOL="$TMP/spool"; mkdir -p "$SPOOL"
+for f in tiny.parquet tiny.arrow tiny.orc tiny.bam tiny.bcf tiny.vcf.gz tiny.bed.gz \
+         tiny.sqlite tiny.h5ad tiny.npz tiny.xlsx tiny.ods tiny.bw tiny.2bit tiny.lociss \
+         tiny.tsv tiny.csv; do
+    [ -f "$DATA/$f" ] || continue
+    want=$("$VV" --count "$DATA/$f" 2>/dev/null)
+    assert_eq_file_inline "pipe_count [$f]" \
+        "$(TMPDIR="$SPOOL" "$VV" --count <(cat "$DATA/$f") 2>/dev/null)" "$want"
+done
+assert_eq_file_inline "stdin_parquet_count" \
+    "$(TMPDIR="$SPOOL" "$VV" --count - < "$DATA/tiny.parquet" 2>/dev/null)" "20"
+assert_contains "pipe_copy_note" \
+    "$(TMPDIR="$SPOOL" "$VV" --count - < "$DATA/tiny.parquet" 2>&1 >/dev/null)" \
+    "binary input needs random access; copied it to $SPOOL/vv-pipe-"
+assert_eq_file_inline "pipe_temp_files_removed" "$(ls "$SPOOL" | wc -l | tr -d ' ')" "0"
+# Killed mid-copy (a FIFO that stalls after 100 bytes), the temporary file is
+# removed too.
+mkfifo "$TMP/stall.fifo"
+( head -c 100 "$DATA/tiny.parquet"; sleep 5 ) > "$TMP/stall.fifo" &
+STALL=$!
+TMPDIR="$SPOOL" "$VV" --count "$TMP/stall.fifo" >/dev/null 2>&1 &
+VVPID=$!
+sleep 1.5
+assert_eq_file_inline "pipe_temp_file_while_copying" "$(ls "$SPOOL" | wc -l | tr -d ' ')" "1"
+kill -TERM "$VVPID" 2>/dev/null; wait "$VVPID" 2>/dev/null
+assert_eq_file_inline "pipe_temp_file_removed_on_sigterm" "$(ls "$SPOOL" | wc -l | tr -d ' ')" "0"
+kill "$STALL" 2>/dev/null; wait "$STALL" 2>/dev/null
+rm -f "$TMP/stall.fifo"
 
 echo
 echo '── zstd (.zst) auto-decompression ─────────────────────'
