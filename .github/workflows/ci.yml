@@ -267,6 +267,10 @@ jobs:
           # Search highlights the matching cell and not the others.
           VVG_SELFTEST=1 VVG_FIND='chr2' ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -q "^find 'chr2' -> row 12 col 0 = chr2 highlight=1 first=0$"
+          # The detail dock follows the cursor's row and reuses its items;
+          # moving along a row leaves it as is.
+          VVG_WINTEST=1 VVG_DETAIL='0,0;0,2;3,1' ./build-gui/gui/vvg tests/data/tiny.parquet | tr '\n' ' ' \
+            | grep -q "detail 0,0 -> row=0 rows=5 values=chr1,100 reused=0 detail 0,2 -> row=0 rows=5 values=chr1,100 reused=1 detail 3,1 -> row=3 rows=5 values=chr1,3_100 reused=1"
           # The session toolbar exposes the new open-time options through the same
           # reopen path as region/pileup. --tags adds a column per aux tag (11 SAM
           # columns + NM,AS = 13); --gt-stats adds 9 genotype columns to the BCF's
@@ -522,6 +526,10 @@ jobs:
           # Search highlights the matching cell and not the others.
           VVG_SELFTEST=1 VVG_FIND='chr2' ./build/gui/vvg tests/data/tiny.parquet \
             | grep -q "^find 'chr2' -> row 12 col 0 = chr2 highlight=1 first=0$"
+          # The detail dock follows the cursor's row and reuses its items;
+          # moving along a row leaves it as is.
+          VVG_WINTEST=1 VVG_DETAIL='0,0;0,2;3,1' ./build/gui/vvg tests/data/tiny.parquet | tr '\n' ' ' \
+            | grep -q "detail 0,0 -> row=0 rows=5 values=chr1,100 reused=0 detail 0,2 -> row=0 rows=5 values=chr1,100 reused=1 detail 3,1 -> row=3 rows=5 values=chr1,3_100 reused=1"
           VVG_WINTEST=1 VVG_AFIND='chr1' ./build/gui/vvg tests/data/tiny.parquet \
             | grep -q 'afind .* matches=12'
           out=$(VVG_WINTEST=1 VVG_COPYCMD=1 ./build/gui/vvg --filter 'Score > 0.5' --sort Score:desc \

@@ -37,6 +37,7 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QProgressBar>
+#include <QPointer>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScrollBar>
@@ -185,6 +186,24 @@ public:
         for (int guard = 0; m->isComputing() && guard < 2000000; ++guard)
             QCoreApplication::processEvents();
         return (int)m->viewRows();
+    }
+    // Window self-test: put the cursor on (row, col) and report the detail
+    // dock (row shown, its first two values, whether the value items were
+    // reused).
+    QString detailForTest(int row, int col) {
+        auto* v = activeView();
+        if (!v || !detail_) return QStringLiteral("no view");
+        QTableWidgetItem* before = detail_->item(0, 1);
+        v->selectionModel()->setCurrentIndex(v->model()->index(row, col),
+                                             QItemSelectionModel::ClearAndSelect);
+        QTableWidgetItem* first = detail_->item(0, 1);
+        QStringList vals;
+        for (int r = 0; r < std::min(2, detail_->rowCount()); ++r)
+            vals << (detail_->item(r, 1) ? detail_->item(r, 1)->text() : QString());
+        return QStringLiteral("row=%1 rows=%2 values=%3 reused=%4")
+            .arg(detailRow_).arg(detail_->rowCount())
+            .arg(vals.join(QLatin1Char(',')))
+            .arg(before && before == first ? 1 : 0);
     }
     // Drive the *async* find end-to-end: scan off-thread, pump until the match
     // list is installed, return the number of matches.
@@ -853,18 +872,32 @@ private:
         }
     }
 
+    // Show row `cur` in the detail dock. Moving the cursor along the same row
+    // changes nothing, so it returns early; a new row rewrites the values in
+    // the existing items, and the name column is rewritten (and resized) only
+    // when the model or its column count changes.
     void updateDetail(const QModelIndex& cur) {
         if (!detail_) return;
         auto* m = activeModel();
-        if (!m || !cur.isValid()) { detail_->setRowCount(0); return; }
-        int cols = m->displayColumnCount();
-        detail_->setRowCount(cols);
-        for (int c = 0; c < cols; ++c) {
-            detail_->setItem(c, 0, new QTableWidgetItem(m->columnName(c)));
-            QString v = m->data(m->index(cur.row(), c), Qt::DisplayRole).toString();
-            detail_->setItem(c, 1, new QTableWidgetItem(v));
+        if (!m || !cur.isValid()) {
+            detail_->setRowCount(0);
+            detailModel_ = nullptr; detailRow_ = -1;
+            return;
         }
-        detail_->resizeColumnToContents(0);
+        const int cols = m->displayColumnCount();
+        const bool relabel = m != detailModel_ || detail_->rowCount() != cols;
+        if (!relabel && cur.row() == detailRow_) return;
+        detail_->setRowCount(cols);
+        auto put = [&](int r, int c, const QString& text) {
+            if (QTableWidgetItem* it = detail_->item(r, c)) it->setText(text);
+            else detail_->setItem(r, c, new QTableWidgetItem(text));
+        };
+        for (int c = 0; c < cols; ++c) {
+            if (relabel) put(c, 0, m->columnName(c));
+            put(c, 1, m->data(m->index(cur.row(), c), Qt::DisplayRole).toString());
+        }
+        if (relabel) detail_->resizeColumnToContents(0);
+        detailModel_ = m; detailRow_ = cur.row();
     }
 
     void copySelection() {
@@ -1309,6 +1342,8 @@ private:
 
     QTabWidget*                    tabs_   = nullptr;
     QTableWidget*                  detail_ = nullptr;
+    QPointer<ArrowTableModel>      detailModel_;      // model / row the dock shows
+    int                            detailRow_ = -1;
     QLineEdit*                     filterEdit_ = nullptr;
     QLineEdit*                     findEdit_   = nullptr;
     QLineEdit*                     regionEdit_ = nullptr;
@@ -1698,6 +1733,15 @@ int main(int argc, char** argv) {
         }
         if (const char* cc = std::getenv("VVG_COPYCMD"); cc && *cc && *cc != '0')
             std::printf("cmd=%s\n", win.commandForActiveTab().toLocal8Bit().constData());
+        // Optional detail-dock check: VVG_DETAIL="r,c;r,c;…" moves the cursor
+        // and prints "detail r,c -> row=… rows=… first=… reused=…" per step.
+        if (const char* dt = std::getenv("VVG_DETAIL"); dt && *dt)
+            for (const QString& step : QString::fromLocal8Bit(dt).split(QLatin1Char(';'))) {
+                const QStringList rc = step.split(QLatin1Char(','));
+                if (rc.size() != 2) continue;
+                std::printf("detail %s -> %s\n", step.toLocal8Bit().constData(),
+                            win.detailForTest(rc[0].toInt(), rc[1].toInt()).toLocal8Bit().constData());
+            }
         return 0;
     }
 
