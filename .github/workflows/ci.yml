@@ -299,6 +299,13 @@ jobs:
           grep -q '^shortcut Ctrl+C -> Copy$' <<<"$out"
           grep -q '^shortcut Ctrl+G -> Go to Row…$' <<<"$out"
           grep -q '^shortcut F3 -> Find Next$' <<<"$out"
+          # vvg takes vv's view flags (--filter / --sort / --select / --tab …);
+          # the copied command reproduces them, --select order included.
+          out=$(VVG_WINTEST=1 VVG_COPYCMD=1 ./build-gui/gui/vvg --filter 'Score > 0.5' --sort Score:desc \
+                --select Score,Chr tests/data/tiny.parquet)
+          grep -q "^cmd=vv --filter 'Score > 0.5' --sort Score:desc --select Score,Chr " <<<"$out"
+          VVG_WINTEST=1 VVG_COPYCMD=1 ./build-gui/gui/vvg --tab obs tests/data/tiny.h5ad | grep -q '^cmd=vv --tab obs '
+          if ./build-gui/gui/vvg --no-such-option 2>/dev/null; then exit 1; fi
           # AnnData obsp / varp graphs open as streamed edge-list tabs.
           VVG_WINTEST=1 VVG_TABDIMS=1 ./build-gui/gui/vvg tests/data/tiny.obsp.h5ad \
             | grep -q "tab 'obsp\[connectivities\]' rows=4 cols=5 "
@@ -511,6 +518,9 @@ jobs:
             | grep -q "filter 'Score > 1' -> 0/20 rows"
           VVG_WINTEST=1 VVG_AFIND='chr1' ./build/gui/vvg tests/data/tiny.parquet \
             | grep -q 'afind .* matches=12'
+          out=$(VVG_WINTEST=1 VVG_COPYCMD=1 ./build/gui/vvg --filter 'Score > 0.5' --sort Score:desc \
+                --select Score,Chr tests/data/tiny.parquet)
+          grep -q "^cmd=vv --filter 'Score > 0.5' --sort Score:desc --select Score,Chr " <<<"$out"
           if [ -f tests/data/tiny.dense.h5ad ]; then
             VVG_WINTEST=1 VVG_TABDIMS=1 ./build/gui/vvg tests/data/tiny.dense.h5ad \
               | grep -qE "tab 'X' rows=3 cols=201 .*first 200 of 250 cols"

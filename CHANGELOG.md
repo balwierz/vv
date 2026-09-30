@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **vvg takes vv's view flags.** `vvg --filter … --select … --sort … --tab …
+  -r … file` opens the file in that view (region / session options, tab,
+  columns in the given order, filter, sort), so a `vv` command line can be
+  moved to the window; unknown options are an error and `--help` lists the
+  flags. Previously every argument starting with `-` was ignored and a flag's
+  value was taken as a file name. *Copy as vv Command* now records the
+  columns' on-screen order.
 - **`--tags` for PAF.** minimap2's optional `TAG:type:value` fields after
   PAF's 12 mandatory columns (`NM:i:5`, `tp:A:P`, `cg:Z:…`) were dropped;
   `--tags NM,tp,cg` now adds them as columns, typed from each tag's type

@@ -392,7 +392,14 @@ reader core as the CLI, so it opens every supported format:
 ```sh
 vvg data.parquet            # or any supported file
 vvg a.bam b.vcf.gz c.h5ad   # multiple files → one tab each
+vvg --filter 'Score > 0.5' --sort Score:desc --select Chr,Score peaks.parquet
+vvg --tab obs cells.h5ad    # vv's view flags open the same view in the window
 ```
+
+`vvg` takes vv's view flags — `--filter`, `--select`, `--sort`, `--tab`,
+`-r` / `--region` (with `--coords`, `--slop`), `--tags`, `--pileup`,
+`--gt-stats`, `--contigs` — so a `vv` command line opens the same view in the
+window; *Edit ▸ Copy as vv Command* goes the other way.
 
 ![vvg showing an ATAC peak Parquet](docs/img/vvg-parquet.png)
 

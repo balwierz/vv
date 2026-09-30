@@ -373,6 +373,12 @@ std::string apply_region_modifiers(Config& cfg);
 // same way open_source() picks the reader, so no file is opened.
 std::string packed_column_for(const std::string& path);
 
+// Resolve a --select spec (names, globs, 1-based ranges, @type classes,
+// !exclusions — see --help) against `src`'s schema: the selected field
+// indices in the spec's order. Terms matching nothing go to `unknown`.
+std::vector<int> select_columns(const TabularSource& src, const std::string& spec,
+                                std::vector<std::string>* unknown);
+
 // ── Export ───────────────────────────────────────────────────────────────────
 // Write the view `cfg` describes — the same options the CLI takes: --tab,
 // region options, --pileup / --tags / --gt-stats / --contigs, --filter,

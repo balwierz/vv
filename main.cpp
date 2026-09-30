@@ -26476,6 +26476,13 @@ static std::string shorten_reader_error(std::string msg) {
     return msg;
 }
 
+std::vector<int> select_columns(const TabularSource& src, const std::string& spec,
+                                std::vector<std::string>* unknown) {
+    Config cfg;
+    cfg.select_cols = spec;
+    return select_field_indices(src, cfg, unknown);
+}
+
 std::string packed_column_for(const std::string& path) {
     std::string det = path;
     if      (fends_ci(det, ".zstd")) det.resize(det.size() - 5);

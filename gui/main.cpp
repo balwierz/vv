@@ -952,10 +952,15 @@ public:
         // Hidden columns: name the visible ones. --select takes an exact name
         // as-is, but splits on commas and trims spaces, so such a name is
         // given by its 1-based source position ("N-N") instead.
+        // In on-screen order, so a reordered view (--select Score,Chr) copies
+        // as it shows.
         const int ncols = m->displayColumnCount();
         QStringList visible;
-        bool anyHidden = false;
-        for (int c = 0; c < ncols; ++c) {
+        bool anyHidden = false, reordered = false;
+        auto* h = v->horizontalHeader();
+        for (int vis = 0; vis < ncols; ++vis) {
+            const int c = h->logicalIndex(vis);
+            if (c != vis) reordered = true;
             if (v->isColumnHidden(c)) { anyHidden = true; continue; }
             const QString name = m->columnName(c);
             if (name.contains(QLatin1Char(',')) || name.trimmed() != name || name.isEmpty()) {
@@ -965,7 +970,7 @@ public:
                 visible << name;
             }
         }
-        if (anyHidden) s.select = visible;
+        if (anyHidden || reordered) s.select = visible;
         return true;
     }
     // Headless export (VVG_WINTEST + VVG_EXPORT): start the export of the
@@ -988,9 +993,9 @@ public:
         *rows = lastExportRows_;
         return lastExportError_;
     }
-    // Test hooks (VVG_WINTEST): sort / hide on the active tab, as the header
-    // click and View > Columns do.
-    bool sortActiveForTest(const QString& column, bool desc) {
+    // Sort / hide on the active tab, as the header click and View > Columns
+    // do (used by --sort and the VVG_WINTEST hooks).
+    bool sortActiveByName(const QString& column, bool desc) {
         auto* m = activeModel();
         if (!m) return false;
         for (int c = 0; c < m->displayColumnCount(); ++c)
@@ -1013,6 +1018,74 @@ public:
         return false;
     }
     void selectTabForTest(int i) { tabs_->setCurrentIndex(i); }
+
+    // vv's view flags on vvg's command line (vvg --filter … --sort … file).
+    struct ViewOptions {
+        QString filter, select, sort, tab, region, tags;
+        bool ncbi = false, pileup = false, gtStats = false, contigs = false;
+        int  slop = 0;
+        bool session() const {
+            return !region.isEmpty() || !tags.isEmpty() || pileup || gtStats || contigs || slop;
+        }
+    };
+    // Apply them after the files open, in vv's order: region / session options
+    // (re-open), --tab, --select (hide the rest, in the given order), --filter,
+    // --sort. Returns a message per option that could not be applied.
+    QStringList applyViewOptions(const ViewOptions& o) {
+        QStringList errs;
+        auto settle = [&](ArrowTableModel* m) {
+            for (int g = 0; m && m->isComputing() && g < 2000000; ++g)
+                QCoreApplication::processEvents();
+        };
+        if (o.session())
+            applyRegionQuery(o.region, o.ncbi, o.slop, o.pileup, o.tags, o.gtStats, o.contigs);
+        if (!o.tab.isEmpty()) {
+            int found = -1;
+            for (int i = 0; i < tabs_->count() && found < 0; ++i)
+                if (tabs_->tabText(i) == o.tab) found = i;
+            bool num = false;
+            const int idx = o.tab.toInt(&num);
+            if (found < 0 && num && idx >= 0 && idx < tabs_->count()) found = idx;
+            if (found >= 0) tabs_->setCurrentIndex(found);
+            else errs << tr("--tab: no tab named '%1'").arg(o.tab);
+        }
+        auto* m = activeModel();
+        auto* v = activeView();
+        if (m && v && !o.select.isEmpty()) {
+            std::vector<std::string> unknown;
+            const auto sel = select_columns(*m->source(), o.select.toStdString(), &unknown);
+            for (const auto& u : unknown)
+                errs << tr("--select: no column matches '%1'").arg(QString::fromStdString(u));
+            std::vector<int> disp;          // selected display columns, in spec order
+            for (int fi : sel) {
+                const QString name = QString::fromStdString(m->source()->schema()->field(fi)->name());
+                for (int c = 0; c < m->displayColumnCount(); ++c)
+                    if (m->columnName(c) == name) { disp.push_back(c); break; }
+            }
+            if (!disp.empty()) {
+                for (int c = 0; c < m->displayColumnCount(); ++c)
+                    v->setColumnHidden(c, std::find(disp.begin(), disp.end(), c) == disp.end());
+                auto* h = v->horizontalHeader();
+                for (int k = 0; k < (int)disp.size(); ++k)
+                    h->moveSection(h->visualIndex(disp[(size_t)k]), k);
+            }
+        }
+        if (m && !o.filter.isEmpty()) {
+            filterEdit_->setText(o.filter);
+            applyFilter();
+            settle(m);
+            if (!filterText_.contains(m))
+                errs << tr("--filter: %1").arg(statusBar()->currentMessage());
+        }
+        if (m && !o.sort.isEmpty()) {
+            QString col = o.sort;
+            const bool desc = col.endsWith(QStringLiteral(":desc"));
+            if (desc) col.chop(5);
+            else if (col.endsWith(QStringLiteral(":asc"))) col.chop(4);
+            if (!sortActiveByName(col, desc)) errs << tr("--sort: no column '%1'").arg(col);
+        }
+        return errs;
+    }
     // Set the horizontal scroll bar and read it back, with its maximum:
     // per-pixel scroll bars range over the table's pixel width and keep any
     // offset (mid-column); per-item bars range over the columns.
@@ -1380,10 +1453,43 @@ int main(int argc, char** argv) {
     app.setWindowIcon(QIcon::fromTheme(QStringLiteral("vv"),
                                        QIcon(QStringLiteral(":/icons/vv.svg"))));
 
+    // Files, and vv's view flags (applied once the files are open).
     QStringList paths;
+    MainWindow::ViewOptions view;
     for (int i = 1; i < argc; ++i) {
-        std::string a = argv[i];
-        if (!a.empty() && a[0] != '-') paths << QString::fromStdString(a);
+        const std::string a = argv[i];
+        auto value = [&](QString* out) {
+            if (i + 1 >= argc) { std::fprintf(stderr, "vvg: %s needs a value\n", a.c_str()); std::exit(2); }
+            *out = QString::fromLocal8Bit(argv[++i]);
+        };
+        QString tmp;
+        if      (a == "--filter")                 value(&view.filter);
+        else if (a == "--select")                 value(&view.select);
+        else if (a == "--sort")                   value(&view.sort);
+        else if (a == "--tab")                    value(&view.tab);
+        else if (a == "-r" || a == "--region")    value(&view.region);
+        else if (a == "--tags")                   value(&view.tags);
+        else if (a == "--coords")                 { value(&tmp); view.ncbi = tmp.compare(QStringLiteral("NCBI"), Qt::CaseInsensitive) == 0; }
+        else if (a == "--slop")                   { value(&tmp); view.slop = tmp.toInt(); }
+        else if (a == "--pileup")                 view.pileup = true;
+        else if (a == "--gt-stats")               view.gtStats = true;
+        else if (a == "--contigs")                view.contigs = true;
+        else if (a == "-h" || a == "--help") {
+            std::printf("usage: vvg [options] [file ...]\n"
+                        "  --filter EXPR     keep rows matching EXPR (vv's --filter grammar)\n"
+                        "  --select TERMS    show these columns, in this order (vv's --select)\n"
+                        "  --sort COL[:desc] sort by a column\n"
+                        "  --tab NAME        open a component tab (or its 0-based index)\n"
+                        "  -r, --region R    region query (UCSC coordinates; --coords NCBI)\n"
+                        "  --slop N, --tags LIST, --pileup, --gt-stats, --contigs\n"
+                        "                    as in vv\n");
+            return 0;
+        }
+        else if (!a.empty() && a[0] == '-' && a != "-") {
+            std::fprintf(stderr, "vvg: unknown option '%s' (vvg --help)\n", a.c_str());
+            return 2;
+        }
+        else paths << QString::fromStdString(a);
     }
 
     if (const char* st = std::getenv("VVG_SELFTEST"); st && *st && *st != '0') {
@@ -1515,6 +1621,8 @@ int main(int argc, char** argv) {
         if (const char* ex = std::getenv("VVG_EXPAND"); ex && *ex == '0')
             win.setExpandForTest(false);
         win.openPaths(paths, /*quiet=*/true);
+        for (const QString& e : win.applyViewOptions(view))
+            std::fprintf(stderr, "vvg: %s\n", e.toLocal8Bit().constData());
         std::printf("win_tabs=%d\n", win.tabCount());
         if (const char* sm = std::getenv("VVG_SCROLLMODE"); sm && *sm && *sm != '0')
             std::printf("scroll=%s\n", win.scrollModeForTest());
@@ -1567,7 +1675,7 @@ int main(int argc, char** argv) {
             QString spec = QString::fromLocal8Bit(so);
             bool desc = spec.endsWith(QStringLiteral(":desc"));
             if (desc) spec.chop(5);
-            if (!win.sortActiveForTest(spec, desc))
+            if (!win.sortActiveByName(spec, desc))
                 std::fprintf(stderr, "vvg: no column '%s' to sort\n", so);
         }
         if (const char* hd = std::getenv("VVG_HIDE"); hd && *hd)
@@ -1589,7 +1697,13 @@ int main(int argc, char** argv) {
 
     MainWindow win;
     win.show();
-    if (!paths.isEmpty()) win.openPaths(paths);
-    else                  win.setWindowTitle(QStringLiteral("vv"));
+    if (!paths.isEmpty()) {
+        win.openPaths(paths);
+        const QStringList errs = win.applyViewOptions(view);
+        for (const QString& e : errs) std::fprintf(stderr, "vvg: %s\n", e.toLocal8Bit().constData());
+        if (!errs.isEmpty()) win.statusBar()->showMessage(errs.join(QStringLiteral("; ")));
+    } else {
+        win.setWindowTitle(QStringLiteral("vv"));
+    }
     return app.exec();
 }
