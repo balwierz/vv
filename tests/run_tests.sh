@@ -3991,6 +3991,15 @@ if "$VV" --heatmap --image-mode bogus "$DATA/tiny.parquet" >/dev/null 2>&1; then
 else
     PASS=$((PASS + 1)); echo "  ok    heatmap_bad_mode_rejected"
 fi
+# The sixel encoder draws the kitty picture pixel for pixel (decoded and
+# compared by tests/sixel_check.py).
+if command -v python3 >/dev/null 2>&1; then
+    if python3 "$HERE/sixel_check.py" "$VV" "$DATA/tiny.parquet"; then
+        PASS=$((PASS + 1)); echo "  ok    heatmap_sixel_matches_kitty"
+    else
+        FAIL=$((FAIL + 1)); echo "  FAIL  heatmap_sixel_matches_kitty"
+    fi
+fi
 # Help documents the flags.
 HM_HELP=$("$VV" --help 2>&1 || true)
 assert_contains "help_has_heatmap"    "$HM_HELP" "--heatmap"

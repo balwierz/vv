@@ -20092,25 +20092,50 @@ static void emit_sixel(const PalImage& im) {
             ((c&255)*100+127)/255);
         out += buf;
     }
-    std::vector<uint8_t> seen(im.pal.size());
+    // One pass per 6-row band: each pixel sets its row's bit in its colour's
+    // column pattern. Then every colour present in the band is written as one
+    // line of sixel characters, runs of four or more as `!<n><char>`.
+    // O(w × h + colours in band × w) instead of a rescan of the band per
+    // palette entry.
+    const size_t npal = im.pal.size();
+    std::vector<int>     slot(npal, -1);            // palette index → band slot
+    std::vector<size_t>  used;                      // palette indices in the band
+    std::vector<uint8_t> bits;                      // slot × w six-bit patterns
+    auto put_run = [&](char ch, int n) {
+        if (n >= 4) { out += '!'; out += std::to_string(n); out += ch; }
+        else        out.append((size_t)n, ch);
+    };
     for (int band = 0; band * 6 < im.h; ++band) {
-        // colours present in this 6-row band
-        std::fill(seen.begin(), seen.end(), 0);
+        for (size_t c : used) slot[c] = -1;
+        used.clear();
+        bits.clear();
         for (int k = 0; k < 6; ++k) {
-            int row = band*6 + k; if (row >= im.h) break;
-            for (int x = 0; x < im.w; ++x) seen[im.px[(size_t)row*im.w + x]] = 1;
-        }
-        for (size_t c = 0; c < im.pal.size(); ++c) {
-            if (!seen[c]) continue;
-            out += '#'; out += std::to_string(c);
+            const int row = band*6 + k; if (row >= im.h) break;
+            const uint8_t* line = &im.px[(size_t)row * im.w];
             for (int x = 0; x < im.w; ++x) {
-                int bits = 0;
-                for (int k = 0; k < 6; ++k) {
-                    int row = band*6 + k;
-                    if (row < im.h && im.px[(size_t)row*im.w + x] == c) bits |= (1<<k);
+                const size_t c = line[x];
+                if (c >= npal) continue;
+                if (slot[c] < 0) {
+                    slot[c] = (int)used.size();
+                    used.push_back(c);
+                    bits.resize(used.size() * (size_t)im.w, 0);
                 }
-                out += (char)(0x3F + bits);
+                bits[(size_t)slot[c] * im.w + x] |= (uint8_t)(1 << k);
             }
+        }
+        std::vector<size_t> order(used);             // palette order, as before
+        std::sort(order.begin(), order.end());
+        for (size_t c : order) {
+            out += '#'; out += std::to_string(c);
+            const uint8_t* pat = &bits[(size_t)slot[c] * im.w];
+            int run = 0; char prev = 0;
+            for (int x = 0; x < im.w; ++x) {
+                const char ch = (char)(0x3F + pat[x]);
+                if (run && ch == prev) { ++run; continue; }
+                if (run) put_run(prev, run);
+                prev = ch; run = 1;
+            }
+            if (run && prev != 0x3F) put_run(prev, run);   // trailing blanks add nothing
             out += '$';                              // graphics CR (overlay next colour)
         }
         out += '-';                                  // graphics NL (next band)
