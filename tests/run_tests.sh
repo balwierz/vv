@@ -2880,11 +2880,12 @@ if [ -f "$DATA/tiny.nullstr.h5ad" ]; then
     assert_contains "nullstr_var_index_labels_x" "$NS_X" "g0"
 fi
 
-# Boolean obs/var columns are stored as HDF5 enums; they must render their
-# member names, not the old "?" fallback. tiny.h5ad var.mt = [F,F,T,F].
+# Boolean obs/var columns are stored as HDF5 enums {FALSE, TRUE}; they read
+# as a bool column (not the old "?" fallback, nor the text "TRUE").
+# tiny.h5ad var.mt = [F,F,T,F].
 if [ -f "$DATA/tiny.h5ad" ]; then
     VAR_MT=$("$VV" --tab var --tsv "$DATA/tiny.h5ad" 2>&1)
-    assert_contains "h5ad_bool_col_rendered"  "$VAR_MT" "TRUE"
+    assert_contains "h5ad_bool_col_rendered"  "$VAR_MT" "true"
     refute_contains "h5ad_bool_col_not_qmark" "$VAR_MT" "?"
 fi
 
@@ -4560,6 +4561,28 @@ if [ -f "$DATA/tiny.h5ad" ]; then
     XHDR=$("$VV" --tab "X (preview)" -n 2 --tsv "$DATA/tiny.h5ad" 2>/dev/null | head -1)
     assert_contains    "anndata_x_cols_are_genes"     "$XHDR" "gene0"
     assert_contains    "anndata_x_rows_are_obs"       "$XHDR" "obs"
+fi
+
+# ── AnnData column types: bool vs categorical of bool vs of strings ─────────
+# A bool column and every categorical were shown as `string` (a bool as the
+# text "TRUE" / "FALSE"). A categorical is now a dictionary column shown as
+# category[<category type>] — category[bool] and category[string] stay
+# distinct — and a bool column is bool, so `== true` filters it.
+CT="$DATA/tiny.cattypes.h5ad"
+if [ -f "$CT" ]; then
+    assert_eq_file_inline "h5ad_column_types" \
+        "$("$VV" --tab obs --schema --color=never "$CT" | awk '/^---/{s=1;next} s&&!NF{exit} s{printf "%s=%s ", $1, substr($0, index($0,$2))}' | sed 's/  *yes//g')" \
+        "_index=string cell_type=category[string] doublet=bool doublet_cat=category[bool] grade=category[string, ordered] "
+    if command -v python3 >/dev/null 2>&1; then
+        assert_eq_file_inline "h5ad_column_types_json" "$("$VV" --tab obs --schema --json "$CT" | python3 -c '
+import json, sys; print([c["type"] for c in json.load(sys.stdin)["columns"]][2:4])')" "['bool', 'category[bool]']"
+    fi
+    assert_eq_file_inline "h5ad_bool_filter"         "$("$VV" --tab obs --count --filter 'doublet == true' "$CT")" "2"
+    assert_eq_file_inline "h5ad_cat_bool_filter"     "$("$VV" --tab obs --count --filter 'doublet_cat == false' "$CT")" "2"
+    assert_eq_file_inline "h5ad_cat_string_filter"   "$("$VV" --tab obs --count --filter 'cell_type == "T"' "$CT")" "2"
+    assert_eq_file_inline "h5ad_cat_missing_is_null" "$("$VV" --tab obs --count --filter 'cell_type is null' "$CT")" "1"
+    assert_eq_file_inline "h5ad_bool_values" "$("$VV" --tab obs --tsv --no-header --select doublet,doublet_cat "$CT" | tr '\t\n' ',;')" \
+        "true,true;false,false;true,false;false,true;"
 fi
 
 # ── anndata < 0.8 categoricals (integer codes + __categories) ───────────────
