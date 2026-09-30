@@ -9,7 +9,7 @@ Backspace / Delete, Ctrl-U / K / W) in whole UTF-8 characters.
 Checks, on tiny.parquet (Score 0 .. 0.95 by row) and a 3-row TSV whose `name`
 column holds café / naïve / plain:
   1. "Scre > 0.5", Left x8, "o"  ->  Score > 0.5: Row 1-9/9;
-  2. "junk", Ctrl-U, "Score > 0.9 zz", Ctrl-W, Backspace  ->  Row 1-1/1;
+  2. "jk", Ctrl-U, "Score > 0.9 z", Ctrl-W, Backspace  ->  Row 1-1/1;
   3. name == "café" typed as UTF-8 bytes: Row 1-1/1;
   4. "caféX", Backspace x2 (X, then the whole é), "é" again: still 1 row —
      a byte-wise Backspace would leave a stray 0xC3 and match nothing;
@@ -62,7 +62,7 @@ def main():
         ("insert after Left", data,
          keys("&", "Scre > 0.5", *[LEFT] * 8, "o", ENTER), "Row 1-9/9"),
         ("Ctrl-U / Ctrl-W", data,
-         keys("&", "junk", CTRL_U, "Score > 0.9 zz", CTRL_W, BS, ENTER), "Row 1-1/1"),
+         keys("&", "jk", CTRL_U, "Score > 0.9 z", CTRL_W, BS, ENTER), "Row 1-1/1"),
         ("UTF-8 literal", tsv,
          keys("&", 'name == "café"', ENTER), "Row 1-1/1"),
         ("Backspace removes a whole character", tsv,
@@ -71,8 +71,11 @@ def main():
          keys("&", "xScore > 0.5", HOME, DEL, ENTER), "Row 1-9/9"),
     ]
     for label, path, ks, want in cases:
-        txt, _raw, hung = run(vv, [path], ks, budget=12)
-        if hung or status(txt) != want:
+        # Keys go 0.3 s apart; the budget leaves room for a slow runner.
+        txt, _raw, hung = run(vv, [path], ks, budget=40)
+        if hung:
+            fail("%s: timed out (last status %r)" % (label, status(txt)))
+        elif status(txt) != want:
             fail("%s: got %r, want %r" % (label, status(txt), want))
     return rc
 

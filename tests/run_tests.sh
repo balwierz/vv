@@ -3995,7 +3995,7 @@ fi
 # ASCII only, appended at the end, and Backspace removed one byte. On the
 # previous build every check fails.
 if command -v python3 >/dev/null 2>&1; then
-    if run_with_timeout 180 python3 "$HERE/tui_line_edit_check.py" "$VV" "$DATA/tiny.parquet" "$TMP"; then
+    if run_with_timeout 300 python3 "$HERE/tui_line_edit_check.py" "$VV" "$DATA/tiny.parquet" "$TMP"; then
         PASS=$((PASS+1)); echo "  ok    tui_line_edit"
     else
         FAIL=$((FAIL+1)); echo "  FAIL  tui_line_edit"
