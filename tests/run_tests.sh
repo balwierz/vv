@@ -662,12 +662,17 @@ if [ -f "$DATA/tiny.bcf.csi" ]; then
     assert_eq_file_inline "bcf_region_boundary_excludes_start_variant" "$BCF_BOUNDARY" "1"
 fi
 
-# BCF with genotype samples: the FORMAT_SAMPLES column must keep the FORMAT
-# spec (e.g. GT:AD:DP), not collapse to the per-sample values alone.
+# BCF with genotype samples: FORMAT and one column per sample, named from the
+# header — the columns the text VCF reader gives (they were one tab-joined
+# FORMAT_SAMPLES column).
 if [ -f "$DATA/tiny.samples.bcf" ]; then
     SMP_OUT=$("$VV" --tsv --no-header "$DATA/tiny.samples.bcf" 2>&1)
     assert_contains "bcf_format_spec_preserved" "$SMP_OUT" "GT:AD:DP"
     assert_contains "bcf_sample_values_present" "$SMP_OUT" "0/1:5,6:11"
+    assert_eq_file_inline "bcf_sample_columns" "$("$VV" --list-columns "$DATA/tiny.samples.bcf" | tr '\n' ' ')" \
+        "CHROM POS ID REF ALT QUAL FILTER INFO FORMAT S1 S2 "
+    assert_eq_file_inline "bcf_sample_column_values" \
+        "$("$VV" --tsv --no-header --select S2 "$DATA/tiny.samples.bcf" | tr '\n' ';')" "1/1:0,9:9;0/1:4,4:8;"
 fi
 
 # Empty tabix region: a window over a known chromosome that overlaps no records
@@ -3769,7 +3774,7 @@ GTHAP="$TMP/gthap.vcf"
 GT_HAP=$("$VV" --tsv --no-header --gt-stats \
     --select n_het,n_hom_ref,n_hom_alt,n_missing,AC,AN "$GTHAP")
 assert_eq_file_inline "gt_stats_haploid" "$GT_HAP" "$(printf '0\t1\t1\t1\t1\t2')"
-# BCF: the collapsed FORMAT_SAMPLES blob is parsed the same way.
+# BCF: the per-sample columns are read the same way.
 if [ -f "$DATA/tiny.samples.bcf" ]; then
     BCF_GT=$("$VV" --tsv --no-header --gt-stats \
         --select POS,n_het,n_hom_ref,n_hom_alt,AC,AN,AF "$DATA/tiny.samples.bcf" 2>/dev/null)

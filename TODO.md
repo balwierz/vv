@@ -415,8 +415,10 @@ work that touches the same code:
 - [x] **TSV dialects: `.bedpe`, `.pairs`, `.gct`, `.maf`** (S–M) — `feat/tsv-dialects`.
 - [x] **UTF-8 and line editing in the TUI `/ & :` bars** (S, then M) — `feat/tui-line-editing` (history is not included).
 - [x] **`--tags` for PAF** (M).
-- [ ] **VCF/BCF per-sample FORMAT fields** (L) — named BCF sample columns
-  first.
+- [~] **VCF/BCF per-sample FORMAT fields** (L) — named BCF sample columns
+  first. Named BCF sample columns: done (FORMAT + one column per sample, as
+  text VCF). Still open: typed per-sample FORMAT fields (e.g. `S1.GT`,
+  `S1.DP`) — the column layout for many samples needs deciding.
 - [x] **`--flatten` for nested struct paths** (M+).
 - [x] **vvg accepts vv's view flags** (S–M).
 

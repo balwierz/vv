@@ -267,12 +267,12 @@ jobs:
           # The session toolbar exposes the new open-time options through the same
           # reopen path as region/pileup. --tags adds a column per aux tag (11 SAM
           # columns + NM,AS = 13); --gt-stats adds 9 genotype columns to the BCF's
-          # 9, and the default Expand adds its INFO key AF (= 19); a directory
-          # opens as a dataset.
+          # 11 (FORMAT and one per sample), and the default Expand adds its INFO
+          # key AF (= 21); a directory opens as a dataset.
           VVG_WINTEST=1 VVG_TAGS='NM,AS' ./build-gui/gui/vvg tests/data/tiny.bam \
             | grep -q "tags='NM,AS'.*cols=13"
           VVG_WINTEST=1 VVG_GTSTATS=1 ./build-gui/gui/vvg tests/data/tiny.samples.bcf 2>/dev/null \
-            | grep -q 'gtstats=1.*cols=19'
+            | grep -q 'gtstats=1.*cols=21'
           # Smooth (per-pixel) scrolling is the default: the horizontal scroll
           # bar ranges over pixels (well past the 7 columns) and keeps an
           # offset of 3 px, mid-column. smoothScroll=false in vvg's settings

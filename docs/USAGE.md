@@ -835,10 +835,9 @@ a **fixed** set that answers the usual questions:
 | `AF` | alternate-allele frequency, `AC / AN` (null when `AN = 0`) |
 | `call_rate` | `n_called / samples` |
 
-* **Both encodings.** A text VCF keeps `FORMAT` and the sample columns
-  separate; a BCF (read through htslib) collapses them into one
-  `FORMAT_SAMPLES` blob. `--gt-stats` finds the `GT` sub-field in either and
-  parses it the same way. Diploid, haploid (`1` on chrY / mito), and
+* **VCF and BCF alike.** Both give `FORMAT` and one column per sample, named
+  from the header; `--gt-stats` finds the `GT` sub-field and parses it the
+  same way. Diploid, haploid (`1` on chrY / mito), and
   multi-allelic (`1/2`) genotypes are all classified; a phased `1|0` counts the
   same as `1/0`.
 * **Numeric and composable.** The appended columns are `int64` / `double`, so

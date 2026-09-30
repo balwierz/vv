@@ -8951,7 +8951,8 @@ class BcfSource : public TabularSource {
 
     arrow::Status advance(int64_t row_cap = -1) const {
         if (all_read_) return arrow::Status::OK();
-        arrow::StringBuilder chrom_b, id_b, ref_b, alt_b, filter_b, info_b, samples_b;
+        arrow::StringBuilder chrom_b, id_b, ref_b, alt_b, filter_b, info_b, format_b;
+        std::vector<arrow::StringBuilder> sample_b((size_t)n_samples_);  // one per sample
         arrow::Int64Builder  pos_b;
         arrow::FloatBuilder  qual_b;
 
@@ -8996,7 +8997,7 @@ class BcfSource : public TabularSource {
             }
             // After the eight fixed fields (CHROM..INFO), `start` points at the
             // FORMAT field. Everything from there on — FORMAT plus the
-            // per-sample columns — is kept verbatim as the FORMAT_SAMPLES value.
+            // per-sample columns — is split into FORMAT and one value per sample.
             // (Previously this skipped to after the next tab, dropping the
             // FORMAT spec such as GT:AD:DP entirely.)
             if (fi < 8) {
@@ -9031,8 +9032,20 @@ class BcfSource : public TabularSource {
             }
             ARROW_RETURN_NOT_OK(filter_b.Append(f[6].data(), (int32_t)f[6].size()));
             ARROW_RETURN_NOT_OK(info_b.Append  (f[7].data(), (int32_t)f[7].size()));
-            if (n_samples_ > 0)
-                ARROW_RETURN_NOT_OK(samples_b.Append(f[8].data(), (int32_t)f[8].size()));
+            if (n_samples_ > 0) {
+                // FORMAT, then one field per sample (as the text VCF reader has).
+                std::string_view tail = f[8];
+                for (int k = -1; k < n_samples_; ++k) {
+                    const size_t tab = tail.find('\t');
+                    std::string_view v = tail.substr(0, tab);
+                    auto& b = (k < 0) ? format_b : sample_b[(size_t)k];
+                    if (v.empty() && tab == std::string_view::npos && tail.empty())
+                        ARROW_RETURN_NOT_OK(b.AppendNull());
+                    else
+                        ARROW_RETURN_NOT_OK(b.Append(v.data(), (int32_t)v.size()));
+                    tail = (tab == std::string_view::npos) ? std::string_view{} : tail.substr(tab + 1);
+                }
+            }
 
             ++count;
         }
@@ -9060,8 +9073,12 @@ class BcfSource : public TabularSource {
         ARROW_RETURN_NOT_OK(filter_b.Finish(&tmp)); a.push_back(tmp);
         ARROW_RETURN_NOT_OK(info_b.Finish(&tmp));   a.push_back(tmp);
         if (n_samples_ > 0) {
-            ARROW_RETURN_NOT_OK(samples_b.Finish(&tmp));
+            ARROW_RETURN_NOT_OK(format_b.Finish(&tmp));
             a.push_back(tmp);
+            for (auto& b : sample_b) {
+                ARROW_RETURN_NOT_OK(b.Finish(&tmp));
+                a.push_back(tmp);
+            }
         }
 
         auto batch = arrow::RecordBatch::Make(schema_, count, a);
@@ -9152,8 +9169,14 @@ public:
             arrow::field("FILTER", arrow::utf8()),
             arrow::field("INFO",   arrow::utf8()),
         };
-        if (self->n_samples_ > 0)
-            fields.push_back(arrow::field("FORMAT_SAMPLES", arrow::utf8()));
+        // FORMAT and one column per sample, named from the header — the
+        // columns the text VCF reader has (they were one tab-joined
+        // FORMAT_SAMPLES column).
+        if (self->n_samples_ > 0) {
+            fields.push_back(arrow::field("FORMAT", arrow::utf8()));
+            for (int k = 0; k < self->n_samples_; ++k)
+                fields.push_back(arrow::field(self->hdr_->samples[k], arrow::utf8()));
+        }
         self->schema_ = arrow::schema(fields);
 
         auto st = self->advance();

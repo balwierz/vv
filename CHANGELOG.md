@@ -116,6 +116,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   printed the text table; on a non-Parquet file it exits 1.
 
 ### Fixed
+- **BCF sample columns are named.** A BCF packed FORMAT and every sample into
+  one tab-joined `FORMAT_SAMPLES` column, where the same data as a text VCF
+  had `FORMAT` and one column per sample. A BCF now has those columns too,
+  named from the header, so `--select S2` and per-sample views work on either.
 - **FASTA / FASTQ / SAM / VCF / GFF on stdin.** Piped genomics text was read
   as TSV — a FASTQ came out as four-line text rows, a VCF lost its `##`
   header handling. The first lines now pick the reader: FASTA (`>`), FASTQ
