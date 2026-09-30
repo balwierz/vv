@@ -530,6 +530,17 @@ static arrow::Type::type display_type(const arrow::Field& f) {
     return t->id();
 }
 
+// A column type as vv shows it: Arrow's name, except that a dictionary type
+// (a pandas / AnnData categorical, a Parquet dictionary column) reads
+// "category[<value type>]" — "category[string]", "category[bool]", with
+// ", ordered" for an ordered one — instead of Arrow's
+// "dictionary<values=string, indices=int32, ordered=0>".
+static std::string type_label(const arrow::DataType& t) {
+    if (t.id() != arrow::Type::DICTIONARY) return t.ToString();
+    const auto& d = static_cast<const arrow::DictionaryType&>(t);
+    return "category[" + type_label(*d.value_type()) + (d.ordered() ? ", ordered" : "") + "]";
+}
+
 // ── CLI args ─────────────────────────────────────────────────────────────────
 // (ColorMode + Config are defined in vv/vvcore.hpp, included near the top.)
 
@@ -3542,7 +3553,7 @@ bool parse_filter_expr(const std::string& expr,
             a.kind = FilterAtom::K_Int;
             if (!is_integer_type(schema.field(a.col_idx)->type()->id())) {
                 *err = "'" + opt + "' tests bits of an integer column; '" + col +
-                       "' is " + schema.field(a.col_idx)->type()->ToString();
+                       "' is " + type_label(*schema.field(a.col_idx)->type());
                 return false;
             }
             size_t p = i + 2;
@@ -3654,7 +3665,7 @@ bool parse_filter_expr(const std::string& expr,
                     *err = "bad regex '" + a.s_lit + "': " + e.what();
                     return false;
                 }
-            } else if (schema.field(a.col_idx)->type()->id() == arrow::Type::BOOL) {
+            } else if (display_type(*schema.field(a.col_idx)) == arrow::Type::BOOL) {
                 // A boolean column compares with true / false (bare or
                 // quoted, any case) as 1 / 0; text never equalled a bool cell
                 // and a bare `true` was rejected as a bad number.
@@ -12713,12 +12724,23 @@ read_1d_dataset_table(hid_t dset, int64_t row_cap, int64_t* full_rows) {
         if (base >= 0) H5Tclose(base);
         std::vector<int64_t> buf((size_t)n);
         hid_t ms = read_first_n(H5T_NATIVE_INT64, buf.data()); H5Sclose(ms);
-        arrow::StringBuilder b;
-        for (auto v : buf) {
-            auto it = names.find(v);
-            (void)b.Append(it != names.end() ? it->second : std::to_string(v));
+        // h5py's bool: exactly {FALSE = 0, TRUE = 1}. A boolean column, not
+        // the text "TRUE" / "FALSE".
+        const bool h5py_bool = names.size() == 2 && names.count(0) && names.count(1) &&
+                               names[0] == "FALSE" && names[1] == "TRUE";
+        if (h5py_bool) {
+            arrow::BooleanBuilder b;
+            for (auto v : buf) (void)b.Append(v != 0);
+            (void)b.Finish(&arr);
+            fields[0] = arrow::field("value", arrow::boolean());
+        } else {
+            arrow::StringBuilder b;
+            for (auto v : buf) {
+                auto it = names.find(v);
+                (void)b.Append(it != names.end() ? it->second : std::to_string(v));
+            }
+            (void)b.Finish(&arr);
         }
-        (void)b.Finish(&arr);
     } else {
         // Fallback: unsupported type (compound, opaque, …).
         arrow::StringBuilder b;
@@ -12893,27 +12915,43 @@ static int64_t anndata_column_count(hid_t group) {
     return n;
 }
 
-// Map integer codes onto their category strings. Shared by both AnnData
-// categorical encodings: the modern {codes, categories} group and the
-// pre-0.8 "integer dataset + __categories/<name>" layout. Out-of-range and
-// negative codes (anndata's -1 = missing) become nulls.
+// A scalar boolean attribute (anndata writes `ordered` as a numpy bool, i.e.
+// an int8 / enum); false when absent or unreadable.
+static bool read_bool_attr(hid_t obj, const char* name) {
+    if (H5Aexists(obj, name) <= 0) return false;
+    hid_t a = H5Aopen(obj, name, H5P_DEFAULT);
+    if (a < 0) return false;
+    int8_t v = 0;
+    const bool ok = H5Aread(a, H5T_NATIVE_INT8, &v) >= 0;
+    H5Aclose(a);
+    return ok && v != 0;
+}
+
+// An AnnData categorical as an Arrow dictionary column: the codes are the
+// indices and the categories keep their own type (strings, booleans,
+// numbers), so a categorical of booleans is category[bool], distinct from
+// category[string] and from a plain bool column. Shared by both encodings:
+// the modern {codes, categories} group and the pre-0.8 "integer dataset +
+// __categories/<name>" layout. Out-of-range and negative codes (anndata's
+// -1 = missing) become nulls.
 static std::shared_ptr<arrow::Array> anndata_decode_codes(
         const std::shared_ptr<arrow::Array>& codes_arr,
-        const std::shared_ptr<arrow::Array>& cats_arr) {
-    auto cats_s  = std::dynamic_pointer_cast<arrow::StringArray>(cats_arr);
+        const std::shared_ptr<arrow::Array>& cats_arr, bool ordered = false) {
     auto codes_i = std::dynamic_pointer_cast<arrow::Int64Array>(codes_arr);
-    if (!cats_s || !codes_i) return nullptr;
-    const int64_t n = codes_i->length(), nc = cats_s->length();
-    arrow::StringBuilder b;
+    if (!codes_i || !cats_arr) return nullptr;
+    const int64_t n = codes_i->length(), nc = cats_arr->length();
+    arrow::Int32Builder b;
     for (int64_t i = 0; i < n; ++i) {
-        if (codes_i->IsNull(i)) { (void)b.AppendNull(); continue; }
-        int64_t code = codes_i->Value(i);
+        const int64_t code = codes_i->IsNull(i) ? -1 : codes_i->Value(i);
         if (code < 0 || code >= nc) (void)b.AppendNull();
-        else                        (void)b.Append(cats_s->GetString(code));
+        else                        (void)b.Append((int32_t)code);
     }
-    std::shared_ptr<arrow::Array> out;
-    if (!b.Finish(&out).ok()) return nullptr;
-    return out;
+    std::shared_ptr<arrow::Array> idx;
+    if (!b.Finish(&idx).ok()) return nullptr;
+    auto dict = arrow::DictionaryArray::FromArrays(
+        arrow::dictionary(arrow::int32(), cats_arr->type(), ordered), idx, cats_arr);
+    if (!dict.ok()) return nullptr;
+    return *dict;
 }
 
 static arrow::Result<std::shared_ptr<arrow::Table>>
@@ -12971,13 +13009,14 @@ read_anndata_dataframe(hid_t group, int64_t row_cap, int64_t* full_rows) {
                 }
 
                 auto cats_t = read_1d_dataset_table(cats_d);
+                const bool ordered = read_bool_attr(sub, "ordered");
                 H5Dclose(cats_d); H5Dclose(codes_d); H5Gclose(sub);
                 if (cats_t.ok() && codes_t.ok()) {
                     auto a = anndata_decode_codes((*codes_t)->column(0)->chunk(0),
-                                                  (*cats_t)->column(0)->chunk(0));
+                                                  (*cats_t)->column(0)->chunk(0), ordered);
                     if (a) {
                         cols.push_back(a);
-                        fields.push_back(arrow::field(display, arrow::utf8()));
+                        fields.push_back(arrow::field(display, a->type()));
                     }
                 }
                 return arrow::Status::OK();
@@ -13046,7 +13085,7 @@ read_anndata_dataframe(hid_t group, int64_t row_cap, int64_t* full_rows) {
                                 (*cats_t)->column(0)->chunk(0));
                             if (a) {
                                 cols.push_back(a);
-                                fields.push_back(arrow::field(display, arrow::utf8()));
+                                fields.push_back(arrow::field(display, a->type()));
                                 return arrow::Status::OK();
                             }
                         }
@@ -17220,7 +17259,7 @@ public:
         auto t = in_schema->field(idx)->type()->id();
         if (t != arrow::Type::STRING && t != arrow::Type::LARGE_STRING)
             return "--expand: column '" + col_name + "' is " +
-                   in_schema->field(idx)->type()->ToString() +
+                   type_label(*in_schema->field(idx)->type()) +
                    ", not text — nothing to unpack";
 
         auto self = std::unique_ptr<ExpandedSource>(new ExpandedSource());
@@ -20430,7 +20469,7 @@ ColStats compute_col_stats(TabularSource& src, int src_col) {
     if (src_col < 0 || src_col >= src.schema()->num_fields()) return cs;
     auto f = src.schema()->field(src_col);
     cs.name = f->name();
-    cs.type = f->type()->ToString();
+    cs.type = type_label(*f->type());
     cs.is_numeric = is_numeric_type(f->type()->id());
     cs.valid = true;
 
@@ -20511,7 +20550,7 @@ static std::string print_describe(TabularSource& src, const Config& cfg) {
     for (size_t k = 0; k < requested.size(); ++k) {
         auto f = src.schema()->field(requested[k]);
         stats[k].name   = f->name();
-        stats[k].type   = f->type()->ToString();
+        stats[k].type   = type_label(*f->type());
         stats[k].dtype  = f->type();
         stats[k].is_num = is_numeric_type(f->type()->id());
     }
@@ -20818,7 +20857,7 @@ static std::string print_stats_only(TabularSource& src, const Config& cfg) {
             auto f = schema->field(i);
             std::printf("%s{\"name\": ", i ? ", " : "");
             json_emit_string(f->name());
-            std::printf(", \"type\": "); json_emit_string(f->type()->ToString());
+            std::printf(", \"type\": "); json_emit_string(type_label(*f->type()));
             std::printf(", \"codecs\": [");
             auto names = codecs_of(agg[i]);
             for (size_t k = 0; k < names.size(); ++k) {
@@ -20869,12 +20908,12 @@ static std::string print_stats_only(TabularSource& src, const Config& cfg) {
             ? digits_with_sep(std::to_string(agg[i].nulls))
             : "?";
         rows.push_back({
-            f->name(), f->type()->ToString(), codec,
+            f->name(), type_label(*f->type()), codec,
             fmt_size(agg[i].comp), fmt_size(agg[i].raw), ratio
         });
         nulls_col.push_back(nulls);
         wN = std::max(wN, (int)display_width(f->name()));
-        wT = std::max(wT, (int)display_width(f->type()->ToString()));
+        wT = std::max(wT, (int)display_width(type_label(*f->type())));
         wK = std::max(wK, (int)display_width(codec));
         wC = std::max(wC, (int)display_width(rows.back()[3]));
         wR = std::max(wR, (int)display_width(rows.back()[4]));
@@ -23079,7 +23118,7 @@ class TableTUI {
         note_full_pass();
         auto field = src_->schema()->field(sc);
         cs.name = col_names_[virt_col];
-        cs.type = field->type()->ToString();
+        cs.type = type_label(*field->type());
         cs.is_num = is_numeric_type(field->type()->id());
         const std::string& info_key = virt_info_key_[virt_col];
         std::vector<int> need = {sc};
@@ -23306,7 +23345,7 @@ class TableTUI {
         } else if (!number && !text) {
             // Lists, structs, maps, binary and extension columns: == does
             // not compare their values.
-            freq_note_ = "a " + field->type()->ToString() + " column cannot be filtered with ==";
+            freq_note_ = "a " + type_label(*field->type()) + " column cannot be filtered with ==";
             return false;
         } else if (number) {
             atom = ident + " == " + e.value;
@@ -24380,8 +24419,8 @@ public:
         col_types_str_.assign(num_cols_, "");
         for (int vc = 0; vc < num_cols_; ++vc) {
             if (virt_info_key_[vc].empty()) {
-                col_types_str_[vc] = src.schema()->field(virt_src_col_[vc])
-                                         ->type()->ToString();
+                col_types_str_[vc] = type_label(*src.schema()->field(virt_src_col_[vc])
+                                                    ->type());
             } else {
                 col_types_str_[vc] = arrow_type_for_id(v_types[vc])->ToString();
             }
@@ -25369,7 +25408,7 @@ static void print_schema_columns(const arrow::Schema& schema, int max_rows = 0) 
     for (int ci = 0; ci < num_cols; ++ci) {
         auto f = schema.field(ci);
         name_w = std::max(name_w, (int)f->name().size());
-        type_w = std::max(type_w, (int)f->type()->ToString().size());
+        type_w = std::max(type_w, (int)type_label(*f->type()).size());
     }
     name_w = std::min(name_w, 40); type_w = std::min(type_w, 40);
 
@@ -25380,7 +25419,7 @@ static void print_schema_columns(const arrow::Schema& schema, int max_rows = 0) 
     for (int ci = 0; ci < shown; ++ci) {
         auto f = schema.field(ci);
         std::string fname = truncate(f->name(), name_w);
-        std::string ftype = truncate(f->type()->ToString(), type_w);
+        std::string ftype = truncate(type_label(*f->type()), type_w);
         const char* tc = *g_color.reset ? type_color(display_type(*f)) : "";
         std::printf("%-*s  %s%-*s%s  %s\n",
                     name_w, fname.c_str(),
@@ -25563,7 +25602,7 @@ static void emit_schema_json(TabularSource& src, const std::string& fmt_name) {
         std::printf("{\"name\": ");
         json_emit_string(f->name());
         std::printf(", \"type\": ");
-        json_emit_string(f->type()->ToString());
+        json_emit_string(type_label(*f->type()));
         std::printf(", \"nullable\": %s", f->nullable() ? "true" : "false");
         std::printf(", \"hidden\": %s", hidden.count(f->name()) ? "true" : "false");
         std::printf("}");

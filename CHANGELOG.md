@@ -73,6 +73,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   printed the text table; on a non-Parquet file it exits 1.
 
 ### Fixed
+- **AnnData bool and categorical columns keep their types.** A bool `obs` /
+  `var` column (h5py's HDF5 enum `{FALSE, TRUE}`) was read as the text
+  `TRUE` / `FALSE`, and every categorical was decoded to plain strings, so
+  `--schema` showed `string` for a bool, a categorical of bools and a
+  categorical of strings alike. A bool column is now `bool` (`== true`
+  filters it); a categorical is a dictionary column typed by its categories.
+  Everywhere vv names a type (`--schema`, `--describe`, `--stats`, the TUI,
+  vvg), a dictionary column reads `category[string]`, `category[bool]`,
+  `category[string, ordered]` instead of Arrow's
+  `dictionary<values=…, indices=…, ordered=…>`.
 - **Binary files on stdin and through process substitution.** Stdin refused
   Parquet, Arrow IPC, Feather and BAM / BCF ("requires a seekable file; ...
   use process substitution"), and process substitution failed for every

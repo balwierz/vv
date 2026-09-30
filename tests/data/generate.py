@@ -1570,6 +1570,24 @@ else:
                               20, dtype=np.float64).reshape(5, 4)})
     adata.write_h5ad(h5ad_path)
 
+    # tiny.cattypes.h5ad: obs columns whose on-disk types vv collapsed to
+    # `string` — a bool column (an HDF5 enum {FALSE, TRUE}), a categorical of
+    # bools, a categorical of strings (with a missing value, code -1) and an
+    # ordered categorical. They read as bool, category[bool],
+    # category[string] and category[string, ordered]; a reader converting a
+    # categorical of strings to bool would get every value True.
+    _ct = HERE / "tiny.cattypes.h5ad"
+    if _ct.exists():
+        _ct.unlink()
+    _cobs = pd.DataFrame({
+        "doublet":     np.array([True, False, True, False]),
+        "doublet_cat": pd.Categorical([True, False, False, True]),
+        "cell_type":   pd.Categorical(["T", "B", None, "T"]),
+        "grade":       pd.Categorical(["low", "high", "mid", "low"],
+                                      categories=["low", "mid", "high"], ordered=True),
+    }, index=[f"c{i}" for i in range(4)])
+    ad.AnnData(X=np.zeros((4, 2), dtype=np.float32), obs=_cobs).write_h5ad(_ct)
+
     # tiny.legacy_cat.h5ad: the anndata < 0.8 categorical encoding, written by
     # hand because modern anndata cannot emit it. A categorical column is a
     # plain integer code array whose `categories` attribute is an HDF5 object
