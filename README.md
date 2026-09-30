@@ -366,6 +366,7 @@ picker. Key bindings (also visible in-app via `H` / `F1`):
 | `,` / `.`      | narrow / widen the column under the cursor              |
 | z              | freeze first column                                     |
 | S              | column-stats popup (count / nulls / min / max / mean / distinct) |
+| F              | value counts of the cursor's column over the filtered rows; Enter filters to the value |
 | s              | sort by the cursor's column (toggle asc/desc; `u` clears) |
 | `&`            | live filter — same grammar as `--filter`                |
 | c              | show / hide columns overlay                             |

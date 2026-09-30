@@ -402,7 +402,7 @@ work that touches the same code:
 - [ ] **Per-row-group `--stats` view** (S) — row counts, sizes and min / max per row group.
 - [x] **Index-free `-r` on unindexed text formats** (M) — `feat/region-scan-unindexed` — scan and filter with
   a note; also stop htslib's `[E::idx_find_and_load]` line leaking to stderr.
-- [ ] **TUI frequency sheet `F`** (M) — value counts of the cursor column over
+- [x] **TUI frequency sheet `F`** (M) — `feat/tui-freq-sheet` — value counts of the cursor column over
   the filtered rows; Enter filters to the value.
 - [ ] **PLINK `.bed` refusal** (S) — magic `6c 1b 01` → clear error with the
   plink2 export command; named `.bim/.fam/.pvar/.psam` columns.

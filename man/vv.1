@@ -801,6 +801,15 @@ null count, min, max, mean (numeric), distinct-value count (strings,
 capped at 16). Triggers a full-file scan with progress shown in the
 status bar. Any key dismisses the popup.
 .TP
+.B F
+Value counts of the column under the cursor over the rows the live
+filter keeps, most frequent first, with each value's share. j / k,
+PgUp / PgDn and g / G move; Enter narrows the filter to the value under
+the cursor (\fBcol == value\fR, or \fBis null\fR), added to every OR
+branch of the current filter; Esc, q or F closes. A list, struct, map,
+binary or extension column is counted but not filtered. Past 200,000
+distinct values, rows holding a new value are counted only in the total.
+.TP
 .B s
 Sort by the active column. Numeric types sort by raw value, others
 lexicographically; nulls go last regardless of direction. Repeated

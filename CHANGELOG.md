@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **TUI value counts (`F`).** `F` lists how often each value of the
+  cursor's column occurs among the rows the live filter keeps, most frequent
+  first with its share; Enter narrows the filter to that value (`col ==
+  value`, or `is null`), added to every OR branch of the current filter.
+  Lists, structs, maps, binary and extension columns are counted but not
+  filtered, with the reason shown. Past 200,000 distinct values, rows holding
+  a new value are counted only in the total, and the sheet says how many.
 - **`-r` on text files without an index.** `-r` on an unindexed BED, VCF,
   GFF / GTF, SAM, PAF or mpileup file failed with "No tabix index", after
   htslib's own `[E::idx_find_and_load]` line. vv now reads the whole file and

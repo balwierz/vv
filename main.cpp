@@ -844,7 +844,8 @@ static void print_usage(const char* prog) {
         "                      detects it from the data), on (force), off (no header;\n"
         "                      columns are auto-named f0, f1, …)\n"
         "  Keys: arrows/hjkl move the cell cursor, PgUp/PgDn, g/G, /:search,\n"
-        "        S:column-stats, s:sort by current column (u clears),\n"
+        "        S:column-stats, F:value counts (Enter filters to one),\n"
+        "        s:sort by current column (u clears),\n"
         "        &:live filter, c:show/hide columns, y:copy cell (OSC52),\n"
         "        T:pick a theme (saved to ~/.config/vv/config),\n"
         "        ::command line (:<N> jump, :q quit, :theme NAME),\n"
@@ -3119,6 +3120,71 @@ static std::vector<std::string> filter_tokenize(const std::string& s) {
         if (!w.empty()) toks.push_back(w);
     }
     return toks;
+}
+
+// A column name as a filter token: bare when it is a plain identifier that is
+// not a filter keyword, else in backticks with any backtick doubled.
+static std::string filter_quote_name(const std::string& name) {
+    static const char* const kWords[] = {"and", "or", "not", "is", "null", "in",
+        "contains", "startswith", "endswith", "has", "lacks"};
+    bool bare = !name.empty() && (std::isalpha((unsigned char)name[0]) || name[0] == '_');
+    for (char c : name)
+        if (!(std::isalnum((unsigned char)c) || c == '_' || c == '.')) { bare = false; break; }
+    std::string lower;
+    for (char c : name) lower += (char)std::tolower((unsigned char)c);
+    for (const char* w : kWords) if (lower == w) bare = false;
+    if (bare) return name;
+    std::string q = "`";
+    for (char c : name) { q += c; if (c == '`') q += '`'; }
+    return q + "`";
+}
+
+// Split a filter expression at its top-level OR words, keeping each branch's
+// text as written (quoted strings, `names` and in-lists are not split). The
+// grammar has no grouping, so ANDing a condition into a filter means adding
+// it to every branch.
+static std::vector<std::string> filter_split_or(const std::string& s) {
+    std::vector<std::string> out;
+    auto boundary = [](char c) {
+        return std::isspace((unsigned char)c) || c == '"' || c == '\'' || c == '`' ||
+               c == '(' || c == ')';
+    };
+    size_t start = 0, i = 0;
+    int depth = 0;
+    while (i < s.size()) {
+        char c = s[i];
+        if (c == '"' || c == '\'') {                    // quoted literal
+            size_t e = s.find(c, i + 1);
+            i = e == std::string::npos ? s.size() : e + 1;
+            continue;
+        }
+        if (c == '`') {                                 // `name`, `` inside
+            for (++i; i < s.size(); ++i) {
+                if (s[i] != '`') continue;
+                if (i + 1 < s.size() && s[i + 1] == '`') { ++i; continue; }
+                ++i; break;
+            }
+            continue;
+        }
+        if (c == '(') ++depth;
+        if (c == ')' && depth > 0) --depth;
+        if (depth == 0 && i + 2 <= s.size() && (i == 0 || boundary(s[i - 1])) &&
+            std::tolower((unsigned char)s[i]) == 'o' &&
+            std::tolower((unsigned char)s[i + 1]) == 'r' &&
+            (i + 2 == s.size() || boundary(s[i + 2]))) {
+            out.push_back(s.substr(start, i - start));
+            start = i + 2;
+            i += 2;
+            continue;
+        }
+        ++i;
+    }
+    out.push_back(s.substr(start));
+    for (auto& b : out) {
+        while (!b.empty() && std::isspace((unsigned char)b.front())) b.erase(0, 1);
+        while (!b.empty() && std::isspace((unsigned char)b.back()))  b.pop_back();
+    }
+    return out;
 }
 
 static bool filter_parse_op(const std::string& t, FilterAtom::Op* op) {
@@ -21166,6 +21232,20 @@ class TableTUI {
     int                        stats_col_    = -1;   // virtual column index
     std::optional<TuiColStat>  stats_data_;
 
+    // ── Value-count sheet (`F`) ──────────────────────────────────────────────
+    // How often each value of the cursor's column occurs among the rows the
+    // live filter keeps, most frequent first; Enter narrows the filter to one.
+    struct FreqEntry { std::string value; bool is_null; int64_t count; };
+    static constexpr size_t    kFreqMaxDistinct = 200000;
+    bool                       freq_open_   = false;
+    int                        freq_col_    = -1;    // virtual column index
+    std::vector<FreqEntry>     freq_rows_;
+    int64_t                    freq_total_  = 0;     // rows counted
+    int64_t                    freq_other_  = 0;     // rows holding a value past the cap
+    int                        freq_cursor_ = 0;
+    int                        freq_top_    = 0;
+    std::string                freq_note_;           // why Enter did nothing
+
     // ── Column show/hide picker (`c`) ────────────────────────────────────────
     bool                       col_picker_open_     = false;
     int                        col_picker_cursor_   = 0;
@@ -22537,6 +22617,215 @@ class TableTUI {
         stats_data_ = std::move(cs);
     }
 
+    // Count the values of virtual column `virt_col` over the rows the live
+    // filter keeps. Values are the text a filter literal would need (floats
+    // in their exact form), so Enter can filter to one. Past kFreqMaxDistinct
+    // distinct values, rows holding a new value are only counted in total.
+    void compute_freq_for(int virt_col) {
+        freq_rows_.clear(); freq_total_ = freq_other_ = 0;
+        freq_cursor_ = freq_top_ = 0; freq_note_.clear();
+        int sc = (virt_col >= 0 && virt_col < (int)virt_src_col_.size())
+                  ? virt_src_col_[virt_col] : -1;
+        if (sc < 0) return;
+        src_->set_retain_all(true);  // counting reads every chunk: keep them
+        drain_to_eof();
+        note_full_pass();
+        ExactFloats exact;
+        const std::string& info_key = virt_info_key_[virt_col];
+        std::vector<int> need = {sc};
+        if (filter_active_)
+            for (int fc : union_with_filter({}, filter_fx_))
+                if (std::find(need.begin(), need.end(), fc) == need.end())
+                    need.push_back(fc);
+        std::unordered_map<std::string, int64_t> counts;
+        int64_t nulls = 0;
+        int nc = src_->num_chunks();
+        for (int c = 0; c < nc; ++c) {
+            mvprintw(scr_r_-1, 0, " Counting values… chunk %d/%d ", c+1, nc);
+            clrtoeol(); refresh();
+            std::shared_ptr<arrow::Table> tbl;
+            if (!src_->read_chunk(c, need, &tbl).ok()) continue;
+            auto col = tbl->column(0);
+            int64_t row = 0;
+            for (auto& ch : col->chunks()) {
+                for (int64_t r = 0; r < ch->length(); ++r, ++row) {
+                    if (filter_active_) {
+                        bool keep = false;
+                        for (const auto& clause : filter_fx_.groups) {
+                            bool all = true;
+                            for (const auto& a : clause)
+                                if (!eval_atom(*tbl, row, a, need)) { all = false; break; }
+                            if (all) { keep = true; break; }
+                        }
+                        if (!keep) continue;
+                    }
+                    ++freq_total_;
+                    if (ch->IsNull(r)) { ++nulls; continue; }
+                    std::string v = cell_to_string(*ch, r);
+                    if (!info_key.empty()) {
+                        bool found = false;
+                        for (auto& kv : parse_kv_list(v))
+                            if (kv.first == info_key) {
+                                v = kv.second.empty() ? "true" : kv.second;
+                                found = true; break;
+                            }
+                        if (!found) { ++nulls; continue; }
+                    }
+                    auto it = counts.find(v);
+                    if (it != counts.end())                  ++it->second;
+                    else if (counts.size() < kFreqMaxDistinct) counts.emplace(std::move(v), 1);
+                    else                                      ++freq_other_;
+                }
+            }
+        }
+        freq_rows_.reserve(counts.size() + 1);
+        for (auto& [v, n] : counts) freq_rows_.push_back({v, false, n});
+        if (nulls) freq_rows_.push_back({"(null)", true, nulls});
+        std::sort(freq_rows_.begin(), freq_rows_.end(),
+                  [](const FreqEntry& a, const FreqEntry& b) {
+                      if (a.count != b.count) return a.count > b.count;
+                      if (a.is_null != b.is_null) return b.is_null;   // null last among ties
+                      return a.value < b.value;
+                  });
+    }
+
+    int freq_visible_lines() const { return std::max(1, std::min(scr_r_ - 2, 30) - 6); }
+
+    void draw_freq_overlay() {
+        const int lines = freq_visible_lines();
+        auto with_sep = [](int64_t v) { return digits_with_sep(std::to_string(v)); };
+        std::string summary = with_sep(freq_total_) + " rows" +
+                              (filter_active_ ? " (filtered)" : "") + ", " +
+                              with_sep((int64_t)freq_rows_.size()) + " values";
+        if (freq_other_)
+            summary += "; " + with_sep(freq_other_) + " rows hold values past the first " +
+                       with_sep((int64_t)kFreqMaxDistinct);
+        if (partial_pass_) summary += "; PARTIAL (batches released)";
+        const std::string hint = freq_note_.empty()
+            ? std::string("Enter: filter to value   Esc: close") : freq_note_;
+        int w_n = 5;
+        for (const auto& e : freq_rows_) w_n = std::max(w_n, (int)with_sep(e.count).size());
+        const std::string title = " value counts: " + col_names_[freq_col_] + " ";
+        int w_v = 0;
+        for (int i = 0; i < (int)freq_rows_.size() && i < 500; ++i)
+            w_v = std::max(w_v, (int)display_width(freq_rows_[i].value));
+        int inner = std::max({w_n + 2 + 6 + 2 + w_v, (int)display_width(title),
+                              (int)display_width(summary), (int)display_width(hint)});
+        int panel_w = std::min(inner + 4, scr_c_);
+        const int shown = std::min(lines, std::max(1, (int)freq_rows_.size()));
+        int panel_h = std::min(shown + 5, scr_r_);   // borders, summary, header, hint
+        int y0 = std::max(0, (scr_r_ - panel_h) / 2);
+        int x0 = std::max(0, (scr_c_ - panel_w) / 2);
+        {
+            int title_w = (int)display_width(title);
+            int rest = std::max(0, panel_w - 2 - title_w);
+            std::string top = BOX_TL;
+            for (int i = 0; i < rest / 2; ++i) top += BOX_HLINE;
+            top += title;
+            for (int i = 0; i < rest - rest / 2; ++i) top += BOX_HLINE;
+            top += BOX_TR;
+            nc_str(y0, x0, top, A_BOLD);
+        }
+        for (int i = 1; i < panel_h - 1; ++i) {
+            mvaddstr(y0 + i, x0, BOX_VLINE);
+            mvhline(y0 + i, x0 + 1, ' ', panel_w - 2);
+            mvaddstr(y0 + i, x0 + panel_w - 1, BOX_VLINE);
+        }
+        const int avail = panel_w - 4;
+        auto put = [&](int yy, std::string text, attr_t attr) {
+            if ((int)display_width(text) > avail) text = truncate(text, avail);
+            nc_str(yy, x0 + 2, text, attr);
+        };
+        put(y0 + 1, summary, A_NORMAL);
+        char head[64];
+        std::snprintf(head, sizeof(head), "%*s  %6s  ", w_n, "count", "%");
+        put(y0 + 2, std::string(head) + "value", A_BOLD);
+        for (int i = 0; i < shown && freq_top_ + i < (int)freq_rows_.size(); ++i) {
+            const auto& e = freq_rows_[freq_top_ + i];
+            char buf[64];
+            double pct = freq_total_ ? 100.0 * (double)e.count / (double)freq_total_ : 0.0;
+            std::snprintf(buf, sizeof(buf), "%*s  %5.1f%%  ", w_n, with_sep(e.count).c_str(), pct);
+            std::string line = std::string(buf) + e.value;
+            const bool cur = freq_top_ + i == freq_cursor_;
+            if (cur) mvhline(y0 + 3 + i, x0 + 1, ' ', panel_w - 2);
+            put(y0 + 3 + i, line, cur ? A_REVERSE : (e.is_null ? A_DIM : A_NORMAL));
+        }
+        put(y0 + panel_h - 2, hint, A_DIM);
+        std::string bot = BOX_BL;
+        for (int i = 0; i < panel_w - 2; ++i) bot += BOX_HLINE;
+        bot += BOX_BR;
+        nc_str(y0 + panel_h - 1, x0, bot, A_BOLD);
+    }
+
+    // Narrow the live filter to the value under the sheet's cursor: `col ==
+    // value` (or `col is null`), ANDed into every OR branch of the current
+    // filter. Returns false, with freq_note_ saying why, when it cannot.
+    bool apply_freq_filter() {
+        if (freq_cursor_ < 0 || freq_cursor_ >= (int)freq_rows_.size()) return false;
+        const FreqEntry& e = freq_rows_[freq_cursor_];
+        if (!virt_info_key_[freq_col_].empty()) {
+            freq_note_ = "an INFO key is filtered with --expand INFO";
+            return false;
+        }
+        auto field = src_->schema()->field(virt_src_col_[freq_col_]);
+        const std::string ident = filter_quote_name(field->name());
+        std::string atom;
+        // A dictionary column compares by its decoded values.
+        const arrow::DataType* vt = field->type().get();
+        if (vt->id() == arrow::Type::DICTIONARY)
+            vt = static_cast<const arrow::DictionaryType&>(*vt).value_type().get();
+        const auto id = vt->id();
+        const bool number = arrow::is_integer(id) || arrow::is_floating(id) ||
+                            arrow::is_decimal(id) || id == arrow::Type::BOOL;
+        const bool text = id == arrow::Type::STRING || id == arrow::Type::LARGE_STRING ||
+                          is_date_or_timestamp(*vt);
+        if (e.is_null) {
+            atom = ident + " is null";
+        } else if (!number && !text) {
+            // Lists, structs, maps, binary and extension columns: == does
+            // not compare their values.
+            freq_note_ = "a " + field->type()->ToString() + " column cannot be filtered with ==";
+            return false;
+        } else if (number) {
+            atom = ident + " == " + e.value;
+        } else if (e.value.find('"') == std::string::npos) {
+            atom = ident + " == \"" + e.value + "\"";
+        } else if (e.value.find('\'') == std::string::npos) {
+            atom = ident + " == '" + e.value + "'";
+        } else {
+            freq_note_ = "this value holds both quote characters; no filter can name it";
+            return false;
+        }
+        std::string expr = atom;
+        if (filter_active_) {
+            expr.clear();
+            for (const auto& branch : filter_split_or(filter_expr_str_))
+                expr += (expr.empty() ? "" : " OR ") + branch + " AND " + atom;
+        }
+        FilterExpr fx;
+        std::string err;
+        if (!parse_filter_expr(expr, *src_->schema(), &fx, &err)) {
+            freq_note_ = err;
+            return false;
+        }
+        // Each OR branch must have gained exactly the one new condition.
+        bool shape_ok = !filter_active_ || fx.groups.size() == filter_fx_.groups.size();
+        for (size_t g = 0; shape_ok && filter_active_ && g < fx.groups.size(); ++g)
+            shape_ok = fx.groups[g].size() == filter_fx_.groups[g].size() + 1;
+        if (!shape_ok) {
+            freq_note_ = "could not combine with the current filter; edit it with &";
+            return false;
+        }
+        filter_fx_       = std::move(fx);
+        filter_expr_str_ = expr;
+        filter_active_   = true;
+        filter_err_.clear();
+        rebuild_display_order();
+        top_row_ = 0; cur_row_ = 0;
+        search_row_ = -1;
+        return true;
+    }
+
     void draw_stats_overlay() {
         if (!stats_data_) return;
         const auto& cs = *stats_data_;
@@ -22869,6 +23158,7 @@ private:
         save_active_to_snapshot();
         // Close transient overlays — they were positioned for the old tab.
         help_open_ = stats_open_ = col_picker_open_ = theme_picker_open_ = false;
+        freq_open_ = false;
         detail_row_ = -1;
         copy_status_.clear();
         cmd_mode_ = CmdMode::None; cmd_input_.clear(); cmd_err_.clear();
@@ -23173,6 +23463,7 @@ private:
             {"/  ?",          "search forward / backward (regex, icase)"},
             {"n  N",          "next / previous match (direction-aware)"},
             {"S",             "per-column stats (count/min/max/mean/distinct)"},
+            {"F",             "value counts of the cursor's column; Enter filters to one"},
             {"s",             "sort by the cursor's column (toggle asc/desc; u to clear)"},
             {"&",             "live filter: hide non-matching rows; empty input clears"},
             {"c",             "show / hide columns (overlay)"},
@@ -23376,6 +23667,7 @@ private:
         draw_status(vc);
         draw_detail_pane();  // overlay if detail_row_ >= 0
         if (stats_open_)      draw_stats_overlay();
+        if (freq_open_)       draw_freq_overlay();
         if (col_picker_open_)   draw_col_picker();
         if (theme_picker_open_) draw_theme_picker();
         if (help_open_)       draw_help_overlay();
@@ -23711,6 +24003,28 @@ public:
             if (stats_open_) {
                 stats_open_ = false;
                 stats_data_.reset();
+                continue;
+            }
+
+            // ── Value-count sheet: move, Enter filters, Esc / q / F close ─────
+            if (freq_open_) {
+                const int n = (int)freq_rows_.size(), page = freq_visible_lines();
+                switch (ch) {
+                    case 27: case 'q': case 'Q': case 'F':
+                        freq_open_ = false; freq_rows_.clear(); break;
+                    case KEY_DOWN: case 'j': freq_cursor_ = std::min(n - 1, freq_cursor_ + 1); break;
+                    case KEY_UP:   case 'k': freq_cursor_ = std::max(0, freq_cursor_ - 1); break;
+                    case KEY_NPAGE: case ' ': freq_cursor_ = std::min(n - 1, freq_cursor_ + page); break;
+                    case KEY_PPAGE: case 'b': freq_cursor_ = std::max(0, freq_cursor_ - page); break;
+                    case 'g': case KEY_HOME: freq_cursor_ = 0; break;
+                    case 'G': case KEY_END:  freq_cursor_ = std::max(0, n - 1); break;
+                    case '\n': case '\r': case KEY_ENTER:
+                        if (apply_freq_filter()) { freq_open_ = false; freq_rows_.clear(); }
+                        break;
+                    default: break;
+                }
+                if (freq_cursor_ < freq_top_) freq_top_ = freq_cursor_;
+                if (freq_cursor_ >= freq_top_ + page) freq_top_ = freq_cursor_ - page + 1;
                 continue;
             }
 
@@ -24059,6 +24373,12 @@ public:
                     stats_col_ = cur_col_;
                     compute_stats_for(stats_col_);
                     stats_open_ = true;
+                    break;
+                case 'F':
+                    if (text_view_) { copy_status_ = TEXT_NA("F"); break; }
+                    freq_col_ = cur_col_;
+                    compute_freq_for(freq_col_);
+                    freq_open_ = true;
                     break;
                 case 's': {
                     if (text_view_) { copy_status_ = TEXT_NA("s"); break; }
