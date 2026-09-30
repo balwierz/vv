@@ -95,6 +95,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   printed the text table; on a non-Parquet file it exits 1.
 
 ### Fixed
+- **TUI: rows left blank on a stream with small batches.** A FASTQ batch
+  closes early on a byte budget, so with long reads it can hold fewer
+  records than the screen has rows. The viewer read one more batch per
+  redraw and loaded only the top and bottom chunks, leaving the rows between
+  blank while the status bar claimed them ("Row 1-20/?"). It now reads on
+  until the viewport is filled; while the total is unknown, the status range
+  ends at the rows loaded.
 - **Delimited records longer than 16 MiB.** A line longer than the reader's
   16 MiB block (a long sequence field) failed with Arrow's "straddling object
   straddles two block boundaries". Opening now retries with 4× larger blocks

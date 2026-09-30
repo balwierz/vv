@@ -4039,6 +4039,20 @@ else
     echo "  skip  tui_line_edit (python3 not found)"
 fi
 
+# The TUI fills its viewport from a stream whose batches are smaller than the
+# screen (FASTQ batches close early on a byte budget): it read one batch per
+# redraw and left rows blank under a status bar that claimed them. On the
+# previous build reads 15-19 of a 24-row screen are missing.
+if command -v python3 >/dev/null 2>&1; then
+    if run_with_timeout 120 python3 "$HERE/tui_stream_fill_check.py" "$VV" "$TMP"; then
+        PASS=$((PASS+1)); echo "  ok    tui_stream_fill"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_stream_fill"
+    fi
+else
+    echo "  skip  tui_stream_fill (python3 not found)"
+fi
+
 # `/` search, n / N and :N move the cell cursor to their target. They used to
 # move only the viewport, which the next draw scrolled back to the cursor, so
 # nothing past the first screen was reachable. Verified discriminating: on the

@@ -22758,13 +22758,23 @@ class TableTUI {
         ensure_cols(top_chunk, src_cols, need);
         int64_t bot = top_row_ + (int64_t)data_lines() - 1;
         if (total_rows() > 0) bot = std::min(bot, total_rows() - 1);
-        if (total_rows() < 0)
-            src_->ensure(src_->num_chunks());
-        else
+        if (total_rows() < 0) {
+            // A stream not yet read to the end: read on until the loaded rows
+            // reach the bottom of the viewport (a batch can hold fewer rows
+            // than the screen — long FASTQ reads close one early), or it ends.
+            for (;;) {
+                const int n = src_->num_chunks();
+                const auto last = src_->chunk_meta(n - 1);
+                if (last.first_row + last.num_rows > bot) break;
+                src_->ensure(n);
+                if (src_->num_chunks() == n) break;          // end of stream
+            }
+        } else {
             src_->ensure(chunk_for_row(std::max(bot, top_row_)));
+        }
         if (bot > top_row_) {
-            int bot_chunk = chunk_for_row(bot);
-            if (bot_chunk != top_chunk) ensure_cols(bot_chunk, src_cols);
+            const int bot_chunk = chunk_for_row(bot);
+            for (int c = top_chunk + 1; c <= bot_chunk; ++c) ensure_cols(c, src_cols);
         }
     }
 
@@ -23244,7 +23254,14 @@ class TableTUI {
         // ── Normal status bar ────────────────────────────────────────────────
         int64_t tr  = total_rows();
         int64_t bot = top_row_ + (int64_t)data_lines();
-        if (tr >= 0) bot = std::min(bot, tr);
+        if (tr >= 0) {
+            bot = std::min(bot, tr);
+        } else if (src_ && src_->num_chunks() > 0 && sort_order_.empty() && !filter_active_) {
+            // Not fully read yet: end the range at the rows loaded so far, not
+            // at the bottom of the viewport ("Row 1-40/?" over 30 rows).
+            const auto last = src_->chunk_meta(src_->num_chunks() - 1);
+            bot = std::min(bot, last.first_row + last.num_rows);
+        }
 
         std::string s = text_view_ ? " Line " : " Row ";
         s += digits_with_sep(std::to_string(top_row_ + 1)) + "-"
