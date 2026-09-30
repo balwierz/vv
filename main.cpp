@@ -913,7 +913,8 @@ static void print_usage(const char* prog) {
         "  --count             print the row count and exit (honours -r and\n"
         "                      --filter)\n"
         "  --stats             print Parquet metadata footer (row groups, codecs,\n"
-        "                      per-column sizes) without reading data; exit\n"
+        "                      per-column sizes, key-value metadata) without\n"
+        "                      reading data; exit (add --json for JSON)\n"
         "  --contigs           BAM/CRAM/SAM, VCF/BCF: list the reference sequences\n"
         "                      (name, length) from the header and name the assembly\n"
         "                      (GRCh38, mm10, …). Reads no records; composes with\n"
@@ -19116,10 +19117,8 @@ static void json_emit_string(const std::string& v) {
 }
 
 // Emit one Arrow cell as a JSON value. Numbers go bare, strings are
-// quoted, booleans as true/false, nulls as null. List/struct/map fall
-// back to their Python-style cell_to_string rendering wrapped in a
-// JSON string so the output stays parseable (good-enough v1; structured
-// nesting is a follow-up).
+// quoted, booleans as true/false, nulls as null; lists, structs and maps
+// as JSON arrays / objects (see below).
 static void json_emit_cell(const arrow::Array& arr, int64_t row) {
     FILE* out = out_stream();
     if (arr.IsNull(row)) { std::fputs("null", out); return; }
@@ -19875,6 +19874,9 @@ static std::string print_describe(TabularSource& src, const Config& cfg) {
 // Forward decl (definition lives alongside print_table at the bottom of
 // this file).
 static void print_schema_block(TabularSource& src);
+static void print_schema_metadata(const arrow::Schema& schema);
+static void emit_metadata_json(const arrow::Schema& schema);
+static std::string format_label_of(TabularSource& src);
 
 // ── --stats: Parquet metadata footer dump ────────────────────────────────────
 //
@@ -19882,14 +19884,19 @@ static void print_schema_block(TabularSource& src);
 // column sizes, statistics) without decoding any data. For non-Parquet
 // sources, prints the schema block and a note that detailed stats are
 // Parquet-only.
-static std::string print_stats_only(TabularSource& src, const Config& /*cfg*/) {
+static std::string print_stats_only(TabularSource& src, const Config& cfg) {
+    const bool json = cfg.json_array || cfg.json_lines;
     auto* pq = dynamic_cast<ParquetSource*>(&src);
     if (!pq) {
+        const std::string fmt = format_label_of(src);
+        if (json)
+            return "--stats reads the Parquet footer; this file is " +
+                   (fmt.empty() ? std::string("not Parquet") : fmt) +
+                   " (--schema --json gives its columns)";
         print_schema_block(src);
         std::printf("\n%sNote:%s detailed per-column statistics are "
                     "Parquet-only; this file is a %s source.\n",
-                    g_color.meta_key, g_color.reset,
-                    src.footer().c_str());
+                    g_color.meta_key, g_color.reset, fmt.c_str());
         return "";
     }
     auto meta = pq->parquet_meta();
@@ -19925,20 +19932,6 @@ static std::string print_stats_only(TabularSource& src, const Config& /*cfg*/) {
         }
     };
 
-    // File-level summary
-    std::printf("%sFile:%s          %s\n", g_color.meta_key, g_color.reset, src.path().c_str());
-    std::printf("%sFormat:%s        Parquet\n", g_color.meta_key, g_color.reset);
-    std::printf("%sRows:%s          %s\n", g_color.meta_key, g_color.reset,
-                digits_with_sep(std::to_string(total_rows)).c_str());
-    std::printf("%sRow groups:%s    %d\n", g_color.meta_key, g_color.reset, n_rg);
-    std::printf("%sCompressed:%s    %s\n", g_color.meta_key, g_color.reset, fmt_size(comp_sz).c_str());
-    std::printf("%sUncompressed:%s  %s", g_color.meta_key, g_color.reset, fmt_size(raw_sz).c_str());
-    if (comp_sz > 0)
-        std::printf("  (ratio: %.2fx)", (double)raw_sz / (double)comp_sz);
-    std::putchar('\n');
-    if (!pq->created_by().empty())
-        std::printf("%sCreated by:%s    %s\n", g_color.meta_key, g_color.reset,
-                    pq->created_by().c_str());
 
     // Per-column rollup: sum (compressed, uncompressed) across all row groups.
     auto schema = src.schema();
@@ -19978,6 +19971,58 @@ static std::string print_stats_only(TabularSource& src, const Config& /*cfg*/) {
         }
     }
 
+    auto codecs_of = [&](const ColAgg& c) {
+        std::vector<std::string> names;
+        for (auto k : c.codecs) names.push_back(codec_name(k));
+        return names;
+    };
+    if (json) {
+        std::printf("{\"path\": ");  json_emit_string(src.path());
+        std::printf(", \"format\": "); json_emit_string(format_label_of(src));
+        std::printf(", \"rows\": %lld, \"row_groups\": %d", (long long)total_rows, n_rg);
+        std::printf(", \"compressed_bytes\": %lld, \"uncompressed_bytes\": %lld",
+                    (long long)comp_sz, (long long)raw_sz);
+        std::printf(", \"created_by\": ");
+        if (pq->created_by().empty()) std::printf("null");
+        else                          json_emit_string(pq->created_by());
+        emit_metadata_json(*schema);
+        std::printf(", \"columns\": [");
+        for (int i = 0; i < n_cols; ++i) {
+            auto f = schema->field(i);
+            std::printf("%s{\"name\": ", i ? ", " : "");
+            json_emit_string(f->name());
+            std::printf(", \"type\": "); json_emit_string(f->type()->ToString());
+            std::printf(", \"codecs\": [");
+            auto names = codecs_of(agg[i]);
+            for (size_t k = 0; k < names.size(); ++k) {
+                if (k) std::printf(", ");
+                json_emit_string(names[k]);
+            }
+            std::printf("], \"compressed_bytes\": %lld, \"uncompressed_bytes\": %lld",
+                        (long long)agg[i].comp, (long long)agg[i].raw);
+            if (agg[i].has_nulls) std::printf(", \"nulls\": %lld}", (long long)agg[i].nulls);
+            else                  std::printf(", \"nulls\": null}");
+        }
+        std::printf("]}\n");
+        return "";
+    }
+
+    // File-level summary
+    std::printf("%sFile:%s          %s\n", g_color.meta_key, g_color.reset, src.path().c_str());
+    std::printf("%sFormat:%s        Parquet\n", g_color.meta_key, g_color.reset);
+    std::printf("%sRows:%s          %s\n", g_color.meta_key, g_color.reset,
+                digits_with_sep(std::to_string(total_rows)).c_str());
+    std::printf("%sRow groups:%s    %d\n", g_color.meta_key, g_color.reset, n_rg);
+    std::printf("%sCompressed:%s    %s\n", g_color.meta_key, g_color.reset, fmt_size(comp_sz).c_str());
+    std::printf("%sUncompressed:%s  %s", g_color.meta_key, g_color.reset, fmt_size(raw_sz).c_str());
+    if (comp_sz > 0)
+        std::printf("  (ratio: %.2fx)", (double)raw_sz / (double)comp_sz);
+    std::putchar('\n');
+    if (!pq->created_by().empty())
+        std::printf("%sCreated by:%s    %s\n", g_color.meta_key, g_color.reset,
+                    pq->created_by().c_str());
+    print_schema_metadata(*schema);
+
     // Per-column table
     std::vector<std::array<std::string, 6>> rows;     // name, type, codec, comp, raw, ratio
     std::vector<std::string>                 nulls_col;
@@ -19985,9 +20030,9 @@ static std::string print_stats_only(TabularSource& src, const Config& /*cfg*/) {
     for (int i = 0; i < n_cols; ++i) {
         auto f = schema->field(i);
         std::string codec;
-        for (auto c : agg[i].codecs) {
+        for (const auto& c : codecs_of(agg[i])) {
             if (!codec.empty()) codec += "+";
-            codec += codec_name(c);
+            codec += c;
         }
         if (codec.empty()) codec = "?";
         std::string ratio = (agg[i].comp > 0)
@@ -24264,6 +24309,50 @@ static void print_schema_columns(const arrow::Schema& schema, int max_rows = 0) 
                     g_color.meta_key, num_cols - shown, g_color.reset);
 }
 
+// The schema's key-value metadata: what a Parquet or Arrow IPC writer stored
+// beside the data (pandas' index description, an assembly name, a
+// provenance note). Parquet's `ARROW:schema` is not among them — the Arrow
+// reader consumes it and it only repeats the columns. One line per key; a
+// value is cut to one line of about 80 characters, with its size when cut.
+static void print_schema_metadata(const arrow::Schema& schema) {
+    auto kv = schema.metadata();
+    if (!kv || kv->size() == 0) return;
+    std::printf("%sMetadata:%s\n", g_color.meta_key, g_color.reset);
+    for (int64_t i = 0; i < kv->size(); ++i) {
+        const std::string& v = kv->value(i);
+        std::string shown;
+        for (char c : v) {
+            if (c == '\n')      shown += "\\n";
+            else if (c == '\t') shown += "\\t";
+            else if ((unsigned char)c < 0x20) shown += '?';
+            else                shown += c;
+        }
+        constexpr size_t kMax = 80;
+        if (display_width(shown) > kMax) {
+            shown = truncate(shown, kMax);
+            char sz[32];
+            if (v.size() < 1024) std::snprintf(sz, sizeof(sz), " (%zu B)", v.size());
+            else                 std::snprintf(sz, sizeof(sz), " (%.1f KiB)", v.size() / 1024.0);
+            shown += sz;
+        }
+        std::printf("  %s%s%s = %s\n", g_color.meta_key, kv->key(i).c_str(), g_color.reset,
+                    shown.c_str());
+    }
+}
+
+// `, "metadata": {key: value, …}` — the full values; {} when there are none.
+static void emit_metadata_json(const arrow::Schema& schema) {
+    std::printf(", \"metadata\": {");
+    if (auto kv = schema.metadata())
+        for (int64_t i = 0; i < kv->size(); ++i) {
+            if (i) std::printf(", ");
+            json_emit_string(kv->key(i));
+            std::printf(": ");
+            json_emit_string(kv->value(i));
+        }
+    std::printf("}");
+}
+
 static void print_schema_block(TabularSource& src) {
     print_schema_columns(*src.schema());
 
@@ -24273,6 +24362,7 @@ static void print_schema_block(TabularSource& src) {
     if (!src.created_by().empty())
         std::printf("%sCreated by:%s %s\n", g_color.meta_key, g_color.reset,
                     src.created_by().c_str());
+    print_schema_metadata(*src.schema());
     // VCF/BAM/SAM/GFF meta header lines shown below the schema (display-truncated)
     {
         auto pb = src.preamble_below();
@@ -24356,7 +24446,8 @@ static std::string format_label_of(TabularSource& src) {
     const std::string f = src.footer();
     const std::string key = "Format: ";
     auto p = f.find(key);
-    if (p == std::string::npos) return "";
+    if (p == std::string::npos)   // plain Parquet's footer starts at "Row groups:"
+        return dynamic_cast<ParquetSource*>(&src) ? "Parquet" : "";
     std::string rest = f.substr(p + key.size());
     auto bar = rest.find("  |");
     if (bar != std::string::npos) rest.erase(bar);
@@ -24394,7 +24485,9 @@ static void emit_schema_json(TabularSource& src, const std::string& fmt_name) {
         std::printf(", \"hidden\": %s", hidden.count(f->name()) ? "true" : "false");
         std::printf("}");
     }
-    std::printf("]}\n");
+    std::printf("]");
+    emit_metadata_json(*schema);
+    std::printf("}\n");
 }
 
 // ── Document modes (markdown today; plain text next) ─────────────────────────

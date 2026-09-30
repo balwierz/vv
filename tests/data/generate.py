@@ -119,6 +119,20 @@ _jv = pa.table({
     "dc": pa.array(["a", "b", None, "a", "c", "b"]).dictionary_encode(),
     "li": pa.array([[1, 2, 3], [None], None, [], [4], [5, 6]], pa.list_(pa.int32())),
 })
+# tiny.kvmeta.{parquet,arrow}: key-value metadata beside the data — a short
+# value, one with a newline, and a 200-byte value — for --schema / --stats and
+# their --json forms. zstd on one column, 2 row groups of 2 rows, one null.
+_kv = pa.table({
+    "id":   pa.array([1, 2, 3, 4], pa.int64()),
+    "name": pa.array(["a", None, "c", "d"], pa.string()),
+}).replace_schema_metadata({"genome": "GRCh38", "note": "line one\nline two",
+                            "long": "x" * 200})
+pq.write_table(_kv, HERE / "tiny.kvmeta.parquet", row_group_size=2,
+               compression={"id": "snappy", "name": "zstd"})
+with pa.OSFile(str(HERE / "tiny.kvmeta.arrow"), "wb") as f:
+    with ipc.new_file(f, _kv.schema) as w:
+        w.write_table(_kv)
+
 with pa.OSFile(str(HERE / "tiny.jsonvals.arrow"), "wb") as f:
     with ipc.new_file(f, _jv.schema) as w:
         w.write_table(_jv, max_chunksize=2)

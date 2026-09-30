@@ -6,7 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Key-value metadata and `--stats --json`.** The metadata a Parquet or
+  Arrow IPC writer stores beside the data (pandas' index description, an
+  assembly name, a LociSSD manifest) was not shown anywhere. `--schema`,
+  `--stats` and the table footer now list it one key per line, each value cut
+  to about 80 characters with its size; `--schema --json` carries the full
+  values under `metadata` (`{}` when there are none). `--stats --json` writes
+  the footer rollup as one object — file totals, `metadata`, and per column
+  `type`, `codecs`, compressed / uncompressed bytes and `nulls` — where it
+  printed the text table; on a non-Parquet file it exits 1.
+
 ### Fixed
+- **`--schema --json` names Parquet.** `format` was `""` for a plain Parquet
+  file; it is `"Parquet"`. The non-Parquet `--stats` note names the format
+  (`this file is a BAM source`) instead of repeating the whole footer.
 - **vvg: Ctrl+C copies the selection.** Ctrl+C was bound both to Edit ▸ Copy
   and to a separate window shortcut. Qt treats a key with two window
   shortcuts as ambiguous and runs neither, so Ctrl+C copied nothing; the

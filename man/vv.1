@@ -398,7 +398,10 @@ row-group stats) so combining with \fB\-r\fR is fine.
 .TP
 .B \-\-schema
 Print column names, Arrow types, nullability, and the file-info
-footer (row groups, compression, creator) and exit.
+footer (row groups, compression, creator) and exit. Key-value metadata
+stored in a Parquet or Arrow IPC file is listed one key per line, each
+value cut to about 80 characters; with \fB\-\-json\fR the full values
+are under \fBmetadata\fR.
 .TP
 .BI \-\-tab " NAME"
 View a named component tab instead of the first one: AnnData
@@ -432,9 +435,14 @@ given, counts only the matching rows (a scan).
 .TP
 .B \-\-stats
 Print Parquet metadata (row groups, compressed / uncompressed sizes,
-codecs, per-column sizes and null counts) without decoding any data.
-For non-Parquet sources, falls back to \fB\-\-schema\fR. Useful for
-"what's in this 50 GB file from a colleague?".
+codecs, per-column sizes and null counts, key-value metadata) without
+decoding any data. For non-Parquet sources, falls back to
+\fB\-\-schema\fR. Useful for "what's in this 50 GB file from a
+colleague?". With \fB\-\-json\fR, one JSON object: file totals
+(\fBrows\fR, \fBrow_groups\fR, \fBcompressed_bytes\fR,
+\fBuncompressed_bytes\fR, \fBcreated_by\fR, \fBmetadata\fR) and per
+column \fBname\fR, \fBtype\fR, \fBcodecs\fR, sizes and \fBnulls\fR;
+an error on a non-Parquet file.
 .TP
 .B \-\-contigs
 For BAM / CRAM / SAM and VCF / BCF, list the reference sequences named
