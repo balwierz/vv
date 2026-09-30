@@ -185,6 +185,36 @@ assert_exit_code "mtx_entry_count_mismatch" 1 "$VV" --tsv "$MTX/nnz.mtx"
 assert_exit_code "mtx_region_refused"      1 "$VV" -r chr1:1-2 "$MTX/int.mtx"
 rm -rf "$MTX"
 
+# Genomics TSV layouts, shown as plain text before: .bedpe (no header row →
+# bedtools names), 4DN .pairs (names from "#columns:"), GenePattern .gct (the
+# version and dimensions lines, and 1.3's column-metadata rows, are not data)
+# and mutation .maf ("#version" lines, then a header). A UCSC alignment .maf
+# ("##maf") stays plain text.
+DL="$TMP/dialects"; mkdir -p "$DL"
+printf 'chr1\t100\t200\tchr5\t500\t600\tp1\t10\t+\t-\nchr2\t50\t80\tchr2\t900\t950\tp2\t3\t-\t+\n' > "$DL/a.bedpe"
+printf '## pairs format v1.0\n#sorted: chr1-chr2-pos1-pos2\n#chromsize: chr1 1000\n#columns: readID chr1 pos1 chr2 pos2 strand1 strand2 pair_type\nr1\tchr1\t10\tchr1\t500\t+\t-\tUU\nr2\tchr1\t20\tchr2\t30\t-\t+\tUU\n' > "$DL/a.pairs"
+gzip -c "$DL/a.pairs" > "$DL/b.pairs.gz"
+printf '#1.2\n2\t3\nName\tDescription\tS1\tS2\tS3\nTP53\tna\t1.5\t2.0\t0.1\nEGFR\tna\t3.2\t0.4\t1.1\n' > "$DL/a.gct"
+printf '#1.3\n2\t3\t1\t2\nid\tgene\tS1\tS2\tS3\ntissue\tna\tliver\tlung\tbrain\ndose\tna\t1\t2\t3\nr1\tTP53\t1.5\t2.0\t0.1\nr2\tEGFR\t3.2\t0.4\t1.1\n' > "$DL/b.gct"
+printf '#version 2.4\nHugo_Symbol\tChromosome\tStart_Position\tTumor_Sample_Barcode\nTP53\t17\t7673802\tS1\nKRAS\t12\t25245350\tS2\n' > "$DL/a.maf"
+printf '##maf version=1\na score=100\ns hg38.chr1 100 10 + 248956422 ACGTACGTAC\n' > "$DL/aln.maf"
+for c in "a.bedpe|chrom1 start1 end1 chrom2 start2 end2 name score strand1 strand2 |2" \
+         "a.pairs|readID chr1 pos1 chr2 pos2 strand1 strand2 pair_type |2" \
+         "b.pairs.gz|readID chr1 pos1 chr2 pos2 strand1 strand2 pair_type |2" \
+         "a.gct|Name Description S1 S2 S3 |2" "b.gct|id gene S1 S2 S3 |2" \
+         "a.maf|Hugo_Symbol Chromosome Start_Position Tumor_Sample_Barcode |2"; do
+    IFS='|' read -r f cols n <<<"$c"
+    assert_eq_file_inline "dialect_columns [$f]" "$("$VV" --list-columns "$DL/$f" | tr '\n' ' ')" "$cols"
+    assert_eq_file_inline "dialect_rows [$f]"    "$("$VV" --count "$DL/$f")" "$n"
+done
+assert_eq_file_inline "dialect_gct13_values" \
+    "$("$VV" --tsv --no-header --select S3 "$DL/b.gct" | tr '\n' ' ')" "0.1 1.1 "
+assert_contains "dialect_gct13_meta_in_header" "$("$VV" --schema --color=never "$DL/b.gct")" "tissue"
+assert_contains "dialect_gct_footer" "$("$VV" --schema --color=never "$DL/a.gct")" "GenePattern GCT 1.2"
+assert_eq_file_inline "dialect_bedpe_filter" "$("$VV" --count --filter 'start2 > 700' "$DL/a.bedpe")" "1"
+assert_eq_file_inline "dialect_alignment_maf_is_text" "$("$VV" --list-columns "$DL/aln.maf")" "line"
+rm -rf "$DL"
+
 # PLINK. A PLINK 1 .bed (magic 6c 1b) was read as a one-column BED of hex
 # bytes; it and a PLINK 2 .pgen are refused with the plink2 export command.
 # The variant / sample tables open with PLINK 2's column names: .bim / .fam
@@ -1596,6 +1626,26 @@ PYEOF
     # how `.bg` stayed listed by --formats and missing from --help since
     # ENCODE support was added.
     "$VV" --help > "$TMP/help.txt" 2>&1
+    # print_usage hands the whole help text to fprintf as its format, so a
+    # bare % is a conversion: glibc prints "%," literally, but macOS read an
+    # argument and emitted a garbage byte (the help was then not UTF-8). Only
+    # %s (the program name) and %% may appear.
+    python3 - main.cpp <<'PYEOF'
+import re, sys
+src = open(sys.argv[1]).read()
+start = src.index("static void print_usage(")
+body = src[start:src.index("\n}\n", start)]
+lits = "".join(re.findall(r'"((?:[^"\\]|\\.)*)"', body))
+bad = re.findall(r'%(?!%|s)(.)', lits.replace("%%", ""))
+if bad:
+    print("print_usage has printf conversions other than %s / %%:", bad)
+    sys.exit(1)
+PYEOF
+    if [ $? -eq 0 ]; then
+        PASS=$((PASS+1)); echo "  ok    help_text_printf_safe"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  help_text_printf_safe"
+    fi
     python3 - "$TMP/formats.json" "$TMP/help.txt" <<'PYEOF'
 import json, re, sys
 formats = json.load(open(sys.argv[1]))
@@ -2880,11 +2930,12 @@ if [ -f "$DATA/tiny.nullstr.h5ad" ]; then
     assert_contains "nullstr_var_index_labels_x" "$NS_X" "g0"
 fi
 
-# Boolean obs/var columns are stored as HDF5 enums; they must render their
-# member names, not the old "?" fallback. tiny.h5ad var.mt = [F,F,T,F].
+# Boolean obs/var columns are stored as HDF5 enums {FALSE, TRUE}; they read
+# as a bool column (not the old "?" fallback, nor the text "TRUE").
+# tiny.h5ad var.mt = [F,F,T,F].
 if [ -f "$DATA/tiny.h5ad" ]; then
     VAR_MT=$("$VV" --tab var --tsv "$DATA/tiny.h5ad" 2>&1)
-    assert_contains "h5ad_bool_col_rendered"  "$VAR_MT" "TRUE"
+    assert_contains "h5ad_bool_col_rendered"  "$VAR_MT" "true"
     refute_contains "h5ad_bool_col_not_qmark" "$VAR_MT" "?"
 fi
 
@@ -4582,6 +4633,28 @@ if [ -f "$CK" ]; then
         "$(printf 'X/indptr\tint32  |  contiguous  |  no compression  |  ')"
     assert_contains "h5ad_storage_row_slice" "$CKS" \
         "$(printf 'X row slice\tone data chunk \xe2\x89\x88 8 rows; a slice decompresses at least 240 B of data and 120 B of indices')"
+fi
+
+# ── AnnData column types: bool vs categorical of bool vs of strings ─────────
+# A bool column and every categorical were shown as `string` (a bool as the
+# text "TRUE" / "FALSE"). A categorical is now a dictionary column shown as
+# category[<category type>] — category[bool] and category[string] stay
+# distinct — and a bool column is bool, so `== true` filters it.
+CT="$DATA/tiny.cattypes.h5ad"
+if [ -f "$CT" ]; then
+    assert_eq_file_inline "h5ad_column_types" \
+        "$("$VV" --tab obs --schema --color=never "$CT" | awk '/^---/{s=1;next} s&&!NF{exit} s{printf "%s=%s ", $1, substr($0, index($0,$2))}' | sed 's/  *yes//g')" \
+        "_index=string cell_type=category[string] doublet=bool doublet_cat=category[bool] grade=category[string, ordered] "
+    if command -v python3 >/dev/null 2>&1; then
+        assert_eq_file_inline "h5ad_column_types_json" "$("$VV" --tab obs --schema --json "$CT" | python3 -c '
+import json, sys; print([c["type"] for c in json.load(sys.stdin)["columns"]][2:4])')" "['bool', 'category[bool]']"
+    fi
+    assert_eq_file_inline "h5ad_bool_filter"         "$("$VV" --tab obs --count --filter 'doublet == true' "$CT")" "2"
+    assert_eq_file_inline "h5ad_cat_bool_filter"     "$("$VV" --tab obs --count --filter 'doublet_cat == false' "$CT")" "2"
+    assert_eq_file_inline "h5ad_cat_string_filter"   "$("$VV" --tab obs --count --filter 'cell_type == "T"' "$CT")" "2"
+    assert_eq_file_inline "h5ad_cat_missing_is_null" "$("$VV" --tab obs --count --filter 'cell_type is null' "$CT")" "1"
+    assert_eq_file_inline "h5ad_bool_values" "$("$VV" --tab obs --tsv --no-header --select doublet,doublet_cat "$CT" | tr '\t\n' ',;')" \
+        "true,true;false,false;true,false;false,true;"
 fi
 
 # ── anndata < 0.8 categoricals (integer codes + __categories) ───────────────

@@ -84,6 +84,7 @@ _vv() {
         '*.fq' '*.fq.gz' '*.fastq' '*.fastq.gz'
         '*.paf' '*.paf.gz' '*.paf.zst'
         '*.mtx' '*.mtx.gz' '*.mtx.zst'
+        '*.bedpe' '*.bedpe.gz' '*.bedpe.zst' '*.pairs' '*.pairs.gz' '*.pairs.zst' '*.gct' '*.gct.gz' '*.gct.zst' '*.maf' '*.maf.gz' '*.maf.zst'
         '*.bim' '*.bim.gz' '*.bim.zst' '*.fam' '*.fam.gz' '*.fam.zst' '*.pvar' '*.pvar.gz' '*.pvar.zst' '*.psam' '*.psam.gz' '*.psam.zst'
         '*.json' '*.json.gz' '*.json.zst'
         '*.ndjson' '*.ndjson.gz' '*.ndjson.zst'

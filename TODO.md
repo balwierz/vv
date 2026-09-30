@@ -414,7 +414,7 @@ work that touches the same code:
   text are read as TSV; sniff them as the file readers would.
 - [x] **idxstats in `--contigs`, index-backed `--count`** (S+) — `feat/index-stats`.
 - [x] **`--seq-stats` for FASTA / FASTQ** (S) — `feat/seq-stats`.
-- [ ] **TSV dialects: `.bedpe`, `.pairs`, `.gct`, `.maf`** (S–M).
+- [x] **TSV dialects: `.bedpe`, `.pairs`, `.gct`, `.maf`** (S–M) — `feat/tsv-dialects`.
 - [ ] **UTF-8 and line editing in the TUI `/ & :` bars** (S, then M).
 - [ ] **`--tags` for PAF** (M).
 - [ ] **VCF/BCF per-sample FORMAT fields** (L) — named BCF sample columns

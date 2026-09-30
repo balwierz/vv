@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   marked `(large chunks)` above 64 MiB. The rows follow the existing summary
   rows, so a preview of the summary still starts with the matrix and obs /
   var.
+- **BEDPE, 4DN pairs, GCT and MAF files open as tables.** These tab-separated
+  layouts were shown as plain text (unknown extension), and renamed to
+  `.tsv` they lost rows or failed. `.bedpe` gets bedtools' column names (no
+  header row); `.pairs` takes its names from the `#columns:` line; `.gct`
+  (GenePattern 1.2 / 1.3) keeps the version, dimensions and 1.3
+  column-metadata lines out of the data, so sample columns stay numeric;
+  `.maf` (mutation annotation) skips its `#version` lines. A UCSC alignment
+  `.maf` (`##maf`) is still shown as text. Plus `.gz` / `.zst`.
 - **`--seq-stats` for FASTA / FASTQ.** One pass, one row, like `seqkit stats
   -a`: record count, total / min / mean / max length, N50, GC % (over
   A/C/G/T/U, N excluded) and, for FASTQ, the share of bases at Q20 and Q30;
@@ -75,6 +83,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   printed the text table; on a non-Parquet file it exits 1.
 
 ### Fixed
+- **AnnData bool and categorical columns keep their types.** A bool `obs` /
+  `var` column (h5py's HDF5 enum `{FALSE, TRUE}`) was read as the text
+  `TRUE` / `FALSE`, and every categorical was decoded to plain strings, so
+  `--schema` showed `string` for a bool, a categorical of bools and a
+  categorical of strings alike. A bool column is now `bool` (`== true`
+  filters it); a categorical is a dictionary column typed by its categories.
+  Everywhere vv names a type (`--schema`, `--describe`, `--stats`, the TUI,
+  vvg), a dictionary column reads `category[string]`, `category[bool]`,
+  `category[string, ordered]` instead of Arrow's
+  `dictionary<values=…, indices=…, ordered=…>`.
 - **Binary files on stdin and through process substitution.** Stdin refused
   Parquet, Arrow IPC, Feather and BAM / BCF ("requires a seekable file; ...
   use process substitution"), and process substitution failed for every
