@@ -493,6 +493,17 @@ reads without a position), or \fBrecords\fR for a BCF or bgzipped VCF, as
 \fBbcftools index \-\-stats\fR; a sequence with records but no header line
 is added with a null length. A CRAM index holds no counts.
 .TP
+.B \-\-seq\-stats
+For a FASTA or FASTQ file (plain or \fB.gz\fR), read every record once and
+print a one-row summary, like \fBseqkit stats \-a\fR: \fBfile\fR,
+\fBformat\fR, \fBtype\fR (DNA, RNA or Protein, from the residues),
+\fBnum_seqs\fR, \fBsum_len\fR, \fBmin_len\fR, \fBavg_len\fR,
+\fBmax_len\fR, \fBn50\fR, \fBgc_pct\fR (G+C over A/C/G/T/U, N excluded;
+null for protein) and, for FASTQ, \fBq20_pct\fR / \fBq30_pct\fR (the share
+of bases at Phred \(>= 20 / 30, Phred+33). Lengths are kept as a histogram,
+so memory does not grow with the record count. Composes with \fB\-\-tsv\fR
+and \fB\-\-json\fR; a malformed record is an error.
+.TP
 .B \-\-gt\-stats
 For a VCF / BCF with genotypes, append per-variant summary columns
 computed over the sample \fBGT\fR fields: \fBn_called\fR, \fBn_het\fR,

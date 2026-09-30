@@ -3292,6 +3292,34 @@ if [ -f "$DATA/tiny.cram" ] && [ -f "$DATA/tiny.pileup.fa" ]; then
         "$(printf 'r1\t1\tAAAA\nr2\t1\tCCCC\nr3\t0\tGGGG')"
 fi
 
+# --seq-stats: one pass over a FASTA / FASTQ, one row (count, total / min /
+# mean / max length, N50, GC over A/C/G/T/U, Q20 / Q30 share for FASTQ).
+# tiny.fq: 3 reads of 16 + 8 + 3 bases; tiny.fa: 3 records of 32 + 19 + 12.
+assert_eq_file_inline "seq_stats_fastq" \
+    "$("$VV" --seq-stats --tsv --no-header --select num_seqs,sum_len,min_len,avg_len,max_len,n50,q20_pct "$DATA/tiny.fq")" \
+    "$(printf '3\t27\t3\t9\t16\t16\t100')"
+assert_eq_file_inline "seq_stats_fastq_gz_same" \
+    "$("$VV" --seq-stats --tsv --no-header --select 2- "$DATA/tiny.fq.gz")" \
+    "$("$VV" --seq-stats --tsv --no-header --select 2- "$DATA/tiny.fq")"
+assert_eq_file_inline "seq_stats_fasta" \
+    "$("$VV" --seq-stats --tsv --no-header --select format,type,num_seqs,sum_len,n50,q20_pct "$DATA/tiny.fa")" \
+    "$(printf 'FASTA\tDNA\t3\t63\t32\t')"
+SS="$TMP/seqstats"; mkdir -p "$SS"
+printf '>p1\nMKVLAAGIVGLLLAQWE\n>p2\nMSTNPKPQRKTKRNTNRRPQDVK\n' > "$SS/p.faa"
+printf '>r1\nACGUACGU\n>r2\nGGCC\n' > "$SS/r.fa"
+printf '@a\nACGTN\n+\n!+5?I\n' > "$SS/q.fq"
+: > "$SS/empty.fq"
+printf '@a\nACGT\n+\nII\n' > "$SS/bad.fq"
+assert_eq_file_inline "seq_stats_protein" "$("$VV" --seq-stats --tsv --no-header --select type,gc_pct "$SS/p.faa")" "$(printf 'Protein\t')"
+assert_eq_file_inline "seq_stats_rna_gc"  "$("$VV" --seq-stats --tsv --no-header --select type,gc_pct "$SS/r.fa")" "$(printf 'RNA\t66.66666666666667')"
+# Quals ! + 5 ? I = Phred 0 10 20 30 40: Q20 3/5, Q30 2/5; GC 2 of ACGT (N out).
+assert_eq_file_inline "seq_stats_q20_q30_gc" \
+    "$("$VV" --seq-stats --tsv --no-header --select gc_pct,q20_pct,q30_pct "$SS/q.fq")" "$(printf '50\t60\t40')"
+assert_eq_file_inline "seq_stats_empty" "$("$VV" --seq-stats --tsv --no-header --select num_seqs,n50 "$SS/empty.fq")" "$(printf '0\t')"
+assert_exit_code "seq_stats_malformed_exit1" 1 "$VV" --seq-stats "$SS/bad.fq"
+assert_exit_code "seq_stats_non_fastx_exit1" 1 "$VV" --seq-stats "$DATA/tiny.bed"
+assert_exit_code "seq_stats_markdown_exit1"  1 "$VV" --seq-stats --no-interactive "$HERE/../README.md"
+
 # ── --contigs: reference sequences + assembly detection ────────────────────────
 # The header's @SQ / ##contig records become a (name, length) table without
 # reading any records; it composes with --tsv / --json / --sort / --filter.

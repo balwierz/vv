@@ -413,7 +413,7 @@ work that touches the same code:
 - [ ] **Text formats on stdin** (S) — FASTA / FASTQ / SAM / VCF piped as plain
   text are read as TSV; sniff them as the file readers would.
 - [x] **idxstats in `--contigs`, index-backed `--count`** (S+) — `feat/index-stats`.
-- [ ] **`--seq-stats` for FASTA / FASTQ** (S).
+- [x] **`--seq-stats` for FASTA / FASTQ** (S) — `feat/seq-stats`.
 - [ ] **TSV dialects: `.bedpe`, `.pairs`, `.gct`, `.maf`** (S–M).
 - [ ] **UTF-8 and line editing in the TUI `/ & :` bars** (S, then M).
 - [ ] **`--tags` for PAF** (M).

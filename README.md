@@ -593,6 +593,19 @@ $ vv --contigs reads.bam
 Reference sequences: 25  |  Assembly: GRCh38 / hg38 (Homo sapiens)  |  Sorted: coordinate  |  Read groups: 2  |  Samples: NA12878  |  Programs: bwa 0.7.17, samtools 1.19
 ```
 
+### Sequence statistics — `--seq-stats`
+
+For a FASTA / FASTQ (plain or `.gz`), one pass and one row, like `seqkit stats
+-a`: record count, total / min / mean / max length, N50, GC % (over A/C/G/T/U,
+N excluded) and, for FASTQ, the share of bases at Q20 and Q30. The type (DNA,
+RNA, Protein) is read from the residues. Composes with `--tsv` / `--json`.
+
+```
+$ vv --seq-stats --tsv reads.fq.gz
+file         format  type  num_seqs  sum_len    min_len  avg_len  max_len  n50  gc_pct  q20_pct  q30_pct
+reads.fq.gz  FASTQ   DNA   1204331   180649650  35       150      151      151  41.2    97.8     93.1
+```
+
 ### Genotype summaries — `--gt-stats`
 
 For a multi-sample VCF / BCF, `--gt-stats` appends per-variant genotype summary

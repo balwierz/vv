@@ -92,6 +92,9 @@ struct Config {
     bool        contigs        = false;  // --contigs: list a file's reference
                                          // sequences (name, length) and detect
                                          // the assembly (BAM/CRAM/SAM, VCF/BCF)
+    bool        seq_stats      = false;  // --seq-stats: one-row summary of a
+                                         // FASTA / FASTQ (count, lengths, N50,
+                                         // GC, Q20 / Q30)
     bool        gt_stats       = false;  // --gt-stats: VCF/BCF per-variant
                                          // genotype aggregate columns (het/hom/
                                          // missing counts, AC/AN/AF, call_rate)

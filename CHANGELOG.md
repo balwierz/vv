@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`--seq-stats` for FASTA / FASTQ.** One pass, one row, like `seqkit stats
+  -a`: record count, total / min / mean / max length, N50, GC % (over
+  A/C/G/T/U, N excluded) and, for FASTQ, the share of bases at Q20 and Q30;
+  the type (DNA / RNA / Protein) is read from the residues. Composes with
+  `--tsv` / `--json`. Lengths are kept as a histogram, so memory does not
+  grow with the read count.
 - **Index record counts in `--contigs` and `--count`.** An index that counts
   records now fills in per-sequence counts in `--contigs`: `mapped` and
   `unmapped` reads for a BAM (`.bai` / `.csi`, as `samtools idxstats`, with
