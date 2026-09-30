@@ -350,10 +350,11 @@ analysis ranking. One PR per box; no stacked PRs.
   `--tsv` / `--count` stop at the 1000-row / 200-column preview with exit 0.
   Either export the full matrix (streamed by row blocks) or refuse loudly with
   the real shape; never write a truncated file silently.
-- [ ] **Stream a whole matrix on export** (M) — `--tab X --parquet` now
-  refuses a capped preview. Writing the full matrix needs a chunked source
-  reading row blocks (dense hyperslabs; CSR by indptr ranges; CSC needs a
-  transpose pass), with dense and long (`cell, gene, value`) output shapes.
+- [~] **Stream a whole matrix on export** (M) — dense shape done: dense
+  datasets (hyperslabs) and CSR groups (indptr ranges) stream in row blocks
+  for every export mode. Open: CSC (needs a transpose pass), Loom / Cell
+  Ranger (stored transposed), and the long (`cell, gene, value`) output shape
+  — the long shape needs a decision on its flag and column names.
 - [x] **`raw/` tabs** (S) — `feat/anndata-raw-tabs` — `raw.X` preview labelled from `/raw/var`, and
   `raw.var`; today skipped without mention.
 - [x] **`obsp` / `varp` listed** (M) — `feat/anndata-obsp-edges` — neighbour graphs as streamed edge

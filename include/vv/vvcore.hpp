@@ -344,6 +344,10 @@ public:
     // write or aggregate every row refuse such a tab (preview_refusal) rather
     // than present the preview as the whole dataset.
     virtual PreviewLimit preview_limit() const { return {}; }
+    // For a capped matrix preview that can be read in full: a source streaming
+    // the whole matrix (same columns, every row and column), which the export
+    // modes use instead of refusing. nullptr when there is none.
+    virtual std::unique_ptr<TabularSource> full_matrix() const { return nullptr; }
     // Sibling "tabs" for multi-tab containers (xlsx/ods sheets, sqlite
     // tables, hdf5/npz datasets). Returns the OTHER tabs beyond this one,
     // each a ready-to-read source sharing the underlying file handle.

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Whole-matrix export.** `--tab X --parquet` (or `--tsv`, `--csv`, `--json`,
+  `--describe`, vvg's *Export*) on an AnnData / HDF5 matrix larger than the
+  1000 × 200 preview exited 1; it now streams every row and column — dense
+  datasets by hyperslab, CSR groups by `indptr` range, densified — in blocks
+  of about 4 million cells, with the preview's labels (obs names, one column
+  per gene or embedding dimension) and value types. A CSC matrix, a Loom /
+  Cell Ranger matrix and a NumPy array past 4096 columns are still refused
+  with their real shape.
 - **`--flatten`.** Struct columns (Parquet / Arrow / JSON nesting) become one
   column per leaf, named by path — `st.a`, `st.b.c` — recursively; a null
   struct makes its leaves null, lists and maps keep their shape. The leaves

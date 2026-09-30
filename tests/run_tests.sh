@@ -2057,11 +2057,10 @@ if [ -f "$DATA/tiny.wide2d.h5" ]; then
     # The preview holds the right cells (row 3, column 200 = 2199)...
     assert_contains "h5_wide2d_values" \
         "$("$VV" --tab /grp/wide --vertical -n 3 --color=never "$W2")" "│ col199 │ 199 │ 1_199 │ 2_199 │"
-    # ...but an export would drop 50 of the 250 columns, so it is refused
-    # (exit 1, the real shape named) rather than written as the whole matrix.
-    assert_exit_code "h5_wide2d_export_refused" 1 "$VV" --tab /grp/wide --tsv "$W2"
-    assert_contains "h5_wide2d_export_refused_msg" \
-        "$("$VV" --tab /grp/wide --tsv "$W2" 2>&1)" "is a 3 × 200 preview of a 3 × 250"
+    # ...and an export streams the whole 3 × 250 dataset, not the preview.
+    assert_eq_file_inline "h5_wide2d_export_full" \
+        "$("$VV" --tab /grp/wide --tsv "$W2" | cut -f1,200,250 | tr '\t\n' ',;')" \
+        "col0,col199,col249;0,199,249;1000,1199,1249;2000,2199,2249;"
 fi
 
 # Loom: /matrix and /layers/* (genes × cells) shown cells × genes, labelled by
@@ -2992,18 +2991,29 @@ if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
             "$("$VV" --tab 'obsp[connectivities]' --tsv --no-header "$DATA/tiny.badobsp.h5ad" | tr '\t\n' ',;')" \
             "0,1,cell0,cell1,1;0,99,cell0,,2;0,-3,cell0,,3;"
     fi
-    # obs / var are read in full for an export; a matrix tab is only ever a
-    # preview (here 3 cells × the first 200 of 250 genes). Exporting it is
-    # refused rather than written as the whole matrix; --count needs only the
-    # rows, which the preview has in full; the table view is unaffected.
+    # A matrix tab shows a preview (here 3 cells × the first 200 of 250
+    # genes); an export streams the whole matrix in row blocks instead: every
+    # gene column, the values as stored. --count needs only the rows; the
+    # table view keeps the preview.
     if [ -f "$DATA/tiny.dense.h5ad" ]; then
         DX="$DATA/tiny.dense.h5ad"
         for m in --tsv --csv --json --ndjson --md --describe; do
-            assert_exit_code "h5ad_x_export_refused_${m#--}" 1 "$VV" --tab X "$m" "$DX"
+            assert_exit_code "h5ad_x_export_full_${m#--}" 0 "$VV" --tab X "$m" "$DX"
         done
-        assert_contains "h5ad_x_export_refused_msg" "$("$VV" --tab X --tsv "$DX" 2>&1)" \
-            "tab 'X' is a 3 × 200 preview of a 3 × 250 (rows × columns) matrix; --tsv"
-        assert_exit_code "h5ad_x_export_refused_n" 1 "$VV" --tab X -n 1 --csv "$DX"
+        assert_eq_file_inline "h5ad_x_export_full_shape" \
+            "$("$VV" --tab X --tsv "$DX" | awk -F'\t' '{print NF}' | sort -u | tr '\n' ,)$("$VV" --tab X --tsv "$DX" | wc -l)" \
+            "251,4"
+        assert_eq_file_inline "h5ad_x_export_full_last_gene" \
+            "$("$VV" --tab X --tsv "$DX" | head -1 | awk -F'\t' '{print $NF}')" "gene249"
+        assert_eq_file_inline "h5ad_x_export_full_n" "$("$VV" --tab X -n 1 --csv "$DX" | wc -l)" "2"
+        if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
+            # CSR X, 1500 cells (preview: 1000): all 1500 rows, densified.
+            assert_eq_file_inline "h5ad_x_export_full_csr" \
+                "$("$VV" --tab X --csv "$DATA/tiny.bigobs.h5ad" | sed -n '1p;3p;1501p;1502p' | tr '\n' ';')" \
+                "obs,gene0,gene1,gene2,gene3;cell1,0.18961396933845598,0,0.8174245085509352,0;cell1499,0,0,0,0.5695691341122411;"
+            assert_eq_file_inline "h5ad_x_export_full_csr_rows" \
+                "$("$VV" --tab X --tsv "$DATA/tiny.bigobs.h5ad" | wc -l)" "1501"
+        fi
         assert_eq_file_inline "h5ad_x_count_allowed" "$("$VV" --tab X --count "$DX")" "3"
         assert_contains "h5ad_x_table_view" \
             "$("$VV" --tab X -n 1 --no-interactive --color=never "$DX")" "preview: first 200 of 250 cols"

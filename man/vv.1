@@ -456,10 +456,12 @@ case-insensitive; an unknown name lists the available tabs. Large
 components are shown as a capped preview (the footer notes the full size).
 Tables (\fBobs\fR, \fBvar\fR, 1-D datasets) are read in full by the modes
 that need every row (export, \fB\-\-count\fR, \fB\-\-describe\fR, ...).
-A matrix (\fBX\fR, layers, 2-D datasets, a NumPy array wider than 4096
-columns) is only ever a preview, so exporting or aggregating a capped one
-exits 1 with its real shape instead of writing the preview; \fB\-\-count\fR
-works when every row is in the preview.
+A dense or CSR matrix (\fBX\fR, layers, obsm / varm, 2-D datasets) is
+streamed in full, in row blocks, by those modes. A CSC matrix, a Loom /
+Cell Ranger matrix and a NumPy array wider than 4096 columns are only ever a
+preview, so exporting or aggregating a capped one exits 1 with its real
+shape instead of writing the preview; \fB\-\-count\fR works when every row
+is in the preview.
 .TP
 .B \-\-describe
 Per-column statistics: count, nulls, min, max, mean (numeric),

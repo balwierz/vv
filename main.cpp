@@ -12499,6 +12499,10 @@ static std::vector<OpenSpec> scan_generic(hid_t file_id);
 
 // ── Hdf5Source: one tab's view of the file ──────────────────────────────────
 
+struct OpenSpec;
+static std::unique_ptr<TabularSource> make_h5_matrix_stream(const H5FilePtr& file,
+                                                           const std::string& path,
+                                                           const OpenSpec& spec);
 class Hdf5Source : public WorkbookSource {
     H5FilePtr   file_;
     std::string h5_path_;
@@ -12840,6 +12844,12 @@ public:
     }
     PreviewLimit preview_limit() const override {
         ensure_built(); return limit_;
+    }
+    // A capped dense matrix or CSR preview streams in full for an export.
+    std::unique_ptr<TabularSource> full_matrix() const override {
+        ensure_built();
+        if (!limit_.capped()) return nullptr;
+        return make_h5_matrix_stream(file_, path(), spec_);
     }
 
     std::vector<std::unique_ptr<TabularSource>>
@@ -13661,6 +13671,213 @@ static void apply_anndata_matrix_labels(hid_t file_id, AnnMatrixAxes axes,
         }
     }
     *tbl = t;
+}
+
+// ── A whole AnnData / HDF5 matrix, streamed in row blocks ───────────────────
+//
+// The export counterpart of the capped matrix preview: every row and column
+// of a dense 2-D dataset (hyperslabs) or a CSR group (indptr ranges,
+// densified per block), with the preview's columns — the row label, then one
+// column per gene / dimension. Blocks hold about 4 million cells, so memory
+// is bounded however large the matrix. Values keep the storage class: int64
+// for integer data, double otherwise. A CSC matrix is not streamed (it would
+// need a transpose pass).
+class H5MatrixStreamSource : public TabularSource {
+    H5FilePtr   file_;
+    std::string path_, h5_path_, label_;
+    bool        sparse_ = false, ints_ = false;
+    int64_t     rows_ = 0, cols_ = 0, block_ = 1;
+    std::vector<std::string> row_labels_;
+    std::shared_ptr<arrow::Schema> schema_;
+    mutable arrow::Status status_;
+
+public:
+    static std::unique_ptr<TabularSource> open(const H5FilePtr& file, const std::string& path,
+                                               const OpenSpec& spec) {
+        auto self = std::make_unique<H5MatrixStreamSource>();
+        self->file_ = file; self->path_ = path; self->h5_path_ = spec.h5_path;
+        self->label_ = spec.display;
+        const hid_t fid = *file;
+        hid_t data_d = -1;
+        if (spec.kind == OpenSpec::Kind::Sparse) {
+            hid_t g = H5Gopen2(fid, spec.h5_path.c_str(), H5P_DEFAULT);
+            if (g < 0) return nullptr;
+            const bool csr = read_string_attr(g, "encoding-type") == "csr_matrix";
+            int64_t shape[2] = {0, 0};
+            read_shape2(g, "shape", shape);
+            if (csr) {
+                hid_t ip = H5Dopen2(g, "indptr", H5P_DEFAULT);
+                if (ip >= 0) { shape[0] = std::min<int64_t>(shape[0], std::max<int64_t>(0, h5_len_1d(ip) - 1)); H5Dclose(ip); }
+                data_d = H5Dopen2(g, "data", H5P_DEFAULT);
+            }
+            H5Gclose(g);
+            if (!csr) return nullptr;
+            self->sparse_ = true; self->rows_ = shape[0]; self->cols_ = shape[1];
+        } else if (spec.kind == OpenSpec::Kind::Matrix2D || spec.kind == OpenSpec::Kind::Dataset2D) {
+            data_d = H5Dopen2(fid, spec.h5_path.c_str(), H5P_DEFAULT);
+            if (data_d < 0) return nullptr;
+            hid_t sp = H5Dget_space(data_d);
+            hsize_t dims[2] = {0, 0};
+            const bool two = H5Sget_simple_extent_ndims(sp) == 2;
+            if (two) H5Sget_simple_extent_dims(sp, dims, nullptr);
+            H5Sclose(sp);
+            if (!two) { H5Dclose(data_d); return nullptr; }
+            self->rows_ = (int64_t)dims[0]; self->cols_ = (int64_t)dims[1];
+        } else {
+            return nullptr;
+        }
+        // The preview's value types: a dense dataset int64 or double by its
+        // class (text and compound datasets are not streamed), a sparse matrix
+        // double.
+        H5T_class_t cls = H5T_FLOAT;
+        if (data_d >= 0) {
+            hid_t t = H5Dget_type(data_d);
+            cls = H5Tget_class(t);
+            H5Tclose(t); H5Dclose(data_d);
+        }
+        if (!self->sparse_) {
+            if (cls != H5T_INTEGER && cls != H5T_FLOAT) return nullptr;
+            self->ints_ = cls == H5T_INTEGER;
+        }
+        if (self->cols_ <= 0) return nullptr;
+        self->block_ = std::clamp<int64_t>((int64_t)4000000 / self->cols_, 1, 65536);
+        // Columns and the row label, as the preview names them: a generic 2-D
+        // dataset col0, col1, ...; an AnnData matrix by its axes.
+        std::vector<std::string> col_names;
+        std::string row_header;
+        if (spec.kind != OpenSpec::Kind::Dataset2D) {
+            const bool obs_by_var = spec.axes == AnnMatrixAxes::ObsByVar || spec.axes == AnnMatrixAxes::ObsByRawVar;
+            if (obs_by_var) {
+                std::string idx;
+                read_anndata_index_labels(fid, spec.axes == AnnMatrixAxes::ObsByRawVar ? "/raw/var" : "/var",
+                                          self->cols_, &col_names, &idx);
+            } else if (!spec.key.empty()) {
+                for (int64_t c = 0; c < self->cols_; ++c) col_names.push_back(spec.key + std::to_string(c + 1));
+            }
+            const char* rg = spec.axes == AnnMatrixAxes::VarByDim ? "/var" : "/obs";
+            std::string idx;
+            read_anndata_index_labels(fid, rg, self->rows_, &self->row_labels_, &idx);
+            row_header = idx.empty() || idx == "_index"
+                             ? (spec.axes == AnnMatrixAxes::VarByDim ? "var" : "obs") : idx;
+        }
+        arrow::FieldVector fields;
+        if (!self->row_labels_.empty()) fields.push_back(arrow::field(row_header, arrow::utf8()));
+        for (int64_t c = 0; c < self->cols_; ++c)
+            fields.push_back(arrow::field(c < (int64_t)col_names.size() ? col_names[(size_t)c]
+                                                                        : "col" + std::to_string(c),
+                                          self->ints_ ? arrow::int64() : arrow::float64()));
+        self->schema_ = arrow::schema(fields);
+        return self;
+    }
+
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    int64_t total_rows() const override { return rows_; }
+    int     num_chunks() const override { return (int)((rows_ + block_ - 1) / block_); }
+    ChunkMeta chunk_meta(int i) const override {
+        const int64_t r0 = (int64_t)i * block_;
+        return {r0, std::min(block_, rows_ - r0)};
+    }
+    arrow::Status read_status() const override { return status_; }
+    const std::string& path() const override { return path_; }
+    std::string tab_label() const override { return label_; }
+    std::string footer() const override {
+        return "Format: AnnData " + label_ + " (full matrix)  |  " + std::to_string(rows_) +
+               " \xc3\x97 " + std::to_string(cols_);
+    }
+
+    arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
+                             std::shared_ptr<arrow::Table>* out) override {
+        const int64_t r0 = (int64_t)i * block_;
+        const int64_t n  = std::min(block_, rows_ - r0);
+        if (n <= 0) return arrow::Status::IndexError("chunk ", i, " out of range");
+        std::vector<double>  dv;
+        std::vector<int64_t> iv;
+        (ints_ ? (void)iv.assign((size_t)(n * cols_), 0) : (void)dv.assign((size_t)(n * cols_), 0.0));
+        const hid_t fid = *file_;
+        auto fail = [&](const std::string& why) {
+            status_ = arrow::Status::IOError(why);
+            return status_;
+        };
+        if (!sparse_) {
+            hid_t d = H5Dopen2(fid, h5_path_.c_str(), H5P_DEFAULT);
+            if (d < 0) return fail("cannot open " + h5_path_);
+            hid_t fs = H5Dget_space(d);
+            hsize_t start[2] = {(hsize_t)r0, 0}, count[2] = {(hsize_t)n, (hsize_t)cols_};
+            H5Sselect_hyperslab(fs, H5S_SELECT_SET, start, nullptr, count, nullptr);
+            hid_t ms = H5Screate_simple(2, count, nullptr);
+            herr_t st = ints_ ? H5Dread(d, H5T_NATIVE_INT64, ms, fs, H5P_DEFAULT, iv.data())
+                              : H5Dread(d, H5T_NATIVE_DOUBLE, ms, fs, H5P_DEFAULT, dv.data());
+            const std::string why = st < 0 ? h5_read_failure(d) : std::string();
+            H5Sclose(ms); H5Sclose(fs); H5Dclose(d);
+            if (st < 0) return fail(why);
+        } else {
+            hid_t g = H5Gopen2(fid, h5_path_.c_str(), H5P_DEFAULT);
+            if (g < 0) return fail("cannot open " + h5_path_);
+            auto read_slice = [&](const char* name, int64_t off, int64_t len, hid_t mtype, void* buf) {
+                hid_t d = H5Dopen2(g, name, H5P_DEFAULT);
+                if (d < 0) return false;
+                hid_t fs = H5Dget_space(d);
+                hsize_t start = (hsize_t)off, count = (hsize_t)len;
+                H5Sselect_hyperslab(fs, H5S_SELECT_SET, &start, nullptr, &count, nullptr);
+                hid_t ms = H5Screate_simple(1, &count, nullptr);
+                const bool ok = len == 0 || H5Dread(d, mtype, ms, fs, H5P_DEFAULT, buf) >= 0;
+                H5Sclose(ms); H5Sclose(fs); H5Dclose(d);
+                return ok;
+            };
+            std::vector<int64_t> ip((size_t)n + 1);
+            if (!read_slice("indptr", r0, n + 1, H5T_NATIVE_INT64, ip.data())) { H5Gclose(g); return fail("cannot read indptr of " + h5_path_); }
+            const int64_t a = ip[0], len = ip[(size_t)n] - a;
+            if (len < 0) { H5Gclose(g); return fail("indptr of " + h5_path_ + " decreases"); }
+            std::vector<int64_t> idx((size_t)len);
+            std::vector<double>  dval;
+            std::vector<int64_t> ival;
+            (ints_ ? ival.resize((size_t)len) : dval.resize((size_t)len));
+            const bool ok = read_slice("indices", a, len, H5T_NATIVE_INT64, idx.data()) &&
+                            (ints_ ? read_slice("data", a, len, H5T_NATIVE_INT64, ival.data())
+                                   : read_slice("data", a, len, H5T_NATIVE_DOUBLE, dval.data()));
+            H5Gclose(g);
+            if (!ok) return fail("cannot read data / indices of " + h5_path_);
+            for (int64_t r = 0; r < n; ++r)
+                for (int64_t k = ip[(size_t)r] - a; k < ip[(size_t)r + 1] - a; ++k) {
+                    const int64_t c = idx[(size_t)k];
+                    if (c < 0 || c >= cols_) return fail("column index out of range in " + h5_path_);
+                    if (ints_) iv[(size_t)(r * cols_ + c)] = ival[(size_t)k];
+                    else       dv[(size_t)(r * cols_ + c)] = dval[(size_t)k];
+                }
+        }
+        const int label = row_labels_.empty() ? 0 : 1;
+        arrow::FieldVector fields;
+        std::vector<std::shared_ptr<arrow::Array>> cols;
+        for (int ci : col_indices) {
+            fields.push_back(schema_->field(ci));
+            std::shared_ptr<arrow::Array> arr;
+            if (label && ci == 0) {
+                arrow::StringBuilder b;
+                for (int64_t r = 0; r < n; ++r)
+                    (void)(r0 + r < (int64_t)row_labels_.size() ? b.Append(row_labels_[(size_t)(r0 + r)]) : b.AppendNull());
+                ARROW_RETURN_NOT_OK(b.Finish(&arr));
+            } else if (ints_) {
+                arrow::Int64Builder b;
+                ARROW_RETURN_NOT_OK(b.Reserve(n));
+                for (int64_t r = 0; r < n; ++r) b.UnsafeAppend(iv[(size_t)(r * cols_ + ci - label)]);
+                ARROW_RETURN_NOT_OK(b.Finish(&arr));
+            } else {
+                arrow::DoubleBuilder b;
+                ARROW_RETURN_NOT_OK(b.Reserve(n));
+                for (int64_t r = 0; r < n; ++r) b.UnsafeAppend(dv[(size_t)(r * cols_ + ci - label)]);
+                ARROW_RETURN_NOT_OK(b.Finish(&arr));
+            }
+            cols.push_back(std::move(arr));
+        }
+        *out = arrow::Table::Make(arrow::schema(fields), cols, n);
+        return arrow::Status::OK();
+    }
+};
+
+static std::unique_ptr<TabularSource> make_h5_matrix_stream(const H5FilePtr& file,
+                                                           const std::string& path,
+                                                           const OpenSpec& spec) {
+    return H5MatrixStreamSource::open(file, path, spec);
 }
 
 // ── Scanners — decide which tabs to emit ────────────────────────────────────
@@ -26632,8 +26849,9 @@ std::string packed_column_for(const std::string& path) {
 
 // Why `mode` (e.g. "--tsv") must not run on `src`, or "" when it may. A mode
 // that writes or aggregates every row would otherwise present a capped preview
-// (an HDF5 / AnnData matrix, a wide NumPy array) as the whole dataset and exit
-// 0. `rows_wanted`: how many rows the mode reads (-n), or -1 for all — a row
+// as the whole dataset and exit 0. Dense and CSR matrices never get here (the
+// callers swap in full_matrix()); what remains is a CSC matrix, a Loom / Cell
+// Ranger matrix (stored transposed) and a NumPy array past 4096 columns. `rows_wanted`: how many rows the mode reads (-n), or -1 for all — a row
 // cap matters only when the mode wants more rows than the preview holds.
 // `cols_matter`: false for a mode that only counts rows (--count).
 static std::string preview_refusal(const TabularSource& src, const std::string& mode,
@@ -26648,8 +26866,10 @@ static std::string preview_refusal(const TabularSource& src, const std::string& 
     return "tab '" + src.tab_label() + "' is a " + shape(l.shown_rows, l.shown_cols) +
            " preview of a " + shape(l.full_rows, l.full_cols) +
            " (rows \xc3\x97 columns) matrix; " + mode +
-           " would give the preview as if it were the whole matrix. vv reads "
-           "matrices only as previews; use the TUI or the table view to look at it";
+           " would give the preview as if it were the whole matrix. Exports stream "
+           "dense and CSR HDF5 matrices in full, but not CSC, Loom / Cell Ranger "
+           "matrices or NumPy arrays past 4096 columns; use the TUI or the table "
+           "view to look at this one";
 }
 
 // --tab NAME: replace `src` with its component tab NAME (AnnData obs/var/X, a
@@ -26730,6 +26950,8 @@ std::string export_view(const Config& cfg_in, const std::string& out_path,
         if (auto err = select_tab(src, cfg.tab); !err.empty()) return err;
     if (!src->read_status().ok())
         return shorten_reader_error(src->read_status().ToString());
+    if (src->preview_limit().capped())                 // stream a whole matrix
+        if (auto full = src->full_matrix()) src = std::move(full);
     if (auto err = preview_refusal(*src, mode); !err.empty()) return err;
     if (!cfg.sort_col.empty()) {
         if (auto err = build_sort(src, cfg); !err.empty()) return err;
@@ -27468,6 +27690,10 @@ int main(int argc, char** argv) {
         // An export honours -n: `-n 10 --tsv` of a 1000-row preview is complete.
         const int64_t rows_wanted = (honours_n && cfg.head_rows_set && cfg.head_rows > 0)
                                     ? (int64_t)cfg.head_rows : -1;
+        // A matrix preview that can be read in full is exported in full.
+        if (!mode.empty() && src->preview_limit().capped() &&
+            preview_refusal(*src, mode, rows_wanted, cols_matter) != "")
+            if (auto full = src->full_matrix()) src = std::move(full);
         if (!mode.empty())
             if (auto perr = preview_refusal(*src, mode, rows_wanted, cols_matter);
                 !perr.empty()) {
