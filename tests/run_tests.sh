@@ -3071,6 +3071,16 @@ if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
         assert_contains "h5ad_x_table_view" \
             "$("$VV" --tab X -n 1 --no-interactive --color=never "$DX")" "preview: first 200 of 250 cols"
     fi
+    # Loom (stored genes × cells) and Cell Ranger (CSC by barcode) matrices
+    # larger than the preview stream in full too, cells × genes, compared
+    # value for value with h5py / scipy by tests/h5_matrix_export_check.py.
+    if python3 -c "import h5py, numpy, scipy" 2>/dev/null; then
+        if python3 "$HERE/h5_matrix_export_check.py" "$VV" "$TMP"; then
+            PASS=$((PASS+1)); echo "  ok    h5_matrix_export_loom_10x"
+        else
+            FAIL=$((FAIL+1)); echo "  FAIL  h5_matrix_export_loom_10x"
+        fi
+    fi
     # Categorical obs columns decode to their string labels, not integer codes.
     # The dictionary cap (VV_CATEGORY_DICT_CAP, default 1,000,000 — raised from
     # 65536, which wrongly coded real high-cardinality columns like CRISPR
