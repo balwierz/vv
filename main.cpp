@@ -9666,8 +9666,9 @@ public:
         if (is_fastq) fields.push_back(arrow::field("qual", arrow::utf8()));
         self->schema_ = arrow::schema(fields);
 
-        auto st = self->advance();
-        if (!st.ok()) return "Error reading '" + path + "': " + st.ToString();
+        // Records are read on demand, so an -n preview or a thumbnail
+        // (read_first) reads only the rows it shows; a malformed file is
+        // reported by the first read (read_status).
         *out = std::move(self);
         return "";
     }
@@ -9695,11 +9696,26 @@ public:
         *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
         return arrow::Status::OK();
     }
+    // The first `rows` rows, reading only as many records as that needs
+    // (open() read one): a batch not yet read is read capped at the
+    // shortfall, not as a whole 4096-record / byte-budget batch. Each chunk
+    // is collected as soon as it exists, as the base read_first does.
     arrow::Status read_first(int64_t rows, const std::vector<int>& col_indices,
                               std::shared_ptr<arrow::Table>* out) override {
-        if (batches_.empty() && !all_read_ && rows > 0)
-            ARROW_RETURN_NOT_OK(advance(rows));
-        return TabularSource::read_first(rows, col_indices, out);
+        std::shared_ptr<arrow::Table> acc;
+        for (int c = 0; !acc || acc->num_rows() < rows; ++c) {
+            const int64_t got = acc ? acc->num_rows() : 0;
+            while (!all_read_ && c >= (int)batches_.size())
+                ARROW_RETURN_NOT_OK(advance(rows - got));
+            if (c >= (int)batches_.size()) break;
+            std::shared_ptr<arrow::Table> chunk;
+            ARROW_RETURN_NOT_OK(read_chunk(c, col_indices, &chunk));
+            if (!acc) { acc = chunk; continue; }
+            ARROW_ASSIGN_OR_RAISE(acc, arrow::ConcatenateTables({acc, chunk}));
+        }
+        if (acc && acc->num_rows() > rows) acc = acc->Slice(0, rows);
+        *out = acc;
+        return arrow::Status::OK();
     }
     arrow::Status read_status() const override { return read_status_; }
     const std::string& path() const override { return path_; }
@@ -10497,8 +10513,8 @@ class SqliteSource : public TabularSource {
         if (sqlite3_prepare_v2(db.get(), sq.c_str(), -1, &self->stmt_, nullptr) != SQLITE_OK)
             return std::string("SQLite prepare failed: ") + sqlite3_errmsg(db.get());
 
-        auto astat = self->advance();
-        if (!astat.ok()) return astat.ToString();
+        // Rows are read on demand, so read_first reads only the rows it
+        // returns; a step error is reported by the first read (read_status).
         *out = std::move(self);
         return "";
     }
@@ -10601,11 +10617,26 @@ public:
         *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
         return arrow::Status::OK();
     }
+    // The first `rows` rows, reading only as many records as that needs
+    // (open() read one): a batch not yet read is read capped at the
+    // shortfall, not as a whole 4096-record / byte-budget batch. Each chunk
+    // is collected as soon as it exists, as the base read_first does.
     arrow::Status read_first(int64_t rows, const std::vector<int>& col_indices,
                               std::shared_ptr<arrow::Table>* out) override {
-        if (batches_.empty() && !all_read_ && rows > 0)
-            ARROW_RETURN_NOT_OK(advance(rows));
-        return TabularSource::read_first(rows, col_indices, out);
+        std::shared_ptr<arrow::Table> acc;
+        for (int c = 0; !acc || acc->num_rows() < rows; ++c) {
+            const int64_t got = acc ? acc->num_rows() : 0;
+            while (!all_read_ && c >= (int)batches_.size())
+                ARROW_RETURN_NOT_OK(advance(rows - got));
+            if (c >= (int)batches_.size()) break;
+            std::shared_ptr<arrow::Table> chunk;
+            ARROW_RETURN_NOT_OK(read_chunk(c, col_indices, &chunk));
+            if (!acc) { acc = chunk; continue; }
+            ARROW_ASSIGN_OR_RAISE(acc, arrow::ConcatenateTables({acc, chunk}));
+        }
+        if (acc && acc->num_rows() > rows) acc = acc->Slice(0, rows);
+        *out = acc;
+        return arrow::Status::OK();
     }
     const std::string& path() const override { return path_; }
     std::string tab_label() const override { return table_; }
@@ -21360,6 +21391,7 @@ ColStats compute_col_stats(TabularSource& src, int src_col) {
 }
 
 // `Mean` only filled for numeric columns; `Distinct` only when small.
+static std::string shorten_reader_error(std::string msg);
 static std::string print_describe(TabularSource& src, const Config& cfg) {
     std::vector<std::string> unknown;
     std::vector<int> requested = select_field_indices(src, cfg, &unknown);
@@ -21449,6 +21481,10 @@ static std::string print_describe(TabularSource& src, const Config& cfg) {
         }
         rows_left -= take;
     }
+    // A stream that failed part-way (a malformed record, a truncated file)
+    // must not be summarised as if the rows read so far were the whole table.
+    if (!src.read_status().ok())
+        return shorten_reader_error(src.read_status().ToString());
 
     // Machine-readable stats: `--describe --json` emits a JSON array of per-column
     // objects, `--describe --ndjson` one object per line. Numbers are exact
@@ -22059,6 +22095,9 @@ static std::string build_sample(std::unique_ptr<TabularSource>& src,
         if (have_filter) tbl = apply_filter(tbl, fx, all_cols);
         if (tbl && tbl->num_rows() > 0) chunks.push_back(std::move(tbl));
     }
+    // A stream that failed part-way is an error, not a shorter table.
+    if (!src->read_status().ok())
+        return shorten_reader_error(src->read_status().ToString());
     auto hidden_from_src = src->hidden_for_display();
     if (chunks.empty()) {
         // Empty result — still build an empty table.
@@ -22156,6 +22195,9 @@ static std::string build_tail(std::unique_ptr<TabularSource>& src,
         if (have_filter) tbl = apply_filter(tbl, fx, all_cols);
         if (tbl && tbl->num_rows() > 0) chunks.push_back(std::move(tbl));
     }
+    // A stream that failed part-way is an error, not a shorter table.
+    if (!src->read_status().ok())
+        return shorten_reader_error(src->read_status().ToString());
     auto hidden_from_src = src->hidden_for_display();
     if (chunks.empty()) {
         std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
@@ -22280,6 +22322,9 @@ static std::string build_sort(std::unique_ptr<TabularSource>& src,
         if (have_filter) tbl = apply_filter(tbl, fx, all_cols);
         if (tbl && tbl->num_rows() > 0) chunks.push_back(std::move(tbl));
     }
+    // A stream that failed part-way is an error, not a shorter table.
+    if (!src->read_status().ok())
+        return shorten_reader_error(src->read_status().ToString());
     auto hidden_from_src = src->hidden_for_display();
     std::string old_path = src->path();
 

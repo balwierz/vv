@@ -428,7 +428,23 @@ elif [ "$FQ_RC" -ne 0 ]; then
 else
     FAIL=$((FAIL+1)); echo "  FAIL  fastx_midstream_error_no_hang (silent truncation, exit 0)"
 fi
+# The modes that read the whole file before printing (--describe, --sort,
+# --tail, --sample) report the malformed record too, instead of summarising
+# the 4200 good records as the whole file.
+for m in --describe "--sort seq" "--tail 3" "--sample 3"; do
+    # shellcheck disable=SC2086
+    assert_exit_code "fastx_midstream_error_${m%% *}" 1 "$VV" $m "$BADFQ"
+done
 rm -f "$BADFQ"
+# FASTQ and SQLite read only the rows an -n preview shows: with record 5
+# malformed, -n 3 prints records 1-3 and exits 0 (as head -n 12 would), while
+# reading the whole file still fails.
+EARLYBAD="$TMP/earlybad.fq"
+awk 'BEGIN{for(i=1;i<=4;i++)printf "@r%d\nACGT\n+\nIIII\n",i; printf "@bad\nACGT\n+\nII\n"}' > "$EARLYBAD"
+assert_eq_file_inline "fastx_head_reads_only_shown_rows" \
+    "$("$VV" -n 3 --tsv --no-header --select name "$EARLYBAD" 2>&1 | tr '\n' ,)" "r1,r2,r3,"
+assert_exit_code "fastx_head_whole_file_still_fails" 1 "$VV" --tsv "$EARLYBAD"
+rm -f "$EARLYBAD"
 
 # Streaming retention window on a second source family (FastxSource): a FASTQ
 # with >BATCH_SIZE (4096) records spans multiple batches. With the window

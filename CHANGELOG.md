@@ -124,6 +124,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   printed the text table; on a non-Parquet file it exits 1.
 
 ### Fixed
+- **Read errors in `--describe`, `--sort`, `--tail`, `--sample`.** A
+  malformed record or truncated file part-way through was summarised,
+  sorted or sampled as if the rows before it were the whole file (exit 0);
+  these modes now report the error and exit 1, as the exports do. vvg's
+  status bar shows a read error instead of presenting the rows before it
+  as the file.
+- **FASTQ / FASTA and SQLite previews read only the rows shown.** `-n 3`
+  (and thumbnails) read a whole 4096-record batch first — up to 64 MiB of
+  long reads; they now read three records, and a malformed record after
+  them no longer fails the preview (the whole-file modes still report it).
 - **BCF sample columns are named.** A BCF packed FORMAT and every sample into
   one tab-joined `FORMAT_SAMPLES` column, where the same data as a text VCF
   had `FORMAT` and one column per sample. A BCF now has those columns too,

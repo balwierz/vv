@@ -582,6 +582,11 @@ bool ArrowTableModel::stepSlice(int delta) {
 QString ArrowTableModel::footer() const {
     if (computing_) return QStringLiteral("Working…");
     QString f = QString::fromStdString(src_->footer());
+    // A stream that failed (a malformed record, a truncated file) holds only
+    // the rows before the failure; say so rather than show them as the file.
+    if (const arrow::Status st = src_->read_status(); !st.ok())
+        f += QStringLiteral("  |  read error (rows after it are missing): %1")
+                 .arg(QString::fromStdString(st.message()));
     if (const int64_t n = viewRows(); n > kMaxViewRows)
         f += QStringLiteral("  |  the window shows the first %1 of %2 rows; an export writes all")
                  .arg(QLocale().toString((qlonglong)kMaxViewRows))
