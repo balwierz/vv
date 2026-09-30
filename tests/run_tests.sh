@@ -1626,6 +1626,26 @@ PYEOF
     # how `.bg` stayed listed by --formats and missing from --help since
     # ENCODE support was added.
     "$VV" --help > "$TMP/help.txt" 2>&1
+    # print_usage hands the whole help text to fprintf as its format, so a
+    # bare % is a conversion: glibc prints "%," literally, but macOS read an
+    # argument and emitted a garbage byte (the help was then not UTF-8). Only
+    # %s (the program name) and %% may appear.
+    python3 - main.cpp <<'PYEOF'
+import re, sys
+src = open(sys.argv[1]).read()
+start = src.index("static void print_usage(")
+body = src[start:src.index("\n}\n", start)]
+lits = "".join(re.findall(r'"((?:[^"\\]|\\.)*)"', body))
+bad = re.findall(r'%(?!%|s)(.)', lits.replace("%%", ""))
+if bad:
+    print("print_usage has printf conversions other than %s / %%:", bad)
+    sys.exit(1)
+PYEOF
+    if [ $? -eq 0 ]; then
+        PASS=$((PASS+1)); echo "  ok    help_text_printf_safe"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  help_text_printf_safe"
+    fi
     python3 - "$TMP/formats.json" "$TMP/help.txt" <<'PYEOF'
 import json, re, sys
 formats = json.load(open(sys.argv[1]))
