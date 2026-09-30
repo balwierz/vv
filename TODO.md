@@ -690,7 +690,7 @@ be done first: it catches this whole bug class automatically.
 ### Low (28)
 
 **Bugs**
-- [ ] `gui/kde/thumbrender.cpp:58` — Thumbnail elision uses non-bold QFontMetrics for bold header text
+- [x] `gui/kde/thumbrender.cpp:58` — Thumbnail elision uses non-bold QFontMetrics for bold header text — the header is elided with a bold QFontMetrics (the font it is drawn in); no change where bold and regular advances are equal (Noto Sans Mono: 35 / 56 / 84 px either way at 40 / 60 / 90 px cells)
 - [ ] `main.cpp:1150` — emit_cell dims a genuine trailing U+2026 in cell data as if it were a truncation marker
 - [x] `main.cpp:1669` — Region integer parser silently accepts trailing garbage (e.g. 'chr1:-5-10') — fixed on `fix/audit-batch` (region int parser now rejects unconsumed trailing input via stoll's pos out-param, so 'chr1:5x' / 'chr1:-5-10' no longer silently parse; apply_region_modifiers validates -r up front and returns 'Invalid region …' instead of parse_region_list silently dropping the token into a whole-file query)
 - [x] `main.cpp:3107` — block_size of 16 MiB causes a hard parse failure when a single delimited line exceeds it — opening retries with 4× larger blocks (to 1 GiB); a long record later names `VV_CSV_BLOCK_MB`, the new block-size setting.

@@ -78,12 +78,17 @@ QImage vv_render_thumbnail(const QString& path, const QSize& target) try {
     QFont f("monospace", -1);
     f.setPixelSize(fpx);
     p.setFont(f);
-    QFontMetrics fm(f);
+    QFont fb = f;
+    fb.setBold(true);
+    // Elide with the metrics of the font the text is drawn in: where the bold
+    // face is wider (a synthesized bold, a proportional fallback), a header
+    // measured with the regular font overflowed its cell and was clipped
+    // mid-glyph instead of ending in "…".
+    const QFontMetrics fm(f), fmb(fb);
 
     auto drawText = [&](const QString& s, qreal x, qreal y, qreal w, bool bold) {
-        f.setBold(bold);
-        p.setFont(f);
-        QString t = fm.elidedText(s, Qt::ElideRight, (int)(w - 6));
+        p.setFont(bold ? fb : f);
+        QString t = (bold ? fmb : fm).elidedText(s, Qt::ElideRight, (int)(w - 6));
         p.drawText(QRectF(x + 3, y, w - 6, cellH),
                    Qt::AlignVCenter | Qt::AlignLeft, t);
     };
