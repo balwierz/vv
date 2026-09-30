@@ -21879,6 +21879,49 @@ struct TuiStart {
     bool             sort_desc = false;
 };
 
+// ── Line editing for the TUI's input bars (/ ? & :) ─────────────────────────
+//
+// One key applied to `text` with the cursor at byte offset `cur` (npos = end).
+// Text is UTF-8: ncurses hands a multi-byte character over as its bytes, each
+// inserted at the cursor in turn, and the cursor moves and deletes by whole
+// characters. Keys: Left / Right (Ctrl-B / Ctrl-F), Home / End (Ctrl-A /
+// Ctrl-E), Backspace, Delete (Ctrl-D), Ctrl-U (to line start), Ctrl-K (to
+// line end), Ctrl-W (the word before the cursor). Returns true when the key
+// was an edit or a cursor move.
+static bool line_edit_key(std::string& text, size_t& cur, int ch) {
+    if (cur > text.size()) cur = text.size();
+    auto cont = [&](size_t i) { return i < text.size() && ((unsigned char)text[i] & 0xC0) == 0x80; };
+    auto prev = [&](size_t i) { if (i == 0) return i; --i; while (i > 0 && cont(i)) --i; return i; };
+    auto next = [&](size_t i) { if (i >= text.size()) return text.size(); ++i; while (cont(i)) ++i; return i; };
+    switch (ch) {
+        case KEY_LEFT:  case 2:  cur = prev(cur); return true;
+        case KEY_RIGHT: case 6:  cur = next(cur); return true;
+        case KEY_HOME:  case 1:  cur = 0; return true;
+        case KEY_END:   case 5:  cur = text.size(); return true;
+        case KEY_BACKSPACE: case 127: case 8: {
+            size_t p = prev(cur);
+            text.erase(p, cur - p); cur = p; return true;
+        }
+        case KEY_DC: case 4:
+            text.erase(cur, next(cur) - cur); return true;
+        case 21: text.erase(0, cur); cur = 0; return true;              // Ctrl-U
+        case 11: text.erase(cur); return true;                          // Ctrl-K
+        case 23: {                                                      // Ctrl-W
+            size_t p = cur;
+            while (p > 0 && text[p - 1] == ' ') --p;
+            while (p > 0 && text[p - 1] != ' ') --p;
+            text.erase(p, cur - p); cur = p; return true;
+        }
+        default: break;
+    }
+    if (ch >= 32 && ch < 256 && ch != 127) {       // printable ASCII or a UTF-8 byte
+        text.insert(cur, 1, (char)ch);
+        ++cur;
+        return true;
+    }
+    return false;
+}
+
 class TableTUI {
     // Multiple files become tabs. `src_` always points at the currently
     // active tab's source; `sources_` owns them. The snapshot vector
@@ -22097,6 +22140,7 @@ class TableTUI {
     enum class FilterMode { None, Input };
     FilterMode                 filter_mode_   = FilterMode::None;  // input bar state
     std::string                filter_input_;        // text being typed
+    size_t                     filter_cur_ = std::string::npos;  // edit point (npos = end)
     std::string                filter_expr_str_;     // committed expression
     FilterExpr                 filter_fx_;           // compiled, valid when active
     bool                       filter_active_ = false;
@@ -22118,6 +22162,7 @@ class TableTUI {
     enum class CmdMode { None, Input };
     CmdMode                    cmd_mode_   = CmdMode::None;
     std::string                cmd_input_;          // text being typed
+    size_t                     cmd_cur_ = std::string::npos;
     std::string                cmd_err_;            // last parse error
 
     // Translate a display-row index to the underlying source-row when a
@@ -22133,6 +22178,7 @@ class TableTUI {
     // ── Search state ─────────────────────────────────────────────────────────
     SearchMode  search_mode_  = SearchMode::None;
     std::string search_input_;   // text being typed in the search bar
+    size_t      search_cur_ = std::string::npos;
     std::string search_query_;   // committed query (empty = no active search)
     std::string search_query_lc_;  // search_query_ lowercased once, for matching
     int64_t     search_row_   = -1;   // row of the focused match (-1 = none)
@@ -23111,36 +23157,43 @@ class TableTUI {
         }
     }
 
+    // An input bar on the bottom line: `prefix`, the text, then `err`, with
+    // the terminal cursor at the edit point. Widths are display columns, and
+    // text wider than the line scrolls so the cursor stays on screen.
+    void draw_input_bar(char prefix, const std::string& text, size_t cur,
+                        const std::string& err) {
+        if (cur > text.size()) cur = text.size();
+        const int avail = std::max(1, scr_c_ - 2);          // prefix + cursor cell
+        size_t from = 0;                                     // first byte shown
+        while ((int)display_width(text.substr(from, cur - from)) > avail) {
+            ++from;
+            while (from < text.size() && ((unsigned char)text[from] & 0xC0) == 0x80) ++from;
+        }
+        std::string shown = text.substr(from);
+        if (!err.empty()) shown += "    !! " + err;
+        std::string bar = std::string(1, prefix) + truncate(shown, scr_c_ - 1);
+        int w = (int)display_width(bar);
+        if (w < scr_c_) bar += std::string((size_t)(scr_c_ - w), ' ');
+        move(scr_r_ - 1, 0);
+        addstr(bar.c_str());
+        curs_set(1);
+        move(scr_r_ - 1, 1 + (int)display_width(text.substr(from, cur - from)));
+    }
+
     void draw_status(const std::vector<ColVis>& vc) {
         // ── Search-input mode: show a vim-style search bar ───────────────────
         if (search_mode_ == SearchMode::Input) {
-            char prefix = search_dir_forward_ ? '/' : '?';
-            std::string bar = std::string(1, prefix) + search_input_;
-            if ((int)bar.size() < scr_c_) bar += std::string(scr_c_ - (int)bar.size(), ' ');
-            mvaddnstr(scr_r_ - 1, 0, bar.c_str(), scr_c_);
-            // Position the cursor after the typed text
-            curs_set(1);
-            move(scr_r_ - 1, (int)search_input_.size() + 1);
+            draw_input_bar(search_dir_forward_ ? '/' : '?', search_input_, search_cur_, "");
             return;
         }
         // ── Filter-input mode: `&<expression>`; show parse error if any ─────
         if (filter_mode_ == FilterMode::Input) {
-            std::string bar = std::string("&") + filter_input_;
-            if (!filter_err_.empty()) bar += "    !! " + filter_err_;
-            if ((int)bar.size() < scr_c_) bar += std::string(scr_c_ - (int)bar.size(), ' ');
-            mvaddnstr(scr_r_ - 1, 0, bar.c_str(), scr_c_);
-            curs_set(1);
-            move(scr_r_ - 1, (int)filter_input_.size() + 1);
+            draw_input_bar('&', filter_input_, filter_cur_, filter_err_);
             return;
         }
         // ── Command-line input: `:command`; show parse error if any ─────────
         if (cmd_mode_ == CmdMode::Input) {
-            std::string bar = std::string(":") + cmd_input_;
-            if (!cmd_err_.empty()) bar += "    !! " + cmd_err_;
-            if ((int)bar.size() < scr_c_) bar += std::string(scr_c_ - (int)bar.size(), ' ');
-            mvaddnstr(scr_r_ - 1, 0, bar.c_str(), scr_c_);
-            curs_set(1);
-            move(scr_r_ - 1, (int)cmd_input_.size() + 1);
+            draw_input_bar(':', cmd_input_, cmd_cur_, cmd_err_);
             return;
         }
         curs_set(0);
@@ -24241,6 +24294,7 @@ private:
             {"y",             "copy the cursor's cell to the clipboard (OSC52)"},
             {"T",             "pick a color theme (saved to ~/.config/vv/config)"},
             {":",             "command line: :N (jump), :q, :theme NAME, :slice N"},
+            {"in / & : bars", "←→ ^B ^F  Home End ^A ^E  Del ^D  ^U ^K ^W (word); UTF-8"},
             {"Tab  Shift-Tab","next / previous tab (with multiple files)"},
             {"[  ]",          "step slice axis (NPZ 3-D+ arrays only)"},
             {"Enter",         "open detail pane for the cursor's row"},
@@ -24959,10 +25013,8 @@ public:
                 } else if (ch == 27) {    // Esc — cancel
                     search_mode_  = SearchMode::None;
                     search_input_.clear();
-                } else if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
-                    if (!search_input_.empty()) search_input_.pop_back();
-                } else if (ch >= 32 && ch < 127) {
-                    search_input_ += (char)ch;
+                } else {
+                    line_edit_key(search_input_, search_cur_, ch);
                 }
                 continue;
             }
@@ -25000,11 +25052,7 @@ public:
                     filter_mode_ = FilterMode::None;
                     filter_input_.clear();
                     filter_err_.clear();
-                } else if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
-                    if (!filter_input_.empty()) filter_input_.pop_back();
-                    filter_err_.clear();
-                } else if (ch >= 32 && ch < 127) {
-                    filter_input_ += (char)ch;
+                } else if (line_edit_key(filter_input_, filter_cur_, ch)) {
                     filter_err_.clear();
                 }
                 continue;
@@ -25023,11 +25071,7 @@ public:
                     cmd_mode_ = CmdMode::None;
                     cmd_input_.clear();
                     cmd_err_.clear();
-                } else if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
-                    if (!cmd_input_.empty()) cmd_input_.pop_back();
-                    cmd_err_.clear();
-                } else if (ch >= 32 && ch < 127) {
-                    cmd_input_ += (char)ch;
+                } else if (line_edit_key(cmd_input_, cmd_cur_, ch)) {
                     cmd_err_.clear();
                 }
                 continue;
@@ -25213,6 +25257,7 @@ public:
                     // on Enter, abort with Esc.
                     filter_mode_   = FilterMode::Input;
                     filter_input_  = filter_expr_str_;  // pre-fill with current
+                    filter_cur_    = std::string::npos;
                     filter_err_.clear();
                     break;
                 case ':':
@@ -25221,6 +25266,7 @@ public:
                     // stay in the bar so the user can edit and retry.
                     cmd_mode_  = CmdMode::Input;
                     cmd_input_.clear();
+                    cmd_cur_   = std::string::npos;
                     cmd_err_.clear();
                     break;
                 case 'y': {
@@ -25252,11 +25298,13 @@ public:
                 case '/':
                     search_mode_  = SearchMode::Input;
                     search_input_.clear();
+                    search_cur_   = std::string::npos;
                     search_dir_forward_ = true;
                     break;
                 case '?':
                     search_mode_  = SearchMode::Input;
                     search_input_.clear();
+                    search_cur_   = std::string::npos;
                     search_dir_forward_ = false;
                     break;
                 case 'n':

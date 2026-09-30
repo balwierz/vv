@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Line editing and UTF-8 in the TUI's `/ ? & :` bars.** The input bars
+  took ASCII only (a UTF-8 character was dropped), appended at the end, and
+  Backspace removed one byte. They now edit at a cursor in whole UTF-8
+  characters — Left / Right (Ctrl-B / F), Home / End (Ctrl-A / E),
+  Backspace, Delete (Ctrl-D), Ctrl-U / Ctrl-K to the start / end, Ctrl-W the
+  previous word — so `name == "café"` can be typed and a typo fixed without
+  retyping; text wider than the screen scrolls with the cursor.
 - **AnnData storage layout in the summary tab.** How `X`, `raw.X` and each
   layer are stored, read from HDF5 metadata alone (milliseconds even on a
   network mount): file size; encoding and version, stored values per row,

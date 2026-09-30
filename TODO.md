@@ -415,7 +415,7 @@ work that touches the same code:
 - [x] **idxstats in `--contigs`, index-backed `--count`** (S+) — `feat/index-stats`.
 - [x] **`--seq-stats` for FASTA / FASTQ** (S) — `feat/seq-stats`.
 - [x] **TSV dialects: `.bedpe`, `.pairs`, `.gct`, `.maf`** (S–M) — `feat/tsv-dialects`.
-- [ ] **UTF-8 and line editing in the TUI `/ & :` bars** (S, then M).
+- [x] **UTF-8 and line editing in the TUI `/ & :` bars** (S, then M) — `feat/tui-line-editing` (history is not included).
 - [ ] **`--tags` for PAF** (M).
 - [ ] **VCF/BCF per-sample FORMAT fields** (L) — named BCF sample columns
   first.

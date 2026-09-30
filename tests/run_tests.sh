@@ -3990,6 +3990,20 @@ else
     echo "  skip  tui_freq_sheet (python3 not found)"
 fi
 
+# The / & : input bars edit at a cursor (Left / Right, Home / End, Ctrl-A / E,
+# Backspace / Delete, Ctrl-U / K / W) in whole UTF-8 characters; they took
+# ASCII only, appended at the end, and Backspace removed one byte. On the
+# previous build every check fails.
+if command -v python3 >/dev/null 2>&1; then
+    if run_with_timeout 180 python3 "$HERE/tui_line_edit_check.py" "$VV" "$DATA/tiny.parquet" "$TMP"; then
+        PASS=$((PASS+1)); echo "  ok    tui_line_edit"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_line_edit"
+    fi
+else
+    echo "  skip  tui_line_edit (python3 not found)"
+fi
+
 # `/` search, n / N and :N move the cell cursor to their target. They used to
 # move only the viewport, which the next draw scrolled back to the cursor, so
 # nothing past the first screen was reachable. Verified discriminating: on the
