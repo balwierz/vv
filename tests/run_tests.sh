@@ -185,6 +185,39 @@ assert_exit_code "mtx_entry_count_mismatch" 1 "$VV" --tsv "$MTX/nnz.mtx"
 assert_exit_code "mtx_region_refused"      1 "$VV" -r chr1:1-2 "$MTX/int.mtx"
 rm -rf "$MTX"
 
+# PLINK. A PLINK 1 .bed (magic 6c 1b) was read as a one-column BED of hex
+# bytes; it and a PLINK 2 .pgen are refused with the plink2 export command.
+# The variant / sample tables open with PLINK 2's column names: .bim / .fam
+# have no header row (.fam is space-separated as PLINK 1 writes it), .pvar /
+# .psam take their # header line, and without one use .bim / .fam order.
+PL="$TMP/plink"; mkdir -p "$PL"
+printf '\x6c\x1b\x01\x1b\xff' > "$PL/g.bed"
+printf 'x' > "$PL/g.pgen"
+printf '1\trs1\t0\t100\tA\tG\n1\trs2\t0.5\t200\tC\tT\n' > "$PL/g.bim"
+gzip -c "$PL/g.bim" > "$PL/gz.bim.gz"
+printf 'F1 I1 0 0 1 -9\nF2 I2 0 0 2 1\n' > "$PL/g.fam"
+printf '##fileformat=PVARv1.0\n#CHROM\tPOS\tID\tREF\tALT\n1\t100\trs1\tA\tG\n' > "$PL/g.pvar"
+printf '1\trs1\t100\tG\tA\n1\trs2\t200\tT\tC\n' > "$PL/nohdr.pvar"
+printf '#IID\tSEX\nI1\t1\nI2\t2\n' > "$PL/g.psam"
+printf 'F1\tI1\t0\t0\t1\t-9\n' > "$PL/nohdr.psam"
+assert_exit_code "plink_bed_refused"  1 "$VV" "$PL/g.bed"
+PLB=$("$VV" "$PL/g.bed" 2>&1)
+assert_contains  "plink_bed_says_what" "$PLB" "PLINK 1 .bed genotype file"
+assert_contains  "plink_bed_command"   "$PLB" "plink2 --bfile $PL/g --export vcf bgz --out $PL/g"
+assert_exit_code "plink_pgen_refused" 1 "$VV" "$PL/g.pgen"
+assert_contains  "plink_pgen_command" "$("$VV" "$PL/g.pgen" 2>&1)" "plink2 --pfile $PL/g "
+for c in "g.bim|CHROM ID CM POS ALT REF |2" "gz.bim.gz|CHROM ID CM POS ALT REF |2" \
+         "g.fam|FID IID PAT MAT SEX PHENO1 |2" "g.pvar|CHROM POS ID REF ALT |1" \
+         "nohdr.pvar|CHROM ID POS ALT REF |2" "g.psam|IID SEX |2" \
+         "nohdr.psam|FID IID PAT MAT SEX PHENO1 |1"; do
+    IFS='|' read -r f cols n <<<"$c"
+    assert_eq_file_inline "plink_columns [$f]" "$("$VV" --list-columns "$PL/$f" | tr '\n' ' ')" "$cols"
+    assert_eq_file_inline "plink_rows [$f]"    "$("$VV" --count "$PL/$f")" "$n"
+done
+assert_eq_file_inline "plink_fam_first_row" \
+    "$("$VV" --tsv --no-header -n 1 "$PL/g.fam" | tr '\t' ' ')" "F1 I1 0 0 1 -9"
+rm -rf "$PL"
+
 # A 10x Genomics / STARsolo matrix directory (matrix.mtx + barcodes.tsv +
 # features.tsv or v2 genes.tsv) opens as matrix / features / barcodes tabs, the
 # matrix entries labelled with their feature and barcode, instead of failing
@@ -1482,7 +1515,9 @@ allow = {'.gz', '.zst', '.zstd', '.bai', '.csi', '.crai', '.tbi', '.fai', '.gzi'
          # Recognised ONLY to produce a better error than the generic one.
          # Deliberately absent from the registry: advertising a format vv
          # cannot open is the thing this check exists to prevent.
-         '.fods'}
+         '.fods',
+         # A PLINK 2 genotype file: refused with the plink2 export command.
+         '.pgen'}
 seen = re.findall(r'fends_ci\([^,]+,\s*"([^"]+)"', src)
 bad = sorted({e for e in seen
               if e.lower().startswith('.')

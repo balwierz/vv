@@ -404,7 +404,7 @@ work that touches the same code:
   a note; also stop htslib's `[E::idx_find_and_load]` line leaking to stderr.
 - [x] **TUI frequency sheet `F`** (M) — `feat/tui-freq-sheet` — value counts of the cursor column over
   the filtered rows; Enter filters to the value.
-- [ ] **PLINK `.bed` refusal** (S) — magic `6c 1b 01` → clear error with the
+- [x] **PLINK `.bed` refusal** (S) — `feat/plink-files` — magic `6c 1b 01` → clear error with the
   plink2 export command; named `.bim/.fam/.pvar/.psam` columns.
 - [ ] **Arrow IPC stream + columnar formats on stdin / pipes** (M).
 - [ ] **idxstats in `--contigs`, index-backed `--count`** (S+).

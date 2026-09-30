@@ -192,6 +192,14 @@ for chromosome-scale references; use \fBtwoBitToFa\fR for that.
 .IP \(bu 2
 \fB.paf\fR, \fB.paf.gz\fR \(en minimap2 pairwise alignments
 .IP \(bu 2
+\fB.bim\fR, \fB.fam\fR, \fB.pvar\fR, \fB.psam\fR \(en PLINK variant and
+sample tables, with PLINK 2's column names: \fB.bim\fR as \fBCHROM ID CM
+POS ALT REF\fR and \fB.fam\fR as \fBFID IID PAT MAT SEX PHENO1\fR (no
+header row), \fB.pvar\fR / \fB.psam\fR from their \fB#\fR header line. A
+PLINK 1 \fB.bed\fR (recognised by its magic bytes) or PLINK 2 \fB.pgen\fR
+genotype file is refused with the \fBplink2 \-\-export vcf\fR command
+that converts it.
+.IP \(bu 2
 \fB.mtx\fR, \fB.mtx.gz\fR \(en MatrixMarket sparse matrix (as written by
 Cell Ranger, STARsolo, \fBscipy.io.mmwrite\fR and R \fBMatrix::writeMM\fR),
 listed one stored entry per row as \fBrow\fR, \fBcol\fR, \fBvalue\fR

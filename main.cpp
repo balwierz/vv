@@ -677,6 +677,8 @@ static const FormatInfo kFormats[] = {
    true,  false, false, true,  false, ""},
   {"MatrixMarket (sparse matrix)", ".mtx", "DelimitedSource",
    true,  false, false, true,  false, ""},
+  {"PLINK variant / sample tables", ".bim .fam .pvar .psam", "DelimitedSource",
+   true,  false, false, true,  false, ""},
   {"FASTA", ".fa .fasta .fna .faa .ffn .frn", "FastxSource",
    true,  false, false, true,  false, ""},
   {"FASTQ", ".fq .fastq", "FastxSource",
@@ -819,6 +821,9 @@ static void print_usage(const char* prog) {
         "  .bcf                        binary VCF (htslib)\n"
         "  .paf  .paf.gz               minimap2 pairwise alignments\n"
         "  .mtx  .mtx.gz               MatrixMarket sparse matrix (row, col, value; 0-based)\n"
+        "  .bim  .fam  .pvar  .psam    PLINK variant / sample tables (a PLINK .bed /\n"
+        "                              .pgen genotype file is refused, with the\n"
+        "                              plink2 command that exports it to VCF)\n"
         "  .json  .ndjson  .jsonl      JSON: an array of objects or newline-delimited\n"
         "                              (plus .gz / .zst; nested → struct/list columns)\n"
         "  .txt  .text  .log           plain text (also .gz / .zst; viewed like less -SN,\n"
@@ -6874,6 +6879,31 @@ public:
     static std::string open(const std::string& path, DelimKind kind,
                              std::unique_ptr<DelimitedSource>* out) {
         return open(path, kind, /*region=*/"", out);
+    }
+    // The first line of `path` that does not start with "##" (decompressed
+    // for .gz / .zst); "" when there is none or the file cannot be read.
+    static std::string first_line_after_meta(const std::string& path) {
+        const bool is_gz = fends_ci(path, ".gz") || fends_ci(path, ".zst") ||
+                           fends_ci(path, ".zstd");
+        std::shared_ptr<arrow::io::ReadableFile> raw;
+        std::shared_ptr<arrow::io::InputStream>  input;
+        if (!open_stream(path, is_gz, &raw, &input).empty()) return "";
+        LineReader lr(input);
+        std::string line;
+        for (;;) {
+            bool ok = lr.read_line(&line);
+            if (line.rfind("##", 0) != 0) return line;
+            if (!ok) return "";
+        }
+    }
+    // Give the leading columns of a file read headerless their names (the
+    // rest keep f<i>) and note in the footer what the file is.
+    void apply_column_names(const std::vector<std::string>& names, std::string note) {
+        arrow::FieldVector fields = schema_->fields();
+        for (size_t i = 0; i < fields.size() && i < names.size(); ++i)
+            fields[i] = fields[i]->WithName(names[i]);
+        schema_ = arrow::schema(fields);
+        format_note_ = std::move(note);
     }
     // Open a delimited source from an already-built InputStream.
     // `path_label` is used for error messages and as the displayed file name
@@ -17952,6 +17982,48 @@ static int tenx_sidecar_kind(const std::string& path) {
     return 0;
 }
 
+// PLINK files. The genotypes (.bed, PLINK 1; .pgen, PLINK 2) are binary and
+// vv does not decode them; their variant and sample tables are text:
+//   .bim   CHROM ID CM POS ALT REF          no header (allele 1 is ALT to plink2)
+//   .fam   FID IID PAT MAT SEX PHENO1       no header
+//   .pvar  a VCF-like #CHROM header line; without one, .bim column order
+//   .psam  a #FID / #IID header line; without one, .fam column order
+enum class PlinkTable { None, Bim, Fam, Pvar, Psam };
+static PlinkTable plink_table_kind(const std::string& det) {
+    auto is = [&](const char* ext) {
+        return fends_ci(det, ext) || fends_ci(det, (std::string(ext) + ".gz").c_str());
+    };
+    if (is(".bim"))  return PlinkTable::Bim;
+    if (is(".fam"))  return PlinkTable::Fam;
+    if (is(".pvar")) return PlinkTable::Pvar;
+    if (is(".psam")) return PlinkTable::Psam;
+    return PlinkTable::None;
+}
+
+// True when `path` starts with PLINK 1's .bed magic 0x6c 0x1b (then 0x01,
+// variant-major, or 0x00, sample-major). A text BED cannot start with it:
+// 0x1b is ESC.
+static bool is_plink_bed(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    unsigned char m[2] = {0, 0};
+    return f.read(reinterpret_cast<char*>(m), 2) && m[0] == 0x6c && m[1] == 0x1b;
+}
+
+// The refusal for a PLINK genotype file, with the plink2 command that
+// exports it to a VCF vv reads and the sidecars that vv reads as they are.
+static std::string plink_genotype_refusal(const std::string& path, bool pgen) {
+    std::filesystem::path p(path);
+    std::string stem = (p.parent_path() / p.stem()).string();
+    if (stem.find_first_of(" '\"$`\\") != std::string::npos) stem = "'" + stem + "'";
+    const std::string name = p.stem().string();
+    return std::string("a PLINK ") + (pgen ? "2 .pgen" : "1 .bed") + " genotype file (binary), " +
+           (pgen ? "not a table" : "not a BED interval file") +
+           "; vv does not decode genotypes. Export them with\n  plink2 " +
+           (pgen ? "--pfile " : "--bfile ") + stem + " --export vcf bgz --out " + stem +
+           "\nand open the .vcf.gz. Its variants (" + name + (pgen ? ".pvar" : ".bim") +
+           ") and samples (" + name + (pgen ? ".psam" : ".fam") + ") are tables vv opens.";
+}
+
 std::string TenxDirSource::load_table(const std::string& path, const Config& cfg,
                                       std::shared_ptr<arrow::Table>* out) {
     std::unique_ptr<TabularSource> src;
@@ -18399,6 +18471,12 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         dk = DelimKind::Mtx;
     } else if (fends_ci(det, ".paf") || fends_ci(det, ".paf.gz")) {
         dk = DelimKind::PAF;
+    } else if (fends_ci(det, ".pgen")) {
+        return plink_genotype_refusal(path, /*pgen=*/true);
+    } else if (fends_ci(det, ".bed") && is_plink_bed(path)) {
+        return plink_genotype_refusal(path, /*pgen=*/false);
+    } else if (plink_table_kind(det) != PlinkTable::None) {
+        dk = DelimKind::TSV;
     } else if (fends_ci(det, ".bed")        || fends_ci(det, ".bed.gz")
             || fends_ci(det, ".narrowPeak") || fends_ci(det, ".narrowPeak.gz")
             || fends_ci(det, ".broadPeak")  || fends_ci(det, ".broadPeak.gz")
@@ -18485,12 +18563,42 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
     // Read them headerless and name the columns, unless --header was given.
     const int tenx = (dk == DelimKind::TSV && cfg.header == HeaderMode::Auto)
                          ? tenx_sidecar_kind(path) : 0;
+    // PLINK tables: .bim / .fam have no header row, and neither has a .pvar /
+    // .psam whose first line (after ## meta lines) is not a # header. PLINK 1
+    // writes .fam space-separated, so the separator follows the first line.
+    const PlinkTable plink = dk == DelimKind::TSV ? plink_table_kind(det) : PlinkTable::None;
+    std::vector<std::string> plink_names;
+    std::string plink_note;
+    char delim_override = 0;
+    if (plink != PlinkTable::None) {
+        const std::string first = DelimitedSource::first_line_after_meta(path);
+        const bool headed = (plink == PlinkTable::Pvar || plink == PlinkTable::Psam) &&
+                            !first.empty() && first[0] == '#';
+        if (!headed) {
+            delim_override = first.find('\t') != std::string::npos ? '\t' : ' ';
+            const bool bim_order = plink == PlinkTable::Bim || plink == PlinkTable::Pvar;
+            if (bim_order) {
+                std::vector<std::string> f;
+                split_delimited_line(first, delim_override, &f);
+                plink_names = f.size() == 5
+                    ? std::vector<std::string>{"CHROM", "ID", "POS", "ALT", "REF"}
+                    : std::vector<std::string>{"CHROM", "ID", "CM", "POS", "ALT", "REF"};
+                plink_note = std::string("PLINK ") + (plink == PlinkTable::Bim ? ".bim" : ".pvar") +
+                             " (no header row; allele 1 is ALT, allele 2 REF, as plink2 reads them)";
+            } else {
+                plink_names = {"FID", "IID", "PAT", "MAT", "SEX", "PHENO1"};
+                plink_note = std::string("PLINK ") + (plink == PlinkTable::Fam ? ".fam" : ".psam") +
+                             " (no header row)";
+            }
+        }
+    }
+    const bool headerless = tenx || (!plink_names.empty() && cfg.header == HeaderMode::Auto);
     std::unique_ptr<DelimitedSource> src;
-    std::string err = DelimitedSource::open(path, dk, cfg.region, &src,
-                                            /*delim_override=*/0,
-                                            tenx ? HeaderMode::Off : cfg.header);
+    std::string err = DelimitedSource::open(path, dk, cfg.region, &src, delim_override,
+                                            headerless ? HeaderMode::Off : cfg.header);
     if (!err.empty()) return err;
     if (tenx) src->apply_tenx_sidecar(tenx);
+    if (headerless && !plink_names.empty()) src->apply_column_names(plink_names, plink_note);
     // ENCODE peak-family variants ride on top of DelimKind::BED — the
     // dispatch detected them by extension; apply variant-specific naming
     // now that the schema is materialised.

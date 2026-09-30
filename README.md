@@ -244,6 +244,7 @@ against it in CI, so this list cannot drift from the code.
 | Apache Parquet    | `.parquet`                                                 |
 | Arrow IPC, Feather| `.arrow`, `.feather`                                       |
 | LociSSD           | `.lociss` (sorted-interval Parquet; `MaxEndSoFar` auto-hidden) |
+| PLINK             | `.bim`, `.fam`, `.pvar`, `.psam` (plus `.gz` / `.zst`) — variant and sample tables with PLINK 2's column names (`.bim`: `CHROM ID CM POS ALT REF`; `.fam`: `FID IID PAT MAT SEX PHENO1`; `.pvar` / `.psam` from their `#` header). A PLINK 1 `.bed` (by its magic bytes) or PLINK 2 `.pgen` genotype file is refused with the `plink2 --export vcf bgz` command that converts it. |
 | Sparse matrices   | `.mtx` / `.mtx.gz` (MatrixMarket coordinate, e.g. Cell Ranger / STARsolo `matrix.mtx.gz`), listed as `row`, `col`, `value` with 0-based indices; shape and entry count in the footer. A 10x Genomics / STARsolo matrix directory (`matrix.mtx` + `barcodes.tsv` + `features.tsv`/`genes.tsv`) opens as `matrix` / `features` / `barcodes` tabs, the entries labelled with feature and barcode. |
 | Sequence alignments | `.bam`, `.cram`, `.sam`, `.paf` / `.paf.gz` (minimap2). `--tags NM,AS,RG` adds a typed column per optional aux tag (filterable). |
 | Variant calls     | `.vcf`, `.vcf.gz`, `.bcf` (binary VCF via htslib)          |
