@@ -989,7 +989,7 @@ static void print_usage(const char* prog) {
         "  --decode-pileup     mpileup only: replace the packed bases/quals\n"
         "                      columns with typed per-allele counts\n"
         "                      (A, C, G, T, N, del, ins, fwd, rev, mean_qual)\n"
-        "  --tags <list>       BAM/CRAM/SAM only: add one column per named aux\n"
+        "  --tags <list>       BAM/CRAM/SAM and PAF: add one column per named aux\n"
         "                      tag (comma-separated 2-char SAM tags, e.g.\n"
         "                      --tags NM,AS,RG). Column type follows the tag's\n"
         "                      SAM type (i->int, f->float, else string), so\n"
@@ -5407,6 +5407,78 @@ public:
     }
 };
 
+// PAF with --tags: each line keeps its 12 mandatory fields and gains one
+// field per requested tag — the value of the optional `TG:type:value` field
+// named TG, or empty when the line has none (read as null).
+class PafTagsStream : public arrow::io::InputStream {
+    std::shared_ptr<arrow::io::InputStream> inner_;
+    LineReader               lr_;
+    std::vector<std::string> tags_;
+    std::string              out_buf_;
+    size_t                   out_pos_    = 0;
+    bool                     inner_done_ = false;
+
+    bool refill() {
+        out_buf_.clear(); out_pos_ = 0;
+        std::string line;
+        while (line.empty()) {
+            bool ok = lr_.read_line(&line);
+            if (!ok && line.empty()) { inner_done_ = true; return false; }
+            if (!ok) inner_done_ = true;
+        }
+        std::vector<std::string_view> f;
+        for (size_t a = 0;;) {
+            size_t b = line.find('\t', a);
+            f.emplace_back(std::string_view(line).substr(a, b == std::string::npos ? b : b - a));
+            if (b == std::string::npos) break;
+            a = b + 1;
+        }
+        for (size_t i = 0; i < 12; ++i) {
+            if (i) out_buf_ += '\t';
+            if (i < f.size()) out_buf_ += f[i];
+        }
+        for (const auto& t : tags_) {
+            out_buf_ += '\t';
+            for (size_t i = 12; i < f.size(); ++i)
+                if (f[i].size() >= 5 && f[i].substr(0, 2) == t && f[i][2] == ':' && f[i][4] == ':') {
+                    out_buf_ += f[i].substr(5);
+                    break;
+                }
+        }
+        out_buf_ += '\n';
+        return true;
+    }
+
+public:
+    PafTagsStream(std::shared_ptr<arrow::io::InputStream> inner, std::vector<std::string> tags)
+        : inner_(inner), lr_(inner), tags_(std::move(tags)) {}
+    arrow::Status Close() override { return inner_->Close(); }
+    bool closed() const override { return inner_->closed(); }
+    arrow::Result<int64_t> Tell() const override {
+        return arrow::Status::NotImplemented("PafTagsStream::Tell");
+    }
+    arrow::Result<int64_t> Read(int64_t n, void* buf) override {
+        uint8_t* p = static_cast<uint8_t*>(buf);
+        int64_t total = 0;
+        while (n > 0) {
+            if (out_pos_ >= out_buf_.size()) {
+                if (inner_done_ || !refill()) break;
+            }
+            int64_t avail = (int64_t)(out_buf_.size() - out_pos_);
+            int64_t take  = std::min(n, avail);
+            std::memcpy(p, out_buf_.data() + out_pos_, (size_t)take);
+            p += take; out_pos_ += (size_t)take; n -= take; total += take;
+        }
+        return total;
+    }
+    arrow::Result<std::shared_ptr<arrow::Buffer>> Read(int64_t n) override {
+        ARROW_ASSIGN_OR_RAISE(auto buf, arrow::AllocateResizableBuffer(n));
+        ARROW_ASSIGN_OR_RAISE(int64_t actual, Read(n, buf->mutable_data()));
+        ARROW_RETURN_NOT_OK(buf->Resize(actual, false));
+        return std::shared_ptr<arrow::Buffer>(std::move(buf));
+    }
+};
+
 // Wraps an InputStream so every line's fields are separated by exactly one
 // space: runs of spaces / tabs collapse to one, leading and trailing whitespace
 // is dropped, and blank lines are skipped. MatrixMarket bodies are "separated by
@@ -6731,6 +6803,8 @@ class DelimitedSource : public TabularSource {
     char                                  delimiter_;
     DelimKind                             kind_;
     TsvDialect                            dialect_ = TsvDialect::None;
+    std::vector<std::string>              paf_tags_;     // --tags on a PAF
+    std::vector<char>                     paf_tag_types_; // SAM type of each (i f A Z …)
     std::shared_ptr<arrow::Schema>        schema_;
     std::vector<std::string>              preamble_lines_;
     int                                   bed_level_ = 3; // detected BED standard cols (3..9)
@@ -7014,6 +7088,36 @@ public:
             if (!ok) return "";
         }
     }
+    // The SAM type character of each tag in `tags`, from its first occurrence
+    // in the first 1000 lines of a PAF ('Z' when it does not occur there).
+    static std::vector<char> paf_tag_types(const std::string& path,
+                                           const std::vector<std::string>& tags) {
+        std::vector<char> types(tags.size(), 0);
+        const bool is_gz = fends_ci(path, ".gz") || fends_ci(path, ".bgz") ||
+                           fends_ci(path, ".zst") || fends_ci(path, ".zstd");
+        std::shared_ptr<arrow::io::ReadableFile> raw;
+        std::shared_ptr<arrow::io::InputStream>  input;
+        if (open_stream(path, is_gz, &raw, &input).empty()) {
+            LineReader lr(input);
+            std::string line;
+            for (int n = 0; n < 1000 && (lr.read_line(&line) || !line.empty()); ++n) {
+                for (size_t a = 0, k = 0;; ++k) {
+                    size_t b = line.find('\t', a);
+                    if (k >= 12) {
+                        std::string_view f = std::string_view(line).substr(a, b == std::string::npos ? b : b - a);
+                        for (size_t t = 0; t < tags.size(); ++t)
+                            if (!types[t] && f.size() >= 5 && f.substr(0, 2) == tags[t] && f[2] == ':' && f[4] == ':')
+                                types[t] = f[3];
+                    }
+                    if (b == std::string::npos) break;
+                    a = b + 1;
+                }
+                line.clear();
+            }
+        }
+        for (auto& t : types) if (!t) t = 'Z';
+        return types;
+    }
     // The first line of `path` (decompressed for .gz / .zst); "" if unreadable.
     static std::string first_line_after_meta_raw(const std::string& path) {
         const bool is_gz = fends_ci(path, ".gz") || fends_ci(path, ".bgz") || fends_ci(path, ".zst") ||
@@ -7066,12 +7170,14 @@ public:
                              std::unique_ptr<DelimitedSource>* out,
                              char delim_override = 0,
                              HeaderMode header_mode = HeaderMode::Auto,
-                             TsvDialect dialect = TsvDialect::None) {
+                             TsvDialect dialect = TsvDialect::None,
+                             const std::vector<std::string>& paf_tags = {}) {
         std::string err;
         for (int64_t block = csv_block_bytes();; block *= 4) {
             const int64_t saved = csv_block_override;
             csv_block_override = block;
-            err = open_once(path, kind, region, out, delim_override, header_mode, dialect);
+            err = open_once(path, kind, region, out, delim_override, header_mode, dialect,
+                            paf_tags);
             csv_block_override = saved;
             if (err.find("straddling object") == std::string::npos || block >= ((int64_t)1 << 30))
                 break;
@@ -7083,11 +7189,14 @@ public:
                              const std::string& region,
                              std::unique_ptr<DelimitedSource>* out,
                              char delim_override, HeaderMode header_mode,
-                             TsvDialect dialect) {
+                             TsvDialect dialect,
+                             const std::vector<std::string>& paf_tags) {
         auto self = std::make_unique<DelimitedSource>();
         self->path_      = path;
         self->kind_      = kind;
         self->dialect_   = dialect;
+        self->paf_tags_  = paf_tags;
+        if (!paf_tags.empty()) self->paf_tag_types_ = paf_tag_types(path, paf_tags);
         self->header_mode_ = header_mode;
         self->delimiter_ = delim_override ? delim_override
                                           : (kind == DelimKind::CSV ? ',' : kind == DelimKind::Mtx ? ' ' : '\t');
@@ -7300,7 +7409,12 @@ private:
                 col_names = {"qname","qlen","qstart","qend","strand",
                              "tname","tlen","tstart","tend",
                              "nmatch","alen","mapq"};
-                input = std::make_shared<TruncateFieldsStream>(input, 12);
+                if (self->paf_tags_.empty()) {
+                    input = std::make_shared<TruncateFieldsStream>(input, 12);
+                } else {
+                    input = std::make_shared<PafTagsStream>(input, self->paf_tags_);
+                    for (const auto& t : self->paf_tags_) col_names.push_back(t);
+                }
                 put_back.clear();
                 break;
             }
@@ -7392,8 +7506,15 @@ private:
         if (kind == DelimKind::CSV || kind == DelimKind::TSV)
             force_string = detect_leading_zero_columns(path, is_gz,
                                                        self->delimiter_, col_names);
-        bool strings_nullable = (kind == DelimKind::CSV || kind == DelimKind::TSV);
+        bool strings_nullable = (kind == DelimKind::CSV || kind == DelimKind::TSV) ||
+                                !self->paf_tags_.empty();    // a PAF record without the tag
         std::vector<std::pair<std::string, std::shared_ptr<arrow::DataType>>> col_types;
+        // PAF tag columns take the tag's SAM type: i -> int64, f -> double, else text.
+        for (size_t t = 0; t < self->paf_tags_.size(); ++t) {
+            const char ty = t < self->paf_tag_types_.size() ? self->paf_tag_types_[t] : 'Z';
+            col_types.push_back({self->paf_tags_[t], ty == 'i' ? arrow::int64()
+                                                    : ty == 'f' ? arrow::float64() : arrow::utf8()});
+        }
         if (kind == DelimKind::Mtx) {
             col_types = {{"row", arrow::int64()}, {"col", arrow::int64()}};
             if (self->mtx_field_ == "integer") col_types.push_back({"value", arrow::int64()});
@@ -18844,10 +18965,10 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
     // alignment records).
     if (!cfg.bam_tags.empty()) {
         bool is_aln = fends_ci(path, ".bam") || fends_ci(path, ".cram") ||
-                      fends_ci(path, ".sam");
+                      fends_ci(path, ".sam") || fends_ci(det, ".paf") || fends_ci(det, ".paf.gz");
         if (!is_aln)
             return "'" + path + "': --tags applies to BAM/CRAM/SAM alignment "
-                   "files (a read's optional NM/AS/RG/… aux tags)";
+                   "files and PAF (a record's optional NM/AS/tp/… tags)";
         if (cfg.pileup)
             return "--tags cannot be combined with --pileup — pileup rows are "
                    "per-base counts, not alignment records";
@@ -19370,9 +19491,16 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
     }
     const bool headerless = tenx || (!plink_names.empty() && cfg.header == HeaderMode::Auto);
     const TsvDialect dialect = dk == DelimKind::TSV ? tsv_dialect_of(det) : TsvDialect::None;
+    std::vector<std::string> paf_tags;
+    if (dk == DelimKind::PAF && !cfg.bam_tags.empty()) {
+        std::string terr;
+        paf_tags = parse_bam_tag_list(cfg.bam_tags, &terr);
+        if (!terr.empty()) return terr;
+    }
     std::unique_ptr<DelimitedSource> src;
     std::string err = DelimitedSource::open(path, dk, cfg.region, &src, delim_override,
-                                            headerless ? HeaderMode::Off : cfg.header, dialect);
+                                            headerless ? HeaderMode::Off : cfg.header, dialect,
+                                            paf_tags);
     if (!err.empty()) return err;
     // BEDPE has no header row unless it starts with a "#chrom1 …" line (read
     // as the header); without one, name the bedtools columns.

@@ -142,7 +142,7 @@ _vv() {
         '--text[Read the file as plain text whatever its extension]' \
         '--expand+[Unpack a packed key=value column into real columns]:column:_vv_column' \
         '--sort+[Order rows by a column before output (COL or COL:desc)]:column:_vv_column' \
-        '--tags+[BAM/CRAM/SAM: add a typed column per aux tag (comma-separated, e.g. NM,AS,RG)]:tags:' \
+        '--tags+[BAM/CRAM/SAM/PAF: add a typed column per aux tag (comma-separated, e.g. NM,AS,RG)]:tags:' \
         '--formats[Print the supported-format table and exit]' \
         '--list-columns[Print column names, one per line, and exit]' \
         '--list-tabs[Print component tab names and exit]' \

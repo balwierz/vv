@@ -140,7 +140,7 @@ complete -c vv -c vh -l min-mapq -x        -d '--pileup: skip reads below this m
 complete -c vv -c vh -l min-bq -x          -d '--pileup: drop bases below this base quality (default 13)'
 complete -c vv -c vh -l count-orphans      -d '--pileup: keep paired reads that are not properly paired'
 complete -c vv -c vh -l ignore-overlaps    -d '--pileup: no mate-overlap quality merging'
-complete -c vv -c vh -l tags -x            -d 'BAM/CRAM/SAM: add a typed column per aux tag (comma-separated, e.g. NM,AS,RG)'
+complete -c vv -c vh -l tags -x            -d 'BAM/CRAM/SAM/PAF: add a typed column per aux tag (comma-separated, e.g. NM,AS,RG)'
 complete -c vv -c vh -s f -l fasta -r -F   -d 'reference FASTA (.fai): --pileup ref column + ./, notation, or CRAM decoding'
 complete -c vv -c vh -l select -x -a '(__vv_columns_csv)' -d 'Project columns: names, globs, N-M ranges, @types, !exclusions'
 complete -c vv -c vh -l cols -x -a '(__vv_columns_csv)' -d 'Alias of --select'

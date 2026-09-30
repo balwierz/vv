@@ -304,7 +304,7 @@ export mode. For ordering very large files, a query engine is the
 right tool.
 .TP
 .BI \-\-tags " LIST"
-BAM / CRAM / SAM only. Add one column per named optional (aux) tag,
+BAM / CRAM / SAM and PAF. Add one column per named optional (aux) tag,
 \fILIST\fR being a comma-separated list of two-character SAM tags
 (e.g. \fB\-\-tags NM,AS,RG\fR). Each column's Arrow type follows the
 tag's SAM type code \(en integer tags (\fBi\fR and friends) become
@@ -313,7 +313,10 @@ tag's SAM type code \(en integer tags (\fBi\fR and friends) become
 compares numbers, not text. A read that lacks the tag is null. The
 type is resolved from the first records that carry each tag. A plain
 \fB.sam\fR is read through htslib when \fB\-\-tags\fR is given so the
-aux fields decode into typed columns.
+aux fields decode into typed columns. On a PAF (minimap2), the optional
+\fBTAG:type:value\fR fields after the 12 mandatory columns are read the
+same way (\fB\-\-tags NM,tp,cg\fR), typed from each tag's first
+occurrence in the first 1000 lines.
 .TP
 .BI \-w " WIDTH"
 Maximum cell width in the ASCII table (default: 32).

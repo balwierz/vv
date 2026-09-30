@@ -414,7 +414,7 @@ work that touches the same code:
 - [x] **`--seq-stats` for FASTA / FASTQ** (S) — `feat/seq-stats`.
 - [x] **TSV dialects: `.bedpe`, `.pairs`, `.gct`, `.maf`** (S–M) — `feat/tsv-dialects`.
 - [x] **UTF-8 and line editing in the TUI `/ & :` bars** (S, then M) — `feat/tui-line-editing` (history is not included).
-- [ ] **`--tags` for PAF** (M).
+- [x] **`--tags` for PAF** (M).
 - [ ] **VCF/BCF per-sample FORMAT fields** (L) — named BCF sample columns
   first.
 - [ ] **`--flatten` for nested struct paths** (M+).

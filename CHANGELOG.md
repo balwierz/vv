@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`--tags` for PAF.** minimap2's optional `TAG:type:value` fields after
+  PAF's 12 mandatory columns (`NM:i:5`, `tp:A:P`, `cg:Z:…`) were dropped;
+  `--tags NM,tp,cg` now adds them as columns, typed from each tag's type
+  (`i` → int64, `f` → double, else text), null where a record lacks the
+  tag — so `--filter 'NM <= 2'` works on a PAF as on a BAM.
 - **Per-row-group `--stats`.** `--stats` ends with a row-group table (rows,
   first row, compressed / uncompressed size); `--select` narrows the columns
   and adds their min / max per row group from the statistics — how well a

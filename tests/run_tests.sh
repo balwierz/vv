@@ -220,6 +220,19 @@ assert_eq_file_inline "bgz_bed_count"  "$("$VV" --count "$BGZ/g.bed.bgz")" "20"
 assert_eq_file_inline "bgz_fastq_count" "$("$VV" --count "$BGZ/r.fq.bgz")" "3"
 rm -rf "$BGZ"
 
+# --tags on PAF: minimap2's optional TAG:type:value fields become columns
+# typed by the tag's type (i -> int64, f -> double, else text); a record
+# without the tag is null. --tags applied only to BAM / CRAM / SAM. tiny.paf:
+# read1 NM:i:50, read2 none, read3 NM:i:20 ms:i:480.
+assert_eq_file_inline "paf_tags_values" \
+    "$("$VV" --tags NM,ms --tsv --no-header --select qname,NM,ms "$DATA/tiny.paf" | tr '\t\n' ',;')" \
+    "read1,50,;read2,,;read3,20,480;"
+assert_contains "paf_tags_typed" "$("$VV" --tags NM --schema --color=never "$DATA/tiny.paf")" "NM      int64"
+assert_eq_file_inline "paf_tags_filter"  "$("$VV" --tags NM --count --filter 'NM > 30' "$DATA/tiny.paf")" "1"
+assert_eq_file_inline "paf_tags_missing" "$("$VV" --tags NM --count --filter 'NM is null' "$DATA/tiny.paf")" "1"
+assert_eq_file_inline "paf_tags_gz" "$("$VV" --tags NM --tsv --no-header --select NM "$DATA/tiny.paf.gz" | head -1)" "50"
+assert_exit_code "tags_other_format_exit1" 1 "$VV" --tags NM "$DATA/tiny.tsv"
+
 # Genomics TSV layouts, shown as plain text before: .bedpe (no header row →
 # bedtools names), 4DN .pairs (names from "#columns:"), GenePattern .gct (the
 # version and dimensions lines, and 1.3's column-metadata rows, are not data)

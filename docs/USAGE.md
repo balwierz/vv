@@ -955,9 +955,12 @@ at open), so the schema is known before streaming begins; the reader stays
 forward-only and previews files larger than memory. Tags compose with `-r`
 region queries on an indexed BAM/CRAM. A plain `.sam` is normally read by the
 delimited-text reader, but with `--tags` it is decoded through htslib so the
-aux fields become typed columns too. `--tags` is rejected on non-alignment
-files and cannot be combined with `--pileup` (whose rows are per-base counts,
-not alignment records).
+aux fields become typed columns too. A PAF (minimap2) takes `--tags` as
+well: the optional `TAG:type:value` fields after its 12 mandatory columns
+(`NM:i:5`, `tp:A:P`, `cg:Z:…`) become columns, typed from each tag's first
+occurrence in the first 1000 lines, null where a record lacks the tag.
+`--tags` is rejected on other files and cannot be combined with `--pileup`
+(whose rows are per-base counts, not alignment records).
 
 # Stdin
 
