@@ -4135,6 +4135,18 @@ else
     echo "  skip  tui_stream_fill (python3 not found)"
 fi
 
+# Search in a sorted view whose order cycles through every row group lands on
+# the match (and n wraps to it); each chunk is scanned once per search.
+if command -v python3 >/dev/null 2>&1; then
+    if run_with_timeout 120 python3 "$HERE/tui_sorted_search_check.py" "$VV" "$TMP"; then
+        PASS=$((PASS+1)); echo "  ok    tui_sorted_search"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_sorted_search"
+    fi
+else
+    echo "  skip  tui_sorted_search (python3 not found)"
+fi
+
 # `/` search, n / N and :N move the cell cursor to their target. They used to
 # move only the viewport, which the next draw scrolled back to the cursor, so
 # nothing past the first screen was reachable. Verified discriminating: on the

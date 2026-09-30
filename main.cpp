@@ -23027,34 +23027,45 @@ class TableTUI {
 
         // Sort active: scan display rows one at a time, translating each to
         // its source row via sort_order_. Consecutive display rows can land in
-        // different row groups, so route every lookup through the shared LRU
-        // chunk cache (ensure_cols / cache_) rather than a single last-chunk
-        // slot — a sort that bounces between a handful of row groups then
-        // re-decodes each at most once per eviction, not once per row.
+        // any chunk, so a chunk is scanned whole the first time a row of it
+        // comes up and its matching rows are recorded; every later row of
+        // that chunk is a bit lookup. Each chunk is decoded at most once per
+        // search, however the sort interleaves them, and a match near the
+        // cursor still stops the scan early.
         if (!sort_order_.empty()) {
             int64_t N = (int64_t)sort_order_.size();
+            int64_t src_rows = 0;
+            if (nc > 0) {
+                auto last = src_->chunk_meta(nc - 1);
+                src_rows = last.first_row + last.num_rows;
+            }
+            std::vector<uint8_t> scanned((size_t)nc, 0);
+            std::vector<bool>    hit((size_t)src_rows, false);
             int64_t r = from_row;
             int64_t end = forward ? N : -1;
             int64_t step = forward ? +1 : -1;
-            int64_t scanned = 0;
+            int64_t scanned_rows = 0;
             for (; r != end; r += step) {
                 if (r < 0 || r >= N) break;
-                // Throttle the progress repaint: the decode is now cached, so
-                // an un-throttled refresh per row would dominate the scan.
-                if ((scanned++ & 8191) == 0) {
+                if ((scanned_rows++ & 8191) == 0) {
                     mvprintw(scr_r_-1, 0, " Searching (sorted)… row %lld ",
                              (long long)r);
                     clrtoeol(); refresh();
                 }
                 int64_t srow = sort_order_[r];
+                if (srow < 0 || srow >= src_rows) continue;
                 int c = chunk_for_row(srow);
-                ensure_cols(c, all_cols);
-                auto it = cache_.find(c);
-                if (it == cache_.end() || !it->second.ok) continue;
-                const CachedRG& cr = it->second;
-                int64_t local = srow - cr.first_row;
-                if (local < 0 || local >= cr.num_rows) continue;
-                if (cached_row_matches(cr, local, q)) return r;
+                if (c < 0 || c >= nc) continue;
+                if (!scanned[(size_t)c]) {
+                    scanned[(size_t)c] = 1;
+                    auto meta = src_->chunk_meta(c);
+                    std::shared_ptr<arrow::Table> tbl;
+                    if (src_->read_chunk(c, all_cols, &tbl).ok() && tbl)
+                        for (int64_t l = 0; l < tbl->num_rows(); ++l)
+                            if (meta.first_row + l < src_rows && row_matches(tbl, l))
+                                hit[(size_t)(meta.first_row + l)] = true;
+                }
+                if (hit[(size_t)srow]) return r;
             }
             return -1;
         }
@@ -23131,8 +23142,8 @@ class TableTUI {
     }
 
     // True if any column of cached chunk `cr` matches the lowercased query `q`
-    // at row offset `local`. Shared by the sorted find scan and the
-    // highlight check, so both consult the same decoded row groups.
+    // at row offset `local` (the highlight check; consults decoded row groups
+    // only).
     bool cached_row_matches(const CachedRG& cr, int64_t local,
                             const std::string& q) const {
         for (auto& arr : cr.cols) {
