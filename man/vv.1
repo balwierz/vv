@@ -478,8 +478,12 @@ decoding any data. For non-Parquet sources, falls back to
 colleague?". With \fB\-\-json\fR, one JSON object: file totals
 (\fBrows\fR, \fBrow_groups\fR, \fBcompressed_bytes\fR,
 \fBuncompressed_bytes\fR, \fBcreated_by\fR, \fBmetadata\fR) and per
-column \fBname\fR, \fBtype\fR, \fBcodecs\fR, sizes and \fBnulls\fR;
-an error on a non-Parquet file.
+column \fBname\fR, \fBtype\fR, \fBcodecs\fR, sizes and \fBnulls\fR, and
+\fBrow_group_stats\fR: per row group its rows, first row, sizes and each
+column's nulls / min / max; an error on a non-Parquet file. The text form
+ends with a row-group table (rows, first row, sizes; the first 50 row
+groups); \fB\-\-select\fR narrows the columns and adds their per-row-group
+min / max to that table.
 .TP
 .B \-\-contigs
 For BAM / CRAM / SAM and VCF / BCF, list the reference sequences named

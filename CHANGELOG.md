@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Per-row-group `--stats`.** `--stats` ends with a row-group table (rows,
+  first row, compressed / uncompressed size); `--select` narrows the columns
+  and adds their min / max per row group from the statistics — how well a
+  file is laid out for range pruning. `--stats --json` gains
+  `row_group_stats` with every row group's per-column nulls / min / max.
 - **`.bgz` files.** bgzip's `.bgz` suffix (gnomAD ships `*.vcf.bgz`) was not
   recognised and the file was shown as plain text. It is now read like `.gz`
   — `x.vcf.bgz`, `x.bed.bgz`, `x.fq.bgz` open as VCF / BED / FASTQ, and `-r`

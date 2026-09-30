@@ -21179,6 +21179,45 @@ static std::string print_stats_only(TabularSource& src, const Config& cfg) {
         for (auto k : c.codecs) names.push_back(codec_name(k));
         return names;
     };
+    // --select narrows the columns reported (all of them otherwise).
+    std::vector<int> sel;
+    if (cfg.select_cols.empty()) {
+        for (int i = 0; i < n_cols; ++i) sel.push_back(i);
+    } else {
+        std::vector<std::string> unknown;
+        sel = select_field_indices(src, cfg, &unknown, /*include_hidden=*/true);
+        if (!unknown.empty()) return "--select: no column matches '" + unknown[0] + "'";
+    }
+    // Min / max of field `i` in row group `g`, from the column chunk's
+    // statistics; false when absent or the field is nested.
+    auto rg_minmax = [&](int g, int i, std::string* mn, std::string* mx, bool* numeric) {
+        if (schema->field(i)->type()->num_fields() > 0) return false;
+        auto rg = meta->RowGroup(g);
+        const int leaf = leaf_for_field[i];
+        if (leaf < 0 || leaf >= rg->num_columns()) return false;
+        auto cc = rg->ColumnChunk(leaf);
+        if (!cc->is_stats_set()) return false;
+        auto st = cc->statistics();
+        if (!st || !st->HasMinMax()) return false;
+        std::shared_ptr<arrow::Scalar> a, b;
+        if (!parquet::arrow::StatisticsAsScalars(*st, &a, &b).ok() || !a || !b) return false;
+        *mn = a->ToString();
+        *mx = b->ToString();
+        *numeric = arrow::is_integer(a->type->id()) || arrow::is_floating(a->type->id());
+        // Writers store a zero minimum as -0.0 (the Parquet spec); show 0.
+        if (*mn == "-0") *mn = "0";
+        if (*mx == "-0") *mx = "0";
+        return true;
+    };
+    auto rg_nulls = [&](int g, int i, int64_t* n) {
+        auto rg = meta->RowGroup(g);
+        const int leaf = leaf_for_field[i];
+        if (leaf < 0 || leaf >= rg->num_columns()) return false;
+        auto cc = rg->ColumnChunk(leaf);
+        if (!cc->is_stats_set() || !cc->statistics() || !cc->statistics()->HasNullCount()) return false;
+        *n = cc->statistics()->null_count();
+        return true;
+    };
     if (json) {
         std::printf("{\"path\": ");  json_emit_string(src.path());
         std::printf(", \"format\": "); json_emit_string(format_label_of(src));
@@ -21190,9 +21229,10 @@ static std::string print_stats_only(TabularSource& src, const Config& cfg) {
         else                          json_emit_string(pq->created_by());
         emit_metadata_json(*schema);
         std::printf(", \"columns\": [");
-        for (int i = 0; i < n_cols; ++i) {
+        for (size_t si = 0; si < sel.size(); ++si) {
+            const int i = sel[si];
             auto f = schema->field(i);
-            std::printf("%s{\"name\": ", i ? ", " : "");
+            std::printf("%s{\"name\": ", si ? ", " : "");
             json_emit_string(f->name());
             std::printf(", \"type\": "); json_emit_string(type_label(*f->type()));
             std::printf(", \"codecs\": [");
@@ -21205,6 +21245,38 @@ static std::string print_stats_only(TabularSource& src, const Config& cfg) {
                         (long long)agg[i].comp, (long long)agg[i].raw);
             if (agg[i].has_nulls) std::printf(", \"nulls\": %lld}", (long long)agg[i].nulls);
             else                  std::printf(", \"nulls\": null}");
+        }
+        // Per row group: rows, sizes, and each reported column's nulls /
+        // min / max from its statistics (null where the writer stored none).
+        std::printf("], \"row_group_stats\": [");
+        int64_t first = 0;
+        for (int g = 0; g < n_rg; ++g) {
+            auto rg = meta->RowGroup(g);
+            std::printf("%s{\"index\": %d, \"rows\": %lld, \"first_row\": %lld, "
+                        "\"compressed_bytes\": %lld, \"uncompressed_bytes\": %lld, \"columns\": [",
+                        g ? ", " : "", g, (long long)rg->num_rows(), (long long)first,
+                        (long long)rg->total_compressed_size(), (long long)rg->total_byte_size());
+            first += rg->num_rows();
+            for (size_t si = 0; si < sel.size(); ++si) {
+                const int i = sel[si];
+                std::printf("%s{\"name\": ", si ? ", " : "");
+                json_emit_string(schema->field(i)->name());
+                int64_t nn = 0;
+                if (rg_nulls(g, i, &nn)) std::printf(", \"nulls\": %lld", (long long)nn);
+                else                     std::printf(", \"nulls\": null");
+                std::string mn, mx;
+                bool numeric = false;
+                if (rg_minmax(g, i, &mn, &mx, &numeric)) {
+                    std::printf(", \"min\": ");
+                    if (numeric && mn != "nan" && mx != "nan") std::printf("%s", mn.c_str()); else json_emit_string(mn);
+                    std::printf(", \"max\": ");
+                    if (numeric && mn != "nan" && mx != "nan") std::printf("%s", mx.c_str()); else json_emit_string(mx);
+                } else {
+                    std::printf(", \"min\": null, \"max\": null");
+                }
+                std::printf("}");
+            }
+            std::printf("]}");
         }
         std::printf("]}\n");
         return "";
@@ -21230,7 +21302,7 @@ static std::string print_stats_only(TabularSource& src, const Config& cfg) {
     std::vector<std::array<std::string, 6>> rows;     // name, type, codec, comp, raw, ratio
     std::vector<std::string>                 nulls_col;
     int wN = 6, wT = 4, wK = 5, wC = 10, wR = 12, wRatio = 5, wNulls = 5;
-    for (int i = 0; i < n_cols; ++i) {
+    for (int i : sel) {
         auto f = schema->field(i);
         std::string codec;
         for (const auto& c : codecs_of(agg[i])) {
@@ -21280,6 +21352,62 @@ static std::string print_stats_only(TabularSource& src, const Config& cfg) {
                     wR, r[4].c_str(),
                     wRatio, r[5].c_str(),
                     wNulls, nulls_col[k].c_str());
+    }
+
+    // Per row group: rows, first row, sizes; with --select, the selected
+    // columns' min / max from the row group's statistics. At most 50 row
+    // groups are listed (--stats --json lists every one).
+    {
+        constexpr int kMaxShown = 50;
+        std::vector<std::string> head = {"Group", "Rows", "First row", "Compressed", "Uncompressed"};
+        const bool with_minmax = !cfg.select_cols.empty();
+        if (with_minmax)
+            for (int i : sel) {
+                head.push_back(schema->field(i)->name() + " min");
+                head.push_back(schema->field(i)->name() + " max");
+            }
+        std::vector<std::vector<std::string>> body;
+        int64_t first = 0;
+        for (int g = 0; g < n_rg; ++g) {
+            auto rg = meta->RowGroup(g);
+            if (g < kMaxShown) {
+                std::vector<std::string> r = {
+                    std::to_string(g), digits_with_sep(std::to_string(rg->num_rows())),
+                    digits_with_sep(std::to_string(first)),
+                    fmt_size(rg->total_compressed_size()), fmt_size(rg->total_byte_size())};
+                if (with_minmax)
+                    for (int i : sel) {
+                        std::string mn = "-", mx = "-";
+                        bool numeric = false;
+                        rg_minmax(g, i, &mn, &mx, &numeric);
+                        r.push_back(mn);
+                        r.push_back(mx);
+                    }
+                body.push_back(std::move(r));
+            }
+            first += rg->num_rows();
+        }
+        std::vector<int> w(head.size());
+        for (size_t c = 0; c < head.size(); ++c) {
+            w[c] = (int)display_width(head[c]);
+            for (const auto& r : body) w[c] = std::max(w[c], (int)display_width(r[c]));
+            w[c] = std::min(w[c], 40);
+        }
+        std::printf("\n%s", g_color.header);
+        for (size_t c = 0; c < head.size(); ++c)
+            std::printf("%s%*s", c ? "  " : "", w[c], truncate(head[c], w[c]).c_str());
+        std::printf("%s\n%s", g_color.reset, g_color.border);
+        for (size_t c = 0; c < head.size(); ++c)
+            std::printf("%s%s", c ? "  " : "", std::string((size_t)w[c], '-').c_str());
+        std::printf("%s\n", g_color.reset);
+        for (const auto& r : body) {
+            for (size_t c = 0; c < r.size(); ++c)
+                std::printf("%s%*s", c ? "  " : "", w[c], truncate(r[c], w[c]).c_str());
+            std::printf("\n");
+        }
+        if (n_rg > kMaxShown)
+            std::printf("%s… %d more row groups (--stats --json lists every one)%s\n",
+                        g_color.meta_key, n_rg - kMaxShown, g_color.reset);
     }
     return "";
 }

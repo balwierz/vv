@@ -716,11 +716,25 @@ Reads no data — just the Parquet footer. Use it on inherited
 multi-GB files to find out how they were written. The file's key-value
 metadata, if any, follows `Created by:` as in `--schema`.
 
+The text form ends with one row per row group — rows, first row,
+compressed and uncompressed size (the first 50 row groups). `--select`
+narrows the columns reported and adds each selected column's min / max per
+row group, from the row-group statistics:
+
+```sh
+$ vv --stats --select Start tests/data/tiny.parquet
+…
+Group  Rows  First row  Compressed  Uncompressed  Start min  Start max
+    0     5          0       521 B         520 B        100       4100
+    1     5          5       525 B         520 B       5100       9100
+```
+
 `--stats --json` writes the same as one JSON object: `format`, `rows`,
 `row_groups`, `compressed_bytes`, `uncompressed_bytes`, `created_by`,
 `metadata`, and per column `name`, `type`, `codecs`, `compressed_bytes`,
 `uncompressed_bytes` and `nulls` (null where the writer stored no null
-count). On a file that is not Parquet it is an error; `--schema --json`
+count), and `row_group_stats`: per row group `index`, `rows`, `first_row`,
+sizes and each column's `nulls` / `min` / `max`. On a file that is not Parquet it is an error; `--schema --json`
 gives that file's columns.
 
 ## `--seq-stats` (FASTA / FASTQ summary)

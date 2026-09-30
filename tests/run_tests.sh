@@ -2362,6 +2362,27 @@ import json, sys; d = json.load(sys.stdin); print(d["format"], sorted(d["metadat
 import json, sys; d = json.load(sys.stdin); print(d["format"], d["metadata"])')" "Parquet {}"
     fi
 fi
+# Per row group (--stats): rows, first row and sizes for each row group; with
+# --select, the selected columns' min / max from the row-group statistics.
+# --stats --json carries every row group's per-column nulls / min / max under
+# row_group_stats. tiny.parquet: 4 row groups of 5 rows, Start 100..11100.
+RGT=$("$VV" --stats --color=never "$DATA/tiny.parquet")
+assert_contains "stats_row_group_table" "$RGT" "Group  Rows  First row  Compressed  Uncompressed"
+assert_eq_file_inline "stats_row_group_minmax" \
+    "$("$VV" --stats --color=never --select Start "$DATA/tiny.parquet" | awk '/^Group/{s=1;next} s&&/^ *[0-9]/{print $1, $(NF-1), $NF}' | tr '\n' ';')" \
+    "0 100 4100;1 5100 9100;2 100 11100;3 3100 7100;"
+assert_eq_file_inline "stats_select_narrows_columns" \
+    "$("$VV" --stats --color=never --select Chr,Score "$DATA/tiny.parquet" | awk '/^Column/{s=1;next} /^-/{next} s&&!NF{exit} s{print $1}' | tr '\n' ' ')" "Chr Score "
+assert_exit_code "stats_select_unknown_exit1" 1 "$VV" --stats --select Nope "$DATA/tiny.parquet"
+if command -v python3 >/dev/null 2>&1; then
+    assert_eq_file_inline "stats_json_row_group_stats" "$("$VV" --stats --json --select Chr,Score "$DATA/tiny.parquet" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+g = d["row_group_stats"]
+print(d["row_groups"], len(g), [(r["rows"], r["first_row"]) for r in g][:2], g[2]["columns"][0], g[0]["columns"][1]["min"])')" \
+        "4 4 [(5, 0), (5, 5)] {'name': 'Chr', 'nulls': 0, 'min': 'chr1', 'max': 'chr2'} 0"
+fi
+
 # --stats on a file without a Parquet footer: the text form notes it (naming
 # the format, not pasting the whole footer); --json is an error.
 assert_contains "stats_nonparquet_note" "$("$VV" --stats --color=never "$DATA/tiny.bam")" \
