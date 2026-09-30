@@ -11008,6 +11008,65 @@ static std::string human_bytes(int64_t sz) {
     return buf;
 }
 
+// Copy an already-decoded stream (stdin after gunzip) into a new temporary
+// file ending in `ext`, removed at exit like spool_pipe's copies.
+static std::string spool_stream(const std::shared_ptr<arrow::io::InputStream>& in,
+                                const std::string& ext, std::string* path_out,
+                                int64_t* bytes_out) {
+    const char* tmpdir = std::getenv("TMPDIR");
+    std::string tmpl = std::string(tmpdir && *tmpdir ? tmpdir : "/tmp") + "/vv-pipe-XXXXXX";
+    std::vector<char> name(tmpl.begin(), tmpl.end());
+    name.push_back('\0');
+    int out = ::mkstemp(name.data());
+    if (out < 0) return "cannot create a temporary file: " + std::string(std::strerror(errno)) +
+                        " (set TMPDIR)";
+    std::string path(name.data());
+    spool_register(path);
+    int64_t total = 0;
+    std::string err;
+    for (;;) {
+        auto buf = in->Read(1 << 20);
+        if (!buf.ok()) { err = buf.status().ToString(); break; }
+        if ((*buf)->size() == 0) break;
+        const char* p = reinterpret_cast<const char*>((*buf)->data());
+        size_t n = (size_t)(*buf)->size();
+        while (n) {
+            ssize_t w = ::write(out, p, n);
+            if (w < 0) { if (errno == EINTR) continue; err = std::strerror(errno); break; }
+            p += w; n -= (size_t)w; total += w;
+        }
+        if (!err.empty()) break;
+    }
+    ::close(out);
+    if (!err.empty()) return "copying the input to " + path + " failed: " + err;
+    const std::string named = path + ext;
+    if (::rename(path.c_str(), named.c_str()) != 0)
+        return "renaming " + path + " failed: " + std::strerror(errno);
+    spool_register(named);
+    *path_out = named;
+    *bytes_out = total;
+    return "";
+}
+
+// The genomics text format the first bytes of piped text are in, as the
+// file readers would take it: FASTA ('>'), FASTQ ('@' with a '+' third
+// line), SAM (an @HD / @SQ / @RG / @PG / @CO header line), VCF
+// (##fileformat=VCF), GFF (##gff-version). "" for anything else (TSV / CSV).
+static std::string sniff_text_format(const std::string& head) {
+    auto starts = [&](const char* p) { return head.rfind(p, 0) == 0; };
+    if (starts("##fileformat=VCF")) return "vcf";
+    if (starts("##gff-version"))     return "gff";
+    for (const char* t : {"@HD\t", "@SQ\t", "@RG\t", "@PG\t", "@CO\t"})
+        if (starts(t)) return "sam";
+    if (starts(">")) return "fasta";
+    if (starts("@")) {
+        size_t a = head.find('\n');
+        size_t b = a == std::string::npos ? a : head.find('\n', a + 1);
+        if (b != std::string::npos && b + 1 < head.size() && head[b + 1] == '+') return "fastq";
+    }
+    return "";
+}
+
 // True when the regular file at `path` begins like an Arrow IPC stream.
 static bool file_is_ipc_stream(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
@@ -18922,7 +18981,32 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
             TextSniffResult tr = sniff_text(head.data(), head.size());
             if (tr != TextSniffResult::Text)
                 return text_binary_error(path == "-" ? "stdin" : path, tr);
-            input = std::make_shared<PrependInputStream>(std::move(head), input);
+            // A genomics text format read as its file reader would read it,
+            // not as TSV — unless --text or -d asks for something else.
+            if (!cfg.force_text && cfg.in_delimiter == 0) {
+                const std::string fmt = sniff_text_format(head);
+                input = std::make_shared<PrependInputStream>(std::move(head), input);
+                if (fmt == "vcf" || fmt == "gff" || fmt == "sam") {
+                    const DelimKind k = fmt == "vcf" ? DelimKind::VCF
+                                      : fmt == "gff" ? DelimKind::GFF : DelimKind::SAM;
+                    std::unique_ptr<DelimitedSource> src;
+                    std::string e = DelimitedSource::open_from_stream(
+                        std::move(input), path, k, is_gz, cfg.region, &src);
+                    if (!e.empty()) return e;
+                    *out = std::move(src);
+                    return "";
+                }
+                if (fmt == "fasta" || fmt == "fastq") {
+                    // The FASTA / FASTQ reader opens a file: copy the text to one.
+                    std::string tmp;
+                    int64_t bytes = 0;
+                    std::string serr = spool_stream(input, fmt == "fasta" ? ".fa" : ".fq", &tmp, &bytes);
+                    if (!serr.empty()) return serr;
+                    return open_source_dispatch(tmp, cfg, out);
+                }
+            } else {
+                input = std::make_shared<PrependInputStream>(std::move(head), input);
+            }
         }
 
         // --text on stdin: `cat server.log | vv --text -` must behave like

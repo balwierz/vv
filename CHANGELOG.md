@@ -95,6 +95,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   printed the text table; on a non-Parquet file it exits 1.
 
 ### Fixed
+- **FASTA / FASTQ / SAM / VCF / GFF on stdin.** Piped genomics text was read
+  as TSV — a FASTQ came out as four-line text rows, a VCF lost its `##`
+  header handling. The first lines now pick the reader: FASTA (`>`), FASTQ
+  (`@` with a `+` third line), SAM (an `@HD` / `@SQ` / … header), VCF
+  (`##fileformat=VCF`), GFF (`##gff-version`); plain or gzipped. FASTA /
+  FASTQ are copied to a temporary file for the sequence reader. `--text`
+  and `-d` still apply.
 - **TUI: rows left blank on a stream with small batches.** A FASTQ batch
   closes early on a byte budget, so with long reads it can hold fewer
   records than the screen has rows. The viewer read one more batch per

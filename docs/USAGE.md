@@ -961,8 +961,12 @@ $ zcat huge.tsv.gz | vv --tsv --no-header -      # plain text pipeline
   names the file, and it is removed when vv exits or is interrupted. A
   bgzipped stream is identified by content (BAM, BCF, VCF, BED, FASTQ,
   FASTA).
-* Auto-detects gzip and zstandard via magic bytes. Other text on stdin is
-  read as TSV / CSV (a FASTA or FASTQ is not recognised there yet).
+* Auto-detects gzip and zstandard via magic bytes. Genomics text is read
+  by its format: FASTA (`>`), FASTQ (`@` with a `+` third line; both copied
+  to a temporary file for the sequence reader), SAM (an `@HD` / `@SQ` / `@RG`
+  / `@PG` / `@CO` header), VCF (`##fileformat=VCF`) and GFF
+  (`##gff-version`). Other text is read as TSV / CSV; `--text` and `-d`
+  keep their meaning.
 
 # Directories and partitioned datasets
 

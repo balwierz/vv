@@ -1002,6 +1002,26 @@ echo '── Stdin (-) ───────────────────
 assert_eq_file "stdin_tsv_matches_file" "$TMP/stdin_tsv.out" "$GOLDEN/tsv_tsv.expected"
 gzip -c "$DATA/tiny.tsv" | "$VV" --tsv --no-header - > "$TMP/stdin_gz.out"
 assert_eq_file "stdin_tsv_gz_matches_file" "$TMP/stdin_gz.out" "$GOLDEN/tsv_tsv.expected"
+# Genomics text on stdin is read as its file reader would read it — FASTA /
+# FASTQ (copied to a temporary file for the sequence reader), SAM, VCF and GFF
+# — instead of as TSV (a FASTQ became four-line text rows, a VCF lost its
+# header handling). Plain and gzipped.
+STX="$TMP/stdin_text"; mkdir -p "$STX"
+printf '@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:1000\nr1\t0\tchr1\t10\t60\t4M\t*\t0\t0\tACGT\tIIII\nr2\t16\tchr1\t20\t60\t4M\t*\t0\t0\tTTTT\tIIII\n' > "$STX/a.sam"
+printf '##gff-version 3\nchr1\tsrc\tgene\t1\t100\t.\t+\t.\tID=g1\nchr1\tsrc\tgene\t200\t300\t.\t-\t.\tID=g2\n' > "$STX/a.gff3"
+for c in "$DATA/tiny.fq|3|name comment seq qual" "$DATA/tiny.fa|3|name comment seq" \
+         "$DATA/tiny.vcf|4|CHROM POS ID REF ALT QUAL FILTER INFO" \
+         "$STX/a.sam|2|QNAME FLAG RNAME POS" "$STX/a.gff3|2|seqname source feature start"; do
+    IFS='|' read -r f n cols <<<"$c"
+    b=$(basename "$f")
+    assert_eq_file_inline "stdin_text_count [$b]" "$("$VV" --count - < "$f" 2>/dev/null)" "$n"
+    assert_eq_file_inline "stdin_text_gz_count [$b]" "$(gzip -c "$f" | "$VV" --count - 2>/dev/null)" "$n"
+    assert_contains "stdin_text_columns [$b]" "$("$VV" --list-columns - < "$f" 2>/dev/null | tr '\n' ' ')" "$cols"
+done
+# --text still shows it as lines.
+assert_eq_file_inline "stdin_text_forced_lines" "$("$VV" --text --count - < "$DATA/tiny.fq")" "12"
+rm -rf "$STX"
+
 # Binary input on stdin or a pipe (process substitution) is copied to a
 # temporary file and opened from there; text streams in. Both failed: stdin
 # refused Parquet / Arrow / BAM ("requires a seekable file; ... use process

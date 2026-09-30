@@ -408,8 +408,8 @@ work that touches the same code:
   formats on stdin / pipes: `fix/pipes-and-process-substitution` (copied to a
   temporary file); the Arrow IPC stream format (`.arrows`, and a stream on
   stdin, read as it arrives): `feat/arrow-ipc-stream`.
-- [ ] **Text formats on stdin** (S) — FASTA / FASTQ / SAM / VCF piped as plain
-  text are read as TSV; sniff them as the file readers would.
+- [x] **Text formats on stdin** (S) — FASTA / FASTQ / SAM / VCF piped as plain
+  text are read as TSV; sniff them as the file readers would. (GFF too.)
 - [x] **idxstats in `--contigs`, index-backed `--count`** (S+) — `feat/index-stats`.
 - [x] **`--seq-stats` for FASTA / FASTQ** (S) — `feat/seq-stats`.
 - [x] **TSV dialects: `.bedpe`, `.pairs`, `.gct`, `.maf`** (S–M) — `feat/tsv-dialects`.

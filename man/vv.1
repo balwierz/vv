@@ -240,7 +240,9 @@ Arrow IPC, Feather, ORC, LociSSD, BAM, BCF, CRAM, SQLite, HDF5 / AnnData,
 NumPy, xlsx, ods, bigWig / bigBed, 2bit) needs random access, so it is
 copied to a temporary file in \fB$TMPDIR\fR (default \fB/tmp\fR) and opened
 from there; a note on standard error names the file, which is removed
-when vv exits or is interrupted. A pipe path such as process substitution
+when vv exits or is interrupted. Genomics text is read by its format: FASTA,
+FASTQ, SAM, VCF and GFF are recognised by their first lines; other text is
+read as TSV. A pipe path such as process substitution
 (\fBvv <(zcat x.parquet.gz)\fR) or a FIFO is read the same way.
 .IP \(bu 2
 \fIDIR/\fR \(en a directory is read as one dataset: the data files under it
