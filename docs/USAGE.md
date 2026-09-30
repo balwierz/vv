@@ -172,6 +172,7 @@ $ vv tests/data/tiny.lociss        # default when stdout is a terminal
 | `,` / `.`      | narrow / widen the column under the cursor              |
 | `z`            | toggle frozen first column                              |
 | `S`            | per-column stats popup (count, nulls, min, max, mean, distinct) |
+| `F`            | value counts of the cursor's column over the filtered rows; Enter filters to the value |
 | `s`            | sort by the cursor's column (toggle asc / desc)         |
 | `u`            | undo / clear the active sort                            |
 | `&`            | live filter: hide non-matching rows (empty input clears)|

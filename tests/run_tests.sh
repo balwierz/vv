@@ -3778,6 +3778,20 @@ else
     echo "  skip  tui_start_view (python3 not found)"
 fi
 
+# F: value counts of the cursor's column over the filtered rows; Enter
+# narrows the filter to one value (ANDed into every OR branch). Checks the
+# counts, filtered counts, the AND / OR combination, a float32 value and the
+# refusal on a list column. On the previous build F does nothing.
+if command -v python3 >/dev/null 2>&1; then
+    if run_with_timeout 120 python3 "$HERE/tui_freq_check.py" "$VV" "$DATA/tiny.parquet"; then
+        PASS=$((PASS+1)); echo "  ok    tui_freq_sheet"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_freq_sheet"
+    fi
+else
+    echo "  skip  tui_freq_sheet (python3 not found)"
+fi
+
 # `/` search, n / N and :N move the cell cursor to their target. They used to
 # move only the viewport, which the next draw scrolled back to the cursor, so
 # nothing past the first screen was reachable. Verified discriminating: on the
