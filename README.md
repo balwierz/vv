@@ -698,7 +698,9 @@ $ vv --heatmap --image-mode ascii embedding.npy > grid.txt
   `is null` / `is not null`
   — the rows `--describe` counts but nothing could previously select — and
   a quoted date against a date / timestamp column (`day >= "2024-01-01"`,
-  `ts < "2024-06-15 12:30:00Z"`; a zone offset is converted to UTC), and
+  `ts < "2024-06-15 12:30:00Z"`; a zone offset is converted to UTC),
+  `true` / `false` against a boolean column (a number against a float32
+  column is compared at float32 precision), and
   `has` / `lacks` for bit flags: `FLAG lacks UNMAP,SECONDARY,DUP` (samtools
   `-F 0x504`), `FLAG has PAIRED,READ1`, or numbers (`FLAG lacks 0x904`).
   The word operators are operators only in operator position, so a column

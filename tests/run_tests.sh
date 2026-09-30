@@ -1717,16 +1717,35 @@ assert_eq_file_inline "filter_in_numeric"  "$(fcount 'Start in (100)'       "$DA
 assert_eq_file_inline "filter_in_numeric_matches_eq" \
     "$(fcount 'Start in (100)' "$DATA/tiny.parquet")" \
     "$(fcount 'Start == 100'   "$DATA/tiny.parquet")"
-# Composes with AND / OR and with the existing ordering operators. NB 4, not 3:
-# Score is float32, so the stored value nearest 0.4 is 0.40000000596..., which
-# really is > 0.4. An awk cross-check on the PRINTED value says 3 — awk is the
-# approximation here, not vv. Pinned against the same expression using the
-# pre-existing `==` operator so the two can never drift apart.
+# Composes with AND / OR and with the existing ordering operators. Score is
+# float32 and a literal is compared at the column's precision (0.4 → 0.4f), so
+# the row showing 0.4 is not > 0.4: 3, as printed. Pinned against the same
+# expression using the pre-existing `==` operator so the two can never drift
+# apart.
 assert_eq_file_inline "filter_regex_and_cmp" \
-    "$(fcount 'Chr ~ "chr1" AND Score > 0.4' "$DATA/tiny.parquet")" "4"
+    "$(fcount 'Chr ~ "chr1" AND Score > 0.4' "$DATA/tiny.parquet")" "3"
 assert_eq_file_inline "filter_regex_matches_eq" \
     "$(fcount 'Chr ~ "^chr1$" AND Score > 0.4' "$DATA/tiny.parquet")" \
     "$(fcount 'Chr == "chr1"  AND Score > 0.4' "$DATA/tiny.parquet")"
+
+# == on float32, decimal and boolean columns. A float32 cell is compared with
+# the literal rounded to float32 (Score holds 0.05f, which `== 0.05` never
+# equalled); a decimal is read as the double nearest its text (99.99 came out
+# 99.99000000000001); a boolean compares with true / false (text never matched
+# and a bare `true` was "bad number"). Score is 0, 0.05, …, 0.95 by row.
+assert_eq_file_inline "filter_float32_eq"  "$(fcount 'Score == 0.05' "$DATA/tiny.parquet")" "1"
+assert_eq_file_inline "filter_float32_gt"  "$(fcount 'Score > 0.05'  "$DATA/tiny.parquet")" "18"
+assert_eq_file_inline "filter_float32_in"  "$(fcount 'Score in (0.05, 0.1)' "$DATA/tiny.parquet")" "2"
+if [ -f "$DATA/tiny.temporal.parquet" ]; then
+    assert_eq_file_inline "filter_decimal_eq" "$(fcount 'dec == 99.99'  "$DATA/tiny.temporal.parquet")" "1"
+    assert_eq_file_inline "filter_decimal_eq_trailing_zero" \
+        "$(fcount 'dec == 99.990' "$DATA/tiny.temporal.parquet")" "1"
+fi
+printf 'b,x\ntrue,1\nfalse,2\ntrue,3\n' > "$TMP/bool.csv"
+assert_eq_file_inline "filter_bool_bare"   "$(fcount 'b == true'    "$TMP/bool.csv")" "2"
+assert_eq_file_inline "filter_bool_quoted" "$(fcount "b == 'FALSE'" "$TMP/bool.csv")" "1"
+assert_eq_file_inline "filter_bool_ne"     "$(fcount 'b != true'    "$TMP/bool.csv")" "1"
+assert_exit_code "filter_bool_other_literal_exit1" 1 "$VV" --filter 'b == yes' --count "$TMP/bool.csv"
 
 # THE in-tree oracle for the null tests: `is null` must agree with the null
 # count --describe already reports for the same column. No external tool.

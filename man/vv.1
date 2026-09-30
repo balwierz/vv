@@ -391,6 +391,10 @@ Against a date or timestamp column a quoted value is a point in time:
 \fBT\fR for the space) and a zone (\fBZ\fR or \fB\(+-HH:MM\fR, converted to
 UTC); a date alone is midnight. It is compared in the column's own unit,
 e.g. \fB\-\-filter 'ts >= "2024-01-01" and ts < "2024-02-01"'\fR.
+A boolean column compares with \fBtrue\fR / \fBfalse\fR (bare or quoted).
+A number against a float32 column is rounded to float32 first, so
+\fBScore == 0.05\fR matches the cell shown as 0.05 and \fBScore > 0.05\fR
+does not; a decimal column compares by its value as written.
 Values: integer, float, single- or double-quoted string. Example:
 \fB\-\-filter 'Chromosome == "chr1" AND Score > 0.5'\fR. Evaluated
 per row after the source's own pruning (tabix region, LociSSD
