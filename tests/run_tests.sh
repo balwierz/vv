@@ -3012,18 +3012,18 @@ if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
             assert_exit_code "h5ad_x_export_full_${m#--}" 0 "$VV" --tab X "$m" "$DX"
         done
         assert_eq_file_inline "h5ad_x_export_full_shape" \
-            "$("$VV" --tab X --tsv "$DX" | awk -F'\t' '{print NF}' | sort -u | tr '\n' ,)$("$VV" --tab X --tsv "$DX" | wc -l)" \
+            "$("$VV" --tab X --tsv "$DX" | awk -F'\t' '{print NF}' | sort -u | tr '\n' ,)$("$VV" --tab X --tsv "$DX" | wc -l | tr -d ' ')" \
             "251,4"
         assert_eq_file_inline "h5ad_x_export_full_last_gene" \
             "$("$VV" --tab X --tsv "$DX" | head -1 | awk -F'\t' '{print $NF}')" "gene249"
-        assert_eq_file_inline "h5ad_x_export_full_n" "$("$VV" --tab X -n 1 --csv "$DX" | wc -l)" "2"
+        assert_eq_file_inline "h5ad_x_export_full_n" "$("$VV" --tab X -n 1 --csv "$DX" | wc -l | tr -d ' ')" "2"
         if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
             # CSR X, 1500 cells (preview: 1000): all 1500 rows, densified.
             assert_eq_file_inline "h5ad_x_export_full_csr" \
                 "$("$VV" --tab X --csv "$DATA/tiny.bigobs.h5ad" | sed -n '1p;3p;1501p;1502p' | tr '\n' ';')" \
                 "obs,gene0,gene1,gene2,gene3;cell1,0.18961396933845598,0,0.8174245085509352,0;cell1499,0,0,0,0.5695691341122411;"
             assert_eq_file_inline "h5ad_x_export_full_csr_rows" \
-                "$("$VV" --tab X --tsv "$DATA/tiny.bigobs.h5ad" | wc -l)" "1501"
+                "$("$VV" --tab X --tsv "$DATA/tiny.bigobs.h5ad" | wc -l | tr -d ' ')" "1501"
         fi
         assert_eq_file_inline "h5ad_x_count_allowed" "$("$VV" --tab X --count "$DX")" "3"
         assert_contains "h5ad_x_table_view" \
