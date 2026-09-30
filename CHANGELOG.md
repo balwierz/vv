@@ -95,6 +95,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   printed the text table; on a non-Parquet file it exits 1.
 
 ### Fixed
+- **Delimited records longer than 16 MiB.** A line longer than the reader's
+  16 MiB block (a long sequence field) failed with Arrow's "straddling object
+  straddles two block boundaries". Opening now retries with 4× larger blocks
+  (up to 1 GiB), and a long record later in the file is reported with the new
+  `VV_CSV_BLOCK_MB` setting named, which sets the block size (also for JSON).
 - **AnnData bool and categorical columns keep their types.** A bool `obs` /
   `var` column (h5py's HDF5 enum `{FALSE, TRUE}`) was read as the text
   `TRUE` / `FALSE`, and every categorical was decoded to plain strings, so

@@ -185,6 +185,30 @@ assert_exit_code "mtx_entry_count_mismatch" 1 "$VV" --tsv "$MTX/nnz.mtx"
 assert_exit_code "mtx_region_refused"      1 "$VV" -r chr1:1-2 "$MTX/int.mtx"
 rm -rf "$MTX"
 
+# A delimited record longer than the reader's block failed with Arrow's
+# "straddling object straddles two block boundaries". Opening now retries with
+# 4x larger blocks; a long record later in the stream names VV_CSV_BLOCK_MB.
+# Scaled down with VV_CSV_BLOCK_MB=1: 3 MiB lines stand in for 40 MiB ones.
+LL="$TMP/longlines"; mkdir -p "$LL"
+python3 - "$LL" <<'PYEOF'
+import sys
+d = sys.argv[1]
+with open(f"{d}/start.tsv", "w") as f:
+    f.write("id\tseq\n")
+    for i in range(3): f.write(f"{i}\t" + "C" * (3 << 20) + "\n")
+with open(f"{d}/later.tsv", "w") as f:
+    f.write("id\tseq\n")
+    for i in range(120000): f.write(f"{i}\tACGTACGTACGT\n")
+    f.write("big\t" + "C" * (3 << 20) + "\n")
+PYEOF
+assert_eq_file_inline "long_record_at_start" "$(VV_CSV_BLOCK_MB=1 "$VV" --count "$LL/start.tsv")" "3"
+assert_eq_file_inline "long_record_value_intact" \
+    "$(VV_CSV_BLOCK_MB=1 "$VV" --tsv --no-header -n 1 "$LL/start.tsv" | awk -F'\t' '{print length($2)}')" "3145728"
+assert_exit_code "long_record_later_exit1" 1 env VV_CSV_BLOCK_MB=1 "$VV" --count "$LL/later.tsv"
+assert_contains  "long_record_later_hint" "$(VV_CSV_BLOCK_MB=1 "$VV" --count "$LL/later.tsv" 2>&1)" "set VV_CSV_BLOCK_MB"
+assert_eq_file_inline "long_record_later_with_setting" "$(VV_CSV_BLOCK_MB=8 "$VV" --count "$LL/later.tsv")" "120001"
+rm -rf "$LL"
+
 # .bgz is bgzip's suffix (gnomAD ships *.vcf.bgz); it read as plain text.
 # It is now read like .gz: VCF / BED / FASTQ, and -r through the .tbi.
 BGZ="$TMP/bgz"; mkdir -p "$BGZ"

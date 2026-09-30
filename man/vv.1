@@ -1054,6 +1054,12 @@ When set to any non-empty value, disables coloured output (see
 \fIhttps://no-color.org\fR). An explicit \fB\-\-color=always\fR or
 \fB\-\-color=never\fR overrides it.
 .TP
+.B VV_CSV_BLOCK_MB
+Read-block size in MiB for delimited text and JSON (default 16). A record
+must fit in one block; vv retries with larger blocks when the first block
+fails, and a longer record later in the file is reported with this setting
+named.
+.TP
 .B VV_CATEGORY_DICT_CAP
 Maximum number of categories an AnnData categorical \fIobs\fR/\fIvar\fR column
 may have before it is shown as integer codes rather than decoded labels

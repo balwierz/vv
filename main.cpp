@@ -6595,6 +6595,23 @@ inline int64_t fastx_byte_budget() {
     return budget;
 }
 
+// Block size for Arrow's streaming CSV / JSON readers: 16 MiB, or
+// VV_CSV_BLOCK_MB. A record longer than a block fails with "straddling object
+// straddles two block boundaries"; opening retries with larger blocks
+// (csv_block_override), and a failure later in the stream names the setting.
+static thread_local int64_t csv_block_override = 0;
+static int64_t csv_block_bytes() {
+    if (csv_block_override > 0) return csv_block_override;
+    static const int64_t env = [] {
+        if (const char* e = std::getenv("VV_CSV_BLOCK_MB")) {
+            long long mb = std::atoll(e);
+            if (mb > 0) return (int64_t)mb << 20;
+        }
+        return (int64_t)16 << 20;
+    }();
+    return env;
+}
+
 // Append a freshly-decoded batch to a forward-only streaming source's storage:
 // record its (first_row, num_rows) metadata (kept forever, so chunk_meta() /
 // total_rows() stay exact after eviction) and enforce the bounded trailing
@@ -6855,7 +6872,7 @@ class DelimitedSource : public TabularSource {
         // 16 MiB blocks + per-block parsing on the CPU pool. The default
         // (~1 MiB) is too small for multi-GB files; raising it amortises
         // tokenizer overhead and lets parsing parallelise across threads.
-        ropts.block_size  = 16 << 20;
+        ropts.block_size  = (int32_t)std::min<int64_t>(csv_block_bytes(), INT32_MAX);
         ropts.use_threads = true;
         if (!col_names.empty())
             ropts.column_names = col_names;
@@ -7042,12 +7059,31 @@ public:
     // the kind's default (used by -d/--in-delimiter); pass kind CSV or TSV so
     // the CSV/TSV code paths — header auto-detect, leading-zero guard — apply.
     // `header_mode` overrides CSV/TSV header detection (On/Off) or leaves it Auto.
+    // Open, retrying with 4x larger read blocks (up to 1 GiB) while the first
+    // block cannot hold a whole record — a line longer than the block.
     static std::string open(const std::string& path, DelimKind kind,
                              const std::string& region,
                              std::unique_ptr<DelimitedSource>* out,
                              char delim_override = 0,
                              HeaderMode header_mode = HeaderMode::Auto,
                              TsvDialect dialect = TsvDialect::None) {
+        std::string err;
+        for (int64_t block = csv_block_bytes();; block *= 4) {
+            const int64_t saved = csv_block_override;
+            csv_block_override = block;
+            err = open_once(path, kind, region, out, delim_override, header_mode, dialect);
+            csv_block_override = saved;
+            if (err.find("straddling object") == std::string::npos || block >= ((int64_t)1 << 30))
+                break;
+            out->reset();
+        }
+        return err;
+    }
+    static std::string open_once(const std::string& path, DelimKind kind,
+                             const std::string& region,
+                             std::unique_ptr<DelimitedSource>* out,
+                             char delim_override, HeaderMode header_mode,
+                             TsvDialect dialect) {
         auto self = std::make_unique<DelimitedSource>();
         self->path_      = path;
         self->kind_      = kind;
@@ -9849,7 +9885,7 @@ public:
                 std::make_shared<JsonArrayUnwrapStream>(std::move(input)), self->gate_);
 
         auto ropts = arrow::json::ReadOptions::Defaults();
-        ropts.block_size  = 16 << 20;
+        ropts.block_size  = (int32_t)std::min<int64_t>(csv_block_bytes(), INT32_MAX);
         ropts.use_threads = true;
         auto popts = arrow::json::ParseOptions::Defaults();
         popts.newlines_in_values         = true;   // tolerate pretty-printed records
@@ -26062,6 +26098,10 @@ static std::string preflight_path(const std::string& path) {
 // redundancy from Arrow's open-error strings — the path is already in our
 // own "cannot open '...': " prefix.
 static std::string shorten_reader_error(std::string msg) {
+    if (msg.find("straddling object straddles two block boundaries") != std::string::npos)
+        return "a record is longer than the " + std::to_string(csv_block_bytes() >> 20) +
+               " MiB read block; set VV_CSV_BLOCK_MB to a larger size (e.g. " +
+               std::to_string((csv_block_bytes() >> 20) * 8) + ") and run again";
     auto erase = [&](const std::string& needle) {
         auto p = msg.find(needle);
         if (p != std::string::npos) msg.erase(p, needle.size());
