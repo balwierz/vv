@@ -499,12 +499,18 @@ Supported sources:
 
 * **BAM / CRAM**: requires an index (`.bai` / `.csi` / `.crai`) from
   `samtools index`. vv uses htslib's multi-region iterator, so several
-  comma-separated windows are walked in one pass. A plain `.sam` has no
-  index and is rejected rather than silently scanned. CRAM decoding needs
+  comma-separated windows are walked in one pass. CRAM decoding needs
   a reference: pass `-f ref.fa`, or let htslib fall back to `$REF_PATH` /
   `$REF_CACHE`;
 * **tabix-indexed text**: `.vcf.gz`, `.bed.gz`, `.gff.gz`, `.tsv.gz`
   (requires a `.tbi`);
+* **unindexed text** — BED and its peak / signal variants, VCF, GFF / GTF,
+  SAM, PAF and mpileup, plain or gzipped: the whole file is read and each
+  line kept when it overlaps a window by tabix's rules (VCF spans `POS` plus
+  the `REF` length or `INFO` `END=`, SAM `POS` plus the `CIGAR`'s reference
+  length, PAF the target span). stderr notes `no tabix index; -r reads the
+  whole file`. A CSV / TSV names its coordinate columns only in its header,
+  so it still needs a tabix index (or use `--filter`);
 * **BCF**: requires `.csi` / `.tbi` from `bcftools index`;
 * **LociSSD Parquet** (`.lociss`): pruning uses the embedded manifest
   to locate each chromosome's row range, then Parquet's column

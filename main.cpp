@@ -1009,8 +1009,10 @@ static void print_usage(const char* prog) {
         "  Supported on indexed BAM/CRAM (.bai/.csi/.crai), tabix-indexed\n"
         "  VCF/BED/GFF/TSV, indexed BCF (.csi/.tbi), LociSSD (.lociss),\n"
         "  plain sorted Parquet with chrom/start/end columns, and\n"
-        "  bigBed/bigWig. Formats with no region index warn on stderr and\n"
-        "  show the whole file. Coordinates follow the UCSC convention\n"
+        "  bigBed/bigWig. Unindexed BED/VCF/GFF/SAM/PAF/mpileup text is\n"
+        "  read in full and filtered, with a note on stderr; other formats\n"
+        "  with no region index warn on stderr and show the whole file.\n"
+        "  Coordinates follow the UCSC convention\n"
         "  (0-based half-open) by default; pass --coords NCBI for 1-based\n"
         "  inclusive (samtools/tabix style).\n"
         "\nPerformance:\n"
@@ -2852,6 +2854,185 @@ static void resolve_region_chroms(std::vector<Region>& ws, HavePred have,
     bool noted = false;
     for (auto& w : ws) w.chrom = resolve_chrom(w.chrom, have, path, noted);
 }
+
+// True when htslib finds a tabix / CSI index for `path`. Loading it with
+// htslib's logging off keeps its "[E::idx_find_and_load] Could not retrieve
+// index file" line off stderr: a missing index is an expected case here.
+static bool tabix_index_exists(const std::string& path) {
+    const int level = hts_get_log_level();
+    hts_set_log_level(HTS_LOG_OFF);
+    tbx_t* tbx = tbx_index_load(path.c_str());
+    hts_set_log_level((htsLogLevel)level);
+    if (!tbx) return false;
+    tbx_destroy(tbx);
+    return true;
+}
+
+// -r over a text file that has no tabix index: read every data line and keep
+// those overlapping a window, as a tabix query of the same file would. Each
+// line's span follows tabix's presets, as 0-based half-open:
+//   BED      chrom, start, end (col 1-3; a zero-length interval counts 1 bp)
+//   GFF/GTF  seqid, start - 1, end (col 1, 4, 5; 1-based inclusive)
+//   VCF      CHROM, POS - 1, POS - 1 + len(REF), or INFO END= when present
+//   SAM      RNAME, POS - 1, plus the reference length of CIGAR ('*' = 1)
+//   PAF      target name, start, end (col 6, 8, 9)
+//   mpileup  chrom, pos - 1, pos
+// A window's chromosome also matches its UCSC / Ensembl alias (chr1 / 1).
+// A line whose coordinates do not parse is passed on, so the reader reports
+// it as it would without -r; blank lines are passed on and skipped there.
+class RegionScanStream : public arrow::io::InputStream {
+public:
+    enum class Kind { BED, GFF, VCF, SAM, PAF, Mpileup };
+private:
+    std::shared_ptr<arrow::io::InputStream> inner_;
+    LineReader          lr_;
+    Kind                kind_;
+    char                delim_;
+    std::vector<Region> windows_;
+    std::vector<std::string> aliases_;   // chrom_alias of each window's chrom
+    std::string         out_buf_;
+    size_t              out_pos_    = 0;
+    bool                inner_done_ = false;
+
+    static bool to_int(std::string_view v, int64_t* out) {
+        if (v.empty()) return false;
+        auto r = std::from_chars(v.data(), v.data() + v.size(), *out);
+        return r.ec == std::errc() && r.ptr == v.data() + v.size();
+    }
+    static int64_t cigar_ref_len(std::string_view c) {
+        if (c == "*") return 1;
+        int64_t len = 0, n = 0;
+        for (char ch : c) {
+            if (ch >= '0' && ch <= '9') { n = n * 10 + (ch - '0'); continue; }
+            if (ch == 'M' || ch == 'D' || ch == 'N' || ch == '=' || ch == 'X') len += n;
+            n = 0;
+        }
+        return len > 0 ? len : 1;
+    }
+    // The line's span; false when its coordinates do not parse.
+    bool span(std::string_view line, std::string_view* chrom,
+              int64_t* beg, int64_t* end) const {
+        std::string_view f[9];
+        int nf = 0;
+        size_t start = 0;
+        const int want = kind_ == Kind::VCF ? 8 : kind_ == Kind::PAF ? 9
+                       : kind_ == Kind::GFF ? 5 : kind_ == Kind::SAM ? 6
+                       : kind_ == Kind::BED ? 3 : 2;
+        while (nf < want) {
+            size_t d = line.find(delim_, start);
+            f[nf++] = line.substr(start, d == std::string_view::npos ? d : d - start);
+            if (d == std::string_view::npos) break;
+            start = d + 1;
+        }
+        if (nf < want) return false;
+        switch (kind_) {
+            case Kind::BED:
+                *chrom = f[0];
+                if (!to_int(f[1], beg) || !to_int(f[2], end)) return false;
+                if (*end <= *beg) *end = *beg + 1;
+                return true;
+            case Kind::GFF:
+                *chrom = f[0];
+                if (!to_int(f[3], beg) || !to_int(f[4], end)) return false;
+                *beg -= 1;
+                return true;
+            case Kind::VCF: {
+                *chrom = f[0];
+                if (!to_int(f[1], beg)) return false;
+                *beg -= 1;
+                *end = *beg + (int64_t)std::max<size_t>(f[3].size(), 1);
+                // INFO END= (a symbolic allele's extent), 1-based inclusive.
+                std::string_view info = f[7];
+                for (size_t p = 0; p < info.size();) {
+                    size_t sc = info.find(';', p);
+                    std::string_view kv = info.substr(p, sc == std::string_view::npos ? sc : sc - p);
+                    int64_t e;
+                    if (kv.size() > 4 && kv.substr(0, 4) == "END=" && to_int(kv.substr(4), &e))
+                        *end = e;
+                    if (sc == std::string_view::npos) break;
+                    p = sc + 1;
+                }
+                return true;
+            }
+            case Kind::SAM:
+                *chrom = f[2];
+                if (*chrom == "*" || !to_int(f[3], beg)) return false;
+                *beg -= 1;
+                *end = *beg + cigar_ref_len(f[5]);
+                return true;
+            case Kind::PAF:
+                *chrom = f[5];
+                return to_int(f[7], beg) && to_int(f[8], end);
+            case Kind::Mpileup:
+                *chrom = f[0];
+                if (!to_int(f[1], beg)) return false;
+                *end = *beg; *beg -= 1;
+                return true;
+        }
+        return false;
+    }
+    bool keep(std::string_view line) const {
+        if (line.empty()) return true;
+        std::string_view chrom;
+        int64_t beg, end;
+        if (!span(line, &chrom, &beg, &end)) {
+            // An unmapped SAM read (RNAME '*') lies in no window.
+            return !(kind_ == Kind::SAM && line.find(delim_) != std::string_view::npos &&
+                     chrom == "*");
+        }
+        for (size_t w = 0; w < windows_.size(); ++w) {
+            const Region& r = windows_[w];
+            if (chrom != r.chrom && (aliases_[w].empty() || chrom != aliases_[w])) continue;
+            if (beg < r.end && end > r.start) return true;
+        }
+        return false;
+    }
+    bool refill() {
+        out_buf_.clear(); out_pos_ = 0;
+        std::string line;
+        while (out_buf_.empty()) {
+            bool ok = lr_.read_line(&line);
+            if (!ok && line.empty()) { inner_done_ = true; return false; }
+            if (!ok) inner_done_ = true;
+            if (keep(line)) { out_buf_ = line; out_buf_ += '\n'; }
+            else if (inner_done_) return false;
+        }
+        return true;
+    }
+
+public:
+    RegionScanStream(std::shared_ptr<arrow::io::InputStream> inner, Kind kind, char delim,
+                     std::vector<Region> windows)
+        : inner_(inner), lr_(inner), kind_(kind), delim_(delim), windows_(std::move(windows)) {
+        for (const auto& w : windows_) aliases_.push_back(chrom_alias(w.chrom));
+    }
+
+    arrow::Status Close() override { return inner_->Close(); }
+    bool closed() const override { return inner_->closed(); }
+    arrow::Result<int64_t> Tell() const override {
+        return arrow::Status::NotImplemented("RegionScanStream::Tell");
+    }
+    arrow::Result<int64_t> Read(int64_t n, void* buf) override {
+        uint8_t* p = static_cast<uint8_t*>(buf);
+        int64_t total = 0;
+        while (n > 0) {
+            if (out_pos_ >= out_buf_.size()) {
+                if (inner_done_ || !refill()) break;
+            }
+            int64_t avail = (int64_t)(out_buf_.size() - out_pos_);
+            int64_t take  = std::min(n, avail);
+            std::memcpy(p, out_buf_.data() + out_pos_, (size_t)take);
+            p += take; out_pos_ += (size_t)take; n -= take; total += take;
+        }
+        return total;
+    }
+    arrow::Result<std::shared_ptr<arrow::Buffer>> Read(int64_t n) override {
+        ARROW_ASSIGN_OR_RAISE(auto buf, arrow::AllocateResizableBuffer(n));
+        ARROW_ASSIGN_OR_RAISE(int64_t actual, Read(n, buf->mutable_data()));
+        ARROW_RETURN_NOT_OK(buf->Resize(actual, false));
+        return std::shared_ptr<arrow::Buffer>(std::move(buf));
+    }
+};
 
 // ── Simple value-predicate filter (--filter) ─────────────────────────────────
 //
@@ -6855,7 +7036,30 @@ private:
         // Tabix range query: drop the file-driven data stream and replace it
         // with a tabix iterator that yields only records overlapping `region`.
         // Preamble + column names already came from the original file above.
-        if (!region.empty()) {
+        if (!region.empty() && !tabix_index_exists(path)) {
+            // No index: scan the whole file and keep the lines a tabix query
+            // would return. CSV / TSV name their coordinate columns only in
+            // the header Arrow reads later, so they still need an index.
+            std::optional<RegionScanStream::Kind> scan;
+            switch (kind) {
+                case DelimKind::BED:     scan = RegionScanStream::Kind::BED; break;
+                case DelimKind::GFF:     scan = RegionScanStream::Kind::GFF; break;
+                case DelimKind::VCF:     scan = RegionScanStream::Kind::VCF; break;
+                case DelimKind::SAM:     scan = RegionScanStream::Kind::SAM; break;
+                case DelimKind::PAF:     scan = RegionScanStream::Kind::PAF; break;
+                case DelimKind::Mpileup: scan = RegionScanStream::Kind::Mpileup; break;
+                default: break;
+            }
+            if (!scan)
+                return "No tabix index (.tbi / .csi) found for '" + path + "'; -r on a "
+                       "CSV / TSV file needs one (bgzip it, then tabix -s <col> -b <col> "
+                       "-e <col>), or select rows with --filter";
+            std::fprintf(stderr, "vv: %s: no tabix index; -r reads the whole file\n",
+                         path.c_str());
+            input = std::make_shared<RegionScanStream>(
+                input, *scan, self->delimiter_, parse_region_list(region));
+            self->region_applied_ = true;
+        } else if (!region.empty()) {
             // `region` is canonical 0-based half-open; tbx_itr_querys reads its
             // string argument as 1-based inclusive, so convert at the boundary.
             std::shared_ptr<TabixInputStream> tabix;

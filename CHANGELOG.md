@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`-r` on text files without an index.** `-r` on an unindexed BED, VCF,
+  GFF / GTF, SAM, PAF or mpileup file failed with "No tabix index", after
+  htslib's own `[E::idx_find_and_load]` line. vv now reads the whole file and
+  keeps the lines a tabix query would return, by tabix's span rules (VCF
+  `POS` plus the `REF` length or `INFO` `END=`, SAM `POS` plus the `CIGAR`'s
+  reference length, a zero-length BED interval as 1 bp), with a note on
+  stderr. Plain and gzipped files alike; the UCSC / Ensembl chromosome alias
+  applies. A CSV / TSV still needs an index, and its error now says so and
+  points to `--filter`; the htslib line no longer appears.
+
 - **Key-value metadata and `--stats --json`.** The metadata a Parquet or
   Arrow IPC writer stores beside the data (pandas' index description, an
   assembly name, a LociSSD manifest) was not shown anywhere. `--schema`,

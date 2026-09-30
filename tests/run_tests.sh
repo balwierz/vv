@@ -562,6 +562,41 @@ if [ -f "$DATA/tiny.vcf.gz.tbi" ]; then
         "$VV" --tsv --no-header -r chr1:9000000-9000001 "$DATA/tiny.vcf.gz"
 fi
 
+# -r on a text file with no tabix index reads the whole file and keeps the
+# lines a tabix query would return (it failed with "No tabix index", after
+# htslib's own "[E::idx_find_and_load]" line). The same data bgzipped and
+# indexed gives the same rows.
+for pair in "tiny.bed|chr1:1150-4150" "tiny.bed|chr2:" "tiny.vcf|chr1:99-1500" "tiny.vcf|chr2:0-199"; do
+    f=${pair%%|*}; w=${pair#*|}
+    assert_eq_file_inline "region_scan_matches_tabix [$f $w]" \
+        "$("$VV" --tsv --no-header -r "$w" "$DATA/$f" 2>/dev/null)" \
+        "$("$VV" --tsv --no-header -r "$w" "$DATA/$f.gz" 2>/dev/null)"
+done
+RS_ERR=$("$VV" --count -r chr1:0-500 "$DATA/tiny.bed" 2>&1 >/dev/null)
+assert_contains "region_scan_note" "$RS_ERR" "no tabix index; -r reads the whole file"
+assert_eq_file_inline "region_scan_no_htslib_line" "$(printf '%s\n' "$RS_ERR" | grep -cF '[E::')" "0"
+# Each format's span, 0-based half-open as tabix computes it. `ids` lists the
+# 4th BED field / VCF POS / GFF ID / SAM QNAME / PAF qname / pileup pos kept.
+RS="$TMP/rscan"; mkdir -p "$RS"
+printf 'chr1\t100\t100\tzero\nchr1\t99\t100\tleft\nchr1\t101\t150\tright\n' > "$RS/a.bed"
+printf '##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\nchr1\t90\t.\tACGTACGTACGT\tA\t1\tPASS\t.\nchr1\t50\t.\tN\t<DEL>\t1\tPASS\tEND=120\nchr1\t80\t.\tA\tG\t1\tPASS\t.\n' > "$RS/a.vcf"
+printf '##gff-version 3\nchr1\ts\tgene\t101\t101\t.\t+\t.\tID=in\nchr1\ts\tgene\t1\t100\t.\t+\t.\tID=out\n' > "$RS/a.gff3"
+printf '@SQ\tSN:chr1\tLN:1000\nspliced\t0\tchr1\t1\t60\t10M200N10M\t*\t0\t0\t*\t*\nshort\t0\tchr1\t1\t60\t10M\t*\t0\t0\t*\t*\nunmapped\t4\t*\t0\t0\t*\t*\t0\t0\tA\tI\n' > "$RS/a.sam"
+printf 'q1\t10\t0\t10\t+\tchr1\t1000\t100\t110\t10\t10\t60\nq2\t10\t0\t10\t+\tchr1\t1000\t0\t100\t10\t10\t60\n' > "$RS/a.paf"
+printf 'chr1\t100\tA\t1\t.\tI\nchr1\t101\tA\t1\t.\tI\n' > "$RS/a.pileup"
+for c in "a.bed|chr1:100-101|4|zero" "a.vcf|chr1:100-101|2|90 50" \
+         "a.gff3|chr1:100-101|9|ID=in" "a.sam|chr1:150-160|1|spliced" \
+         "a.paf|chr1:100-101|1|q1" "a.pileup|chr1:100-101|2|101" \
+         "a.bed|1:100-101|4|zero"; do
+    IFS='|' read -r f w col want <<<"$c"
+    assert_eq_file_inline "region_scan_span [$f $w]" \
+        "$("$VV" --tsv --no-header -r "$w" "$RS/$f" 2>/dev/null | cut -f"$col" | tr '\n' ' ' | sed 's/ $//')" "$want"
+done
+# CSV / TSV name their coordinate columns only in the header, so -r there
+# still needs an index; the error says how to get one or to use --filter.
+assert_exit_code "region_scan_tsv_exit1" 1 "$VV" --count -r chr1:0-10 "$DATA/tiny.tsv"
+assert_contains "region_scan_tsv_hint" "$("$VV" --count -r chr1:0-10 "$DATA/tiny.tsv" 2>&1)" "--filter"
+
 # bigBed / bigWig — autoSql expansion + range queries.
 if [ -f "$DATA/tiny.bb" ]; then
     BB_TSV=$("$VV" --tsv --no-header "$DATA/tiny.bb" | wc -l | tr -d ' ')

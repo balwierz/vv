@@ -400,7 +400,7 @@ work that touches the same code:
 - [x] **Parquet footer depth** (S–M) — `feat/parquet-footer-json` — `--stats --json`, `--schema --json`
   format for Parquet, key-value metadata.
 - [ ] **Per-row-group `--stats` view** (S) — row counts, sizes and min / max per row group.
-- [ ] **Index-free `-r` on unindexed text formats** (M) — scan and filter with
+- [x] **Index-free `-r` on unindexed text formats** (M) — `feat/region-scan-unindexed` — scan and filter with
   a note; also stop htslib's `[E::idx_find_and_load]` line leaking to stderr.
 - [ ] **TUI frequency sheet `F`** (M) — value counts of the cursor column over
   the filtered rows; Enter filters to the value.
