@@ -10908,20 +10908,11 @@ class OrcSource : public TabularSource {
     arrow::Compression::type                                 compression_ =
         arrow::Compression::UNCOMPRESSED;
     int64_t                                                  file_size_ = 0;
-    mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
-    mutable std::vector<int64_t>                             batch_first_row_;
-    mutable int64_t                                          rows_so_far_ = 0;
+    // Each stripe's first row and row count, from the file footer: stripes are
+    // located without decoding, and read_chunk() decodes only the requested
+    // columns of one stripe (nothing is cached; the callers cache chunks).
+    std::vector<ChunkMeta>                                   stripes_;
     mutable arrow::Status                                    read_status_;  // sticky error
-
-    arrow::Status load_stripe(int i) const {
-        ARROW_ASSIGN_OR_RAISE(auto b,
-            const_cast<arrow::adapters::orc::ORCFileReader*>(reader_.get())
-                ->ReadStripe(i));
-        batch_first_row_.push_back(rows_so_far_);
-        rows_so_far_ += b->num_rows();
-        batches_.push_back(std::move(b));
-        return arrow::Status::OK();
-    }
 
     static std::string fmt_size(int64_t sz) {
         char buf[32];
@@ -10971,13 +10962,9 @@ public:
         auto cmp_or = self->reader_->GetCompression();
         if (cmp_or.ok()) self->compression_ = *cmp_or;
 
-        // Empty file: seed an empty batch so schema-only views still work.
-        if (self->num_stripes_ == 0) {
-            self->batch_first_row_.push_back(0);
-            self->batches_.push_back(arrow::RecordBatch::Make(
-                self->schema_, 0, std::vector<std::shared_ptr<arrow::Array>>(
-                    self->schema_->num_fields(),
-                    arrow::MakeArrayOfNull(arrow::utf8(), 0).ValueOrDie())));
+        for (int64_t i = 0; i < self->num_stripes_; ++i) {
+            const auto si = self->reader_->GetStripeInformation(i);
+            self->stripes_.push_back({si.first_row_id, si.num_rows});
         }
         *out = std::move(self);
         return "";
@@ -10985,38 +10972,53 @@ public:
 
     std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
     int64_t total_rows() const override { return num_rows_total_; }
+    // An empty file still has one (empty) chunk, so schema-only views work.
     int     num_chunks() const override {
         return num_stripes_ == 0 ? 1 : (int)num_stripes_;
     }
     ChunkMeta chunk_meta(int i) const override {
-        if (i >= (int)batches_.size())
-            const_cast<OrcSource*>(this)->ensure(i);
-        // A stripe that fails to decode leaves batches_ short of num_stripes_
-        // (the count num_chunks() reports), so index past the end read out of
-        // bounds. Report an empty chunk; ensure() has set the sticky error.
-        if (i < 0 || i >= (int)batches_.size()) {
-            int64_t end = batch_first_row_.empty()
-                ? 0 : batch_first_row_.back() + batches_.back()->num_rows();
-            return {end, 0};
-        }
-        return {batch_first_row_[i], batches_[i]->num_rows()};
+        if (i < 0 || i >= (int)stripes_.size()) return {0, 0};
+        return stripes_[(size_t)i];
     }
     arrow::Status read_status() const override { return read_status_; }
-    void ensure(int i) override {
-        while ((int)batches_.size() <= i &&
-               (int64_t)batches_.size() < num_stripes_) {
-            auto st = load_stripe((int)batches_.size());
-            // A failed stripe read used to be swallowed here, so a truncated or
-            // corrupt ORC produced a partial table with exit 0. Make it sticky.
-            if (!st.ok()) { if (read_status_.ok()) read_status_ = st; break; }
-        }
-    }
     arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
                               std::shared_ptr<arrow::Table>* out) override {
-        ensure(i);
-        if (i >= (int)batches_.size())
+        if (num_stripes_ == 0 && i == 0) {          // empty file
+            arrow::FieldVector fields;
+            std::vector<std::shared_ptr<arrow::Array>> cols;
+            for (int c : col_indices) {
+                fields.push_back(schema_->field(c));
+                ARROW_ASSIGN_OR_RAISE(auto a, arrow::MakeArrayOfNull(schema_->field(c)->type(), 0));
+                cols.push_back(std::move(a));
+            }
+            *out = arrow::Table::Make(arrow::schema(fields), cols, 0);
+            return arrow::Status::OK();
+        }
+        if (i < 0 || i >= (int)num_stripes_)
             return arrow::Status::IndexError("chunk ", i, " out of range");
-        *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
+        // ORC decodes the selected top-level fields, returned in schema
+        // order; map each requested column (any order, repeats allowed) to
+        // its place in that batch.
+        std::vector<int> wanted(col_indices.begin(), col_indices.end());
+        std::sort(wanted.begin(), wanted.end());
+        wanted.erase(std::unique(wanted.begin(), wanted.end()), wanted.end());
+        auto b = reader_->ReadStripe(i, wanted);
+        if (!b.ok()) {
+            // A failed stripe read must not become a short table with exit 0.
+            if (read_status_.ok()) read_status_ = b.status();
+            return b.status();
+        }
+        const auto& batch = *b;
+        arrow::FieldVector fields;
+        std::vector<std::shared_ptr<arrow::Array>> cols;
+        for (int c : col_indices) {
+            const int pos = (int)(std::lower_bound(wanted.begin(), wanted.end(), c) - wanted.begin());
+            if (pos >= batch->num_columns())
+                return arrow::Status::Invalid("ORC stripe ", i, " lacks column ", c);
+            fields.push_back(schema_->field(c));
+            cols.push_back(batch->column(pos));
+        }
+        *out = arrow::Table::Make(arrow::schema(fields), cols, batch->num_rows());
         return arrow::Status::OK();
     }
     const std::string& path() const override { return path_; }

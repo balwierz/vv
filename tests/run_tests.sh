@@ -2749,6 +2749,23 @@ if [ -f "$DATA/tiny.orc" ] && \
     # --filter on the typed double column works as expected.
     ORC_FLT=$("$VV" --tsv --no-header --filter 'score > 5.0' "$DATA/tiny.orc" | wc -l | tr -d ' ')
     assert_eq_file_inline "orc_filter_by_real"      "$ORC_FLT" "2"
+    # Many stripes: each is located from the footer and decodes only the
+    # requested columns (a struct with its children), in the requested order.
+    if python3 -c "import pyarrow.orc" 2>/dev/null; then
+        python3 -c "
+import pyarrow as pa, pyarrow.orc as orc, sys
+n = 60000
+orc.write_table(pa.table({'a': list(range(n)), 's': [{'x': i} for i in range(n)],
+                          'name': ['n%d' % i for i in range(n)]}),
+                sys.argv[1], stripe_size=1 << 16)
+print(orc.ORCFile(sys.argv[1]).nstripes > 1)" "$TMP/multi.orc" > "$TMP/multi.orc.ok"
+        assert_eq_file_inline "orc_multi_stripe_fixture" "$(cat "$TMP/multi.orc.ok")" "True"
+        assert_eq_file_inline "orc_multi_stripe_select_order" \
+            "$("$VV" --tsv --no-header --select name,s,a "$TMP/multi.orc" | sed -n '1p;30001p;60000p' | tr '\t\n' ',;')" \
+            'n0,{x:int64 = 0},0;n30000,{x:int64 = 30000},30000;n59999,{x:int64 = 59999},59999;'
+        assert_eq_file_inline "orc_multi_stripe_count" "$("$VV" --count "$TMP/multi.orc")" "60000"
+        rm -f "$TMP/multi.orc" "$TMP/multi.orc.ok"
+    fi
 fi
 
 # Excel (.xlsx): two sheets; first ("peaks") dumps via --tsv, schema shows
