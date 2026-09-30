@@ -938,6 +938,9 @@ static void print_usage(const char* prog) {
         "                      --tsv / --json / --sort / --filter. With an index:\n"
         "                      mapped / unmapped reads (BAM) or records (VCF / BCF)\n"
         "                      per sequence, as samtools idxstats\n"
+        "  --seq-stats         FASTA/FASTQ: one-row summary — record count, total /\n"
+        "                      min / mean / max length, N50, GC %, and for FASTQ\n"
+        "                      Q20 / Q30 %; composes with --tsv / --json\n"
         "  --gt-stats          VCF/BCF: add per-variant genotype summary columns\n"
         "                      over the samples — n_called/n_het/n_hom_ref/\n"
         "                      n_hom_alt/n_missing, AC/AN/AF, call_rate. A fixed\n"
@@ -1211,6 +1214,8 @@ static Config parse_args(int argc, char** argv) {
             cfg.stats_only = true;
         } else if (!std::strcmp(argv[i], "--contigs")) {
             cfg.contigs = true;
+        } else if (!std::strcmp(argv[i], "--seq-stats")) {
+            cfg.seq_stats = true;
         } else if (!std::strcmp(argv[i], "--gt-stats")) {
             cfg.gt_stats = true;
         } else if (!std::strcmp(argv[i], "--distinct")) {
@@ -18908,6 +18913,8 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
 // caller — CLI, GUI, KDE plugins — gets it through open_source().
 static std::string build_contigs(const Config& cfg,
                                  std::unique_ptr<TabularSource>* out);
+static std::string build_seq_stats(const Config& cfg,
+                                   std::unique_ptr<TabularSource>* out);
 
 // The public entry point: dispatch, then apply --expand once. Doing it here
 // rather than at each `*out = std::move(src)` means every format and every
@@ -18928,6 +18935,7 @@ std::string open_source(const std::string& path, const Config& cfg,
     // --contigs replaces the data view with the header's reference-sequence
     // table (BAM/CRAM/SAM, VCF/BCF), reading no records.
     if (cfg.contigs) return build_contigs(cfg, out);
+    if (cfg.seq_stats) return build_seq_stats(cfg, out);
     std::string err = open_source_dispatch(path, cfg, out);
     if (!err.empty() || !*out) return err;
     if (!cfg.expand_col.empty()) {
@@ -25468,6 +25476,7 @@ static std::string document_flag_error(const Config& cfg, DocKind kind) {
         {cfg.schema_only,              BOTH, "--schema",    md ? "it has no columns" : "its only column is `line`"},
         {cfg.describe,                 BOTH, "--describe",  md ? "it has no columns" : "its only column is `line`"},
         {cfg.stats_only,               BOTH, "--stats",     "it has no Parquet metadata"},
+        {cfg.seq_stats,                BOTH, "--seq-stats", "it is not a FASTA / FASTQ file"},
         {cfg.count,                    MD,   "--count",     "it has no rows"},
         {!cfg.unique_cols.empty(),     BOTH, "--unique",    md ? "it has no columns" : "its only column is `line`"},
         {cfg.sample_n > 0,             BOTH, "--sample",    "it has no rows"},
@@ -26089,6 +26098,115 @@ static std::string build_contigs(const Config& cfg,
     }
 
     *out = std::make_unique<MemoryTableSource>(table, path, footer);
+    return "";
+}
+
+// --seq-stats: one pass over a FASTA / FASTQ with htslib's kseq, summarised
+// as one row (like `seqkit stats -a`): record count, total / min / mean / max
+// length, N50, GC share, and for FASTQ the share of bases at Phred >= 20 and
+// >= 30 (Phred+33). Lengths are kept as a histogram, so memory does not grow
+// with the read count.
+static std::string build_seq_stats(const Config& cfg, std::unique_ptr<TabularSource>* out) {
+    const std::string& path = cfg.path;
+    std::string det = path;
+    for (const char* sfx : {".gz", ".bgz"})
+        if (fends_ci(det, sfx)) { det.resize(det.size() - std::strlen(sfx)); break; }
+    const bool fastq = fends_ci(det, ".fq") || fends_ci(det, ".fastq");
+    const bool fasta = fends_ci(det, ".fa") || fends_ci(det, ".fasta") || fends_ci(det, ".fna") ||
+                       fends_ci(det, ".faa") || fends_ci(det, ".ffn") || fends_ci(det, ".frn");
+    if (!fastq && !fasta)
+        return "--seq-stats summarises a FASTA / FASTQ file (.fa .fasta .fna .faa .ffn .frn "
+               ".fq .fastq, plus .gz)";
+    if (!cfg.region.empty() || !cfg.filter_expr.empty())
+        return "--seq-stats summarises every record; it does not take -r or --filter";
+
+    BGZF* fp = bgzf_open(path.c_str(), "r");
+    if (!fp) return "Cannot open '" + path + "'";
+    if (int n = effective_threads(cfg); n > 1) bgzf_mt(fp, n, 256);
+    kseq_t* ks = kseq_init(fp);
+    std::map<int64_t, int64_t> len_hist;
+    uint64_t res[256] = {0}, qual[256] = {0};
+    int64_t n = 0, sum = 0;
+    int ret;
+    while ((ret = kseq_read(ks)) >= 0) {
+        ++n;
+        sum += (int64_t)ks->seq.l;
+        ++len_hist[(int64_t)ks->seq.l];
+        const unsigned char* s = (const unsigned char*)ks->seq.s;
+        for (size_t i = 0; i < ks->seq.l; ++i) ++res[s[i]];
+        if (fastq && ks->qual.l) {
+            const unsigned char* q = (const unsigned char*)ks->qual.s;
+            for (size_t i = 0; i < ks->qual.l; ++i) ++qual[q[i]];
+        }
+    }
+    kseq_destroy(ks);
+    bgzf_close(fp);
+    if (ret < -1)
+        return "malformed " + std::string(fastq ? "FASTQ" : "FASTA") +
+               " record after " + std::to_string(n) + " records" +
+               (ret == -2 ? " (quality string length differs from the sequence)" : "");
+
+    auto both = [&](char c) { return res[(unsigned char)c] + res[(unsigned char)std::tolower(c)]; };
+    const uint64_t a = both('A'), c = both('C'), g = both('G'), t = both('T'), u = both('U');
+    const uint64_t nuc = a + c + g + t + u + both('N');
+    const uint64_t total = (uint64_t)sum;
+    // Nucleotides unless more than a tenth of the residues are other letters.
+    const bool protein = total > 0 && (double)(total - nuc) > 0.1 * (double)total;
+    const char* type = protein ? "Protein" : (u > 0 && t == 0 ? "RNA" : "DNA");
+
+    int64_t n50 = 0, acc = 0;
+    for (auto it = len_hist.rbegin(); it != len_hist.rend(); ++it) {
+        acc += it->first * it->second;
+        if (2 * acc >= sum) { n50 = it->first; break; }
+    }
+    uint64_t q_all = 0, q20 = 0, q30 = 0;
+    for (int ch = 33; ch < 256; ++ch) {
+        q_all += qual[ch];
+        if (ch >= 33 + 20) q20 += qual[ch];
+        if (ch >= 33 + 30) q30 += qual[ch];
+    }
+
+    arrow::StringBuilder file_b, fmt_b, type_b;
+    arrow::Int64Builder  num_b, sum_b, min_b, max_b, n50_b;
+    arrow::DoubleBuilder avg_b, gc_b, q20_b, q30_b;
+    (void)file_b.Append(path);
+    (void)fmt_b.Append(fastq ? "FASTQ" : "FASTA");
+    (void)type_b.Append(type);
+    (void)num_b.Append(n);
+    (void)sum_b.Append(sum);
+    if (n) {
+        (void)min_b.Append(len_hist.begin()->first);
+        (void)max_b.Append(len_hist.rbegin()->first);
+        (void)avg_b.Append((double)sum / (double)n);
+        (void)n50_b.Append(n50);
+    } else {
+        (void)min_b.AppendNull(); (void)max_b.AppendNull();
+        (void)avg_b.AppendNull(); (void)n50_b.AppendNull();
+    }
+    const uint64_t acgtu = a + c + g + t + u;
+    if (!protein && acgtu) (void)gc_b.Append(100.0 * (double)(g + c) / (double)acgtu);
+    else                   (void)gc_b.AppendNull();
+    if (fastq && q_all) {
+        (void)q20_b.Append(100.0 * (double)q20 / (double)q_all);
+        (void)q30_b.Append(100.0 * (double)q30 / (double)q_all);
+    } else {
+        (void)q20_b.AppendNull(); (void)q30_b.AppendNull();
+    }
+    std::vector<std::shared_ptr<arrow::Array>> cols(12);
+    arrow::ArrayBuilder* bs[] = {&file_b, &fmt_b, &type_b, &num_b, &sum_b, &min_b, &avg_b,
+                                 &max_b, &n50_b, &gc_b, &q20_b, &q30_b};
+    for (size_t i = 0; i < 12; ++i)
+        if (!bs[i]->Finish(&cols[i]).ok()) return "'" + path + "': failed to build the summary";
+    auto schema = arrow::schema({
+        arrow::field("file", arrow::utf8()),      arrow::field("format", arrow::utf8()),
+        arrow::field("type", arrow::utf8()),      arrow::field("num_seqs", arrow::int64()),
+        arrow::field("sum_len", arrow::int64()),  arrow::field("min_len", arrow::int64()),
+        arrow::field("avg_len", arrow::float64()), arrow::field("max_len", arrow::int64()),
+        arrow::field("n50", arrow::int64()),      arrow::field("gc_pct", arrow::float64()),
+        arrow::field("q20_pct", arrow::float64()), arrow::field("q30_pct", arrow::float64())});
+    *out = std::make_unique<MemoryTableSource>(arrow::Table::Make(schema, cols), path,
+        std::string("Sequence statistics: GC over A/C/G/T/U (N excluded)") +
+        (fastq ? "; Q20 / Q30 = share of bases at Phred >= 20 / 30 (Phred+33)" : ""));
     return "";
 }
 

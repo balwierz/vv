@@ -721,6 +721,28 @@ metadata, if any, follows `Created by:` as in `--schema`.
 count). On a file that is not Parquet it is an error; `--schema --json`
 gives that file's columns.
 
+## `--seq-stats` (FASTA / FASTQ summary)
+
+```sh
+$ vv --seq-stats reads.fq.gz
+$ vv --seq-stats --json proteins.faa
+```
+
+Reads a FASTA or FASTQ (plain or `.gz`) once and prints one row, like
+`seqkit stats -a`:
+
+| column | meaning |
+| --- | --- |
+| `format`, `type` | FASTA / FASTQ; DNA, RNA (U without T) or Protein (more than a tenth of the residues are not A/C/G/T/U/N) |
+| `num_seqs`, `sum_len` | record count and total length |
+| `min_len`, `avg_len`, `max_len`, `n50` | length summary; N50 is the length L such that records of length ≥ L hold half the bases |
+| `gc_pct` | G+C over A/C/G/T/U, N excluded; null for protein |
+| `q20_pct`, `q30_pct` | FASTQ: share of bases at Phred ≥ 20 / ≥ 30 (Phred+33); null for FASTA |
+
+Lengths are kept as a histogram, so memory does not grow with the read
+count. A malformed record (for example a quality string shorter than its
+sequence) is an error. `-r` and `--filter` do not apply.
+
 ## `--contigs` (reference sequences & assembly)
 
 ```sh
