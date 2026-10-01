@@ -143,6 +143,7 @@ extern "C" {
 // open_source). Defined here in main.cpp; this header is what the Qt GUI and
 // the KF6 plugins include to drive libvvcore.
 #include "vv/vvcore.hpp"
+#include "vv/vvjson.hpp"
 
 // ── Colors ────────────────────────────────────────────────────────────────────
 
@@ -588,6 +589,10 @@ static void load_user_config(Config& cfg) {
                 if (v >= 4 && v <= 100000) cfg.max_col_w = v;
             } catch (...) { /* ignore */ }
         }
+        else if (key == "json_view" && (val == "tree" || val == "table")) {
+            // How a JSON file opens on a terminal; --tree / --no-tree win.
+            cfg.json_view = val;
+        }
         else if (key == "threads" && cfg.threads == 0) {
             // Same as -@; -@ on the command line wins (0 stays "auto").
             try {
@@ -844,8 +849,9 @@ static void print_usage(const char* prog) {
         "  .bim  .fam  .pvar  .psam    PLINK variant / sample tables (a PLINK .bed /\n"
         "                              .pgen genotype file is refused, with the\n"
         "                              plink2 command that exports it to VCF)\n"
-        "  .json  .ndjson  .jsonl      JSON: an array of objects or newline-delimited\n"
-        "                              (plus .gz / .zst; nested → struct/list columns)\n"
+        "  .json  .ndjson  .jsonl      JSON documents (plus .gz / .zst; also on stdin):\n"
+        "                              printed re-indented on a pipe; a table of\n"
+        "                              records with any table flag (see JSON below)\n"
         "  .txt  .text  .log           plain text (also .gz / .zst; viewed like less -SN,\n"
         "                              not tabulated). The fallback for any file\n"
         "                              no other format claims.\n"
@@ -880,6 +886,14 @@ static void print_usage(const char* prog) {
         "        ::command line (:<N> jump, :q quit, :theme NAME),\n"
         "        Tab / Shift-Tab: switch files (with multiple positionals),\n"
         "        H/F1: in-app help, q quit\n"
+        "\nJSON documents (.json / .ndjson / .jsonl, or JSON on stdin):\n"
+        "  On a pipe a JSON file prints re-indented, two spaces, scalars as\n"
+        "  written (like jq .). A table flag (--tsv, --parquet, --filter, -n,\n"
+        "  --table, ...) reads it as a table of records instead.\n"
+        "  --pretty            print the document re-indented (also on a terminal)\n"
+        "  --json-paths        print one `path = value` line per leaf, with jq\n"
+        "                      paths: .a.b[0] = 1, .[\"a b\"] = \"x\" (NDJSON: .[i])\n"
+        "  --no-tree           read JSON as a table of records\n"
         "\nTable options:\n"
         "  -n <rows>           rows to display  (default: 10, 0 = all)\n"
         "  --tail <N>          show the last N rows instead of the first N\n"
@@ -1284,6 +1298,14 @@ static Config parse_args(int argc, char** argv) {
         } else if (!std::strcmp(argv[i], "--md") ||
                    !std::strcmp(argv[i], "--markdown")) {
             cfg.md = true;
+        } else if (!std::strcmp(argv[i], "--tree")) {
+            cfg.json_tree = true;
+        } else if (!std::strcmp(argv[i], "--no-tree")) {
+            cfg.json_no_tree = true;
+        } else if (!std::strcmp(argv[i], "--pretty")) {
+            cfg.json_pretty = true;
+        } else if (!std::strcmp(argv[i], "--json-paths")) {
+            cfg.json_paths = true;
         } else if (!std::strcmp(argv[i], "--text")) {
             cfg.force_text = true;
         } else if (!std::strcmp(argv[i], "--validate")) {
@@ -10079,22 +10101,32 @@ public:
 
     static std::string open(const std::string& path, const Config& /*cfg*/,
                             std::unique_ptr<JsonSource>* out) {
-        auto self = std::make_unique<JsonSource>();
-        self->path_ = path;
-
         auto maybe_raw = arrow::io::ReadableFile::Open(path);
         if (!maybe_raw.ok())
             return "Cannot open '" + path + "': " + maybe_raw.status().ToString();
         auto raw = maybe_raw.ValueOrDie();
-        self->comp_ = sniff_stream_codec(raw);
+        const arrow::Compression::type comp = sniff_stream_codec(raw);
         std::shared_ptr<arrow::io::InputStream> input = raw;
-        if (self->comp_ != arrow::Compression::UNCOMPRESSED) {
-            auto codec = arrow::util::Codec::Create(self->comp_);
+        if (comp != arrow::Compression::UNCOMPRESSED) {
+            auto codec = arrow::util::Codec::Create(comp);
             if (!codec.ok()) return codec.status().ToString();
             auto ci = arrow::io::CompressedInputStream::Make(codec->get(), input);
             if (!ci.ok()) return ci.status().ToString();
             input = ci.ValueOrDie();
         }
+        return open_stream(path, std::move(input), comp, out);
+    }
+
+    // Records from an already-decoded stream (JSON on stdin); `label` names it
+    // in messages, `comp` is the compression it arrived with.
+    static std::string open_stream(const std::string& label,
+                                   std::shared_ptr<arrow::io::InputStream> input,
+                                   arrow::Compression::type comp,
+                                   std::unique_ptr<JsonSource>* out) {
+        auto self = std::make_unique<JsonSource>();
+        self->path_ = label;
+        self->comp_ = comp;
+        const std::string& path = label;
         std::shared_ptr<arrow::io::InputStream> unwrapped =
             std::make_shared<GatedInputStream>(
                 std::make_shared<JsonArrayUnwrapStream>(std::move(input)), self->gate_);
@@ -10152,6 +10184,529 @@ public:
                (comp_ == arrow::Compression::GZIP ? " (gzip)" :
                 comp_ == arrow::Compression::ZSTD ? " (zstd)" : "");
     }
+};
+
+// ── JSON documents: strict streaming lexer, pretty print, paths ─────────────
+//
+// `vv x.json` on a pipe prints the document re-indented (like `jq .`) and
+// --json-paths prints one `path = value` line per leaf (like gron, with jq
+// paths). Both run on a pull lexer over any InputStream (a file, gzip / zstd,
+// stdin): iterative with an explicit container stack, numbers kept as the
+// bytes in the file, strings handed on in pieces — memory is constant in
+// nesting depth and value size. RFC 8259 strict: no comments, no trailing
+// commas, no NaN; several top-level values are allowed (NDJSON, concatenated).
+
+namespace vvjson {
+
+std::string JsonError::describe() const {
+    return "invalid JSON at byte " + std::to_string(offset) + " (line " +
+           std::to_string(line) + ", column " + std::to_string(col) + "): " + msg;
+}
+
+namespace {
+
+// Buffered reader with the byte offset and the line count of what it has
+// consumed, so an error can name its line and column without a second pass.
+class ByteReader {
+    arrow::io::InputStream& in_;
+    std::vector<char>       buf_;
+    size_t                  pos_ = 0, len_ = 0;
+    int64_t                 base_ = 0;          // stream offset of buf_[0]
+    int64_t                 lines_ = 0;         // '\n' before buf_[0]
+    int64_t                 last_nl_ = -1;      // offset of the last '\n' before buf_[0]
+    bool                    eof_ = false;
+public:
+    arrow::Status           status;
+    explicit ByteReader(arrow::io::InputStream& in, size_t buf = (size_t)1 << 20)
+        : in_(in), buf_(buf) {}
+    bool fill() {
+        if (eof_) return false;
+        for (size_t k = 0; k < len_; ++k)
+            if (buf_[k] == '\n') { ++lines_; last_nl_ = base_ + (int64_t)k; }
+        base_ += (int64_t)len_;
+        pos_ = len_ = 0;
+        auto r = in_.Read((int64_t)buf_.size(), buf_.data());
+        if (!r.ok()) { status = r.status(); eof_ = true; return false; }
+        len_ = (size_t)*r;
+        if (len_ == 0) { eof_ = true; return false; }
+        return true;
+    }
+    int peek() { return (pos_ < len_ || fill()) ? (unsigned char)buf_[pos_] : -1; }
+    int get()  { int c = peek(); if (c >= 0) ++pos_; return c; }
+    // The bytes available without another read (empty at end of input).
+    const char* span(size_t* n) {
+        if (pos_ == len_) fill();
+        *n = len_ - pos_;
+        return buf_.data() + pos_;
+    }
+    void skip(size_t n) { pos_ += n; }
+    int64_t offset() const { return base_ + (int64_t)pos_; }
+    void locate(int64_t* line, int64_t* col) const {
+        int64_t l = lines_, nl = last_nl_;
+        for (size_t k = 0; k < pos_ && k < len_; ++k)
+            if (buf_[k] == '\n') { ++l; nl = base_ + (int64_t)k; }
+        *line = l + 1;
+        *col = offset() - nl;
+    }
+};
+
+// What the lexer reports. String bytes come between str_begin / str_end (or
+// key_begin / key_end) as raw pieces: the text between the quotes, escapes
+// kept. `empty` on open / close: the container is {} or [].
+struct Visitor {
+    virtual ~Visitor() = default;
+    virtual void doc_begin(int64_t /*index*/) {}
+    virtual void doc_end() {}
+    virtual void open(bool /*obj*/, bool /*empty*/) {}
+    virtual void close(bool /*obj*/, bool /*empty*/) {}
+    virtual void key_begin() {}
+    virtual void key_end() {}
+    virtual void str_begin() {}
+    virtual void str_end() {}
+    virtual void piece(const char* /*p*/, size_t /*n*/) {}
+    // A number ('n') or a literal ('t' true, 'f' false, 'z' null), as written.
+    virtual void scalar(const char* /*p*/, size_t /*n*/, char /*kind*/) {}
+};
+
+class Lexer {
+    ByteReader&           r_;
+    Visitor&              v_;
+    JsonError             err_;
+    std::vector<uint8_t>  stack_;   // 1 = object, 0 = array
+    std::string           num_;
+    int64_t               docs_ = 0;  // complete top-level values
+
+    bool fail(const std::string& msg) {
+        if (err_.ok()) {
+            err_.offset = r_.offset();
+            r_.locate(&err_.line, &err_.col);
+            err_.msg = msg;
+        }
+        return false;
+    }
+    static bool ws(int c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
+    void skip_ws() { while (ws(r_.peek())) r_.get(); }
+    static bool hex(int c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    }
+    static bool alnum(int c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+    }
+
+    // After the opening quote: hand the raw bytes on, validating escapes and
+    // rejecting control characters, up to and including the closing quote.
+    bool string_body() {
+        for (;;) {
+            size_t n = 0;
+            const char* p = r_.span(&n);
+            if (n == 0) return fail("unterminated string");
+            size_t k = 0;
+            while (k < n && p[k] != '"' && p[k] != '\\' && (unsigned char)p[k] >= 0x20) ++k;
+            if (k) v_.piece(p, k);
+            r_.skip(k);
+            if (k == n) continue;
+            const char c = p[k];
+            if (c == '"') { r_.skip(1); return true; }
+            if (c != '\\') return fail("control character in a string (must be escaped)");
+            r_.skip(1);
+            const int e = r_.get();
+            char esc[6] = {'\\', (char)e, 0, 0, 0, 0};
+            if (e == 'u') {
+                for (int d = 0; d < 4; ++d) {
+                    const int h = r_.get();
+                    if (!hex(h)) return fail("bad \\u escape (four hex digits expected)");
+                    esc[2 + d] = (char)h;
+                }
+                v_.piece(esc, 6);
+            } else if (e == '"' || e == '\\' || e == '/' || e == 'b' || e == 'f' ||
+                       e == 'n' || e == 'r' || e == 't') {
+                v_.piece(esc, 2);
+            } else {
+                return fail(e < 0 ? "unterminated string" : "bad escape in a string");
+            }
+        }
+    }
+    bool number() {
+        num_.clear();
+        auto digits = [&]() {
+            size_t before = num_.size();
+            while (r_.peek() >= '0' && r_.peek() <= '9') num_ += (char)r_.get();
+            return num_.size() > before;
+        };
+        if (r_.peek() == '-') num_ += (char)r_.get();
+        if (r_.peek() == '0') num_ += (char)r_.get();
+        else if (!digits()) return fail("bad number");
+        if (r_.peek() == '.') {
+            num_ += (char)r_.get();
+            if (!digits()) return fail("bad number: digits expected after '.'");
+        }
+        if (r_.peek() == 'e' || r_.peek() == 'E') {
+            num_ += (char)r_.get();
+            if (r_.peek() == '+' || r_.peek() == '-') num_ += (char)r_.get();
+            if (!digits()) return fail("bad number: digits expected in the exponent");
+        }
+        const int next = r_.peek();
+        if (alnum(next) || next == '.') return fail("bad number");
+        v_.scalar(num_.data(), num_.size(), 'n');
+        return true;
+    }
+    bool literal(const char* word, char kind) {
+        const size_t n = std::strlen(word);
+        for (size_t k = 0; k < n; ++k)
+            if (r_.get() != word[k]) return fail("expected a value");
+        if (alnum(r_.peek())) return fail("expected a value");
+        v_.scalar(word, n, kind);
+        return true;
+    }
+
+    // One complete top-level value.
+    bool value() {
+        enum { VALUE, KEY, AFTER } st = VALUE;
+        stack_.clear();
+        for (;;) {
+            skip_ws();
+            const int c = r_.peek();
+            if (st == VALUE) {
+                if (c == '{' || c == '[') {
+                    const bool obj = c == '{';
+                    r_.get();
+                    skip_ws();
+                    if (r_.peek() == (obj ? '}' : ']')) {
+                        r_.get();
+                        v_.open(obj, true);
+                        v_.close(obj, true);
+                        st = AFTER;
+                    } else {
+                        v_.open(obj, false);
+                        stack_.push_back(obj ? 1 : 0);
+                        st = obj ? KEY : VALUE;
+                    }
+                } else if (c == '"') {
+                    r_.get();
+                    v_.str_begin();
+                    if (!string_body()) return false;
+                    v_.str_end();
+                    st = AFTER;
+                } else if (c == '-' || (c >= '0' && c <= '9')) {
+                    if (!number()) return false;
+                    st = AFTER;
+                } else if (c == 't') { if (!literal("true", 't')) return false; st = AFTER; }
+                else if (c == 'f')   { if (!literal("false", 'f')) return false; st = AFTER; }
+                else if (c == 'n')   { if (!literal("null", 'z')) return false; st = AFTER; }
+                else return fail(c < 0 ? "unexpected end of input" : "expected a value");
+            } else if (st == KEY) {
+                if (c != '"') return fail(c < 0 ? "unexpected end of input" : "expected a string key");
+                r_.get();
+                v_.key_begin();
+                if (!string_body()) return false;
+                v_.key_end();
+                skip_ws();
+                if (r_.peek() != ':') return fail(r_.peek() < 0 ? "unexpected end of input"
+                                                                : "expected ':' after a key");
+                r_.get();
+                st = VALUE;
+            } else {                                    // AFTER a value
+                if (stack_.empty()) return true;
+                const bool obj = stack_.back() == 1;
+                if (c == ',') { r_.get(); st = obj ? KEY : VALUE; }
+                else if (c == (obj ? '}' : ']')) {
+                    r_.get();
+                    stack_.pop_back();
+                    v_.close(obj, false);
+                } else if (c < 0) return fail("unexpected end of input");
+                else return fail(obj ? "expected ',' or '}'" : "expected ',' or ']'");
+            }
+        }
+    }
+
+public:
+    Lexer(ByteReader& r, Visitor& v) : r_(r), v_(v) {}
+    int64_t docs() const { return docs_; }
+    // Every top-level value to the end of the input; `max_docs` > 0 stops
+    // after that many.
+    JsonError run(int64_t max_docs = 0) {
+        if (r_.peek() == 0xEF) {                        // UTF-8 byte order mark
+            r_.get();
+            if (r_.get() != 0xBB || r_.get() != 0xBF) { fail("expected a value"); return err_; }
+        }
+        for (int64_t i = 0; max_docs <= 0 || i < max_docs; ++i) {
+            skip_ws();
+            if (r_.peek() < 0) break;
+            v_.doc_begin(i);
+            if (!value()) break;
+            v_.doc_end();
+            ++docs_;
+        }
+        if (err_.ok() && !r_.status.ok()) {
+            err_.offset = r_.offset();
+            r_.locate(&err_.line, &err_.col);
+            err_.msg = "read error: " + r_.status.ToString();
+        }
+        return err_;
+    }
+};
+
+// Buffered output to a FILE*.
+class Out {
+    std::FILE*  f_;
+    std::string b_;
+    char        last_ = '\n';     // the last byte written
+public:
+    // End a line cut off by an error, so the message starts on its own line.
+    void end_line() { if (!b_.empty() ? b_.back() != '\n' : last_ != '\n') put('\n'); }
+    explicit Out(std::FILE* f) : f_(f) { b_.reserve(1 << 16); }
+    ~Out() { flush(); }
+    void put(const char* p, size_t n) {
+        b_.append(p, n);
+        if (b_.size() >= (1 << 16)) flush();
+    }
+    void put(const std::string& s) { put(s.data(), s.size()); }
+    void put(char c) { b_ += c; if (b_.size() >= (1 << 16)) flush(); }
+    void flush() {
+        if (!b_.empty()) {
+            std::fwrite(b_.data(), 1, b_.size(), f_);
+            last_ = b_.back();
+            b_.clear();
+        }
+        std::fflush(f_);
+    }
+};
+
+// The theme's colours for JSON tokens (all empty without colour).
+struct Palette {
+    std::string key, str, num, t, f, null, reset;
+    explicit Palette(bool on) {
+        if (!on || !*g_color.reset) return;
+        key = g_color.header; str = g_color.type_str; num = g_color.number;
+        t = g_color.bool_true; f = g_color.bool_false; null = g_color.null_val;
+        reset = g_color.reset;
+    }
+    const std::string& of(char kind) const {
+        return kind == 'n' ? num : kind == 't' ? t : kind == 'f' ? f : null;
+    }
+};
+
+class PrettySink : public Visitor {
+    Out&                 o_;
+    Palette              c_;
+    struct Level { bool obj; int64_t n; };
+    std::vector<Level>   st_;
+    void indent() {
+        o_.put('\n');
+        for (size_t k = 0; k < st_.size(); ++k) o_.put("  ", 2);
+    }
+    // A value about to start: in an array, its separator and indent (an
+    // object member's indent was written with its key).
+    void before_value() {
+        if (st_.empty() || st_.back().obj) return;
+        if (st_.back().n++) o_.put(',');
+        indent();
+    }
+public:
+    PrettySink(Out& o, bool color) : o_(o), c_(color) {}
+    void doc_end() override { o_.put('\n'); }
+    void open(bool obj, bool empty) override {
+        before_value();
+        if (empty) { o_.put(obj ? "{}" : "[]", 2); return; }
+        o_.put(obj ? '{' : '[');
+        st_.push_back({obj, 0});
+    }
+    void close(bool obj, bool empty) override {
+        if (empty) return;
+        st_.pop_back();
+        indent();
+        o_.put(obj ? '}' : ']');
+    }
+    void key_begin() override {
+        if (st_.back().n++) o_.put(',');
+        indent();
+        o_.put(c_.key);
+        o_.put('"');
+    }
+    void key_end() override { o_.put('"'); o_.put(c_.reset); o_.put(": ", 2); }
+    void str_begin() override { before_value(); o_.put(c_.str); o_.put('"'); }
+    void str_end() override { o_.put('"'); o_.put(c_.reset); }
+    void piece(const char* p, size_t n) override { o_.put(p, n); }
+    void scalar(const char* p, size_t n, char kind) override {
+        before_value();
+        o_.put(c_.of(kind));
+        o_.put(p, n);
+        o_.put(c_.reset);
+    }
+};
+
+// `path = value` per leaf; an empty container is a leaf ({} / []), so the
+// lines describe the document completely. Paths are jq paths: .key for an
+// identifier key, ["key"] (the key as written, escapes kept) otherwise, [i]
+// for an array element; the root is ".". NDJSON records are .[i].
+class PathsSink : public Visitor {
+    Out&                     o_;
+    Palette                  c_;
+    bool                     lines_;
+    struct Level { bool obj; int64_t n; size_t path_len; };
+    std::vector<Level>       st_;
+    std::string              path_;       // the current member's path
+    std::string              key_;        // the pending key (raw bytes)
+    bool                     in_key_ = false;
+    size_t                   member_len_ = 0;
+    static bool ident(const std::string& k) {
+        if (k.empty() || !(std::isalpha((unsigned char)k[0]) || k[0] == '_')) return false;
+        for (char ch : k)
+            if (!(std::isalnum((unsigned char)ch) || ch == '_')) return false;
+        return true;
+    }
+    // Point path_ at the next member of the current container.
+    void lead() {
+        if (!st_.empty()) {
+            Level& lv = st_.back();
+            path_.resize(lv.path_len);
+            if (lv.obj) {
+                if (ident(key_)) { path_ += '.'; path_ += key_; }
+                else {
+                    if (path_.empty()) path_ += '.';
+                    path_ += "[\""; path_ += key_; path_ += "\"]";
+                }
+            } else {
+                if (path_.empty()) path_ += '.';
+                path_ += '[' + std::to_string(lv.n) + ']';
+            }
+            ++lv.n;
+        }
+        member_len_ = path_.size();
+    }
+    void write_lead() {
+        o_.put(c_.key);
+        if (path_.empty()) o_.put('.'); else o_.put(path_);
+        o_.put(c_.reset);
+        o_.put(" = ", 3);
+    }
+public:
+    PathsSink(Out& o, bool color, bool lines) : o_(o), c_(color), lines_(lines) {}
+    void doc_begin(int64_t i) override {
+        st_.clear();
+        path_ = lines_ ? ".[" + std::to_string(i) + "]" : std::string();
+    }
+    void open(bool obj, bool empty) override {
+        lead();
+        if (empty) {
+            write_lead();
+            o_.put(obj ? "{}\n" : "[]\n", 3);
+            return;
+        }
+        st_.push_back({obj, 0, member_len_});
+    }
+    void close(bool, bool empty) override { if (!empty) st_.pop_back(); }
+    void key_begin() override { key_.clear(); in_key_ = true; }
+    void key_end() override { in_key_ = false; }
+    void str_begin() override { lead(); write_lead(); o_.put(c_.str); o_.put('"'); }
+    void str_end() override { o_.put('"'); o_.put(c_.reset); o_.put('\n'); }
+    void piece(const char* p, size_t n) override {
+        if (in_key_) key_.append(p, n); else o_.put(p, n);
+    }
+    void scalar(const char* p, size_t n, char kind) override {
+        lead();
+        write_lead();
+        o_.put(c_.of(kind));
+        o_.put(p, n);
+        o_.put(c_.reset);
+        o_.put('\n');
+    }
+};
+
+}  // namespace
+
+JsonError write_json_document(arrow::io::InputStream& in, std::FILE* out,
+                              JsonOut mode, bool lines, bool color) {
+    ByteReader r(in);
+    Out o(out);
+    std::unique_ptr<Visitor> v;
+    if (mode == JsonOut::Pretty) v = std::make_unique<PrettySink>(o, color);
+    else                         v = std::make_unique<PathsSink>(o, color, lines);
+    Lexer lx(r, *v);
+    JsonError e = lx.run();
+    if (!e.ok()) o.end_line();
+    o.flush();
+    return e;
+}
+
+// Does this decoded head of a stream look like JSON? The first token must
+// open an object with a key (or `{}`) or an array with a value, and the bytes
+// must lex cleanly up to where the head was cut off — or break inside that
+// first value, which is malformed JSON (reported as such) rather than text.
+// A complete first value followed by something that is not JSON — a TSV
+// whose first cell is "[1]" — is not taken for JSON.
+bool looks_like_json(const std::string& head) {
+    size_t i = 0;
+    if (head.compare(0, 3, "\xEF\xBB\xBF") == 0) i = 3;
+    auto skip = [&]() { while (i < head.size() && std::strchr(" \t\r\n", head[i]) && head[i]) ++i; };
+    skip();
+    if (i >= head.size()) return false;
+    const char open = head[i++];
+    skip();
+    if (i >= head.size()) return false;
+    const char next = head[i];
+    if (open == '{') { if (next != '"' && next != '}') return false; }
+    else if (open == '[') {
+        if (!(std::strchr("{[\"-tfn]", next) || (next >= '0' && next <= '9'))) return false;
+    } else return false;
+    arrow::io::BufferReader br(arrow::Buffer::FromString(head));
+    ByteReader r(br, 1 << 16);
+    Visitor none;
+    Lexer lx(r, none);
+    JsonError e = lx.run();
+    return e.ok() || lx.docs() == 0 || e.offset >= (int64_t)head.size() ||
+           e.msg == "unexpected end of input" || e.msg == "unterminated string";
+}
+
+#ifdef VV_FUZZ
+void fuzz_one(const uint8_t* buf, size_t n) {
+    auto run = [](const std::string& in, JsonOut mode, std::string* out) {
+        char* mem = nullptr;
+        size_t len = 0;
+        std::FILE* f = open_memstream(&mem, &len);
+        arrow::io::BufferReader br(arrow::Buffer::FromString(in));
+        JsonError e = write_json_document(br, f, mode, false, false);
+        std::fclose(f);
+        out->assign(mem, len);
+        std::free(mem);
+        return e;
+    };
+    const std::string in(reinterpret_cast<const char*>(buf), n);
+    std::string p1, p2, paths;
+    const JsonError e = run(in, JsonOut::Pretty, &p1);
+    if (!e.ok() && (e.offset < 0 || e.offset > (int64_t)n)) std::abort();
+    run(in, JsonOut::Paths, &paths);
+    if (e.ok()) {
+        const JsonError e2 = run(p1, JsonOut::Pretty, &p2);
+        if (!e2.ok() || p1 != p2) std::abort();
+    }
+    (void)looks_like_json(in);
+}
+#endif
+
+}  // namespace vvjson
+
+// JSON on stdin wanted as a document (Config::json_document, set by the CLI):
+// carries the decoded stream to main(), which prints or views it. It reads
+// no records itself.
+class JsonStreamSource : public TabularSource {
+    std::string                              label_;
+    std::shared_ptr<arrow::io::InputStream>  in_;
+    std::shared_ptr<arrow::Schema>           schema_ =
+        arrow::schema({arrow::field("json", arrow::utf8())});
+public:
+    JsonStreamSource(std::string label, std::shared_ptr<arrow::io::InputStream> in)
+        : label_(std::move(label)), in_(std::move(in)) {}
+    std::shared_ptr<arrow::io::InputStream> stream() const { return in_; }
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    int64_t total_rows() const override { return 0; }
+    int     num_chunks() const override { return 0; }
+    ChunkMeta chunk_meta(int) const override { return {0, 0}; }
+    arrow::Status read_chunk(int, const std::vector<int>&, std::shared_ptr<arrow::Table>*) override {
+        return arrow::Status::Invalid("a JSON document stream has no table");
+    }
+    const std::string& path() const override { return label_; }
+    std::string footer() const override { return "Format: JSON document"; }
 };
 
 // ── 2bit (UCSC) source ────────────────────────────────────────────────────────
@@ -11291,6 +11846,7 @@ static std::string sniff_text_format(const std::string& head) {
     for (const char* t : {"@HD\t", "@SQ\t", "@RG\t", "@PG\t", "@CO\t"})
         if (starts(t)) return "sam";
     if (starts(">")) return "fasta";
+    if (vvjson::looks_like_json(head)) return "json";
     if (starts("@")) {
         size_t a = head.find('\n');
         size_t b = a == std::string::npos ? a : head.find('\n', a + 1);
@@ -20105,6 +20661,19 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
                     *out = std::move(src);
                     return "";
                 }
+                if (fmt == "json") {
+                    // As a document (the CLI's pretty print / viewer), or as
+                    // records for the table modes and the GUI.
+                    if (cfg.json_document) {
+                        *out = std::make_unique<JsonStreamSource>(path, std::move(input));
+                        return "";
+                    }
+                    std::unique_ptr<JsonSource> src;
+                    std::string e = JsonSource::open_stream(path, std::move(input), comp, &src);
+                    if (!e.empty()) return e;
+                    *out = std::move(src);
+                    return "";
+                }
                 if (fmt == "fasta" || fmt == "fastq") {
                     // The FASTA / FASTQ reader opens a file: copy the text to one.
                     std::string tmp;
@@ -27841,6 +28410,78 @@ static void emit_schema_json(TabularSource& src, const std::string& fmt_name) {
 // --list-columns / -n work naturally and are allowed. But --tsv / --csv /
 // --select on a file with no fields produce output that fails downstream
 // parsers for no stated reason, so those are errors here and not for markdown.
+// ── JSON documents (routing) ─────────────────────────────────────────────────
+//
+// A JSON file is a document first: on a pipe `vv x.json` prints it re-indented
+// (or, with --json-paths, as path = value lines). A flag that asks for rows or
+// columns — an export, a report, a filter, -n, --table, --no-tree — keeps it
+// on the table path (JsonSource), exactly as before.
+
+// 1 for .json, 2 for NDJSON / JSON Lines (after .gz / .bgz / .zst), else 0.
+static int json_path_kind(const std::string& path) {
+    std::string p = path;
+    for (const char* z : {".gz", ".bgz", ".zstd", ".zst"})
+        if (fends_ci(p, z)) { p.resize(p.size() - std::strlen(z)); break; }
+    if (fends_ci(p, ".json")) return 1;
+    if (fends_ci(p, ".ndjson") || fends_ci(p, ".jsonl")) return 2;
+    return 0;
+}
+
+// The first flag that asks for JSON as a table, or nullptr.
+static const char* json_table_flag(const Config& cfg) {
+    struct F { bool set; const char* name; };
+    const F flags[] = {
+        {cfg.delimiter == '\t', "--tsv"}, {cfg.delimiter == ',', "--csv"},
+        {cfg.delimiter != 0, "--delimiter"}, {cfg.json_array, "--json"},
+        {cfg.json_lines, "--ndjson"}, {cfg.md, "--md"},
+        {!cfg.parquet_out.empty(), "--parquet"}, {!cfg.arrow_out.empty(), "--arrow"},
+        {cfg.schema_only, "--schema"}, {cfg.describe, "--describe"},
+        {cfg.stats_only, "--stats"}, {cfg.count, "--count"},
+        {!cfg.unique_cols.empty(), "--unique"}, {cfg.sample_n > 0, "--sample"},
+        {cfg.tail_rows_set, "--tail"}, {cfg.list_columns, "--list-columns"},
+        {cfg.list_tabs, "--list-tabs"}, {!cfg.tab.empty(), "--tab"},
+        {cfg.heatmap, "--heatmap"}, {cfg.distinct, "--distinct"},
+        {!cfg.filter_expr.empty(), "--filter"}, {!cfg.select_cols.empty(), "--select"},
+        {!cfg.sort_col.empty(), "--sort"}, {cfg.flatten, "--flatten"},
+        {!cfg.expand_col.empty(), "--expand"}, {cfg.head_rows_set, "-n"},
+        {cfg.vertical, "--vertical"}, {cfg.max_cols > 0, "-c"},
+        {cfg.max_col_w_set, "-w"}, {cfg.no_index, "--no-index"},
+        {cfg.no_header, "--no-header"},
+        {!cfg.region.empty() || !cfg.regions_file.empty(), "-r"},
+        {cfg.in_delimiter != 0, "-d"}, {cfg.no_interactive, "--table"},
+        {cfg.json_no_tree, "--no-tree"},
+    };
+    for (const auto& f : flags) if (f.set) return f.name;
+    return nullptr;
+}
+
+// Print a JSON document from `in` (pretty, or --json-paths); "" or the error.
+static std::string print_json_document(arrow::io::InputStream& in, const Config& cfg,
+                                       bool lines) {
+    const vvjson::JsonError e = vvjson::write_json_document(
+        in, stdout, cfg.json_paths ? vvjson::JsonOut::Paths : vvjson::JsonOut::Pretty,
+        lines, /*color=*/*g_color.reset != '\0');
+    return e.ok() ? std::string() : e.describe();
+}
+
+// The decoded bytes of a JSON file (gzip / zstd by magic).
+static std::string open_json_file(const std::string& path,
+                                  std::shared_ptr<arrow::io::InputStream>* out) {
+    auto raw = arrow::io::ReadableFile::Open(path);
+    if (!raw.ok()) return "Cannot open '" + path + "': " + raw.status().ToString();
+    std::shared_ptr<arrow::io::InputStream> in = *raw;
+    const arrow::Compression::type comp = sniff_stream_codec(*raw);
+    if (comp != arrow::Compression::UNCOMPRESSED) {
+        auto codec = arrow::util::Codec::Create(comp);
+        if (!codec.ok()) return codec.status().ToString();
+        auto ci = arrow::io::CompressedInputStream::Make(codec->get(), in);
+        if (!ci.ok()) return ci.status().ToString();
+        in = *ci;
+    }
+    *out = std::move(in);
+    return "";
+}
+
 enum class DocKind { Markdown = 1, Text = 2 };
 
 static std::string document_flag_error(const Config& cfg, DocKind kind) {
@@ -28809,6 +29450,45 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // ── JSON documents ───────────────────────────────────────────────────────
+    // On a pipe (or with --pretty / --json-paths) a JSON file is printed as a
+    // document; a table flag keeps it on the table path. JSON on stdin is
+    // recognised by its content inside open_source (json_document asks for
+    // the stream rather than a table).
+    const bool json_stdin = cfg.path == "-" || path_is_pipe(cfg.path);
+    const char* json_tflag = json_table_flag(cfg);
+    {
+        const int jkind = cfg.force_text ? 0 : json_path_kind(cfg.path);
+        if (cfg.json_pretty || cfg.json_paths) {
+            const char* which = cfg.json_pretty ? "--pretty" : "--json-paths";
+            if (cfg.json_pretty && cfg.json_paths) {
+                report(cfg.path, "--pretty and --json-paths both print the document; give one");
+                return 1;
+            }
+            if (json_tflag) {
+                report(cfg.path, std::string(which) + " prints the JSON document; it does not "
+                                 "combine with " + json_tflag);
+                return 1;
+            }
+            if (jkind == 0 && !json_stdin) {
+                report(cfg.path, std::string(which) + " applies to JSON input (.json, .ndjson, "
+                                 ".jsonl, or JSON on stdin)");
+                return 1;
+            }
+        }
+        if (jkind != 0 && !json_tflag &&
+            (cfg.json_pretty || cfg.json_paths || !tui_wanted(cfg))) {
+            std::shared_ptr<arrow::io::InputStream> in;
+            if (auto e = open_json_file(cfg.path, &in); !e.empty()) { report(cfg.path, e); return 1; }
+            if (auto e = print_json_document(*in, cfg, jkind == 2); !e.empty()) {
+                report(cfg.path, e);
+                return 1;
+            }
+            return 0;
+        }
+        cfg.json_document = json_stdin && !json_tflag && !cfg.force_text;
+    }
+
     std::unique_ptr<TabularSource> src;
     // --contigs is applied inside open_source() now (so the GUI / KDE plugins
     // reach it too); it reads only the header and returns the reference-sequence
@@ -28826,6 +29506,20 @@ int main(int argc, char** argv) {
             if (q != std::string::npos) detail.erase(0, q + 3);
         }
         report(cfg.path, shorten_reader_error(std::move(detail)));
+        return 1;
+    }
+
+    // JSON on stdin, wanted as a document: print it from the decoded stream.
+    if (auto* js = dynamic_cast<JsonStreamSource*>(src.get())) {
+        if (auto e = print_json_document(*js->stream(), cfg, false); !e.empty()) {
+            report(cfg.path == "-" ? "stdin" : cfg.path, e);
+            return 1;
+        }
+        return 0;
+    }
+    if (cfg.json_pretty || cfg.json_paths) {
+        report(cfg.path, std::string(cfg.json_pretty ? "--pretty" : "--json-paths") +
+                         ": the input is not JSON");
         return 1;
     }
 

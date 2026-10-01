@@ -224,11 +224,14 @@ a symmetric file stores one triangle and a dense \fBarray\fR file is not a
 listing, so both are refused. An index outside the declared shape, or an
 entry count different from the size line, is an error.
 .IP \(bu 2
-\fB.json\fR, \fB.ndjson\fR, \fB.jsonl\fR \(en JSON, as a top-level array of
-objects or as newline-delimited objects (JSON Lines). Records need not share
-a schema \(en Arrow infers the union of fields and fills gaps with nulls;
-nested objects and arrays become struct and list columns. Also \fB.gz\fR /
-\fB.zst\fR. Use \fBvv --text\fR to view a non-tabular JSON file as raw source.
+\fB.json\fR, \fB.ndjson\fR, \fB.jsonl\fR \(en JSON documents (also \fB.gz\fR /
+\fB.zst\fR, and JSON on stdin, recognised by its content). On a pipe the
+document is printed re-indented (see \fB\-\-pretty\fR). With a table flag
+(an export, a report, \fB\-\-filter\fR, \fB\-n\fR, \fB\-\-table\fR,
+\fB\-\-no\-tree\fR) it is read as records: a top-level array of objects or
+newline-delimited objects (JSON Lines); records need not share a schema
+\(en Arrow infers the union of fields and fills gaps with nulls; nested
+objects and arrays become struct and list columns.
 .IP \(bu 2
 \fB.npy\fR \(en a single NumPy array; \fB.npz\fR \(en a NumPy archive,
 one array per TUI tab. 1-D and 2-D arrays become rows and columns; 3-D+
@@ -362,6 +365,24 @@ per leaf, named by its path: \fBst.a\fR, \fBst.b.c\fR. A null struct makes
 its leaves null. Lists and maps keep their shape. The leaves work with
 \fB\-\-select\fR, \fB\-\-filter\fR, \fB\-\-sort\fR and the exports like any
 column (\fB\-\-filter 'st.a > 3'\fR).
+.TP
+.B \-\-pretty
+Print a JSON document re-indented with two spaces, scalars exactly as written
+in the file (large integers, \fB1e400\fR), like \fBjq .\fR. This is what
+\fBvv x.json\fR does on a pipe; \fB\-\-pretty\fR does it on a terminal too.
+Several top-level values (NDJSON, concatenated JSON) are printed in turn.
+Constant memory whatever the file size. Malformed JSON: the valid part is
+printed, then the error with its byte, line and column, exit 1.
+.TP
+.B \-\-json\-paths
+Print a JSON document as one \fIpath\fR\ =\ \fIvalue\fR line per leaf
+(empty \fB{}\fR / \fB[]\fR included), with jq paths: \fB.a.b[0] = 1\fR,
+\fB.["a b"] = "x"\fR; the root alone is \fB.\fR. NDJSON records are
+\fB.[0]\fR, \fB.[1]\fR, ... The lines can be searched with grep and keep
+the full path of every match.
+.TP
+.B \-\-no\-tree
+Read a JSON file as a table of records rather than as a document.
 .TP
 .BI \-\-samples " HOW"
 How a multi-sample VCF / BCF shows its sample columns. \fBstruct\fR

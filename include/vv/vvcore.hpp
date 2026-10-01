@@ -143,6 +143,16 @@ struct Config {
                                          // columns appended to the schema
     std::string tab;                     // --tab NAME: view a named component
                                          // tab (AnnData obs/var/X, sheet, …)
+    // JSON documents (.json / .ndjson / .jsonl, JSON on stdin).
+    bool        json_tree      = false;  // --tree: the tree viewer even when a
+                                         // flag would pick the table
+    bool        json_no_tree   = false;  // --no-tree: today's table view
+    bool        json_pretty    = false;  // --pretty: print the document
+                                         // re-indented
+    bool        json_paths     = false;  // --json-paths: `path = value` lines
+    std::string json_view;               // config `json_view = tree|table`
+    bool        json_document  = false;  // set by the CLI: JSON on stdin is
+                                         // wanted as a document, not a table
 };
 
 // ── Cell formatting helpers (defined in libvvcore) ───────────────────────────

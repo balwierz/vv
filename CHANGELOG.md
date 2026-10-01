@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **JSON documents: pretty print and paths.** `vv x.json` on a pipe prints
+  the document re-indented (two spaces, numbers and strings exactly as in the
+  file) from a streaming lexer, in constant memory; `--pretty` does the same
+  on a terminal. `--json-paths` prints one `path = value` line per leaf with
+  jq paths (`.a.b[0] = 1`, `.["a b"] = "x"`; NDJSON records `.[i]`).
+  Malformed JSON prints the valid part and names the byte, line and column
+  of the error (exit 1).
+
+### Changed
+- **`vv x.json` on a pipe prints JSON.** It printed a 10-row table of the
+  records, with nested values cut to 32 characters. `-t`, `-n`, `--no-tree`
+  or any export / report flag still reads the file as a table.
+
+### Fixed
+- **JSON on stdin.** Piped JSON went to the TSV reader. It is now
+  recognised by its content: `cat x.json | vv -` prints the document and
+  `cat x.ndjson | vv - --tsv` gives the same table as the file.
+
 ## [1.25.0] - 2026-10-01
 
 ### Added

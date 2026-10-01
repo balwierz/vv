@@ -83,7 +83,7 @@ would need horizontal scrolling.
 | Sequences (FASTA) | `.fa`, `.fasta`, `.fna`, `.faa`, `.ffn`, `.frn` (plus `.gz`)|
 | Sequencing reads  | `.fq`, `.fastq` (plus `.gz`)                                |
 | Delimited text    | `.tsv`, `.csv` (plus `.gz`)                                 |
-| JSON / NDJSON     | `.json`, `.ndjson`, `.jsonl` (plus `.gz` / `.zst`) via Arrow's streaming JSON reader. Two shapes are accepted: a top-level array of objects `[{…},{…}]` (pretty-printed or compact), and newline-delimited / concatenated objects (JSON Lines). The array form is unwrapped into records by a small stream filter — it drops the enclosing `[` `]` and turns the commas between elements into newlines, tracking string and nesting state so structural characters inside a value are left alone — before Arrow parses it; NDJSON passes straight through. Records need not share a schema: `unexpected_field_behavior = InferType` means Arrow infers the union of all fields and fills the gaps with nulls. Nested objects become `struct` columns and nested arrays become `list` columns, rendered by the same cell formatters as Parquet. Streaming and forward-only, so a file larger than memory still previews. An empty array, an array of scalars, or a field whose type changes between rows is not tabular and errors with a pointer to `--text`, which shows the raw JSON source instead. |
+| JSON / NDJSON     | `.json`, `.ndjson`, `.jsonl` (plus `.gz` / `.zst`, and JSON on stdin, recognised by its content) are documents: on a pipe `vv x.json` prints the document re-indented (`--pretty`) and `--json-paths` prints `path = value` lines — see *JSON documents*. With a table flag (an export, a report, `--filter`, `-n`, `--table`, `--no-tree`) the file is read as records via Arrow's streaming JSON reader. Two shapes are accepted: a top-level array of objects `[{…},{…}]` (pretty-printed or compact), and newline-delimited / concatenated objects (JSON Lines). The array form is unwrapped into records by a small stream filter — it drops the enclosing `[` `]` and turns the commas between elements into newlines, tracking string and nesting state so structural characters inside a value are left alone — before Arrow parses it; NDJSON passes straight through. Records need not share a schema: `unexpected_field_behavior = InferType` means Arrow infers the union of all fields and fills the gaps with nulls. Nested objects become `struct` columns and nested arrays become `list` columns, rendered by the same cell formatters as Parquet. Streaming and forward-only, so a file larger than memory still previews. An empty array, an array of scalars, or a field whose type changes between rows is not tabular and errors with a pointer to `--text`, which shows the raw JSON source instead. |
 | Stdin             | `vv -` reads text from stdin as it streams in (auto-decompresses gzip / zstd); a binary format (Parquet, Arrow, BAM, BCF, HDF5, SQLite, xlsx, …) is copied to a temporary file first. Process substitution (`vv <(zcat x.parquet.gz)`) works the same way |
 
 Unknown extensions are auto-detected by magic bytes (Parquet, Arrow IPC file
@@ -809,6 +809,35 @@ Reference sequences: 25  |  Assembly: GRCh38 / hg38 (Homo sapiens)
   `--json` / `--ndjson`, `--select`, `--filter`, `--sort`, and the
   interactive viewer all work on it. `-r`, `--pileup`, `--tags`, and
   `--expand` — which read the file's records — are rejected in combination.
+
+## JSON documents
+
+A `.json` / `.ndjson` / `.jsonl` file (or JSON piped in) is a document. On a
+pipe, `vv x.json` prints it re-indented — two spaces, scalars exactly as the
+file writes them (`123456789012345678901234567890`, `1e400`), like `jq .` —
+streaming, in constant memory whatever the size:
+
+```sh
+$ curl -s https://api.example.org/items | vv - | less
+$ vv config.json.gz --pretty                # also on a terminal
+```
+
+`--json-paths` prints one `path = value` line per leaf (empty `{}` / `[]`
+included), with jq paths, so grep keeps the full path of every match:
+
+```sh
+$ vv package.json --json-paths | grep -i license
+.license = "MIT"
+$ vv records.ndjson --json-paths | head -2   # NDJSON records are .[0], .[1], ...
+.[0].id = 1
+.[0].name = "alice"
+```
+
+Malformed JSON prints the valid part, then `invalid JSON at byte N (line L,
+column C): …` on stderr, exit 1. A table flag — an export (`--tsv`,
+`--parquet`, …), a report (`--count`, `--schema`, `--describe`), `--filter`,
+`--select`, `-n`, `--table` or `--no-tree` — reads the file as a table of
+records instead, as before.
 
 ## Sample columns (`--samples`)
 

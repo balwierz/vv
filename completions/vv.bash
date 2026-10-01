@@ -196,7 +196,7 @@ _vv() {
                 --parquet --arrow --feather --compression
                 --json --ndjson --md --markdown
                 --select --cols --filter
-                --schema --describe --count --stats --contigs --seq-stats --flatten --gt-stats --validate --decode-pileup --pileup --text
+                --schema --describe --count --stats --contigs --seq-stats --flatten --pretty --json-paths --no-tree --gt-stats --validate --decode-pileup --pileup --text
                 --exclude-flags --ff --require-flags --rf --min-mapq --min-bq --count-orphans --ignore-overlaps
                 --in-delimiter --header
                 --expand --formats --list-columns --list-tabs

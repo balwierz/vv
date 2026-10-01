@@ -28,6 +28,11 @@ decode_colblock(const uint8_t* buf, size_t blen, int codec_id,
 // slab_to_arrow / build_1d_table / build_2d_table). Compiled only under VV_FUZZ.
 namespace npz { void npy_fuzz_one(const uint8_t* buf, size_t n); }
 
+// Run the JSON pretty printer, the paths writer and the stdin sniff over an
+// untrusted buffer; aborts when an invariant breaks (error offset beyond the
+// input, pretty print not a fixed point). Compiled only under VV_FUZZ.
+namespace vvjson { void fuzz_one(const uint8_t* buf, size_t n); }
+
 // Decode an untrusted LZF stream (HDF5 filter 32000) into `out`. Returns the
 // decoded length, or 0 on failure (*out_too_small set if `out` ran out of room).
 namespace h5lzf {

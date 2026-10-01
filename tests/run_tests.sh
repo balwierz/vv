@@ -1218,11 +1218,95 @@ assert_eq_file_inline "json_array_ndjson_roundtrip" "$RT_FROM_ARRAY" "$RT_FROM_N
 # An empty array has no records to infer a schema from → clean error, exit 1.
 printf '[]' > "$TMP/jempty.json"
 assert_exit_code "json_empty_array_exits_1" 1 "$VV" --count "$TMP/jempty.json"
-JEMPTY_ERR=$("$VV" "$TMP/jempty.json" 2>&1 || true)
+JEMPTY_ERR=$("$VV" -t "$TMP/jempty.json" 2>&1 || true)
 assert_contains "json_empty_array_message" "$JEMPTY_ERR" "no JSON records"
 # Malformed JSON errors non-zero rather than emitting a partial table.
 printf '[{"a":1},{"a":' > "$TMP/jbad.json"
 assert_exit_code "json_malformed_exits_1" 1 "$VV" --count "$TMP/jbad.json"
+# A JSON file is a document: on a pipe `vv x.json` prints it re-indented
+# (2 spaces, scalars exactly as written — big integers and 1e400 included),
+# --json-paths prints `path = value` per leaf. Table flags keep the table.
+JD="$TMP/jdoc.json"
+printf '{"name":"vv","n":123456789012345678901234567890,"e":1e400,"t":true,"z":null,"u":"caf\\u00e9 \\"q\\"","x":[],"y":{},"a b":[{"k":1},2]}' > "$JD"
+cat > "$TMP/jdoc.expected" <<'JEOF'
+{
+  "name": "vv",
+  "n": 123456789012345678901234567890,
+  "e": 1e400,
+  "t": true,
+  "z": null,
+  "u": "caf\u00e9 \"q\"",
+  "x": [],
+  "y": {},
+  "a b": [
+    {
+      "k": 1
+    },
+    2
+  ]
+}
+JEOF
+"$VV" "$JD" > "$TMP/jdoc.out"
+assert_eq_file "json_pretty_document" "$TMP/jdoc.out" "$TMP/jdoc.expected"
+assert_eq_file_inline "json_pretty_idempotent" "$("$VV" "$JD" | "$VV" --pretty - | md5sum)" "$(md5sum < "$TMP/jdoc.expected")"
+assert_eq_file_inline "json_pretty_no_color_on_pipe" "$("$VV" "$JD" | tr -dc '\033' | wc -c | tr -d ' ')" "0"
+assert_contains "json_pretty_color_always" "$("$VV" --color=always "$JD")" "$(printf '\033[')"
+assert_eq_file_inline "json_pretty_color_never" "$("$VV" --pretty --color=never "$JD" | tr -dc '\033' | wc -c | tr -d ' ')" "0"
+assert_eq_file_inline "json_paths_document" "$("$VV" --json-paths "$JD" | tr '\n' ';')" \
+    '.name = "vv";.n = 123456789012345678901234567890;.e = 1e400;.t = true;.z = null;.u = "caf\u00e9 \"q\"";.x = [];.y = {};.["a b"][0].k = 1;.["a b"][1] = 2;'
+assert_eq_file_inline "json_paths_scalar_root" "$(printf '42' > "$TMP/jscalar.json"; "$VV" --json-paths "$TMP/jscalar.json")" ". = 42"
+# NDJSON: each record pretty-printed in turn; paths prefixed .[i].
+assert_eq_file_inline "json_paths_ndjson" "$("$VV" --json-paths "$TMP/j.ndjson" | head -3 | tr '\n' ';')" \
+    '.[0].id = 1;.[0].name = "alice";.[1].id = 2;'
+assert_eq_file_inline "json_pretty_ndjson_records" "$("$VV" "$TMP/j.ndjson" | grep -c '^{')" "3"
+# Malformed: the valid prefix is printed, the line is ended, the error names
+# byte / line / column, exit 1 — never a silent truncation.
+JB_OUT=$("$VV" "$TMP/jbad.json" 2>"$TMP/jbad.err"); JB_RC=$?
+assert_eq_file_inline "json_pretty_malformed_exit_1" "$JB_RC" "1"
+assert_contains "json_pretty_malformed_message" "$(cat "$TMP/jbad.err")" "invalid JSON at byte 14 (line 1, column 15): unexpected end of input"
+assert_contains "json_pretty_malformed_prefix" "$JB_OUT" '"a": 1'
+assert_contains "json_pretty_trailing_comma" "$(printf '{"a":1,}' | "$VV" - 2>&1)" "expected a string key"
+# Compressed files and stdin (plain, gzip) give the same document.
+gzip -c "$JD" > "$TMP/jdoc.json.gz"
+assert_eq_file_inline "json_pretty_gz" "$("$VV" "$TMP/jdoc.json.gz" | md5sum)" "$(md5sum < "$TMP/jdoc.expected")"
+assert_eq_file_inline "json_pretty_stdin" "$(cat "$JD" | "$VV" - | md5sum)" "$(md5sum < "$TMP/jdoc.expected")"
+assert_eq_file_inline "json_pretty_stdin_gz" "$(gzip -c "$JD" | "$VV" - | md5sum)" "$(md5sum < "$TMP/jdoc.expected")"
+# JSON on stdin is recognised by content: table modes read it as records
+# (it used to go to the TSV reader); a TSV whose first cell is "[1]" or
+# "[x]" is still a TSV.
+assert_eq_file_inline "json_stdin_tsv_matches_file" "$(cat "$TMP/j.ndjson" | "$VV" - --tsv)" "$("$VV" "$TMP/j.ndjson" --tsv)"
+assert_eq_file_inline "json_stdin_not_tsv_lookalike" "$(printf '[1]\tfoo\n2\t3\n' | "$VV" - --tsv --no-header)" "$(printf '2\t3')"
+assert_eq_file_inline "json_stdin_not_tsv_bracket" "$(printf '[x]\tb\n1\t2\n' | "$VV" - --tsv --no-header)" "$(printf '1\t2')"
+# Table flags keep today's table: -t, -n, --no-tree, --count, --schema.
+assert_contains "json_table_flag_t" "$("$VV" -t "$TMP/j.ndjson")" "alice"
+assert_contains "json_table_flag_n" "$("$VV" -n 2 "$TMP/j.ndjson")" "│"
+assert_contains "json_table_flag_no_tree" "$("$VV" --no-tree "$TMP/j.ndjson")" "│"
+assert_eq_file_inline "json_table_flag_count" "$("$VV" --count "$TMP/j.ndjson")" "3"
+# --pretty / --json-paths: conflicts are errors (exit 1), not ignored flags.
+assert_exit_code "json_pretty_with_tsv" 1 "$VV" --pretty --tsv "$JD"
+assert_exit_code "json_paths_with_filter" 1 "$VV" --json-paths --filter 'a > 1' "$JD"
+assert_exit_code "json_pretty_and_paths" 1 "$VV" --pretty --json-paths "$JD"
+assert_exit_code "json_pretty_not_json" 1 "$VV" --pretty "$DATA/tiny.parquet"
+assert_exit_code "json_pretty_stdin_not_json" 1 sh -c "printf 'a\tb\n1\t2\n' | '$VV' --pretty -"
+# A 300,000-element array streams: the last path is right and memory stays
+# far below the input size times a constant (no tree is built).
+if command -v python3 >/dev/null 2>&1; then
+    python3 -c "
+import sys
+with open(sys.argv[1], 'w') as f:
+    f.write('[' + ','.join('{\"i\":%d,\"s\":\"%s\"}' % (i, 'x' * 40) for i in range(300000)) + ']')" "$TMP/jbig.json"
+    assert_eq_file_inline "json_paths_big_array" "$("$VV" --json-paths "$TMP/jbig.json" | tail -1)" \
+        ".[299999].s = \"$(printf 'x%.0s' $(seq 1 40))\""
+    if [ -x /usr/bin/time ]; then
+        JBIG_KB=$( { /usr/bin/time -f '%M' "$VV" "$TMP/jbig.json" > /dev/null; } 2>&1 | tail -1)
+        if [ "${JBIG_KB:-0}" -lt 200000 ]; then
+            PASS=$((PASS+1)); echo "  ok    json_pretty_big_array_memory"
+        else
+            FAIL=$((FAIL+1)); echo "  FAIL  json_pretty_big_array_memory (${JBIG_KB} KB)"
+        fi
+    fi
+    rm -f "$TMP/jbig.json"
+fi
 # --text is the escape hatch: a .json shown as raw source, not parsed.
 JTEXT=$("$VV" --text --no-header "$TMP/j.json")
 assert_contains "json_text_shows_raw_source" "$JTEXT" '[{"id":1,"name":"alice"}'

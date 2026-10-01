@@ -577,7 +577,7 @@ if(VV_BUILD_FUZZERS)
   # Each harness = the reader core (main.cpp, VV_CORE_LIB + VV_FUZZ, no main/TUI)
   # plus its entry point, instrumented for libFuzzer + ASan + UBSan, linking vv's
   # exact reader deps.
-  foreach(_fz colblock npy lzf)
+  foreach(_fz colblock npy lzf json)
     add_executable(fuzz_${_fz} main.cpp tests/fuzz/fuzz_${_fz}.cpp)
     target_compile_definitions(fuzz_${_fz} PRIVATE
         VV_CORE_LIB=1 VV_FUZZ=1
@@ -592,7 +592,7 @@ if(VV_BUILD_FUZZERS)
         -fsanitize=fuzzer,address,undefined)
     target_link_libraries(fuzz_${_fz} PRIVATE ${_vv_link_common})
   endforeach()
-  message(STATUS "Fuzzers     : enabled (fuzz_colblock, fuzz_npy)")
+  message(STATUS "Fuzzers     : enabled (fuzz_colblock, fuzz_npy, fuzz_lzf, fuzz_json)")
 endif()
 
 # ── Install rules ─────────────────────────────────────────────────────────────
