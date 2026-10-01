@@ -27,7 +27,7 @@
 %global xlsxio_version 0.2.36
 
 Name:           vv
-Version:        1.24.0
+Version:        1.25.0
 Release:        1%{?dist}
 Summary:        Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)
 License:        MIT
@@ -143,6 +143,14 @@ rm -f  %{buildroot}%{_libdir}/pkgconfig/mimalloc.pc
 %{_datadir}/icons/hicolor/scalable/apps/vv.svg
 
 %changelog
+* Thu Oct 01 2026 Piotr Balwierz <nikt@tuta.com> - 1.25.0-1
+- Update to 1.25.0: multi-sample VCF / BCF samples as typed structs
+  (--samples struct|long|text); --matrix long for HDF5 / AnnData / Loom /
+  Cell Ranger matrices; whole-matrix exports instead of previews; .fods;
+  .bgz; Arrow IPC streams; PLINK tables; BEDPE / pairs / GCT / MAF; --seq-stats;
+  --flatten; per-row-group --stats; PAF --tags; heatmaps in iTerm2 / WezTerm;
+  TUI line editing and value counts; read errors reported by every mode.
+
 * Tue Sep 29 2026 Piotr Balwierz <nikt@tuta.com> - 1.24.0-1
 - Update to 1.24.0: Cell Ranger HDF5, 10x / STARsolo matrix directories,
   MatrixMarket .mtx, Loom and AnnData .raw / obsp / varp open as labelled

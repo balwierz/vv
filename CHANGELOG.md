@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.25.0] - 2026-10-01
+
 ### Added
 - **Typed VCF / BCF samples (`--samples`).** Each sample column of a
   multi-sample file is now a struct typed from the `##FORMAT` declarations
@@ -23,9 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `Gene`, `barcode`, `feature`; `dim` for an embedding) — with categorical
   labels. It covers the whole matrix, not the preview, in the viewer and in
   every export.
-- **Struct cells read `{a: 1, b: x}`.** Struct values (Parquet, Arrow, ORC,
-  JSON nesting) were shown with Arrow's typed form, `{a:int64 = 1, b:string
-  = x}`; null fields are now left out.
 - **Heatmap images in iTerm2 and WezTerm.** `--heatmap` drew half-blocks
   there; the auto backend now sends a PNG with iTerm2's inline-image
   protocol (OSC 1337), which both terminals display, and `--image-mode
@@ -152,6 +151,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the footer rollup as one object — file totals, `metadata`, and per column
   `type`, `codecs`, compressed / uncompressed bytes and `nulls` — where it
   printed the text table; on a non-Parquet file it exits 1.
+
+### Changed
+- **Multi-sample VCF / BCF samples are typed structs by default.** The
+  sample columns were the packed FORMAT strings (`0/1:5,6:11`) next to a
+  FORMAT column; they are now one struct per sample (see `--samples` above)
+  and FORMAT is folded into them. `--samples text` gives the previous
+  columns.
+- **Struct cells read `{a: 1, b: x}`.** Struct values (Parquet, Arrow, ORC,
+  JSON nesting) were shown with Arrow's typed form, `{a:int64 = 1, b:string
+  = x}`; null fields are now left out.
 
 ### Fixed
 - **`--gt-stats` with `--expand`.** The genotype counts took every column
