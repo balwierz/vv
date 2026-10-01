@@ -23,8 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   of about 4 million cells, with the preview's labels (obs names, one column
   per gene or embedding dimension) and value types. Loom matrices and layers
   (stored genes × cells) and Cell Ranger matrices stream the same way, cells
-  × genes. An AnnData CSC matrix and a NumPy array past 4096 columns are
-  still refused with their real shape.
+  × genes; an AnnData CSC matrix is transposed to CSR in memory on the first
+  read (about 12 bytes per stored value). A NumPy array past 4096 columns is
+  still refused with its real shape.
 - **`--flatten`.** Struct columns (Parquet / Arrow / JSON nesting) become one
   column per leaf, named by path — `st.a`, `st.b.c` — recursively; a null
   struct makes its leaves null, lists and maps keep their shape. The leaves

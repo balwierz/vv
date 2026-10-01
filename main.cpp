@@ -13730,15 +13730,16 @@ static void apply_anndata_matrix_labels(hid_t file_id, AnnMatrixAxes axes,
 // matrix: indptr ranges, densified per block), with the preview's columns —
 // the row label, then one column per gene / dimension. Blocks hold about 4
 // million cells, so memory is bounded however large the matrix. Values keep
-// the preview's types. An AnnData CSC matrix is not streamed (it would need a
-// transpose pass).
+// the preview's types. An AnnData CSC matrix is transposed to CSR in memory
+// on the first read (about 12 bytes per stored value).
 class H5MatrixStreamSource : public TabularSource {
 public:
     // How rows map onto the stored data: a dense dataset read row by row
     // (Dense), a dense dataset whose columns are the rows (DenseT: Loom's
     // genes × cells, shown cells × genes), or a group with CSR-style
-    // data / indices / indptr over the rows (AnnData CSR, Cell Ranger).
-    enum class Layout { Dense, DenseT, Csr };
+    // data / indices / indptr over the rows (AnnData CSR, Cell Ranger), or
+    // over the columns (Csc: AnnData CSC, transposed in memory on first read).
+    enum class Layout { Dense, DenseT, Csr, Csc };
     struct Plan {
         std::string h5_path, label, format;
         Layout      layout = Layout::Dense;
@@ -13755,6 +13756,84 @@ private:
     int64_t     block_ = 1;
     std::shared_ptr<arrow::Schema> schema_;
     mutable arrow::Status status_;
+    // Layout::Csc: the matrix as CSR (row pointers, column, value), built by
+    // one counting-sort pass over indices / data the first time a chunk is
+    // read — about 12 bytes per stored value plus 8 per row.
+    bool                 csr_built_ = false;
+    std::vector<int64_t> csr_ptr_;
+    std::vector<int32_t> csr_col_;
+    std::vector<double>  csr_val_;
+
+    arrow::Status build_csr_from_csc() {
+        const hid_t fid = *file_;
+        const std::string& gp = plan_.h5_path;
+        const int64_t R = plan_.rows, C = plan_.cols;
+        if (C > INT32_MAX) return arrow::Status::Invalid(gp, ": too many columns");
+        hid_t g = H5Gopen2(fid, gp.c_str(), H5P_DEFAULT);
+        if (g < 0) return arrow::Status::IOError("cannot open ", gp);
+        std::string err;
+        auto read_slice = [&](const char* name, int64_t off, int64_t len, hid_t mtype, void* buf) {
+            if (len == 0) return true;
+            hid_t d = H5Dopen2(g, name, H5P_DEFAULT);
+            if (d < 0) { err = gp + "/" + name + ": cannot open"; return false; }
+            hid_t fs = H5Dget_space(d);
+            hsize_t start = (hsize_t)off, count = (hsize_t)len;
+            H5Sselect_hyperslab(fs, H5S_SELECT_SET, &start, nullptr, &count, nullptr);
+            hid_t ms = H5Screate_simple(1, &count, nullptr);
+            const bool ok = H5Dread(d, mtype, ms, fs, H5P_DEFAULT, buf) >= 0;
+            if (!ok) err = h5_read_failure(d);
+            H5Sclose(ms); H5Sclose(fs); H5Dclose(d);
+            return ok;
+        };
+        std::vector<int64_t> cptr((size_t)C + 1);
+        bool ok = read_slice("indptr", 0, C + 1, H5T_NATIVE_INT64, cptr.data());
+        const int64_t nnz = ok ? cptr[(size_t)C] - cptr[0] : 0;
+        for (int64_t c = 0; ok && c < C; ++c)
+            if (cptr[(size_t)c + 1] < cptr[(size_t)c]) { err = gp + "/indptr decreases"; ok = false; }
+        // Pass 1: entries per row. Pass 2: scatter (column, value) into each
+        // row's slots in column order, so every row comes out sorted.
+        constexpr int64_t kStep = (int64_t)1 << 22;
+        std::vector<int64_t> idx;
+        std::vector<double>  val;
+        if (ok) csr_ptr_.assign((size_t)R + 1, 0);
+        for (int64_t k0 = 0; ok && k0 < nnz; k0 += kStep) {
+            const int64_t len = std::min(kStep, nnz - k0);
+            idx.resize((size_t)len);
+            ok = read_slice("indices", cptr[0] + k0, len, H5T_NATIVE_INT64, idx.data());
+            for (int64_t k = 0; ok && k < len; ++k) {
+                if (idx[(size_t)k] < 0 || idx[(size_t)k] >= R) { err = gp + ": row index out of range"; ok = false; break; }
+                ++csr_ptr_[(size_t)idx[(size_t)k] + 1];
+            }
+        }
+        if (ok) {
+            for (int64_t r = 0; r < R; ++r) csr_ptr_[(size_t)r + 1] += csr_ptr_[(size_t)r];
+            csr_col_.resize((size_t)nnz);
+            csr_val_.resize((size_t)nnz);
+        }
+        std::vector<int64_t> fill;                     // next free slot per row
+        if (ok) fill.assign(csr_ptr_.begin(), csr_ptr_.end() - 1);
+        int64_t c = 0;
+        for (int64_t k0 = 0; ok && k0 < nnz; k0 += kStep) {
+            const int64_t len = std::min(kStep, nnz - k0);
+            idx.resize((size_t)len); val.resize((size_t)len);
+            ok = read_slice("indices", cptr[0] + k0, len, H5T_NATIVE_INT64, idx.data()) &&
+                 read_slice("data", cptr[0] + k0, len, H5T_NATIVE_DOUBLE, val.data());
+            for (int64_t k = 0; ok && k < len; ++k) {
+                const int64_t at = cptr[0] + k0 + k;
+                while (c < C && at >= cptr[(size_t)c + 1]) ++c;
+                const int64_t pos = fill[(size_t)idx[(size_t)k]]++;
+                csr_col_[(size_t)pos] = (int32_t)c;
+                csr_val_[(size_t)pos] = val[(size_t)k];
+            }
+        }
+        H5Gclose(g);
+        if (!ok) {
+            csr_ptr_.clear(); csr_col_.clear(); csr_val_.clear();
+            return arrow::Status::IOError(err.empty() ? gp + ": cannot read" : err);
+        }
+        csr_built_ = true;
+        return arrow::Status::OK();
+    }
 
 public:
     static std::unique_ptr<TabularSource> from_plan(const H5FilePtr& file, const std::string& path,
@@ -13805,7 +13884,15 @@ public:
             status_ = arrow::Status::IOError(why);
             return status_;
         };
-        if (plan_.layout != Layout::Csr) {
+        if (plan_.layout == Layout::Csc) {
+            if (!csr_built_) {
+                auto st = build_csr_from_csc();
+                if (!st.ok()) return fail(st.message());
+            }
+            for (int64_t r = 0; r < n; ++r)
+                for (int64_t k = csr_ptr_[(size_t)(r0 + r)]; k < csr_ptr_[(size_t)(r0 + r) + 1]; ++k)
+                    dv[(size_t)(r * cols_ + csr_col_[(size_t)k])] = csr_val_[(size_t)k];
+        } else if (plan_.layout != Layout::Csr) {
             // DenseT reads stored columns r0..r0+n of every stored row into a
             // cols × n buffer; the cell (r, c) is then buf[c * n + r].
             const bool tr = plan_.layout == Layout::DenseT;
@@ -15108,16 +15195,19 @@ static std::unique_ptr<TabularSource> make_h5_matrix_stream(const H5FilePtr& fil
     case OpenSpec::Kind::Sparse: {                 // AnnData CSR group
         hid_t g = H5Gopen2(fid, spec.h5_path.c_str(), H5P_DEFAULT);
         if (g < 0) return nullptr;
-        const bool csr = read_string_attr(g, "encoding-type") == "csr_matrix";
+        const std::string enc = read_string_attr(g, "encoding-type");
+        const bool csr = enc == "csr_matrix";
+        if (!csr && enc != "csc_matrix") { H5Gclose(g); return nullptr; }
         int64_t shape[2] = {0, 0};
         read_shape2(g, "shape", shape);
         if (hid_t ip = H5Dopen2(g, "indptr", H5P_DEFAULT); ip >= 0) {
-            shape[0] = std::min<int64_t>(shape[0], std::max<int64_t>(0, h5_len_1d(ip) - 1));
+            int64_t& major = csr ? shape[0] : shape[1];   // the axis indptr spans
+            major = std::min<int64_t>(major, std::max<int64_t>(0, h5_len_1d(ip) - 1));
             H5Dclose(ip);
         }
         H5Gclose(g);
-        if (!csr) return nullptr;                  // CSC would need a transpose pass
-        p.layout = Layout::Csr; p.rows = shape[0]; p.cols = shape[1];
+        // CSC: transposed to CSR in memory when the export first reads.
+        p.layout = csr ? Layout::Csr : Layout::Csc; p.rows = shape[0]; p.cols = shape[1];
         p.format = "AnnData";                      // sparse previews are double
         break;
     }
@@ -27126,9 +27216,8 @@ std::string packed_column_for(const std::string& path) {
 
 // Why `mode` (e.g. "--tsv") must not run on `src`, or "" when it may. A mode
 // that writes or aggregates every row would otherwise present a capped preview
-// as the whole dataset and exit 0. Dense, CSR, Loom and Cell Ranger matrices
-// never get here (the callers swap in full_matrix()); what remains is an
-// AnnData CSC matrix and a NumPy array past 4096 columns. `rows_wanted`: how many rows the mode reads (-n), or -1 for all — a row
+// as the whole dataset and exit 0. HDF5 matrices never get here (the callers
+// swap in full_matrix()); what remains is a NumPy array past 4096 columns. `rows_wanted`: how many rows the mode reads (-n), or -1 for all — a row
 // cap matters only when the mode wants more rows than the preview holds.
 // `cols_matter`: false for a mode that only counts rows (--count).
 static std::string preview_refusal(const TabularSource& src, const std::string& mode,
@@ -27144,9 +27233,9 @@ static std::string preview_refusal(const TabularSource& src, const std::string& 
            " preview of a " + shape(l.full_rows, l.full_cols) +
            " (rows \xc3\x97 columns) matrix; " + mode +
            " would give the preview as if it were the whole matrix. Exports stream "
-           "dense, CSR, Loom and Cell Ranger matrices in full, but not AnnData "
-           "CSC matrices or NumPy arrays past 4096 columns; use the TUI or the "
-           "table view to look at this one";
+           "HDF5 / AnnData / Loom / Cell Ranger matrices in full, but not NumPy "
+           "arrays past 4096 columns; use the TUI or the table view to look at "
+           "this one";
 }
 
 // --tab NAME: replace `src` with its component tab NAME (AnnData obs/var/X, a

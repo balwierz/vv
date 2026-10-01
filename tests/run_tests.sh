@@ -2764,6 +2764,8 @@ print(orc.ORCFile(sys.argv[1]).nstripes > 1)" "$TMP/multi.orc" > "$TMP/multi.orc
             'n0,{x:int64 = 0},0;n30000,{x:int64 = 30000},30000;n59999,{x:int64 = 59999},59999;'
         assert_eq_file_inline "orc_multi_stripe_count" "$("$VV" --count "$TMP/multi.orc")" "60000"
         rm -f "$TMP/multi.orc" "$TMP/multi.orc.ok"
+    else
+        echo "  skip  orc_multi_stripe_* (needs: python3 pyarrow.orc)"
     fi
 fi
 
@@ -3080,6 +3082,8 @@ if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
         else
             FAIL=$((FAIL+1)); echo "  FAIL  h5_matrix_export_loom_10x"
         fi
+    else
+        echo "  skip  h5_matrix_export_loom_10x (needs: python3 h5py numpy scipy)"
     fi
     # Categorical obs columns decode to their string labels, not integer codes.
     # The dictionary cap (VV_CATEGORY_DICT_CAP, default 1,000,000 — raised from

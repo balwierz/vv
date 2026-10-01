@@ -353,9 +353,10 @@ analysis ranking. One PR per box; no stacked PRs.
 - [~] **Stream a whole matrix on export** (M) — dense shape done: dense
   datasets (hyperslabs) and CSR groups (indptr ranges) stream in row blocks
   for every export mode, and so do Loom (column slabs of genes × cells) and
-  Cell Ranger (CSC by barcode = CSR by shown cell). Open: AnnData CSC (needs
-  a transpose pass), and the long (`cell, gene, value`) output shape — the
-  long shape needs a decision on its flag and column names.
+  Cell Ranger (CSC by barcode = CSR by shown cell), and AnnData CSC
+  (transposed to CSR in memory on first read — decided 2026-10-01: speed
+  over memory). Open: the long (`cell, gene, value`) output shape — needs a
+  decision on its flag and column names.
 - [x] **`raw/` tabs** (S) — `feat/anndata-raw-tabs` — `raw.X` preview labelled from `/raw/var`, and
   `raw.var`; today skipped without mention.
 - [x] **`obsp` / `varp` listed** (M) — `feat/anndata-obsp-edges` — neighbour graphs as streamed edge

@@ -41,7 +41,8 @@ jobs:
       - name: Smoke tests
         env:
           VV: ${{ github.workspace }}/build/vv
-        run: tests/run_tests.sh
+        # The fixture venv's python, so the pyarrow / h5py / scipy checks run.
+        run: PATH="/tmp/vvpy/bin:$PATH" tests/run_tests.sh
         if: hashFiles('tests/run_tests.sh') != ''
 
       - name: Sanity check
@@ -75,7 +76,8 @@ jobs:
           ASAN_OPTIONS: "detect_leaks=0:abort_on_error=1"
           UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
           ARROW_DEFAULT_MEMORY_POOL: system
-        run: tests/run_tests.sh
+        # The fixture venv's python, so the pyarrow / h5py / scipy checks run.
+        run: PATH="/tmp/vvpy/bin:$PATH" tests/run_tests.sh
 
       # ── libFuzzer smoke over the binary parsers (24.04 only) ─────────────
       # Fuzz the LociSSD v4 codec decoder, the NumPy .npy parser + builders and
@@ -497,7 +499,8 @@ jobs:
       - name: Smoke tests
         env:
           VV: ${{ github.workspace }}/build/vv
-        run: tests/run_tests.sh
+        # The fixture venv's python, so the pyarrow / h5py / scipy checks run.
+        run: PATH="/tmp/vvpy/bin:$PATH" tests/run_tests.sh
         if: hashFiles('tests/run_tests.sh') != ''
 
       # Mirrors the Linux "Verify GUI artifacts" step minus the KF6 .so

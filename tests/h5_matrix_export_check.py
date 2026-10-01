@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""A capped Loom or Cell Ranger matrix exports in full, cells × genes.
+"""A capped Loom, Cell Ranger or AnnData CSC matrix exports in full.
 
 Builds, with h5py, a Loom file (250 genes × 1200 cells, int32 /matrix and a
 float32 layer; a repeated gene name gets its Accession appended) and a Cell
 Ranger v3 file (300 features × 1500 barcodes, CSC by barcode). Both are
 larger than the 1000 × 200 preview. `--tab matrix --tsv` (and the layer) must
 write every cell and gene, labelled like the preview, with values equal to
-the stored matrix transposed.
+the stored matrix transposed. An AnnData file whose X is a CSC matrix
+(1200 cells × 300 genes, written with h5py in AnnData's on-disk layout) must
+export as cells × genes equal to the dense matrix (transposed to CSR in
+memory by vv).
 
 Usage: h5_matrix_export_check.py <vv-binary> <tmpdir>
 Exit 0 on success, 1 on failure.
@@ -71,6 +74,30 @@ def main():
         bad.append("10x header %r ... (%d unique of %d)" % (head[:3], len(set(head)), len(head)))
     if labels[:2] != ["BC0", "BC1"] or len(labels) != nb or not np.array_equal(vals, X.toarray().T):
         bad.append("10x matrix values / barcodes")
+
+    nc, ng = 1200, 300
+    h5ad = os.path.join(tmp, "csc.h5ad")
+    Y = sp.random(nc, ng, density=0.05, format="csc", random_state=4, dtype=np.float64)
+    def index_frame(grp, names):
+        grp.attrs["encoding-type"] = "dataframe"
+        grp.attrs["encoding-version"] = "0.2.0"
+        grp.attrs["_index"] = "_index"
+        grp.attrs["column-order"] = np.array([], dtype="S")
+        grp.create_dataset("_index", data=np.array(names, dtype="S"))
+    with h5py.File(h5ad, "w") as f:
+        f.attrs["encoding-type"] = "anndata"
+        f.attrs["encoding-version"] = "0.1.0"
+        x = f.create_group("X")
+        x.attrs["encoding-type"] = "csc_matrix"
+        x.attrs["encoding-version"] = "0.1.0"
+        x.attrs["shape"] = np.array([nc, ng])
+        x["data"] = Y.data; x["indices"] = Y.indices.astype(np.int32); x["indptr"] = Y.indptr.astype(np.int64)
+        index_frame(f.create_group("obs"), ["c%d" % i for i in range(nc)])
+        index_frame(f.create_group("var"), ["g%d" % i for i in range(ng)])
+    head, labels, vals = export(vv, "X", h5ad)
+    if head[:3] != ["obs", "g0", "g1"] or len(head) != ng + 1 or labels[:2] != ["c0", "c1"] \
+            or len(labels) != nc or not np.array_equal(vals, Y.toarray()):
+        bad.append("anndata CSC X: header %r, %d rows" % (head[:3], len(labels)))
 
     for b in bad:
         sys.stderr.write("h5_matrix_export: %s\n" % b)
