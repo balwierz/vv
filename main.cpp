@@ -24328,6 +24328,141 @@ enum : int {
     NCP_SEARCH,       // search-match highlight row
     NCP_PLAIN,        // default-fg text (used as zebra-twin base)
 };
+// The last colour pair is kept for the JSON viewer's string colour; the
+// table viewer's on-demand pairs stop below it.
+static int tui_reserved_pair() { return COLOR_PAIRS - 1; }
+
+// One terminal session for the ncurses viewers: the SCREEN, the handlers that
+// restore the terminal on SIGINT / SIGTERM / SIGHUP, and the key reader that
+// swallows late terminal replies. A session can host several viewers in turn
+// (the JSON tree and the table view it switches to) without the screen
+// flickering back to the shell in between.
+class TuiSession {
+    SCREEN*          scr_ = nullptr;
+    std::FILE*       in_  = nullptr;
+    bool             own_in_ = false;
+    sigset_t         sigs_;
+    void (*prev_int_)(int)  = SIG_DFL;
+    void (*prev_term_)(int) = SIG_DFL;
+    void (*prev_hup_)(int)  = SIG_DFL;
+public:
+    TuiSession() = default;
+    TuiSession(const TuiSession&) = delete;
+    TuiSession& operator=(const TuiSession&) = delete;
+    ~TuiSession() { close(); }
+
+    // Start ncurses on stdout, reading keys from `in` (stdin when null; the
+    // controlling terminal when stdin carries the data). false: the terminal
+    // could not be initialised.
+    bool open(std::FILE* in = nullptr) {
+        setlocale(LC_ALL, "");
+        static bool bg_detected = false;
+        if (!bg_detected) { detect_term_bg(); bg_detected = true; }   // OSC 11 query, once
+        in_ = in ? in : stdin;
+        scr_ = newterm(nullptr, stdout, in_);
+        if (!scr_) return false;
+        set_term(scr_);
+        // Restore the terminal if we're killed while owning it. Handlers stay
+        // installed for the whole session; the signals are blocked except
+        // around getch() so endwin() only runs from a safe context.
+        g_tui_active = 1;
+        prev_int_  = signal(SIGINT,  tui_signal_restore);
+        prev_term_ = signal(SIGTERM, tui_signal_restore);
+        prev_hup_  = signal(SIGHUP,  tui_signal_restore);
+        sigemptyset(&sigs_);
+        sigaddset(&sigs_, SIGINT);
+        sigaddset(&sigs_, SIGTERM);
+        sigaddset(&sigs_, SIGHUP);
+        sigprocmask(SIG_BLOCK, &sigs_, nullptr);
+        noecho(); cbreak(); keypad(stdscr, TRUE); curs_set(0);
+        set_escdelay(25);
+        // Mouse: scroll wheel (BUTTON4 / BUTTON5) + click and double-click.
+        // Adding click events means the terminal switches into application
+        // mouse mode and stops handling its own drag-to-select; Shift+drag
+        // still works as the escape hatch in every modern emulator.
+        mousemask(BUTTON1_CLICKED | BUTTON1_DOUBLE_CLICKED
+                | BUTTON4_PRESSED | BUTTON5_PRESSED, nullptr);
+        // 200 ms is long enough for an unhurried double-click but short
+        // enough that a deliberate pair-of-clicks isn't mistaken for one.
+        mouseinterval(200);
+        return true;
+    }
+    // Open the controlling terminal for keys (the data arrives on stdin).
+    bool open_tty() {
+        std::FILE* tty = std::fopen("/dev/tty", "r");
+        if (!tty) return false;
+        own_in_ = true;
+        if (!open(tty)) { std::fclose(tty); in_ = nullptr; own_in_ = false; return false; }
+        return true;
+    }
+    void close() {
+        if (!scr_) return;
+        g_tui_active = 0;
+        endwin();
+        // Hand the signals back to whatever was there before the TUI ran and
+        // restore the original mask.
+        signal(SIGINT,  prev_int_);
+        signal(SIGTERM, prev_term_);
+        signal(SIGHUP,  prev_hup_);
+        sigprocmask(SIG_UNBLOCK, &sigs_, nullptr);
+        delscreen(scr_);
+        scr_ = nullptr;
+        if (own_in_ && in_) std::fclose(in_);
+        in_ = nullptr;
+        own_in_ = false;
+    }
+
+    // The next key. A late terminal reply must not read as keystrokes.
+    // detect_term_bg() sends an OSC 11 background query before ncurses
+    // starts and waits ~80 ms; over a slow transport (a jupyter-lab web
+    // console proxied through kubernetes, tmux over a laggy ssh) the
+    // terminal's reply can outrun that budget and land here instead — where
+    // its leading ESC used to hit the Esc-quits binding, so vv exited "by
+    // itself" and the tail leaked to the shell as `11;rgb:ffff/ffff/ffff`.
+    // After a bare ESC, peek: a string introducer (OSC/DCS/APC/SOS/PM) or a
+    // CSI start means the terminal is talking, not the user — swallow
+    // through the terminator and read on. Anything else is pushed back, so
+    // Esc, double-Esc and Alt+key behave as before. (Signals are allowed
+    // only while parked in the blocking getch(): one arriving during draw()
+    // is delivered there — in read(), not mid-malloc — where the endwin() in
+    // the handler is safe.)
+    int read_key() {
+        for (;;) {
+            sigprocmask(SIG_UNBLOCK, &sigs_, nullptr);
+            int ch = ::getch();
+            sigprocmask(SIG_BLOCK, &sigs_, nullptr);
+            if (ch != 27) return ch;
+            timeout(0);
+            int nxt = ::getch();
+            if (nxt == ERR) { timeout(-1); return 27; }        // lone Esc
+            bool str_seq = nxt == ']' || nxt == 'P' || nxt == '_' ||
+                           nxt == 'X' || nxt == '^';
+            if (!str_seq && nxt != '[') {                      // Alt+key…
+                ungetch(nxt);
+                timeout(-1);
+                return 27;
+            }
+            // The reply may still be trickling in over the transport that
+            // delayed it; allow 50 ms between bytes, cap the total.
+            timeout(50);
+            if (str_seq) {                    // …until BEL or ST (ESC \)
+                int prev = 0;
+                for (int i = 0; i < 4096; ++i) {
+                    int c = ::getch();
+                    if (c == ERR || c == '\a' || (prev == 27 && c == '\\'))
+                        break;
+                    prev = c;
+                }
+            } else {                          // CSI: …until a final byte
+                for (int i = 0; i < 256; ++i) {
+                    int c = ::getch();
+                    if (c == ERR || (c >= 0x40 && c <= 0x7e)) break;
+                }
+            }
+            timeout(-1);
+        }
+    }
+};
 
 // Each of the above pairs has an optional zebra twin at pair + ZEBRA_OFFSET,
 // identical fg but with a dim grey background — applied to odd data rows.
@@ -24452,8 +24587,9 @@ class TableTUI {
     // it. Bounded by COLOR_PAIRS, and shared with the RGB allocator's counter
     // so the two cannot collide.
     std::map<int, int> fg_pair_;
+    bool start_applied_ = false;   // apply_start_view() ran (once per viewer)
     int get_fg_pair(int fg, int bg) {
-        if (next_rgb_pair_ >= COLOR_PAIRS) return 0;
+        if (next_rgb_pair_ >= tui_reserved_pair()) return 0;
         int key = ((fg + 1) << 9) | (bg + 1);
         auto it = fg_pair_.find(key);
         if (it != fg_pair_.end()) return it->second;
@@ -24464,7 +24600,7 @@ class TableTUI {
     }
 
     int get_rgb_pair(int r, int g, int b) {
-        if (COLORS < 256 || next_rgb_pair_ >= COLOR_PAIRS) return 0;
+        if (COLORS < 256 || next_rgb_pair_ >= tui_reserved_pair()) return 0;
         int key = (r << 16) | (g << 8) | b;
         auto it = rgb_pair_.find(key);
         if (it != rgb_pair_.end()) return it->second;
@@ -27239,93 +27375,29 @@ public:
     }
 
     // Returns false if the terminal type is not supported (missing terminfo).
+    // Run in a session of its own; false: the terminal could not start.
     bool run() {
-        setlocale(LC_ALL, "");
-        detect_term_bg();   // before ncurses takes the tty (OSC 11 query)
-        SCREEN* scr = newterm(nullptr, stdout, stdin);
-        if (!scr) return false;
-        set_term(scr);
-        // Restore the terminal if we're killed while owning it (see above).
-        // Handlers stay installed for the whole TUI; the signals are blocked
-        // except around getch() so endwin() only runs from a safe context.
-        g_tui_active = 1;
-        auto prev_int  = signal(SIGINT,  tui_signal_restore);
-        auto prev_term = signal(SIGTERM, tui_signal_restore);
-        auto prev_hup  = signal(SIGHUP,  tui_signal_restore);
-        sigset_t tui_sigs;
-        sigemptyset(&tui_sigs);
-        sigaddset(&tui_sigs, SIGINT);
-        sigaddset(&tui_sigs, SIGTERM);
-        sigaddset(&tui_sigs, SIGHUP);
-        sigprocmask(SIG_BLOCK, &tui_sigs, nullptr);
-        noecho(); cbreak(); keypad(stdscr, TRUE); curs_set(0);
-        set_escdelay(25); setup_colors();
-        // Mouse: scroll wheel (BUTTON4 / BUTTON5) + click and double-click.
-        // Adding click events means the terminal switches into application
-        // mouse mode and stops handling its own drag-to-select; Shift+drag
-        // still works as the escape hatch in every modern emulator.
-        mousemask(BUTTON1_CLICKED | BUTTON1_DOUBLE_CLICKED
-                | BUTTON4_PRESSED | BUTTON5_PRESSED, nullptr);
-        // 200 ms is long enough for an unhurried double-click but short
-        // enough that a deliberate pair-of-clicks isn't mistaken for one.
-        mouseinterval(200);
-        apply_start_view();
+        TuiSession session;
+        if (!session.open()) return false;
+        run_in(session);
+        return true;
+    }
 
-        // A late terminal reply must not read as keystrokes. detect_term_bg()
-        // sends an OSC 11 background query before ncurses starts and waits
-        // ~80 ms; over a slow transport (a jupyter-lab web console proxied
-        // through kubernetes, tmux over a laggy ssh) the terminal's reply
-        // can outrun that budget and land here instead — where its leading
-        // ESC used to hit the Esc-quits binding, so vv exited "by itself"
-        // and the tail leaked to the shell as `11;rgb:ffff/ffff/ffff`.
-        // After a bare ESC, peek: a string introducer (OSC/DCS/APC/SOS/PM)
-        // or a CSI start means the terminal is talking, not the user —
-        // swallow through the terminator and read on. Anything else is
-        // pushed back, so Esc, double-Esc and Alt+key behave as before.
-        // (Signals are allowed only while parked in the blocking getch():
-        // one arriving during draw() is delivered there — in read(), not
-        // mid-malloc — where the endwin() in the handler is safe.)
-        auto tui_getch = [&]() -> int {
-            for (;;) {
-                sigprocmask(SIG_UNBLOCK, &tui_sigs, nullptr);
-                int ch = getch();
-                sigprocmask(SIG_BLOCK, &tui_sigs, nullptr);
-                if (ch != 27) return ch;
-                timeout(0);
-                int nxt = getch();
-                if (nxt == ERR) { timeout(-1); return 27; }        // lone Esc
-                bool str_seq = nxt == ']' || nxt == 'P' || nxt == '_' ||
-                               nxt == 'X' || nxt == '^';
-                if (!str_seq && nxt != '[') {                      // Alt+key…
-                    ungetch(nxt);
-                    timeout(-1);
-                    return 27;
-                }
-                // The reply may still be trickling in over the transport
-                // that delayed it; allow 50 ms between bytes, cap the total.
-                timeout(50);
-                if (str_seq) {                    // …until BEL or ST (ESC \)
-                    int prev = 0;
-                    for (int i = 0; i < 4096; ++i) {
-                        int c = getch();
-                        if (c == ERR || c == '\a' || (prev == 27 && c == '\\'))
-                            break;
-                        prev = c;
-                    }
-                } else {                          // CSI: …until a final byte
-                    for (int i = 0; i < 256; ++i) {
-                        int c = getch();
-                        if (c == ERR || (c >= 0x40 && c <= 0x7e)) break;
-                    }
-                }
-                timeout(-1);
-            }
-        };
+    // Run inside an open session (which outlives this call).
+    void run_in(TuiSession& session) {
+        // Colour pairs are set up afresh: another viewer may have used the
+        // session's pairs, so the on-demand pair caches start empty.
+        fg_pair_.clear();
+        rgb_pair_.clear();
+        next_rgb_pair_ = NCP_PLAIN + 1;
+        setup_colors();
+        if (!start_applied_) { apply_start_view(); start_applied_ = true; }
+        clearok(stdscr, TRUE);
 
         bool quit = false;
         while (!quit) {
             draw();
-            int ch = tui_getch();
+            int ch = session.read_key();
             int dl = data_lines();
 
             // ── Help overlay: any key dismisses it (and is consumed) ─────────
@@ -27827,16 +27899,6 @@ public:
                 default: break;
             }
         }
-        g_tui_active = 0;
-        endwin();
-        // Hand the signals back to whatever was there before the TUI ran and
-        // restore the original mask.
-        signal(SIGINT,  prev_int);
-        signal(SIGTERM, prev_term);
-        signal(SIGHUP,  prev_hup);
-        sigprocmask(SIG_UNBLOCK, &tui_sigs, nullptr);
-        delscreen(scr);
-        return true;
     }
 };
 
