@@ -167,6 +167,7 @@ _vv() {
         '--contigs[List reference sequences (name, length) and detect the assembly]' \
         '--seq-stats[FASTA/FASTQ summary: count, lengths, N50, GC, Q20/Q30]' \
         '--flatten[Struct columns as one column per leaf (st.a, st.b.c)]' \
+        '--tree[JSON: open the tree viewer]' \
         '--pretty[JSON: print the document re-indented]' \
         '--json-paths[JSON: one path = value line per leaf]' \
         '--no-tree[JSON: read it as a table of records]' \

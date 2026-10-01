@@ -155,6 +155,7 @@ complete -c vv -c vh -l stats              -d 'Parquet metadata dump (no data re
 complete -c vv -c vh -l contigs            -d 'BAM/CRAM/SAM, VCF/BCF: list reference sequences + detect assembly'
 complete -c vv -c vh -l seq-stats          -d 'FASTA/FASTQ: count, lengths, N50, GC, Q20/Q30'
 complete -c vv -c vh -l flatten            -d 'struct columns as one column per leaf (st.a, st.b.c)'
+complete -c vv -c vh -l tree               -d 'JSON: open the tree viewer'
 complete -c vv -c vh -l pretty             -d 'JSON: print the document re-indented'
 complete -c vv -c vh -l json-paths         -d 'JSON: one path = value line per leaf'
 complete -c vv -c vh -l no-tree            -d 'JSON: read it as a table of records'

@@ -225,8 +225,9 @@ listing, so both are refused. An index outside the declared shape, or an
 entry count different from the size line, is an error.
 .IP \(bu 2
 \fB.json\fR, \fB.ndjson\fR, \fB.jsonl\fR \(en JSON documents (also \fB.gz\fR /
-\fB.zst\fR, and JSON on stdin, recognised by its content). On a pipe the
-document is printed re-indented (see \fB\-\-pretty\fR). With a table flag
+\fB.zst\fR, and JSON on stdin, recognised by its content). On a terminal
+the document opens in a folding tree viewer (see \fBJSON VIEWER\fR); on a
+pipe it is printed re-indented (see \fB\-\-pretty\fR). With a table flag
 (an export, a report, \fB\-\-filter\fR, \fB\-n\fR, \fB\-\-table\fR,
 \fB\-\-no\-tree\fR) it is read as records: a top-level array of objects or
 newline-delimited objects (JSON Lines); records need not share a schema
@@ -381,8 +382,14 @@ Print a JSON document as one \fIpath\fR\ =\ \fIvalue\fR line per leaf
 \fB.[0]\fR, \fB.[1]\fR, ... The lines can be searched with grep and keep
 the full path of every match.
 .TP
+.B \-\-tree
+Open the JSON tree viewer, also for a file whose extension is not
+\fB.json\fR when its content is JSON.
+.TP
 .B \-\-no\-tree
-Read a JSON file as a table of records rather than as a document.
+Read a JSON file as a table of records rather than as a document. The
+config file setting \fBjson_view = table\fR makes that the default on a
+terminal.
 .TP
 .BI \-\-samples " HOW"
 How a multi-sample VCF / BCF shows its sample columns. \fBstruct\fR
@@ -1010,6 +1017,54 @@ Quit.
 \fBvh\fR is a symlink to \fBvv\fR that defaults to \fB\-\-vertical\fR mode.
 \fBvh wide.parquet\fR prints a transposed head where the user scrolls
 vertically through fields rather than horizontally through columns.
+.SH JSON VIEWER
+A JSON document opens as a tree: one row per value, object keys bare when
+they are identifiers, array elements numbered, scalars exactly as written in
+the file. A collapsed object or array shows a preview on its row
+(\fB{\[u2026]} 3 keys  {"id": 1, \[u2026]}\fR). Small files open fully expanded, larger
+ones to depth 2 or 1. The file is mapped, not read into memory: only the
+containers on screen are indexed, so multi-gigabyte files open in about the
+time of one pass over them. The status line shows the jq path of the cursor
+(\fB.items[3]["a b"]\fR), its type and size, its byte offset, and whether the
+file is valid JSON (checked in the background; a truncated or malformed file
+shows its valid part and an error row).
+.TP
+.B j k \(ua \(da
+Move; \fBPgUp PgDn\fR, \fB^U ^D\fR (half page), \fBg G\fR (first / last row).
+.TP
+.B h l \(<- \(->
+Collapse / expand; \fBh\fR on a leaf or a collapsed node goes to the parent,
+\fBl\fR on an open node to its first child.
+.TP
+.B Space Enter
+Toggle the node; \fBEnter\fR on a value opens it in full (strings decoded).
+.TP
+.B J K
+Next / previous sibling.
+.TP
+.B e E c C
+Expand the node / the node and everything inside; collapse the node / and
+everything inside.
+.TP
+.B 1 \(en 9, 0
+Fold the whole document to depth N; \fB0\fR to the root.
+.TP
+.B / ? n N
+Search keys and values (case-insensitive; a regular expression when the query
+uses regex syntax), forward / backward; the match is revealed and the scan can
+be cancelled with any key.
+.TP
+.B y p Y
+Copy the value (a string decoded), its jq path, or its key to the clipboard
+(OSC 52).
+.TP
+.B t
+The table view of the records (an array of objects or JSON Lines);
+\fBt\fR there returns to the tree.
+.TP
+.B H F1 q
+Help; quit.
+
 .SH EXAMPLES
 .PP
 First 10 rows of a Parquet file with a nice ASCII table:

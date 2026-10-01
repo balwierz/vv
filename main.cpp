@@ -104,6 +104,7 @@ extern "C" {
 #include <regex>
 #include <set>
 #include <sstream>
+#include <mutex>
 #include <thread>
 #include <string>
 #include <fnmatch.h>   // --select globs (POSIX; present on Linux + macOS)
@@ -116,6 +117,7 @@ extern "C" {
 #include <vector>
 #include <sys/ioctl.h>
 #include <cerrno>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 
@@ -850,8 +852,9 @@ static void print_usage(const char* prog) {
         "                              .pgen genotype file is refused, with the\n"
         "                              plink2 command that exports it to VCF)\n"
         "  .json  .ndjson  .jsonl      JSON documents (plus .gz / .zst; also on stdin):\n"
-        "                              printed re-indented on a pipe; a table of\n"
-        "                              records with any table flag (see JSON below)\n"
+        "                              a folding tree viewer on a terminal, printed\n"
+        "                              re-indented on a pipe; a table of records with\n"
+        "                              any table flag (see JSON below)\n"
         "  .txt  .text  .log           plain text (also .gz / .zst; viewed like less -SN,\n"
         "                              not tabulated). The fallback for any file\n"
         "                              no other format claims.\n"
@@ -887,13 +890,21 @@ static void print_usage(const char* prog) {
         "        Tab / Shift-Tab: switch files (with multiple positionals),\n"
         "        H/F1: in-app help, q quit\n"
         "\nJSON documents (.json / .ndjson / .jsonl, or JSON on stdin):\n"
-        "  On a pipe a JSON file prints re-indented, two spaces, scalars as\n"
-        "  written (like jq .). A table flag (--tsv, --parquet, --filter, -n,\n"
-        "  --table, ...) reads it as a table of records instead.\n"
+        "  On a terminal a JSON file opens in a folding tree viewer; on a pipe\n"
+        "  it prints re-indented, two spaces, scalars as written (like jq .).\n"
+        "  A table flag (--tsv, --parquet, --filter, -n, --table, ...) reads it\n"
+        "  as a table of records instead.\n"
+        "  --tree              the tree viewer (also a JSON file of any extension)\n"
         "  --pretty            print the document re-indented (also on a terminal)\n"
         "  --json-paths        print one `path = value` line per leaf, with jq\n"
         "                      paths: .a.b[0] = 1, .[\"a b\"] = \"x\" (NDJSON: .[i])\n"
-        "  --no-tree           read JSON as a table of records\n"
+        "  --no-tree           read JSON as a table of records (config file:\n"
+        "                      json_view = table makes that the default)\n"
+        "  Tree keys: j/k move, h/l collapse/expand (h: to the parent), Space\n"
+        "        toggle, J/K next/previous sibling, e/E c/C expand/collapse (the\n"
+        "        node / everything inside), 1-9 0 fold to depth N, /:search,\n"
+        "        y/p/Y copy the value / jq path / key, Enter: full value,\n"
+        "        t: table view (t comes back), H: help, q quit\n"
         "\nTable options:\n"
         "  -n <rows>           rows to display  (default: 10, 0 = all)\n"
         "  --tail <N>          show the last N rows instead of the first N\n"
@@ -10346,7 +10357,7 @@ class Lexer {
             if (!digits()) return fail("bad number: digits expected in the exponent");
         }
         const int next = r_.peek();
-        if (alnum(next) || next == '.') return fail("bad number");
+        if (alnum(next) || next == '.' || next == '-' || next == '+') return fail("bad number");
         v_.scalar(num_.data(), num_.size(), 'n');
         return true;
     }
@@ -10354,7 +10365,8 @@ class Lexer {
         const size_t n = std::strlen(word);
         for (size_t k = 0; k < n; ++k)
             if (r_.get() != word[k]) return fail("expected a value");
-        if (alnum(r_.peek())) return fail("expected a value");
+        const int next = r_.peek();
+        if (alnum(next) || next == '-' || next == '+' || next == '.') return fail("expected a value");
         v_.scalar(word, n, kind);
         return true;
     }
@@ -10658,6 +10670,490 @@ bool looks_like_json(const std::string& head) {
            e.msg == "unexpected end of input" || e.msg == "unterminated string";
 }
 
+
+// ── JsonDoc: a lazy structural index over an mmap'ed JSON file ───────────────
+//
+// The tree viewer's model. Nothing is parsed up front beyond a pass over the
+// top level: a container's children are indexed the first time they are
+// asked for, a page of K at a time, with a checkpoint (the byte offset) every
+// K children so a page evicted from the cache is re-read from its checkpoint
+// rather than from the container's start. Scalars are never parsed — they
+// are shown as the bytes in the file. The structural scanner is lenient (it
+// tracks brackets, strings and commas); the strict Lexer validates the file
+// on a background thread and reports the first error. Memory: the mapped
+// file (not copied), 8 bytes per K children for checkpoints, and at most
+// kMaxPages pages of nodes.
+//
+// Root modes: a single value; several top-level values (concatenated JSON),
+// shown as a virtual array; NDJSON / JSON Lines, one element per line.
+
+enum class JKind : uint8_t { Object, Array, String, Number, True, False, Null, Error };
+
+struct JNode {
+    uint64_t off = 0;                // first byte (the error position for Error)
+    uint64_t end = 0;                // one past the value
+    uint64_t key_off = UINT64_MAX;   // object member: the key's opening quote
+    int64_t  count = 0;              // containers: direct children
+    JKind    kind = JKind::Null;
+    bool     broken = false;         // the value's bytes end in an error
+    bool     virt = false;           // the virtual root of a sequence / NDJSON
+    bool     container() const { return kind == JKind::Object || kind == JKind::Array; }
+    uint64_t start() const { return key_off != UINT64_MAX ? key_off : off; }
+};
+
+class JsonDoc {
+public:
+    enum class Root { Value, Sequence, Lines };
+
+    JsonDoc() = default;
+    JsonDoc(const JsonDoc&) = delete;
+    JsonDoc& operator=(const JsonDoc&) = delete;
+    ~JsonDoc() {
+        stop_ = true;
+        if (validator_.joinable()) validator_.join();
+        if (map_) munmap(map_, size_);
+    }
+
+    // Map `path` (a regular, uncompressed file). `lines`: NDJSON / JSON Lines.
+    std::string open(const std::string& path, bool lines, bool validate = true) {
+        path_ = path;
+        int fd = ::open(path.c_str(), O_RDONLY);
+        if (fd < 0) return "Cannot open '" + path + "': " + std::strerror(errno);
+        struct stat st;
+        if (fstat(fd, &st) != 0) { ::close(fd); return "Cannot stat '" + path + "'"; }
+        size_ = (size_t)st.st_size;
+        if (size_ > 0) {
+            void* m = mmap(nullptr, size_, PROT_READ, MAP_PRIVATE, fd, 0);
+            if (m == MAP_FAILED) {
+                ::close(fd);
+                return "Cannot map '" + path + "': " + std::strerror(errno);
+            }
+            map_ = m;
+            data_ = static_cast<const char*>(m);
+        }
+        ::close(fd);
+        init(lines, validate);
+        return "";
+    }
+    // An in-memory buffer (fuzzing). The buffer must outlive the document.
+    void open_buffer(const char* data, size_t n, bool lines, bool validate) {
+        data_ = data;
+        size_ = n;
+        init(lines, validate);
+    }
+
+    const std::string& path() const { return path_; }
+    size_t size() const { return size_; }
+    const char* data() const { return data_; }
+    Root root_mode() const { return mode_; }
+    const JNode& root() const { return root_; }
+    int64_t page_size() const { return K_; }
+
+    // A node's raw bytes.
+    std::string_view bytes(const JNode& n) const {
+        if (n.off >= size_ || n.end <= n.off) return {};
+        return std::string_view(data_ + n.off, (size_t)(std::min<uint64_t>(n.end, size_) - n.off));
+    }
+    // An object member's key, as written between its quotes.
+    std::string_view key(const JNode& n) const {
+        if (n.key_off == UINT64_MAX || n.key_off >= size_) return {};
+        const uint64_t e = skip_string(n.key_off, size_);
+        if (e == UINT64_MAX || e < n.key_off + 2) return {};
+        return std::string_view(data_ + n.key_off + 1, (size_t)(e - n.key_off - 2));
+    }
+
+    // Child i of container `parent`; false past the end (or after an error).
+    bool child(const JNode& parent, int64_t i, JNode* out) {
+        if (!parent.container() || i < 0) return false;
+        Index& ix = index_of(parent);
+        const int64_t page = i / K_;
+        if (!ensure_page(parent, ix, page)) return false;
+        const std::vector<JNode>& nodes = page_nodes(parent, ix, page);
+        const int64_t k = i - page * K_;
+        if (k >= (int64_t)nodes.size()) return false;
+        *out = nodes[(size_t)k];
+        return true;
+    }
+
+    // Path from the root to the deepest node whose bytes (key included)
+    // contain `target`: (node, index in its parent); the root's index is -1.
+    std::vector<std::pair<JNode, int64_t>> path_to(uint64_t target) {
+        std::vector<std::pair<JNode, int64_t>> p;
+        p.push_back({root_, -1});
+        for (;;) {
+            const JNode cur = p.back().first;
+            if (!cur.container() || cur.count == 0) break;
+            int64_t lo = 0, hi = cur.count - 1, found = -1;
+            JNode fn;
+            while (lo <= hi) {
+                const int64_t mid = lo + (hi - lo) / 2;
+                JNode c;
+                if (!child(cur, mid, &c)) { hi = mid - 1; continue; }
+                if (c.start() <= target) { found = mid; fn = c; lo = mid + 1; }
+                else hi = mid - 1;
+            }
+            if (found < 0 || target >= std::max(fn.end, fn.off + 1)) break;
+            p.push_back({fn, found});
+        }
+        return p;
+    }
+
+    // A one-line compact rendering of a node's bytes (whitespace outside
+    // strings dropped, ", " and ": " spaced), cut at `max_bytes` of output.
+    std::string compact(const JNode& n, size_t max_bytes) const {
+        std::string out;
+        uint64_t i = n.off;
+        const uint64_t e = std::min<uint64_t>(n.end, size_);
+        bool in_str = false, esc = false;
+        while (i < e && out.size() < max_bytes) {
+            const char c = data_[i++];
+            if (in_str) {
+                out += c;
+                if (esc) esc = false;
+                else if (c == '\\') esc = true;
+                else if (c == '"') in_str = false;
+            } else if (c == '"') { in_str = true; out += c; }
+            else if (ws(c)) continue;
+            else { out += c; if (c == ',' || c == ':') out += ' '; }
+        }
+        return out;
+    }
+
+    // The first structural error (where the scanner gave up), if any.
+    bool has_struct_err() const { return !struct_err_.empty(); }
+    uint64_t struct_err_off() const { return struct_err_off_; }
+    const std::string& struct_err() const { return struct_err_; }
+
+    // Background validation: 0 running, 1 valid, 2 invalid.
+    int validation() const { return valid_state_.load(); }
+    int64_t validated_bytes() const { return validated_.load(); }
+    JsonError validation_error() const {
+        std::lock_guard<std::mutex> g(err_mu_);
+        return valid_err_;
+    }
+    // Wait for the validator (tests, the fuzzer).
+    void wait_validation() { if (validator_.joinable()) validator_.join(); }
+
+private:
+    struct Index {
+        std::vector<uint64_t> ckpt;     // start of child k*K (an object member's key)
+        uint64_t scan_pos = 0;          // start of the next unscanned child
+        int64_t  scanned = 0;           // children scanned so far
+        bool     complete = false;
+    };
+    std::string           path_;
+    void*                 map_ = nullptr;
+    const char*           data_ = nullptr;
+    size_t                size_ = 0;
+    Root                  mode_ = Root::Value;
+    JNode                 root_;
+    int64_t               K_ = 1024;
+    std::vector<uint64_t> top_, top_end_;   // top-level values (Sequence / Lines)
+    std::unordered_map<uint64_t, Index> index_;
+    static constexpr size_t kMaxPages = 64;
+    using PageKey = std::pair<uint64_t, int64_t>;
+    std::list<std::pair<PageKey, std::vector<JNode>>> pages_;   // most recent first
+    std::map<PageKey, decltype(pages_)::iterator> page_at_;
+    std::string           struct_err_;
+    uint64_t              struct_err_off_ = 0;
+    std::thread           validator_;
+    std::atomic<bool>     stop_{false};
+    std::atomic<int>      valid_state_{0};
+    std::atomic<int64_t>  validated_{0};
+    mutable std::mutex    err_mu_;
+    JsonError             valid_err_;
+
+    static bool ws(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
+    uint64_t skip_ws(uint64_t i, uint64_t lim) const {
+        while (i < lim && ws(data_[i])) ++i;
+        return i;
+    }
+    // Past a string that opens at `i`; UINT64_MAX when it is not closed
+    // before `lim`.
+    uint64_t skip_string(uint64_t i, uint64_t lim) const {
+        uint64_t k = i + 1;
+        while (k < lim) {
+            const void* q = std::memchr(data_ + k, '"', (size_t)(lim - k));
+            if (!q) return UINT64_MAX;
+            const uint64_t at = (uint64_t)(static_cast<const char*>(q) - data_);
+            uint64_t j = at;
+            while (j > i + 1 && data_[j - 1] == '\\') --j;
+            if ((at - j) % 2 == 0) return at + 1;
+            k = at + 1;
+        }
+        return UINT64_MAX;
+    }
+    void note_err(uint64_t off, const char* msg) {
+        if (struct_err_.empty() || off < struct_err_off_) {
+            struct_err_ = msg;
+            struct_err_off_ = off;
+        }
+    }
+    static JKind scalar_kind(char c) {
+        if (c == '"') return JKind::String;
+        if (c == 't') return JKind::True;
+        if (c == 'f') return JKind::False;
+        if (c == 'n') return JKind::Null;
+        if (c == '-' || (c >= '0' && c <= '9')) return JKind::Number;
+        return JKind::Error;
+    }
+    JNode error_at(uint64_t off, const char* msg) {
+        JNode n;
+        n.kind = JKind::Error;
+        n.off = n.end = off;
+        note_err(off, msg);
+        return n;
+    }
+    // The value at `i` (bytes before `lim`): end, kind, and for containers
+    // the number of direct children. Lenient: brackets must match, nothing
+    // else is checked. A structural break marks the node broken and ends it
+    // there.
+    JNode scan_value(uint64_t i, uint64_t lim) {
+        if (i >= lim) return error_at(i, "unexpected end of input");
+        JNode n;
+        n.off = i;
+        const char c = data_[i];
+        if (c == '{' || c == '[') {
+            n.kind = c == '{' ? JKind::Object : JKind::Array;
+            std::vector<char> st(1, c == '{' ? '}' : ']');
+            uint64_t k = i + 1;
+            bool any = false;
+            int64_t commas = 0;
+            while (k < lim && !st.empty()) {
+                const char ch = data_[k];
+                if (ch == '"') {
+                    if (st.size() == 1) any = true;
+                    k = skip_string(k, lim);
+                    if (k == UINT64_MAX) break;
+                    continue;
+                }
+                if (ch == '{' || ch == '[') {
+                    if (st.size() == 1) any = true;
+                    st.push_back(ch == '{' ? '}' : ']');
+                } else if (ch == '}' || ch == ']') {
+                    if (ch != st.back()) {
+                        n.count = commas + (any ? 1 : 0);
+                        n.broken = true;
+                        n.end = k;
+                        note_err(k, "mismatched bracket");
+                        return n;
+                    }
+                    st.pop_back();
+                } else if (ch == ',') {
+                    if (st.size() == 1) ++commas;
+                } else if (!ws(ch) && st.size() == 1) {
+                    any = true;
+                }
+                ++k;
+            }
+            n.count = commas + (any ? 1 : 0);
+            if (!st.empty()) {
+                n.broken = true;
+                n.end = lim;
+                note_err(lim, k == UINT64_MAX ? "unterminated string" : "unexpected end of input");
+                return n;
+            }
+            n.end = k;
+            return n;
+        }
+        n.kind = scalar_kind(c);
+        if (n.kind == JKind::Error) return error_at(i, "expected a value");
+        if (n.kind == JKind::String) {
+            const uint64_t e = skip_string(i, lim);
+            if (e == UINT64_MAX) { n.broken = true; n.end = lim; note_err(lim, "unterminated string"); }
+            else n.end = e;
+            return n;
+        }
+        uint64_t k = i + 1;            // a number or literal ends at any structural byte
+        while (k < lim && !ws(data_[k]) && !std::strchr(",:[]{}\"", data_[k])) ++k;
+        n.end = k;
+        return n;
+    }
+
+    void init(bool lines, bool validate) {
+        if (const char* e = std::getenv("VV_JSON_CHECKPOINT")) {
+            const long v = std::atol(e);
+            if (v >= 2 && v <= (1L << 20)) K_ = v;
+        }
+        uint64_t i = 0;
+        if (size_ >= 3 && std::memcmp(data_, "\xEF\xBB\xBF", 3) == 0) i = 3;
+        i = skip_ws(i, size_);
+        if (lines) {
+            mode_ = Root::Lines;
+            uint64_t p = i;
+            while (p < size_) {
+                p = skip_ws(p, size_);
+                if (p >= size_) break;
+                const void* nl = std::memchr(data_ + p, '\n', size_ - p);
+                const uint64_t e = nl ? (uint64_t)(static_cast<const char*>(nl) - data_) : size_;
+                top_.push_back(p);
+                top_end_.push_back(e);
+                p = e + 1;
+            }
+        } else {
+            uint64_t p = i;
+            while (p < size_) {
+                const JNode v = scan_value(p, size_);
+                top_.push_back(p);
+                top_end_.push_back(size_);
+                if (v.kind == JKind::Error || v.broken) break;
+                p = skip_ws(v.end, size_);
+            }
+            mode_ = top_.size() > 1 ? Root::Sequence : Root::Value;
+        }
+        if (mode_ == Root::Value) {
+            if (top_.empty()) root_ = error_at(0, "no JSON value (empty input)");
+            else root_ = scan_value(top_[0], size_);
+            if (root_.kind == JKind::Error && size_ == 0) struct_err_.clear();
+        } else {
+            root_.kind = JKind::Array;
+            root_.virt = true;
+            root_.off = 0;
+            root_.end = size_;
+            root_.count = (int64_t)top_.size();
+        }
+        if (validate) start_validation();
+        else valid_state_ = struct_err_.empty() ? 1 : 2;
+    }
+
+    void start_validation() {
+        if (size_ == 0) { valid_state_ = 1; return; }
+        validator_ = std::thread([this]() {
+            auto buf = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(data_),
+                                                       (int64_t)size_);
+            // Feeds the Lexer 1 MiB at a time, counting progress and stopping
+            // when the document closes.
+            struct Feed : arrow::io::InputStream {
+                arrow::io::BufferReader in;
+                JsonDoc& d;
+                Feed(std::shared_ptr<arrow::Buffer> b, JsonDoc& doc) : in(std::move(b)), d(doc) {}
+                arrow::Status Close() override { return in.Close(); }
+                arrow::Result<int64_t> Tell() const override { return in.Tell(); }
+                bool closed() const override { return in.closed(); }
+                arrow::Result<int64_t> Read(int64_t n, void* out) override {
+                    if (d.stop_) return 0;
+                    auto r = in.Read(std::min<int64_t>(n, 1 << 20), out);
+                    if (r.ok()) d.validated_ += *r;
+                    return r;
+                }
+                arrow::Result<std::shared_ptr<arrow::Buffer>> Read(int64_t n) override {
+                    return in.Read(n);
+                }
+            } feed(buf, *this);
+            ByteReader r(feed, 1 << 20);
+            Visitor none;
+            Lexer lx(r, none);
+            const JsonError e = lx.run();
+            if (stop_) return;
+            if (e.ok()) { valid_state_ = 1; return; }
+            std::lock_guard<std::mutex> g(err_mu_);
+            valid_err_ = e;
+            valid_state_ = 2;
+        });
+    }
+
+    static uint64_t key_of(const JNode& n) { return n.virt ? UINT64_MAX : n.off; }
+
+    Index& index_of(const JNode& parent) {
+        const uint64_t k = key_of(parent);
+        auto it = index_.find(k);
+        if (it != index_.end()) return it->second;
+        Index ix;
+        if (parent.virt) {
+            for (size_t j = 0; j < top_.size(); j += (size_t)K_) ix.ckpt.push_back(j);   // indexes
+            ix.scanned = (int64_t)top_.size();
+            ix.complete = true;
+        } else {
+            const uint64_t lim = std::min<uint64_t>(parent.end, size_);
+            ix.scan_pos = skip_ws(parent.off + 1, lim);
+            const char close = parent.kind == JKind::Object ? '}' : ']';
+            if (parent.count == 0 || ix.scan_pos >= lim || data_[ix.scan_pos] == close)
+                ix.complete = true;
+            else ix.ckpt.push_back(ix.scan_pos);
+        }
+        return index_.emplace(k, std::move(ix)).first->second;
+    }
+
+    // One member at `pos` of a non-virtual container: the node, and where
+    // the next member starts (UINT64_MAX after the last one or an error).
+    JNode read_member(uint64_t pos, const JNode& parent, uint64_t* next) {
+        *next = UINT64_MAX;
+        const uint64_t lim = std::min<uint64_t>(parent.end, size_);
+        uint64_t p = pos;
+        JNode c;
+        if (parent.kind == JKind::Object) {
+            if (p >= lim || data_[p] != '"')
+                return error_at(p, p >= lim ? "unexpected end of input" : "expected a string key");
+            const uint64_t key = p;
+            p = skip_string(p, lim);
+            if (p == UINT64_MAX) return error_at(lim, "unterminated string");
+            p = skip_ws(p, lim);
+            if (p >= lim || data_[p] != ':')
+                return error_at(p, p >= lim ? "unexpected end of input" : "expected ':' after a key");
+            p = skip_ws(p + 1, lim);
+            c = scan_value(p, lim);
+            c.key_off = key;
+        } else {
+            c = scan_value(p, lim);
+        }
+        if (c.kind == JKind::Error || c.broken) return c;
+        p = skip_ws(c.end, lim);
+        if (p < lim && data_[p] == ',') *next = skip_ws(p + 1, lim);
+        return c;
+    }
+
+    // Checkpoints up to `page`, scanning forward one child at a time.
+    bool ensure_page(const JNode& parent, Index& ix, int64_t page) {
+        while ((int64_t)ix.ckpt.size() <= page && !ix.complete) {
+            uint64_t next;
+            const JNode c = read_member(ix.scan_pos, parent, &next);
+            ++ix.scanned;
+            if (c.kind == JKind::Error || c.broken || next == UINT64_MAX) { ix.complete = true; break; }
+            ix.scan_pos = next;
+            if (ix.scanned % K_ == 0) ix.ckpt.push_back(next);
+        }
+        return page < (int64_t)ix.ckpt.size();
+    }
+
+    const std::vector<JNode>& page_nodes(const JNode& parent, Index& ix, int64_t page) {
+        const PageKey key(key_of(parent), page);
+        auto it = page_at_.find(key);
+        if (it != page_at_.end()) {
+            pages_.splice(pages_.begin(), pages_, it->second);
+            return it->second->second;
+        }
+        std::vector<JNode> nodes;
+        if (parent.virt) {
+            const size_t a = (size_t)ix.ckpt[(size_t)page];
+            const size_t b = std::min(top_.size(), a + (size_t)K_);
+            for (size_t j = a; j < b; ++j) {
+                JNode v = scan_value(top_[j], top_end_[j]);
+                if (mode_ == Root::Lines && v.kind != JKind::Error && !v.broken) {
+                    const uint64_t p = skip_ws(v.end, top_end_[j]);
+                    if (p < top_end_[j]) { v.broken = true; note_err(p, "unexpected text after the value"); }
+                }
+                nodes.push_back(v);
+            }
+        } else {
+            uint64_t pos = ix.ckpt[(size_t)page];
+            for (int64_t k = 0; k < K_ && pos != UINT64_MAX; ++k) {
+                uint64_t next;
+                const JNode c = read_member(pos, parent, &next);
+                nodes.push_back(c);
+                if (c.kind == JKind::Error || c.broken) break;
+                pos = next;
+            }
+        }
+        pages_.emplace_front(key, std::move(nodes));
+        page_at_[key] = pages_.begin();
+        while (pages_.size() > kMaxPages) {
+            page_at_.erase(pages_.back().first);
+            pages_.pop_back();
+        }
+        return pages_.front().second;
+    }
+};
+
 #ifdef VV_FUZZ
 void fuzz_one(const uint8_t* buf, size_t n) {
     auto run = [](const std::string& in, JsonOut mode, std::string* out) {
@@ -10681,6 +11177,43 @@ void fuzz_one(const uint8_t* buf, size_t n) {
         if (!e2.ok() || p1 != p2) std::abort();
     }
     (void)looks_like_json(in);
+
+    // The lazy index over the same bytes, walked completely with tiny pages
+    // (so checkpoints and evicted pages are exercised): children lie inside
+    // their parent in increasing order, and an accepted document has as many
+    // scalars in the tree as the lexer reported.
+    setenv("VV_JSON_CHECKPOINT", "4", 1);
+    JsonDoc doc;
+    doc.open_buffer(in.data(), in.size(), /*lines=*/false, /*validate=*/false);
+    struct Count : Visitor {
+        int64_t n = 0;
+        void str_end() override { ++n; }
+        void scalar(const char*, size_t, char) override { ++n; }
+        void open(bool, bool empty) override { if (empty) ++n; }
+    } lexed;
+    arrow::io::BufferReader br(arrow::Buffer::FromString(in));
+    ByteReader r(br, 1 << 12);
+    Lexer lx(r, lexed);
+    const bool accepted = lx.run().ok();
+    int64_t leaves = 0, visited = 0;
+    std::vector<JNode> stack{doc.root()};
+    while (!stack.empty() && visited < 200000) {
+        const JNode cur = stack.back();
+        stack.pop_back();
+        ++visited;
+        if (!cur.container()) { if (cur.kind != JKind::Error) ++leaves; continue; }
+        if (cur.count == 0 && !cur.broken) { ++leaves; continue; }
+        uint64_t prev = 0;
+        for (int64_t i = 0; i < cur.count; ++i) {
+            JNode c;
+            if (!doc.child(cur, i, &c)) break;
+            if (!cur.virt && (c.off < cur.off || c.off > cur.end)) std::abort();
+            if (i > 0 && c.start() < prev) std::abort();
+            prev = c.start();
+            stack.push_back(c);
+        }
+    }
+    if (accepted && visited < 200000 && leaves != lexed.n) std::abort();
 }
 #endif
 
@@ -24468,6 +25001,25 @@ public:
 // identical fg but with a dim grey background — applied to odd data rows.
 static constexpr int ZEBRA_OFFSET = 100;
 
+// The theme's fixed colour pairs (header, index, null, number, booleans,
+// separator, search, plain), shared by the table and the JSON viewer.
+static void tui_init_base_pairs() {
+    if (!has_colors()) return;
+    start_color(); use_default_colors();
+    const bool c256 = COLORS >= 256;
+    const Theme& t  = *g_theme;
+    init_pair(NCP_HEADER, c256 ? t.nc_fg_header : t.nc16_fg_header, -1);
+    init_pair(NCP_INDEX,  c256 ? t.nc_fg_index  : t.nc16_fg_index,  -1);
+    init_pair(NCP_NULL,   c256 ? t.nc_fg_null   : t.nc16_fg_null,   -1);
+    init_pair(NCP_NUMBER, c256 ? t.nc_fg_number : t.nc16_fg_number, -1);
+    init_pair(NCP_BOOL_T, c256 ? t.nc_fg_boolt  : t.nc16_fg_boolt,  -1);
+    init_pair(NCP_BOOL_F, c256 ? t.nc_fg_boolf  : t.nc16_fg_boolf,  -1);
+    init_pair(NCP_SEP,    c256 ? t.nc_fg_sep    : t.nc16_fg_sep,    -1);
+    init_pair(NCP_SEARCH, c256 ? t.nc_fg_search : t.nc16_fg_search,
+                          c256 ? t.nc_bg_search : t.nc16_bg_search);
+    init_pair(NCP_PLAIN,  -1, -1);
+}
+
 static void nc_str(int y, int x, const std::string& s,
                    attr_t attrs = A_NORMAL, int cp = 0) {
     attr_t full = attrs | (cp ? (attr_t)COLOR_PAIR(cp) : 0);
@@ -24588,6 +25140,8 @@ class TableTUI {
     // so the two cannot collide.
     std::map<int, int> fg_pair_;
     bool start_applied_ = false;   // apply_start_view() ran (once per viewer)
+    bool tree_return_ = false;     // opened from the JSON tree: `t` goes back
+    bool back_to_tree_ = false;    // the viewer closed with `t`
     int get_fg_pair(int fg, int bg) {
         if (next_rgb_pair_ >= tui_reserved_pair()) return 0;
         int key = ((fg + 1) << 9) | (bg + 1);
@@ -27166,18 +27720,7 @@ private:
         const int fg_boolt  = c256 ? t.nc_fg_boolt  : t.nc16_fg_boolt;
         const int fg_boolf  = c256 ? t.nc_fg_boolf  : t.nc16_fg_boolf;
         const int fg_sep    = c256 ? t.nc_fg_sep    : t.nc16_fg_sep;
-        const int fg_search = c256 ? t.nc_fg_search : t.nc16_fg_search;
-        const int bg_search = c256 ? t.nc_bg_search : t.nc16_bg_search;
-
-        init_pair(NCP_HEADER,  fg_header, -1);
-        init_pair(NCP_INDEX,   fg_index,  -1);
-        init_pair(NCP_NULL,    fg_null,   -1);
-        init_pair(NCP_NUMBER,  fg_number, -1);
-        init_pair(NCP_BOOL_T,  fg_boolt,  -1);
-        init_pair(NCP_BOOL_F,  fg_boolf,  -1);
-        init_pair(NCP_SEP,     fg_sep,    -1);
-        init_pair(NCP_SEARCH,  fg_search, bg_search);
-        init_pair(NCP_PLAIN,   -1,        -1);
+        tui_init_base_pairs();
 
         // Zebra twins (256-color only). Each theme picks its own bg shade;
         // -1 disables zebra altogether (e.g. for the light theme on bright
@@ -27380,6 +27923,10 @@ public:
     }
 
     // Returns false if the terminal type is not supported (missing terminfo).
+    // Opened from the JSON tree viewer: `t` closes the table and goes back.
+    void set_tree_return(bool on) { tree_return_ = on; }
+    bool back_to_tree() const { return back_to_tree_; }
+
     // Run in a session of its own; false: the terminal could not start.
     bool run() {
         TuiSession session;
@@ -27398,6 +27945,7 @@ public:
         setup_colors();
         if (!start_applied_) { apply_start_view(); start_applied_ = true; }
         clearok(stdscr, TRUE);
+        back_to_tree_ = false;
 
         bool quit = false;
         while (!quit) {
@@ -27900,12 +28448,825 @@ public:
                 case 'N':
                     if (!search_query_.empty()) do_search(!search_dir_forward_);
                     break;
+                case 't':
+                    if (tree_return_) { back_to_tree_ = true; quit = true; }
+                    break;
                 case KEY_RESIZE: break;
                 default: break;
             }
         }
     }
 };
+
+// ── JsonTUI: the JSON tree viewer ────────────────────────────────────────────
+//
+// A folding tree over a JsonDoc, in jless's "data mode": one row per value,
+// keys bare when they are identifiers, array indices shown, a collapsed
+// container previewed on its row ({…} 3 keys  {"id": 1, …}), scalars printed
+// as written in the file. The cursor and the top of the screen are paths
+// (container, child index), so moving costs the same at any file size; only
+// the containers on screen are ever indexed. `t` hands over to the table view
+// (main() runs TableTUI in the same session and comes back on its `t`).
+
+// Decode a JSON string body (escapes as written) to UTF-8.
+static std::string json_unescape(std::string_view raw) {
+    std::string out;
+    out.reserve(raw.size());
+    auto put_cp = [&](uint32_t cp) {
+        if (cp < 0x80) out += (char)cp;
+        else if (cp < 0x800) { out += (char)(0xC0 | (cp >> 6)); out += (char)(0x80 | (cp & 0x3F)); }
+        else if (cp < 0x10000) {
+            out += (char)(0xE0 | (cp >> 12)); out += (char)(0x80 | ((cp >> 6) & 0x3F));
+            out += (char)(0x80 | (cp & 0x3F));
+        } else {
+            out += (char)(0xF0 | (cp >> 18)); out += (char)(0x80 | ((cp >> 12) & 0x3F));
+            out += (char)(0x80 | ((cp >> 6) & 0x3F)); out += (char)(0x80 | (cp & 0x3F));
+        }
+    };
+    auto hex4 = [&](size_t i, uint32_t* v) {
+        if (i + 4 > raw.size()) return false;
+        uint32_t x = 0;
+        for (size_t k = i; k < i + 4; ++k) {
+            const char c = raw[k];
+            x <<= 4;
+            if (c >= '0' && c <= '9') x |= (uint32_t)(c - '0');
+            else if (c >= 'a' && c <= 'f') x |= (uint32_t)(c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F') x |= (uint32_t)(c - 'A' + 10);
+            else return false;
+        }
+        *v = x;
+        return true;
+    };
+    for (size_t i = 0; i < raw.size(); ++i) {
+        const char c = raw[i];
+        if (c != '\\' || i + 1 >= raw.size()) { out += c; continue; }
+        const char e = raw[++i];
+        switch (e) {
+            case 'n': out += '\n'; break;
+            case 't': out += '\t'; break;
+            case 'r': out += '\r'; break;
+            case 'b': out += '\b'; break;
+            case 'f': out += '\f'; break;
+            case 'u': {
+                uint32_t cp;
+                if (!hex4(i + 1, &cp)) { out += "\\u"; break; }
+                i += 4;
+                if (cp >= 0xD800 && cp < 0xDC00 && i + 2 < raw.size() && raw[i + 1] == '\\' &&
+                    raw[i + 2] == 'u') {
+                    uint32_t lo;
+                    if (hex4(i + 3, &lo) && lo >= 0xDC00 && lo < 0xE000) {
+                        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                        i += 6;
+                    }
+                }
+                put_cp(cp);
+                break;
+            }
+            default: out += e;   // \" \\ \/
+        }
+    }
+    return out;
+}
+
+// Search: case-insensitive; a literal unless the query uses regex syntax.
+struct JsonSearch {
+    std::string lit;
+    std::regex  re;
+    bool        is_re = false;
+    void compile(const std::string& q) {
+        is_re = q.find_first_of(".^$|?*+()[]{}\\") != std::string::npos;
+        lit.clear();
+        if (is_re) {
+            try { re = std::regex(q, std::regex::ECMAScript | std::regex::icase); }
+            catch (...) { is_re = false; }
+        }
+        if (!is_re) for (char c : q) lit += (char)std::tolower((unsigned char)c);
+    }
+    bool match(std::string_view s) const {
+        if (is_re) return std::regex_search(s.begin(), s.end(), re);
+        if (lit.empty() || s.size() < lit.size()) return false;
+        for (size_t i = 0; i + lit.size() <= s.size(); ++i) {
+            size_t k = 0;
+            while (k < lit.size() && std::tolower((unsigned char)s[i + k]) == lit[k]) ++k;
+            if (k == lit.size()) return true;
+        }
+        return false;
+    }
+};
+
+class JsonTUI {
+public:
+    enum class Exit { Quit, OpenTable };
+
+    JsonTUI(vvjson::JsonDoc& doc, std::string label) : doc_(doc), label_(std::move(label)) {
+        const uint64_t sz = doc_.size();
+        depth_ = doc_.root().virt ? 1 : sz <= (256u << 10) ? 99 : sz <= (16u << 20) ? 2 : 1;
+        cur_.push_back({doc_.root(), -1});
+        top_ = cur_;
+    }
+    void flash(const std::string& m) { flash_ = m; }
+
+    Exit run_in(TuiSession& session) {
+        init_pairs();
+        clearok(stdscr, TRUE);
+        for (;;) {
+            draw();
+            timeout(doc_.validation() == 0 ? 200 : -1);
+            int ch = session.read_key();
+            timeout(-1);
+            if (ch == ERR) continue;
+            if (help_) { help_ = false; continue; }
+            if (pane_) { pane_key(ch); continue; }
+            if (input_) { input_key(ch); continue; }
+            const std::string keep_flash = flash_;
+            flash_.clear();
+            const int page = std::max(1, rows_ - 3);
+            switch (ch) {
+                case 'q': case 'Q': return Exit::Quit;
+                case 27:
+                    if (!query_.empty()) { query_.clear(); break; }
+                    return Exit::Quit;
+                case 't': return Exit::OpenTable;
+                case KEY_DOWN: case 'j': step(+1); break;
+                case KEY_UP:   case 'k': step(-1); break;
+                case KEY_NPAGE: case 6 /* ^F */: step(+page); break;
+                case KEY_PPAGE: case 'b': case 2 /* ^B */: step(-page); break;
+                case 4  /* ^D */: step(+page / 2); break;
+                case 21 /* ^U */: step(-page / 2); break;
+                case 'g': case KEY_HOME: cur_.assign(1, {doc_.root(), -1}); top_ = cur_; break;
+                case 'G': case KEY_END: go_last(); break;
+                case KEY_LEFT: case 'h': left(); break;
+                case KEY_RIGHT: case 'l': right(); break;
+                case ' ': toggle(); break;
+                case '\n': case '\r': case KEY_ENTER:
+                    if (cur_.back().node.container()) toggle(); else open_pane();
+                    break;
+                case 'J': sibling(+1); break;
+                case 'K': sibling(-1); break;
+                case 'e': set_ov(cur_.back().node, 1); break;
+                case 'E': clear_ov_inside(cur_.back().node); set_ov(cur_.back().node, 3); break;
+                case 'c': set_ov(cur_.back().node, 2); fix_cursor(); break;
+                case 'C': clear_ov_inside(cur_.back().node); set_ov(cur_.back().node, 2); fix_cursor(); break;
+                case '0': case '1': case '2': case '3': case '4':
+                case '5': case '6': case '7': case '8': case '9':
+                    depth_ = ch - '0';
+                    ov_.clear();
+                    fix_cursor();
+                    flash_ = ch == '0' ? "folded to the root" : std::string("folded to depth ") + (char)ch;
+                    break;
+                case '/': case '?':
+                    input_ = true; input_fwd_ = ch == '/'; input_buf_.clear(); input_cur_ = 0;
+                    break;
+                case 'n': if (!query_.empty()) search(fwd_); break;
+                case 'N': if (!query_.empty()) search(!fwd_); break;
+                case 'y': copy_value(); break;
+                case 'p': { const std::string p = path_str(cur_); osc52_copy(p); flash_ = "copied path: " + p; break; }
+                case 'Y': copy_key(); break;
+                case 'H': case KEY_F(1): help_ = true; break;
+                case KEY_MOUSE: mouse(); break;
+                case KEY_RESIZE: break;
+                default: flash_ = keep_flash; break;
+            }
+        }
+    }
+
+private:
+    using JNode = vvjson::JNode;
+    using JKind = vvjson::JKind;
+    struct Frame { JNode node; int64_t idx; };
+    using Path = std::vector<Frame>;
+    struct Seg { std::string text; int pair; attr_t attr; };
+
+    vvjson::JsonDoc&          doc_;
+    std::string               label_;
+    int                       depth_ = 1;          // containers above this depth start open
+    std::map<uint64_t, uint8_t> ov_;               // 1 open, 2 closed, 3 open with descendants
+    Path                      cur_, top_;
+    int                       rows_ = 0, cols_ = 0;
+    std::string               flash_;
+    bool                      help_ = false;
+    // search
+    std::string               query_;
+    JsonSearch                pat_;
+    bool                      fwd_ = true;
+    bool                      input_ = false, input_fwd_ = true;
+    std::string               input_buf_;
+    size_t                    input_cur_ = 0;
+    // value pane
+    bool                      pane_ = false;
+    std::vector<std::string>  pane_lines_;
+    std::string               pane_value_;
+    int                       pane_top_ = 0;
+    int                       pair_str_ = 0;
+
+    static uint64_t ovkey(const JNode& n) { return n.virt ? UINT64_MAX : n.off; }
+    int data_rows() const { return std::max(1, rows_ - 2); }
+
+    void init_pairs() {
+        tui_init_base_pairs();
+        pair_str_ = 0;
+        if (has_colors() && COLOR_PAIRS > 16) {
+            const std::string name = g_theme ? g_theme->name : "";
+            int fg = COLOR_GREEN;
+            if (COLORS >= 256)
+                fg = name.find("solarized") != std::string::npos ? 64
+                   : name.find("light") != std::string::npos ? 28 : 114;
+            init_pair((short)tui_reserved_pair(), (short)fg, -1);
+            pair_str_ = tui_reserved_pair();
+        }
+    }
+
+    // ── Folding ────────────────────────────────────────────────────────────
+    bool is_open(const Path& p, size_t lvl) const {
+        const JNode& n = p[lvl].node;
+        if (!n.container() || n.count == 0) return false;
+        auto it = ov_.find(ovkey(n));
+        if (it != ov_.end()) return it->second != 2;
+        for (size_t a = lvl; a-- > 0;) {
+            auto jt = ov_.find(ovkey(p[a].node));
+            if (jt != ov_.end()) { if (jt->second == 3) return true; break; }
+        }
+        return (int)lvl < depth_;
+    }
+    void set_ov(const JNode& n, uint8_t v) { if (n.container()) ov_[ovkey(n)] = v; }
+    void clear_ov_inside(const JNode& n) {
+        if (n.virt) { ov_.clear(); return; }
+        auto it = ov_.upper_bound(n.off);
+        while (it != ov_.end() && it->first < n.end && it->first != UINT64_MAX) it = ov_.erase(it);
+    }
+    // After a fold: keep the cursor (and the top) on a visible node.
+    void fix_cursor() {
+        auto trim = [&](Path& p) {
+            for (size_t lvl = 1; lvl < p.size(); ++lvl)
+                if (!is_open(p, lvl - 1)) { p.resize(lvl); break; }
+        };
+        trim(cur_);
+        trim(top_);
+    }
+
+    // ── Walking the visible rows ───────────────────────────────────────────
+    bool next(Path& p) {
+        if (is_open(p, p.size() - 1)) {
+            JNode c;
+            if (doc_.child(p.back().node, 0, &c)) { p.push_back({c, 0}); return true; }
+        }
+        Path q = p;
+        while (q.size() > 1) {
+            JNode sib;
+            const Frame& par = q[q.size() - 2];
+            if (doc_.child(par.node, q.back().idx + 1, &sib)) {
+                q.back() = {sib, q.back().idx + 1};
+                p = q;
+                return true;
+            }
+            q.pop_back();
+        }
+        return false;
+    }
+    bool prev(Path& p) {
+        if (p.size() == 1) return false;
+        Frame& f = p.back();
+        if (f.idx == 0) { p.pop_back(); return true; }
+        JNode sib;
+        if (!doc_.child(p[p.size() - 2].node, f.idx - 1, &sib)) { p.pop_back(); return true; }
+        f = {sib, f.idx - 1};
+        while (is_open(p, p.size() - 1)) {
+            const JNode n = p.back().node;
+            int64_t last = n.count - 1;
+            JNode c;
+            while (last >= 0 && !doc_.child(n, last, &c)) --last;   // a broken tail
+            if (last < 0) break;
+            p.push_back({c, last});
+        }
+        return true;
+    }
+    static bool same(const Path& a, const Path& b) {
+        return a.size() == b.size() && a.back().node.start() == b.back().node.start() &&
+               a.back().node.virt == b.back().node.virt;
+    }
+    static bool before(const Path& a, const Path& b) {
+        const uint64_t x = a.back().node.virt ? 0 : a.back().node.start();
+        const uint64_t y = b.back().node.virt ? 0 : b.back().node.start();
+        return x < y || (x == y && a.size() < b.size());
+    }
+    void step(int n) {
+        for (int i = 0; i < std::abs(n); ++i)
+            if (!(n > 0 ? next(cur_) : prev(cur_))) break;
+    }
+    void ensure_visible() {
+        if (before(cur_, top_)) { top_ = cur_; return; }
+        Path p = top_;
+        for (int i = 0; i < data_rows(); ++i) {
+            if (same(p, cur_)) return;
+            if (!next(p)) break;
+        }
+        top_ = cur_;
+        for (int i = 0; i < data_rows() - 1; ++i) if (!prev(top_)) break;
+    }
+    void go_last() {
+        cur_.assign(1, {doc_.root(), -1});
+        while (is_open(cur_, cur_.size() - 1)) {
+            const JNode n = cur_.back().node;
+            int64_t last = n.count - 1;
+            JNode c;
+            while (last >= 0 && !doc_.child(n, last, &c)) --last;
+            if (last < 0) break;
+            cur_.push_back({c, last});
+        }
+    }
+    void left() {
+        if (is_open(cur_, cur_.size() - 1)) { set_ov(cur_.back().node, 2); return; }
+        if (cur_.size() > 1) cur_.pop_back();
+    }
+    void right() {
+        const JNode& n = cur_.back().node;
+        if (!n.container() || n.count == 0) return;
+        if (!is_open(cur_, cur_.size() - 1)) { set_ov(n, 1); return; }
+        JNode c;
+        if (doc_.child(n, 0, &c)) cur_.push_back({c, 0});
+    }
+    void toggle() {
+        const JNode& n = cur_.back().node;
+        if (!n.container() || n.count == 0) return;
+        set_ov(n, is_open(cur_, cur_.size() - 1) ? 2 : 1);
+    }
+    void sibling(int d) {
+        if (cur_.size() < 2) return;
+        JNode s;
+        if (doc_.child(cur_[cur_.size() - 2].node, cur_.back().idx + d, &s))
+            cur_.back() = {s, cur_.back().idx + d};
+    }
+
+    // ── Text of a row ──────────────────────────────────────────────────────
+    static bool ident(std::string_view k) {
+        if (k.empty() || !(std::isalpha((unsigned char)k[0]) || k[0] == '_')) return false;
+        for (char c : k) if (!(std::isalnum((unsigned char)c) || c == '_')) return false;
+        return true;
+    }
+    std::string path_str(const Path& p) const {
+        std::string s;
+        for (size_t l = 1; l < p.size(); ++l) {
+            const JNode& par = p[l - 1].node;
+            if (par.kind == JKind::Object && !par.virt) {
+                const std::string_view k = doc_.key(p[l].node);
+                if (ident(k)) { s += '.'; s += k; }
+                else { if (s.empty()) s += '.'; s += "[\""; s += k; s += "\"]"; }
+            } else {
+                if (s.empty()) s += '.';
+                s += "[" + std::to_string(p[l].idx) + "]";
+            }
+        }
+        return s.empty() ? "." : s;
+    }
+    static std::string clean(std::string_view v) {
+        std::string s;
+        s.reserve(v.size());
+        for (char c : v) s += ((unsigned char)c < 0x20 || c == 0x7f) ? '?' : c;
+        return s;
+    }
+    std::string count_label(const JNode& n) const {
+        const char* what = n.virt ? (doc_.root_mode() == vvjson::JsonDoc::Root::Lines ? "line" : "value")
+                         : n.kind == JKind::Object ? "key" : "item";
+        return std::to_string(n.count) + " " + what + (n.count == 1 ? "" : "s");
+    }
+    int scalar_pair(JKind k) const {
+        switch (k) {
+            case JKind::String: return pair_str_;
+            case JKind::Number: return NCP_NUMBER;
+            case JKind::True:   return NCP_BOOL_T;
+            case JKind::False:  return NCP_BOOL_F;
+            case JKind::Null:   return NCP_NULL;
+            default:            return NCP_BOOL_F;
+        }
+    }
+    std::vector<Seg> row_segs(const Path& p, int width) const {
+        std::vector<Seg> segs;
+        const size_t lvl = p.size() - 1;
+        const JNode& n = p.back().node;
+        const int indent = std::min((int)lvl * 2, std::max(0, width / 2));
+        segs.push_back({std::string((size_t)indent, ' '), 0, A_NORMAL});
+        const bool ascii = g_box && std::strcmp(g_box->vline, "|") == 0;
+        if (n.container() && n.count > 0)
+            segs.push_back({is_open(p, lvl) ? (ascii ? "- " : "▾ ") : (ascii ? "+ " : "▸ "), NCP_SEP, A_NORMAL});
+        else
+            segs.push_back({"  ", 0, A_NORMAL});
+        if (lvl > 0) {
+            const JNode& par = p[lvl - 1].node;
+            if (par.kind == JKind::Object && !par.virt) {
+                const std::string_view k = doc_.key(n);
+                segs.push_back({ident(k) ? std::string(k) : "\"" + clean(k) + "\"", NCP_HEADER, A_BOLD});
+                segs.push_back({": ", NCP_SEP, A_NORMAL});
+            } else {
+                segs.push_back({std::to_string(p.back().idx) + ": ", NCP_INDEX, A_DIM});
+            }
+        }
+        if (n.kind == JKind::Error) {
+            segs.push_back({"⚠ " + (doc_.has_struct_err() ? doc_.struct_err() : std::string("invalid JSON")) +
+                                " at byte " + std::to_string(n.off), NCP_BOOL_F, A_BOLD});
+            return segs;
+        }
+        if (n.container()) {
+            const bool obj = n.kind == JKind::Object;
+            const std::string open = n.virt ? "[" : obj ? "{" : "[";
+            const std::string close = n.virt ? "]" : obj ? "}" : "]";
+            if (n.count == 0) { segs.push_back({open + close, NCP_SEP, A_NORMAL}); }
+            else if (is_open(p, lvl)) {
+                segs.push_back({open, NCP_SEP, A_NORMAL});
+                segs.push_back({"  " + count_label(n), NCP_SEP, A_DIM});
+            } else {
+                segs.push_back({open + "…" + close, NCP_SEP, A_NORMAL});
+                segs.push_back({" " + count_label(n) + "  ", NCP_SEP, A_DIM});
+                if (!n.virt) segs.push_back({clean(doc_.compact(n, (size_t)std::max(8, width) * 2)), NCP_SEP, A_DIM});
+            }
+            if (n.broken) segs.push_back({"  ⚠ cut short", NCP_BOOL_F, A_BOLD});
+            return segs;
+        }
+        const std::string_view b = doc_.bytes(n);
+        const size_t cap = (size_t)std::max(16, width) * 4;
+        if (b.size() > cap) {
+            segs.push_back({clean(b.substr(0, cap)), scalar_pair(n.kind), A_NORMAL});
+            segs.push_back({"… (" + human_bytes((int64_t)b.size()) + ")", NCP_SEP, A_DIM});
+        } else {
+            segs.push_back({clean(b), scalar_pair(n.kind), A_NORMAL});
+        }
+        if (n.broken) segs.push_back({"  ⚠ cut short", NCP_BOOL_F, A_BOLD});
+        return segs;
+    }
+    bool row_matches(const Path& p) const {
+        if (query_.empty()) return false;
+        const JNode& n = p.back().node;
+        if (p.size() > 1 && doc_.key(n).size() && pat_.match(doc_.key(n))) return true;
+        if (n.container() || n.kind == JKind::Error) return false;
+        std::string_view b = doc_.bytes(n);
+        if (n.kind == JKind::String && b.size() >= 2) b = b.substr(1, b.size() - 2);
+        return pat_.match(b.substr(0, std::min<size_t>(b.size(), 1 << 16)));
+    }
+
+    // Draw `segs` on row y from column 0, clipped to the width.
+    void put_segs(int y, const std::vector<Seg>& segs, bool cursor, bool hit) {
+        int x = 0;
+        move_to(y, 0);
+        for (const Seg& s : segs) {
+            if (x >= cols_) break;
+            const size_t k = utf8_prefix_for_width(s.text, cols_ - x);
+            const std::string t = s.text.substr(0, k);
+            attr_t a = s.attr;
+            int pr = s.pair;
+            if (hit && pr != NCP_SEP && pr != 0 && pr != NCP_INDEX) pr = NCP_SEARCH;
+            if (pr) a |= COLOR_PAIR(pr);
+            if (cursor) a |= A_REVERSE;
+            attron(a);
+            mvaddstr(y, x, t.c_str());
+            attroff(a);
+            x += display_width(t);
+        }
+        if (cursor && x < cols_) {
+            attron(A_REVERSE);
+            mvhline(y, x, ' ', cols_ - x);
+            attroff(A_REVERSE);
+        }
+    }
+    static void move_to(int y, int x) { ::move(y, x); clrtoeol(); }
+
+    void draw() {
+        getmaxyx(stdscr, rows_, cols_);
+        erase();
+        ensure_visible();
+        // Title.
+        const JNode& r = doc_.root();
+        const size_t slash = label_.find_last_of('/');
+        std::string title = " " + (slash == std::string::npos ? label_ : label_.substr(slash + 1)) +
+                            "  " + human_bytes((int64_t)doc_.size());
+        if (r.virt) title += doc_.root_mode() == vvjson::JsonDoc::Root::Lines ? "  JSON Lines" : "  JSON sequence";
+        attron(A_BOLD | COLOR_PAIR(NCP_HEADER));
+        mvaddnstr(0, 0, title.c_str(), cols_);
+        attroff(A_BOLD | COLOR_PAIR(NCP_HEADER));
+        // Rows.
+        Path p = top_;
+        for (int y = 1; y <= data_rows(); ++y) {
+            put_segs(y, row_segs(p, cols_), same(p, cur_), row_matches(p));
+            if (!next(p)) break;
+        }
+        draw_status();
+        if (pane_) draw_pane();
+        if (help_) draw_help();
+        refresh();
+    }
+
+    std::string type_info(const JNode& n) const {
+        switch (n.kind) {
+            case JKind::Object: return "object · " + count_label(n);
+            case JKind::Array:  return (n.virt ? std::string("document · ") : "array · ") + count_label(n);
+            case JKind::String: return "string";
+            case JKind::Number: return "number";
+            case JKind::True: case JKind::False: return "boolean";
+            case JKind::Null:   return "null";
+            default:            return "error";
+        }
+    }
+    void draw_status() {
+        const int y = rows_ - 1;
+        move_to(y, 0);
+        if (input_) {
+            const std::string prompt = input_fwd_ ? "/" : "?";
+            mvaddnstr(y, 0, (prompt + input_buf_).c_str(), cols_);
+            curs_set(1);
+            ::move(y, std::min(cols_ - 1, 1 + display_width(input_buf_.substr(0, input_cur_))));
+            return;
+        }
+        curs_set(0);
+        const JNode& n = cur_.back().node;
+        std::string left = " " + path_str(cur_) + "  " + type_info(n);
+        if (!n.container() && n.kind != JKind::Error) left += " · " + human_bytes((int64_t)(n.end - n.off));
+        std::string right;
+        const uint64_t pos = n.virt ? 0 : n.start();
+        const int pct = doc_.size() ? (int)(100.0 * (double)pos / (double)doc_.size()) : 0;
+        right = "@ " + digits_with_sep(std::to_string(pos)) + " (" + std::to_string(pct) + "%)  ";
+        const int v = doc_.validation();
+        if (v == 0) {
+            const int vp = doc_.size() ? (int)(100.0 * (double)doc_.validated_bytes() / (double)doc_.size()) : 0;
+            right += "validating " + std::to_string(vp) + "%";
+        } else if (v == 1) right += "✓ valid";
+        else {
+            const vvjson::JsonError e = doc_.validation_error();
+            right += "⚠ invalid at " + std::to_string(e.line) + ":" + std::to_string(e.col);
+        }
+        right += "  H:help ";
+        if (!flash_.empty()) left += "   " + flash_;
+        attron(A_REVERSE);
+        mvhline(y, 0, ' ', cols_);
+        mvaddnstr(y, 0, left.c_str(), cols_);
+        const int rw = display_width(right);
+        if (display_width(left) + rw + 1 < cols_) mvaddstr(y, cols_ - rw, right.c_str());
+        attroff(A_REVERSE);
+    }
+
+    // ── Search ─────────────────────────────────────────────────────────────
+    void input_key(int ch) {
+        if (ch == 27) { input_ = false; return; }
+        if (ch == '\n' || ch == '\r' || ch == KEY_ENTER) {
+            input_ = false;
+            if (input_buf_.empty()) return;
+            query_ = input_buf_;
+            pat_.compile(query_);
+            fwd_ = input_fwd_;
+            search(fwd_, /*include_cursor=*/false);
+            return;
+        }
+        line_edit_key(input_buf_, input_cur_, ch);
+    }
+    // Scan the bytes in [a, b) for a key, string or scalar matching the
+    // query; the first (forward) or last (backward) hit's offset, or
+    // UINT64_MAX. Any key cancels (returns UINT64_MAX, sets *cancelled).
+    uint64_t scan(uint64_t a, uint64_t b, bool forward, bool* cancelled) {
+        const char* d = doc_.data();
+        uint64_t i = a, last = UINT64_MAX, next_poll = a + (4u << 20);
+        nodelay(stdscr, TRUE);
+        while (i < b) {
+            if (i >= next_poll) {
+                next_poll = i + (4u << 20);
+                if (::getch() != ERR) { *cancelled = true; break; }
+                const int pct = (int)(100.0 * (double)(i - a) / (double)std::max<uint64_t>(1, b - a));
+                attron(A_REVERSE);
+                mvhline(rows_ - 1, 0, ' ', cols_);
+                mvaddstr(rows_ - 1, 0, (" searching… " + std::to_string(pct) + "%  (any key cancels)").c_str());
+                attroff(A_REVERSE);
+                refresh();
+            }
+            const char c = d[i];
+            if (c == '"') {
+                const void* q = nullptr;
+                uint64_t k = i + 1;
+                for (;;) {
+                    q = std::memchr(d + k, '"', (size_t)(doc_.size() - k));
+                    if (!q) break;
+                    const uint64_t at = (uint64_t)(static_cast<const char*>(q) - d);
+                    uint64_t j = at;
+                    while (j > i + 1 && d[j - 1] == '\\') --j;
+                    if ((at - j) % 2 == 0) break;
+                    k = at + 1;
+                }
+                const uint64_t e = q ? (uint64_t)(static_cast<const char*>(q) - d) : doc_.size();
+                if (pat_.match(std::string_view(d + i + 1, (size_t)(e - i - 1)))) {
+                    if (forward) { nodelay(stdscr, FALSE); return i; }
+                    last = i;
+                }
+                i = e + 1;
+                continue;
+            }
+            if (c == '-' || (c >= '0' && c <= '9') || c == 't' || c == 'f' || c == 'n') {
+                uint64_t e = i;
+                while (e < b && !std::strchr(" \t\r\n,:[]{}\"", d[e])) ++e;
+                if (pat_.match(std::string_view(d + i, (size_t)(e - i)))) {
+                    if (forward) { nodelay(stdscr, FALSE); return i; }
+                    last = i;
+                }
+                i = std::max(e, i + 1);
+                continue;
+            }
+            ++i;
+        }
+        nodelay(stdscr, FALSE);
+        return *cancelled ? UINT64_MAX : last;
+    }
+    void search(bool forward, bool include_cursor = false) {
+        const JNode& n = cur_.back().node;
+        // Resume after the cursor's own token (inside a container: after its
+        // opening bracket), so a search never starts in the middle of a string.
+        uint64_t from;
+        if (n.virt) from = 0;
+        else if (n.container()) from = n.off + 1;
+        else from = include_cursor ? n.start() : n.end;
+        const uint64_t cur_start = n.virt ? 0 : n.start();
+        bool cancelled = false, wrapped = false;
+        uint64_t hit;
+        if (forward) {
+            hit = scan(from, doc_.size(), true, &cancelled);
+            if (hit == UINT64_MAX && !cancelled) { hit = scan(0, from, true, &cancelled); wrapped = true; }
+        } else {
+            hit = scan(0, cur_start, false, &cancelled);
+            if (hit == UINT64_MAX && !cancelled) { hit = scan(cur_start, doc_.size(), false, &cancelled); wrapped = true; }
+        }
+        if (cancelled) { flash_ = "search cancelled"; return; }
+        if (hit == UINT64_MAX) { flash_ = "not found: " + query_; return; }
+        const auto path = doc_.path_to(hit);
+        Path p;
+        for (const auto& pr : path) p.push_back({pr.first, pr.second});
+        for (size_t l = 0; l + 1 < p.size(); ++l)
+            if (!is_open(p, l)) set_ov(p[l].node, 1);
+        cur_ = p;
+        // centre the hit
+        top_ = cur_;
+        for (int i = 0; i < data_rows() / 2; ++i) if (!prev(top_)) break;
+        flash_ = (wrapped ? "(wrapped) " : "") + std::string("/") + query_;
+    }
+
+    // ── Copy, value pane, help, mouse ──────────────────────────────────────
+    void copy_value() {
+        const JNode& n = cur_.back().node;
+        if (n.kind == JKind::Error) return;
+        std::string v;
+        std::string_view b = doc_.bytes(n);
+        if (n.virt) b = std::string_view();
+        const size_t cap = 1u << 20;
+        const bool cut = b.size() > cap;
+        if (cut) b = b.substr(0, cap);
+        if (n.kind == JKind::String && b.size() >= 2) v = json_unescape(b.substr(1, b.size() - 2));
+        else v = std::string(b);
+        osc52_copy(v);
+        flash_ = cut ? "copied the first 1 MiB of the value" : "copied " + human_bytes((int64_t)v.size());
+    }
+    void copy_key() {
+        if (cur_.size() < 2) return;
+        const JNode& par = cur_[cur_.size() - 2].node;
+        std::string k = par.kind == JKind::Object && !par.virt
+                            ? json_unescape(doc_.key(cur_.back().node))
+                            : std::to_string(cur_.back().idx);
+        osc52_copy(k);
+        flash_ = "copied key: " + k;
+    }
+    void open_pane() {
+        const JNode& n = cur_.back().node;
+        if (n.container() || n.kind == JKind::Error) return;
+        std::string_view b = doc_.bytes(n);
+        pane_value_ = n.kind == JKind::String && b.size() >= 2 ? json_unescape(b.substr(1, b.size() - 2))
+                                                              : std::string(b);
+        pane_lines_.clear();
+        const int w = std::max(10, cols_ - 6);
+        std::string line;
+        auto flush_line = [&]() { pane_lines_.push_back(clean(line)); line.clear(); };
+        for (size_t i = 0; i < pane_value_.size();) {
+            int len = 1;
+            utf8_decode(pane_value_, i, &len);
+            const std::string cp = pane_value_.substr(i, (size_t)len);
+            i += (size_t)len;
+            if (cp == "\n") { flush_line(); continue; }
+            if (display_width(line + cp) > w) flush_line();
+            line += cp;
+        }
+        flush_line();
+        pane_top_ = 0;
+        pane_ = true;
+    }
+    void pane_key(int ch) {
+        const int h = std::max(1, rows_ - 6);
+        const int maxtop = std::max(0, (int)pane_lines_.size() - h);
+        switch (ch) {
+            case 'q': case 27: case '\n': case '\r': case KEY_ENTER: pane_ = false; break;
+            case 'j': case KEY_DOWN: pane_top_ = std::min(maxtop, pane_top_ + 1); break;
+            case 'k': case KEY_UP: pane_top_ = std::max(0, pane_top_ - 1); break;
+            case ' ': case KEY_NPAGE: pane_top_ = std::min(maxtop, pane_top_ + h); break;
+            case 'b': case KEY_PPAGE: pane_top_ = std::max(0, pane_top_ - h); break;
+            case 'g': pane_top_ = 0; break;
+            case 'G': pane_top_ = maxtop; break;
+            case 'y': osc52_copy(pane_value_); flash_ = "copied the value"; pane_ = false; break;
+            default: break;
+        }
+    }
+    void draw_box(int y0, int x0, int h, int w, const std::string& title) {
+        attron(COLOR_PAIR(NCP_SEP));
+        for (int y = y0; y < y0 + h; ++y) mvhline(y, x0, ' ', w);
+        mvhline(y0, x0, ACS_HLINE, w);
+        mvhline(y0 + h - 1, x0, ACS_HLINE, w);
+        mvvline(y0, x0, ACS_VLINE, h);
+        mvvline(y0, x0 + w - 1, ACS_VLINE, h);
+        mvaddch(y0, x0, ACS_ULCORNER); mvaddch(y0, x0 + w - 1, ACS_URCORNER);
+        mvaddch(y0 + h - 1, x0, ACS_LLCORNER); mvaddch(y0 + h - 1, x0 + w - 1, ACS_LRCORNER);
+        attroff(COLOR_PAIR(NCP_SEP));
+        attron(A_BOLD);
+        mvaddnstr(y0, x0 + 2, title.c_str(), std::max(0, w - 4));
+        attroff(A_BOLD);
+    }
+    void draw_pane() {
+        const int h = std::max(3, rows_ - 4), w = std::max(10, cols_ - 2);
+        draw_box(1, 1, h, w, " " + path_str(cur_) + " ");
+        for (int i = 0; i < h - 2 && pane_top_ + i < (int)pane_lines_.size(); ++i) {
+            const std::string& l = pane_lines_[(size_t)(pane_top_ + i)];
+            mvaddstr(2 + i, 3, l.substr(0, utf8_prefix_for_width(l, w - 4)).c_str());
+        }
+    }
+    void draw_help() {
+        struct Row { const char* k; const char* d; };
+        static const Row rows[] = {
+            {"↑↓  j k", "move"},
+            {"←  h", "collapse; on a leaf or closed node, go to the parent"},
+            {"→  l", "expand; if open, go to the first child"},
+            {"Space  Enter", "toggle; Enter on a value opens it in full"},
+            {"J  K", "next / previous sibling"},
+            {"e  E", "expand the node / the node and everything inside"},
+            {"c  C", "collapse the node / and everything inside"},
+            {"1-9  0", "fold the document to depth N / to the root"},
+            {"PgUp PgDn  ^U ^D", "page / half page"},
+            {"g  G", "first / last row"},
+            {"/  ?  n  N", "search keys and values (regex, icase); next / previous"},
+            {"y  p  Y", "copy the value / its jq path / its key (OSC 52)"},
+            {"t", "table view of the records (t there comes back)"},
+            {"q  Esc", "quit (Esc clears a search first)"},
+            {"H  F1", "this help"},
+        };
+        const int n = (int)(sizeof(rows) / sizeof(rows[0]));
+        int wk = 0, wd = 0;
+        for (const Row& r : rows) { wk = std::max(wk, display_width(r.k)); wd = std::max(wd, display_width(r.d)); }
+        const int w = std::min(cols_, wk + wd + 6), h = std::min(rows_, n + 2);
+        const int y0 = std::max(0, (rows_ - h) / 2), x0 = std::max(0, (cols_ - w) / 2);
+        draw_box(y0, x0, h, w, " vv JSON — keys ");
+        for (int i = 0; i < n && i < h - 2; ++i) {
+            attron(A_BOLD);
+            mvaddnstr(y0 + 1 + i, x0 + 2, rows[i].k, w - 4);
+            attroff(A_BOLD);
+            mvaddnstr(y0 + 1 + i, x0 + 2 + wk + 2, rows[i].d, std::max(0, w - wk - 6));
+        }
+    }
+    void mouse() {
+        MEVENT ev;
+        if (getmouse(&ev) == ERR) return;
+        if (ev.bstate & BUTTON4_PRESSED) { step(-3); return; }
+        if (ev.bstate & BUTTON5_PRESSED) { step(+3); return; }
+        if (ev.bstate & (BUTTON1_CLICKED | BUTTON1_DOUBLE_CLICKED)) {
+            if (ev.y < 1 || ev.y > data_rows()) return;
+            Path p = top_;
+            for (int y = 1; y < ev.y; ++y) if (!next(p)) return;
+            cur_ = p;
+            if (ev.bstate & BUTTON1_DOUBLE_CLICKED) toggle();
+        }
+    }
+};
+
+// Run the JSON tree viewer on `file` (an uncompressed file it can map),
+// switching to the table view (`t`) over `table_path`, which the table reader
+// opens itself (the original file, compressed or not). Keys come from the
+// controlling terminal when the data arrived on stdin. "" or an error;
+// *term_failed when the terminal could not start (nothing was shown).
+static std::string run_json_viewer(const std::string& file, const std::string& table_path,
+                                   const std::string& label, bool lines, bool keys_from_tty,
+                                   const Config& cfg, bool* term_failed) {
+    vvjson::JsonDoc doc;
+    if (auto e = doc.open(file, lines); !e.empty()) return e;
+    TuiSession session;
+    if (!(keys_from_tty ? session.open_tty() : session.open())) { *term_failed = true; return ""; }
+    JsonTUI tree(doc, label);
+    std::unique_ptr<TableTUI> table;
+    for (;;) {
+        if (tree.run_in(session) == JsonTUI::Exit::Quit) return "";
+        if (!table) {
+            std::unique_ptr<JsonSource> js;
+            std::string e = JsonSource::open(table_path, cfg, &js);
+            if (!e.empty()) {
+                tree.flash(e.find("Empty JSON") != std::string::npos ||
+                           e.find("no JSON records") != std::string::npos
+                               ? "no table view: no records"
+                               : "no table view: this JSON is not a list of records");
+                continue;
+            }
+            std::vector<std::unique_ptr<TabularSource>> v;
+            v.push_back(std::move(js));
+            table = std::make_unique<TableTUI>(std::move(v), cfg);
+            table->set_tree_return(true);
+        }
+        table->run_in(session);
+        if (!table->back_to_tree()) return "";
+    }
+}
 
 #endif  // VV_CORE_LIB (end of ncurses TUI frontend)
 
@@ -29525,7 +30886,9 @@ int main(int argc, char** argv) {
     const bool json_stdin = cfg.path == "-" || path_is_pipe(cfg.path);
     const char* json_tflag = json_table_flag(cfg);
     {
-        const int jkind = cfg.force_text ? 0 : json_path_kind(cfg.path);
+        // Several files open as tabs of the table viewer, as before.
+        const bool one_file = cfg.paths.size() <= 1;
+        const int jkind = (cfg.force_text || !one_file) ? 0 : json_path_kind(cfg.path);
         if (cfg.json_pretty || cfg.json_paths) {
             const char* which = cfg.json_pretty ? "--pretty" : "--json-paths";
             if (cfg.json_pretty && cfg.json_paths) {
@@ -29543,17 +30906,65 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
-        if (jkind != 0 && !json_tflag &&
-            (cfg.json_pretty || cfg.json_paths || !tui_wanted(cfg))) {
+        int jk = jkind;
+        if (cfg.json_tree) {
+            const char* bad = json_tflag ? json_tflag : cfg.json_pretty ? "--pretty"
+                            : cfg.json_paths ? "--json-paths" : nullptr;
+            if (bad) {
+                report(cfg.path, std::string("--tree opens the JSON viewer; it does not combine with ") + bad);
+                return 1;
+            }
+            // Any extension: --tree takes a file whose content is JSON.
+            if (jk == 0 && !json_stdin) {
+                std::shared_ptr<arrow::io::InputStream> in;
+                std::string head(8192, '\0');
+                if (open_json_file(cfg.path, &in).empty()) {
+                    auto got = in->Read((int64_t)head.size(), head.data());
+                    head.resize(got.ok() ? (size_t)*got : 0);
+                    if (vvjson::looks_like_json(head)) jk = 1;
+                }
+                if (jk == 0) { report(cfg.path, "--tree: the file is not JSON"); return 1; }
+            }
+        }
+        const bool want_tree = jk != 0 && !json_tflag && !cfg.json_pretty && !cfg.json_paths &&
+                               (cfg.json_tree || (tui_wanted(cfg) && cfg.json_view != "table"));
+        bool tree_failed = false;
+        if (want_tree) {
+            // The viewer maps the file; a compressed one is decompressed to a
+            // temporary copy first (removed at exit).
+            std::string file = cfg.path;
+            {
+                auto raw = arrow::io::ReadableFile::Open(cfg.path);
+                if (raw.ok() && sniff_stream_codec(*raw) != arrow::Compression::UNCOMPRESSED) {
+                    std::shared_ptr<arrow::io::InputStream> in;
+                    if (auto e = open_json_file(cfg.path, &in); !e.empty()) { report(cfg.path, e); return 1; }
+                    int64_t bytes = 0;
+                    if (auto e = spool_stream(in, ".json", &file, &bytes); !e.empty()) {
+                        report(cfg.path, e);
+                        return 1;
+                    }
+                }
+            }
+            if (auto e = run_json_viewer(file, cfg.path, cfg.path, jk == 2, false, cfg, &tree_failed);
+                !e.empty()) {
+                report(cfg.path, e);
+                return 1;
+            }
+            if (!tree_failed) return 0;
+            std::fprintf(stderr, "vv: interactive viewer unavailable (terminal init failed); "
+                         "showing non-interactive output\n");
+        }
+        if (jk != 0 && !json_tflag &&
+            (tree_failed || cfg.json_pretty || cfg.json_paths || !tui_wanted(cfg))) {
             std::shared_ptr<arrow::io::InputStream> in;
             if (auto e = open_json_file(cfg.path, &in); !e.empty()) { report(cfg.path, e); return 1; }
-            if (auto e = print_json_document(*in, cfg, jkind == 2); !e.empty()) {
+            if (auto e = print_json_document(*in, cfg, jk == 2); !e.empty()) {
                 report(cfg.path, e);
                 return 1;
             }
             return 0;
         }
-        cfg.json_document = json_stdin && !json_tflag && !cfg.force_text;
+        cfg.json_document = json_stdin && one_file && !json_tflag && !cfg.force_text;
     }
 
     std::unique_ptr<TabularSource> src;
@@ -29578,6 +30989,29 @@ int main(int argc, char** argv) {
 
     // JSON on stdin, wanted as a document: print it from the decoded stream.
     if (auto* js = dynamic_cast<JsonStreamSource*>(src.get())) {
+        const std::string label = cfg.path == "-" ? "stdin" : cfg.path;
+        // A terminal on stdout: the tree viewer, reading keys from the
+        // controlling terminal (stdin carries the data), over a copy of the
+        // stream it can map.
+        if (!cfg.json_pretty && !cfg.json_paths && cfg.json_view != "table" &&
+            (cfg.json_tree || cfg.interactive || isatty(STDOUT_FILENO))) {
+            std::string tmp;
+            int64_t bytes = 0;
+            if (auto e = spool_stream(js->stream(), ".json", &tmp, &bytes); !e.empty()) {
+                report(label, e);
+                return 1;
+            }
+            bool failed = false;
+            if (auto e = run_json_viewer(tmp, tmp, label, false, true, cfg, &failed); !e.empty()) {
+                report(label, e);
+                return 1;
+            }
+            if (!failed) return 0;
+            std::shared_ptr<arrow::io::InputStream> in;
+            if (auto e = open_json_file(tmp, &in); !e.empty()) { report(label, e); return 1; }
+            if (auto e = print_json_document(*in, cfg, false); !e.empty()) { report(label, e); return 1; }
+            return 0;
+        }
         if (auto e = print_json_document(*js->stream(), cfg, false); !e.empty()) {
             report(cfg.path == "-" ? "stdin" : cfg.path, e);
             return 1;

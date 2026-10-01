@@ -4387,6 +4387,18 @@ fi
 assert_exit_code "samples_bad_value" 2 "$VV" --samples wide "$DATA/tiny.samples.bcf"
 assert_exit_code "matrix_bad_value" 2 "$VV" --matrix tall "$DATA/tiny.h5ad"
 
+# The JSON tree viewer: navigation, folding, search, copy (OSC 52), the
+# table view and back, index pages, a truncated file, stdin via /dev/tty.
+if command -v python3 >/dev/null 2>&1; then
+    if run_with_timeout 300 python3 "$HERE/tui_json_check.py" "$VV" "$TMP"; then
+        PASS=$((PASS+1)); echo "  ok    tui_json_tree"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_json_tree"
+    fi
+fi
+assert_exit_code "json_tree_with_table_flag" 1 "$VV" --tree --tsv "$TMP/j.ndjson"
+assert_exit_code "json_tree_not_json" 1 "$VV" --tree "$DATA/tiny.parquet"
+
 # A source that reads nothing at open (JSON) shows its rows on the first
 # frame of the table viewer; they used to stay blank until a key was pressed
 # (or the window was resized). Read the first second of output only.

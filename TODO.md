@@ -424,6 +424,16 @@ work that touches the same code:
   text VCF). Typed per-sample fields: done — decided 2026-10-01: a struct per
   sample by default (`--flatten` → `S1.GT`, `S1.DP`), `--samples long` one row
   per record × sample, `--samples text` the packed strings.
+- [ ] **JSON viewer, next steps** — the tree viewer (`JsonTUI` over the lazy
+  `JsonDoc` index) shipped without: a vvg tree view (QTreeView over JsonDoc,
+  children on `fetchMore`); `t` on a subtree (an array of objects inside the
+  document as a table, via `JsonSource::open_stream` over the mmap slice);
+  `t` from a JSON tab of the multi-file table viewer; `:` jump to a path or
+  line and `!` to the first error; line mode (closing brackets, `%`
+  matching); the theme picker (`T`) in the tree; `.geojson` / `.ipynb` /
+  `.har` as JSON extensions; streaming decompression instead of a temporary
+  copy for `.gz` / `.zst`; a guard against SIGBUS when a mapped file is
+  truncated while open.
 - [ ] **vvg: `--samples` / `--matrix` choices** (S–M) — the viewer and exports
   take both; vvg follows the defaults (struct samples, wide matrices) but has
   no toolbar control or command-line flag for them yet.

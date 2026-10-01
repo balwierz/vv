@@ -813,7 +813,49 @@ Reference sequences: 25  |  Assembly: GRCh38 / hg38 (Homo sapiens)
 ## JSON documents
 
 A `.json` / `.ndjson` / `.jsonl` file (or JSON piped in) is a document. On a
-pipe, `vv x.json` prints it re-indented — two spaces, scalars exactly as the
+terminal it opens in a folding tree viewer:
+
+```
+ package.json  1.4 KiB
+▾ {  9 keys
+    name: "vv"
+    version: "1.25.0"
+  ▸ scripts: {…} 3 keys  {"build": "cmake --build build", "test": …
+  ▾ keywords: [  4 items
+      0: "parquet"
+      1: "genomics"
+ .keywords[1]  string · 10 B                        @ 214 (15%)  ✓ valid  H:help
+```
+
+One row per value: keys bare when they are identifiers, array elements
+numbered, scalars exactly as the file writes them, a collapsed container
+previewed on its row. Small files open fully expanded, larger ones to depth 2
+or 1. The file is mapped, not loaded: only the containers on screen are
+indexed (a page of 1024 children at a time, with a checkpoint per page), so a
+multi-gigabyte file opens in about the time of one pass over it and `G` or a
+search reaches its end in seconds. The status line shows the cursor's jq path,
+type, size and byte offset, and whether the file is valid JSON (checked in the
+background; a truncated file shows its valid part and an error row).
+
+| Keys | |
+|---|---|
+| `j` `k` `↑` `↓`, `PgUp` `PgDn`, `^U` `^D`, `g` `G` | move |
+| `h` `l` `←` `→` | collapse / expand (`h` on a leaf: to the parent; `l` on an open node: into it) |
+| `Space`, `Enter` | toggle; `Enter` on a value opens it in full, strings decoded |
+| `J` `K` | next / previous sibling |
+| `e` `E` / `c` `C` | expand / collapse the node (capital: and everything inside) |
+| `1`–`9`, `0` | fold the document to depth N / to the root |
+| `/` `?` `n` `N` | search keys and values (case-insensitive, regex when the query uses regex syntax); any key cancels a long scan |
+| `y` `p` `Y` | copy the value / its jq path / its key (OSC 52) |
+| `t` | table view of the records; `t` there returns |
+| `H` `q` | help, quit |
+
+`--no-tree` (or `json_view = table` in the config file) opens the table view
+instead; `--tree` opens the viewer for a JSON file of any extension. JSON on
+stdin opens in the viewer too when stdout is a terminal (keys are read from
+the terminal).
+
+On a pipe, `vv x.json` prints it re-indented — two spaces, scalars exactly as the
 file writes them (`123456789012345678901234567890`, `1e400`), like `jq .` —
 streaming, in constant memory whatever the size:
 

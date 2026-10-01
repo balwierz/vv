@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **JSON tree viewer.** On a terminal a JSON / NDJSON file (or JSON piped
+  in) opens in a folding tree: keys and indices, scalars as written,
+  previews of collapsed containers (`{…} 3 keys  {"id": 1, …}`), the jq path
+  of the cursor, regex search that reveals hidden matches, copy of the value
+  / path / key (OSC 52), folding to a depth, and `t` for the table view of
+  the records (and back). The file is mapped and indexed lazily, a page of
+  children at a time: a 281 MiB file with 3 million items opens in 0.7 s and
+  `G` reaches its last item in 0.3 s. A strict validator runs in the
+  background; a truncated file shows its valid part and an error row.
+  `--tree` / `--no-tree`, config `json_view = tree|table`.
 - **JSON documents: pretty print and paths.** `vv x.json` on a pipe prints
   the document re-indented (two spaces, numbers and strings exactly as in the
   file) from a streaming lexer, in constant memory; `--pretty` does the same
@@ -16,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   of the error (exit 1).
 
 ### Changed
+- **`vv x.json` on a terminal opens the tree viewer** instead of the table
+  viewer; `t` switches to the table, `--no-tree` / `json_view = table` keep
+  the table as the default.
 - **`vv x.json` on a pipe prints JSON.** It printed a 10-row table of the
   records, with nested values cut to 32 characters. `-t`, `-n`, `--no-tree`
   or any export / report flag still reads the file as a table.
