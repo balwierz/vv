@@ -572,7 +572,7 @@ regardless of override.
 | `chr1:`           | whole chromosome                                     |
 | `chr1:78-`        | from 78 to end                                       |
 | `chr1:-99`        | start to 99                                          |
-| `chr1:100`        | single point (position 100)                          |
+| `chr1:100`        | one base (= `chr1:100-101`; with `--coords NCBI`, `chr1:100-100`), not samtools' "100 to end" |
 | `chr1:100-200,chr2:0-1000` | multiple windows                            |
 
 ## Many windows (`--regions-file`)

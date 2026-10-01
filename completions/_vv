@@ -133,7 +133,7 @@ _vv() {
         '--feather+[Write an Arrow IPC file (Feather v2)]:path:_files' \
         '--compression+[Parquet codec]:codec:(zstd snappy gzip lz4 none)' \
         '--heatmap[Render numeric columns as a terminal heatmap]' \
-        '--image-mode+[Heatmap backend]:how:(auto kitty sixel halfblock ascii)' \
+        '--image-mode+[Heatmap backend]:how:(auto kitty iterm sixel halfblock ascii)' \
         '--json[Write a JSON array]' \
         '--ndjson[Write one JSON object per line]' \
         '--md[Write a GitHub-flavored markdown table]' \

@@ -722,8 +722,9 @@ When stdout is not a terminal (redirected to a file or pipe), a plain
 ASCII intensity grid is written instead of raw terminal escape sequences.
 .TP
 .BI \-\-image\-mode " HOW"
-Heatmap rendering backend: \fBauto\fR (default \(en kitty graphics if the
-terminal supports it, else half-block), \fBkitty\fR, \fBsixel\fR,
+Heatmap rendering backend: \fBauto\fR (default \(en kitty graphics in
+kitty, the iTerm2 inline-image protocol in iTerm2 and WezTerm, half-block
+elsewhere and inside tmux / screen), \fBkitty\fR, \fBiterm\fR, \fBsixel\fR,
 \fBhalfblock\fR, or \fBascii\fR (plain text).
 .SS Range queries
 .TP
@@ -757,7 +758,10 @@ Multiple regions may be given comma-separated. Open-ended forms
 (\fBchr1:\fR \(en whole chromosome, \fBchr1:78-\fR, \fBchr1:-99\fR) are
 accepted. Coordinates follow the UCSC convention (0-based, half-open)
 by default; pass \fB\-\-coords NCBI\fR for 1-based inclusive
-(samtools / tabix / VCF style).
+(samtools / tabix / VCF style). A single coordinate is one base:
+\fBchr1:100\fR is \fBchr1:100-101\fR in UCSC coordinates (with
+\fB\-\-coords NCBI\fR, \fBchr1:100-100\fR) \(en not samtools' reading of
+\fBchr1:100\fR as position 100 to the end of the chromosome.
 .IP
 If the queried chromosome isn't in the file but its UCSC\(->Ensembl
 counterpart is, vv retries with the alias and notes the swap on stderr

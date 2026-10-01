@@ -4062,6 +4062,18 @@ if command -v python3 >/dev/null 2>&1; then
     else
         FAIL=$((FAIL + 1)); echo "  FAIL  heatmap_sixel_matches_kitty"
     fi
+    # --image-mode iterm (iTerm2 / WezTerm): a valid PNG with kitty's pixels
+    # and cell size; auto picks it in those terminals (not inside tmux).
+    if python3 "$HERE/sixel_check.py" "$VV" "$DATA/tiny.parquet" iterm; then
+        PASS=$((PASS + 1)); echo "  ok    heatmap_iterm_matches_kitty"
+    else
+        FAIL=$((FAIL + 1)); echo "  FAIL  heatmap_iterm_matches_kitty"
+    fi
+    if run_with_timeout 120 python3 "$HERE/image_auto_check.py" "$VV" "$DATA/tiny.parquet"; then
+        PASS=$((PASS + 1)); echo "  ok    heatmap_auto_backend_by_terminal"
+    else
+        FAIL=$((FAIL + 1)); echo "  FAIL  heatmap_auto_backend_by_terminal"
+    fi
 fi
 # Help documents the flags.
 HM_HELP=$("$VV" --help 2>&1 || true)

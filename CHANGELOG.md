@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Heatmap images in iTerm2 and WezTerm.** `--heatmap` drew half-blocks
+  there; the auto backend now sends a PNG with iTerm2's inline-image
+  protocol (OSC 1337), which both terminals display, and `--image-mode
+  iterm` selects it explicitly. Inside tmux / screen, which drop image
+  escapes, auto uses half-blocks (as for the markdown viewer's images).
 - **Flat OpenDocument (`.fods`).** A `.fods` is the `content.xml` of an
   `.ods` as a single XML file (LibreOffice's *Flat XML ODF Spreadsheet*); it
   was refused with a conversion hint and now opens like an `.ods` — one tab

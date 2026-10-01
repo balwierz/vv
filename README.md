@@ -684,8 +684,9 @@ $ vv --filter 'Score > 0.5' --parquet - big.lociss | duckdb -c "..."
 Render the numeric columns as a colour heatmap right in the terminal
 (rows × numeric-columns, globally normalised, viridis palette) — a quick look
 at the shape of a matrix without leaving the shell. `--image-mode` picks the
-backend: `auto` (kitty graphics if the terminal supports it, else Unicode
-half-blocks), `kitty`, `sixel`, `halfblock`, or `ascii`. When stdout is not a
+backend: `auto` (kitty graphics in kitty, the iTerm2 image protocol in iTerm2
+and WezTerm, else Unicode half-blocks), `kitty`, `iterm`, `sixel`,
+`halfblock`, or `ascii`. When stdout is not a
 terminal a plain ASCII intensity grid is written instead of raw escape
 sequences, so redirection and `| less` stay clean. Non-finite cells (`NaN` /
 `Inf`) are treated as gaps.
@@ -807,7 +808,7 @@ a headless browser such as `chromium`).
 | `-@`, `--threads <N>`      | worker threads (default auto, capped at 8)           |
 | `--tsv` / `--csv` / `--json` / `--ndjson` / `--md` | non-interactive output |
 | `--parquet OUT`            | convert input to a Parquet file (or `-` for stdout)  |
-| `--heatmap`                | render numeric columns as a terminal heatmap (`--image-mode auto/kitty/sixel/halfblock/ascii`) |
+| `--heatmap`                | render numeric columns as a terminal heatmap (`--image-mode auto/kitty/iterm/sixel/halfblock/ascii`) |
 | `--tab <name>`             | view a named component tab from the CLI (AnnData `obs`/`var`/`X`, a workbook sheet) — e.g. `vv cells.h5ad --tab obs -n 20` |
 | `--schema` / `--describe` / `--stats` / `--unique` / `--distinct` / `--sample` / `--contigs` / `--gt-stats` | data-exploration modes |
 | `--validate`               | LociSSD invariants check; exits non-zero on failure  |

@@ -109,7 +109,7 @@ complete -c vv -c vh -l no-header          -d 'Omit the header row in delimited 
 
 # Visualization
 complete -c vv -c vh -l heatmap            -d 'Render numeric columns as a terminal heatmap'
-complete -c vv -c vh -l image-mode -r -a 'auto kitty sixel halfblock ascii' -d 'Heatmap backend'
+complete -c vv -c vh -l image-mode -r -a 'auto kitty iterm sixel halfblock ascii' -d 'Heatmap backend'
 
 # Parquet output
 complete -c vv -c vh -l parquet -r -F      -d 'Write a Parquet file at this path'

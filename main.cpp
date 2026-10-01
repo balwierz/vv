@@ -94,6 +94,7 @@ extern "C" {
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <zlib.h>
 #include <list>
 #include <map>
 #include <memory>
@@ -1013,8 +1014,9 @@ static void print_usage(const char* prog) {
         "                      the terminal (rows x numeric-columns, globally\n"
         "                      normalised). Writes a plain ASCII grid when stdout\n"
         "                      is not a terminal.\n"
-        "  --image-mode <how>  heatmap backend: auto (default), kitty, sixel,\n"
-        "                      halfblock, ascii\n"
+        "  --image-mode <how>  heatmap backend: auto (default: kitty graphics in\n"
+        "                      kitty, iterm in iTerm2 / WezTerm, else halfblock),\n"
+        "                      kitty, iterm, sixel, halfblock, ascii\n"
         "\nDelimited output (replaces table view):\n"
         "  --tsv               write tab-separated values to stdout\n"
         "  --csv               write comma-separated values to stdout\n"
@@ -1412,10 +1414,11 @@ static Config parse_args(int argc, char** argv) {
     // Validate --image-mode up front so a typo is reported rather than silently
     // ignored (the heatmap renderer also checks, but only when --heatmap runs).
     if (!cfg.image_mode.empty() && cfg.image_mode != "auto" &&
-        cfg.image_mode != "kitty" && cfg.image_mode != "sixel" &&
+        cfg.image_mode != "kitty" && cfg.image_mode != "iterm" &&
+        cfg.image_mode != "sixel" &&
         cfg.image_mode != "halfblock" && cfg.image_mode != "ascii") {
         std::fprintf(stderr, "--image-mode: unknown mode '%s' "
-                     "(use auto|kitty|sixel|halfblock|ascii)\n",
+                     "(use auto|kitty|iterm|sixel|halfblock|ascii)\n",
                      cfg.image_mode.c_str());
         std::exit(2);
     }
@@ -16674,6 +16677,10 @@ static bool detect_osc8_support() {
 enum class ImageProto { None, Kitty, ITerm2 };
 
 static ImageProto detect_image_proto() {
+    // tmux (and screen) keep the outer terminal's TERM_PROGRAM / LC_TERMINAL
+    // / KITTY_WINDOW_ID but drop image escapes that are not wrapped for
+    // passthrough, so an image sent from inside them never shows.
+    if (std::getenv("TMUX") || std::getenv("STY")) return ImageProto::None;
     const char* term_program = std::getenv("TERM_PROGRAM");
     const char* lc_term      = std::getenv("LC_TERMINAL");
     if ((term_program && std::string(term_program) == "iTerm.app") ||
@@ -20110,7 +20117,7 @@ struct PalImage {                    // palette-indexed image
     std::vector<uint32_t> pal;       // 0x00RRGGBB, ≤256 entries
 };
 
-enum class Mode { Auto, Kitty, Sixel, HalfBlock, Ascii };
+enum class Mode { Auto, Kitty, ITerm2, Sixel, HalfBlock, Ascii };
 
 // Viridis-ish palette: interpolate a handful of anchors into `n` entries.
 static std::vector<uint32_t> viridis_palette(int n) {
@@ -20233,6 +20240,55 @@ static void emit_kitty(const PalImage& im, int cell_cols, int cell_rows) {
     std::fwrite(out.data(), 1, out.size(), stdout);
 }
 
+// iTerm2's inline-image protocol (OSC 1337 File=), which WezTerm also speaks:
+// the image travels as a PNG file — RGB, unfiltered scanlines deflated with
+// zlib — scaled by the terminal to `cell_cols` × `cell_rows` cells.
+static std::string png_rgb(const PalImage& im) {
+    auto be32 = [](std::string& o, uint32_t v) {
+        for (int k = 3; k >= 0; --k) o += (char)((v >> (8 * k)) & 255);
+    };
+    auto chunk = [&](std::string& o, const char* type, const std::string& data) {
+        be32(o, (uint32_t)data.size());
+        std::string td(type, 4);
+        td += data;
+        o += td;
+        be32(o, (uint32_t)crc32(0L, (const Bytef*)td.data(), (uInt)td.size()));
+    };
+    std::string raw;
+    raw.reserve((size_t)im.h * ((size_t)im.w * 3 + 1));
+    for (int y = 0; y < im.h; ++y) {
+        raw += '\0';                                 // filter: none
+        for (int x = 0; x < im.w; ++x) {
+            uint32_t c = im.pal[im.px[(size_t)y * im.w + x]];
+            raw += (char)((c >> 16) & 255); raw += (char)((c >> 8) & 255); raw += (char)(c & 255);
+        }
+    }
+    uLongf zlen = compressBound((uLong)raw.size());
+    std::string z(zlen, '\0');
+    if (compress2((Bytef*)z.data(), &zlen, (const Bytef*)raw.data(), (uLong)raw.size(), 6) != Z_OK)
+        return "";
+    z.resize(zlen);
+    std::string ihdr;
+    be32(ihdr, (uint32_t)im.w); be32(ihdr, (uint32_t)im.h);
+    ihdr += (char)8; ihdr += (char)2;                 // 8-bit RGB
+    ihdr += '\0'; ihdr += '\0'; ihdr += '\0';         // deflate, adaptive filter, no interlace
+    std::string png = "\x89PNG\r\n\x1a\n";
+    chunk(png, "IHDR", ihdr);
+    chunk(png, "IDAT", z);
+    chunk(png, "IEND", "");
+    return png;
+}
+
+static void emit_iterm2(const PalImage& im, int cell_cols, int cell_rows) {
+    const std::string png = png_rgb(im);
+    if (png.empty()) return;
+    std::string out = "\033]1337;File=inline=1;size=" + std::to_string(png.size()) +
+                      ";width=" + std::to_string(cell_cols) +
+                      ";height=" + std::to_string(cell_rows) +
+                      ";preserveAspectRatio=0:" + base64_encode(png) + "\a\n";
+    std::fwrite(out.data(), 1, out.size(), stdout);
+}
+
 static void emit_sixel(const PalImage& im) {
     std::string out = "\033Pq";                     // sixel start
     for (size_t i = 0; i < im.pal.size(); ++i) {    // register palette (0-100)
@@ -20299,9 +20355,14 @@ static void emit_sixel(const PalImage& im) {
 // for the pixel-based protocols.
 static void emit(const PalImage& src, Mode mode) {
     int cols, rows; term_cells(&cols, &rows);
-    if (mode == Mode::Auto)
-        mode = (md::detect_image_proto() == md::ImageProto::Kitty) ? Mode::Kitty
-                                                                   : Mode::HalfBlock;
+    if (mode == Mode::Auto) {
+        // kitty graphics in kitty; iTerm2's protocol in iTerm2 and WezTerm;
+        // half-blocks (truecolour text) everywhere else.
+        const md::ImageProto proto = md::detect_image_proto();
+        mode = proto == md::ImageProto::Kitty  ? Mode::Kitty
+             : proto == md::ImageProto::ITerm2 ? Mode::ITerm2
+                                               : Mode::HalfBlock;
+    }
     // Fit a cell box preserving aspect (image px aspect vs ~2:1 cell aspect).
     int box_cols = std::min(cols, std::max(1, src.w));
     int box_rows = std::max(1, (int)std::lround(
@@ -20317,6 +20378,8 @@ static void emit(const PalImage& src, Mode mode) {
         emit_halfblock(resample(src, box_cols, box_rows * 2));
     } else if (mode == Mode::Sixel) {
         emit_sixel(resample(src, box_cols * 8, box_rows * 16));
+    } else if (mode == Mode::ITerm2) {
+        emit_iterm2(resample(src, box_cols * 8, box_rows * 16), box_cols, box_rows);
     } else { // Kitty
         emit_kitty(resample(src, box_cols * 8, box_rows * 16), box_cols, box_rows);
     }
@@ -20385,11 +20448,12 @@ static std::string render_heatmap(TabularSource& src, const Config& cfg) {
     img::Mode mode = img::Mode::Auto;
     if      (cfg.image_mode.empty() || cfg.image_mode == "auto") mode = img::Mode::Auto;
     else if (cfg.image_mode == "kitty")     mode = img::Mode::Kitty;
+    else if (cfg.image_mode == "iterm")     mode = img::Mode::ITerm2;
     else if (cfg.image_mode == "sixel")     mode = img::Mode::Sixel;
     else if (cfg.image_mode == "halfblock") mode = img::Mode::HalfBlock;
     else if (cfg.image_mode == "ascii")     mode = img::Mode::Ascii;
     else return "--image-mode: unknown mode '" + cfg.image_mode +
-                "' (use auto|kitty|sixel|halfblock|ascii)";
+                "' (use auto|kitty|iterm|sixel|halfblock|ascii)";
 
     // The graphical backends write raw terminal escape/control sequences. If
     // stdout isn't a terminal (redirected to a file or a pipe) and the user

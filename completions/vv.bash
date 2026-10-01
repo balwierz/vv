@@ -163,7 +163,7 @@ _vv() {
             return
             ;;
         --image-mode)
-            COMPREPLY=( $(compgen -W 'auto kitty sixel halfblock ascii' -- "$cur") )
+            COMPREPLY=( $(compgen -W 'auto kitty iterm sixel halfblock ascii' -- "$cur") )
             return
             ;;
     esac
