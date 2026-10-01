@@ -1297,7 +1297,8 @@ with open(sys.argv[1], 'w') as f:
     f.write('[' + ','.join('{\"i\":%d,\"s\":\"%s\"}' % (i, 'x' * 40) for i in range(300000)) + ']')" "$TMP/jbig.json"
     assert_eq_file_inline "json_paths_big_array" "$("$VV" --json-paths "$TMP/jbig.json" | tail -1)" \
         ".[299999].s = \"$(printf 'x%.0s' $(seq 1 40))\""
-    if [ -x /usr/bin/time ]; then
+    # GNU time only (BSD / macOS time has no -f).
+    if /usr/bin/time -f '%M' true >/dev/null 2>&1; then
         JBIG_KB=$( { /usr/bin/time -f '%M' "$VV" "$TMP/jbig.json" > /dev/null; } 2>&1 | tail -1)
         if [ "${JBIG_KB:-0}" -lt 200000 ]; then
             PASS=$((PASS+1)); echo "  ok    json_pretty_big_array_memory"
