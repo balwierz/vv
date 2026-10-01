@@ -350,13 +350,14 @@ analysis ranking. One PR per box; no stacked PRs.
   `--tsv` / `--count` stop at the 1000-row / 200-column preview with exit 0.
   Either export the full matrix (streamed by row blocks) or refuse loudly with
   the real shape; never write a truncated file silently.
-- [~] **Stream a whole matrix on export** (M) — dense shape done: dense
+- [x] **Stream a whole matrix on export** (M) — dense shape done: dense
   datasets (hyperslabs) and CSR groups (indptr ranges) stream in row blocks
   for every export mode, and so do Loom (column slabs of genes × cells) and
   Cell Ranger (CSC by barcode = CSR by shown cell), and AnnData CSC
   (transposed to CSR in memory on first read — decided 2026-10-01: speed
-  over memory). Open: the long (`cell, gene, value`) output shape — needs a
-  decision on its flag and column names.
+  over memory). Long shape: done — decided 2026-10-01: `--matrix long|wide`,
+  obs / var / value or the files' own index names, zeros skipped, in the
+  viewer and every export.
 - [x] **`raw/` tabs** (S) — `feat/anndata-raw-tabs` — `raw.X` preview labelled from `/raw/var`, and
   `raw.var`; today skipped without mention.
 - [x] **`obsp` / `varp` listed** (M) — `feat/anndata-obsp-edges` — neighbour graphs as streamed edge
@@ -418,10 +419,14 @@ work that touches the same code:
 - [x] **TSV dialects: `.bedpe`, `.pairs`, `.gct`, `.maf`** (S–M) — `feat/tsv-dialects`.
 - [x] **UTF-8 and line editing in the TUI `/ & :` bars** (S, then M) — `feat/tui-line-editing` (history is not included).
 - [x] **`--tags` for PAF** (M).
-- [~] **VCF/BCF per-sample FORMAT fields** (L) — named BCF sample columns
+- [x] **VCF/BCF per-sample FORMAT fields** (L) — named BCF sample columns
   first. Named BCF sample columns: done (FORMAT + one column per sample, as
-  text VCF). Still open: typed per-sample FORMAT fields (e.g. `S1.GT`,
-  `S1.DP`) — the column layout for many samples needs deciding.
+  text VCF). Typed per-sample fields: done — decided 2026-10-01: a struct per
+  sample by default (`--flatten` → `S1.GT`, `S1.DP`), `--samples long` one row
+  per record × sample, `--samples text` the packed strings.
+- [ ] **vvg: `--samples` / `--matrix` choices** (S–M) — the viewer and exports
+  take both; vvg follows the defaults (struct samples, wide matrices) but has
+  no toolbar control or command-line flag for them yet.
 - [x] **`--flatten` for nested struct paths** (M+).
 - [x] **vvg accepts vv's view flags** (S–M).
 

@@ -15,7 +15,7 @@ end
 function __vv_file
     set -l valopts n w c @ threads decode-threads delimiter in-delimiter d header color theme box r region \
         window regions-file region-cols slop coords tail sort tags expand parquet arrow \
-        feather compression image-mode f fasta select cols filter tab unique sample \
+        feather compression image-mode samples matrix f fasta select cols filter tab unique sample \
         exclude-flags ff require-flags rf min-mapq min-bq
     set -l toks (commandline -opc)
     set -l i 2
@@ -110,6 +110,8 @@ complete -c vv -c vh -l no-header          -d 'Omit the header row in delimited 
 # Visualization
 complete -c vv -c vh -l heatmap            -d 'Render numeric columns as a terminal heatmap'
 complete -c vv -c vh -l image-mode -r -a 'auto kitty iterm sixel halfblock ascii' -d 'Heatmap backend'
+complete -c vv -c vh -l samples -r -a 'struct long text' -d 'VCF/BCF sample columns: typed structs, one row per sample, or text'
+complete -c vv -c vh -l matrix -r -a 'wide long' -d 'HDF5 matrix tabs: cells x genes, or one row per non-zero'
 
 # Parquet output
 complete -c vv -c vh -l parquet -r -F      -d 'Write a Parquet file at this path'

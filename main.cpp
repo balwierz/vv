@@ -936,6 +936,17 @@ static void print_usage(const char* prog) {
         "                      scan CAN disagree on the column set.\n"
         "  --flatten           struct columns become one column per leaf, named\n"
         "                      by path (st.a, st.b.c); lists and maps are kept\n"
+        "  --samples <how>     VCF/BCF sample columns: struct (default; one\n"
+        "                      struct per sample typed from ##FORMAT, e.g.\n"
+        "                      {GT: 0/1, AD: [5, 6], DP: 11}; --flatten gives\n"
+        "                      S1.GT, S1.DP, ...), long (one row per record x\n"
+        "                      sample: sample, GT, AD, DP, ...; --filter 'DP < 10'\n"
+        "                      reaches every sample), text (the packed strings)\n"
+        "  --matrix <how>      HDF5 / AnnData / Loom / Cell Ranger matrix tabs:\n"
+        "                      wide (default; cells x genes) or long (one row per\n"
+        "                      stored non-zero value: obs, var, value, named\n"
+        "                      after the file's indexes), in the viewer and\n"
+        "                      every export\n"
         "  --list-columns      column names, one per line\n"
         "  --list-tabs         component tab labels, one per line\n"
         "  --formats           the supported-format table (add --json)\n"
@@ -1239,6 +1250,20 @@ static Config parse_args(int argc, char** argv) {
             cfg.flatten = true;
         } else if (!std::strcmp(argv[i], "--gt-stats")) {
             cfg.gt_stats = true;
+        } else if (!std::strcmp(argv[i], "--samples") && i + 1 < argc) {
+            cfg.samples = argv[++i];
+            if (cfg.samples != "struct" && cfg.samples != "long" && cfg.samples != "text") {
+                std::fprintf(stderr, "--samples: unknown layout '%s' (use struct|long|text)\n",
+                             cfg.samples.c_str());
+                std::exit(2);
+            }
+        } else if (!std::strcmp(argv[i], "--matrix") && i + 1 < argc) {
+            cfg.matrix = argv[++i];
+            if (cfg.matrix != "wide" && cfg.matrix != "long") {
+                std::fprintf(stderr, "--matrix: unknown layout '%s' (use wide|long)\n",
+                             cfg.matrix.c_str());
+                std::exit(2);
+            }
         } else if (!std::strcmp(argv[i], "--distinct")) {
             cfg.distinct = true;
         } else if (!std::strcmp(argv[i], "--box") && i + 1 < argc) {
@@ -1386,7 +1411,7 @@ static Config parse_args(int argc, char** argv) {
                 "--arrow", "--feather",
                 "--compression", "--unique", "--sample", "--filter",
                 "--select", "--cols", "--image-mode", "--tab", "--theme",
-                "--expand",
+                "--expand", "--samples", "--matrix",
                 "--delimiter", "--in-delimiter", "-d", "--header",
                 "-f", "--fasta", "--box",
                 "--exclude-flags", "--ff", "--require-flags", "--rf",
@@ -2095,6 +2120,27 @@ std::string cell_to_string(const arrow::Array& arr, int64_t row) {
                 s += cell_to_string(*values, off + i);
             }
             s += ")";
+            return s;
+        }
+        case arrow::Type::STRUCT: {
+            // {name: value, ...} like a map. A null field is left out, as a
+            // VCF sample leaves out the FORMAT keys it lacks; a null struct
+            // is the null symbol.
+            auto& sa = static_cast<const arrow::StructArray&>(arr);
+            if (sa.IsNull(row)) return NULL_SYMBOL;
+            const auto& st = static_cast<const arrow::StructType&>(*sa.type());
+            std::string s = "{";
+            bool first = true;
+            for (int f = 0; f < st.num_fields(); ++f) {
+                auto child = sa.field(f);            // offset-adjusted
+                if (child->IsNull(row)) continue;
+                if (!first) s += ", ";
+                first = false;
+                s += st.field(f)->name();
+                s += ": ";
+                s += cell_to_string(*child, row);
+            }
+            s += "}";
             return s;
         }
         case arrow::Type::MAP: {
@@ -12532,6 +12578,7 @@ struct OpenSpec {
     // the dimension columns are derived from ("X_umap" -> X_umap1, X_umap2).
     AnnMatrixAxes axes = AnnMatrixAxes::ObsByVar;
     std::string   key;       // EdgeList: the labelled axis, "obs" or "var"
+    bool          long_form = false;  // --matrix long: shown as entry rows
 };
 
 // An obsp / varp graph tab streams its edges from the sparse matrix rather than
@@ -12552,6 +12599,9 @@ struct OpenSpec;
 static std::unique_ptr<TabularSource> make_h5_matrix_stream(const H5FilePtr& file,
                                                            const std::string& path,
                                                            const OpenSpec& spec);
+static std::unique_ptr<TabularSource> make_h5_long_matrix(const H5FilePtr& file,
+                                                         const std::string& path,
+                                                         const OpenSpec& spec);
 class Hdf5Source : public WorkbookSource {
     H5FilePtr   file_;
     std::string h5_path_;
@@ -12855,9 +12905,11 @@ class Hdf5Source : public WorkbookSource {
     }
 
 public:
+    // `matrix_long`: --matrix long — matrix tabs open as entry rows.
     static std::string open_first(const std::string& path,
                                     std::unique_ptr<Hdf5Source>* out,
-                                    int64_t df_row_cap = kDataFrameRowCap);
+                                    int64_t df_row_cap = kDataFrameRowCap,
+                                    bool matrix_long = false);
 
     // tab_label() reads only the spec — no build, so the tab strip and the
     // --tab selector can list/match components without materialising them.
@@ -12912,6 +12964,11 @@ public:
                 result.push_back(make_edge_list_source(path(), file_, sp));
                 continue;
             }
+            if (sp.long_form)
+                if (auto lm = make_h5_long_matrix(file_, path(), sp)) {
+                    result.push_back(std::move(lm));
+                    continue;
+                }
             result.push_back(std::unique_ptr<TabularSource>(
                 new Hdf5Source(path(), file_, sp, all_specs_, df_row_cap_)));
         }
@@ -13747,6 +13804,10 @@ public:
         bool        ints = false;            // int64 values, else double
         std::string row_header;              // row label column ("" = none)
         std::vector<std::string> row_labels, col_names;
+        // --matrix long: the column-label column's name ("var", the var
+        // index name, "dim" for an embedding, ...); row_header names the row
+        // labels ("obs" when the wide view has none). Empty labels → indexes.
+        std::string long_row = "row", long_col = "col";
     };
 
 private:
@@ -13868,16 +13929,18 @@ public:
                std::to_string(plan_.rows) + " \xc3\x97 " + std::to_string(plan_.cols);
     }
 
-    arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
-                             std::shared_ptr<arrow::Table>* out) override {
+    const Plan& plan() const { return plan_; }
+    int64_t block_rows() const { return block_; }
+
+    // Block i's rows as a dense row-major n × cols buffer (iv for integer
+    // plans, dv otherwise).
+    arrow::Status fill_block(int i, std::vector<int64_t>& iv, std::vector<double>& dv) {
         const int64_t r0 = (int64_t)i * block_;
         const int64_t n  = std::min(block_, plan_.rows - r0);
         const int64_t cols_ = plan_.cols;
         const bool ints_ = plan_.ints;
         const std::string& h5_path_ = plan_.h5_path;
         if (n <= 0) return arrow::Status::IndexError("chunk ", i, " out of range");
-        std::vector<double>  dv;
-        std::vector<int64_t> iv;
         (ints_ ? (void)iv.assign((size_t)(n * cols_), 0) : (void)dv.assign((size_t)(n * cols_), 0.0));
         const hid_t fid = *file_;
         auto fail = [&](const std::string& why) {
@@ -13956,6 +14019,134 @@ public:
                     else       dv[(size_t)(r * cols_ + c)] = dval[(size_t)k];
                 }
         }
+        return arrow::Status::OK();
+    }
+
+    // --matrix long: the entries of block i as (row, column, value) in row
+    // order — every stored entry of a sparse matrix, every non-zero cell of a
+    // dense one.
+    struct Entries {
+        std::vector<int64_t> row;
+        std::vector<int64_t> col;
+        std::vector<int64_t> iv;
+        std::vector<double>  dv;
+    };
+    arrow::Status entries(int i, Entries* e) {
+        e->row.clear(); e->col.clear(); e->iv.clear(); e->dv.clear();
+        const int64_t r0 = (int64_t)i * block_;
+        const int64_t n  = std::min(block_, plan_.rows - r0);
+        if (n <= 0) return arrow::Status::IndexError("chunk ", i, " out of range");
+        if (plan_.layout == Layout::Csc) {
+            if (!csr_built_) ARROW_RETURN_NOT_OK(build_csr_from_csc());
+            for (int64_t r = r0; r < r0 + n; ++r)
+                for (int64_t k = csr_ptr_[(size_t)r]; k < csr_ptr_[(size_t)r + 1]; ++k) {
+                    e->row.push_back(r); e->col.push_back(csr_col_[(size_t)k]);
+                    e->dv.push_back(csr_val_[(size_t)k]);
+                }
+            return arrow::Status::OK();
+        }
+        if (plan_.layout == Layout::Csr) {
+            hid_t g = H5Gopen2(*file_, plan_.h5_path.c_str(), H5P_DEFAULT);
+            if (g < 0) return arrow::Status::IOError("cannot open ", plan_.h5_path);
+            std::string err;
+            auto read_slice = [&](const char* name, int64_t off, int64_t len, hid_t mtype, void* buf) {
+                if (len == 0) return true;
+                hid_t d = H5Dopen2(g, name, H5P_DEFAULT);
+                if (d < 0) { err = plan_.h5_path + "/" + name + ": cannot open"; return false; }
+                hid_t fs = H5Dget_space(d);
+                hsize_t start = (hsize_t)off, count = (hsize_t)len;
+                H5Sselect_hyperslab(fs, H5S_SELECT_SET, &start, nullptr, &count, nullptr);
+                hid_t ms = H5Screate_simple(1, &count, nullptr);
+                const bool ok = H5Dread(d, mtype, ms, fs, H5P_DEFAULT, buf) >= 0;
+                if (!ok) err = h5_read_failure(d);
+                H5Sclose(ms); H5Sclose(fs); H5Dclose(d);
+                return ok;
+            };
+            std::vector<int64_t> ip((size_t)n + 1);
+            bool ok = read_slice("indptr", r0, n + 1, H5T_NATIVE_INT64, ip.data());
+            const int64_t a = ok ? ip[0] : 0, len = ok ? ip[(size_t)n] - a : 0;
+            if (ok && len < 0) { err = plan_.h5_path + "/indptr decreases"; ok = false; }
+            if (ok) {
+                e->col.resize((size_t)len);
+                ok = read_slice("indices", a, len, H5T_NATIVE_INT64, e->col.data());
+                if (ok && plan_.ints) { e->iv.resize((size_t)len); ok = read_slice("data", a, len, H5T_NATIVE_INT64, e->iv.data()); }
+                else if (ok)          { e->dv.resize((size_t)len); ok = read_slice("data", a, len, H5T_NATIVE_DOUBLE, e->dv.data()); }
+            }
+            H5Gclose(g);
+            if (!ok) return arrow::Status::IOError(err.empty() ? plan_.h5_path + ": cannot read" : err);
+            e->row.resize((size_t)len);
+            for (int64_t r = 0; r < n; ++r) {
+                if (ip[(size_t)r + 1] < ip[(size_t)r]) return arrow::Status::IOError(plan_.h5_path, "/indptr decreases");
+                for (int64_t k = ip[(size_t)r] - a; k < ip[(size_t)r + 1] - a; ++k) e->row[(size_t)k] = r0 + r;
+            }
+            for (int64_t c : e->col)
+                if (c < 0 || c >= plan_.cols) return arrow::Status::IOError("column index out of range in ", plan_.h5_path);
+            return arrow::Status::OK();
+        }
+        std::vector<int64_t> iv;
+        std::vector<double>  dv;
+        ARROW_RETURN_NOT_OK(fill_block(i, iv, dv));
+        const int64_t C = plan_.cols;
+        for (int64_t r = 0; r < n; ++r)
+            for (int64_t c = 0; c < C; ++c) {
+                const size_t k = (size_t)(r * C + c);
+                if (plan_.ints ? iv[k] == 0 : dv[k] == 0.0) continue;
+                e->row.push_back(r0 + r); e->col.push_back(c);
+                if (plan_.ints) e->iv.push_back(iv[k]); else e->dv.push_back(dv[k]);
+            }
+        return arrow::Status::OK();
+    }
+
+    // Stored entries per block, when they are known without reading values
+    // (sparse layouts); false for a dense matrix.
+    bool block_counts(std::vector<int64_t>* counts) {
+        counts->clear();
+        const int nb = num_chunks();
+        if (plan_.layout == Layout::Csc) {
+            if (!csr_built_ && !build_csr_from_csc().ok()) return false;
+            for (int b = 0; b < nb; ++b) {
+                const int64_t r0 = (int64_t)b * block_, r1 = std::min(plan_.rows, r0 + block_);
+                counts->push_back(csr_ptr_[(size_t)r1] - csr_ptr_[(size_t)r0]);
+            }
+            return true;
+        }
+        if (plan_.layout != Layout::Csr) return false;
+        hid_t g = H5Gopen2(*file_, plan_.h5_path.c_str(), H5P_DEFAULT);
+        if (g < 0) return false;
+        hid_t d = H5Dopen2(g, "indptr", H5P_DEFAULT);
+        std::vector<int64_t> ip((size_t)plan_.rows + 1);
+        bool ok = d >= 0;
+        if (ok) {
+            hid_t fs = H5Dget_space(d);
+            hsize_t start = 0, count = (hsize_t)plan_.rows + 1;
+            H5Sselect_hyperslab(fs, H5S_SELECT_SET, &start, nullptr, &count, nullptr);
+            hid_t ms = H5Screate_simple(1, &count, nullptr);
+            ok = H5Dread(d, H5T_NATIVE_INT64, ms, fs, H5P_DEFAULT, ip.data()) >= 0;
+            H5Sclose(ms); H5Sclose(fs); H5Dclose(d);
+        }
+        H5Gclose(g);
+        if (!ok) return false;
+        for (int b = 0; b < nb; ++b) {
+            const int64_t r0 = (int64_t)b * block_, r1 = std::min(plan_.rows, r0 + block_);
+            if (ip[(size_t)r1] < ip[(size_t)r0]) return false;
+            counts->push_back(ip[(size_t)r1] - ip[(size_t)r0]);
+        }
+        return true;
+    }
+
+    arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
+                             std::shared_ptr<arrow::Table>* out) override {
+        const int64_t r0 = (int64_t)i * block_;
+        const int64_t n  = std::min(block_, plan_.rows - r0);
+        const int64_t cols_ = plan_.cols;
+        const bool ints_ = plan_.ints;
+        if (n <= 0) return arrow::Status::IndexError("chunk ", i, " out of range");
+        std::vector<double>  dv;
+        std::vector<int64_t> iv;
+        if (auto st = fill_block(i, iv, dv); !st.ok()) {
+            if (status_.ok()) status_ = st;
+            return st;
+        }
         const auto& row_labels_ = plan_.row_labels;
         const int label = plan_.row_header.empty() ? 0 : 1;
         arrow::FieldVector fields;
@@ -13986,6 +14177,160 @@ public:
     }
 };
 
+
+// ── --matrix long: one row per matrix entry ─────────────────────────────────
+//
+// The whole matrix (not a preview) as (row label, column label, value) rows,
+// built block by block from an H5MatrixStreamSource: every stored entry of a
+// sparse matrix, every non-zero cell of a dense one. Labels are dictionary
+// columns over the full label lists (one copy, any number of rows); a matrix
+// without labels gets integer indexes. A sparse matrix knows its entries per
+// block from indptr, so all chunks are addressable at once; a dense one is
+// read forward, a block at a time, until its zeros have been skipped.
+class H5LongMatrixSource : public TabularSource {
+    using Stream = H5MatrixStreamSource;
+    std::unique_ptr<Stream>          wide_;
+    std::string                      label_;
+    std::shared_ptr<arrow::Schema>   schema_;
+    std::shared_ptr<arrow::Array>    row_dict_, col_dict_;   // null: indexes
+    std::vector<int64_t>             first_;                  // per known block
+    std::vector<int64_t>             count_;
+    bool                             all_known_ = false;
+    int                              cached_block_ = -1;
+    Stream::Entries                  cached_;
+    mutable arrow::Status            status_;
+
+    static std::shared_ptr<arrow::Array> strings(const std::vector<std::string>& v) {
+        arrow::StringBuilder b;
+        for (const auto& x : v) (void)b.Append(x);
+        std::shared_ptr<arrow::Array> a;
+        (void)b.Finish(&a);
+        return a;
+    }
+    arrow::Status load(int b) {
+        if (b == cached_block_) return arrow::Status::OK();
+        auto st = wide_->entries(b, &cached_);
+        if (!st.ok()) { if (status_.ok()) status_ = st; cached_block_ = -1; return st; }
+        cached_block_ = b;
+        return arrow::Status::OK();
+    }
+
+public:
+    static std::unique_ptr<TabularSource> make(std::unique_ptr<TabularSource> wide_src) {
+        auto* w = dynamic_cast<Stream*>(wide_src.get());
+        if (!w) return nullptr;
+        auto self = std::make_unique<H5LongMatrixSource>();
+        self->wide_.reset(static_cast<Stream*>(wide_src.release()));
+        const auto& p = self->wide_->plan();
+        std::string lbl = p.label;
+        if (auto at = lbl.find(" (preview)"); at != std::string::npos) lbl.erase(at);
+        const std::string tag = " (long)";
+        if (lbl.size() < tag.size() || lbl.compare(lbl.size() - tag.size(), tag.size(), tag) != 0)
+            lbl += tag;
+        self->label_ = lbl;
+        const bool rl = !p.row_labels.empty() && (int64_t)p.row_labels.size() == p.rows &&
+                        p.rows < INT32_MAX;
+        const bool cl = !p.col_names.empty() && (int64_t)p.col_names.size() == p.cols &&
+                        p.cols < INT32_MAX;
+        if (rl) self->row_dict_ = strings(p.row_labels);
+        if (cl) self->col_dict_ = strings(p.col_names);
+        auto label_type = arrow::dictionary(arrow::int32(), arrow::utf8());
+        std::string rname = p.long_row, cname = p.long_col, vname = "value";
+        if (cname == rname) cname += "_col";
+        self->schema_ = arrow::schema({
+            arrow::field(rname, rl ? label_type : arrow::int64()),
+            arrow::field(cname, cl ? label_type : arrow::int64()),
+            arrow::field(vname, p.ints ? arrow::int64() : arrow::float64())});
+        std::vector<int64_t> counts;
+        if (self->wide_->block_counts(&counts)) {
+            int64_t at = 0;
+            for (int64_t c : counts) { self->first_.push_back(at); self->count_.push_back(c); at += c; }
+            self->all_known_ = true;
+        }
+        return self;
+    }
+
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    int64_t total_rows() const override {
+        if (!all_known_) return -1;
+        return first_.empty() ? 0 : first_.back() + count_.back();
+    }
+    int  num_chunks() const override { return (int)count_.size(); }
+    ChunkMeta chunk_meta(int i) const override {
+        if (i < 0 || i >= (int)count_.size()) return {total_rows() < 0 ? 0 : total_rows(), 0};
+        return {first_[(size_t)i], count_[(size_t)i]};
+    }
+    // A dense matrix: read blocks forward until block i's size is known.
+    void ensure(int i) override {
+        while (!all_known_ && (int)count_.size() <= i) {
+            const int b = (int)count_.size();
+            if (b >= wide_->num_chunks()) { all_known_ = true; break; }
+            if (!load(b).ok()) { all_known_ = true; break; }
+            const int64_t at = first_.empty() ? 0 : first_.back() + count_.back();
+            first_.push_back(at);
+            count_.push_back((int64_t)cached_.row.size());
+        }
+    }
+    arrow::Status read_status() const override {
+        return status_.ok() ? wide_->read_status() : status_;
+    }
+    arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
+                             std::shared_ptr<arrow::Table>* out) override {
+        ensure(i);
+        if (i < 0 || i >= (int)count_.size())
+            return arrow::Status::IndexError("chunk ", i, " out of range");
+        ARROW_RETURN_NOT_OK(load(i));
+        const auto& e = cached_;
+        const int64_t n = (int64_t)e.row.size();
+        auto labels = [&](const std::vector<int64_t>& idx, const std::shared_ptr<arrow::Array>& dict,
+                          std::shared_ptr<arrow::Array>* arr) -> arrow::Status {
+            if (!dict) {
+                arrow::Int64Builder b;
+                ARROW_RETURN_NOT_OK(b.AppendValues(idx));
+                return b.Finish(arr);
+            }
+            arrow::Int32Builder b;
+            ARROW_RETURN_NOT_OK(b.Reserve(n));
+            for (int64_t v : idx) b.UnsafeAppend((int32_t)v);
+            std::shared_ptr<arrow::Array> ix;
+            ARROW_RETURN_NOT_OK(b.Finish(&ix));
+            ARROW_ASSIGN_OR_RAISE(*arr, arrow::DictionaryArray::FromArrays(
+                arrow::dictionary(arrow::int32(), arrow::utf8()), ix, dict));
+            return arrow::Status::OK();
+        };
+        arrow::FieldVector fields;
+        std::vector<std::shared_ptr<arrow::Array>> cols;
+        for (int c : col_indices) {
+            std::shared_ptr<arrow::Array> arr;
+            if (c == 0) ARROW_RETURN_NOT_OK(labels(e.row, row_dict_, &arr));
+            else if (c == 1) ARROW_RETURN_NOT_OK(labels(e.col, col_dict_, &arr));
+            else if (wide_->plan().ints) {
+                arrow::Int64Builder b;
+                ARROW_RETURN_NOT_OK(b.AppendValues(e.iv));
+                ARROW_RETURN_NOT_OK(b.Finish(&arr));
+            } else {
+                arrow::DoubleBuilder b;
+                ARROW_RETURN_NOT_OK(b.AppendValues(e.dv));
+                ARROW_RETURN_NOT_OK(b.Finish(&arr));
+            }
+            fields.push_back(schema_->field(c));
+            cols.push_back(std::move(arr));
+        }
+        *out = arrow::Table::Make(arrow::schema(fields), cols, n);
+        return arrow::Status::OK();
+    }
+    const std::string& path() const override { return wide_->path(); }
+    std::string tab_label() const override { return label_; }
+    std::string footer() const override {
+        const auto& p = wide_->plan();
+        std::string f = "Format: " + p.format + " " + label_ + "  |  " + std::to_string(p.rows) +
+                        " \xc3\x97 " + std::to_string(p.cols) + " matrix, one row per " +
+                        (p.layout == Stream::Layout::Csr || p.layout == Stream::Layout::Csc
+                             ? "stored entry" : "non-zero cell");
+        if (all_known_) f += "  |  Rows: " + std::to_string(total_rows());
+        return f;
+    }
+};
 
 // ── Scanners — decide which tabs to emit ────────────────────────────────────
 
@@ -15180,8 +15525,17 @@ static bool h5_dense_value_type(hid_t d, bool* ints) {
     return cls == H5T_INTEGER || cls == H5T_FLOAT;
 }
 
+// --matrix long for a matrix tab: the whole matrix as entry rows; nullptr for
+// a matrix that cannot be read that way (text data).
+static std::unique_ptr<TabularSource> make_h5_long_matrix(const H5FilePtr& file,
+                                                         const std::string& path,
+                                                         const OpenSpec& spec) {
+    auto wide = make_h5_matrix_stream(file, path, spec);
+    return wide ? H5LongMatrixSource::make(std::move(wide)) : nullptr;
+}
+
 // A whole-matrix stream for a capped matrix tab, labelled as its preview is;
-// nullptr for a matrix that is not streamed (CSC, text data).
+// nullptr for a matrix that is not streamed (text data).
 static std::unique_ptr<TabularSource> make_h5_matrix_stream(const H5FilePtr& file,
                                                            const std::string& path,
                                                            const OpenSpec& spec) {
@@ -15254,6 +15608,7 @@ static std::unique_ptr<TabularSource> make_h5_matrix_stream(const H5FilePtr& fil
         if (!ok) return nullptr;
         p.layout = Layout::Csr; p.rows = nb; p.cols = nf;
         p.row_header = "barcode";
+        p.long_row = "barcode"; p.long_col = "feature";
         p.format = "10x Genomics";
         return H5MatrixStreamSource::from_plan(file, path, std::move(p));
     }
@@ -15270,6 +15625,8 @@ static std::unique_ptr<TabularSource> make_h5_matrix_stream(const H5FilePtr& fil
         const std::string gene_attr = loom_label_attr(fid, "row_attrs", kLoomGeneIds);
         if (!cell_attr.empty()) p.row_labels = h5_strings(fid, "col_attrs/" + cell_attr, C);
         p.row_header = cell_attr.empty() ? "cell" : cell_attr;
+        p.long_row = p.row_header;
+        p.long_col = gene_attr.empty() ? "gene" : gene_attr;
         std::vector<std::string> genes = gene_attr.empty() ? std::vector<std::string>{}
             : h5_strings(fid, "row_attrs/" + gene_attr, G);
         std::vector<std::string> alt;
@@ -15296,19 +15653,25 @@ static std::unique_ptr<TabularSource> make_h5_matrix_stream(const H5FilePtr& fil
     }
     // AnnData labels by the matrix's axes (a generic 2-D dataset has none:
     // col0, col1, ...).
+    // The long form names the axes obs / var (or the indexes' own names);
+    // an embedding's columns are dimensions.
     if (spec.kind != OpenSpec::Kind::Dataset2D) {
         if (spec.axes == AnnMatrixAxes::ObsByVar || spec.axes == AnnMatrixAxes::ObsByRawVar) {
             std::string idx;
             read_anndata_index_labels(fid, spec.axes == AnnMatrixAxes::ObsByRawVar ? "/raw/var" : "/var",
                                       p.cols, &p.col_names, &idx);
-        } else if (!spec.key.empty()) {
-            for (int64_t c = 0; c < p.cols; ++c) p.col_names.push_back(spec.key + std::to_string(c + 1));
+            p.long_col = idx.empty() || idx == "_index" ? "var" : idx;
+        } else {
+            if (!spec.key.empty())
+                for (int64_t c = 0; c < p.cols; ++c) p.col_names.push_back(spec.key + std::to_string(c + 1));
+            p.long_col = "dim";
         }
         const bool by_var = spec.axes == AnnMatrixAxes::VarByDim;
         std::string idx;
         read_anndata_index_labels(fid, by_var ? "/var" : "/obs", p.rows, &p.row_labels, &idx);
-        if (!p.row_labels.empty())
-            p.row_header = idx.empty() || idx == "_index" ? (by_var ? "var" : "obs") : idx;
+        const std::string rname = idx.empty() || idx == "_index" ? (by_var ? "var" : "obs") : idx;
+        if (!p.row_labels.empty()) p.row_header = rname;
+        p.long_row = rname;
     }
     return H5MatrixStreamSource::from_plan(file, path, std::move(p));
 }
@@ -15317,7 +15680,7 @@ static std::unique_ptr<TabularSource> make_h5_matrix_stream(const H5FilePtr& fil
 
 std::string Hdf5Source::open_first(const std::string& path,
                                       std::unique_ptr<Hdf5Source>* out,
-                                      int64_t df_row_cap) {
+                                      int64_t df_row_cap, bool matrix_long) {
     // Silence HDF5's stderr error spew for missing attrs etc.
     H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
     register_hdf5_filters();
@@ -15357,6 +15720,17 @@ std::string Hdf5Source::open_first(const std::string& path,
                                 : is_loom(fid) ? scan_loom(fid)
                                 : scan_generic(fid);
     if (specs.empty()) return "'" + path + "': no viewable HDF5 datasets";
+    // --matrix long: matrix tabs become entry rows of the whole matrix, so
+    // their label says "(long)" rather than "(preview)".
+    if (matrix_long)
+        for (auto& sp : specs) {
+            using K = OpenSpec::Kind;
+            if (sp.kind != K::Matrix2D && sp.kind != K::Dataset2D && sp.kind != K::Sparse &&
+                sp.kind != K::TenxMatrix && sp.kind != K::LoomMatrix) continue;
+            sp.long_form = true;
+            if (auto at = sp.display.find(" (preview)"); at != std::string::npos) sp.display.erase(at);
+            sp.display += " (long)";
+        }
 
     auto all = std::make_shared<std::vector<OpenSpec>>(specs);
     OpenSpec first = specs.front();
@@ -18561,6 +18935,7 @@ class GenotypeStatsSource : public TabularSource {
     int                            fs_col_    = -1;   // collapsed: FORMAT_SAMPLES
     int                            fmt_col_   = -1;   // separate: FORMAT
     int                            n_samples_ = 0;    // separate: fixed sample count
+    std::vector<int>               samp_cols_;        // separate: the sample columns
     std::vector<int>               src_cols_;         // inner cols needed to compute
 
     static constexpr int kNStat = 9;   // the appended columns
@@ -18597,7 +18972,7 @@ class GenotypeStatsSource : public TabularSource {
         if (collapsed_) fs = col_at(fs_col_);
         else {
             fmt = col_at(fmt_col_);
-            for (int c = fmt_col_ + 1; c < n_inner_; ++c) samp.push_back(col_at(c));
+            for (int c : samp_cols_) samp.push_back(col_at(c));
         }
 
         std::vector<std::string> sample_gts;
@@ -18667,8 +19042,12 @@ class GenotypeStatsSource : public TabularSource {
     }
 
 public:
+    // `samples`: the sample column names (vcf_sample_names() of the source as
+    // read). Columns appended after them (--expand) are not samples; without
+    // the list every column after FORMAT is taken as one.
     static std::string open(std::unique_ptr<TabularSource> inner,
-                            std::unique_ptr<TabularSource>* out) {
+                            std::unique_ptr<TabularSource>* out,
+                            const std::vector<std::string>& samples = {}) {
         auto in_schema = inner->schema();
         auto self = std::unique_ptr<GenotypeStatsSource>(new GenotypeStatsSource());
         self->n_inner_ = in_schema->num_fields();
@@ -18682,8 +19061,15 @@ public:
         } else if (fmt >= 0 && fmt + 1 < self->n_inner_) {
             self->collapsed_ = false;
             self->fmt_col_ = fmt;
-            self->n_samples_ = self->n_inner_ - (fmt + 1);
-            for (int c = fmt; c < self->n_inner_; ++c) self->src_cols_.push_back(c);
+            for (const auto& nm : samples) {
+                const int c = in_schema->GetFieldIndex(nm);
+                if (c > fmt) self->samp_cols_.push_back(c);
+            }
+            if (samples.empty())
+                for (int c = fmt + 1; c < self->n_inner_; ++c) self->samp_cols_.push_back(c);
+            self->n_samples_ = (int)self->samp_cols_.size();
+            self->src_cols_.push_back(fmt);
+            for (int c : self->samp_cols_) self->src_cols_.push_back(c);
         } else {
             return "--gt-stats: no per-sample genotypes found — needs a VCF/BCF "
                    "with a FORMAT column and one or more sample columns";
@@ -19884,7 +20270,7 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         int64_t df_cap = df_preview_only
             ? h5v::kDataFrameRowCap
             : (cfg.head_rows_set ? (int64_t)cfg.head_rows : -1);
-        std::string err = h5v::Hdf5Source::open_first(path, &src, df_cap);
+        std::string err = h5v::Hdf5Source::open_first(path, &src, df_cap, cfg.matrix == "long");
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
@@ -20135,6 +20521,447 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
     return "";
 }
 
+// ── VCF / BCF sample columns: typed structs, or one row per sample ──────────
+//
+// A multi-sample VCF stores, per record, a FORMAT key list ("GT:AD:DP") and one
+// packed value per sample ("0/1:5,6:11"). By default (--samples struct) each
+// sample column becomes a struct typed from the ##FORMAT declarations —
+// {GT: 0/1, AD: [5, 6], DP: 11}; keys a record lacks are null (and left out
+// when the struct is shown) and the FORMAT column, now redundant, is dropped.
+// --samples long instead emits one row per record × sample: the record's
+// columns, `sample`, then one typed column per FORMAT key, so
+// `--filter 'DP < 10'` applies across samples. --samples text keeps the packed
+// strings. Types: Integer / Float with Number=1 → int64 / double, with any
+// other Number (A, R, G, ., n) → a list of them; String / Character → text.
+
+enum class FmtKind { Str, Int, Float, IntList, FloatList };
+struct FmtDef { std::string id; FmtKind kind; };
+
+static std::vector<FmtDef> parse_vcf_format_headers(const std::vector<std::string>& preamble) {
+    std::vector<FmtDef> out;
+    const std::string prefix = "##FORMAT=<";
+    for (const auto& line : preamble) {
+        if (line.rfind(prefix, 0) != 0 || line.back() != '>') continue;
+        const std::string body = line.substr(prefix.size(), line.size() - prefix.size() - 1);
+        std::string id, type, number;
+        size_t i = 0, n = body.size();
+        while (i < n) {
+            size_t ke = body.find('=', i);
+            if (ke == std::string::npos) break;
+            const std::string k = body.substr(i, ke - i);
+            size_t vs = ke + 1, ve;
+            std::string v;
+            if (vs < n && body[vs] == '"') {
+                ve = body.find('"', vs + 1);
+                if (ve == std::string::npos) break;
+                v = body.substr(vs + 1, ve - vs - 1);
+                i = (ve + 1 < n) ? ve + 2 : n;
+            } else {
+                ve = body.find(',', vs);
+                if (ve == std::string::npos) ve = n;
+                v = body.substr(vs, ve - vs);
+                i = (ve < n) ? ve + 1 : n;
+            }
+            if (k == "ID") id = v; else if (k == "Type") type = v; else if (k == "Number") number = v;
+        }
+        if (id.empty()) continue;
+        bool dup = false;
+        for (const auto& d : out) dup |= d.id == id;
+        if (dup) continue;
+        const bool scalar = number == "1";
+        FmtKind kind = FmtKind::Str;
+        if (type == "Integer") kind = scalar ? FmtKind::Int : FmtKind::IntList;
+        else if (type == "Float") kind = scalar ? FmtKind::Float : FmtKind::FloatList;
+        out.push_back({id, kind});
+    }
+    return out;
+}
+
+static std::shared_ptr<arrow::DataType> fmt_arrow_type(FmtKind k) {
+    switch (k) {
+        case FmtKind::Int:       return arrow::int64();
+        case FmtKind::Float:     return arrow::float64();
+        case FmtKind::IntList:   return arrow::list(arrow::int64());
+        case FmtKind::FloatList: return arrow::list(arrow::float64());
+        default:                 return arrow::utf8();
+    }
+}
+
+// The FORMAT column and the sample columns after it, when `sch` is a VCF's
+// (CHROM .. INFO, FORMAT, samples). Empty when there are no samples.
+static std::vector<std::string> vcf_sample_names(const arrow::Schema& sch) {
+    std::vector<std::string> out;
+    if (sch.num_fields() < 10) return out;
+    const std::string c0 = sch.field(0)->name();
+    if ((c0 != "CHROM" && c0 != "#CHROM") || sch.field(8)->name() != "FORMAT") return out;
+    for (int i = 9; i < sch.num_fields(); ++i) out.push_back(sch.field(i)->name());
+    return out;
+}
+
+class VcfSamplesSource : public TabularSource {
+    // Output column → what it is built from.
+    struct OutCol { enum Kind { Pass, Sample, SampleName, Field } kind; int inner; int idx; };
+    std::unique_ptr<TabularSource>        inner_;
+    bool                                  long_ = false;
+    int                                   fmt_col_ = -1;
+    std::vector<int>                      samp_cols_;     // inner sample columns
+    std::vector<std::string>              samp_names_;
+    std::vector<FmtDef>                   defs_;
+    std::unordered_map<std::string, int>  def_index_;
+    std::vector<OutCol>                   out_;
+    std::shared_ptr<arrow::Schema>        schema_;
+    std::shared_ptr<arrow::DataType>      struct_type_;
+
+    int64_t nsamp() const { return (int64_t)samp_cols_.size(); }
+
+    static std::string cell_at(const arrow::ChunkedArray& c, int64_t r) {
+        for (const auto& ch : c.chunks()) {
+            if (r < ch->length()) return ch->IsNull(r) ? std::string() : cell_to_string(*ch, r);
+            r -= ch->length();
+        }
+        return {};
+    }
+
+    // A text column of one chunk, read as string_views (no copy per cell).
+    struct Strs {
+        std::shared_ptr<arrow::Array> arr;
+        const arrow::StringArray*     s = nullptr;
+        std::string                   tmp;
+        std::string_view get(int64_t r) {
+            if (arr->IsNull(r)) return {};
+            if (s) return s->GetView(r);
+            tmp = cell_to_string(*arr, r);
+            return tmp;
+        }
+    };
+    static arrow::Status make_strs(const arrow::ChunkedArray& c, Strs* out) {
+        if (c.num_chunks() == 1) out->arr = c.chunk(0);
+        else if (c.num_chunks() == 0) { ARROW_ASSIGN_OR_RAISE(out->arr, arrow::MakeArrayOfNull(c.type(), 0)); }
+        else { ARROW_ASSIGN_OR_RAISE(out->arr, arrow::Concatenate(c.chunks())); }
+        if (out->arr->type_id() == arrow::Type::STRING)
+            out->s = static_cast<const arrow::StringArray*>(out->arr.get());
+        return arrow::Status::OK();
+    }
+
+    // Append one FORMAT value (token) of kind `k` to `b`; "." or "" is null.
+    static arrow::Status append_value(arrow::ArrayBuilder* b, FmtKind k, std::string_view tok) {
+        if (tok.empty() || tok == ".") return b->AppendNull();
+        switch (k) {
+            case FmtKind::Int: {
+                long long v = 0;
+                auto r = std::from_chars(tok.data(), tok.data() + tok.size(), v);
+                auto* ib = static_cast<arrow::Int64Builder*>(b);
+                return (r.ec == std::errc() && r.ptr == tok.data() + tok.size()) ? ib->Append(v)
+                                                                                : ib->AppendNull();
+            }
+            case FmtKind::Float: {
+                double v = 0;
+                auto r = std::from_chars(tok.data(), tok.data() + tok.size(), v);
+                auto* db = static_cast<arrow::DoubleBuilder*>(b);
+                return (r.ec == std::errc() && r.ptr == tok.data() + tok.size()) ? db->Append(v)
+                                                                                : db->AppendNull();
+            }
+            case FmtKind::IntList:
+            case FmtKind::FloatList: {
+                auto* lb = static_cast<arrow::ListBuilder*>(b);
+                ARROW_RETURN_NOT_OK(lb->Append());
+                const FmtKind ek = k == FmtKind::IntList ? FmtKind::Int : FmtKind::Float;
+                size_t i = 0;
+                while (i <= tok.size()) {
+                    size_t j = tok.find(',', i);
+                    if (j == std::string_view::npos) j = tok.size();
+                    ARROW_RETURN_NOT_OK(append_value(lb->value_builder(), ek, tok.substr(i, j - i)));
+                    i = j + 1;
+                }
+                return arrow::Status::OK();
+            }
+            default:
+                return static_cast<arrow::StringBuilder*>(b)->Append(tok);
+        }
+    }
+
+    // FORMAT keys of one record → def index per position (-1: undeclared).
+    std::vector<int> key_defs(const std::string& fmt) const {
+        std::vector<int> out;
+        size_t i = 0;
+        while (i <= fmt.size() && !fmt.empty()) {
+            size_t j = fmt.find(':', i);
+            if (j == std::string::npos) j = fmt.size();
+            auto it = def_index_.find(fmt.substr(i, j - i));
+            out.push_back(it == def_index_.end() ? -1 : it->second);
+            i = j + 1;
+        }
+        return out;
+    }
+
+    // Split one sample's packed value by ':' into the per-def tokens (views
+    // into `v`; empty when the record or the sample lacks the key).
+    void split_sample(std::string_view v, const std::vector<int>& kd,
+                      std::vector<std::string_view>* tok, std::vector<char>* has) const {
+        tok->assign(defs_.size(), std::string_view());
+        has->assign(defs_.size(), 0);
+        size_t i = 0, p = 0;
+        while (i <= v.size() && !v.empty() && p < kd.size()) {
+            size_t j = v.find(':', i);
+            if (j == std::string_view::npos) j = v.size();
+            if (kd[p] >= 0 && !(*has)[(size_t)kd[p]]) {
+                (*tok)[(size_t)kd[p]] = v.substr(i, j - i);
+                (*has)[(size_t)kd[p]] = 1;
+            }
+            ++p;
+            i = j + 1;
+        }
+    }
+
+public:
+    static std::unique_ptr<TabularSource> wrap(std::unique_ptr<TabularSource> inner,
+                                               const std::vector<std::string>& samples,
+                                               bool long_form) {
+        auto sch = inner->schema();
+        const int fmt = sch->GetFieldIndex("FORMAT");
+        if (fmt < 0 || samples.empty()) return inner;
+        auto self = std::make_unique<VcfSamplesSource>();
+        self->long_ = long_form;
+        self->fmt_col_ = fmt;
+        for (const auto& n : samples) {
+            const int c = sch->GetFieldIndex(n);
+            if (c <= fmt) return inner;              // not the layout we expect
+            self->samp_cols_.push_back(c);
+            self->samp_names_.push_back(n);
+        }
+        self->defs_ = parse_vcf_format_headers(inner->preamble_below());
+        if (self->defs_.empty()) self->defs_ = parse_vcf_format_headers(inner->preamble_above());
+        if (self->defs_.empty()) {
+            // No ##FORMAT lines: take the keys of the first chunk, as text.
+            inner->ensure(0);
+            std::shared_ptr<arrow::Table> t;
+            if (inner->num_chunks() > 0 && inner->read_chunk(0, {fmt}, &t).ok() && t) {
+                for (int64_t r = 0; r < t->num_rows(); ++r) {
+                    const std::string f = cell_at(*t->column(0), r);
+                    size_t i = 0;
+                    while (i <= f.size() && !f.empty()) {
+                        size_t j = f.find(':', i);
+                        if (j == std::string::npos) j = f.size();
+                        const std::string k = f.substr(i, j - i);
+                        bool seen = false;
+                        for (const auto& d : self->defs_) seen |= d.id == k;
+                        if (!seen && !k.empty()) self->defs_.push_back({k, FmtKind::Str});
+                        i = j + 1;
+                    }
+                }
+            }
+        }
+        if (self->defs_.empty()) return inner;
+        for (size_t k = 0; k < self->defs_.size(); ++k) self->def_index_[self->defs_[k].id] = (int)k;
+        arrow::FieldVector sfields;
+        for (const auto& d : self->defs_) sfields.push_back(arrow::field(d.id, fmt_arrow_type(d.kind)));
+        self->struct_type_ = arrow::struct_(sfields);
+
+        auto is_sample = [&](int c) {
+            return std::find(self->samp_cols_.begin(), self->samp_cols_.end(), c) != self->samp_cols_.end();
+        };
+        arrow::FieldVector fields;
+        if (!long_form) {
+            for (int i = 0; i < sch->num_fields(); ++i) {
+                if (i == fmt) continue;
+                if (is_sample(i)) {
+                    self->out_.push_back({OutCol::Sample, i, -1});
+                    fields.push_back(arrow::field(sch->field(i)->name(), self->struct_type_));
+                } else {
+                    self->out_.push_back({OutCol::Pass, i, -1});
+                    fields.push_back(sch->field(i));
+                }
+            }
+        } else {
+            for (int i = 0; i < fmt; ++i) {
+                self->out_.push_back({OutCol::Pass, i, -1});
+                fields.push_back(sch->field(i));
+            }
+            self->out_.push_back({OutCol::SampleName, -1, -1});
+            fields.push_back(arrow::field("sample", arrow::utf8()));
+            for (size_t k = 0; k < self->defs_.size(); ++k) {
+                std::string name = self->defs_[k].id;
+                if (sch->GetFieldIndex(name) >= 0 || name == "sample") name += "_fmt";
+                self->out_.push_back({OutCol::Field, -1, (int)k});
+                fields.push_back(arrow::field(name, fmt_arrow_type(self->defs_[k].kind)));
+            }
+            for (int i = fmt + 1; i < sch->num_fields(); ++i) {
+                if (is_sample(i)) continue;
+                self->out_.push_back({OutCol::Pass, i, -1});
+                fields.push_back(sch->field(i));
+            }
+        }
+        self->schema_ = arrow::schema(fields);
+        self->inner_ = std::move(inner);
+        return self;
+    }
+
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+
+    arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
+                             std::shared_ptr<arrow::Table>* out) override {
+        // Inner columns needed: the passed-through ones, plus FORMAT and the
+        // samples whenever a sample-derived column is asked for.
+        std::vector<int> need;
+        auto want = [&](int c) {
+            if (std::find(need.begin(), need.end(), c) == need.end()) need.push_back(c);
+        };
+        bool any_field = false;
+        for (int c : col_indices) {
+            const OutCol& oc = out_[(size_t)c];
+            if (oc.kind == OutCol::Pass) want(oc.inner);
+            else if (oc.kind == OutCol::Sample) { want(fmt_col_); want(oc.inner); }
+            else if (oc.kind == OutCol::Field) { any_field = true; }
+        }
+        if (any_field) { want(fmt_col_); for (int sc : samp_cols_) want(sc); }
+        if (need.empty()) want(fmt_col_);                 // for the row count
+        std::shared_ptr<arrow::Table> in;
+        ARROW_RETURN_NOT_OK(inner_->read_chunk(i, need, &in));
+        if (!in) { *out = nullptr; return arrow::Status::OK(); }
+        auto col_of = [&](int inner_c) {
+            return in->column((int)(std::find(need.begin(), need.end(), inner_c) - need.begin()));
+        };
+        const int64_t n = in->num_rows();
+        const int64_t S = long_ ? nsamp() : 1;
+        std::vector<std::vector<int>> kd;                 // per row: key → def
+        auto keys = [&]() -> const std::vector<std::vector<int>>& {
+            if (kd.empty() && n > 0) {
+                auto f = col_of(fmt_col_);
+                kd.resize((size_t)n);
+                for (int64_t r = 0; r < n; ++r) kd[(size_t)r] = key_defs(cell_at(*f, r));
+            }
+            return kd;
+        };
+        // Long form: every sample-derived column for this chunk in one pass.
+        std::vector<std::unique_ptr<arrow::ArrayBuilder>> field_b(defs_.size());
+        std::shared_ptr<arrow::Array> name_arr;
+        if (long_ && any_field) {
+            for (size_t k = 0; k < defs_.size(); ++k)
+                ARROW_RETURN_NOT_OK(arrow::MakeBuilder(arrow::default_memory_pool(),
+                                                       fmt_arrow_type(defs_[k].kind), &field_b[k]));
+            std::vector<Strs> sc(samp_cols_.size());
+            for (size_t k = 0; k < samp_cols_.size(); ++k)
+                ARROW_RETURN_NOT_OK(make_strs(*col_of(samp_cols_[k]), &sc[k]));
+            const auto& K = keys();
+            std::vector<std::string_view> tok;
+            std::vector<char> has;
+            for (int64_t r = 0; r < n; ++r)
+                for (int64_t s = 0; s < S; ++s) {
+                    split_sample(sc[(size_t)s].get(r), K[(size_t)r], &tok, &has);
+                    for (size_t k = 0; k < defs_.size(); ++k)
+                        ARROW_RETURN_NOT_OK(has[k] ? append_value(field_b[k].get(), defs_[k].kind, tok[k])
+                                                   : field_b[k]->AppendNull());
+                }
+        }
+        arrow::FieldVector fields;
+        std::vector<std::shared_ptr<arrow::Array>> cols;
+        for (int c : col_indices) {
+            const OutCol& oc = out_[(size_t)c];
+            fields.push_back(schema_->field(c));
+            std::shared_ptr<arrow::Array> arr;
+            if (oc.kind == OutCol::Pass) {
+                auto ca = col_of(oc.inner);
+                if (!long_) {
+                    if (ca->num_chunks() == 0) {
+                        ARROW_ASSIGN_OR_RAISE(arr, arrow::MakeArrayOfNull(ca->type(), 0));
+                    } else {
+                        ARROW_ASSIGN_OR_RAISE(arr, arrow::Concatenate(ca->chunks()));
+                    }
+                } else {                                  // each row once per sample
+                    std::unique_ptr<arrow::ArrayBuilder> b;
+                    ARROW_RETURN_NOT_OK(arrow::MakeBuilder(arrow::default_memory_pool(), ca->type(), &b));
+                    ARROW_RETURN_NOT_OK(b->Reserve(n * S));
+                    for (const auto& ch : ca->chunks()) {
+                        arrow::ArraySpan span(*ch->data());
+                        for (int64_t r = 0; r < ch->length(); ++r)
+                            for (int64_t s = 0; s < S; ++s)
+                                ARROW_RETURN_NOT_OK(b->AppendArraySlice(span, r, 1));
+                    }
+                    ARROW_RETURN_NOT_OK(b->Finish(&arr));
+                }
+            } else if (oc.kind == OutCol::SampleName) {
+                arrow::StringBuilder b;
+                for (int64_t r = 0; r < n; ++r)
+                    for (int64_t s = 0; s < S; ++s) ARROW_RETURN_NOT_OK(b.Append(samp_names_[(size_t)s]));
+                ARROW_RETURN_NOT_OK(b.Finish(&arr));
+            } else if (oc.kind == OutCol::Field) {
+                // Finish each builder once; a column asked for twice reuses it.
+                if (field_b[(size_t)oc.idx]) {
+                    ARROW_RETURN_NOT_OK(field_b[(size_t)oc.idx]->Finish(&arr));
+                    field_b[(size_t)oc.idx].reset();
+                    name_arr = arr;                       // keep for a repeat
+                } else {
+                    arr = name_arr;
+                }
+            } else {                                      // Sample → struct
+                std::unique_ptr<arrow::ArrayBuilder> ub;
+                ARROW_RETURN_NOT_OK(arrow::MakeBuilder(arrow::default_memory_pool(), struct_type_, &ub));
+                auto* sb = static_cast<arrow::StructBuilder*>(ub.get());
+                Strs sc;
+                ARROW_RETURN_NOT_OK(make_strs(*col_of(oc.inner), &sc));
+                const auto& K = keys();
+                std::vector<std::string_view> tok;
+                std::vector<char> has;
+                for (int64_t r = 0; r < n; ++r) {
+                    const std::string_view v = sc.get(r);
+                    if (v.empty() || v == ".") {
+                        for (size_t k = 0; k < defs_.size(); ++k)
+                            ARROW_RETURN_NOT_OK(sb->field_builder((int)k)->AppendNull());
+                        ARROW_RETURN_NOT_OK(sb->Append(false));
+                        continue;
+                    }
+                    ARROW_RETURN_NOT_OK(sb->Append(true));
+                    split_sample(v, K[(size_t)r], &tok, &has);
+                    for (size_t k = 0; k < defs_.size(); ++k)
+                        ARROW_RETURN_NOT_OK(has[k] ? append_value(sb->field_builder((int)k), defs_[k].kind, tok[k])
+                                                   : sb->field_builder((int)k)->AppendNull());
+                }
+                ARROW_RETURN_NOT_OK(sb->Finish(&arr));
+            }
+            cols.push_back(std::move(arr));
+        }
+        *out = arrow::Table::Make(arrow::schema(fields), cols, n * S);
+        return arrow::Status::OK();
+    }
+
+    int64_t total_rows() const override {
+        const int64_t t = inner_->total_rows();
+        return (t >= 0 && long_) ? t * nsamp() : t;
+    }
+    int     num_chunks() const override { return inner_->num_chunks(); }
+    ChunkMeta chunk_meta(int i) const override {
+        ChunkMeta m = inner_->chunk_meta(i);
+        if (long_) { m.first_row *= nsamp(); m.num_rows *= nsamp(); }
+        return m;
+    }
+    void    ensure(int i)           override { inner_->ensure(i); }
+    void    set_retain_all(bool b)  override { inner_->set_retain_all(b); }
+    bool    evicted_any()     const override { return inner_->evicted_any(); }
+    arrow::Status read_status() const override { return inner_->read_status(); }
+    bool    region_applied()  const override { return inner_->region_applied(); }
+    const std::string& path() const override { return inner_->path(); }
+    std::string tab_label()   const override { return inner_->tab_label(); }
+    std::string created_by()  const override { return inner_->created_by(); }
+    std::string top_banner()  const override { return inner_->top_banner(); }
+    std::vector<std::string> preamble_above() const override { return inner_->preamble_above(); }
+    std::vector<std::string> preamble_below() const override { return inner_->preamble_below(); }
+    std::vector<std::string> hidden_for_display() const override {
+        return inner_->hidden_for_display();
+    }
+    std::string format_cell(int col_idx, std::string val) const override {
+        const OutCol& oc = out_[(size_t)col_idx];
+        return oc.kind == OutCol::Pass ? inner_->format_cell(oc.inner, std::move(val)) : val;
+    }
+    int min_col_width(int col_idx) const override {
+        const OutCol& oc = out_[(size_t)col_idx];
+        return oc.kind == OutCol::Pass ? inner_->min_col_width(oc.inner) : 4;
+    }
+    std::string footer() const override {
+        return inner_->footer() + (long_ ? "  |  one row per record \xc3\x97 sample"
+                                         : "  |  sample columns typed from ##FORMAT");
+    }
+};
+
 // --contigs reads only a genomics file's header and presents its reference
 // sequences as a table; defined below (near main) but reachable here so every
 // caller — CLI, GUI, KDE plugins — gets it through open_source().
@@ -20165,21 +20992,28 @@ std::string open_source(const std::string& path, const Config& cfg,
     if (cfg.seq_stats) return build_seq_stats(cfg, out);
     std::string err = open_source_dispatch(path, cfg, out);
     if (!err.empty() || !*out) return err;
+    // Order matters. The VCF sample columns are named as read, before
+    // --expand appends columns after them; --gt-stats parses the samples'
+    // packed text, so it runs before they become structs (or rows); --flatten
+    // runs last, so it turns sample structs into S1.GT, S1.DP, ...
+    const std::vector<std::string> samples = vcf_sample_names(*(*out)->schema());
     if (!cfg.expand_col.empty()) {
         std::unique_ptr<TabularSource> wrapped;
         err = ExpandedSource::open(std::move(*out), cfg.expand_col, &wrapped);
         if (!err.empty()) return err;
         *out = std::move(wrapped);
     }
+    if (cfg.gt_stats) {
+        std::unique_ptr<TabularSource> wrapped;
+        err = GenotypeStatsSource::open(std::move(*out), &wrapped, samples);
+        if (!err.empty()) return err;
+        *out = std::move(wrapped);
+    }
+    if (!samples.empty() && cfg.samples != "text")
+        *out = VcfSamplesSource::wrap(std::move(*out), samples, cfg.samples == "long");
     if (cfg.flatten) {
         std::unique_ptr<TabularSource> wrapped;
         FlattenSource::open(std::move(*out), &wrapped);
-        *out = std::move(wrapped);
-    }
-    if (cfg.gt_stats) {
-        std::unique_ptr<TabularSource> wrapped;
-        err = GenotypeStatsSource::open(std::move(*out), &wrapped);
-        if (!err.empty()) return err;
         *out = std::move(wrapped);
     }
     return "";
@@ -28147,8 +28981,10 @@ int main(int argc, char** argv) {
         IndexStats ix;
         // Nothing narrows the rows: an index that counts records answers
         // without reading them (samtools idxstats / bcftools index --stats).
+        // --samples long makes one row per record × sample, so it scans.
         if (cfg.filter_expr.empty() && cfg.region.empty() && !cfg.distinct &&
-            !cfg.pileup && !cfg.contigs && cfg.tab.empty() && read_index_stats(cfg.path, &ix)) {
+            !cfg.pileup && !cfg.contigs && cfg.tab.empty() && cfg.samples != "long" &&
+            read_index_stats(cfg.path, &ix)) {
             total = (int64_t)ix.total();
         } else if (cfg.filter_expr.empty()) {
             while (src->total_rows() < 0) src->ensure(src->num_chunks());

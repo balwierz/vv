@@ -97,6 +97,14 @@ struct Config {
     bool        seq_stats      = false;  // --seq-stats: one-row summary of a
                                          // FASTA / FASTQ (count, lengths, N50,
                                          // GC, Q20 / Q30)
+    std::string samples        = "struct"; // --samples: VCF/BCF sample columns —
+                                         // "struct" (one typed struct column per
+                                         // sample, fields from ##FORMAT), "long"
+                                         // (one row per variant × sample), or
+                                         // "text" (the packed strings)
+    std::string matrix         = "wide"; // --matrix: HDF5 / AnnData matrix tabs —
+                                         // "wide" (cells × genes) or "long" (one
+                                         // row per stored non-zero value)
     bool        gt_stats       = false;  // --gt-stats: VCF/BCF per-variant
                                          // genotype aggregate columns (het/hom/
                                          // missing counts, AC/AN/AF, call_rate)

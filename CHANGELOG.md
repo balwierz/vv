@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Typed VCF / BCF samples (`--samples`).** Each sample column of a
+  multi-sample file is now a struct typed from the `##FORMAT` declarations
+  (`{GT: 0/1, AD: [5, 6], DP: 11}`; `Number≠1` numeric keys are lists) and
+  the FORMAT column is folded into them; `--flatten` makes them `S1.GT`,
+  `S1.DP`, …. `--samples long` gives one row per record × sample with a
+  `sample` column and one typed column per FORMAT key, so `--filter
+  'DP < 10'` reaches every sample; `--samples text` keeps the previous
+  packed strings. The viewer and every export take it; vvg shows the
+  struct default.
+- **Long matrix layout (`--matrix long`).** AnnData `X` / layers / obsm /
+  varm, `raw.X`, Loom and Cell Ranger matrices and 2-D datasets can be shown
+  and exported as one row per stored entry (sparse) or non-zero cell
+  (dense): `obs`, `var`, `value` — or the file's own index names (`CellID`,
+  `Gene`, `barcode`, `feature`; `dim` for an embedding) — with categorical
+  labels. It covers the whole matrix, not the preview, in the viewer and in
+  every export.
+- **Struct cells read `{a: 1, b: x}`.** Struct values (Parquet, Arrow, ORC,
+  JSON nesting) were shown with Arrow's typed form, `{a:int64 = 1, b:string
+  = x}`; null fields are now left out.
 - **Heatmap images in iTerm2 and WezTerm.** `--heatmap` drew half-blocks
   there; the auto backend now sends a PNG with iTerm2's inline-image
   protocol (OSC 1337), which both terminals display, and `--image-mode
@@ -135,6 +154,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   printed the text table; on a non-Parquet file it exits 1.
 
 ### Fixed
+- **`--gt-stats` with `--expand`.** The genotype counts took every column
+  after FORMAT for a sample, including the INFO keys `--expand` appends, so
+  `--expand INFO --gt-stats` counted an extra "sample" (n_called 3, AN 5 on
+  a two-sample file). It now counts the sample columns only.
 - **Read errors in `--describe`, `--sort`, `--tail`, `--sample`.** A
   malformed record or truncated file part-way through was summarised,
   sorted or sampled as if the rows before it were the whole file (exit 0);

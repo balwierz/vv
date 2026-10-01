@@ -678,18 +678,53 @@ if [ -f "$DATA/tiny.bcf.csi" ]; then
     assert_eq_file_inline "bcf_region_boundary_excludes_start_variant" "$BCF_BOUNDARY" "1"
 fi
 
-# BCF with genotype samples: FORMAT and one column per sample, named from the
-# header — the columns the text VCF reader gives (they were one tab-joined
-# FORMAT_SAMPLES column).
+# BCF with genotype samples. --samples text: FORMAT and one packed column per
+# sample, named from the header — the columns the text VCF reader gives (they
+# were one tab-joined FORMAT_SAMPLES column).
 if [ -f "$DATA/tiny.samples.bcf" ]; then
-    SMP_OUT=$("$VV" --tsv --no-header "$DATA/tiny.samples.bcf" 2>&1)
+    SB="$DATA/tiny.samples.bcf"
+    SMP_OUT=$("$VV" --samples text --tsv --no-header "$SB" 2>&1)
     assert_contains "bcf_format_spec_preserved" "$SMP_OUT" "GT:AD:DP"
     assert_contains "bcf_sample_values_present" "$SMP_OUT" "0/1:5,6:11"
-    assert_eq_file_inline "bcf_sample_columns" "$("$VV" --list-columns "$DATA/tiny.samples.bcf" | tr '\n' ' ')" \
+    assert_eq_file_inline "bcf_sample_columns" "$("$VV" --samples text --list-columns "$SB" | tr '\n' ' ')" \
         "CHROM POS ID REF ALT QUAL FILTER INFO FORMAT S1 S2 "
     assert_eq_file_inline "bcf_sample_column_values" \
-        "$("$VV" --tsv --no-header --select S2 "$DATA/tiny.samples.bcf" | tr '\n' ';')" "1/1:0,9:9;0/1:4,4:8;"
+        "$("$VV" --samples text --tsv --no-header --select S2 "$SB" | tr '\n' ';')" "1/1:0,9:9;0/1:4,4:8;"
+    # Default (--samples struct): one struct per sample, typed from ##FORMAT
+    # (GT text, AD Number=R Integer -> list<int64>, DP int64); FORMAT dropped.
+    assert_eq_file_inline "samples_struct_columns" "$("$VV" --list-columns "$SB" | tr '\n' ' ')" \
+        "CHROM POS ID REF ALT QUAL FILTER INFO S1 S2 "
+    assert_eq_file_inline "samples_struct_values" \
+        "$("$VV" --tsv --no-header --select S2 "$SB" | tr '\n' ';')" \
+        "{GT: 1/1, AD: [0, 9], DP: 9};{GT: 0/1, AD: [4, 4], DP: 8};"
+    assert_contains "samples_struct_type" "$("$VV" --schema --json "$SB")" '"type": "struct<GT: string, AD: list<item: int64>, DP: int64>"'
+    # --flatten turns the structs into one typed column per sample and key.
+    assert_eq_file_inline "samples_flatten" \
+        "$("$VV" --flatten --tsv --select S1.DP,S2.DP,S2.AD "$SB" | tr '\t\n' ',;')" \
+        "S1.DP,S2.DP,S2.AD;11,9,[0, 9];10,8,[4, 4];"
+    # --samples long: one row per record x sample; the FORMAT keys are typed
+    # columns, so --filter reaches every sample.
+    assert_eq_file_inline "samples_long_rows" \
+        "$("$VV" --samples long --tsv --select POS,sample,GT,AD,DP "$SB" | tr '\t\n' ',;')" \
+        "POS,sample,GT,AD,DP;100,S1,0/1,[5, 6],11;100,S2,1/1,[0, 9],9;500,S1,0/0,[10, 0],10;500,S2,0/1,[4, 4],8;"
+    assert_eq_file_inline "samples_long_filter" \
+        "$("$VV" --samples long --filter 'DP < 10' --tsv --no-header --select POS,sample "$SB" | tr '\t\n' ',;')" \
+        "100,S2;500,S2;"
+    assert_eq_file_inline "samples_long_count" "$("$VV" --samples long --count "$SB")" "4"
+    # --gt-stats counts the samples only, not columns --expand appends after
+    # them (the INFO AF was taken for a third sample: n_called 3, AN 5).
+    assert_eq_file_inline "gt_stats_ignores_expanded_columns" \
+        "$("$VV" --expand INFO --gt-stats --tsv --no-header --select AF,n_called,AN,AF_gt "$SB" | head -1 | tr '\t' ,)" \
+        "0.5,2,4,0.75"
 fi
+# Missing values: "./." stays a genotype, "." a null key, a lone "." a null
+# sample, a record's undeclared key (XX) is dropped, trailing keys may be
+# omitted, and a list keeps its "." element as null.
+SMV="$TMP/samples_missing.vcf"
+printf '##fileformat=VCFv4.2\n##FORMAT=<ID=GT,Number=1,Type=String,Description="g">\n##FORMAT=<ID=AD,Number=R,Type=Integer,Description="a">\n##FORMAT=<ID=DP,Number=1,Type=Integer,Description="d">\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tA\tB\tC\nchr1\t10\t.\tA\tG\t50\tPASS\t.\tGT:AD:DP\t0/1:3,4:7\t./.:.:.\t1/1:0,.:9\nchr1\t20\t.\tC\tT\t.\t.\t.\tGT:XX:DP\t0|1:foo:12\t.\t0/0\n' > "$SMV"
+assert_eq_file_inline "samples_struct_missing" \
+    "$("$VV" --tsv --no-header --select A,B,C "$SMV" | tr '\t\n' '|;')" \
+    "{GT: 0/1, AD: [3, 4], DP: 7}|{GT: ./.}|{GT: 1/1, AD: [0, ∅], DP: 9};{GT: 0|1, DP: 12}||{GT: 0/0};"
 
 # Empty tabix region: a window over a known chromosome that overlaps no records
 # must return an empty result with exit 0 — matching the Parquet/BCF/BAM paths —
@@ -2761,7 +2796,7 @@ print(orc.ORCFile(sys.argv[1]).nstripes > 1)" "$TMP/multi.orc" > "$TMP/multi.orc
         assert_eq_file_inline "orc_multi_stripe_fixture" "$(cat "$TMP/multi.orc.ok")" "True"
         assert_eq_file_inline "orc_multi_stripe_select_order" \
             "$("$VV" --tsv --no-header --select name,s,a "$TMP/multi.orc" | sed -n '1p;30001p;60000p' | tr '\t\n' ',;')" \
-            'n0,{x:int64 = 0},0;n30000,{x:int64 = 30000},30000;n59999,{x:int64 = 59999},59999;'
+            'n0,{x: 0},0;n30000,{x: 30000},30000;n59999,{x: 59999},59999;'
         assert_eq_file_inline "orc_multi_stripe_count" "$("$VV" --count "$TMP/multi.orc")" "60000"
         rm -f "$TMP/multi.orc" "$TMP/multi.orc.ok"
     else
@@ -3072,6 +3107,39 @@ if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
         assert_eq_file_inline "h5ad_x_count_allowed" "$("$VV" --tab X --count "$DX")" "3"
         assert_contains "h5ad_x_table_view" \
             "$("$VV" --tab X -n 1 --no-interactive --color=never "$DX")" "preview: first 200 of 250 cols"
+    fi
+    # --matrix long: the whole matrix as (obs, var, value) rows — every
+    # stored entry of a sparse X (here CSR and CSC), every non-zero cell of a
+    # dense one; labels are categorical, an embedding's columns are "dim".
+    if [ -f "$DATA/tiny.h5ad" ]; then
+        assert_eq_file_inline "matrix_long_tabs" "$("$VV" --matrix long --list-tabs "$DATA/tiny.h5ad" | tr '\n' '|')" \
+            "summary|X (long)|obs|var|obsm[X_umap] (long)|varm[PCs] (long)|layers[counts] (long)|"
+        assert_eq_file_inline "matrix_long_csr" "$("$VV" --matrix long --tab X --tsv "$DATA/tiny.h5ad" | tr '\t\n' ',;')" \
+            "obs,var,value;cell0,gene1,43;cell0,gene3,86;cell1,gene3,84;cell2,gene0,45;cell3,gene0,45;cell3,gene2,23;cell4,gene2,7;"
+        assert_eq_file_inline "matrix_long_obsm_dim" \
+            "$("$VV" --matrix long --tab 'obsm[X_umap]' --tsv -n 2 "$DATA/tiny.h5ad" | tr '\t\n' ',;')" \
+            "obs,dim,value;cell0,X_umap1,0.1;cell0,X_umap2,0.2;"
+        assert_contains "matrix_long_categorical" "$("$VV" --matrix long --tab X --schema "$DATA/tiny.h5ad")" "category[string]"
+        assert_eq_file_inline "matrix_long_filter" \
+            "$("$VV" --matrix long --tab X --filter 'var == "gene3"' --tsv --no-header "$DATA/tiny.h5ad" | tr '\t\n' ',;')" \
+            "cell0,gene3,86;cell1,gene3,84;"
+    fi
+    if [ -f "$DATA/tiny.csc.h5ad" ]; then
+        assert_eq_file_inline "matrix_long_csc" "$("$VV" --matrix long --tab X --tsv --no-header "$DATA/tiny.csc.h5ad" | tr '\t\n' ',;')" \
+            "cell0,gene0,1;cell0,gene3,2;cell1,gene1,3;cell2,gene2,4;cell2,gene3,5;"
+    fi
+    if [ -f "$DATA/tiny.dense.h5ad" ]; then
+        assert_eq_file_inline "matrix_long_dense_count" \
+            "$("$VV" --matrix long --tab X --count "$DATA/tiny.dense.h5ad")" \
+            "$("$VV" --tab X --tsv --no-header "$DATA/tiny.dense.h5ad" | cut -f2- | tr '\t' '\n' | grep -cv '^0$')"
+    fi
+    if [ -f "$DATA/tiny.loom" ]; then
+        assert_eq_file_inline "matrix_long_loom" "$("$VV" --matrix long --tab matrix --tsv -n 2 "$DATA/tiny.loom" | tr '\t\n' ',;')" \
+            "CellID,Gene,value;c0,GeneA (ENS1),1;c0,GeneC,5;"
+    fi
+    if [ -f "$DATA/tiny.10x.h5" ]; then
+        assert_eq_file_inline "matrix_long_10x" "$("$VV" --matrix long --tab matrix --tsv -n 2 "$DATA/tiny.10x.h5" | tr '\t\n' ',;')" \
+            "barcode,feature,value;AAAC-1,GeneA (ENSG0A),1;AAAC-1,GeneC,3;"
     fi
     # Loom (stored genes × cells) and Cell Ranger (CSC by barcode) matrices
     # larger than the preview stream in full too, cells × genes, compared
@@ -4222,6 +4290,18 @@ if command -v python3 >/dev/null 2>&1; then
 else
     echo "  skip  tui_stream_fill (python3 not found)"
 fi
+
+# The viewer opens --matrix long / --samples long in their long layouts, and
+# multi-sample VCF samples as structs by default.
+if command -v python3 >/dev/null 2>&1; then
+    if run_with_timeout 120 python3 "$HERE/tui_layout_check.py" "$VV" "$DATA"; then
+        PASS=$((PASS+1)); echo "  ok    tui_long_layouts"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_long_layouts"
+    fi
+fi
+assert_exit_code "samples_bad_value" 2 "$VV" --samples wide "$DATA/tiny.samples.bcf"
+assert_exit_code "matrix_bad_value" 2 "$VV" --matrix tall "$DATA/tiny.h5ad"
 
 # Search in a sorted view whose order cycles through every row group lands on
 # the match (and n wraps to it); each chunk is scanned once per search.

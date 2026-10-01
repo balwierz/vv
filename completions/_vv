@@ -24,7 +24,7 @@ _vv_file_arg() {
     valopts=(-n -w -c -@ --threads --decode-threads --delimiter --in-delimiter -d --header --color --theme --box
              -r --region --window --regions-file --region-cols --slop --coords
              --tail --sort --tags --expand --parquet --arrow --feather --compression
-             --image-mode -f --fasta --select --cols --filter --tab --unique
+             --image-mode --samples --matrix -f --fasta --select --cols --filter --tab --unique
              --sample --exclude-flags --ff --require-flags --rf --min-mapq --min-bq)
     local i tok
     for (( i = 2; i < CURRENT; i++ )); do
@@ -134,6 +134,8 @@ _vv() {
         '--compression+[Parquet codec]:codec:(zstd snappy gzip lz4 none)' \
         '--heatmap[Render numeric columns as a terminal heatmap]' \
         '--image-mode+[Heatmap backend]:how:(auto kitty iterm sixel halfblock ascii)' \
+        '--samples+[VCF/BCF sample columns]:how:(struct long text)' \
+        '--matrix+[HDF5 matrix tabs]:how:(wide long)' \
         '--json[Write a JSON array]' \
         '--ndjson[Write one JSON object per line]' \
         '--md[Write a GitHub-flavored markdown table]' \

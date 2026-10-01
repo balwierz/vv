@@ -363,6 +363,27 @@ its leaves null. Lists and maps keep their shape. The leaves work with
 \fB\-\-select\fR, \fB\-\-filter\fR, \fB\-\-sort\fR and the exports like any
 column (\fB\-\-filter 'st.a > 3'\fR).
 .TP
+.BI \-\-samples " HOW"
+How a multi-sample VCF / BCF shows its sample columns. \fBstruct\fR
+(default): one struct column per sample, typed from the \fB##FORMAT\fR
+declarations (Integer / Float with \fBNumber=1\fR \(-> int64 / double, any
+other Number \(-> a list; String \(-> text), shown as
+\fB{GT: 0/1, AD: [5, 6], DP: 11}\fR; keys a record lacks are null and left
+out, and the FORMAT column is dropped. \fB\-\-flatten\fR turns the structs
+into \fBS1.GT\fR, \fBS1.DP\fR, ... \fBlong\fR: one row per record \(mu sample
+\(en the record's columns, \fBsample\fR, then one typed column per FORMAT
+key \(en so \fB\-\-filter 'DP < 10'\fR applies to every sample.
+\fBtext\fR: FORMAT and the packed per-sample strings, as in the file.
+.TP
+.BI \-\-matrix " HOW"
+Layout of HDF5 matrix tabs (AnnData \fBX\fR, layers, obsm / varm,
+\fBraw.X\fR, Loom matrices, Cell Ranger matrices, 2-D datasets).
+\fBwide\fR (default): one row per cell, one column per gene. \fBlong\fR:
+one row per stored non-zero value, with columns \fBobs\fR, \fBvar\fR and
+\fBvalue\fR (the row and column labels take the file's index names when
+it has them). The long form is the whole matrix, not a preview, in the
+viewer and in every export.
+.TP
 .BI \-\-expand " col"
 Unpack a packed \fBkey=value\fR column into real columns, appended to the
 schema. Written for VCF \fBINFO\fR and GFF/GTF \fBattributes\fR, which carry

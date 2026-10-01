@@ -11,6 +11,9 @@ the stored matrix transposed. An AnnData file whose X is a CSC matrix
 export as cells × genes equal to the dense matrix (transposed to CSR in
 memory by vv).
 
+`--matrix long` on the same tabs must give, row for row, the non-zero cells
+of the wide export as (row label, column label, value).
+
 Usage: h5_matrix_export_check.py <vv-binary> <tmpdir>
 Exit 0 on success, 1 on failure.
 """
@@ -27,6 +30,18 @@ def export(vv, tab, path):
         raise SystemExit("h5_matrix_export: %s %s: exit %d: %s" % (path, tab, r.returncode, r.stderr))
     rows = list(csv.reader(io.StringIO(r.stdout), delimiter="\t"))
     return rows[0], [row[0] for row in rows[1:]], np.array([[float(v) for v in row[1:]] for row in rows[1:]])
+
+
+def long_matches_wide(vv, tab, path):
+    head, labels, vals = export(vv, tab, path)
+    r = subprocess.run([vv, "--matrix", "long", "--tab", tab, "--tsv", path], capture_output=True, text=True)
+    if r.returncode != 0:
+        return "exit %d: %s" % (r.returncode, r.stderr)
+    rows = list(csv.reader(io.StringIO(r.stdout), delimiter="\t"))[1:]
+    got = [(a, b, float(c)) for a, b, c in rows]
+    want = [(labels[i], head[j + 1], vals[i, j]) for i in range(vals.shape[0])
+            for j in range(vals.shape[1]) if vals[i, j] != 0]
+    return "" if got == want else "%d long rows, %d non-zero wide cells" % (len(got), len(want))
 
 
 def main():
@@ -98,6 +113,11 @@ def main():
     if head[:3] != ["obs", "g0", "g1"] or len(head) != ng + 1 or labels[:2] != ["c0", "c1"] \
             or len(labels) != nc or not np.array_equal(vals, Y.toarray()):
         bad.append("anndata CSC X: header %r, %d rows" % (head[:3], len(labels)))
+
+    for tab, path in (("matrix", loom), ("layers[spliced]", loom), ("matrix", tenx), ("X", h5ad)):
+        why = long_matches_wide(vv, tab, path)
+        if why:
+            bad.append("--matrix long %s %s: %s" % (os.path.basename(path), tab, why))
 
     for b in bad:
         sys.stderr.write("h5_matrix_export: %s\n" % b)

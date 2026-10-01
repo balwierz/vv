@@ -24,7 +24,7 @@ _vv_input_file() {
     local val_opts=' -n -w -c -@ --threads --decode-threads --delimiter --in-delimiter -d --header --color
         --theme --box -r --region --window --regions-file --region-cols --slop --coords
         --tail --sort --tags --expand --parquet --arrow --feather --compression --image-mode
-        -f --fasta --select --cols --filter --tab --unique --sample
+        --samples --matrix -f --fasta --select --cols --filter --tab --unique --sample
         --exclude-flags --ff --require-flags --rf --min-mapq --min-bq '
     for (( i = 1; i < ${#words[@]}; i++ )); do
         tok=${words[i]}
@@ -166,6 +166,14 @@ _vv() {
             COMPREPLY=( $(compgen -W 'auto kitty iterm sixel halfblock ascii' -- "$cur") )
             return
             ;;
+        --samples)
+            COMPREPLY=( $(compgen -W 'struct long text' -- "$cur") )
+            return
+            ;;
+        --matrix)
+            COMPREPLY=( $(compgen -W 'wide long' -- "$cur") )
+            return
+            ;;
     esac
 
     case "$cur" in
@@ -199,6 +207,7 @@ _vv() {
                 --vertical
                 --no-header
                 --heatmap --image-mode
+                --samples --matrix
             '
             COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
             return
