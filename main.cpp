@@ -25330,7 +25330,12 @@ class TableTUI {
     }
 
     void prefetch_visible(const std::vector<int>& visible_virt_cols) {
-        if (src_->num_chunks() == 0) { src_->ensure(0); return; }
+        // A source that reads nothing until asked (JSON) has no chunk on the
+        // first paint: read one, then load its columns like any other.
+        if (src_->num_chunks() == 0) {
+            src_->ensure(0);
+            if (src_->num_chunks() == 0) return;
+        }
         std::vector<int> src_cols = src_cols_for_virt(visible_virt_cols);
         int top_chunk = chunk_for_row(top_row_);
         // First paint of a Parquet file: only need rows within (and just

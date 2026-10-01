@@ -4387,6 +4387,31 @@ fi
 assert_exit_code "samples_bad_value" 2 "$VV" --samples wide "$DATA/tiny.samples.bcf"
 assert_exit_code "matrix_bad_value" 2 "$VV" --matrix tall "$DATA/tiny.h5ad"
 
+# A source that reads nothing at open (JSON) shows its rows on the first
+# frame of the table viewer; they used to stay blank until a key was pressed
+# (or the window was resized). Read the first second of output only.
+if command -v python3 >/dev/null 2>&1; then
+    printf '{"id":1,"name":"alice"}\n{"id":2,"name":"bob"}\n' > "$TMP/first_paint.ndjson"
+    FP=$(python3 - "$VV" "$TMP/first_paint.ndjson" <<'PYFP'
+import fcntl, os, pty, select, signal, struct, sys, termios, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.environ["TERM"] = "xterm-256color"
+    os.execv(sys.argv[1], [sys.argv[1], "-i", "--no-tree", sys.argv[2]])
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 12, 80, 0, 0))
+out, end = b"", time.time() + 1.5
+while time.time() < end:
+    r, _, _ = select.select([fd], [], [], 0.1)
+    if r:
+        try: out += os.read(fd, 65536)
+        except OSError: break
+os.kill(pid, signal.SIGKILL); os.waitpid(pid, 0)
+print(b"alice" in out)
+PYFP
+)
+    assert_eq_file_inline "tui_json_table_first_paint" "$FP" "True"
+fi
+
 # Search in a sorted view whose order cycles through every row group lands on
 # the match (and n wraps to it); each chunk is scanned once per search.
 if command -v python3 >/dev/null 2>&1; then

@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   or any export / report flag still reads the file as a table.
 
 ### Fixed
+- **JSON in the table viewer started blank.** The rows of a JSON file stayed
+  empty until a key was pressed: the first frame read the first batch but
+  loaded no columns from it.
 - **JSON on stdin.** Piped JSON went to the TSV reader. It is now
   recognised by its content: `cat x.json | vv -` prints the document and
   `cat x.ndjson | vv - --tsv` gives the same table as the file.
