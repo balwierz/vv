@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **NumPy summary labels.** `.npz` arrays of fixed-width strings (`<U11`,
+  `|S2`) or datetimes were labelled "pickled / object — skipped"; the label
+  now names the dtype class ("strings — not supported", "datetime — not
+  supported"); object arrays keep the pickled label.
 - **Low-contrast JSON tree punctuation.** Fold markers, `:`, brackets, item
   counts and collapsed previews used the table's separator colour (dark grey
   238, dimmed); they now use the row-index colour, readable on dark and

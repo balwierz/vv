@@ -4838,6 +4838,14 @@ fi
 # ("buffer_index out of range") — for 7 of the 9 NumPy dtypes and for every VCF
 # Flag INFO key. Exit 0 plus an unreadable file is the worst failure mode there
 # is, so each dtype is round-tripped rather than merely schema-checked.
+# The .npz summary names why an array is not shown: only an object array is
+# pickled; fixed-width strings and datetimes are dtypes vv does not read.
+if python3 -c 'import numpy' 2>/dev/null; then
+    python3 -c 'import numpy as np, sys; np.savez(sys.argv[1], o=np.array([1, "a"], dtype=object), d=np.array(["2024-01-01"], dtype="M8[D]"), u=np.array(["ab"]))' "$TMP/kinds.npz"
+    assert_eq_file_inline "npz_unsupported_kind_labels" \
+        "$("$VV" --tsv --tab summary "$TMP/kinds.npz" 2>/dev/null | cut -f1,4 | tail -n +2 | tr '\n' ';')" \
+        "o	(pickled / object — skipped);d	(datetime — not supported);u	(strings — not supported);"
+fi
 DT="$DATA/tiny.dtypes.npz"
 for T in i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 b; do
     assert_exit_code "npy_dtype_${T}_arrow_writes"  0 "$VV" --tab "$T" --arrow   "$TMP/dt.arrow"   "$DT"

@@ -17346,7 +17346,14 @@ class NpzSource : public WorkbookSource {
                 (void)sb.Append(shape_str(e.header.shape));
                 (void)db.Append(e.header.dtype_str);
                 std::string kind;
-                if (e.header.unsupported) kind = "(pickled / object — skipped)";
+                if (e.header.unsupported) {
+                    // descr is endian + kind + size ("<U11", "|O", "<M8[ns]").
+                    const char k = e.header.dtype_str.size() >= 2 ? e.header.dtype_str[1] : '?';
+                    kind = k == 'O' ? "(pickled / object — skipped)"
+                         : (k == 'S' || k == 'U') ? "(strings — not supported)"
+                         : (k == 'M' || k == 'm') ? "(datetime — not supported)"
+                         : "(unsupported dtype — skipped)";
+                }
                 else if (e.header.shape.empty()) kind = "scalar";
                 else if (e.header.shape.size() == 1) kind = "1-D";
                 else if (e.header.shape.size() == 2) kind = "2-D";
