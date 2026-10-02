@@ -52,6 +52,8 @@ BuildRequires:  hdf5-devel
 BuildRequires:  sqlite-devel
 BuildRequires:  expat-devel
 BuildRequires:  zlib-devel
+BuildRequires:  xz-devel
+BuildRequires:  bzip2-devel
 BuildRequires:  minizip-ng-compat-devel
 # GUI:
 BuildRequires:  qt6-qtbase-devel

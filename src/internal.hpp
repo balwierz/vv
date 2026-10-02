@@ -942,8 +942,21 @@ TextSniffResult sniff_text(const char* p, size_t n);
 std::string text_binary_error(const std::string& what,
                               TextSniffResult r);
 
-arrow::Compression::type sniff_stream_codec(
- const std::shared_ptr<arrow::io::ReadableFile>& rf);
+// Compressed input (src/core/compress.cpp): the codec a stream starts with,
+// by magic bytes, and a decoded stream over it.
+enum class StreamCodec { None, Gzip, Zstd, Bz2, Xz };
+StreamCodec sniff_codec(const uint8_t* m, size_t n);
+// The codec a file starts with; rewinds `rf`.
+StreamCodec sniff_file_codec(const std::shared_ptr<arrow::io::ReadableFile>& rf);
+const char* codec_label(StreamCodec c);           // "gzip", "zstd", "bzip2", "xz", ""
+bool has_compression_suffix(const std::string& path);    // .gz .bgz .zst .zstd .xz .bz2
+std::string strip_compression_suffix(const std::string& path);
+// `in` decoded with codec `c` (None: `in` itself). "" or an error.
+std::string decode_stream(StreamCodec c, std::shared_ptr<arrow::io::InputStream> in,
+                          std::shared_ptr<arrow::io::InputStream>* out);
+// Open `path` and decode it by its magic bytes; *codec gets the codec found.
+std::string open_decoded_file(const std::string& path, std::shared_ptr<arrow::io::InputStream>* out,
+                              StreamCodec* codec = nullptr);
 
 std::string open_text_stream(const std::string& label, std::shared_ptr<arrow::io::InputStream> in,
                              std::unique_ptr<TabularSource>* out);
@@ -953,7 +966,7 @@ bool text_final_newline(const TabularSource& src);
 std::string open_json_source(const std::string& path, const Config& cfg, std::unique_ptr<TabularSource>* out);
 
 std::string open_json_stream(const std::string& label, std::shared_ptr<arrow::io::InputStream> input,
-                             arrow::Compression::type comp, std::unique_ptr<TabularSource>* out);
+                             StreamCodec comp, std::unique_ptr<TabularSource>* out);
 
 bool is_json_source(const TabularSource* src);
 namespace vvjson {

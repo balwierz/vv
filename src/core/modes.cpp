@@ -32,9 +32,7 @@
 
 // 1 for .json, 2 for NDJSON / JSON Lines (after .gz / .bgz / .zst), else 0.
 int json_path_kind(const std::string& path) {
-    std::string p = path;
-    for (const char* z : {".gz", ".bgz", ".zstd", ".zst"})
-        if (fends_ci(p, z)) { p.resize(p.size() - std::strlen(z)); break; }
+    const std::string p = strip_compression_suffix(path);
     // GeoJSON, Jupyter notebooks and HTTP archives are JSON documents.
     if (fends_ci(p, ".json") || fends_ci(p, ".geojson") || fends_ci(p, ".ipynb") ||
         fends_ci(p, ".har")) return 1;
@@ -79,22 +77,10 @@ std::string print_json_document(arrow::io::InputStream& in, const Config& cfg,
     return e.ok() ? std::string() : e.describe();
 }
 
-// The decoded bytes of a JSON file (gzip / zstd by magic).
+// The decoded bytes of a JSON file (gzip / zstd / bzip2 / xz by magic).
 std::string open_json_file(const std::string& path,
                            std::shared_ptr<arrow::io::InputStream>* out) {
-    auto raw = arrow::io::ReadableFile::Open(path);
-    if (!raw.ok()) return "Cannot open '" + path + "': " + raw.status().ToString();
-    std::shared_ptr<arrow::io::InputStream> in = *raw;
-    const arrow::Compression::type comp = sniff_stream_codec(*raw);
-    if (comp != arrow::Compression::UNCOMPRESSED) {
-        auto codec = arrow::util::Codec::Create(comp);
-        if (!codec.ok()) return codec.status().ToString();
-        auto ci = arrow::io::CompressedInputStream::Make(codec->get(), in);
-        if (!ci.ok()) return ci.status().ToString();
-        in = *ci;
-    }
-    *out = std::move(in);
-    return "";
+    return open_decoded_file(path, out);
 }
 
 

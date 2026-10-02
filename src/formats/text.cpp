@@ -75,24 +75,6 @@ std::string text_binary_error(const std::string& what,
            "`vv --formats`; it has no hex view.";
 }
 
-// Return the compression codec a file starts with — gzip (magic 1f 8b) or
-// zstandard (magic 28 b5 2f fd) — else UNCOMPRESSED. Detects by content, not
-// suffix, so `syslog.1.gz` or a bare `dump.zst` work too. Rewinds `rf`.
-arrow::Compression::type sniff_stream_codec(
- const std::shared_ptr<arrow::io::ReadableFile>& rf) {
-    auto head = rf->Read(4);
-    arrow::Compression::type comp = arrow::Compression::UNCOMPRESSED;
-    if (head.ok() && (*head)->size() >= 2) {
-        const uint8_t* m = (*head)->data();
-        int64_t n = (*head)->size();
-        if (m[0] == 0x1f && m[1] == 0x8b) comp = arrow::Compression::GZIP;
-        else if (n >= 4 && m[0] == 0x28 && m[1] == 0xB5 &&
-                 m[2] == 0x2F && m[3] == 0xFD) comp = arrow::Compression::ZSTD;
-    }
-    (void)rf->Seek(0);
-    return comp;
-}
-
 class TextSource : public TabularSource {
     std::string                            path_;
     std::shared_ptr<arrow::Schema>         schema_;
@@ -109,8 +91,7 @@ class TextSource : public TabularSource {
     mutable std::string                    pending_;      // partial last line
     mutable arrow::Status                  read_status_;
     bool                                   gz_ = false;   // compressed stream
-    arrow::Compression::type               comp_ =
-        arrow::Compression::UNCOMPRESSED;                 // gzip or zstd, if gz_
+    StreamCodec                            comp_ = StreamCodec::None;   // if gz_
 
     static constexpr int    BATCH_SIZE = 4096;
     static constexpr size_t READ_SIZE  = 64 * 1024;
@@ -179,17 +160,11 @@ public:
         auto raw = rf.ValueOrDie();
         // Detect gzip / zstd by magic (the `gz` hint from the caller is
         // suffix-based and may be blank for a magic-only match).
-        self->comp_ = sniff_stream_codec(raw);
+        self->comp_ = sniff_file_codec(raw);
         (void)gz;
-        self->gz_ = (self->comp_ != arrow::Compression::UNCOMPRESSED);
-        std::shared_ptr<arrow::io::InputStream> in = raw;
-        if (self->gz_) {
-            auto codec = arrow::util::Codec::Create(self->comp_);
-            if (!codec.ok()) return codec.status().ToString();
-            auto ci = arrow::io::CompressedInputStream::Make(codec->get(), in);
-            if (!ci.ok()) return ci.status().ToString();
-            in = ci.ValueOrDie();
-        }
+        self->gz_ = (self->comp_ != StreamCodec::None);
+        std::shared_ptr<arrow::io::InputStream> in;
+        if (auto e = decode_stream(self->comp_, raw, &in); !e.empty()) return "'" + path + "': " + e;
         self->in_ = std::move(in);
 
         auto st = self->advance();
@@ -238,8 +213,7 @@ public:
     const std::string& path() const override { return path_; }
     std::string footer() const override {
         return std::string("Format: text") +
-               (comp_ == arrow::Compression::GZIP ? " (gzip)" :
-                comp_ == arrow::Compression::ZSTD ? " (zstd)" : "");
+               (comp_ != StreamCodec::None ? std::string(" (") + codec_label(comp_) + ")" : "");
     }
     // True when the file's last line carries no terminator, so a verbatim
     // dump can reproduce that.
@@ -303,15 +277,9 @@ std::string open_text(const std::string& path, const Config& cfg,
     // Compression is detected by magic, not by suffix, so `syslog.1.gz` and a
     // bare `dump.zst` work as well as `notes.txt.gz`. Decompress before sniffing
     // so the text/binary check sees the real content.
-    arrow::Compression::type comp = sniff_stream_codec(rf.ValueOrDie());
-    bool gz = (comp != arrow::Compression::UNCOMPRESSED);
-    if (gz) {
-        auto codec = arrow::util::Codec::Create(comp);
-        if (!codec.ok()) return codec.status().ToString();
-        auto ci = arrow::io::CompressedInputStream::Make(codec->get(), in);
-        if (!ci.ok()) return ci.status().ToString();
-        in = ci.ValueOrDie();
-    }
+    const StreamCodec comp = sniff_file_codec(rf.ValueOrDie());
+    bool gz = (comp != StreamCodec::None);
+    if (auto e = decode_stream(comp, in, &in); !e.empty()) return "'" + path + "': " + e;
 
     std::string buf(8192, '\0');
     auto got = in->Read(8192, buf.data());
@@ -339,11 +307,11 @@ std::string open_text(const std::string& path, const Config& cfg,
 // DatasetSource. A member file is never itself a directory, so there is no
 // recursion.
 // A FASTA / FASTQ extension, plain or .gz / .bgz (checked on `det`, where
-// .bgz reads as .gz). The reader decompresses through BGZF, which handles
-// gzip but not zstandard, so a .zst wrapper does not count.
+// .bgz reads as .gz, and .zst / .bz2 / .xz are already stripped). The reader
+// decodes any of them.
 bool fastx_ext(const std::string& path, const std::string& det,
                std::initializer_list<const char*> exts) {
-    if (fends_ci(path, ".zst") || fends_ci(path, ".zstd")) return false;
+    (void)path;
     for (const char* e : exts)
         if (fends_ci(det, e) || fends_ci(det, (std::string(e) + ".gz").c_str())) return true;
     return false;

@@ -114,7 +114,7 @@ public:
 class JsonSource : public TabularSource {
     std::string                            path_;
     std::shared_ptr<arrow::Schema>         schema_;
-    arrow::Compression::type               comp_ = arrow::Compression::UNCOMPRESSED;
+    StreamCodec                            comp_ = StreamCodec::None;
 
     mutable std::shared_ptr<arrow::json::StreamingReader> reader_;
     std::shared_ptr<ReadGate>             gate_ = std::make_shared<ReadGate>();
@@ -150,19 +150,9 @@ public:
 
     static std::string open(const std::string& path, const Config& /*cfg*/,
                             std::unique_ptr<JsonSource>* out) {
-        auto maybe_raw = arrow::io::ReadableFile::Open(path);
-        if (!maybe_raw.ok())
-            return "Cannot open '" + path + "': " + maybe_raw.status().ToString();
-        auto raw = maybe_raw.ValueOrDie();
-        const arrow::Compression::type comp = sniff_stream_codec(raw);
-        std::shared_ptr<arrow::io::InputStream> input = raw;
-        if (comp != arrow::Compression::UNCOMPRESSED) {
-            auto codec = arrow::util::Codec::Create(comp);
-            if (!codec.ok()) return codec.status().ToString();
-            auto ci = arrow::io::CompressedInputStream::Make(codec->get(), input);
-            if (!ci.ok()) return ci.status().ToString();
-            input = ci.ValueOrDie();
-        }
+        std::shared_ptr<arrow::io::InputStream> input;
+        StreamCodec comp = StreamCodec::None;
+        if (auto e = open_decoded_file(path, &input, &comp); !e.empty()) return e;
         return open_stream(path, std::move(input), comp, out);
     }
 
@@ -170,7 +160,7 @@ public:
     // in messages, `comp` is the compression it arrived with.
     static std::string open_stream(const std::string& label,
                                    std::shared_ptr<arrow::io::InputStream> input,
-                                   arrow::Compression::type comp,
+                                   StreamCodec comp,
                                    std::unique_ptr<JsonSource>* out) {
         auto self = std::make_unique<JsonSource>();
         self->path_ = label;
@@ -230,8 +220,7 @@ public:
     const std::string& path() const override { return path_; }
     std::string footer() const override {
         return std::string("Format: JSON") +
-               (comp_ == arrow::Compression::GZIP ? " (gzip)" :
-                comp_ == arrow::Compression::ZSTD ? " (zstd)" : "");
+               (comp_ != StreamCodec::None ? std::string(" (") + codec_label(comp_) + ")" : "");
     }
 };
 
@@ -242,7 +231,7 @@ std::string open_json_source(const std::string& path, const Config& cfg, std::un
     return e;
 }
 std::string open_json_stream(const std::string& label, std::shared_ptr<arrow::io::InputStream> input,
-                             arrow::Compression::type comp, std::unique_ptr<TabularSource>* out) {
+                             StreamCodec comp, std::unique_ptr<TabularSource>* out) {
     std::unique_ptr<JsonSource> s;
     std::string e = JsonSource::open_stream(label, std::move(input), comp, &s);
     if (e.empty()) *out = std::move(s);
@@ -256,7 +245,7 @@ std::string open_json_records(std::shared_ptr<arrow::io::InputStream> in,
                               const std::string& label,
                               std::unique_ptr<TabularSource>* out) {
     std::unique_ptr<JsonSource> js;
-    std::string e = JsonSource::open_stream(label, std::move(in), arrow::Compression::UNCOMPRESSED, &js);
+    std::string e = JsonSource::open_stream(label, std::move(in), StreamCodec::None, &js);
     if (e.empty()) *out = std::move(js);
     return e;
 }

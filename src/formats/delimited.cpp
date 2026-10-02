@@ -690,7 +690,7 @@ class DelimitedSource : public TabularSource {
         return arrow::RecordBatch::Make(b->schema(), b->num_rows(), cols);
     }
 
-    // Open the file as a (possibly gzip-decompressed) InputStream.
+    // Open the file as a (possibly decompressed) InputStream.
     static std::string open_stream(const std::string& path, bool is_gz,
                                     std::shared_ptr<arrow::io::ReadableFile>*  raw_out,
                                     std::shared_ptr<arrow::io::InputStream>*   input_out) {
@@ -699,14 +699,9 @@ class DelimitedSource : public TabularSource {
             return "Cannot open '" + path + "': " + maybe_raw.status().ToString();
         auto raw = maybe_raw.ValueOrDie();
         std::shared_ptr<arrow::io::InputStream> input = raw;
-        if (is_gz) {   // "is_gz" == the stream is compressed; pick the codec.
-            auto comp = (fends_ci(path, ".zst") || fends_ci(path, ".zstd"))
-                            ? arrow::Compression::ZSTD : arrow::Compression::GZIP;
-            auto mc = arrow::util::Codec::Create(comp);
-            if (!mc.ok()) return mc.status().ToString();
-            auto ci = arrow::io::CompressedInputStream::Make(mc->get(), raw);
-            if (!ci.ok()) return ci.status().ToString();
-            input = ci.ValueOrDie();
+        if (is_gz) {   // "is_gz" == the stream is compressed; the codec is in its magic.
+            if (auto e = decode_stream(sniff_file_codec(raw), raw, &input); !e.empty())
+                return "'" + path + "': " + e;
         }
         *raw_out   = raw;
         *input_out = input;
@@ -859,8 +854,7 @@ public:
     // The first line of `path` that does not start with "##" (decompressed
     // for .gz / .zst); "" when there is none or the file cannot be read.
     static std::string first_line_after_meta(const std::string& path) {
-        const bool is_gz = fends_ci(path, ".gz") || fends_ci(path, ".bgz") || fends_ci(path, ".zst") ||
-                           fends_ci(path, ".zstd");
+        const bool is_gz = has_compression_suffix(path);
         std::shared_ptr<arrow::io::ReadableFile> raw;
         std::shared_ptr<arrow::io::InputStream>  input;
         if (!open_stream(path, is_gz, &raw, &input).empty()) return "";
@@ -877,8 +871,7 @@ public:
     static std::vector<char> paf_tag_types(const std::string& path,
                                            const std::vector<std::string>& tags) {
         std::vector<char> types(tags.size(), 0);
-        const bool is_gz = fends_ci(path, ".gz") || fends_ci(path, ".bgz") ||
-                           fends_ci(path, ".zst") || fends_ci(path, ".zstd");
+        const bool is_gz = has_compression_suffix(path);
         std::shared_ptr<arrow::io::ReadableFile> raw;
         std::shared_ptr<arrow::io::InputStream>  input;
         if (open_stream(path, is_gz, &raw, &input).empty()) {
@@ -904,8 +897,7 @@ public:
     }
     // The first line of `path` (decompressed for .gz / .zst); "" if unreadable.
     static std::string first_line_after_meta_raw(const std::string& path) {
-        const bool is_gz = fends_ci(path, ".gz") || fends_ci(path, ".bgz") || fends_ci(path, ".zst") ||
-                           fends_ci(path, ".zstd");
+        const bool is_gz = has_compression_suffix(path);
         std::shared_ptr<arrow::io::ReadableFile> raw;
         std::shared_ptr<arrow::io::InputStream>  input;
         if (!open_stream(path, is_gz, &raw, &input).empty()) return "";
@@ -988,8 +980,7 @@ public:
         // "is_gz" means the byte stream is compressed (non-seekable). Both a
         // gzip (.gz) and a zstandard (.zst / .zstd) wrapper qualify; open_stream
         // selects the matching codec.
-        bool is_gz = fends_ci(path, ".gz") || fends_ci(path, ".bgz") ||
-                     fends_ci(path, ".zst") || fends_ci(path, ".zstd");
+        bool is_gz = has_compression_suffix(path);
 
         std::shared_ptr<arrow::io::ReadableFile>  raw;
         std::shared_ptr<arrow::io::InputStream>   input;

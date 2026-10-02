@@ -1170,6 +1170,40 @@ if require "zstd roundtrip" zstd; then
 fi
 
 echo
+echo '── bzip2 (.bz2) and xz (.xz) input ────────────────────'
+# Every text reader decodes bzip2 and xz, chosen by magic bytes: delimited and
+# genomics text, FASTA / FASTQ (through kseq, not BGZF), JSON, plain text and
+# stdin. Each read must reproduce the uncompressed read byte for byte;
+# concatenated streams are read in full; a truncated file is an error.
+if command -v python3 >/dev/null 2>&1; then
+    compress() {   # compress SRC DST {xz|bz2}
+        python3 -c 'import sys, lzma, bz2; d = open(sys.argv[1], "rb").read(); m = lzma if sys.argv[3] == "xz" else bz2; open(sys.argv[2], "wb").write(m.compress(d))' "$1" "$2" "$3"
+    }
+    for z in xz bz2; do
+        for base in tiny.tsv tiny.vcf tiny.gtf tiny.fa tiny.fq tiny.mpileup; do
+            compress "$DATA/$base" "$TMP/$base.$z" $z
+            "$VV" --tsv --no-header "$DATA/$base"     > "$TMP/${base}.plain.out" 2>&1
+            "$VV" --tsv --no-header "$TMP/$base.$z"   > "$TMP/${base}.$z.out"    2>&1
+            assert_eq_file "${z}_matches_plain_${base}" "$TMP/${base}.$z.out" "$TMP/${base}.plain.out"
+        done
+        printf '{"a":[1,2]}' > "$TMP/zdoc.json"; compress "$TMP/zdoc.json" "$TMP/zdoc.json.$z" $z
+        assert_eq_file_inline "${z}_json_document" "$("$VV" --json-paths "$TMP/zdoc.json.$z")" '.a[0] = 1
+.a[1] = 2'
+        printf 'one\ntwo\n' > "$TMP/znotes.log"; compress "$TMP/znotes.log" "$TMP/znotes.log.$z" $z
+        assert_eq_file_inline "${z}_plain_text" "$("$VV" "$TMP/znotes.log.$z")" 'one
+two'
+        assert_contains "${z}_footer_names_codec" "$("$VV" -n 1 --color=never "$TMP/zdoc.json.$z" --no-tree 2>&1)" "($( [ $z = xz ] && echo xz || echo bzip2 ))"
+        "$VV" --tsv --no-header - < "$TMP/tiny.tsv.$z" > "$TMP/stdin_$z.out" 2>&1
+        assert_eq_file "stdin_tsv_${z}_matches_file" "$TMP/stdin_$z.out" "$GOLDEN/tsv_tsv.expected"
+        cat "$TMP/tiny.fq.$z" "$TMP/tiny.fq.$z" > "$TMP/two.fq.$z"
+        assert_eq_file_inline "${z}_concatenated_streams" "$("$VV" --count "$TMP/two.fq.$z")" "6"
+        head -c 40 "$TMP/tiny.tsv.$z" > "$TMP/trunc.tsv.$z"
+        assert_exit_code "${z}_truncated_exits_1" 1 "$VV" --tsv "$TMP/trunc.tsv.$z"
+    done
+    assert_contains "xz_truncated_message" "$("$VV" --tsv "$TMP/trunc.tsv.xz" 2>&1)" "xz:"
+fi
+
+echo
 echo '── JSON / NDJSON input ────────────────────────────────'
 # NDJSON (one object per line) and a top-level JSON array must read to the same
 # table — the array form is unwrapped into records before Arrow parses it.

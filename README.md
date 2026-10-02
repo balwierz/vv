@@ -19,7 +19,7 @@ More screenshots, one per format: **[docs/formats.md](docs/formats.md)**.
 
 ## Highlights
 
-- **Any format, one command** — dispatched by extension or content; gzip, bgzip and zstd on the fly; stdin and pipes.
+- **Any format, one command** — dispatched by extension or content; gzip, bgzip, zstd, bzip2 and xz on the fly; stdin and pipes.
 - **Terminal viewer** — scroll, search (`/`), filter (`&`), sort (`s`), column stats (`S`), record detail (`Enter`), tabs; a folding tree for JSON.
 - **Desktop viewer** — [vvg](docs/vvg.md): the same views in a Qt6 window, Dolphin thumbnails on KDE.
 - **Region queries** — `-r chr1:1000-2000` on indexed BAM / CRAM / VCF / BCF / BED / GFF / bigWig, and Parquet with chrom / start / end columns.
@@ -53,7 +53,7 @@ More screenshots, one per format: **[docs/formats.md](docs/formats.md)**.
 | Plain text, logs | `.txt` `.text` `.log`, any other text file | [screens](docs/formats.md#plain-text-and-logs) |
 | Directories, Hive datasets | `vv dir/` | [screens](docs/formats.md#directories-and-datasets) |
 
-Text formats also read as `.gz` / `.bgz` / `.zst`; `vv --formats` prints the
+Text formats also read as `.gz` / `.bgz` / `.zst` / `.bz2` / `.xz`; `vv --formats` prints the
 full capability table.
 
 ## Install

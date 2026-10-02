@@ -382,7 +382,8 @@ endif()
 # plugins) and the fuzz harnesses. The CLI adds the argument parser, main()
 # and the ncurses viewers.
 set(VV_CORE_SOURCES
-    src/core/common.cpp   src/core/derived.cpp  src/core/filter.cpp
+    src/core/common.cpp   src/core/compress.cpp src/core/derived.cpp
+    src/core/filter.cpp
     src/core/io.cpp       src/core/modes.cpp    src/core/open.cpp
     src/core/region.cpp   src/core/source.cpp
     src/formats/arrow.cpp     src/formats/delimited.cpp src/formats/hdf5.cpp
@@ -411,6 +412,19 @@ target_include_directories(vv PRIVATE
 if(ARROW_ORC_HEADER)
   target_compile_definitions(vv PRIVATE VV_HAVE_ORC=1)
 endif()
+# xz and bzip2 input (src/core/compress.cpp), when liblzma / libbz2 are found;
+# without them those files are refused with "built without xz support".
+find_package(LibLZMA)
+find_package(BZip2)
+if(LIBLZMA_FOUND)
+  target_compile_definitions(vv PRIVATE VV_HAVE_LZMA=1)
+  target_include_directories(vv PRIVATE ${LIBLZMA_INCLUDE_DIRS})
+endif()
+if(BZIP2_FOUND)
+  target_compile_definitions(vv PRIVATE VV_HAVE_BZ2=1)
+  target_include_directories(vv PRIVATE ${BZIP2_INCLUDE_DIRS})
+endif()
+message(STATUS "xz / bzip2 : ${LIBLZMA_FOUND} / ${BZIP2_FOUND}")
 
 # Collect all static libs built into static-libs/
 find_library(ZSTD_STATIC         NAMES libzstd.a         PATHS "${_static_libs_dir}" NO_DEFAULT_PATH)
@@ -517,6 +531,8 @@ else()
       ${ARROW_TARGET}
       mimalloc-static
       ${HTSLIB_LINK_LIBRARIES}
+      $<$<BOOL:${LIBLZMA_FOUND}>:${LIBLZMA_LIBRARIES}>
+      $<$<BOOL:${BZIP2_FOUND}>:${BZIP2_LIBRARIES}>
       bigwig
       md4c
       ${SQLITE3_TARGET}

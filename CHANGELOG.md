@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **bzip2 and xz input.** Every text reader — delimited and genomics text,
+  FASTA / FASTQ, JSON, plain text, stdin, `in @file` lists — reads `.bz2` and
+  `.xz` (and FASTA / FASTQ now `.zst` too), detected by content, including
+  concatenated streams. Range queries still need bgzip + tabix.
 - **vvg: Find in the JSON tree.** The Find bar searches a tree tab's keys
   and values (case-insensitive text, or a regex), highlights matching rows,
   and opens the tree to the next hit; F3 / Enter steps on, wrapping at the

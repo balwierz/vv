@@ -4846,7 +4846,7 @@ static bool json_tree_loop(TuiSession& session, JsonTreeView& v, const Config& c
                                                            (int64_t)b.size());
                 e = open_json_stream(v.label + " " + tt.path,
                                      std::make_shared<arrow::io::BufferReader>(buf),
-                                     arrow::Compression::UNCOMPRESSED, &js);
+                                     StreamCodec::None, &js);
             }
             if (!e.empty()) {
                 v.tables.erase(key);
@@ -4920,7 +4920,7 @@ bool run_table_viewer(std::vector<std::unique_ptr<TabularSource>> srcs, const Co
                 if (!view) {
                     std::string file = jp, e;
                     auto raw = arrow::io::ReadableFile::Open(jp);
-                    if (raw.ok() && sniff_stream_codec(*raw) != arrow::Compression::UNCOMPRESSED) {
+                    if (raw.ok() && sniff_file_codec(*raw) != StreamCodec::None) {
                         std::shared_ptr<arrow::io::InputStream> in;
                         int64_t bytes = 0;
                         e = open_json_file(jp, &in);

@@ -1351,14 +1351,41 @@ std::string open_bcf_source(const std::string& path, const Config& cfg, std::uni
 
 // ── FASTA / FASTQ source (kseq.h via htslib BGZF) ─────────────────────────────
 
-KSEQ_INIT(BGZF*, bgzf_read)
+// kseq's input: BGZF for plain, gzip and bgzip files (multi-threaded
+// decompression), or a decoded stream for zstd, bzip2 and xz.
+struct FastxIn {
+    BGZF* bg = nullptr;
+    std::shared_ptr<arrow::io::InputStream> st;
+    ~FastxIn() { if (bg) bgzf_close(bg); }
+};
+static int fastx_read(FastxIn* f, void* buf, int len) {
+    if (f->bg) return bgzf_read(f->bg, buf, len);
+    auto r = f->st->Read(len, buf);
+    return r.ok() ? (int)*r : -1;
+}
+static std::string open_fastx_input(const std::string& path, const Config& cfg, FastxIn* in) {
+    auto rf = arrow::io::ReadableFile::Open(path);
+    if (!rf.ok()) return "Cannot open '" + path + "'";
+    const StreamCodec c = sniff_file_codec(*rf);
+    if (c != StreamCodec::None && c != StreamCodec::Gzip) {
+        if (auto e = decode_stream(c, *rf, &in->st); !e.empty()) return "'" + path + "': " + e;
+        return "";
+    }
+    (void)(*rf)->Close();
+    in->bg = bgzf_open(path.c_str(), "r");
+    if (!in->bg) return "Cannot open '" + path + "'";
+    if (int n = effective_threads(cfg); n > 1) bgzf_mt(in->bg, n, 256);
+    return "";
+}
+
+KSEQ_INIT(FastxIn*, fastx_read)
 
 class FastxSource : public TabularSource {
     std::string                            path_;
     std::shared_ptr<arrow::Schema>         schema_;
     bool                                   is_fastq_ = false;
 
-    mutable BGZF*    fp_ = nullptr;
+    mutable FastxIn  in_;
     mutable kseq_t*  ks_ = nullptr;
 
     mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
@@ -1427,7 +1454,6 @@ class FastxSource : public TabularSource {
 public:
     ~FastxSource() {
         if (ks_) { kseq_destroy(ks_); ks_ = nullptr; }
-        if (fp_) { bgzf_close(fp_);   fp_ = nullptr; }
     }
 
     static std::string open(const std::string& path, bool is_fastq,
@@ -1438,12 +1464,8 @@ public:
         self->path_     = path;
         self->is_fastq_ = is_fastq;
 
-        self->fp_ = bgzf_open(path.c_str(), "r");
-        if (!self->fp_) return "Cannot open '" + path + "'";
-        // Multi-threaded BGZF decompression for large .gz files.
-        int n = effective_threads(cfg);
-        if (n > 1) bgzf_mt(self->fp_, n, 256);
-        self->ks_ = kseq_init(self->fp_);
+        if (auto e = open_fastx_input(path, cfg, &self->in_); !e.empty()) return e;
+        self->ks_ = kseq_init(&self->in_);
         if (!self->ks_) return "Cannot init kseq for '" + path + "'";
 
         arrow::FieldVector fields = {
@@ -2082,22 +2104,19 @@ std::string build_contigs(const Config& cfg,
 // with the read count.
 std::string build_seq_stats(const Config& cfg, std::unique_ptr<TabularSource>* out) {
     const std::string& path = cfg.path;
-    std::string det = path;
-    for (const char* sfx : {".gz", ".bgz"})
-        if (fends_ci(det, sfx)) { det.resize(det.size() - std::strlen(sfx)); break; }
+    const std::string det = strip_compression_suffix(path);
     const bool fastq = fends_ci(det, ".fq") || fends_ci(det, ".fastq");
     const bool fasta = fends_ci(det, ".fa") || fends_ci(det, ".fasta") || fends_ci(det, ".fna") ||
                        fends_ci(det, ".faa") || fends_ci(det, ".ffn") || fends_ci(det, ".frn");
     if (!fastq && !fasta)
         return "--seq-stats summarises a FASTA / FASTQ file (.fa .fasta .fna .faa .ffn .frn "
-               ".fq .fastq, plus .gz)";
+               ".fq .fastq, plus .gz / .zst / .bz2 / .xz)";
     if (!cfg.region.empty() || !cfg.filter_expr.empty())
         return "--seq-stats summarises every record; it does not take -r or --filter";
 
-    BGZF* fp = bgzf_open(path.c_str(), "r");
-    if (!fp) return "Cannot open '" + path + "'";
-    if (int n = effective_threads(cfg); n > 1) bgzf_mt(fp, n, 256);
-    kseq_t* ks = kseq_init(fp);
+    FastxIn in;
+    if (auto e = open_fastx_input(path, cfg, &in); !e.empty()) return e;
+    kseq_t* ks = kseq_init(&in);
     std::map<int64_t, int64_t> len_hist;
     uint64_t res[256] = {0}, qual[256] = {0};
     int64_t n = 0, sum = 0;
@@ -2114,7 +2133,6 @@ std::string build_seq_stats(const Config& cfg, std::unique_ptr<TabularSource>* o
         }
     }
     kseq_destroy(ks);
-    bgzf_close(fp);
     if (ret < -1)
         return "malformed " + std::string(fastq ? "FASTQ" : "FASTA") +
                " record after " + std::to_string(n) + " records" +

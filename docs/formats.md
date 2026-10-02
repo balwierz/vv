@@ -77,7 +77,7 @@ More: [`--tags`](USAGE.md#--tags-list-bam--cram--sam-aux-tags),
 ## BED and ENCODE peaks
 
 `.bed` `.narrowPeak` `.broadPeak` `.gappedPeak` `.bedGraph` `.tagAlign`
-(plain, `.gz`, `.zst`) — named, typed columns (`signalValue`, `pValue`, …);
+(plain, `.gz`, `.zst`, `.bz2`, `.xz`) — named, typed columns (`signalValue`, `pValue`, …);
 BED `itemRgb` is drawn as a colour swatch.
 
 ![vv: an ENCODE narrowPeak file](img/vv/narrowpeak.svg)
@@ -87,7 +87,7 @@ Try: `vv peaks.narrowPeak` · `vv --sort signalValue:desc -n 20 peaks.narrowPeak
 
 ## GFF / GTF
 
-`.gff` `.gff3` `.gtf` (plain, `.gz`, `.zst`) — the nine columns; `--expand
+`.gff` `.gff3` `.gtf` (plain, `.gz`, `.zst`, `.bz2`, `.xz`) — the nine columns; `--expand
 attributes` unpacks the attribute column into one column per key.
 
 ![vv: a GFF3 gene annotation](img/vv/gff3.svg)
@@ -120,7 +120,7 @@ More: [bigBed / bigWig](USAGE.md#bigbed--bigwig-specifics).
 
 ## mpileup
 
-`.pileup` `.mpileup` `.pile` (plain, `.gz`, `.zst`) — per-base rows; a
+`.pileup` `.mpileup` `.pile` (plain, `.gz`, `.zst`, `.bz2`, `.xz`) — per-base rows; a
 multi-sample file gets `depth_i` / `bases_i` / `quals_i` per sample. `vv
 x.bam --pileup -f ref.fa` produces the same rows from a BAM / CRAM.
 
@@ -192,7 +192,7 @@ More: [`--describe`](USAGE.md#--describe), [`--stats`](USAGE.md#--stats-parquet-
 
 ## TSV / CSV
 
-`.tsv` `.csv` (plain, `.gz`, `.zst`; other extensions by content) — types are
+`.tsv` `.csv` (plain, `.gz`, `.zst`, `.bz2`, `.xz`; other extensions by content) — types are
 inferred; `##` preambles, R-style row names and quoted `NA` are handled.
 
 ![vv: a TSV table](img/vv/table.svg)
@@ -224,7 +224,7 @@ More: [directories](USAGE.md#directories-and-partitioned-datasets).
 
 ## JSON / NDJSON
 
-`.json` `.ndjson` `.jsonl` `.geojson` `.ipynb` `.har` (plain, `.gz`, `.zst`, or on stdin) — on a terminal
+`.json` `.ndjson` `.jsonl` `.geojson` `.ipynb` `.har` (plain, `.gz`, `.zst`, `.bz2`, `.xz`, or on stdin) — on a terminal
 a document opens in a folding tree (jq paths, search, copy, `t` for a table of
 records); in a pipe it is re-indented, or listed as `path = value` lines with
 `--json-paths`. NDJSON / record arrays are tables with any table flag.
@@ -249,7 +249,7 @@ renderer; local images are shown inline on kitty / iTerm2 / WezTerm.
 
 ## Plain text and logs
 
-`.txt` `.log` (plain, `.gz`, `.zst`) and any other file that sniffs as text —
+`.txt` `.log` (plain, `.gz`, `.zst`, `.bz2`, `.xz`) and any other file that sniffs as text —
 a `less -SN`-like view with line numbers, sideways scrolling, `/` search and `&`
 filter; ANSI colours in the file are kept. Binary files are refused, not dumped.
 

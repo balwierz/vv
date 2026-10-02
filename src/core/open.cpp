@@ -270,9 +270,7 @@ namespace dataset {
 // skipped during discovery. Also the guard against concatenating mixed formats.
 static std::string format_group(const std::string& name) {
     std::string s = name;
-    if      (fends_ci(s, ".zst"))  s.resize(s.size() - 4);
-    else if (fends_ci(s, ".zstd")) s.resize(s.size() - 5);
-    else if (fends_ci(s, ".gz"))   s.resize(s.size() - 3);
+    s = strip_compression_suffix(s);
     if (fends_ci(s, ".parquet"))                          return "parquet";
     if (fends_ci(s, ".arrow") || fends_ci(s, ".feather")) return "arrow";
     if (fends_ci(s, ".orc"))                              return "orc";
@@ -891,12 +889,13 @@ std::string open_source_dispatch(const std::string& path, const Config& cfg,
     bool        is_parquet = false;
     DelimKind   dk         = DelimKind::TSV;
 
-    // A trailing .zst / .zstd is a compression wrapper, not a format: strip it
-    // so a foo.csv.zst dispatches like foo.csv (the delimited / text readers
-    // then decompress it). A .gz wrapper stays and is matched explicitly below.
+    // A trailing .zst / .zstd / .bz2 / .xz is a compression wrapper, not a
+    // format: strip it so a foo.csv.xz dispatches like foo.csv (the readers
+    // decode by magic bytes). A .gz wrapper stays and is matched explicitly
+    // below.
     std::string det = path;
-    if      (fends_ci(det, ".zstd")) det.resize(det.size() - 5);
-    else if (fends_ci(det, ".zst"))  det.resize(det.size() - 4);
+    for (const char* z : {".zstd", ".zst", ".bz2", ".xz"})
+        if (fends_ci(det, z)) { det.resize(det.size() - std::strlen(z)); break; }
     // `.bgz` (gnomAD's *.vcf.bgz) is the bgzip suffix: read it as `.gz`.
     if (fends_ci(det, ".bgz")) det = det.substr(0, det.size() - 4) + ".gz";
 
@@ -1013,22 +1012,14 @@ std::string open_source_dispatch(const std::string& path, const Config& cfg,
         std::shared_ptr<arrow::io::InputStream> input =
             std::make_shared<FdInputStream>(fd);
 
-        // Compressed stdin: gzip (1f 8b) or zstandard (28 b5 2f fd). BGZF (BAM/
+        // Compressed stdin: gzip, zstandard, bzip2 or xz, by magic. BGZF (BAM /
         // BCF) shares the gzip magic but was already rejected above by its
         // 1f 8b 08 04 header.
-        arrow::Compression::type comp = arrow::Compression::UNCOMPRESSED;
-        if      (starts_with("\x1f\x8b", 2))         comp = arrow::Compression::GZIP;
-        else if (starts_with("\x28\xB5\x2F\xFD", 4)) comp = arrow::Compression::ZSTD;
-        bool is_gz = (comp != arrow::Compression::UNCOMPRESSED);
+        const StreamCodec comp = sniff_codec(reinterpret_cast<const uint8_t*>(sniff.data()), sniff.size());
+        bool is_gz = (comp != StreamCodec::None);
         // Reattach the sniffed bytes BEFORE the decompressor sees the stream.
         input = std::make_shared<PrependInputStream>(std::move(sniff), input);
-        if (is_gz) {
-            auto codec = arrow::util::Codec::Create(comp);
-            if (!codec.ok()) return codec.status().ToString();
-            auto ci = arrow::io::CompressedInputStream::Make(codec->get(), input);
-            if (!ci.ok()) return ci.status().ToString();
-            input = ci.ValueOrDie();
-        }
+        if (auto e = decode_stream(comp, input, &input); !e.empty()) return e;
 
         // Binary refusal, at the second entry point. Piped binary used to
         // reach Arrow's CSV reader, which echoed the raw bytes back inside a

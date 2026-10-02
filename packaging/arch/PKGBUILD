@@ -17,7 +17,7 @@ license=('MIT')
 # `git` is required: CMake fetches mimalloc v2.1.9 from GitHub at configure
 # time (FetchContent, no vendored copy). `htslib` and `xlsxio` are AUR-only,
 # so `makepkg -s` cannot install them — see INSTALL.md.
-makedepends=('cmake' 'gcc' 'git' 'arrow' 'htslib' 'ncurses' 'hdf5' 'sqlite'
+makedepends=('cmake' 'gcc' 'git' 'arrow' 'htslib' 'ncurses' 'hdf5' 'sqlite' 'xz' 'bzip2'
              'expat' 'minizip' 'xlsxio' 'zlib'
              'qt6-base' 'extra-cmake-modules' 'kio' 'kcoreaddons' 'kfilemetadata')
 source=("$pkgbase-$pkgver.tar.gz::https://github.com/balwierz/$pkgbase/archive/refs/tags/v$pkgver.tar.gz")
@@ -36,7 +36,7 @@ build() {
 
 package_vv() {
     pkgdesc="Universal data/genomic file viewer — CLI + ncurses TUI"
-    depends=('arrow' 'htslib' 'ncurses' 'hdf5' 'sqlite'
+    depends=('arrow' 'htslib' 'ncurses' 'hdf5' 'sqlite' 'xz' 'bzip2'
              'expat' 'minizip' 'xlsxio')
     cd "$pkgbase-$pkgver"
     install -Dm755 ../build/vv "$pkgdir/usr/bin/vv"

@@ -192,23 +192,8 @@ static std::string read_filter_set_file(const std::string& path,
                                         std::vector<std::string>* out) {
     auto rf = arrow::io::ReadableFile::Open(path);
     if (!rf.ok()) return "cannot open '" + path + "' for 'in @': " + rf.status().message();
-    std::shared_ptr<arrow::io::InputStream> in = *rf;
-    auto head = (*rf)->ReadAt(0, 4);
-    if (auto st = (*rf)->Seek(0); !st.ok()) return path + ": " + st.message();
-    if (head.ok() && (*head)->size() >= 2) {
-        const uint8_t* b = (*head)->data();
-        std::optional<arrow::Compression::type> comp;
-        if (b[0] == 0x1f && b[1] == 0x8b) comp = arrow::Compression::GZIP;
-        else if ((*head)->size() >= 4 && b[0] == 0x28 && b[1] == 0xb5 && b[2] == 0x2f && b[3] == 0xfd)
-            comp = arrow::Compression::ZSTD;
-        if (comp) {
-            auto codec = arrow::util::Codec::Create(*comp);
-            if (!codec.ok()) return path + ": " + codec.status().message();
-            auto ci = arrow::io::CompressedInputStream::Make(codec->get(), *rf);
-            if (!ci.ok()) return path + ": " + ci.status().message();
-            in = *ci;
-        }
-    }
+    std::shared_ptr<arrow::io::InputStream> in;
+    if (auto e = decode_stream(sniff_file_codec(*rf), *rf, &in); !e.empty()) return path + ": " + e;
     std::string text;
     for (;;) {
         auto buf = in->Read(1 << 20);

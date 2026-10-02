@@ -1221,6 +1221,12 @@ access);
 .B vv \-\-formats \-\-json
 emits the same table as JSON. The shell completions are checked against it in
 CI, so the two cannot drift.
+.PP
+Text formats (delimited and genomics text, FASTA / FASTQ, JSON, plain text,
+stdin) may be compressed with gzip / bgzip, zstandard, bzip2 or xz
+(\fB.gz\fR, \fB.bgz\fR, \fB.zst\fR, \fB.bz2\fR, \fB.xz\fR); the codec is
+detected from the content, and concatenated streams are read in full. Range
+queries (\fB\-r\fR) need a bgzip file with a tabix index.
 .SH EXIT STATUS
 .TP
 .B 0

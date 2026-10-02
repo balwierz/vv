@@ -24,8 +24,8 @@ header-includes:
 formats. The same binary covers Parquet / Arrow IPC / Feather / LociSSD,
 the htslib formats BAM / CRAM / SAM / VCF / BCF, the genomics text
 formats GFF3 / GTF / BED / PAF / FASTA / FASTQ, plain delimited
-text (TSV / CSV) and JSON / NDJSON — gzip- or zstandard-decompressing on
-the fly where it makes sense.
+text (TSV / CSV) and JSON / NDJSON — gzip, zstandard, bzip2 or xz
+decompressed on the fly.
 
 This manual covers every flag with a concrete example. The full flag
 reference also lives in `vv --help` and `man vv`.
@@ -83,8 +83,8 @@ would need horizontal scrolling.
 | Arrow IPC, Feather| `.arrow`, `.feather`                                        |
 | Arrow IPC stream  | `.arrows` — the footer-less stream format, read front to back as it arrives, so it works from stdin or a pipe with no temporary copy. A stream saved as `.arrow`, or under an unknown extension, is recognised by its leading 0xFFFFFFFF marker. |
 | **LociSSD**       | `.lociss` (auto-detected via the `lociSSD_manifest` footer; `MaxEndSoFar` hidden from views) |
-| TSV layouts       | `.bedpe`, `.pairs`, `.gct`, `.maf` (plus `.gz` / `.zst`). **BEDPE** has no header row and is named with bedtools' columns `chrom1 start1 end1 chrom2 start2 end2 name score strand1 strand2` (a leading `#chrom1 …` line is read as the header instead). **4DN pairs** take their column names from the `#columns:` header line (the seven mandatory names without one); the other `#` lines are shown above the schema. **GenePattern GCT** 1.2 / 1.3: the `#1.x` and dimensions lines, and 1.3's column-metadata rows, are shown above the schema rather than read as data, so the sample columns stay numeric. **MAF** (mutation annotation format): `#version` lines, then the header. A UCSC multiple-alignment `.maf` (first line `##maf`) is shown as plain text. The footer names the layout. |
-| PLINK             | `.bim`, `.fam`, `.pvar`, `.psam` (plus `.gz` / `.zst`). `.bim` and `.fam` have no header row and are named with PLINK 2's columns: `CHROM ID CM POS ALT REF` (allele 1 is `ALT`, as plink2 reads it) and `FID IID PAT MAT SEX PHENO1`; a space-separated `.fam` (PLINK 1) is read too. `.pvar` / `.psam` take their `#CHROM` / `#FID` / `#IID` header line, and without one use the `.bim` / `.fam` order. The genotypes — a PLINK 1 `.bed`, recognised by its magic bytes `6c 1b`, or a PLINK 2 `.pgen` — are binary and refused with the command that exports them: `plink2 --bfile NAME --export vcf bgz --out NAME` (`--pfile` for `.pgen`). A text BED is unaffected. |
+| TSV layouts       | `.bedpe`, `.pairs`, `.gct`, `.maf` (plus `.gz` / `.zst` / `.bz2` / `.xz`). **BEDPE** has no header row and is named with bedtools' columns `chrom1 start1 end1 chrom2 start2 end2 name score strand1 strand2` (a leading `#chrom1 …` line is read as the header instead). **4DN pairs** take their column names from the `#columns:` header line (the seven mandatory names without one); the other `#` lines are shown above the schema. **GenePattern GCT** 1.2 / 1.3: the `#1.x` and dimensions lines, and 1.3's column-metadata rows, are shown above the schema rather than read as data, so the sample columns stay numeric. **MAF** (mutation annotation format): `#version` lines, then the header. A UCSC multiple-alignment `.maf` (first line `##maf`) is shown as plain text. The footer names the layout. |
+| PLINK             | `.bim`, `.fam`, `.pvar`, `.psam` (plus `.gz` / `.zst` / `.bz2` / `.xz`). `.bim` and `.fam` have no header row and are named with PLINK 2's columns: `CHROM ID CM POS ALT REF` (allele 1 is `ALT`, as plink2 reads it) and `FID IID PAT MAT SEX PHENO1`; a space-separated `.fam` (PLINK 1) is read too. `.pvar` / `.psam` take their `#CHROM` / `#FID` / `#IID` header line, and without one use the `.bim` / `.fam` order. The genotypes — a PLINK 1 `.bed`, recognised by its magic bytes `6c 1b`, or a PLINK 2 `.pgen` — are binary and refused with the command that exports them: `plink2 --bfile NAME --export vcf bgz --out NAME` (`--pfile` for `.pgen`). A text BED is unaffected. |
 | Sparse matrices   | `.mtx`, `.mtx.gz` — MatrixMarket coordinate files (Cell Ranger / STARsolo `matrix.mtx.gz`, `scipy.io.mmwrite`, R `Matrix::writeMM`). One row per stored entry: `row`, `col`, `value` (no `value` for a `pattern` matrix), indices 0-based like `scipy.io.mmread`. The footer shows the shape and entry count. Only `coordinate` + `general` symmetry is read; symmetric (one triangle stored) and dense `array` files are refused, and an out-of-range index or an entry count that disagrees with the size line is an error. A 10x Genomics / STARsolo matrix directory (`matrix.mtx(.gz)` + `barcodes.tsv(.gz)` + `features.tsv(.gz)` or v2 `genes.tsv`) opens as `matrix`, `features` and `barcodes` tabs; the matrix entries stream with `feature_id`, `feature_name`, `feature_type` and `barcode` appended, so `vv filtered_feature_bc_matrix/ --filter 'feature_name == "CD74"'` works. A shape that fits neither orientation of the sidecars is an error. |
 | Sequence alignments | `.bam`, `.cram`, `.sam`, `.paf` / `.paf.gz`. `--tags` surfaces optional aux tags as typed columns (see [`--tags`](#--tags-list-bam--cram--sam-aux-tags)). |
 | Variant calls     | `.vcf`, `.vcf.gz`, `.bcf` (with `.csi` / `.tbi` for range queries) |
@@ -106,8 +106,8 @@ would need horizontal scrolling.
 | Sequences (FASTA) | `.fa`, `.fasta`, `.fna`, `.faa`, `.ffn`, `.frn` (plus `.gz`)|
 | Sequencing reads  | `.fq`, `.fastq` (plus `.gz`)                                |
 | Delimited text    | `.tsv`, `.csv` (plus `.gz`)                                 |
-| JSON / NDJSON     | `.json`, `.ndjson`, `.jsonl`, `.geojson`, `.ipynb`, `.har` (plus `.gz` / `.zst`, and JSON on stdin, recognised by its content) are documents: on a pipe `vv x.json` prints the document re-indented (`--pretty`) and `--json-paths` prints `path = value` lines — see *JSON documents*. With a table flag (an export, a report, `--filter`, `-n`, `--table`, `--no-tree`) the file is read as records via Arrow's streaming JSON reader. Two shapes are accepted: a top-level array of objects `[{…},{…}]` (pretty-printed or compact), and newline-delimited / concatenated objects (JSON Lines). The array form is unwrapped into records by a small stream filter — it drops the enclosing `[` `]` and turns the commas between elements into newlines, tracking string and nesting state so structural characters inside a value are left alone — before Arrow parses it; NDJSON passes straight through. Records need not share a schema: `unexpected_field_behavior = InferType` means Arrow infers the union of all fields and fills the gaps with nulls. Nested objects become `struct` columns and nested arrays become `list` columns, rendered by the same cell formatters as Parquet. Streaming and forward-only, so a file larger than memory still previews. An empty array, an array of scalars, or a field whose type changes between rows is not tabular and errors with a pointer to `--text`, which shows the raw JSON source instead. |
-| Stdin             | `vv -` reads text from stdin as it streams in (auto-decompresses gzip / zstd); a binary format (Parquet, Arrow, BAM, BCF, HDF5, SQLite, xlsx, …) is copied to a temporary file first. Process substitution (`vv <(zcat x.parquet.gz)`) works the same way |
+| JSON / NDJSON     | `.json`, `.ndjson`, `.jsonl`, `.geojson`, `.ipynb`, `.har` (plus `.gz` / `.zst` / `.bz2` / `.xz`, and JSON on stdin, recognised by its content) are documents: on a pipe `vv x.json` prints the document re-indented (`--pretty`) and `--json-paths` prints `path = value` lines — see *JSON documents*. With a table flag (an export, a report, `--filter`, `-n`, `--table`, `--no-tree`) the file is read as records via Arrow's streaming JSON reader. Two shapes are accepted: a top-level array of objects `[{…},{…}]` (pretty-printed or compact), and newline-delimited / concatenated objects (JSON Lines). The array form is unwrapped into records by a small stream filter — it drops the enclosing `[` `]` and turns the commas between elements into newlines, tracking string and nesting state so structural characters inside a value are left alone — before Arrow parses it; NDJSON passes straight through. Records need not share a schema: `unexpected_field_behavior = InferType` means Arrow infers the union of all fields and fills the gaps with nulls. Nested objects become `struct` columns and nested arrays become `list` columns, rendered by the same cell formatters as Parquet. Streaming and forward-only, so a file larger than memory still previews. An empty array, an array of scalars, or a field whose type changes between rows is not tabular and errors with a pointer to `--text`, which shows the raw JSON source instead. |
+| Stdin             | `vv -` reads text from stdin as it streams in (auto-decompresses gzip / zstd / bzip2 / xz); a binary format (Parquet, Arrow, BAM, BCF, HDF5, SQLite, xlsx, …) is copied to a temporary file first. Process substitution (`vv <(zcat x.parquet.gz)`) works the same way |
 
 Unknown extensions are auto-detected by magic bytes (Parquet, Arrow IPC file
 and stream, Feather, BAM/BCF/CRAM) or delimiter heuristic (TSV vs. CSV).
@@ -299,7 +299,7 @@ other escape sequence (cursor moves, OSC window-title sets) is dropped whole
 
 ### Which files count as text
 
-1. `.txt`, `.text`, `.log` — plus `.gz` or `.zst` on any of them.
+1. `.txt`, `.text`, `.log` — plus `.gz`, `.zst`, `.bz2` or `.xz` on any of them.
 2. Otherwise, whatever the extension and magic bytes say (a `.tsv` of prose is
    still a table; a `foo.dat` starting with `PAR1` is still Parquet).
 3. Otherwise the first 8 KiB are sniffed. Text is shown, with a note on stderr
@@ -308,11 +308,12 @@ other escape sequence (cursor moves, OSC window-title sets) is dropped whole
    dump. Extension-less files (`README`, `Makefile`) get no note.
 
 Compression is detected by magic rather than by suffix, so `syslog.1.gz` works
-as well as `notes.txt.gz`, and a zstandard-wrapped `dump.zst` works as well as
-`notes.txt.zst`. The delimited-text readers (VCF, GFF/GTF, BED and the peak
-family, TSV/CSV, mpileup, PAF, MatrixMarket) accept the same `.zst` wrapper. FASTA/FASTQ
-compression stays gzip-only (bgzf), and range queries (`-r`) still require a
-bgzipped + tabix-indexed file — so those need gzip, not zstandard.
+as well as `notes.txt.gz`, and `dump.xz` as well as `notes.txt.xz`. Every text
+reader — plain text, the delimited and genomics text formats (VCF, GFF/GTF, BED
+and the peak family, TSV/CSV, mpileup, PAF, MatrixMarket, ...), FASTA/FASTQ and
+JSON — accepts gzip / bgzip, zstandard (`.zst`), bzip2 (`.bz2`) and xz (`.xz`),
+including several concatenated streams (`pbzip2`, `pixz`, `cat a.xz b.xz`).
+Range queries (`-r`) still require a bgzipped + tabix-indexed file.
 
 **Binary is refused**, deliberately unlike `less`:
 
@@ -483,7 +484,7 @@ Value-predicate filter. Grammar:
 | `~` `!~` | ECMAScript regex, **unanchored** — use `^` / `$` to anchor |
 | `contains` `startswith` `endswith` | substring tests |
 | `in (a, b, c)`, `not in (…)` | set membership; numeric columns compare numerically |
-| `in @ids.txt`, `not in @…` | members read from a file: one per line, first tab field; `.gz` / `.zst` too |
+| `in @ids.txt`, `not in @…` | members read from a file: one per line, first tab field; compressed files too |
 | `is null`, `is not null` | the column's actual nulls |
 | `has`, `lacks` | bit flags by name or number: `FLAG lacks UNMAP,SECONDARY,DUP` (samtools `-F 0x504`), `FLAG has PAIRED,READ1`, `FLAG lacks 0x904` |
 
@@ -1164,7 +1165,7 @@ $ zcat huge.tsv.gz | vv --tsv --no-header -      # plain text pipeline
   names the file, and it is removed when vv exits or is interrupted. A
   bgzipped stream is identified by content (BAM, BCF, VCF, BED, FASTQ,
   FASTA).
-* Auto-detects gzip and zstandard via magic bytes. Genomics text is read
+* Auto-detects gzip, zstandard, bzip2 and xz via magic bytes. Genomics text is read
   by its format: FASTA (`>`), FASTQ (`@` with a `+` third line; both copied
   to a temporary file for the sequence reader), SAM (an `@HD` / `@SQ` / `@RG`
   / `@PG` / `@CO` header), VCF (`##fileformat=VCF`) and GFF

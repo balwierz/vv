@@ -19,6 +19,7 @@ class Vv < Formula
   depends_on "minizip"
   depends_on "ncurses"
   depends_on "xlsxio"
+  depends_on "xz"
 
   def install
     # Every dependency lives under its own prefix, and ncurses is keg-only —
