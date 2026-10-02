@@ -424,6 +424,15 @@ work that touches the same code:
   text VCF). Typed per-sample fields: done — decided 2026-10-01: a struct per
   sample by default (`--flatten` → `S1.GT`, `S1.DP`), `--samples long` one row
   per record × sample, `--samples text` the packed strings.
+- [ ] **Static binary: system terminfo** (S) — `Dockerfile.almalinux8` builds
+  ncurses with `--with-fallbacks=xterm-256color,xterm,vt100,ansi` and no
+  `--with-terminfo-dirs`, so the released static binary finds no other
+  terminal description: under tmux / screen (`TERM=tmux-256color`,
+  `screen-256color`) or kitty / alacritty / foot the TUI does not start and
+  vv falls back to non-interactive output (seen with v1.26.0 in tmux).
+  Fix: `--with-terminfo-dirs=/etc/terminfo:/lib/terminfo:/usr/share/terminfo:/usr/lib/terminfo`
+  (+ `--with-default-terminfo-dir=/usr/share/terminfo`) and more fallbacks
+  (tmux-256color, screen-256color); check with the Docker build locally.
 - [ ] **JSON viewer, next steps** — the tree viewer (`JsonTUI` over the lazy
   `JsonDoc` index) shipped without: a vvg tree view (QTreeView over JsonDoc,
   children on `fetchMore`); `t` on a subtree (an array of objects inside the
