@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **Low-contrast JSON tree punctuation.** Fold markers, `:`, brackets, item
+  counts and collapsed previews used the table's separator colour (dark grey
+  238, dimmed); they now use the row-index colour, readable on dark and
+  light themes.
 - **`--select` table footer.** The table view printed "N more column(s) not
   shown (-c 0 to see all)" for the columns `--select` left out; `-c 0` does
   not bring those back, and the note is no longer printed with `--select`.

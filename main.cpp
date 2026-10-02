@@ -28865,7 +28865,7 @@ private:
         const int indent = std::min((int)lvl * 2, std::max(0, width / 2));
         segs.push_back({std::string((size_t)indent, ' '), 0, A_NORMAL});
         if (n.container() && n.count > 0)
-            segs.push_back({is_open(p, lvl) ? g("▾ ", "- ") : g("▸ ", "+ "), NCP_SEP, A_NORMAL});
+            segs.push_back({is_open(p, lvl) ? g("▾ ", "- ") : g("▸ ", "+ "), NCP_INDEX, A_NORMAL});
         else
             segs.push_back({"  ", 0, A_NORMAL});
         if (lvl > 0) {
@@ -28873,7 +28873,7 @@ private:
             if (par.kind == JKind::Object && !par.virt) {
                 const std::string_view k = doc_.key(n);
                 segs.push_back({ident(k) ? std::string(k) : "\"" + clean(k) + "\"", NCP_HEADER, A_BOLD});
-                segs.push_back({": ", NCP_SEP, A_NORMAL});
+                segs.push_back({": ", NCP_INDEX, A_NORMAL});
             } else {
                 segs.push_back({std::to_string(p.back().idx) + ": ", NCP_INDEX, A_DIM});
             }
@@ -28887,14 +28887,14 @@ private:
             const bool obj = n.kind == JKind::Object;
             const std::string open = n.virt ? "[" : obj ? "{" : "[";
             const std::string close = n.virt ? "]" : obj ? "}" : "]";
-            if (n.count == 0) { segs.push_back({open + close, NCP_SEP, A_NORMAL}); }
+            if (n.count == 0) { segs.push_back({open + close, NCP_INDEX, A_NORMAL}); }
             else if (is_open(p, lvl)) {
-                segs.push_back({open, NCP_SEP, A_NORMAL});
-                segs.push_back({"  " + count_label(n), NCP_SEP, A_DIM});
+                segs.push_back({open, NCP_INDEX, A_NORMAL});
+                segs.push_back({"  " + count_label(n), NCP_INDEX, A_NORMAL});
             } else {
-                segs.push_back({open + g("…", "...") + close, NCP_SEP, A_NORMAL});
-                segs.push_back({" " + count_label(n) + "  ", NCP_SEP, A_DIM});
-                if (!n.virt) segs.push_back({clean(doc_.compact(n, (size_t)std::max(8, width) * 2)), NCP_SEP, A_DIM});
+                segs.push_back({open + g("…", "...") + close, NCP_INDEX, A_NORMAL});
+                segs.push_back({" " + count_label(n) + "  ", NCP_INDEX, A_NORMAL});
+                if (!n.virt) segs.push_back({clean(doc_.compact(n, (size_t)std::max(8, width) * 2)), NCP_INDEX, A_DIM});
             }
             if (n.broken) segs.push_back({g("  ⚠ cut short", "  ! cut short"), NCP_BOOL_F, A_BOLD});
             return segs;
@@ -28903,7 +28903,7 @@ private:
         const size_t cap = (size_t)std::max(16, width) * 4;
         if (b.size() > cap) {
             segs.push_back({clean(b.substr(0, cap)), scalar_pair(n.kind), A_NORMAL});
-            segs.push_back({std::string(g("… (", "... (")) + human_bytes((int64_t)b.size()) + ")", NCP_SEP, A_DIM});
+            segs.push_back({std::string(g("… (", "... (")) + human_bytes((int64_t)b.size()) + ")", NCP_INDEX, A_DIM});
         } else {
             segs.push_back({clean(b), scalar_pair(n.kind), A_NORMAL});
         }
