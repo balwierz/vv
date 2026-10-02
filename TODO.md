@@ -441,19 +441,18 @@ work that touches the same code:
   `year=2024` partition column is inferred as int64 and printed `2_024`.
   Partition columns are labels: print them without separators (or read them
   as strings).
-- [ ] **JSON viewer, next steps** — the tree viewer (`JsonTUI` over the lazy
-  `JsonDoc` index) shipped without: a vvg tree view (QTreeView over JsonDoc,
-  children on `fetchMore`); `t` on a subtree (an array of objects inside the
-  document as a table, via `JsonSource::open_stream` over the mmap slice);
-  `t` from a JSON tab of the multi-file table viewer; `:` jump to a path or
-  line and `!` to the first error; line mode (closing brackets, `%`
-  matching); the theme picker (`T`) in the tree; `.geojson` / `.ipynb` /
-  `.har` as JSON extensions; streaming decompression instead of a temporary
-  copy for `.gz` / `.zst`; a guard against SIGBUS when a mapped file is
-  truncated while open.
-  Also: on the macOS CI runner, `tests/tui_json_check.py`'s stdin case (JSON
-  piped in, keys from /dev/tty with the pty as controlling terminal) found
-  the pty closed before the first key; it is reported, not checked, there.
+- [ ] **JSON viewer, what is left** — shipped since 1.26.1: `:` path / line
+  jump and `!` first error, `T` theme picker, line mode (`m`, `%`), `t` on a
+  nested array of objects, `t` from a JSON tab of the multi-file viewer,
+  `.geojson` / `.ipynb` / `.har`, the SIGBUS guard for a shrinking file,
+  decompression progress, and vvg's tree tab. Left:
+  - vvg tree tab: the Find bar searches tables only; searching the tree
+    needs a scan like the terminal viewer's (`JsonTUI::scan`, CLI-only today)
+    moved into the core, plus expanding the model to the hit.
+  - Compressed input is still decompressed to a temporary copy before the
+    tree opens (with progress now). Not worth replacing: the index needs
+    random access and its first scan reads the whole document, so a streamed
+    index would not show the first screen sooner.
 - [ ] **vvg: `--samples` / `--matrix` choices** (S–M) — the viewer and exports
   take both; vvg follows the defaults (struct samples, wide matrices) but has
   no toolbar control or command-line flag for them yet.
