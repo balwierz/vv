@@ -85,6 +85,7 @@ _vv() {
         '*.paf' '*.paf.gz' '*.paf.bz2' '*.paf.xz' '*.paf.zst'
         '*.mtx' '*.mtx.gz' '*.mtx.bz2' '*.mtx.xz' '*.mtx.zst'
         '*.bedpe' '*.bedpe.gz' '*.bedpe.bz2' '*.bedpe.xz' '*.bedpe.zst' '*.pairs' '*.pairs.gz' '*.pairs.bz2' '*.pairs.xz' '*.pairs.zst' '*.gct' '*.gct.gz' '*.gct.bz2' '*.gct.xz' '*.gct.zst' '*.maf' '*.maf.gz' '*.maf.bz2' '*.maf.xz' '*.maf.zst'
+        '*.m8' '*.m8.gz' '*.m8.zst' '*.m8.bz2' '*.m8.xz' '*.blast6' '*.blast6.gz' '*.blast6.zst' '*.blast6.bz2' '*.blast6.xz' '*.outfmt6' '*.outfmt6.gz' '*.outfmt6.zst' '*.outfmt6.bz2' '*.outfmt6.xz'
         '*.bim' '*.bim.gz' '*.bim.bz2' '*.bim.xz' '*.bim.zst' '*.fam' '*.fam.gz' '*.fam.bz2' '*.fam.xz' '*.fam.zst' '*.pvar' '*.pvar.gz' '*.pvar.bz2' '*.pvar.xz' '*.pvar.zst' '*.psam' '*.psam.gz' '*.psam.bz2' '*.psam.xz' '*.psam.zst'
         '*.json' '*.json.gz' '*.json.bz2' '*.json.xz' '*.json.zst'
         '*.ndjson' '*.ndjson.gz' '*.ndjson.bz2' '*.ndjson.xz' '*.ndjson.zst'

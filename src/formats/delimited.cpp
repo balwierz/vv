@@ -1290,6 +1290,11 @@ private:
             col_types.push_back({self->paf_tags_[t], ty == 'i' ? arrow::int64()
                                                     : ty == 'f' ? arrow::float64() : arrow::utf8()});
         }
+        // BLAST tabular (standard 12 columns, read headerless as f0..): percent
+        // identity, e-value and bit score are reals even when the first block
+        // happens to hold only whole numbers ("259" before "45.8").
+        if (self->dialect_ == TsvDialect::Blast)
+            for (const char* f : {"f2", "f10", "f11"}) col_types.push_back({f, arrow::float64()});
         if (kind == DelimKind::Mtx) {
             col_types = {{"row", arrow::int64()}, {"col", arrow::int64()}};
             if (self->mtx_field_ == "integer") col_types.push_back({"value", arrow::int64()});

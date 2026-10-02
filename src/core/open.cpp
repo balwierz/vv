@@ -767,6 +767,36 @@ static PlinkTable plink_table_kind(const std::string& det) {
     return PlinkTable::None;
 }
 
+// BLAST / DIAMOND tabular output (-outfmt 6, DIAMOND's default format): no
+// header row; the standard 12 columns are named when the first line fits them
+// (a custom -outfmt "6 ..." can hold any fields, in any order).
+static bool is_blast_tabular(const std::string& det) {
+    for (const char* ext : {".m8", ".blast6", ".outfmt6"})
+        if (fends_ci(det, ext) || fends_ci(det, (std::string(ext) + ".gz").c_str())) return true;
+    return false;
+}
+static const std::vector<std::string> kBlastColumns = {
+    "qseqid", "sseqid", "pident", "length", "mismatch", "gapopen",
+    "qstart", "qend", "sstart", "send", "evalue", "bitscore"};
+// The first line has the standard layout: percent identity, then six integers
+// (length, mismatches, gap opens, query and subject start / end — two of which
+// may be given as floats by some tools), e-value and bit score.
+static bool blast_standard_layout(const std::string& line) {
+    std::vector<std::string> f;
+    split_delimited_line(line, '\t', &f);
+    if (f.size() < 12) return false;
+    auto num = [](const std::string& s, bool integer) {
+        if (s.empty()) return false;
+        char* end = nullptr;
+        if (integer) { (void)std::strtoll(s.c_str(), &end, 10); }
+        else         { (void)std::strtod(s.c_str(), &end); }
+        return end && *end == '\0';
+    };
+    if (!num(f[2], false) || !num(f[10], false) || !num(f[11], false)) return false;
+    for (int i = 3; i <= 9; ++i) if (!num(f[(size_t)i], true)) return false;
+    return true;
+}
+
 // The TSV layout a file's extension names (.gz allowed): .bedpe, .pairs
 // (4DN), .gct (GenePattern), .maf (mutation annotation format).
 static TsvDialect tsv_dialect_of(const std::string& det) {
@@ -1302,7 +1332,7 @@ std::string open_source_dispatch(const std::string& path, const Config& cfg,
         return plink_genotype_refusal(path, /*pgen=*/true);
     } else if (fends_ci(det, ".bed") && is_plink_bed(path)) {
         return plink_genotype_refusal(path, /*pgen=*/false);
-    } else if (plink_table_kind(det) != PlinkTable::None) {
+    } else if (plink_table_kind(det) != PlinkTable::None || is_blast_tabular(det)) {
         dk = DelimKind::TSV;
     } else if (tsv_dialect_of(det) != TsvDialect::None) {
         // A UCSC multiple-alignment file shares .maf with the mutation
@@ -1433,8 +1463,22 @@ std::string open_source_dispatch(const std::string& path, const Config& cfg,
             }
         }
     }
-    const bool headerless = tenx || (!plink_names.empty() && cfg.header == HeaderMode::Auto);
-    const TsvDialect dialect = dk == DelimKind::TSV ? tsv_dialect_of(det) : TsvDialect::None;
+    // BLAST tabular: no header row either; the column names when the layout
+    // is the standard one (they go through the same renaming as PLINK's).
+    const bool blast = dk == DelimKind::TSV && is_blast_tabular(det);
+    if (blast) {
+        if (blast_standard_layout(delimited_first_line_after_meta(path))) {
+            plink_names = kBlastColumns;
+            plink_note = "BLAST tabular (-outfmt 6; no header row)";
+        } else {
+            plink_note = "BLAST tabular with custom columns (no header row; names unknown)";
+        }
+    }
+    const bool named_headerless = !plink_names.empty() || blast;
+    const bool headerless = tenx || (named_headerless && cfg.header == HeaderMode::Auto);
+    const TsvDialect dialect = dk != DelimKind::TSV ? TsvDialect::None
+                             : blast && !plink_names.empty() ? TsvDialect::Blast
+                             : tsv_dialect_of(det);
     std::vector<std::string> paf_tags;
     if (dk == DelimKind::PAF && !cfg.bam_tags.empty()) {
         std::string terr;
@@ -1455,7 +1499,7 @@ std::string open_source_dispatch(const std::string& path, const Config& cfg,
                                             "name", "score", "strand1", "strand2"},
                                      "BEDPE (no header row)");
     if (tenx) delimited_apply_tenx_sidecar(*src, tenx);
-    if (headerless && !plink_names.empty()) delimited_apply_column_names(*src, plink_names, plink_note);
+    if (headerless && named_headerless) delimited_apply_column_names(*src, plink_names, plink_note);
     // ENCODE peak-family variants ride on top of DelimKind::BED — the
     // dispatch detected them by extension; apply variant-specific naming
     // now that the schema is materialised.

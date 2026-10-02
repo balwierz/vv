@@ -206,6 +206,12 @@ lines and 1.3's column-metadata rows are shown above the schema, not as
 data) and the mutation annotation format (MAF); a UCSC alignment
 \fB.maf\fR (\fB##maf\fR) is shown as text
 .IP \(bu 2
+\fB.m8\fR, \fB.blast6\fR, \fB.outfmt6\fR \(en BLAST / DIAMOND tabular
+output (\fB\-outfmt 6\fR): no header row; the 12 standard columns are named
+(qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue
+bitscore) when the first line has that layout, with pident, evalue and bitscore
+read as reals; other layouts keep generic names.
+.IP \(bu 2
 \fB.bim\fR, \fB.fam\fR, \fB.pvar\fR, \fB.psam\fR \(en PLINK variant and
 sample tables, with PLINK 2's column names: \fB.bim\fR as \fBCHROM ID CM
 POS ALT REF\fR and \fB.fam\fR as \fBFID IID PAT MAT SEX PHENO1\fR (no

@@ -39,6 +39,7 @@ More screenshots, one per format: **[docs/formats.md](docs/formats.md)**.
 | FASTA / FASTQ | `.fa` `.fasta` `.fna` `.faa` `.ffn` `.frn` `.fq` `.fastq` | [screens](docs/formats.md#fasta--fastq) |
 | bigWig / bigBed / 2bit | `.bw` `.bigWig` `.bb` `.bigBed` `.2bit` | [screens](docs/formats.md#bigwig--bigbed--2bit) |
 | samtools mpileup | `.pileup` `.mpileup` `.pile` | [notes](docs/formats.md#mpileup) |
+| BLAST / DIAMOND tabular | `.m8` `.blast6` `.outfmt6` | [notes](docs/formats.md#blast--diamond-tabular) |
 | PLINK, BEDPE, pairs, GCT, MAF | `.bim` `.fam` `.pvar` `.psam` `.bedpe` `.pairs` `.gct` `.maf` | [notes](docs/formats.md#plink-and-tsv-layouts) |
 | AnnData / HDF5 / Loom / 10x | `.h5ad` `.h5` `.hdf5` `.loom` | [screens](docs/formats.md#anndata--hdf5--loom--10x) |
 | MatrixMarket | `.mtx` | [screens](docs/formats.md#matrixmarket) |

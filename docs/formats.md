@@ -13,6 +13,7 @@ build prints. Flags and options are covered in the [manual](USAGE.md).
 [FASTA / FASTQ](#fasta--fastq) ·
 [bigWig / bigBed / 2bit](#bigwig--bigbed--2bit) ·
 [mpileup](#mpileup) ·
+[BLAST / DIAMOND tabular](#blast--diamond-tabular) ·
 [PLINK and TSV layouts](#plink-and-tsv-layouts)<br>
 **Single cell and matrices** —
 [AnnData / HDF5 / Loom / 10x](#anndata--hdf5--loom--10x) ·
@@ -125,6 +126,17 @@ multi-sample file gets `depth_i` / `bases_i` / `quals_i` per sample. `vv
 x.bam --pileup -f ref.fa` produces the same rows from a BAM / CRAM.
 
 Try: `vv sample.mpileup.gz -r chr1:1000-2000` · `vv reads.bam --pileup -f ref.fa -r chr17:43045000-43045100`.
+
+## BLAST / DIAMOND tabular
+
+`.m8` `.blast6` `.outfmt6` — `-outfmt 6` output (DIAMOND's default) has no
+header row; the 12 standard columns are named (`qseqid sseqid pident length
+mismatch gapopen qstart qend sstart send evalue bitscore`) and typed, with
+`pident`, `evalue` and `bitscore` always real. A custom `-outfmt "6 ..."` file
+keeps generic column names.
+
+Try: `vv hits.m8` · `vv --filter 'evalue < 1e-10 and pident > 90' --sort bitscore:desc hits.m8` ·
+`vv --unique qseqid hits.m8`.
 
 ## PLINK and TSV layouts
 

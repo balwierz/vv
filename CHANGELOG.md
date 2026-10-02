@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **BLAST / DIAMOND tabular output** (`.m8`, `.blast6`, `.outfmt6`): the 12
+  standard `-outfmt 6` columns named and typed (`pident`, `evalue`, `bitscore`
+  always real); a custom layout keeps generic names.
 - **bzip2 and xz input.** Every text reader — delimited and genomics text,
   FASTA / FASTQ, JSON, plain text, stdin, `in @file` lists — reads `.bz2` and
   `.xz` (and FASTA / FASTQ now `.zst` too), detected by content, including

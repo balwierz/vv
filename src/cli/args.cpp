@@ -70,6 +70,8 @@ static const FormatInfo kFormats[] = {
    true,  false, false, true,  false, ""},
   {"PLINK variant / sample tables", ".bim .fam .pvar .psam", "DelimitedSource",
    true,  false, false, true,  false, ""},
+  {"BLAST / DIAMOND tabular", ".m8 .blast6 .outfmt6", "DelimitedSource",
+   true,  false, false, true,  false, ""},
   {"Genomics TSV layouts", ".bedpe .pairs .gct .maf", "DelimitedSource",
    true,  false, false, true,  false, ""},
   {"FASTA", ".fa .fasta .fna .faa .ffn .frn", "FastxSource",
@@ -215,6 +217,8 @@ static void print_usage(const char* prog) {
         "  .mtx  .mtx.gz               MatrixMarket sparse matrix (row, col, value; 0-based)\n"
         "  .bedpe  .pairs  .gct  .maf  BEDPE, 4DN pairs, GenePattern GCT, mutation MAF\n"
         "                              (TSV with their own headers)\n"
+        "  .m8  .blast6  .outfmt6      BLAST / DIAMOND tabular output (-outfmt 6;\n"
+        "                              the 12 standard columns named)\n"
         "  .bim  .fam  .pvar  .psam    PLINK variant / sample tables (a PLINK .bed /\n"
         "                              .pgen genotype file is refused, with the\n"
         "                              plink2 command that exports it to VCF)\n"

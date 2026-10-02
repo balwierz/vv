@@ -1170,6 +1170,18 @@ if require "zstd roundtrip" zstd; then
 fi
 
 echo
+echo '── BLAST / DIAMOND tabular ────────────────────────────'
+# -outfmt 6 has no header row: the 12 standard columns are named, and pident /
+# evalue / bitscore are real even when the first rows hold whole numbers.
+printf 'q1\ts1\t86.620\t142\t19\t0\t1\t142\t1\t142\t2.15e-90\t259\nq1\ts2\t43.357\t143\t76\t3\t3\t142\t4\t146\t1.18e-35\t45.8\n' > "$TMP/hits.m8"
+assert_eq_file_inline "blast_columns_named" "$("$VV" --tsv "$TMP/hits.m8" | head -1)" \
+    "$(printf 'qseqid\tsseqid\tpident\tlength\tmismatch\tgapopen\tqstart\tqend\tsstart\tsend\tevalue\tbitscore')"
+assert_contains "blast_bitscore_double" "$("$VV" --schema --color=never "$TMP/hits.m8")" "bitscore  double"
+assert_eq_file_inline "blast_filter" "$("$VV" --count --filter 'evalue < 1e-50' "$TMP/hits.m8")" "1"
+printf 'q1\ts1\t1e-5\n' > "$TMP/custom.outfmt6"
+assert_contains "blast_custom_layout_generic" "$("$VV" --tsv "$TMP/custom.outfmt6" | head -1)" "f0"
+
+echo
 echo '── bzip2 (.bz2) and xz (.xz) input ────────────────────'
 # Every text reader decodes bzip2 and xz, chosen by magic bytes: delimited and
 # genomics text, FASTA / FASTQ (through kseq, not BGZF), JSON, plain text and

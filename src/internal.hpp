@@ -802,7 +802,7 @@ bool is_parquet_source(const TabularSource& src);
 enum class DelimKind { CSV, TSV, BED, VCF, GFF, SAM, PAF, Mpileup, Mtx };
 
 // TSV layouts read by DelimKind::TSV with their own header handling.
-enum class TsvDialect { None, Bedpe, Pairs, Gct, Maf };
+enum class TsvDialect { None, Bedpe, Pairs, Gct, Maf, Blast };
 
 // ENCODE peak / signal flavours of BED. Carried alongside DelimKind::BED so
 // the BED reader can apply variant-specific column names (signalValue,
