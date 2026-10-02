@@ -27,7 +27,7 @@
 %global xlsxio_version 0.2.36
 
 Name:           vv
-Version:        1.25.0
+Version:        1.26.0
 Release:        1%{?dist}
 Summary:        Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)
 License:        MIT
@@ -143,6 +143,13 @@ rm -f  %{buildroot}%{_libdir}/pkgconfig/mimalloc.pc
 %{_datadir}/icons/hicolor/scalable/apps/vv.svg
 
 %changelog
+* Fri Oct 02 2026 Piotr Balwierz <nikt@tuta.com> - 1.26.0-1
+- Update to 1.26.0: JSON documents open in a folding tree viewer on a
+  terminal (jq paths, search, copy, previews, t for the table view); on a
+  pipe they print re-indented, or as path = value lines with --json-paths;
+  JSON on stdin is recognised by its content; JSON tables no longer open
+  blank in the table viewer.
+
 * Thu Oct 01 2026 Piotr Balwierz <nikt@tuta.com> - 1.25.0-1
 - Update to 1.25.0: multi-sample VCF / BCF samples as typed structs
   (--samples struct|long|text); --matrix long for HDF5 / AnnData / Loom /

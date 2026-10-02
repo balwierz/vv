@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.26.0] - 2026-10-02
+
 ### Added
 - **JSON tree viewer.** On a terminal a JSON / NDJSON file (or JSON piped
   in) opens in a folding tree: keys and indices, scalars as written,
@@ -34,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   or any export / report flag still reads the file as a table.
 
 ### Fixed
+- **Garbled glyphs in builds made on Debian / Ubuntu.** The build linked
+  the narrow ncurses library there, which prints UTF-8 glyphs (the table's
+  box lines, ellipses) as `M-bM-^TM-^@`. It now requires ncursesw.
 - **JSON in the table viewer started blank.** The rows of a JSON file stayed
   empty until a key was pressed: the first frame read the first batch but
   loaded no columns from it.
