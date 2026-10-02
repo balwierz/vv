@@ -28607,6 +28607,7 @@ public:
             timeout(-1);
             if (ch == ERR) continue;
             if (help_) { help_ = false; continue; }
+            if (theme_open_) { theme_key(ch); continue; }
             if (pane_) { pane_key(ch); continue; }
             if (input_) { input_key(ch); if (quit_) return Exit::Quit; continue; }
             const std::string keep_flash = flash_;
@@ -28653,6 +28654,11 @@ public:
                     input_ = true; input_cmd_ = true; input_buf_.clear(); input_cur_ = 0;
                     break;
                 case '!': goto_error(); break;
+                case 'T':
+                    theme_open_ = true;
+                    theme_cur_ = 0;
+                    for (int i = 0; i < kNumThemes; ++i) if (kAllThemes[i] == g_theme) theme_cur_ = i;
+                    break;
                 case 'n': if (!query_.empty()) search(fwd_); break;
                 case 'N': if (!query_.empty()) search(!fwd_); break;
                 case 'y': copy_value(); break;
@@ -28682,6 +28688,8 @@ private:
     std::string               flash_;
     bool                      help_ = false;
     bool                      quit_ = false;       // ":q"
+    bool                      theme_open_ = false; // the T picker
+    int                       theme_cur_ = 0;
     // search
     std::string               query_;
     JsonSearch                pat_;
@@ -28987,6 +28995,7 @@ private:
         }
         draw_status();
         if (pane_) draw_pane();
+        if (theme_open_) draw_theme_picker();
         if (help_) draw_help();
         refresh();
     }
@@ -29337,16 +29346,21 @@ private:
             default: break;
         }
     }
+    // A frame, blank inside: Unicode, or ASCII when the tree's glyphs are
+    // (--box ascii, or outside a UTF-8 locale).
     void draw_box(int y0, int x0, int h, int w, const std::string& title) {
-        attron(COLOR_PAIR(NCP_SEP));
-        for (int y = y0; y < y0 + h; ++y) mvhline(y, x0, ' ', w);
-        mvhline(y0, x0, ACS_HLINE, w);
-        mvhline(y0 + h - 1, x0, ACS_HLINE, w);
-        mvvline(y0, x0, ACS_VLINE, h);
-        mvvline(y0, x0 + w - 1, ACS_VLINE, h);
-        mvaddch(y0, x0, ACS_ULCORNER); mvaddch(y0, x0 + w - 1, ACS_URCORNER);
-        mvaddch(y0 + h - 1, x0, ACS_LLCORNER); mvaddch(y0 + h - 1, x0 + w - 1, ACS_LRCORNER);
-        attroff(COLOR_PAIR(NCP_SEP));
+        if (h < 2 || w < 2) return;
+        const BoxGlyphs& bx = ascii_ ? kBoxAscii : kBoxUnicode;
+        const std::string hl = repeat_utf8(bx.hline, w - 2);
+        attron(COLOR_PAIR(NCP_INDEX));
+        mvaddstr(y0, x0, (std::string(bx.tl) + hl + bx.tr).c_str());
+        for (int y = y0 + 1; y < y0 + h - 1; ++y) {
+            mvaddstr(y, x0, bx.vline);
+            mvhline(y, x0 + 1, ' ', w - 2);
+            mvaddstr(y, x0 + w - 1, bx.vline);
+        }
+        mvaddstr(y0 + h - 1, x0, (std::string(bx.bl) + hl + bx.br).c_str());
+        attroff(COLOR_PAIR(NCP_INDEX));
         attron(A_BOLD);
         mvaddnstr(y0, x0 + 2, title.c_str(), std::max(0, w - 4));
         attroff(A_BOLD);
@@ -29359,6 +29373,46 @@ private:
             mvaddstr(2 + i, 3, l.substr(0, utf8_prefix_for_width(l, w - 4)).c_str());
         }
     }
+    // ── Theme picker (T): the table viewer's themes, saved to the config ───
+    void theme_key(int ch) {
+        switch (ch) {
+            case 'q': case 'T': case 27: theme_open_ = false; break;
+            case 'j': case KEY_DOWN: theme_cur_ = std::min(kNumThemes - 1, theme_cur_ + 1); break;
+            case 'k': case KEY_UP: theme_cur_ = std::max(0, theme_cur_ - 1); break;
+            case 'g': case KEY_HOME: theme_cur_ = 0; break;
+            case 'G': case KEY_END: theme_cur_ = kNumThemes - 1; break;
+            case ' ': case '\n': case '\r': case KEY_ENTER: {
+                g_theme = kAllThemes[theme_cur_];
+                init_pairs();
+                const bool saved = save_user_setting("theme", g_theme->name);
+                flash_ = std::string("theme: ") + g_theme->name + (saved ? "" : "  (couldn't save)");
+                theme_open_ = false;
+                clearok(stdscr, TRUE);
+                break;
+            }
+            default: break;
+        }
+    }
+    void draw_theme_picker() {
+        int wn = 0;
+        for (int i = 0; i < kNumThemes; ++i) wn = std::max(wn, display_width(kAllThemes[i]->name));
+        const std::string hint = "j/k move  Enter select+save  Esc close";
+        const int w = std::min(cols_, std::max(wn + 8, display_width(hint) + 4));
+        const int h = std::min(rows_, kNumThemes + 4);
+        const int y0 = std::max(0, (rows_ - h) / 2), x0 = std::max(0, (cols_ - w) / 2);
+        draw_box(y0, x0, h, w, " theme ");
+        for (int i = 0; i < kNumThemes && i < h - 3; ++i) {
+            const std::string line = std::string(kAllThemes[i] == g_theme ? "[*] " : "[ ] ") + kAllThemes[i]->name;
+            const attr_t a = i == theme_cur_ ? (attr_t)(A_BOLD | A_REVERSE) : A_NORMAL;
+            attron(a);
+            mvaddnstr(y0 + 1 + i, x0 + 2, line.c_str(), w - 4);
+            attroff(a);
+        }
+        attron(A_DIM);
+        mvaddnstr(y0 + h - 2, x0 + 2, hint.c_str(), w - 4);
+        attroff(A_DIM);
+    }
+
     void draw_help() {
         struct Row { const char* k; const char* d; };
         static const Row rows[] = {
@@ -29377,6 +29431,7 @@ private:
             {"!", "go to the first error"},
             {"y  p  Y", "copy the value / its jq path / its key (OSC 52)"},
             {"t", "table view of the records (t there comes back)"},
+            {"T", "choose a colour theme (saved)"},
             {"q  Esc", "quit (Esc clears a search first)"},
             {"H  F1", "this help"},
         };

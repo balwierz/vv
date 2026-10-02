@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **JSON tree: theme picker (`T`)**, as in the table viewer; the choice is
+  saved to the config file. The tree's overlays (help, value, theme) are
+  framed like the table viewer's, in ASCII outside a UTF-8 locale.
 - **JSON tree: go to a path, a line or the first error.** `:` takes a line
   number (`:120`) or a jq-style path (`:.samples[3].id`, `:.["odd key"]`);
   `!` jumps to the first error in an invalid document; `:q` quits.

@@ -135,6 +135,23 @@ def main():
     check("search", status(txt), (".items[2].name", "string"))
     txt, raw, hung = run(vv, [doc], [b"/carol\r", b"y", b"p"])
     check("copy", osc52(raw)[-2:], ["carol", ".items[2].name"])
+    # T picks a theme and saves it to the config file.
+    cfg = os.path.join(tmp, "themecfg")
+    os.makedirs(cfg, exist_ok=True)
+    old_cfg = os.environ.get("XDG_CONFIG_HOME")
+    os.environ["XDG_CONFIG_HOME"] = cfg
+    txt, raw, hung = run(vv, [doc], [b"T", b"j", b"\r"])
+    if old_cfg is None:
+        del os.environ["XDG_CONFIG_HOME"]
+    else:
+        os.environ["XDG_CONFIG_HOME"] = old_cfg
+    try:
+        saved = open(os.path.join(cfg, "vv", "config")).read()
+    except OSError:
+        saved = ""
+    if "theme = dark" not in saved or "theme: dark" not in txt:
+        bad.append("theme picker: T j Enter did not select and save 'dark' (%r)" % saved)
+
     # ":" goes to a path or a line; a bad path says why.
     txt, raw, hung = run(vv, [doc], [b"1", b":.items[2].name\r"])
     check("goto path", status(txt), (".items[2].name", "string"))
