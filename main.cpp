@@ -12404,10 +12404,13 @@ static std::string human_bytes(int64_t sz) {
 }
 
 // Copy an already-decoded stream (stdin after gunzip) into a new temporary
-// file ending in `ext`, removed at exit like spool_pipe's copies.
+// file ending in `ext`, removed at exit like spool_pipe's copies. With a
+// `progress` label and stderr on a terminal, the bytes written so far are
+// shown on one stderr line ("vv: decompressing x.json.gz: 1.2 GiB"),
+// cleared at the end.
 static std::string spool_stream(const std::shared_ptr<arrow::io::InputStream>& in,
                                 const std::string& ext, std::string* path_out,
-                                int64_t* bytes_out) {
+                                int64_t* bytes_out, const std::string& progress = "") {
     const char* tmpdir = std::getenv("TMPDIR");
     std::string tmpl = std::string(tmpdir && *tmpdir ? tmpdir : "/tmp") + "/vv-pipe-XXXXXX";
     std::vector<char> name(tmpl.begin(), tmpl.end());
@@ -12417,7 +12420,9 @@ static std::string spool_stream(const std::shared_ptr<arrow::io::InputStream>& i
                         " (set TMPDIR)";
     std::string path(name.data());
     spool_register(path);
-    int64_t total = 0;
+    int64_t total = 0, shown_at = 0;
+    const bool show = !progress.empty() && isatty(STDERR_FILENO);
+    const std::string shown_name = progress.substr(progress.find_last_of('/') + 1);
     std::string err;
     for (;;) {
         auto buf = in->Read(1 << 20);
@@ -12431,7 +12436,13 @@ static std::string spool_stream(const std::shared_ptr<arrow::io::InputStream>& i
             p += w; n -= (size_t)w; total += w;
         }
         if (!err.empty()) break;
+        if (show && total - shown_at >= (32 << 20)) {
+            shown_at = total;
+            std::fprintf(stderr, "\rvv: decompressing %s: %s ", shown_name.c_str(), human_bytes(total).c_str());
+            std::fflush(stderr);
+        }
     }
+    if (show && shown_at > 0) { std::fprintf(stderr, "\r\033[K"); std::fflush(stderr); }
     ::close(out);
     if (!err.empty()) return "copying the input to " + path + " failed: " + err;
     const std::string named = path + ext;
@@ -31446,7 +31457,7 @@ int main(int argc, char** argv) {
                     std::shared_ptr<arrow::io::InputStream> in;
                     if (auto e = open_json_file(cfg.path, &in); !e.empty()) { report(cfg.path, e); return 1; }
                     int64_t bytes = 0;
-                    if (auto e = spool_stream(in, ".json", &file, &bytes); !e.empty()) {
+                    if (auto e = spool_stream(in, ".json", &file, &bytes, cfg.path); !e.empty()) {
                         report(cfg.path, e);
                         return 1;
                     }
@@ -31504,7 +31515,7 @@ int main(int argc, char** argv) {
             (cfg.json_tree || cfg.interactive || isatty(STDOUT_FILENO))) {
             std::string tmp;
             int64_t bytes = 0;
-            if (auto e = spool_stream(js->stream(), ".json", &tmp, &bytes); !e.empty()) {
+            if (auto e = spool_stream(js->stream(), ".json", &tmp, &bytes, label); !e.empty()) {
                 report(label, e);
                 return 1;
             }
@@ -31896,7 +31907,7 @@ int main(int argc, char** argv) {
                                 std::shared_ptr<arrow::io::InputStream> in;
                                 int64_t bytes = 0;
                                 e = open_json_file(jp, &in);
-                                if (e.empty()) e = spool_stream(in, ".json", &file, &bytes);
+                                if (e.empty()) e = spool_stream(in, ".json", &file, &bytes, jp);
                             }
                             if (e.empty()) e = open_json_tree_view(file, jp, jp, json_path_kind(jp) == 2, &view);
                             if (!e.empty()) {

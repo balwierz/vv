@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Decompression progress for compressed JSON.** Before the tree opens a
+  `.json.gz` / `.zst` (or JSON piped in), the copy it maps is written with
+  a progress line on stderr (`vv: decompressing x.json.gz: 1.2 GiB`).
 - **JSON tree from the multi-file viewer.** With several files open, `t` on
   a JSON file's tab opens its tree view; `t` there on the document returns
   to the tabs, and the tree keeps its place between visits.
