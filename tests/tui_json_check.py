@@ -22,7 +22,7 @@ status bar ("<jq path>  <type> ...") of the last frame:
 Usage: tui_json_check.py <vv-binary> <tmpdir>
 Exit 0 on success, 1 on failure.
 """
-import base64, fcntl, json, os, re, select, signal, struct, sys, termios, time
+import base64, fcntl, json, locale, os, re, select, signal, struct, sys, termios, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tui_cursor_check import run  # noqa: E402
@@ -110,6 +110,28 @@ def main():
 
     txt, raw, hung = run(vv, [doc], [])
     check("open", status(txt), (".", "object"))
+    # Under a UTF-8 locale the tree draws its Unicode glyphs (the locale is
+    # set when the terminal session opens, which may follow building the tree).
+    utf8 = None
+    for name in ("C.UTF-8", "en_US.UTF-8"):
+        try:
+            locale.setlocale(locale.LC_CTYPE, name)
+            utf8 = name
+            break
+        except locale.Error:
+            pass
+    locale.setlocale(locale.LC_CTYPE, "")
+    if utf8:
+        saved = {k: os.environ.get(k) for k in ("LC_ALL", "LANG")}
+        os.environ["LC_ALL"] = utf8
+        txt_u, _, _ = run(vv, [doc], [])
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        if "\u25be" not in txt_u:
+            bad.append("glyphs: no \u25be in the tree under LC_ALL=%s" % utf8)
     if "valid" not in txt:
         bad.append("open: no validation state in the status bar")
     # Strings are drawn in the string colour, not in an uninitialised pair
