@@ -434,6 +434,9 @@ work that touches the same code:
   `.har` as JSON extensions; streaming decompression instead of a temporary
   copy for `.gz` / `.zst`; a guard against SIGBUS when a mapped file is
   truncated while open.
+  Also: on the macOS CI runner, `tests/tui_json_check.py`'s stdin case (JSON
+  piped in, keys from /dev/tty with the pty as controlling terminal) found
+  the pty closed before the first key; it is reported, not checked, there.
 - [ ] **vvg: `--samples` / `--matrix` choices** (S–M) — the viewer and exports
   take both; vvg follows the defaults (struct samples, wide matrices) but has
   no toolbar control or command-line flag for them yet.

@@ -28559,6 +28559,8 @@ public:
     enum class Exit { Quit, OpenTable };
 
     JsonTUI(vvjson::JsonDoc& doc, std::string label) : doc_(doc), label_(std::move(label)) {
+        // Outside a UTF-8 locale (the ASCII frame style) the glyphs are ASCII.
+        ascii_ = g_box && std::strcmp(g_box->vline, "|") == 0;
         const uint64_t sz = doc_.size();
         depth_ = doc_.root().virt ? 1 : sz <= (256u << 10) ? 99 : sz <= (16u << 20) ? 2 : 1;
         cur_.push_back({doc_.root(), -1});
@@ -28658,6 +28660,8 @@ private:
     std::string               pane_value_;
     int                       pane_top_ = 0;
     int                       pair_str_ = 0;
+    bool                      ascii_ = false;
+    const char* g(const char* utf8, const char* plain) const { return ascii_ ? plain : utf8; }
 
     static uint64_t ovkey(const JNode& n) { return n.virt ? UINT64_MAX : n.off; }
     int data_rows() const { return std::max(1, rows_ - 2); }
@@ -28845,9 +28849,8 @@ private:
         const JNode& n = p.back().node;
         const int indent = std::min((int)lvl * 2, std::max(0, width / 2));
         segs.push_back({std::string((size_t)indent, ' '), 0, A_NORMAL});
-        const bool ascii = g_box && std::strcmp(g_box->vline, "|") == 0;
         if (n.container() && n.count > 0)
-            segs.push_back({is_open(p, lvl) ? (ascii ? "- " : "▾ ") : (ascii ? "+ " : "▸ "), NCP_SEP, A_NORMAL});
+            segs.push_back({is_open(p, lvl) ? g("▾ ", "- ") : g("▸ ", "+ "), NCP_SEP, A_NORMAL});
         else
             segs.push_back({"  ", 0, A_NORMAL});
         if (lvl > 0) {
@@ -28861,7 +28864,7 @@ private:
             }
         }
         if (n.kind == JKind::Error) {
-            segs.push_back({"⚠ " + (doc_.has_struct_err() ? doc_.struct_err() : std::string("invalid JSON")) +
+            segs.push_back({std::string(g("⚠ ", "! ")) + (doc_.has_struct_err() ? doc_.struct_err() : std::string("invalid JSON")) +
                                 " at byte " + std::to_string(n.off), NCP_BOOL_F, A_BOLD});
             return segs;
         }
@@ -28874,22 +28877,22 @@ private:
                 segs.push_back({open, NCP_SEP, A_NORMAL});
                 segs.push_back({"  " + count_label(n), NCP_SEP, A_DIM});
             } else {
-                segs.push_back({open + "…" + close, NCP_SEP, A_NORMAL});
+                segs.push_back({open + g("…", "...") + close, NCP_SEP, A_NORMAL});
                 segs.push_back({" " + count_label(n) + "  ", NCP_SEP, A_DIM});
                 if (!n.virt) segs.push_back({clean(doc_.compact(n, (size_t)std::max(8, width) * 2)), NCP_SEP, A_DIM});
             }
-            if (n.broken) segs.push_back({"  ⚠ cut short", NCP_BOOL_F, A_BOLD});
+            if (n.broken) segs.push_back({g("  ⚠ cut short", "  ! cut short"), NCP_BOOL_F, A_BOLD});
             return segs;
         }
         const std::string_view b = doc_.bytes(n);
         const size_t cap = (size_t)std::max(16, width) * 4;
         if (b.size() > cap) {
             segs.push_back({clean(b.substr(0, cap)), scalar_pair(n.kind), A_NORMAL});
-            segs.push_back({"… (" + human_bytes((int64_t)b.size()) + ")", NCP_SEP, A_DIM});
+            segs.push_back({std::string(g("… (", "... (")) + human_bytes((int64_t)b.size()) + ")", NCP_SEP, A_DIM});
         } else {
             segs.push_back({clean(b), scalar_pair(n.kind), A_NORMAL});
         }
-        if (n.broken) segs.push_back({"  ⚠ cut short", NCP_BOOL_F, A_BOLD});
+        if (n.broken) segs.push_back({g("  ⚠ cut short", "  ! cut short"), NCP_BOOL_F, A_BOLD});
         return segs;
     }
     bool row_matches(const Path& p) const {
@@ -28955,8 +28958,8 @@ private:
 
     std::string type_info(const JNode& n) const {
         switch (n.kind) {
-            case JKind::Object: return "object · " + count_label(n);
-            case JKind::Array:  return (n.virt ? std::string("document · ") : "array · ") + count_label(n);
+            case JKind::Object: return std::string("object") + g(" · ", " - ") + count_label(n);
+            case JKind::Array:  return std::string(n.virt ? "document" : "array") + g(" · ", " - ") + count_label(n);
             case JKind::String: return "string";
             case JKind::Number: return "number";
             case JKind::True: case JKind::False: return "boolean";
@@ -28977,7 +28980,7 @@ private:
         curs_set(0);
         const JNode& n = cur_.back().node;
         std::string left = " " + path_str(cur_) + "  " + type_info(n);
-        if (!n.container() && n.kind != JKind::Error) left += " · " + human_bytes((int64_t)(n.end - n.off));
+        if (!n.container() && n.kind != JKind::Error) left += g(" · ", " - ") + human_bytes((int64_t)(n.end - n.off));
         std::string right;
         const uint64_t pos = n.virt ? 0 : n.start();
         const int pct = doc_.size() ? (int)(100.0 * (double)pos / (double)doc_.size()) : 0;
@@ -28986,10 +28989,11 @@ private:
         if (v == 0) {
             const int vp = doc_.size() ? (int)(100.0 * (double)doc_.validated_bytes() / (double)doc_.size()) : 0;
             right += "validating " + std::to_string(vp) + "%";
-        } else if (v == 1) right += "✓ valid";
+        } else if (v == 1) right += g("✓ valid", "valid");
         else {
             const vvjson::JsonError e = doc_.validation_error();
-            right += "⚠ invalid at " + std::to_string(e.line) + ":" + std::to_string(e.col);
+            right += std::string(g("⚠ invalid at ", "invalid at ")) + std::to_string(e.line) + ":" +
+                     std::to_string(e.col);
         }
         right += "  H:help ";
         if (!flash_.empty()) left += "   " + flash_;
@@ -29029,7 +29033,8 @@ private:
                 const int pct = (int)(100.0 * (double)(i - a) / (double)std::max<uint64_t>(1, b - a));
                 attron(A_REVERSE);
                 mvhline(rows_ - 1, 0, ' ', cols_);
-                mvaddstr(rows_ - 1, 0, (" searching… " + std::to_string(pct) + "%  (any key cancels)").c_str());
+                mvaddstr(rows_ - 1, 0, (std::string(" searching") + g("… ", "... ") + std::to_string(pct) +
+                                        "%  (any key cancels)").c_str());
                 attroff(A_REVERSE);
                 refresh();
             }
@@ -29188,9 +29193,9 @@ private:
     void draw_help() {
         struct Row { const char* k; const char* d; };
         static const Row rows[] = {
-            {"↑↓  j k", "move"},
-            {"←  h", "collapse; on a leaf or closed node, go to the parent"},
-            {"→  l", "expand; if open, go to the first child"},
+            {"j k  Down Up", "move"},
+            {"h  Left", "collapse; on a leaf or closed node, go to the parent"},
+            {"l  Right", "expand; if open, go to the first child"},
             {"Space  Enter", "toggle; Enter on a value opens it in full"},
             {"J  K", "next / previous sibling"},
             {"e  E", "expand the node / the node and everything inside"},
@@ -29209,7 +29214,7 @@ private:
         for (const Row& r : rows) { wk = std::max(wk, display_width(r.k)); wd = std::max(wd, display_width(r.d)); }
         const int w = std::min(cols_, wk + wd + 6), h = std::min(rows_, n + 2);
         const int y0 = std::max(0, (rows_ - h) / 2), x0 = std::max(0, (cols_ - w) / 2);
-        draw_box(y0, x0, h, w, " vv JSON — keys ");
+        draw_box(y0, x0, h, w, " vv JSON - keys ");
         for (int i = 0; i < n && i < h - 2; ++i) {
             attron(A_BOLD);
             mvaddnstr(y0 + 1 + i, x0 + 2, rows[i].k, w - 4);
