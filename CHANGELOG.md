@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Blank right-hand columns on the table viewer's first frame.** A column
+  that came into view only after the column widths were fitted (e.g. `AF` of
+  a VCF split into INFO columns, on a 110-column terminal) was not loaded and
+  painted empty until the first key press.
+
 ## [1.26.0] - 2026-10-02
 
 ### Added

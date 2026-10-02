@@ -4400,18 +4400,20 @@ fi
 assert_exit_code "json_tree_with_table_flag" 1 "$VV" --tree --tsv "$TMP/j.ndjson"
 assert_exit_code "json_tree_not_json" 1 "$VV" --tree "$DATA/tiny.parquet"
 
-# A source that reads nothing at open (JSON) shows its rows on the first
-# frame of the table viewer; they used to stay blank until a key was pressed
-# (or the window was resized). Read the first second of output only.
-if command -v python3 >/dev/null 2>&1; then
-    printf '{"id":1,"name":"alice"}\n{"id":2,"name":"bob"}\n' > "$TMP/first_paint.ndjson"
-    FP=$(python3 - "$VV" "$TMP/first_paint.ndjson" <<'PYFP'
+# The first frame of the table viewer shows every column on screen: a source
+# that reads nothing at open (JSON) used to stay blank until a key was pressed,
+# and a column let in at the right edge once the widths were fitted (the AF
+# column of an INFO-split VCF at 110 columns) painted blank the same way.
+# first_paint NEEDLE COLS ARGS... prints True when NEEDLE is in the first 1.5 s.
+first_paint() {
+    python3 - "$VV" "$@" <<'PYFP'
 import fcntl, os, pty, select, signal, struct, sys, termios, time
+vv, needle, cols, args = sys.argv[1], sys.argv[2].encode(), int(sys.argv[3]), sys.argv[4:]
 pid, fd = pty.fork()
 if pid == 0:
     os.environ["TERM"] = "xterm-256color"
-    os.execv(sys.argv[1], [sys.argv[1], "-i", "--no-tree", sys.argv[2]])
-fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 12, 80, 0, 0))
+    os.execv(vv, [vv, "-i"] + args)
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 12, cols, 0, 0))
 out, end = b"", time.time() + 1.5
 while time.time() < end:
     r, _, _ = select.select([fd], [], [], 0.1)
@@ -4419,10 +4421,26 @@ while time.time() < end:
         try: out += os.read(fd, 65536)
         except OSError: break
 os.kill(pid, signal.SIGKILL); os.waitpid(pid, 0)
-print(b"alice" in out)
+print(needle in out)
 PYFP
-)
-    assert_eq_file_inline "tui_json_table_first_paint" "$FP" "True"
+}
+if command -v python3 >/dev/null 2>&1; then
+    printf '{"id":1,"name":"alice"}\n{"id":2,"name":"bob"}\n' > "$TMP/first_paint.ndjson"
+    assert_eq_file_inline "tui_json_table_first_paint" \
+        "$(first_paint alice 80 --no-tree "$TMP/first_paint.ndjson")" "True"
+    {
+        printf '##fileformat=VCFv4.2\n'
+        printf '##INFO=<ID=AC,Number=A,Type=Integer,Description="c">\n'
+        printf '##INFO=<ID=AF,Number=A,Type=Float,Description="f">\n'
+        printf '##INFO=<ID=DP,Number=1,Type=Integer,Description="d">\n'
+        printf '##INFO=<ID=GENE,Number=1,Type=String,Description="g">\n'
+        printf '##FORMAT=<ID=GT,Number=1,Type=String,Description="g">\n'
+        printf '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\n'
+        printf 'chr1\t161541876\trs98795868\tA\tC\t528.3\tPASS\tAC=3;AF=0.667;DP=191;GENE=FCGR3A\tGT\t1/1\t0/1\n'
+        printf 'chr1\t161542113\trs40360311\tG\tC\t852.1\tPASS\tAC=1;AF=0.250;DP=305;GENE=FCGR3A\tGT\t0/0\t0/1\n'
+    } > "$TMP/first_paint.vcf"
+    assert_eq_file_inline "tui_vcf_first_paint_right_edge" \
+        "$(first_paint 0.667 110 "$TMP/first_paint.vcf")" "True"
 fi
 
 # Search in a sorted view whose order cycles through every row group lands on

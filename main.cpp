@@ -27678,8 +27678,10 @@ private:
         // Prefetch just the source columns that are on screen right now,
         // then fit integer column widths to the rows currently visible.
         // Recompute visible_cols afterwards: width changes may add or drop
-        // columns at the right edge.
-        {
+        // columns at the right edge, and a column that just came into view
+        // has to be loaded too, or it paints blank until the next frame —
+        // so repeat until the set is stable (narrowing converges fast).
+        for (int pass = 0; pass < 3; ++pass) {
             std::vector<int> virt;
             virt.reserve(vc.size());
             for (auto& c : vc) virt.push_back(c.col);
@@ -27687,8 +27689,13 @@ private:
             frame_cells_.clear();   // per-frame; populated by the fit pass below
             autosize_string_columns();   // once per tab, when data is available
             fit_widths_to_visible(virt);
+            auto next = visible_cols();
+            bool same = next.size() == vc.size();
+            for (size_t i = 0; same && i < next.size(); ++i)
+                same = next[i].col == vc[i].col;
+            vc = std::move(next);
+            if (same) break;
         }
-        vc = visible_cols();
         draw_banner();
         draw_tabbar();
         if (!text_view_) draw_header(vc);
