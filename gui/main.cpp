@@ -23,6 +23,8 @@
 #include <QFileInfo>
 #include <QFutureWatcher>
 #include <QTimer>
+#include <QThread>
+#include <QElapsedTimer>
 #include <QtConcurrent/QtConcurrentRun>
 #include <QHeaderView>
 #include <QInputDialog>
@@ -1742,6 +1744,30 @@ int main(int argc, char** argv) {
                 std::printf("detail %s -> %s\n", step.toLocal8Bit().constData(),
                             win.detailForTest(rc[0].toInt(), rc[1].toInt()).toLocal8Bit().constData());
             }
+        // Optional screenshot for the docs: VVG_SCREENSHOT=out.png, after the
+        // options above (tab, sort, detail row, ...); VVG_SCREENSHOT_SIZE=WxH
+        // (default 1100x700). Works headless (QT_QPA_PLATFORM=offscreen).
+        if (const char* sh = std::getenv("VVG_SCREENSHOT"); sh && *sh) {
+            int w = 1100, h = 700;
+            if (const char* sz = std::getenv("VVG_SCREENSHOT_SIZE"); sz && *sz)
+                std::sscanf(sz, "%dx%d", &w, &h);
+            win.resize(std::max(320, w), std::max(240, h));
+            win.show();
+            // Let layout and short animations (the filter field's clear
+            // button fades in) finish, so the image is the same every run.
+            QElapsedTimer settle;
+            settle.start();
+            while (settle.elapsed() < 400) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+                QThread::msleep(5);
+            }
+            if (win.grab().save(QString::fromLocal8Bit(sh)))
+                std::printf("screenshot -> %s\n", sh);
+            else {
+                std::fprintf(stderr, "vvg: cannot write %s\n", sh);
+                return 1;
+            }
+        }
         return 0;
     }
 
