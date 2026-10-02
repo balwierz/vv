@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **Empty table output.** A `--filter` that matched nothing, or a region
+  with no records, printed nothing in the table view (exit 0); the header,
+  the footer and "no rows match --filter" are now printed, as for an empty
+  file.
 - **AnnData `obs` / `var` with `-n` and `--filter` / `--sort`.** `-n N`
   limited the rows read, so the filter or sort saw only the first N rows
   (`-n 3 --filter 'cell_type == "B"'` found nothing when the first three

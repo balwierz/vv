@@ -29548,7 +29548,15 @@ static std::string print_table(TabularSource& src, const Config& cfg,
             }
         }
     }
-    if (!data) return "";
+    // Nothing matched (or nothing to read): draw the header and the
+    // "0 rows" footer, as for an empty file, rather than print nothing.
+    if (!data) {
+        arrow::FieldVector fv;
+        for (int i : read_indices) fv.push_back(schema->field(i));
+        auto empty = arrow::Table::MakeEmpty(arrow::schema(fv));
+        if (!empty.ok()) return "";
+        data = empty.ValueOrDie();
+    }
     // Drop filter-only columns from `data` so the display loop's column
     // indices line up with col_indices (the user-requested set).
     if (read_indices != col_indices)
@@ -29632,8 +29640,9 @@ static std::string print_table(TabularSource& src, const Config& cfg,
 
     // Summary
     int64_t total = (tr >= 0) ? tr : n_display;
-    std::printf("\n%s[%lld rows x %d columns]%s\n",
-                g_color.meta_key, (long long)total, num_cols, g_color.reset);
+    std::printf("\n%s[%lld rows x %d columns]%s%s\n",
+                g_color.meta_key, (long long)total, num_cols, g_color.reset,
+                (have_filter && n_display == 0) ? "  no rows match --filter" : "");
 
     if (with_footer) print_schema_block(src);
     return "";

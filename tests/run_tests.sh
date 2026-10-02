@@ -2440,6 +2440,12 @@ refute_contains "select_no_not_shown_note" "$SEL_TABLE" "not shown"
 assert_contains "c_clamp_not_shown_note" \
     "$("$VV" -n 2 --color=never -c 2 "$DATA/tiny.parquet" 2>&1)" "more column(s) not shown"
 
+# A filter that matches nothing still draws the table header, with a note in
+# the footer; it used to print nothing at all and exit 0.
+NOMATCH=$("$VV" --color=never --filter 'Score > 100' "$DATA/tiny.parquet" 2>&1)
+assert_contains "filter_no_match_header" "$NOMATCH" "Score"
+assert_contains "filter_no_match_note"   "$NOMATCH" "no rows match --filter"
+
 # AnnData obs / var with -n and --filter / --sort: the filter and the sort
 # range over every row, then -n cuts the result. -n used to cap the rows read,
 # so `-n 1 --filter 'cluster == "B"'` looked at cell0 only and found nothing.
