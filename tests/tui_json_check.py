@@ -119,9 +119,10 @@ def main():
     txt, raw, hung = run(vv, [doc], [b"j", b"j", b"l", b"h", b"h"])
     check("h to parent", status(txt), (".items", "array"))
     txt, raw, hung = run(vv, [doc], [b"1"])
-    # "…" or, outside a UTF-8 locale, "..."
-    if not re.search(r"[\[{](…|\.\.\.)[\]}] \d+ (keys|items)", txt):
-        bad.append("fold: no collapsed preview after 1")
+    # "…" or, outside a UTF-8 locale, "..."; ncurses may send the spaces
+    # between the parts as cursor moves, which the scrape drops.
+    if not re.search(r"[\[{](…|\.\.\.)[\]}]\s*\d+\s*(keys|items)", txt):
+        bad.append("fold: no collapsed preview after 1; screen tail: %r" % txt[-700:])
     txt, raw, hung = run(vv, [doc], [b"1", b"/carol\r"])
     check("search", status(txt), (".items[2].name", "string"))
     txt, raw, hung = run(vv, [doc], [b"/carol\r", b"y", b"p"])
