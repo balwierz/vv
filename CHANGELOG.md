@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.26.1] - 2026-10-02
+
+### Added
+- **Screenshots.** The README is now a short overview; `docs/formats.md`
+  shows each format in vv and vvg, `docs/vvg.md` describes the desktop
+  viewer. The AppStream metainfo lists vvg screenshots for software centres.
+
 ### Fixed
 - **Empty table output.** A `--filter` that matched nothing, or a region
   with no records, printed nothing in the table view (exit 0); the header,
