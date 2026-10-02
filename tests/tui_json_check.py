@@ -147,6 +147,14 @@ def main():
     txt, raw, hung = run(vv, [doc], [b"m", b"G", b"%"])
     check("line mode % root", status(txt), (".", "object"))
 
+    # t inside a nested array of objects opens a table of that array; t
+    # there returns to the same row of the tree.
+    txt, raw, hung = run(vv, [doc], [b":.items[1].name\r", b"t"])
+    if not re.search(r"id\s+name", txt) or "carol" not in txt or "Row 1-3/3" not in txt:
+        bad.append("t on a subtree: no 3-row id / name table of .items")
+    txt, raw, hung = run(vv, [doc], [b":.items[1].name\r", b"t", b"t"])
+    check("t subtree back", status(txt), (".items[1].name", "string"))
+
     # T picks a theme and saves it to the config file.
     cfg = os.path.join(tmp, "themecfg")
     os.makedirs(cfg, exist_ok=True)

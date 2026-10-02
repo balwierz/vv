@@ -882,7 +882,7 @@ background; a truncated file shows its valid part and an error row).
 | `m` `%` | line mode: the document as JSON text (quoted keys, commas, closing brackets on their own rows, folding kept); `%` jumps between a container's brackets |
 | `T` | choose a colour theme (saved, as in the table viewer) |
 | `y` `p` `Y` | copy the value / its jq path / its key (OSC 52) |
-| `t` | table view of the records; `t` there returns |
+| `t` | table view of the records: the array of objects at or above the cursor (a GeoJSON `.features`, a notebook's `.cells`), else the whole document; `t` there returns |
 | `H` `q` | help, quit |
 
 `--no-tree` (or `json_view = table` in the config file) opens the table view

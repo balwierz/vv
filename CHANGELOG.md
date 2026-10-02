@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **JSON tree: `t` on nested records.** `t` opens a table of the array of
+  objects at or above the cursor — a GeoJSON `.features`, a notebook's
+  `.cells`, a HAR's `.log.entries` — read in place from the mapped file;
+  on the root it is the whole document as before.
 - **JSON tree: line mode (`m`).** The document as JSON text — quoted keys,
   commas, closing brackets on their own rows — with folding kept; `%` jumps
   between a container's brackets.

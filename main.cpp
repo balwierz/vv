@@ -28597,6 +28597,12 @@ public:
     }
     void flash(const std::string& m) { flash_ = m; }
 
+    // What `t` asked for: the whole document, or the array of objects at or
+    // above the cursor (records nested in the document, e.g. a GeoJSON
+    // .features, a notebook's .cells, a HAR's .log.entries).
+    struct TableTarget { bool whole = true; vvjson::JNode node; std::string path; };
+    const TableTarget& table_target() const { return table_target_; }
+
     Exit run_in(TuiSession& session) {
         init_pairs();
         clearok(stdscr, TRUE);
@@ -28618,7 +28624,7 @@ public:
                 case 27:
                     if (!query_.empty()) { query_.clear(); break; }
                     return Exit::Quit;
-                case 't': return Exit::OpenTable;
+                case 't': pick_table_target(); return Exit::OpenTable;
                 case KEY_DOWN: case 'j': step(+1); break;
                 case KEY_UP:   case 'k': step(-1); break;
                 case KEY_NPAGE: case 6 /* ^F */: step(+page); break;
@@ -28697,6 +28703,7 @@ private:
     bool                      help_ = false;
     bool                      quit_ = false;       // ":q"
     bool                      lines_ = false;      // line mode (m): JSON text with closing rows
+    TableTarget               table_target_;
     bool                      theme_open_ = false; // the T picker
     int                       theme_cur_ = 0;
     // search
@@ -28881,6 +28888,21 @@ private:
         JNode s;
         if (doc_.child(cur_[cur_.size() - 2].node, cur_.back().idx + d, &s))
             cur_.back() = {s, cur_.back().idx + d};
+    }
+    // The nearest array of objects at or above the cursor; the whole
+    // document when that is the root (or there is none).
+    void pick_table_target() {
+        table_target_ = TableTarget{};
+        for (size_t l = cur_.size(); l-- > 1;) {         // level 0 is the root
+            const JNode& n = cur_[l].node;
+            if (n.kind != JKind::Array || n.count == 0) continue;
+            JNode first;
+            if (!doc_.child(n, 0, &first) || first.kind != JKind::Object) continue;
+            Path upto(cur_.begin(), cur_.begin() + (std::ptrdiff_t)l + 1);
+            upto.back().close = false;
+            table_target_ = {false, n, path_str(upto)};
+            return;
+        }
     }
     // "%": between a container's opening and closing rows (line mode).
     void match_bracket() {
@@ -29531,7 +29553,7 @@ private:
             {":", "go to a line (:120) or a path (:.a.b[3]); :q quits"},
             {"!", "go to the first error"},
             {"y  p  Y", "copy the value / its jq path / its key (OSC 52)"},
-            {"t", "table view of the records (t there comes back)"},
+            {"t", "table of the records: the array of objects at or above the cursor, else the document"},
             {"T", "choose a colour theme (saved)"},
             {"m  %", "line mode (JSON text, closing brackets); jump to the matching bracket"},
             {"q  Esc", "quit (Esc clears a search first)"},
@@ -29578,17 +29600,35 @@ static std::string run_json_viewer(const std::string& file, const std::string& t
     TuiSession session;
     if (!(keys_from_tty ? session.open_tty() : session.open())) { *term_failed = true; return ""; }
     JsonTUI tree(doc, label);
-    std::unique_ptr<TableTUI> table;
+    // One table per target: the whole document (key UINT64_MAX) or a nested
+    // array of objects (its offset), read in place from the mapping.
+    std::map<uint64_t, std::unique_ptr<TableTUI>> tables;
     for (;;) {
         if (tree.run_in(session) == JsonTUI::Exit::Quit) return "";
+        const JsonTUI::TableTarget& tt = tree.table_target();
+        const uint64_t key = tt.whole ? UINT64_MAX : tt.node.off;
+        std::unique_ptr<TableTUI>& table = tables[key];
         if (!table) {
             std::unique_ptr<JsonSource> js;
-            std::string e = JsonSource::open(table_path, cfg, &js);
+            std::string e;
+            if (tt.whole) {
+                e = JsonSource::open(table_path, cfg, &js);
+            } else {
+                const std::string_view b = doc.bytes(tt.node);
+                auto buf = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(b.data()),
+                                                           (int64_t)b.size());
+                e = JsonSource::open_stream(label + " " + tt.path,
+                                            std::make_shared<arrow::io::BufferReader>(buf),
+                                            arrow::Compression::UNCOMPRESSED, &js);
+            }
             if (!e.empty()) {
+                tables.erase(key);
                 tree.flash(e.find("Empty JSON") != std::string::npos ||
                            e.find("no JSON records") != std::string::npos
                                ? "no table view: no records"
-                               : "no table view: this JSON is not a list of records");
+                               : tt.whole ? "no table view: this JSON is not a list of records "
+                                            "(t on an array of objects inside it opens that)"
+                                          : "no table view of " + tt.path);
                 continue;
             }
             std::vector<std::unique_ptr<TabularSource>> v;

@@ -1067,8 +1067,10 @@ Copy the value (a string decoded), its jq path, or its key to the clipboard
 (OSC 52).
 .TP
 .B t
-The table view of the records (an array of objects or JSON Lines);
-\fBt\fR there returns to the tree.
+The table view of the records: the array of objects at or above the cursor
+(records nested in the document, such as a GeoJSON \fB.features\fR), else
+the whole document (an array of objects or JSON Lines); \fBt\fR there
+returns to the tree.
 .TP
 .B m %
 Line mode: the document as JSON text \(en quoted keys, commas, closing
