@@ -29607,7 +29607,9 @@ static std::string print_table(TabularSource& src, const Config& cfg,
     }
     draw_separator(columns, SepKind::Bottom);
 
-    if (show_cols < num_cols) {
+    // --select prints exactly the named columns (no -c clamp, hidden ones
+    // included on request): the rest are not "not shown", they were left out.
+    if (show_cols < num_cols && cfg.select_cols.empty()) {
         int n_hidden = (int)src.hidden_for_display().size();
         int n_truncated = num_cols - show_cols - n_hidden;
         if (n_truncated > 0)

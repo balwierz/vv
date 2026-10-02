@@ -2432,6 +2432,14 @@ assert_eq_file_inline "select_c_does_not_clip_explicit" \
     "$("$VV" --tsv -c 2 "$DATA/tiny.parquet" --select 'Chr,Start,End' 2>/dev/null | head -1)" \
     "$(printf 'Chr\tStart\tEnd')"
 
+# The table footer's "N more column(s) not shown (-c 0 to see all)" is about
+# the -c clamp; with --select the other columns were left out on purpose and
+# -c 0 would not bring them back, so the note is not printed.
+SEL_TABLE=$("$VV" -n 2 --color=never --select Chr,Start "$DATA/tiny.parquet" 2>&1)
+refute_contains "select_no_not_shown_note" "$SEL_TABLE" "not shown"
+assert_contains "c_clamp_not_shown_note" \
+    "$("$VV" -n 2 --color=never -c 2 "$DATA/tiny.parquet" 2>&1)" "more column(s) not shown"
+
 # ── Regressions found by adversarial review of the pattern language ──────────
 # 1. `!X` must never be able to ADD X back. Using "the accumulator is empty" as
 #    the proxy for "no positive term yet" re-seeded the full set after an

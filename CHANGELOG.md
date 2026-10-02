@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **`--select` table footer.** The table view printed "N more column(s) not
+  shown (-c 0 to see all)" for the columns `--select` left out; `-c 0` does
+  not bring those back, and the note is no longer printed with `--select`.
 - **Truncated values in the column stats popup (`S`).** The popup is sized
   to its widest value, but the space for a value was computed one column
   short, so that value was always cut (`Max 144…`); the popup also had an
