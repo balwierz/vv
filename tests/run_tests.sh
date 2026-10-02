@@ -1193,6 +1193,18 @@ J2_SCHEMA=$("$VV" --schema "$TMP/j2.json" 2>&1)
 assert_contains "json_nested_list_column"   "$J2_SCHEMA" "list"
 assert_contains "json_nested_struct_column" "$J2_SCHEMA" "struct"
 assert_eq_file_inline "json_pretty_array_count" "$("$VV" --count "$TMP/j2.json")" "2"
+# GeoJSON, Jupyter notebooks and HTTP archives are JSON documents: printed
+# re-indented on a pipe, a table with a table flag.
+printf '{"type":"FeatureCollection","features":[]}' > "$TMP/x.geojson"
+printf '{"cells":[],"nbformat":4}' > "$TMP/x.ipynb"
+printf '{"log":{"entries":[]}}' > "$TMP/x.har"
+assert_eq_file_inline "geojson_is_json_document" "$("$VV" --json-paths "$TMP/x.geojson")" '.type = "FeatureCollection"
+.features = []'
+assert_eq_file_inline "ipynb_is_json_document" "$("$VV" --json-paths "$TMP/x.ipynb")" '.cells = []
+.nbformat = 4'
+assert_eq_file_inline "har_is_json_document" "$("$VV" --json-paths "$TMP/x.har")" '.log.entries = []'
+printf '[{"a":1},{"a":2}]' > "$TMP/rec.geojson"
+assert_eq_file_inline "geojson_records_table" "$("$VV" --count "$TMP/rec.geojson")" "2"
 # .jsonl extension.
 printf '{"a":1}\n{"a":2}\n' > "$TMP/j.jsonl"
 assert_eq_file_inline "jsonl_extension_count" "$("$VV" --count "$TMP/j.jsonl")" "2"

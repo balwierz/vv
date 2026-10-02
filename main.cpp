@@ -726,7 +726,7 @@ static const FormatInfo kFormats[] = {
    false, false, false, false, false, ""},
   {"Markdown", ".md .markdown .mdown .mkd", "md4c renderer",
    false, false, false, false, false, ""},
-  {"JSON / NDJSON", ".json .ndjson .jsonl", "JsonSource",
+  {"JSON / NDJSON", ".json .ndjson .jsonl .geojson .ipynb .har", "JsonSource",
    true,  false, false, true,  false, ""},
   // Plain text is last on purpose: it is the fallback, and any file no other
   // row claims is content-sniffed into it. The extension list is short by
@@ -852,7 +852,8 @@ static void print_usage(const char* prog) {
         "  .bim  .fam  .pvar  .psam    PLINK variant / sample tables (a PLINK .bed /\n"
         "                              .pgen genotype file is refused, with the\n"
         "                              plink2 command that exports it to VCF)\n"
-        "  .json  .ndjson  .jsonl      JSON documents (plus .gz / .zst; also on stdin):\n"
+        "  .json  .ndjson  .jsonl      JSON documents (plus .gz / .zst; also on stdin;\n"
+        "  .geojson  .ipynb  .har      GeoJSON, Jupyter notebooks, HTTP archives):\n"
         "                              a folding tree viewer on a terminal, printed\n"
         "                              re-indented on a pipe; a table of records with\n"
         "                              any table flag (see JSON below)\n"
@@ -21413,7 +21414,10 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         return "";
     } else if (fends_ci(det, ".json")   || fends_ci(det, ".json.gz")   ||
                fends_ci(det, ".ndjson") || fends_ci(det, ".ndjson.gz") ||
-               fends_ci(det, ".jsonl")  || fends_ci(det, ".jsonl.gz")) {
+               fends_ci(det, ".jsonl")  || fends_ci(det, ".jsonl.gz")  ||
+               fends_ci(det, ".geojson") || fends_ci(det, ".geojson.gz") ||
+               fends_ci(det, ".ipynb")  || fends_ci(det, ".ipynb.gz")   ||
+               fends_ci(det, ".har")    || fends_ci(det, ".har.gz")) {
         std::unique_ptr<JsonSource> src;
         std::string err = JsonSource::open(path, cfg, &src);
         if (!err.empty()) return err;
@@ -29891,7 +29895,9 @@ static int json_path_kind(const std::string& path) {
     std::string p = path;
     for (const char* z : {".gz", ".bgz", ".zstd", ".zst"})
         if (fends_ci(p, z)) { p.resize(p.size() - std::strlen(z)); break; }
-    if (fends_ci(p, ".json")) return 1;
+    // GeoJSON, Jupyter notebooks and HTTP archives are JSON documents.
+    if (fends_ci(p, ".json") || fends_ci(p, ".geojson") || fends_ci(p, ".ipynb") ||
+        fends_ci(p, ".har")) return 1;
     if (fends_ci(p, ".ndjson") || fends_ci(p, ".jsonl")) return 2;
     return 0;
 }
@@ -30943,7 +30949,7 @@ int main(int argc, char** argv) {
             }
             if (jkind == 0 && !json_stdin) {
                 report(cfg.path, std::string(which) + " applies to JSON input (.json, .ndjson, "
-                                 ".jsonl, or JSON on stdin)");
+                                 ".jsonl, .geojson, .ipynb, .har, or JSON on stdin)");
                 return 1;
             }
         }

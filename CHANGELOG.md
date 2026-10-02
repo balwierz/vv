@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **GeoJSON, Jupyter notebooks and HTTP archives** (`.geojson`, `.ipynb`,
+  `.har`, plus `.gz` / `.zst`) open as JSON documents: the tree viewer on a
+  terminal, re-indented on a pipe, a table with a table flag.
+
 ## [1.26.1] - 2026-10-02
 
 ### Added

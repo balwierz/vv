@@ -224,7 +224,7 @@ More: [directories](USAGE.md#directories-and-partitioned-datasets).
 
 ## JSON / NDJSON
 
-`.json` `.ndjson` `.jsonl` (plain, `.gz`, `.zst`, or on stdin) — on a terminal
+`.json` `.ndjson` `.jsonl` `.geojson` `.ipynb` `.har` (plain, `.gz`, `.zst`, or on stdin) — on a terminal
 a document opens in a folding tree (jq paths, search, copy, `t` for a table of
 records); in a pipe it is re-indented, or listed as `path = value` lines with
 `--json-paths`. NDJSON / record arrays are tables with any table flag.

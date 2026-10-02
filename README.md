@@ -48,7 +48,7 @@ More screenshots, one per format: **[docs/formats.md](docs/formats.md)**.
 | TSV / CSV | `.tsv` `.csv` | [screens](docs/formats.md#tsv--csv) |
 | Excel / OpenDocument | `.xlsx` `.xlsm` `.ods` `.fods` | [screens](docs/formats.md#excel--ods--sqlite) |
 | SQLite | `.sqlite` `.sqlite3` `.db` | [screens](docs/formats.md#excel--ods--sqlite) |
-| JSON / NDJSON | `.json` `.ndjson` `.jsonl` | [screens](docs/formats.md#json--ndjson) |
+| JSON / NDJSON, GeoJSON, notebooks, HAR | `.json` `.ndjson` `.jsonl` `.geojson` `.ipynb` `.har` | [screens](docs/formats.md#json--ndjson) |
 | Markdown | `.md` `.markdown` `.mdown` `.mkd` | [screens](docs/formats.md#markdown) |
 | Plain text, logs | `.txt` `.text` `.log`, any other text file | [screens](docs/formats.md#plain-text-and-logs) |
 | Directories, Hive datasets | `vv dir/` | [screens](docs/formats.md#directories-and-datasets) |
