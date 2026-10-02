@@ -879,6 +879,7 @@ background; a truncated file shows its valid part and an error row).
 | `/` `?` `n` `N` | search keys and values (case-insensitive, regex when the query uses regex syntax); any key cancels a long scan |
 | `:` | go to a line (`:120`) or a path (`:.samples[3].id`, `:.["odd key"]`, `:.[0]`); `:q` quits |
 | `!` | go to the first error |
+| `m` `%` | line mode: the document as JSON text (quoted keys, commas, closing brackets on their own rows, folding kept); `%` jumps between a container's brackets |
 | `T` | choose a colour theme (saved, as in the table viewer) |
 | `y` `p` `Y` | copy the value / its jq path / its key (OSC 52) |
 | `t` | table view of the records; `t` there returns |

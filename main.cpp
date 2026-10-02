@@ -28654,6 +28654,13 @@ public:
                     input_ = true; input_cmd_ = true; input_buf_.clear(); input_cur_ = 0;
                     break;
                 case '!': goto_error(); break;
+                case 'm':
+                    lines_ = !lines_;
+                    if (!lines_) cur_.back().close = false, top_.back().close = false;
+                    flash_ = lines_ ? "line mode: JSON text, % jumps between brackets"
+                                    : "data mode";
+                    break;
+                case '%': match_bracket(); break;
                 case 'T':
                     theme_open_ = true;
                     theme_cur_ = 0;
@@ -28675,7 +28682,8 @@ public:
 private:
     using JNode = vvjson::JNode;
     using JKind = vvjson::JKind;
-    struct Frame { JNode node; int64_t idx; };
+    // The last frame of a path may be a container's closing row (line mode).
+    struct Frame { JNode node; int64_t idx; bool close = false; };
     using Path = std::vector<Frame>;
     struct Seg { std::string text; int pair; attr_t attr; };
 
@@ -28688,6 +28696,7 @@ private:
     std::string               flash_;
     bool                      help_ = false;
     bool                      quit_ = false;       // ":q"
+    bool                      lines_ = false;      // line mode (m): JSON text with closing rows
     bool                      theme_open_ = false; // the T picker
     int                       theme_cur_ = 0;
     // search
@@ -28745,19 +28754,27 @@ private:
     void fix_cursor() {
         auto trim = [&](Path& p) {
             for (size_t lvl = 1; lvl < p.size(); ++lvl)
-                if (!is_open(p, lvl - 1)) { p.resize(lvl); break; }
+                if (!is_open(p, lvl - 1)) { p.resize(lvl); p.back().close = false; break; }
+            if (p.back().close && !is_open(p, p.size() - 1)) p.back().close = false;
         };
         trim(cur_);
         trim(top_);
     }
 
     // ── Walking the visible rows ───────────────────────────────────────────
+    // A container with a closing row in line mode (not the virtual root of
+    // a JSON sequence / JSON Lines, which has no brackets in the file).
+    bool has_close_row(const Path& p) const {
+        return lines_ && !p.back().node.virt && is_open(p, p.size() - 1);
+    }
     bool next(Path& p) {
-        if (is_open(p, p.size() - 1)) {
+        if (!p.back().close && is_open(p, p.size() - 1)) {
             JNode c;
             if (doc_.child(p.back().node, 0, &c)) { p.push_back({c, 0}); return true; }
+            if (has_close_row(p)) { p.back().close = true; return true; }
         }
         Path q = p;
+        q.back().close = false;
         while (q.size() > 1) {
             JNode sib;
             const Frame& par = q[q.size() - 2];
@@ -28767,17 +28784,15 @@ private:
                 return true;
             }
             q.pop_back();
+            if (has_close_row(q)) { q.back().close = true; p = q; return true; }
         }
         return false;
     }
-    bool prev(Path& p) {
-        if (p.size() == 1) return false;
-        Frame& f = p.back();
-        if (f.idx == 0) { p.pop_back(); return true; }
-        JNode sib;
-        if (!doc_.child(p[p.size() - 2].node, f.idx - 1, &sib)) { p.pop_back(); return true; }
-        f = {sib, f.idx - 1};
+    // The last row of an open container: its closing row in line mode, its
+    // deepest last descendant otherwise.
+    void descend_last(Path& p) {
         while (is_open(p, p.size() - 1)) {
+            if (has_close_row(p)) { p.back().close = true; return; }
             const JNode n = p.back().node;
             int64_t last = n.count - 1;
             JNode c;
@@ -28785,15 +28800,39 @@ private:
             if (last < 0) break;
             p.push_back({c, last});
         }
+    }
+    bool prev(Path& p) {
+        if (p.back().close) {                    // closing row → the container's last child
+            p.back().close = false;
+            const JNode n = p.back().node;
+            int64_t last = n.count - 1;
+            JNode c;
+            while (last >= 0 && !doc_.child(n, last, &c)) --last;
+            if (last < 0) return true;           // nothing inside: the opening row
+            p.push_back({c, last});
+            descend_last(p);
+            return true;
+        }
+        if (p.size() == 1) return false;
+        Frame& f = p.back();
+        if (f.idx == 0) { p.pop_back(); return true; }
+        JNode sib;
+        if (!doc_.child(p[p.size() - 2].node, f.idx - 1, &sib)) { p.pop_back(); return true; }
+        f = {sib, f.idx - 1};
+        descend_last(p);
         return true;
+    }
+    static uint64_t row_pos(const Path& p) {
+        const Frame& f = p.back();
+        if (f.node.virt) return f.close ? UINT64_MAX : 0;
+        return f.close ? f.node.end : f.node.start();
     }
     static bool same(const Path& a, const Path& b) {
         return a.size() == b.size() && a.back().node.start() == b.back().node.start() &&
-               a.back().node.virt == b.back().node.virt;
+               a.back().node.virt == b.back().node.virt && a.back().close == b.back().close;
     }
     static bool before(const Path& a, const Path& b) {
-        const uint64_t x = a.back().node.virt ? 0 : a.back().node.start();
-        const uint64_t y = b.back().node.virt ? 0 : b.back().node.start();
+        const uint64_t x = row_pos(a), y = row_pos(b);
         return x < y || (x == y && a.size() < b.size());
     }
     void step(int n) {
@@ -28812,20 +28851,18 @@ private:
     }
     void go_last() {
         cur_.assign(1, {doc_.root(), -1});
-        while (is_open(cur_, cur_.size() - 1)) {
-            const JNode n = cur_.back().node;
-            int64_t last = n.count - 1;
-            JNode c;
-            while (last >= 0 && !doc_.child(n, last, &c)) --last;
-            if (last < 0) break;
-            cur_.push_back({c, last});
-        }
+        descend_last(cur_);
     }
     void left() {
-        if (is_open(cur_, cur_.size() - 1)) { set_ov(cur_.back().node, 2); return; }
+        if (is_open(cur_, cur_.size() - 1)) {    // also from its closing row
+            cur_.back().close = false;
+            set_ov(cur_.back().node, 2);
+            return;
+        }
         if (cur_.size() > 1) cur_.pop_back();
     }
     void right() {
+        if (cur_.back().close) return;
         const JNode& n = cur_.back().node;
         if (!n.container() || n.count == 0) return;
         if (!is_open(cur_, cur_.size() - 1)) { set_ov(n, 1); return; }
@@ -28835,13 +28872,22 @@ private:
     void toggle() {
         const JNode& n = cur_.back().node;
         if (!n.container() || n.count == 0) return;
-        set_ov(n, is_open(cur_, cur_.size() - 1) ? 2 : 1);
+        const bool open = is_open(cur_, cur_.size() - 1);
+        cur_.back().close = false;
+        set_ov(n, open ? 2 : 1);
     }
     void sibling(int d) {
         if (cur_.size() < 2) return;
         JNode s;
         if (doc_.child(cur_[cur_.size() - 2].node, cur_.back().idx + d, &s))
             cur_.back() = {s, cur_.back().idx + d};
+    }
+    // "%": between a container's opening and closing rows (line mode).
+    void match_bracket() {
+        if (!lines_) { flash_ = "% jumps between brackets in line mode (m)"; return; }
+        if (cur_.back().close) { cur_.back().close = false; return; }
+        if (has_close_row(cur_)) { cur_.back().close = true; return; }
+        flash_ = cur_.back().node.container() ? "folded: no closing row" : "not on a bracket";
     }
 
     // ── Text of a row ──────────────────────────────────────────────────────
@@ -28886,7 +28932,61 @@ private:
             default:            return NCP_BOOL_F;
         }
     }
+    // A row as JSON text (line mode): quoted keys, the value or an opening
+    // bracket, commas between members, closing rows.
+    std::vector<Seg> line_segs(const Path& p, int width) const {
+        std::vector<Seg> segs;
+        const size_t lvl = p.size() - 1;
+        const JNode& n = p.back().node;
+        const bool virt_child = lvl > 0 && p[lvl - 1].node.virt;
+        const int depth = (int)lvl - (lvl > 0 && p[0].node.virt ? 1 : 0);
+        const int indent = std::min(std::max(0, depth) * 2, std::max(0, width / 2));
+        const bool obj = n.kind == JKind::Object;
+        // A comma when a sibling follows (none between top-level values).
+        const bool comma = lvl > 0 && !virt_child && p.back().idx + 1 < p[lvl - 1].node.count;
+        segs.push_back({std::string((size_t)indent, ' '), 0, A_NORMAL});
+        if (p.back().close) {
+            segs.push_back({obj ? "}" : "]", NCP_INDEX, A_NORMAL});
+            if (comma) segs.push_back({",", NCP_INDEX, A_NORMAL});
+            return segs;
+        }
+        if (n.container() && n.count > 0 && !is_open(p, lvl))
+            segs.push_back({g("▸", "+"), NCP_INDEX, A_NORMAL});
+        if (lvl > 0 && p[lvl - 1].node.kind == JKind::Object && !p[lvl - 1].node.virt) {
+            segs.push_back({"\"" + clean(doc_.key(n)) + "\"", NCP_HEADER, A_BOLD});
+            segs.push_back({": ", NCP_INDEX, A_NORMAL});
+        }
+        if (n.kind == JKind::Error) {
+            segs.push_back({std::string(g("⚠ ", "! ")) + (doc_.has_struct_err() ? doc_.struct_err() : std::string("invalid JSON")) +
+                                " at byte " + std::to_string(n.off), NCP_BOOL_F, A_BOLD});
+            return segs;
+        }
+        if (n.container()) {
+            const std::string open = obj ? "{" : "[", close = obj ? "}" : "]";
+            if (n.virt) segs.push_back({count_label(n), NCP_INDEX, A_NORMAL});
+            else if (n.count == 0) segs.push_back({open + close, NCP_INDEX, A_NORMAL});
+            else if (is_open(p, lvl)) segs.push_back({open, NCP_INDEX, A_NORMAL});
+            else {
+                segs.push_back({open + g("…", "...") + close, NCP_INDEX, A_NORMAL});
+                if (comma) segs.push_back({",", NCP_INDEX, A_NORMAL});
+                segs.push_back({"  " + count_label(n), NCP_INDEX, A_DIM});
+                return segs;
+            }
+            if (comma && (n.count == 0 || !is_open(p, lvl))) segs.push_back({",", NCP_INDEX, A_NORMAL});
+            if (n.broken) segs.push_back({g("  ⚠ cut short", "  ! cut short"), NCP_BOOL_F, A_BOLD});
+            return segs;
+        }
+        const std::string_view b = doc_.bytes(n);
+        const size_t cap = (size_t)std::max(16, width) * 4;
+        segs.push_back({clean(b.substr(0, std::min(b.size(), cap))), scalar_pair(n.kind), A_NORMAL});
+        if (b.size() > cap)
+            segs.push_back({std::string(g("… (", "... (")) + human_bytes((int64_t)b.size()) + ")", NCP_INDEX, A_DIM});
+        if (comma) segs.push_back({",", NCP_INDEX, A_NORMAL});
+        if (n.broken) segs.push_back({g("  ⚠ cut short", "  ! cut short"), NCP_BOOL_F, A_BOLD});
+        return segs;
+    }
     std::vector<Seg> row_segs(const Path& p, int width) const {
+        if (lines_) return line_segs(p, width);
         std::vector<Seg> segs;
         const size_t lvl = p.size() - 1;
         const JNode& n = p.back().node;
@@ -28939,7 +29039,7 @@ private:
         return segs;
     }
     bool row_matches(const Path& p) const {
-        if (query_.empty()) return false;
+        if (query_.empty() || p.back().close) return false;
         const JNode& n = p.back().node;
         if (p.size() > 1 && doc_.key(n).size() && pat_.match(doc_.key(n))) return true;
         if (n.container() || n.kind == JKind::Error) return false;
@@ -29026,7 +29126,7 @@ private:
         std::string left = " " + path_str(cur_) + "  " + type_info(n);
         if (!n.container() && n.kind != JKind::Error) left += g(" · ", " - ") + human_bytes((int64_t)(n.end - n.off));
         std::string right;
-        const uint64_t pos = n.virt ? 0 : n.start();
+        const uint64_t pos = n.virt ? 0 : cur_.back().close && n.end > 0 ? n.end - 1 : n.start();
         const int pct = doc_.size() ? (int)(100.0 * (double)pos / (double)doc_.size()) : 0;
         right = "@ " + digits_with_sep(std::to_string(pos)) + " (" + std::to_string(pct) + "%)  ";
         const int v = doc_.validation();
@@ -29124,7 +29224,8 @@ private:
         // Resume after the cursor's own token (inside a container: after its
         // opening bracket), so a search never starts in the middle of a string.
         uint64_t from;
-        if (n.virt) from = 0;
+        if (cur_.back().close) from = std::min<uint64_t>(n.end, doc_.size());
+        else if (n.virt) from = 0;
         else if (n.container()) from = n.off + 1;
         else from = include_cursor ? n.start() : n.end;
         const uint64_t cur_start = n.virt ? 0 : n.start();
@@ -29432,6 +29533,7 @@ private:
             {"y  p  Y", "copy the value / its jq path / its key (OSC 52)"},
             {"t", "table view of the records (t there comes back)"},
             {"T", "choose a colour theme (saved)"},
+            {"m  %", "line mode (JSON text, closing brackets); jump to the matching bracket"},
             {"q  Esc", "quit (Esc clears a search first)"},
             {"H  F1", "this help"},
         };

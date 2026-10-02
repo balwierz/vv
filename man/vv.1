@@ -1070,6 +1070,11 @@ Copy the value (a string decoded), its jq path, or its key to the clipboard
 The table view of the records (an array of objects or JSON Lines);
 \fBt\fR there returns to the tree.
 .TP
+.B m %
+Line mode: the document as JSON text \(en quoted keys, commas, closing
+brackets on their own rows, folding kept; \fB%\fR moves between a
+container's opening and closing rows. \fBm\fR again returns to data mode.
+.TP
 .B T
 Choose a colour theme (saved to the config file, as in the table viewer).
 .TP

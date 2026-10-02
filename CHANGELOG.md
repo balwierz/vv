@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **JSON tree: line mode (`m`).** The document as JSON text — quoted keys,
+  commas, closing brackets on their own rows — with folding kept; `%` jumps
+  between a container's brackets.
 - **JSON tree: theme picker (`T`)**, as in the table viewer; the choice is
   saved to the config file. The tree's overlays (help, value, theme) are
   framed like the table viewer's, in ASCII outside a UTF-8 locale.

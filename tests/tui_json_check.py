@@ -135,6 +135,18 @@ def main():
     check("search", status(txt), (".items[2].name", "string"))
     txt, raw, hung = run(vv, [doc], [b"/carol\r", b"y", b"p"])
     check("copy", osc52(raw)[-2:], ["carol", ".items[2].name"])
+    # m: line mode — the document as JSON text with closing rows; % moves
+    # between a container's brackets; G is the root's closing row.
+    txt, raw, hung = run(vv, [doc], [b"m"])
+    if not re.search(r'"title":\s*"t",', txt) or not re.search(r'"items":\s*\[', txt):
+        bad.append("line mode: no JSON-text rows after m")
+    txt, raw, hung = run(vv, [doc], [b"m", b":.items\r", b"%", b"j"])
+    check("line mode %", status(txt), (".n", "number"))
+    txt, raw, hung = run(vv, [doc], [b"m", b"G", b"k"])
+    check("line mode G k", status(txt), (".n", "number"))
+    txt, raw, hung = run(vv, [doc], [b"m", b"G", b"%"])
+    check("line mode % root", status(txt), (".", "object"))
+
     # T picks a theme and saves it to the config file.
     cfg = os.path.join(tmp, "themecfg")
     os.makedirs(cfg, exist_ok=True)
