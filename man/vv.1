@@ -67,7 +67,10 @@ string). The legacy binary \fB.xls\fR format is not supported. Requires
 \fBlibxlsxio\fR (\fBxlsxio\fR AUR on Arch, \fBlibxlsxio-dev\fR on
 Debian/Ubuntu, \fBbrew install xlsxio\fR on macOS).
 .IP \(bu 2
-\fB.h5ad\fR, \fB.h5\fR, \fB.hdf5\fR, \fB.loom\fR \(en HDF5 containers
+\fB.h5ad\fR, \fB.h5mu\fR, \fB.h5\fR, \fB.hdf5\fR, \fB.loom\fR, \fB.h5seurat\fR,
+\fB.fast5\fR, \fB.nc\fR, \fB.nc4\fR \(en HDF5 containers (MuData: a summary, the
+joint obs / var, then each modality's AnnData tabs prefixed \fIname\fR\fB:\fR;
+NetCDF-3 classic is refused)
 read via libhdf5. AnnData (\fB.h5ad\fR) is detected by the root
 \fBencoding-type\fR attribute (or modern heuristic /obs + /var + X);
 the layout decodes into a summary tab (shapes, and for \fBX\fR, each

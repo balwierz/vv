@@ -582,7 +582,7 @@ static std::string build_loom_table(hid_t file_id, const OpenSpec& spec,
 enum class AnnMatrixAxes { ObsByVar, ObsByDim, VarByDim,
                            ObsByRawVar };   // raw/X: genes from raw/var
 
-static void apply_anndata_matrix_labels(hid_t file_id, AnnMatrixAxes axes,
+static void apply_anndata_matrix_labels(hid_t file_id, const std::string& root, AnnMatrixAxes axes,
                                         const std::string& key,
                                         std::shared_ptr<arrow::Table>* tbl);
 
@@ -604,6 +604,14 @@ struct OpenSpec {
     bool          long_form = false;  // --matrix long: shown as entry rows
 };
 
+// The AnnData a dataset belongs to: "/mod/<name>" for a modality of a MuData
+// (.h5mu) file, "" for a plain AnnData. Its obs / var label the dataset.
+static std::string anndata_root(const std::string& h5_path) {
+    if (h5_path.rfind("/mod/", 0) != 0) return "";
+    const size_t e = h5_path.find('/', 5);
+    return e == std::string::npos ? h5_path : h5_path.substr(0, e);
+}
+
 // An obsp / varp graph tab streams its edges from the sparse matrix rather than
 // materialising a table, so it is a separate source class (H5EdgeListSource,
 // defined below); Hdf5Source creates it for Kind::EdgeList siblings.
@@ -612,7 +620,7 @@ static std::unique_ptr<TabularSource> make_edge_list_source(const std::string& p
                                                             const OpenSpec& spec);
 
 // Read the AnnData layout and produce one OpenSpec per visible tab.
-static std::vector<OpenSpec> scan_anndata(hid_t file_id);
+static std::vector<OpenSpec> scan_anndata(hid_t file_id, const std::string& root = "");
 // Same but for a generic HDF5 file (one spec per 1D/2D dataset).
 static std::vector<OpenSpec> scan_generic(hid_t file_id);
 
@@ -761,7 +769,8 @@ class Hdf5Source : public WorkbookSource {
                     arrow::field("key",   arrow::utf8()),
                     arrow::field("value", arrow::utf8())});
                 *out = arrow::Table::Make(sch, {ka, va});
-                *footer = "Format: AnnData (summary)";
+                *footer = spec.footer_hint.rfind("format\tMuData\n", 0) == 0
+                              ? "Format: MuData (summary)" : "Format: AnnData (summary)";
                 return "";
             }
             case OpenSpec::Kind::Uns: {
@@ -830,7 +839,7 @@ class Hdf5Source : public WorkbookSource {
                 // A dense AnnData matrix (Matrix2D, never generic Dataset2D)
                 // gets obs/var identifiers, per its own axes.
                 if (spec.kind == OpenSpec::Kind::Matrix2D)
-                    apply_anndata_matrix_labels(file_id, spec.axes, spec.key, out);
+                    apply_anndata_matrix_labels(file_id, anndata_root(spec.h5_path), spec.axes, spec.key, out);
                 return "";
             }
             case OpenSpec::Kind::Dataset1D: {
@@ -894,7 +903,7 @@ class Hdf5Source : public WorkbookSource {
                 // X and layers/* are (n_obs x n_var): columns named by var
                 // (genes), obs (cells) row labels prepended. A sparse obsm /
                 // varm entry is labelled per its own axes.
-                apply_anndata_matrix_labels(file_id, spec.axes, spec.key, out);
+                apply_anndata_matrix_labels(file_id, anndata_root(spec.h5_path), spec.axes, spec.key, out);
                 return "";
             }
         }
@@ -1695,10 +1704,11 @@ read_sparse_preview_as(hid_t group, int64_t n_rows, int64_t n_cols, bool is_csr,
 // dataset named by the group's `_index` attribute, e.g. obs/var cell & gene
 // identifiers) as display strings. `*index_name` receives that dataset's name
 // for use as a column header. Leaves the outputs empty on any problem.
-static void read_anndata_index_labels(hid_t file_id, const char* group_path,
+static void read_anndata_index_labels(hid_t file_id, const std::string& group_path_s,
                                       int64_t cap,
                                       std::vector<std::string>* out,
                                       std::string* index_name) {
+    const char* group_path = group_path_s.c_str();
     out->clear();
     if (index_name) index_name->clear();
     hid_t g = H5Gopen2(file_id, group_path, H5P_DEFAULT);
@@ -1747,7 +1757,7 @@ static void read_anndata_index_labels(hid_t file_id, const char* group_path,
 // 1-based: X_umap -> X_umap1, X_umap2.
 //
 // No-op for a non-AnnData file (no obs/var groups -> empty labels).
-static void apply_anndata_matrix_labels(hid_t file_id, AnnMatrixAxes axes,
+static void apply_anndata_matrix_labels(hid_t file_id, const std::string& root, AnnMatrixAxes axes,
                                         const std::string& key,
                                         std::shared_ptr<arrow::Table>* tbl) {
     if (!tbl || !*tbl) return;
@@ -1763,7 +1773,7 @@ static void apply_anndata_matrix_labels(hid_t file_id, AnnMatrixAxes axes,
         // variable ones).
         std::string var_idx_name;
         read_anndata_index_labels(file_id,
-                                  axes == AnnMatrixAxes::ObsByRawVar ? "/raw/var" : "/var",
+                                  root + (axes == AnnMatrixAxes::ObsByRawVar ? "/raw/var" : "/var"),
                                   ncols, &col_names, &var_idx_name);
     } else {
         // Embedding dimensions. Derived from the key so the header says where
@@ -1786,7 +1796,7 @@ static void apply_anndata_matrix_labels(hid_t file_id, AnnMatrixAxes axes,
 
     // ── Rows: prepended as a leading label column ───────────────────────────
     // varm is indexed by gene, everything else by cell.
-    const char* row_group = (axes == AnnMatrixAxes::VarByDim) ? "/var" : "/obs";
+    const std::string row_group = root + ((axes == AnnMatrixAxes::VarByDim) ? "/var" : "/obs");
     const char* row_default = (axes == AnnMatrixAxes::VarByDim) ? "var" : "obs";
     std::vector<std::string> row_labels;
     std::string row_idx_name;
@@ -2715,7 +2725,12 @@ static void matrix_storage_rows(hid_t file_id, const std::string& path, const st
     if (ok) add(label + " storage", "dense " + h5_layout_label(d));
 }
 
-static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
+static std::vector<OpenSpec> scan_anndata(hid_t fid, const std::string& root) {
+    // `root`: the AnnData's group ("/mod/rna" inside a MuData file; "" for the
+    // file itself). Lookups are relative to it; stored paths are absolute.
+    const hid_t file_id = root.empty() ? fid : H5Gopen2(fid, root.c_str(), H5P_DEFAULT);
+    struct CloseRoot { hid_t g; bool own; ~CloseRoot() { if (own && g >= 0) H5Gclose(g); } }
+        close_root{file_id, !root.empty()};
     std::vector<OpenSpec> specs;
 
     // Summary tab (key/value rows). The storage-layout rows are collected
@@ -2731,7 +2746,7 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
     add("format", "AnnData");
     std::string enc = read_string_attr(file_id, "encoding-type");
     if (!enc.empty()) add("root-encoding", enc);
-    if (hsize_t fsz = 0; H5Fget_filesize(file_id, &fsz) >= 0)
+    if (hsize_t fsz = 0; root.empty() && H5Fget_filesize(fid, &fsz) >= 0)
         add_storage("file size", h5_size_label((double)fsz));
 
     // X (matrix). Either a dataset (dense) or a group with
@@ -2749,10 +2764,10 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
                 x_rows = shape[0]; x_cols = shape[1];
                 add("X", xenc + "  (" + std::to_string(x_rows) +
                           " \xc3\x97 " + std::to_string(x_cols) + ")");
-                add("X profile", matrix_profile(file_id, "/X"));
-                matrix_storage_rows(file_id, "/X", "X", add_storage);
+                add("X profile", matrix_profile(fid, root + "/X"));
+                matrix_storage_rows(fid, root + "/X", "X", add_storage);
                 // Both CSR and CSC densify to the same rows × columns preview.
-                specs.push_back({OpenSpec::Kind::Sparse, "/X",
+                specs.push_back({OpenSpec::Kind::Sparse, root + "/X",
                                   "X (preview)",
                                   xenc + "  shape: " +
                                   std::to_string(x_rows) + " \xc3\x97 " +
@@ -2770,9 +2785,9 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
                 x_rows = (int64_t)dims[0]; x_cols = (int64_t)dims[1];
                 add("X", "dense  (" + std::to_string(x_rows) +
                           " \xc3\x97 " + std::to_string(x_cols) + ")");
-                add("X profile", matrix_profile(file_id, "/X"));
-                matrix_storage_rows(file_id, "/X", "X", add_storage);
-                specs.push_back({OpenSpec::Kind::Matrix2D, "/X",
+                add("X profile", matrix_profile(fid, root + "/X"));
+                matrix_storage_rows(fid, root + "/X", "X", add_storage);
+                specs.push_back({OpenSpec::Kind::Matrix2D, root + "/X",
                                   "X", "dense"});
             }
         }
@@ -2783,14 +2798,14 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
         add("obs", std::to_string(x_rows) + " rows, " +
                     std::to_string(anndata_column_count(g)) + " columns");
         H5Gclose(g);
-        specs.push_back({OpenSpec::Kind::DataFrame, "/obs", "obs", ""});
+        specs.push_back({OpenSpec::Kind::DataFrame, root + "/obs", "obs", ""});
     }
     if (link_exists(file_id, "var") && is_group(file_id, "var")) {
         hid_t g = H5Gopen2(file_id, "var", H5P_DEFAULT);
         add("var", std::to_string(x_cols) + " rows, " +
                     std::to_string(anndata_column_count(g)) + " columns");
         H5Gclose(g);
-        specs.push_back({OpenSpec::Kind::DataFrame, "/var", "var", ""});
+        specs.push_back({OpenSpec::Kind::DataFrame, root + "/var", "var", ""});
     }
 
     // obsm / varm / layers — each child becomes its own tab.
@@ -2803,7 +2818,7 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
         hid_t g = H5Gopen2(file_id, parent_name, H5P_DEFAULT);
         auto names = list_children(g);
         for (const auto& nm : names) {
-            OpenSpec s{k, std::string("/") + parent_name + "/" + nm,
+            OpenSpec s{k, root + "/" + parent_name + "/" + nm,
                        std::string(parent_name) + "[" + nm + "]",
                        footer_kind, axes, nm};
             // A CSR/CSC entry is a group, not a dataset — scanpy writes layers
@@ -2828,10 +2843,10 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
         // layers mirror X: profile each, so raw counts stored as a layer show.
         if (axes == AnnMatrixAxes::ObsByVar)
             for (const auto& nm : names) {
-                if (auto pr = matrix_profile(file_id, std::string("/") + parent_name + "/" + nm);
+                if (auto pr = matrix_profile(fid, root + "/" + parent_name + "/" + nm);
                     !pr.empty())
                     add(std::string(parent_name) + "[" + nm + "] profile", pr);
-                matrix_storage_rows(file_id, std::string("/") + parent_name + "/" + nm,
+                matrix_storage_rows(fid, root + "/" + parent_name + "/" + nm,
                                     std::string(parent_name) + "[" + nm + "]", add_storage);
             }
     };
@@ -2861,7 +2876,7 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
                 H5Gclose(eg);
             }
             if (enc == "csr_matrix" || enc == "csc_matrix") {
-                OpenSpec sp{OpenSpec::Kind::EdgeList, std::string("/") + grp + "/" + nm,
+                OpenSpec sp{OpenSpec::Kind::EdgeList, root + "/" + grp + "/" + nm,
                             std::string(grp) + "[" + nm + "]", enc};
                 sp.key = axis;
                 specs.push_back(std::move(sp));
@@ -2895,9 +2910,9 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
                     const std::string dims = std::to_string(shape[0]) + " \xc3\x97 " +
                                              std::to_string(shape[1]);
                     add("raw.X", xenc + "  (" + dims + ")");
-                    add("raw.X profile", matrix_profile(file_id, "/raw/X"));
-                    matrix_storage_rows(file_id, "/raw/X", "raw.X", add_storage);
-                    specs.push_back({OpenSpec::Kind::Sparse, "/raw/X", "raw.X (preview)",
+                    add("raw.X profile", matrix_profile(fid, root + "/raw/X"));
+                    matrix_storage_rows(fid, root + "/raw/X", "raw.X", add_storage);
+                    specs.push_back({OpenSpec::Kind::Sparse, root + "/raw/X", "raw.X (preview)",
                                      xenc + "  shape: " + dims,
                                      AnnMatrixAxes::ObsByRawVar, ""});
                 }
@@ -2913,9 +2928,9 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
                     raw_cols = (int64_t)dims[1];
                     add("raw.X", "dense  (" + std::to_string(dims[0]) + " \xc3\x97 " +
                                  std::to_string(dims[1]) + ")");
-                    add("raw.X profile", matrix_profile(file_id, "/raw/X"));
-                    matrix_storage_rows(file_id, "/raw/X", "raw.X", add_storage);
-                    specs.push_back({OpenSpec::Kind::Matrix2D, "/raw/X", "raw.X", "dense",
+                    add("raw.X profile", matrix_profile(fid, root + "/raw/X"));
+                    matrix_storage_rows(fid, root + "/raw/X", "raw.X", add_storage);
+                    specs.push_back({OpenSpec::Kind::Matrix2D, root + "/raw/X", "raw.X", "dense",
                                      AnnMatrixAxes::ObsByRawVar, ""});
                 }
             }
@@ -2925,7 +2940,7 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
             add("raw.var", std::to_string(raw_cols) + " rows, " +
                            std::to_string(anndata_column_count(g)) + " columns");
             H5Gclose(g);
-            specs.push_back({OpenSpec::Kind::DataFrame, "/raw/var", "raw.var", ""});
+            specs.push_back({OpenSpec::Kind::DataFrame, root + "/raw/var", "raw.var", ""});
         }
         H5Gclose(rg);
     }
@@ -2937,14 +2952,14 @@ static std::vector<OpenSpec> scan_anndata(hid_t file_id) {
         auto names = list_children(g);
         H5Gclose(g);
         if (!names.empty()) {
-            specs.push_back({OpenSpec::Kind::Uns, "/uns", "uns", ""});
+            specs.push_back({OpenSpec::Kind::Uns, root + "/uns", "uns", ""});
             add("uns", std::to_string(names.size()) + " entries");
         }
     }
 
     // Prepend the summary tab.
     summary += storage;
-    OpenSpec sum_spec{OpenSpec::Kind::Summary, "/", "summary", summary};
+    OpenSpec sum_spec{OpenSpec::Kind::Summary, root.empty() ? "/" : root, "summary", summary};
     specs.insert(specs.begin(), sum_spec);
     return specs;
 }
@@ -3017,7 +3032,7 @@ class H5EdgeListSource : public TabularSource {
         nnz_ = indptr_.back() - first_;
         n_ = std::max(shape[0], shape[1]);
         std::string idx_name;
-        read_anndata_index_labels(*file_, spec_.key == "var" ? "/var" : "/obs", n_,
+        read_anndata_index_labels(*file_, anndata_root(spec_.h5_path) + (spec_.key == "var" ? "/var" : "/obs"), n_,
                                   &names_, &idx_name);
         footer_ = "Format: AnnData " + spec_.display + "  |  " + spec_.footer_hint +
                   "  " + std::to_string(shape[0]) + " \xc3\x97 " + std::to_string(shape[1]) +
@@ -3689,7 +3704,8 @@ static std::unique_ptr<TabularSource> make_h5_matrix_stream(const H5FilePtr& fil
     if (spec.kind != OpenSpec::Kind::Dataset2D) {
         if (spec.axes == AnnMatrixAxes::ObsByVar || spec.axes == AnnMatrixAxes::ObsByRawVar) {
             std::string idx;
-            read_anndata_index_labels(fid, spec.axes == AnnMatrixAxes::ObsByRawVar ? "/raw/var" : "/var",
+            read_anndata_index_labels(fid, anndata_root(spec.h5_path) +
+                                          (spec.axes == AnnMatrixAxes::ObsByRawVar ? "/raw/var" : "/var"),
                                       p.cols, &p.col_names, &idx);
             p.long_col = idx.empty() || idx == "_index" ? "var" : idx;
         } else {
@@ -3699,7 +3715,8 @@ static std::unique_ptr<TabularSource> make_h5_matrix_stream(const H5FilePtr& fil
         }
         const bool by_var = spec.axes == AnnMatrixAxes::VarByDim;
         std::string idx;
-        read_anndata_index_labels(fid, by_var ? "/var" : "/obs", p.rows, &p.row_labels, &idx);
+        read_anndata_index_labels(fid, anndata_root(spec.h5_path) + (by_var ? "/var" : "/obs"),
+                                  p.rows, &p.row_labels, &idx);
         const std::string rname = idx.empty() || idx == "_index" ? (by_var ? "var" : "obs") : idx;
         if (!p.row_labels.empty()) p.row_header = rname;
         p.long_row = rname;
@@ -3741,6 +3758,53 @@ std::string Hdf5Source::open_first(const std::string& path,
                "`python -c \"import anndata; "
                "anndata.read_h5ad('" + path + "')"
                ".write_h5ad('out.h5ad')\"`";
+    }
+
+    // MuData (.h5mu): one AnnData per modality under /mod/<name>, plus the
+    // joint obs / var at the root. Tabs: a summary, the joint obs / var, then
+    // each modality's AnnData tabs prefixed "<name>:".
+    const bool is_mudata = read_string_attr(fid, "encoding-type") == "MuData" ||
+                           (link_exists(fid, "mod") && is_group(fid, "mod"));
+    if (is_mudata) {
+        std::vector<OpenSpec> specs;
+        std::string summary = "format\tMuData\n";
+        hid_t mg = H5Gopen2(fid, "mod", H5P_DEFAULT);
+        const std::vector<std::string> mods = mg >= 0 ? list_children(mg) : std::vector<std::string>{};
+        if (mg >= 0) H5Gclose(mg);
+        summary += "modalities\t";
+        for (size_t i = 0; i < mods.size(); ++i) summary += (i ? ", " : "") + mods[i];
+        summary += "\n";
+        for (const char* df : {"obs", "var"})
+            if (link_exists(fid, df) && is_group(fid, df)) {
+                hid_t g = H5Gopen2(fid, df, H5P_DEFAULT);
+                summary += std::string(df) + "\t" + std::to_string(anndata_column_count(g)) +
+                           " columns (joint, all modalities)\n";
+                H5Gclose(g);
+                specs.push_back({OpenSpec::Kind::DataFrame, std::string("/") + df, df, "joint"});
+            }
+        for (const std::string& m : mods) {
+            for (OpenSpec sp : scan_anndata(fid, "/mod/" + m)) {
+                if (sp.kind == OpenSpec::Kind::Summary) {
+                    // the modality's X line, for the MuData summary
+                    for (size_t at = 0; (at = sp.footer_hint.find("X\t", at)) != std::string::npos; ++at)
+                        if (at == 0 || sp.footer_hint[at - 1] == '\n') {
+                            const size_t e = sp.footer_hint.find('\n', at);
+                            summary += m + ":X\t" + sp.footer_hint.substr(at + 2, e - at - 2) + "\n";
+                            break;
+                        }
+                }
+                sp.display = m + ":" + sp.display;
+                specs.push_back(std::move(sp));
+            }
+        }
+        if (hsize_t fsz = 0; H5Fget_filesize(fid, &fsz) >= 0)
+            summary += "file size\t" + h5_size_label((double)fsz) + "\n";
+        specs.insert(specs.begin(), OpenSpec{OpenSpec::Kind::Summary, "/", "summary", summary});
+        auto all = std::make_shared<std::vector<OpenSpec>>(specs);
+        OpenSpec first = specs.front();
+        std::vector<OpenSpec> siblings(specs.begin() + 1, specs.end());
+        return build_one(path, std::move(file), std::move(first),
+                         std::move(all), std::move(siblings), out, df_row_cap);
     }
 
     bool tenx_v3 = false;

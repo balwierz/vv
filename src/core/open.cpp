@@ -1234,7 +1234,20 @@ std::string open_source_dispatch(const std::string& path, const Config& cfg,
         *out = std::move(src);
         return "";
     } else if (fends_ci(path, ".h5ad") || fends_ci(path, ".h5") ||
-               fends_ci(path, ".hdf5") || fends_ci(path, ".loom")) {
+               fends_ci(path, ".hdf5") || fends_ci(path, ".loom") ||
+               // HDF5 underneath: MuData, Seurat's h5Seurat, Oxford Nanopore
+               // FAST5, NetCDF-4.
+               fends_ci(path, ".h5mu") || fends_ci(path, ".h5seurat") ||
+               fends_ci(path, ".fast5") || fends_ci(path, ".nc") || fends_ci(path, ".nc4")) {
+        // NetCDF-3 ("classic": CDF\x01 / \x02 / \x05) is not HDF5.
+        if (fends_ci(path, ".nc") || fends_ci(path, ".nc4")) {
+            char m[4] = {0, 0, 0, 0};
+            std::ifstream f(path, std::ios::binary);
+            f.read(m, 4);
+            if (f.gcount() == 4 && m[0] == 'C' && m[1] == 'D' && m[2] == 'F')
+                return "'" + path + "': NetCDF-3 (classic) is not supported; NetCDF-4 is "
+                       "(convert with `nccopy -k nc4 " + path + " out.nc`)";
+        }
         std::unique_ptr<TabularSource> src;
         // The 1000-row cap exists so opening a 10 GB .h5ad in the TUI does not
         // read 310k rows of obs up front. It must apply to THAT and nothing

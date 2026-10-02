@@ -1170,6 +1170,23 @@ if require "zstd roundtrip" zstd; then
 fi
 
 echo
+echo '── MuData, FAST5, NetCDF-4 (HDF5 underneath) ──────────'
+# MuData: a summary naming the modalities, the joint obs / var, then each
+# modality's AnnData tabs prefixed "<name>:", its matrices labelled by its own
+# obs / var.
+assert_eq_file_inline "h5mu_tabs" "$("$VV" --list-tabs "$DATA/tiny.h5mu" | tr '\n' ' ')" \
+    "summary obs var prot:summary prot:X (preview) prot:obs prot:var rna:summary rna:X rna:obs rna:var "
+assert_contains "h5mu_summary_modalities" "$("$VV" --tab summary --tsv "$DATA/tiny.h5mu")" "$(printf 'modalities\tprot, rna')"
+assert_eq_file_inline "h5mu_modality_labels" "$("$VV" --tab 'prot:X (preview)' --tsv "$DATA/tiny.h5mu" | head -2)" \
+    "$(printf 'obs\tCD3\tCD19\nc0\t5\t0')"
+assert_eq_file_inline "h5mu_joint_obs" "$("$VV" --tab obs --tsv "$DATA/tiny.h5mu" | head -2)" \
+    "$(printf '_index\tsample\nc0\ts1')"
+assert_contains "fast5_is_hdf5" "$("$VV" --list-tabs "$DATA/tiny.fast5")" "/read_0001/signal"
+assert_contains "nc4_is_hdf5" "$("$VV" --list-tabs "$DATA/tiny.nc4")" "/read_0001/signal"
+printf 'CDF\001\000\000\000\000' > "$TMP/classic.nc"
+assert_contains "netcdf3_refused" "$("$VV" "$TMP/classic.nc" 2>&1)" "NetCDF-3 (classic) is not supported"
+
+echo
 echo '── BLAST / DIAMOND tabular ────────────────────────────'
 # -outfmt 6 has no header row: the 12 standard columns are named, and pident /
 # evalue / bitscore are real even when the first rows hold whole numbers.

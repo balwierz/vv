@@ -2067,6 +2067,65 @@ else:
 # Need UCSC's bedToBigBed / bedGraphToBigWig. They're in the
 # `ucsc-bedtobigbed` and `ucsc-bedgraphtobigwig` Bioconda packages, on
 # Arch under `kentutils`, in /opt/ucsc-kent-genome-tools on this dev box.
+# tiny.h5mu: a MuData file (h5py only, no mudata dependency) — joint obs / var
+# at the root and two modalities under /mod: rna (dense 4 × 3, genes g0..g2) and
+# prot (CSR 4 × 2, markers CD3 / CD19). tiny.fast5 / tiny.nc4: plain HDF5 under
+# the Nanopore and NetCDF-4 extensions.
+try:
+    import h5py                                              # type: ignore
+    import numpy as np                                       # type: ignore
+except ImportError:
+    print("warn: h5py / numpy not found; skipping tiny.h5mu / tiny.fast5 / tiny.nc4",
+          file=sys.stderr)
+else:
+    _s = h5py.string_dtype(encoding="utf-8")
+    def _df(group, name, index, cols=None):
+        g = group.create_group(name)
+        g.attrs["encoding-type"] = "dataframe"
+        g.attrs["encoding-version"] = "0.2.0"
+        g.attrs["_index"] = "_index"
+        g.attrs["column-order"] = np.array(list((cols or {}).keys()), dtype=_s)
+        g.create_dataset("_index", data=np.array(index, dtype=_s))
+        for k, v in (cols or {}).items():
+            g.create_dataset(k, data=v)
+        return g
+    def _ann(group, name, X, obs, var):
+        a = group.create_group(name)
+        a.attrs["encoding-type"] = "anndata"
+        a.attrs["encoding-version"] = "0.1.0"
+        if isinstance(X, tuple):                 # CSR (data, indices, indptr, shape)
+            x = a.create_group("X")
+            x.attrs["encoding-type"] = "csr_matrix"
+            x.attrs["encoding-version"] = "0.1.0"
+            x.attrs["shape"] = np.array(X[3], dtype=np.int64)
+            x.create_dataset("data", data=X[0]); x.create_dataset("indices", data=X[1])
+            x.create_dataset("indptr", data=X[2])
+        else:
+            a.create_dataset("X", data=X)
+        _df(a, "obs", obs); _df(a, "var", var)
+    cells = ["c0", "c1", "c2", "c3"]
+    mu_path = HERE / "tiny.h5mu"
+    if mu_path.exists():
+        mu_path.unlink()
+    with h5py.File(mu_path, "w") as f:
+        f.attrs["encoding-type"] = "MuData"
+        f.attrs["encoding-version"] = "0.1.0"
+        _df(f, "obs", cells, {"sample": np.array(["s1", "s1", "s2", "s2"], dtype=_s)})
+        _df(f, "var", ["g0", "g1", "g2", "CD3", "CD19"])
+        m = f.create_group("mod")
+        _ann(m, "rna", np.arange(12, dtype="f4").reshape(4, 3), cells, ["g0", "g1", "g2"])
+        _ann(m, "prot", (np.array([5.0, 7.0], dtype="f4"), np.array([0, 1], dtype=np.int32),
+                         np.array([0, 1, 1, 2, 2], dtype=np.int32), (4, 2)),
+             cells, ["CD3", "CD19"])
+    for name in ("tiny.fast5", "tiny.nc4"):
+        pth = HERE / name
+        if pth.exists():
+            pth.unlink()
+        with h5py.File(pth, "w") as f:
+            g = f.create_group("read_0001")
+            g.create_dataset("signal", data=np.arange(8, dtype=np.int16))
+
+
 def find_kent_tool(name):
     if shutil.which(name): return name
     cand = "/opt/ucsc-kent-genome-tools/" + name

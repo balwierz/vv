@@ -149,11 +149,18 @@ Try: `vv data.bim` · `vv expression.gct`.
 
 ## AnnData / HDF5 / Loom / 10x
 
-`.h5ad` `.h5` `.hdf5` `.loom`, Cell Ranger `filtered_feature_bc_matrix.h5` and
+`.h5ad` `.h5mu` `.h5` `.hdf5` `.loom` `.h5seurat` `.fast5` `.nc` `.nc4`, Cell Ranger `filtered_feature_bc_matrix.h5` and
 `matrix.mtx` directories — a summary tab (shapes, storage, a per-matrix value
 profile) and one tab per component: `X`, `obs`, `var`, `obsm`, `varm`,
 `layers`, `obsp`, `uns`. Sparse matrices are previewed, not densified; `--tab X
 --parquet` exports the whole matrix.
+
+A MuData file (`.h5mu`) opens as a summary naming its modalities, the joint
+`obs` / `var`, then each modality's AnnData tabs prefixed with its name
+(`rna:X`, `prot:obs`); `--tab rna:obs` picks one. h5Seurat, Oxford Nanopore
+FAST5 and NetCDF-4 files are HDF5 and open as its hierarchy and datasets
+(NetCDF-3 classic is not HDF5 and is refused with the `nccopy` command that
+converts it).
 
 ![vv: AnnData summary tab](img/vv/anndata.svg)
 ![vv: AnnData obs tab](img/vv/anndata-obs.svg)

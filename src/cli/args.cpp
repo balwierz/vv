@@ -88,7 +88,7 @@ static const FormatInfo kFormats[] = {
    false, false, true,  false, false, ""},
   {"OpenDocument spreadsheet", ".ods .fods", "OdsSource",
    false, false, true,  false, false, ""},
-  {"HDF5 / AnnData / Loom", ".h5ad .h5 .hdf5 .loom", "Hdf5Source",
+  {"HDF5 / AnnData / Loom", ".h5ad .h5 .hdf5 .loom .h5mu .h5seurat .fast5 .nc .nc4", "Hdf5Source",
    false, false, true,  false, false, ""},
   {"NumPy archive", ".npz", "NpzSource",
    false, false, true,  false, false, ""},
@@ -203,6 +203,8 @@ static void print_usage(const char* prog) {
         "                              XML (each sheet → one TUI tab)\n"
         "  .h5ad                       AnnData (single-cell) — obs / var / X / obsm tabs\n"
         "  .h5  .hdf5  .loom           generic HDF5 — hierarchy tab + per-dataset tabs\n"
+        "  .h5mu                       MuData — joint obs / var + each modality's AnnData tabs\n"
+        "  .h5seurat  .fast5  .nc  .nc4  HDF5-based: h5Seurat, Nanopore FAST5, NetCDF-4\n"
         "  .npz                        NumPy archive — summary tab + per-array tabs (3-D+ scrubs via [/])\n"
         "  .npy                        NumPy single array\n"
         "  .orc                        Apache ORC (columnar; one stripe → one chunk)\n"

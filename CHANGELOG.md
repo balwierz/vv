@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **MuData (`.h5mu`)**: a summary naming the modalities, the joint obs / var,
+  and each modality's AnnData tabs as `name:tab` (matrices labelled by that
+  modality's own obs / var). **`.h5seurat`, `.fast5`, `.nc` / `.nc4`** open as
+  HDF5; a NetCDF-3 classic file is refused with the conversion command.
 - **BLAST / DIAMOND tabular output** (`.m8`, `.blast6`, `.outfmt6`): the 12
   standard `-outfmt 6` columns named and typed (`pident`, `evalue`, `bitscore`
   always real); a custom layout keeps generic names.

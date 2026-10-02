@@ -101,7 +101,7 @@ _vv() {
         '*.pileup' '*.pileup.gz' '*.pileup.bz2' '*.pileup.xz' '*.pileup.zst' '*.mpileup' '*.mpileup.gz' '*.mpileup.bz2' '*.mpileup.xz' '*.mpileup.zst' '*.pile' '*.pile.gz' '*.pile.bz2' '*.pile.xz' '*.pile.zst'
         '*.md' '*.markdown' '*.mdown' '*.mkd'
         '*.txt' '*.txt.gz' '*.txt.bz2' '*.txt.xz' '*.txt.zst' '*.text' '*.text.gz' '*.text.bz2' '*.text.xz' '*.text.zst' '*.log' '*.log.gz' '*.log.bz2' '*.log.xz' '*.log.zst'
-        '*.h5' '*.h5ad' '*.hdf5' '*.loom'
+        '*.h5' '*.h5ad' '*.h5mu' '*.h5seurat' '*.fast5' '*.nc' '*.nc4' '*.hdf5' '*.loom'
     )
 
     _arguments -s -S \
