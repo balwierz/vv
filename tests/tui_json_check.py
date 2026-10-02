@@ -135,6 +135,12 @@ def main():
     check("search", status(txt), (".items[2].name", "string"))
     txt, raw, hung = run(vv, [doc], [b"/carol\r", b"y", b"p"])
     check("copy", osc52(raw)[-2:], ["carol", ".items[2].name"])
+    # ":" goes to a path or a line; a bad path says why.
+    txt, raw, hung = run(vv, [doc], [b"1", b":.items[2].name\r"])
+    check("goto path", status(txt), (".items[2].name", "string"))
+    txt, raw, hung = run(vv, [doc], [b':.items[7]\r'])
+    if "has 3 items; no [7]" not in txt:
+        bad.append("goto path: no message for a missing index")
 
     nd = os.path.join(tmp, "tree.ndjson")
     with open(nd, "w") as f:
@@ -164,6 +170,12 @@ def main():
     txt, raw, hung = run(vv, [tr], [])
     if "unexpected end of input" not in txt or "invalid at 1:" not in txt or hung:
         bad.append("truncated: no error row / status (hung=%s)" % hung)
+    # "!" goes to the first error.
+    bt = os.path.join(tmp, "tree_badtok.json")
+    with open(bt, "w") as f:
+        f.write('{"a": [1, 2, {"b": tru}], "c": 3}')
+    txt, raw, hung = run(vv, [bt], [b"!"])
+    check("goto error", status(txt), (".a[2].b", "boolean"))
 
     # macOS: not checked (reported only) — on the CI runner the child had
     # closed the pty before the first key; not reproducible on Linux.

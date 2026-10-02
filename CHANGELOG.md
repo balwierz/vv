@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **JSON tree: go to a path, a line or the first error.** `:` takes a line
+  number (`:120`) or a jq-style path (`:.samples[3].id`, `:.["odd key"]`);
+  `!` jumps to the first error in an invalid document; `:q` quits.
 - **GeoJSON, Jupyter notebooks and HTTP archives** (`.geojson`, `.ipynb`,
   `.har`, plus `.gz` / `.zst`) open as JSON documents: the tree viewer on a
   terminal, re-indented on a pipe, a table with a table flag.

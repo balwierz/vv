@@ -877,6 +877,8 @@ background; a truncated file shows its valid part and an error row).
 | `e` `E` / `c` `C` | expand / collapse the node (capital: and everything inside) |
 | `1`–`9`, `0` | fold the document to depth N / to the root |
 | `/` `?` `n` `N` | search keys and values (case-insensitive, regex when the query uses regex syntax); any key cancels a long scan |
+| `:` | go to a line (`:120`) or a path (`:.samples[3].id`, `:.["odd key"]`, `:.[0]`); `:q` quits |
+| `!` | go to the first error |
 | `y` `p` `Y` | copy the value / its jq path / its key (OSC 52) |
 | `t` | table view of the records; `t` there returns |
 | `H` `q` | help, quit |

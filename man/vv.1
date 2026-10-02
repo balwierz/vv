@@ -1055,6 +1055,13 @@ Search keys and values (case-insensitive; a regular expression when the query
 uses regex syntax), forward / backward; the match is revealed and the scan can
 be cancelled with any key.
 .TP
+.B :
+Go to a line (\fB:120\fR) or a jq-style path (\fB:.samples[3].id\fR,
+\fB:.["odd key"]\fR, \fB:.[0]\fR); \fB:q\fR quits.
+.TP
+.B !
+Go to the first error (the structure scan's or the validator's).
+.TP
 .B y p Y
 Copy the value (a string decoded), its jq path, or its key to the clipboard
 (OSC 52).

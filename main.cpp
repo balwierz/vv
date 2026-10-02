@@ -28608,7 +28608,7 @@ public:
             if (ch == ERR) continue;
             if (help_) { help_ = false; continue; }
             if (pane_) { pane_key(ch); continue; }
-            if (input_) { input_key(ch); continue; }
+            if (input_) { input_key(ch); if (quit_) return Exit::Quit; continue; }
             const std::string keep_flash = flash_;
             flash_.clear();
             const int page = std::max(1, rows_ - 3);
@@ -28646,8 +28646,13 @@ public:
                     flash_ = ch == '0' ? "folded to the root" : std::string("folded to depth ") + (char)ch;
                     break;
                 case '/': case '?':
-                    input_ = true; input_fwd_ = ch == '/'; input_buf_.clear(); input_cur_ = 0;
+                    input_ = true; input_fwd_ = ch == '/'; input_cmd_ = false;
+                    input_buf_.clear(); input_cur_ = 0;
                     break;
+                case ':':
+                    input_ = true; input_cmd_ = true; input_buf_.clear(); input_cur_ = 0;
+                    break;
+                case '!': goto_error(); break;
                 case 'n': if (!query_.empty()) search(fwd_); break;
                 case 'N': if (!query_.empty()) search(!fwd_); break;
                 case 'y': copy_value(); break;
@@ -28676,11 +28681,12 @@ private:
     int                       rows_ = 0, cols_ = 0;
     std::string               flash_;
     bool                      help_ = false;
+    bool                      quit_ = false;       // ":q"
     // search
     std::string               query_;
     JsonSearch                pat_;
     bool                      fwd_ = true;
-    bool                      input_ = false, input_fwd_ = true;
+    bool                      input_ = false, input_fwd_ = true, input_cmd_ = false;
     std::string               input_buf_;
     size_t                    input_cur_ = 0;
     // value pane
@@ -29000,7 +29006,7 @@ private:
         const int y = rows_ - 1;
         move_to(y, 0);
         if (input_) {
-            const std::string prompt = input_fwd_ ? "/" : "?";
+            const std::string prompt = input_cmd_ ? ":" : input_fwd_ ? "/" : "?";
             mvaddnstr(y, 0, (prompt + input_buf_).c_str(), cols_);
             curs_set(1);
             ::move(y, std::min(cols_ - 1, 1 + display_width(input_buf_.substr(0, input_cur_))));
@@ -29040,6 +29046,7 @@ private:
         if (ch == '\n' || ch == '\r' || ch == KEY_ENTER) {
             input_ = false;
             if (input_buf_.empty()) return;
+            if (input_cmd_) { command(input_buf_); return; }
             query_ = input_buf_;
             pat_.compile(query_);
             fwd_ = input_fwd_;
@@ -29123,16 +29130,149 @@ private:
         }
         if (cancelled) { flash_ = "search cancelled"; return; }
         if (hit == UINT64_MAX) { flash_ = "not found: " + query_; return; }
-        const auto path = doc_.path_to(hit);
+        jump_to(path_at(hit));
+        flash_ = (wrapped ? "(wrapped) " : "") + std::string("/") + query_;
+    }
+
+    // ── Jumps: a byte offset, a jq path, a line, the first error ───────────
+    Path path_at(uint64_t off) {
         Path p;
-        for (const auto& pr : path) p.push_back({pr.first, pr.second});
-        for (size_t l = 0; l + 1 < p.size(); ++l)
-            if (!is_open(p, l)) set_ov(p[l].node, 1);
-        cur_ = p;
-        // centre the hit
+        for (const auto& pr : doc_.path_to(off)) p.push_back({pr.first, pr.second});
+        return p;
+    }
+    // Put the cursor on `p`, opening its ancestors, and centre it.
+    void jump_to(const Path& p) {
+        Path q = p;
+        for (size_t l = 0; l + 1 < q.size(); ++l)
+            if (!is_open(q, l)) set_ov(q[l].node, 1);
+        cur_ = q;
         top_ = cur_;
         for (int i = 0; i < data_rows() / 2; ++i) if (!prev(top_)) break;
-        flash_ = (wrapped ? "(wrapped) " : "") + std::string("/") + query_;
+    }
+    // ":" — a line number, a jq-style path (.a.b[3], .["odd key"], .[0]),
+    // or q to quit.
+    void command(const std::string& in) {
+        std::string t = in;
+        while (!t.empty() && t.back() == ' ') t.pop_back();
+        while (!t.empty() && t.front() == ' ') t.erase(0, 1);
+        if (t == "q" || t == "quit") { quit_ = true; return; }
+        if (!t.empty() && std::all_of(t.begin(), t.end(), [](char c) { return c >= '0' && c <= '9'; })) {
+            goto_line(std::strtoll(t.c_str(), nullptr, 10));
+            return;
+        }
+        if (t.empty() || (t[0] != '.' && t[0] != '[')) {
+            flash_ = "not a line number or a path (.key, [0], .[\"key\"]): " + t;
+            return;
+        }
+        Path p;
+        std::string err;
+        if (!resolve(t, &p, &err)) { flash_ = err; return; }
+        jump_to(p);
+        flash_ = path_str(cur_);
+    }
+    bool resolve(const std::string& t, Path* out, std::string* err) {
+        Path p;
+        p.push_back({doc_.root(), -1});
+        size_t i = 0;
+        if (t[0] == '.') ++i;                     // the leading "." of ".", ".a", ".[0]"
+        while (i < t.size()) {
+            if (t[i] == '.') ++i;
+            const JNode cur = p.back().node;
+            std::string key;
+            int64_t index = -1;
+            bool is_key = false;
+            if (i < t.size() && t[i] == '[') {
+                const size_t close_at = t.find(']', i);
+                if (i + 1 < t.size() && t[i + 1] == '"') {
+                    size_t k = i + 2;
+                    for (; k < t.size() && t[k] != '"'; ++k) {
+                        if (t[k] == '\\' && k + 1 < t.size()) ++k;
+                        key += t[k];
+                    }
+                    if (k + 1 >= t.size() || t[k + 1] != ']') { *err = "unclosed [\"…\"] in " + t; return false; }
+                    is_key = true;
+                    i = k + 2;
+                } else {
+                    if (close_at == std::string::npos) { *err = "unclosed [ in " + t; return false; }
+                    const std::string num = t.substr(i + 1, close_at - i - 1);
+                    if (num.empty() || !std::all_of(num.begin(), num.end(), [](char c) { return c >= '0' && c <= '9'; })) {
+                        *err = "not an index: [" + num + "]";
+                        return false;
+                    }
+                    index = std::strtoll(num.c_str(), nullptr, 10);
+                    i = close_at + 1;
+                }
+            } else {
+                size_t k = i;
+                while (k < t.size() && t[k] != '.' && t[k] != '[') ++k;
+                key = t.substr(i, k - i);
+                if (key.empty()) { *err = "empty key in " + t; return false; }
+                is_key = true;
+                i = k;
+            }
+            const std::string so_far = path_str(p);
+            if (is_key) {
+                if (cur.kind != JKind::Object || cur.virt) { *err = so_far + " is not an object"; return false; }
+                int64_t found = -1;
+                JNode c;
+                for (int64_t j = 0; j < cur.count; ++j) {
+                    if (!doc_.child(cur, j, &c)) break;
+                    if (json_unescape(doc_.key(c)) == key) { found = j; break; }
+                }
+                if (found < 0) { *err = "no key \"" + key + "\" in " + so_far; return false; }
+                p.push_back({c, found});
+            } else {
+                if (cur.kind != JKind::Array) { *err = so_far + " is not an array"; return false; }
+                JNode c;
+                if (index >= cur.count || !doc_.child(cur, index, &c)) {
+                    *err = so_far + " has " + count_label(cur) + "; no [" + std::to_string(index) + "]";
+                    return false;
+                }
+                p.push_back({c, index});
+            }
+        }
+        *out = p;
+        return true;
+    }
+    void goto_line(int64_t line) {
+        if (line < 1) line = 1;
+        const char* d = doc_.data();
+        const uint64_t n = doc_.size();
+        uint64_t off = 0;
+        for (int64_t l = 1; l < line && off < n; ++l) {
+            const void* nl = std::memchr(d + off, '\n', (size_t)(n - off));
+            if (!nl) { flash_ = "the document has " + std::to_string(l) + " line" + (l == 1 ? "" : "s"); return; }
+            off = (uint64_t)(static_cast<const char*>(nl) - d) + 1;
+        }
+        while (off < n && (d[off] == ' ' || d[off] == '\t' || d[off] == '\r' || d[off] == '\n' ||
+                           d[off] == ',' || d[off] == ']' || d[off] == '}'))
+            ++off;
+        jump_to(path_at(std::min<uint64_t>(off, n ? n - 1 : 0)));
+        flash_ = "line " + std::to_string(line);
+    }
+    // "!" — the first error the structure scan or the validator found.
+    void goto_error() {
+        uint64_t off = UINT64_MAX;
+        std::string msg;
+        if (doc_.has_struct_err()) { off = doc_.struct_err_off(); msg = doc_.struct_err(); }
+        if (doc_.validation() == 2) {
+            const vvjson::JsonError e = doc_.validation_error();
+            if (e.offset >= 0 && (uint64_t)e.offset < off) { off = (uint64_t)e.offset; msg = e.msg; }
+        }
+        if (off == UINT64_MAX) {
+            flash_ = doc_.validation() == 1 ? "no errors: the document is valid"
+                                            : "no error found yet (still validating)";
+            return;
+        }
+        // The validator reports the byte after a bad token, often between
+        // values: also try the last token before it and keep the deeper path.
+        const uint64_t at = std::min<uint64_t>(off, doc_.size() ? doc_.size() - 1 : 0);
+        uint64_t back = at;
+        const char* d = doc_.data();
+        while (back > 0 && std::strchr(" \t\r\n,:]}", d[back])) --back;
+        Path p1 = path_at(at), p2 = path_at(back);
+        jump_to(p2.size() > p1.size() ? p2 : p1);
+        flash_ = msg + " at byte " + std::to_string(off);
     }
 
     // ── Copy, value pane, help, mouse ──────────────────────────────────────
@@ -29233,6 +29373,8 @@ private:
             {"PgUp PgDn  ^U ^D", "page / half page"},
             {"g  G", "first / last row"},
             {"/  ?  n  N", "search keys and values (regex, icase); next / previous"},
+            {":", "go to a line (:120) or a path (:.a.b[3]); :q quits"},
+            {"!", "go to the first error"},
             {"y  p  Y", "copy the value / its jq path / its key (OSC 52)"},
             {"t", "table view of the records (t there comes back)"},
             {"q  Esc", "quit (Esc clears a search first)"},
