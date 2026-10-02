@@ -42,6 +42,27 @@ To regenerate the test fixture data (rare):
 python3 tests/data/generate.py
 ```
 
+## Documentation and screenshots
+
+`README.md` is the overview; the [formats gallery](docs/formats.md), the
+[manual](docs/USAGE.md) and the [vvg guide](docs/vvg.md) hold the detail. The
+test suite checks that every relative link and `#anchor` in them resolves, and
+that every extension `vv --formats` lists is in the README's formats table.
+
+The screenshots under `docs/img/` are generated from synthetic data — do not
+edit them by hand:
+
+```sh
+docs/shots/make_shots.sh            # all (~1 min): build/vv, build-gui/gui/vvg
+ONLY=vcf,json-tree docs/shots/make_shots.sh
+```
+
+It needs tmux, ImageMagick and Python with `rich`, `pyarrow`, `pysam`,
+`anndata` and `openpyxl`; the vvg shots need a `-DVV_BUILD_GUI=ON` build. The
+output is deterministic, so `git diff --stat docs/img` shows exactly which
+screens a change affects. A new view goes in as a `tui` / `cli` / `gui` line in
+the script plus a reference from `docs/formats.md`.
+
 ## Code style
 
 - Single-file `main.cpp` is intentional. New formats fit alongside the
@@ -60,6 +81,7 @@ python3 tests/data/generate.py
       plus the ASan/UBSan and fuzzer gates (Linux only).
 - [ ] CHANGELOG.md updated under "Unreleased".
 - [ ] Help text and man page (`man/vv.1`) updated if a CLI flag changed.
+- [ ] Screenshots regenerated (`docs/shots/make_shots.sh`) if a screen changed.
 - [ ] Bumped `kVersion` only if releasing.
 - [ ] No new compiler warnings.
 

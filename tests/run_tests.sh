@@ -1797,6 +1797,27 @@ PYEOF
     else
         FAIL=$((FAIL+1)); echo "  FAIL  formats_completions_no_drift"
     fi
+    # The README's formats table is what someone searching for a viewer of
+    # their file type reads first: every registered extension must be in it.
+    python3 - "$TMP/formats.json" "$HERE/../README.md" <<'PYEOF'
+import json, sys
+exts = sorted({e for f in json.load(open(sys.argv[1])) for e in f['extensions']})
+text = open(sys.argv[2]).read()
+missing = [e for e in exts if "`%s`" % e not in text]
+if missing:
+    print("README.md formats table missing: " + " ".join(missing)); sys.exit(1)
+PYEOF
+    if [ $? -eq 0 ]; then
+        PASS=$((PASS+1)); echo "  ok    formats_readme_no_drift"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  formats_readme_no_drift"
+    fi
+    # Relative links, images and #anchors in the Markdown docs resolve.
+    if python3 "$HERE/check_doc_links.py" "$HERE/.."; then
+        PASS=$((PASS+1)); echo "  ok    doc_links_resolve"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  doc_links_resolve"
+    fi
 
     # Every extension the registry claims must actually be reachable: assert
     # each one appears in the open_source() dispatch ladder in main.cpp.

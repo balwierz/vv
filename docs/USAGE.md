@@ -52,6 +52,29 @@ A symlinked binary named **`vh`** ("vertical head") flips the default
 preview to a transposed, vertical layout — useful for wide tables that
 would need horizontal scrolling.
 
+## Common flags
+
+| Flag | Purpose |
+|---|---|
+| `-n N` | rows to show (default 10; `0` = all) |
+| `--tail N` | the last N rows instead of the first N |
+| `-w W` / `-c N` | maximum cell width (default 32) / maximum columns |
+| `--no-index` | no row-index column |
+| `--select COLS` | columns by name, glob, range or type class |
+| `--filter EXPR` | row predicate (`<col> <op> <value>`, `AND` / `OR`) |
+| `--sort COL[:desc]` | order the rows |
+| `-r REGION` / `--coords UCSC\|NCBI` | range query / its coordinate convention |
+| `--tab NAME` | a sheet, table or component of a multi-table file |
+| `--tsv` `--csv` `--json` `--ndjson` `--md` | text output |
+| `--parquet OUT` / `--arrow OUT` | convert (`-` for stdout) |
+| `--schema` `--describe` `--stats` `--unique` `--distinct` `--sample N` `--contigs` `--seq-stats` `--gt-stats` | data exploration |
+| `--heatmap` | numeric columns as a terminal image |
+| `--vertical` | transposed (`vh`) preview |
+| `--theme NAME` / `--box unicode\|ascii` / `--color auto\|always\|never` | appearance |
+| `-@ N` | worker threads (default auto, at most 8) |
+
+`vv --help` and `man vv` list every flag.
+
 # Supported formats
 
 | Family            | Extensions                                                  |
@@ -459,9 +482,16 @@ Value-predicate filter. Grammar:
 | `~` `!~` | ECMAScript regex, **unanchored** — use `^` / `$` to anchor |
 | `contains` `startswith` `endswith` | substring tests |
 | `in (a, b, c)`, `not in (…)` | set membership; numeric columns compare numerically |
+| `in @ids.txt`, `not in @…` | members read from a file: one per line, first tab field; `.gz` / `.zst` too |
 | `is null`, `is not null` | the column's actual nulls |
+| `has`, `lacks` | bit flags by name or number: `FLAG lacks UNMAP,SECONDARY,DUP` (samtools `-F 0x504`), `FLAG has PAIRED,READ1`, `FLAG lacks 0x904` |
 
-* Literals: integer, float, single- or double-quoted string.
+* Literals: integer, float, single- or double-quoted string; `true` /
+  `false` against a boolean column; a quoted date or time against a date /
+  timestamp column (`day >= "2024-01-01"`, `ts < "2024-06-15 12:30:00Z"`, a
+  zone offset converted to UTC).
+* A column name with spaces or operator characters goes in backticks:
+  `` `Sample ID` == "S1" ``, `` `End)` > 100 ``.
 * `AND` / `OR` case-insensitive.
 * The word operators are operators only in *operator position*, so a
   column genuinely named `in`, `is` or `contains` stays filterable:
@@ -538,7 +568,7 @@ Coordinate convention: **UCSC** by default — 0-based, half-open intervals
 (the convention introduced by Jim Kent's UCSC Genome Browser source tree
 in 2000 and used by BED, bigBed, bigWig, BAM, and LociSSD). For
 samtools / tabix / VCF / GFF style 1-based inclusive coordinates, pass
-`--coords NCBI`. See [Coordinate convention](#coordinate-convention-coords).
+`--coords NCBI`. See [Coordinate convention](#coordinate-convention---coords).
 
 ## Column names (`--region-cols`)
 
@@ -1057,6 +1087,60 @@ well: the optional `TAG:type:value` fields after its 12 mandatory columns
 occurrence in the first 1000 lines, null where a record lacks the tag.
 `--tags` is rejected on other files and cannot be combined with `--pileup`
 (whose rows are per-base counts, not alignment records).
+
+## `--expand COL` (VCF `INFO`, GFF / GTF `attributes`)
+
+```sh
+$ vv variants.vcf --expand INFO --filter 'AF > 0.05' --select CHROM,POS,AF
+$ vv gencode.gtf  --expand attributes --select feature,gene_name,gene_type
+```
+
+Unpacks a packed `key=value` column into one column per key, so the keys
+work everywhere a column works (filter, select, sort, export). VCF keys are
+typed from the `##INFO` declarations (`Number=A/R/G/.` keys such as `AD` and
+`PL` stay text: one value per allele). GFF / GTF declares nothing, so the keys
+come from the first chunk — a `-n` preview and a full scan can differ in the
+column set. The raw column is kept and existing column positions do not move.
+The interactive viewer and vvg expand `INFO` by default.
+
+## `--tab NAME` (sheets, tables, components)
+
+```sh
+$ vv cells.h5ad --tab obs -n 20
+$ vv workbook.xlsx --tab qc --tsv
+$ vv lab.sqlite --tab runs --filter 'q30 > 90'
+```
+
+Files with several tables — workbook sheets, SQLite tables, HDF5 / AnnData
+components (`obs`, `var`, `X`, `obsm[X_umap]`, …), NumPy arrays — open as tabs
+in the interactive viewer; `--tab` picks one by its exact name for every other
+mode (an unknown name lists the available tabs).
+
+## `--heatmap` (numeric columns as an image)
+
+```sh
+$ vv --heatmap counts.parquet
+$ vv --heatmap --image-mode ascii embedding.npy > grid.txt
+```
+
+Renders the numeric columns as a colour heatmap in the terminal (rows ×
+numeric columns, normalised over the whole table, viridis palette) — a look at
+the shape of a matrix. `--image-mode` picks the backend: `auto` (kitty
+graphics in kitty, the iTerm2 protocol in iTerm2 and WezTerm, else Unicode
+half-blocks), `kitty`, `iterm`, `sixel`, `halfblock` or `ascii`. When stdout is
+not a terminal an ASCII intensity grid is written instead of escape sequences.
+`NaN` / `Inf` cells are gaps.
+
+## `--formats`
+
+```sh
+$ vv --formats
+$ vv --formats --json | jq -r '.[] | select(.region) | .name'
+```
+
+The table of formats vv reads, with capability columns: gzip input, region
+queries, tabs, streaming or random access, extensions. The shell completions
+are checked against it in CI.
 
 # Stdin
 

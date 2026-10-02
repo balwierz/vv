@@ -13,6 +13,7 @@ root=$(cd "$here/../.." && pwd)
 VV=$(realpath "${1:-$root/build/vv}")
 VVG=${2:-$root/build-gui/gui/vvg}
 [ -x "$VVG" ] && VVG=$(realpath "$VVG")
+KDETEST=$root/build-gui/gui/kde/vvkdetest     # Dolphin thumbnail renderer
 out_vv=$root/docs/img/vv
 out_vvg=$root/docs/img/vvg
 mkdir -p "$out_vv" "$out_vvg"
@@ -111,3 +112,15 @@ gui parquet    "VVG_DETAIL=0,0"  --filter "signal > 10" --sort signal:desc atac_
 gui bam        "VVG_DETAIL=0,0"  reads.bam
 gui sqlite     "VVG_DETAIL=2,0"  --tab runs lab.sqlite
 gui json       "VVG_DETAIL=14,1" events.ndjson
+
+# ── KDE Dolphin thumbnails (when the KF6 plugins were built) ─────────────────
+if want kde-thumbnails && [ -x "$KDETEST" ]; then
+    for f in atac_peaks.parquet cohort.vcf.gz pbmc.h5ad reads.bam; do
+        QT_QPA_PLATFORM=offscreen "$KDETEST" "$f" "$work/thumb-${f%%.*}.png" >/dev/null
+    done
+    MAGICK_THREAD_LIMIT=1 magick montage "$work"/thumb-{atac_peaks,cohort,pbmc,reads}.png \
+        -tile 4x1 -geometry +8+8 -background '#e8e8e8' "$work/thumbs.png"
+    MAGICK_THREAD_LIMIT=1 magick "$work/thumbs.png" -strip +dither -colors 256 \
+        "PNG8:$out_vvg/kde-thumbnails.png"
+    echo "vvg/kde-thumbnails.png"
+fi

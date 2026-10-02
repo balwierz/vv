@@ -197,6 +197,11 @@ Dockerfile.almalinux8     static binary build (glibc ≥ 2.28)
 docker-sources/           bundled deps for the static build (gitignored)
 completions/              bash, fish, zsh tab completion
 man/vv.1                  groff man page
+docs/USAGE.md             user manual (pandoc → HTML/PDF via docs/build_docs.sh)
+docs/formats.md           per-format screenshot gallery (linked from README's formats table)
+docs/vvg.md               desktop viewer guide
+docs/img/vv, docs/img/vvg generated screenshots — regenerate, never hand-edit
+docs/shots/               make_shots.sh (+ showcase_data.py, ansi_to_svg.py): rebuilds docs/img
 tests/data/               small test fixtures (committed)
 tests/golden/             expected outputs (committed)
 tests/run_tests.sh        smoke test harness
