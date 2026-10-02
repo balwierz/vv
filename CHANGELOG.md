@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **Invisible strings in the JSON tree viewer.** String values were drawn
+  black on black in builds linked against the wide ncurses library (all
+  1.26.0 packages): it reports 65 536 colour pairs on `xterm-256color`, and
+  the reserved string pair (the last one) is beyond what `COLOR_PAIR()`
+  addresses. The table viewer's on-demand pairs (log levels, RGB swatches)
+  stop at 255 for the same reason.
 - **Blank right-hand columns on the table viewer's first frame.** A column
   that came into view only after the column widths were fitted (e.g. `AF` of
   a VCF split into INFO columns, on a 110-column terminal) was not loaded and

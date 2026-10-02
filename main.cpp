@@ -24863,8 +24863,11 @@ enum : int {
     NCP_PLAIN,        // default-fg text (used as zebra-twin base)
 };
 // The last colour pair is kept for the JSON viewer's string colour; the
-// table viewer's on-demand pairs stop below it.
-static int tui_reserved_pair() { return COLOR_PAIRS - 1; }
+// table viewer's on-demand pairs stop below it. Pairs are applied with
+// COLOR_PAIR(), whose attribute field holds 8 bits: with the wide library
+// COLOR_PAIRS is 65536 on xterm-256color, and a higher pair would alias pair
+// n & 255 (uninitialised: black on black), so the range stops at 255.
+static int tui_reserved_pair() { return std::min(COLOR_PAIRS, 256) - 1; }
 
 // One terminal session for the ncurses viewers: the SCREEN, the handlers that
 // restore the terminal on SIGINT / SIGTERM / SIGHUP, and the key reader that

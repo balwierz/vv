@@ -112,6 +112,14 @@ def main():
     check("open", status(txt), (".", "object"))
     if "valid" not in txt:
         bad.append("open: no validation state in the status bar")
+    # Strings are drawn in the string colour, not in an uninitialised pair
+    # (setaf 0 + setab 0: black on black) — the wide library reports 65536
+    # pairs, more than COLOR_PAIR() can address.
+    m = re.search(rb'((?:\x1b\[[0-9;]*m)+)"alice"', raw)
+    if not m:
+        bad.append("string colour: no SGR before a string value")
+    elif b"[30m" in m.group(1) or b"[40m" in m.group(1):
+        bad.append("string colour: drawn black on black (%r)" % m.group(1))
     # A small file opens fully expanded: l on an open node moves into it,
     # h on an open node closes it, h again goes to the parent.
     txt, raw, hung = run(vv, [doc], [b"j", b"j", b"l", b"j"])
