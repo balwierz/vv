@@ -37,7 +37,7 @@ More screenshots, one per format: **[docs/formats.md](docs/formats.md)**.
 | BED, ENCODE peaks, bedGraph | `.bed` `.narrowPeak` `.broadPeak` `.gappedPeak` `.bedGraph` `.bg` `.tagAlign` | [screens](docs/formats.md#bed-and-encode-peaks) |
 | GFF / GTF | `.gff` `.gff3` `.gtf` | [screens](docs/formats.md#gff--gtf) |
 | FASTA / FASTQ | `.fa` `.fasta` `.fna` `.faa` `.ffn` `.frn` `.fq` `.fastq` | [screens](docs/formats.md#fasta--fastq) |
-| bigWig / bigBed / 2bit | `.bw` `.bigWig` `.bb` `.bigBed` `.2bit` | [screens](docs/formats.md#bigwig--bigbed--2bit) |
+| bigWig / bigBed / 2bit, wiggle | `.bw` `.bigWig` `.bb` `.bigBed` `.2bit` `.wig` | [screens](docs/formats.md#bigwig--bigbed--2bit--wig) |
 | samtools mpileup | `.pileup` `.mpileup` `.pile` | [notes](docs/formats.md#mpileup) |
 | BLAST / DIAMOND tabular | `.m8` `.blast6` `.outfmt6` | [notes](docs/formats.md#blast--diamond-tabular) |
 | PLINK, BEDPE, pairs, GCT, MAF | `.bim` `.fam` `.pvar` `.psam` `.bedpe` `.pairs` `.gct` `.maf` | [notes](docs/formats.md#plink-and-tsv-layouts) |

@@ -11,7 +11,7 @@ build prints. Flags and options are covered in the [manual](USAGE.md).
 [BED and ENCODE peaks](#bed-and-encode-peaks) ·
 [GFF / GTF](#gff--gtf) ·
 [FASTA / FASTQ](#fasta--fastq) ·
-[bigWig / bigBed / 2bit](#bigwig--bigbed--2bit) ·
+[bigWig / bigBed / 2bit / WIG](#bigwig--bigbed--2bit--wig) ·
 [mpileup](#mpileup) ·
 [BLAST / DIAMOND tabular](#blast--diamond-tabular) ·
 [PLINK and TSV layouts](#plink-and-tsv-layouts)<br>
@@ -108,11 +108,15 @@ Try: `vv reads.fq.gz` · `vv --seq-stats reads.fq.gz` ·
 `vv --filter 'name ~ "^chr17"' genome.fa`.
 More: [`--seq-stats`](USAGE.md#--seq-stats-fasta--fastq-summary).
 
-## bigWig / bigBed / 2bit
+## bigWig / bigBed / 2bit / WIG
 
 `.bw` `.bigWig` `.bb` `.bigBed` `.2bit` — bigWig intervals and values, bigBed
 records typed from their embedded autoSql, 2bit sequence index; region queries
 use the file's own index.
+
+Text wiggle (`.wig`, also compressed): `fixedStep` / `variableStep` sections
+are expanded into bedGraph rows — `Chr`, `[Beg`, `End)`, `value`, 0-based
+half-open — so they filter, sort and export like a bedGraph.
 
 ![vv: a bigWig](img/vv/bigwig.svg)
 

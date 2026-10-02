@@ -94,7 +94,7 @@ _vv() {
         '*.ipynb' '*.ipynb.gz' '*.ipynb.bz2' '*.ipynb.xz' '*.ipynb.zst'
         '*.har' '*.har.gz' '*.har.bz2' '*.har.xz' '*.har.zst'
         '*.bb' '*.bigBed' '*.bigbed' '*.bw' '*.bigWig' '*.bigwig'
-        '*.2bit'
+        '*.2bit' '*.wig' '*.wig.gz' '*.wig.zst' '*.wig.bz2' '*.wig.xz'
         '*.sqlite' '*.sqlite3' '*.db'
         '*.xlsx' '*.xlsm' '*.ods' '*.fods'
         '*.orc' '*.npz' '*.npy'

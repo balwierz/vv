@@ -1591,7 +1591,8 @@ private:
                         case BedVariant::NarrowPeak: return "Format: narrowPeak (BED6+4)";
                         case BedVariant::BroadPeak:  return "Format: broadPeak (BED6+3)";
                         case BedVariant::GappedPeak: return "Format: gappedPeak (BED12+3)";
-                        case BedVariant::BedGraph:   return "Format: bedGraph";
+                        case BedVariant::BedGraph:
+                            return format_note_.empty() ? "Format: bedGraph" : "Format: " + format_note_;
                         case BedVariant::TagAlign:   return "Format: tagAlign (BED6)";
                         case BedVariant::None: break;
                     }

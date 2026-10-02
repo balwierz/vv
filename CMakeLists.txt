@@ -389,7 +389,8 @@ set(VV_CORE_SOURCES
     src/formats/arrow.cpp     src/formats/delimited.cpp src/formats/hdf5.cpp
     src/formats/htslib.cpp    src/formats/json.cpp      src/formats/lociss.cpp
     src/formats/npz.cpp       src/formats/parquet.cpp   src/formats/sqlite.cpp
-    src/formats/text.cpp      src/formats/ucsc.cpp      src/formats/workbook.cpp
+    src/formats/text.cpp      src/formats/ucsc.cpp      src/formats/wig.cpp
+    src/formats/workbook.cpp
     src/output/reports.cpp    src/output/table.cpp      src/output/writers.cpp
     src/render/image.cpp      src/render/markdown.cpp
 )

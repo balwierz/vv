@@ -1354,6 +1354,8 @@ std::string open_source_dispatch(const std::string& path, const Config& cfg,
             delimited_first_line_after_meta_raw(path).rfind("##maf", 0) == 0)
             return open_text(path, cfg, out);
         dk = DelimKind::TSV;
+    } else if (fends_ci(det, ".wig") || fends_ci(det, ".wig.gz")) {
+        return open_wig_source(path, cfg, out);
     } else if (fends_ci(det, ".bed")        || fends_ci(det, ".bed.gz")
             || fends_ci(det, ".narrowPeak") || fends_ci(det, ".narrowPeak.gz")
             || fends_ci(det, ".broadPeak")  || fends_ci(det, ".broadPeak.gz")

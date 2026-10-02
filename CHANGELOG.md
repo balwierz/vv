@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **UCSC wiggle (`.wig`)**: `fixedStep` / `variableStep` sections expanded on
+  the fly into bedGraph rows (0-based half-open), so they filter, sort and
+  export like a bedGraph; a malformed line is reported with its number.
 - **MuData (`.h5mu`)**: a summary naming the modalities, the joint obs / var,
   and each modality's AnnData tabs as `name:tab` (matrices labelled by that
   modality's own obs / var). **`.h5seurat`, `.fast5`, `.nc` / `.nc4`** open as

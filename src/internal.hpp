@@ -917,6 +917,11 @@ void delimited_apply_tenx_sidecar(TabularSource& src, int kind);
 
 void delimited_apply_bed_variant(TabularSource& src, BedVariant v);
 
+// UCSC wiggle (src/formats/wig.cpp): fixedStep / variableStep expanded to
+// bedGraph rows.
+std::string open_wig_source(const std::string& path, const Config& cfg,
+                            std::unique_ptr<TabularSource>* out);
+
 std::string delimited_first_line_after_meta(const std::string& path);
 
 std::string delimited_first_line_after_meta_raw(const std::string& path);

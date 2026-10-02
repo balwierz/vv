@@ -1187,6 +1187,17 @@ printf 'CDF\001\000\000\000\000' > "$TMP/classic.nc"
 assert_contains "netcdf3_refused" "$("$VV" "$TMP/classic.nc" 2>&1)" "NetCDF-3 (classic) is not supported"
 
 echo
+echo '── UCSC wiggle (.wig) ─────────────────────────────────'
+# fixedStep / variableStep (1-based) and bedGraph-style lines (0-based) become
+# bedGraph rows, 0-based half-open; spans and steps applied.
+printf 'track type=wiggle_0\nvariableStep chrom=chr1 span=5\n101 1.5\nfixedStep chrom=chr2 start=1001 step=10 span=10\n0.5\n0.75\nchr3\t50\t60\t9.5\n' > "$TMP/t.wig"
+assert_eq_file_inline "wig_to_intervals" "$("$VV" --tsv --no-header "$TMP/t.wig")" \
+    "$(printf 'chr1\t100\t105\t1.5\nchr2\t1000\t1010\t0.5\nchr2\t1010\t1020\t0.75\nchr3\t50\t60\t9.5')"
+assert_contains "wig_footer" "$("$VV" -n 1 --color=never "$TMP/t.wig")" "Format: WIG"
+printf 'fixedStep chrom=chr1 step=1\n1\n' > "$TMP/bad.wig"
+assert_contains "wig_bad_line_reported" "$("$VV" --tsv "$TMP/bad.wig" 2>&1)" "WIG line 1: fixedStep needs start="
+
+echo
 echo '── BLAST / DIAMOND tabular ────────────────────────────'
 # -outfmt 6 has no header row: the 12 standard columns are named, and pident /
 # evalue / bitscore are real even when the first rows hold whole numbers.

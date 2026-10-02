@@ -209,6 +209,10 @@ lines and 1.3's column-metadata rows are shown above the schema, not as
 data) and the mutation annotation format (MAF); a UCSC alignment
 \fB.maf\fR (\fB##maf\fR) is shown as text
 .IP \(bu 2
+\fB.wig\fR \(en UCSC wiggle: \fBfixedStep\fR / \fBvariableStep\fR sections (and
+bedGraph-style lines) expanded into bedGraph rows (Chr, [Beg, End), value;
+0-based half-open).
+.IP \(bu 2
 \fB.m8\fR, \fB.blast6\fR, \fB.outfmt6\fR \(en BLAST / DIAMOND tabular
 output (\fB\-outfmt 6\fR): no header row; the 12 standard columns are named
 (qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue

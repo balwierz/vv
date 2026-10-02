@@ -70,6 +70,8 @@ static const FormatInfo kFormats[] = {
    true,  false, false, true,  false, ""},
   {"PLINK variant / sample tables", ".bim .fam .pvar .psam", "DelimitedSource",
    true,  false, false, true,  false, ""},
+  {"UCSC wiggle", ".wig", "DelimitedSource",
+   true,  false, false, true,  false, ""},
   {"BLAST / DIAMOND tabular", ".m8 .blast6 .outfmt6", "DelimitedSource",
    true,  false, false, true,  false, ""},
   {"Genomics TSV layouts", ".bedpe .pairs .gct .maf", "DelimitedSource",
@@ -196,6 +198,7 @@ static void print_usage(const char* prog) {
         "                              ENCODE peak / signal formats (BED+typed cols)\n"
         "  .bb  .bigBed                UCSC bigBed (libBigWig; autoSql columns)\n"
         "  .bw  .bigWig                UCSC bigWig (libBigWig)\n"
+        "  .wig                        UCSC wiggle (fixedStep / variableStep → intervals)\n"
         "  .2bit                       UCSC 2bit (sequence index: name/length/blocks)\n"
         "  .sqlite  .sqlite3  .db      SQLite database (each table → one TUI tab)\n"
         "  .xlsx  .xlsm                Excel spreadsheet (each sheet → one TUI tab)\n"
