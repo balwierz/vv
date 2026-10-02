@@ -167,6 +167,9 @@ std::string truncate(const std::string& s, int max_w);
 std::string digits_with_sep(const std::string& s);
 std::string cell_to_string(const arrow::Array& arr, int64_t row);
 std::string cell_to_display_string(const arrow::Array& arr, int64_t row);
+// type_label: a column type as vv shows it — Arrow's name, except that a
+// dictionary (categorical) type reads "category[string]".
+std::string type_label(const arrow::DataType& t);
 
 // Stable sort order (a row permutation) for one column's values: numeric
 // columns compare numerically, others by their rendered text; nulls sort last;

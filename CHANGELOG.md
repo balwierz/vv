@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **vvg column headers.** A categorical column's header showed Arrow's
+  `dictionary<values=string, indices=int32, ordered=0>` and was sized to it;
+  it now reads `category[string]` as in vv, and nested types longer than 32
+  characters are elided in the header (full type in the tooltip).
 - **NumPy summary labels.** `.npz` arrays of fixed-width strings (`<U11`,
   `|S2`) or datetimes were labelled "pickled / object — skipped"; the label
   now names the dtype class ("strings — not supported", "datetime — not

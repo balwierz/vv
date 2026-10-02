@@ -540,7 +540,7 @@ static arrow::Type::type display_type(const arrow::Field& f) {
 // "category[<value type>]" — "category[string]", "category[bool]", with
 // ", ordered" for an ordered one — instead of Arrow's
 // "dictionary<values=string, indices=int32, ordered=0>".
-static std::string type_label(const arrow::DataType& t) {
+std::string type_label(const arrow::DataType& t) {
     if (t.id() != arrow::Type::DICTIONARY) return t.ToString();
     const auto& d = static_cast<const arrow::DictionaryType&>(t);
     return "category[" + type_label(*d.value_type()) + (d.ordered() ? ", ordered" : "") + "]";

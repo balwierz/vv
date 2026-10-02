@@ -41,7 +41,7 @@ ArrowTableModel::ArrowTableModel(std::unique_ptr<TabularSource> src,
         if (is_hidden) continue;
         displayCols_.push_back(i);
         colNames_.push_back(QString::fromStdString(f->name()));
-        colTypes_.push_back(QString::fromStdString(f->type()->ToString()));
+        colTypes_.push_back(QString::fromStdString(type_label(*f->type())));
     }
     watcher_ = new QFutureWatcher<std::vector<int64_t>>(this);
     connect(watcher_, &QFutureWatcher<std::vector<int64_t>>::finished,
@@ -214,8 +214,13 @@ QVariant ArrowTableModel::data(const QModelIndex& index, int role) const {
 QVariant ArrowTableModel::headerData(int section, Qt::Orientation o, int role) const {
     if (o == Qt::Horizontal) {
         if (section < 0 || section >= (int)colNames_.size()) return {};
-        if (role == Qt::DisplayRole)
-            return colNames_[section] + "\n" + colTypes_[section];
+        if (role == Qt::DisplayRole) {
+            // A nested type (struct<GT: string, AD: list<…>, …>) would size
+            // the column to its full text: elide it; the tooltip has it all.
+            const QString& t = colTypes_[section];
+            return colNames_[section] + "\n"
+                 + (t.size() > 32 ? t.left(31) + QChar(0x2026) : t);
+        }
         if (role == Qt::ToolTipRole)
             return colNames_[section] + " : " + colTypes_[section];
     } else if (o == Qt::Vertical && role == Qt::DisplayRole) {
