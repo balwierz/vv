@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 project(vv
-    VERSION 1.25.0
+    VERSION 1.26.0
     DESCRIPTION "Universal genomic file viewer"
     HOMEPAGE_URL "https://github.com/balwierz/vv"
     LANGUAGES C CXX)
@@ -146,6 +146,10 @@ endforeach()
 # degradation removed in #86 / #100. Better to fail at configure with the fix
 # in the message.
 set(CURSES_NEED_NCURSES TRUE)
+# The wide-character library (ncursesw). The narrow libncurses that FindCurses
+# picks by default on Debian / Ubuntu prints every byte of a UTF-8 glyph
+# (box lines, ellipses, tree markers) in meta notation ("M-bM-^TM-^@").
+set(CURSES_NEED_WIDE TRUE)
 find_package(Curses REQUIRED)
 
 include(CheckCXXSourceCompiles)
