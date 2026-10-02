@@ -26899,8 +26899,8 @@ class TableTUI {
         }
         const std::string title = " column stats ";
         int inner = std::max(w_l + 2 + w_r, (int)display_width(title));
-        int panel_w = inner + 4;
-        int panel_h = (int)rows.size() + 3;
+        int panel_w = inner + 4;            // │ label␣␣value │
+        int panel_h = (int)rows.size() + 2;  // borders + one line per row
         if (panel_w > scr_c_) panel_w = scr_c_;
         if (panel_h > scr_r_) panel_h = scr_r_;
         int y0 = std::max(0, (scr_r_ - panel_h) / 2);
@@ -26928,11 +26928,11 @@ class TableTUI {
             int yy = y0 + 1 + i;
             int xx = x0 + 2;
             attron(A_BOLD); mvaddstr(yy, xx, rows[i].first.c_str()); attroff(A_BOLD);
-            int avail = panel_w - 2 - (xx - x0) - (w_l + 2) - 1;
+            // Columns from the value's start to the space before the border.
+            int avail = (x0 + panel_w - 2) - (xx + w_l + 2);
             std::string v = rows[i].second;
-            if ((int)display_width(v) > avail && avail > 3) {
-                v.resize(avail - 3); v += g_box->ell;
-            }
+            if ((int)display_width(v) > avail && avail > 3)
+                v = truncate(v, avail);
             mvaddstr(yy, xx + w_l + 2, v.c_str());
         }
         std::string bot = std::string(BOX_BL);

@@ -126,12 +126,17 @@ def main():
     elif "column stats" not in txt:
         fail("stats popup did not open")
     else:
-        # The popup is narrow, so the name may be truncated ("S…"). Match the
-        # popup's own Column row rather than the table header behind it.
-        mm = re.search(r"Column\s+(\S+)", txt[txt.rfind("column stats"):])
-        if not mm or not mm.group(1).startswith("S"):
+        # Match the popup's own Column row rather than the table header
+        # behind it. The popup is sized to its widest value, so nothing in it
+        # is truncated.
+        pop = txt[txt.rfind("column stats"):]
+        mm = re.search(r"Column\s+(\S+)", pop)
+        if not mm or mm.group(1) != "Score":
             fail("stats popup names %r, expected the cursor column Score"
                  % (mm.group(1) if mm else None))
+        box = pop[:pop.find("\u2570")] if "\u2570" in pop else ""
+        if not box or "\u2026" in box:
+            fail("stats popup truncates a value: %r" % box)
 
     # 3. Yank copies the cell under the cursor.
     _txt, raw, hung = run(vv, [data], [b"l", b"y"])

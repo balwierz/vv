@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **Truncated values in the column stats popup (`S`).** The popup is sized
+  to its widest value, but the space for a value was computed one column
+  short, so that value was always cut (`Max 144…`); the popup also had an
+  empty last line.
 - **Invisible strings in the JSON tree viewer.** String values were drawn
   black on black in builds linked against the wide ncurses library (all
   1.26.0 packages): it reports 65 536 colour pairs on `xterm-256color`, and
