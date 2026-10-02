@@ -28164,30 +28164,7 @@ static std::string json_unescape(std::string_view raw) {
 }
 
 // Search: case-insensitive; a literal unless the query uses regex syntax.
-struct JsonSearch {
-    std::string lit;
-    std::regex  re;
-    bool        is_re = false;
-    void compile(const std::string& q) {
-        is_re = q.find_first_of(".^$|?*+()[]{}\\") != std::string::npos;
-        lit.clear();
-        if (is_re) {
-            try { re = std::regex(q, std::regex::ECMAScript | std::regex::icase); }
-            catch (...) { is_re = false; }
-        }
-        if (!is_re) for (char c : q) lit += (char)std::tolower((unsigned char)c);
-    }
-    bool match(std::string_view s) const {
-        if (is_re) return std::regex_search(s.begin(), s.end(), re);
-        if (lit.empty() || s.size() < lit.size()) return false;
-        for (size_t i = 0; i + lit.size() <= s.size(); ++i) {
-            size_t k = 0;
-            while (k < lit.size() && std::tolower((unsigned char)s[i + k]) == lit[k]) ++k;
-            if (k == lit.size()) return true;
-        }
-        return false;
-    }
-};
+using vvjson::JsonSearch;
 
 class JsonTUI {
 public:
@@ -28801,80 +28778,30 @@ private:
         }
         line_edit_key(input_buf_, input_cur_, ch);
     }
-    // Scan the bytes in [a, b) for a key, string or scalar matching the
-    // query; the first (forward) or last (backward) hit's offset, or
-    // UINT64_MAX. Any key cancels (returns UINT64_MAX, sets *cancelled).
-    uint64_t scan(uint64_t a, uint64_t b, bool forward, bool* cancelled) {
-        const char* d = doc_.data();
-        uint64_t i = a, last = UINT64_MAX, next_poll = a + (4u << 20);
-        nodelay(stdscr, TRUE);
-        while (i < b) {
-            if (i >= next_poll) {
-                next_poll = i + (4u << 20);
-                if (::getch() != ERR) { *cancelled = true; break; }
-                const int pct = (int)(100.0 * (double)(i - a) / (double)std::max<uint64_t>(1, b - a));
-                attron(A_REVERSE);
-                mvhline(rows_ - 1, 0, ' ', cols_);
-                mvaddstr(rows_ - 1, 0, (std::string(" searching") + g("… ", "... ") + std::to_string(pct) +
-                                        "%  (any key cancels)").c_str());
-                attroff(A_REVERSE);
-                refresh();
-            }
-            const char c = d[i];
-            if (c == '"') {
-                const void* q = nullptr;
-                uint64_t k = i + 1;
-                for (;;) {
-                    q = std::memchr(d + k, '"', (size_t)(doc_.size() - k));
-                    if (!q) break;
-                    const uint64_t at = (uint64_t)(static_cast<const char*>(q) - d);
-                    uint64_t j = at;
-                    while (j > i + 1 && d[j - 1] == '\\') --j;
-                    if ((at - j) % 2 == 0) break;
-                    k = at + 1;
-                }
-                const uint64_t e = q ? (uint64_t)(static_cast<const char*>(q) - d) : doc_.size();
-                if (pat_.match(std::string_view(d + i + 1, (size_t)(e - i - 1)))) {
-                    if (forward) { nodelay(stdscr, FALSE); return i; }
-                    last = i;
-                }
-                i = e + 1;
-                continue;
-            }
-            if (c == '-' || (c >= '0' && c <= '9') || c == 't' || c == 'f' || c == 'n') {
-                uint64_t e = i;
-                while (e < b && !std::strchr(" \t\r\n,:[]{}\"", d[e])) ++e;
-                if (pat_.match(std::string_view(d + i, (size_t)(e - i)))) {
-                    if (forward) { nodelay(stdscr, FALSE); return i; }
-                    last = i;
-                }
-                i = std::max(e, i + 1);
-                continue;
-            }
-            ++i;
-        }
-        nodelay(stdscr, FALSE);
-        return *cancelled ? UINT64_MAX : last;
-    }
     void search(bool forward, bool include_cursor = false) {
         const JNode& n = cur_.back().node;
         // Resume after the cursor's own token (inside a container: after its
-        // opening bracket), so a search never starts in the middle of a string.
-        uint64_t from;
-        if (cur_.back().close) from = std::min<uint64_t>(n.end, doc_.size());
-        else if (n.virt) from = 0;
-        else if (n.container()) from = n.off + 1;
-        else from = include_cursor ? n.start() : n.end;
+        // opening bracket; on a closing row: after the bracket), so a search
+        // never starts in the middle of a string.
+        const uint64_t from = cur_.back().close ? std::min<uint64_t>(n.end, doc_.size())
+                                                : vvjson::JsonDoc::search_from(n, include_cursor);
         const uint64_t cur_start = n.virt ? 0 : n.start();
+        // Any key cancels a long scan; the status line shows its progress.
+        nodelay(stdscr, TRUE);
+        auto tick = [&](uint64_t pos) {
+            if (::getch() != ERR) return false;
+            const int pct = (int)(100.0 * (double)pos / (double)std::max<uint64_t>(1, doc_.size()));
+            attron(A_REVERSE);
+            mvhline(rows_ - 1, 0, ' ', cols_);
+            mvaddstr(rows_ - 1, 0, (std::string(" searching") + g("… ", "... ") + std::to_string(pct) +
+                                    "%  (any key cancels)").c_str());
+            attroff(A_REVERSE);
+            refresh();
+            return true;
+        };
         bool cancelled = false, wrapped = false;
-        uint64_t hit;
-        if (forward) {
-            hit = scan(from, doc_.size(), true, &cancelled);
-            if (hit == UINT64_MAX && !cancelled) { hit = scan(0, from, true, &cancelled); wrapped = true; }
-        } else {
-            hit = scan(0, cur_start, false, &cancelled);
-            if (hit == UINT64_MAX && !cancelled) { hit = scan(cur_start, doc_.size(), false, &cancelled); wrapped = true; }
-        }
+        const uint64_t hit = doc_.search(pat_, forward, from, cur_start, tick, &wrapped, &cancelled);
+        nodelay(stdscr, FALSE);
         if (cancelled) { flash_ = "search cancelled"; return; }
         if (hit == UINT64_MAX) { flash_ = "not found: " + query_; return; }
         jump_to(path_at(hit));

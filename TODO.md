@@ -441,18 +441,14 @@ work that touches the same code:
   `year=2024` partition column is inferred as int64 and printed `2_024`.
   Partition columns are labels: print them without separators (or read them
   as strings).
-- [ ] **JSON viewer, what is left** — shipped since 1.26.1: `:` path / line
+- [x] **JSON viewer follow-ups** — shipped since 1.26.1: `:` path / line
   jump and `!` first error, `T` theme picker, line mode (`m`, `%`), `t` on a
   nested array of objects, `t` from a JSON tab of the multi-file viewer,
   `.geojson` / `.ipynb` / `.har`, the SIGBUS guard for a shrinking file,
-  decompression progress, and vvg's tree tab. Left:
-  - vvg tree tab: the Find bar searches tables only; searching the tree
-    needs a scan like the terminal viewer's (`JsonTUI::scan`, CLI-only today)
-    moved into the core, plus expanding the model to the hit.
-  - Compressed input is still decompressed to a temporary copy before the
-    tree opens (with progress now). Not worth replacing: the index needs
-    random access and its first scan reads the whole document, so a streamed
-    index would not show the first screen sooner.
+  decompression progress, vvg's tree tab and Find in it. Not done, by
+  decision: compressed input is still decompressed to a temporary copy before
+  the tree opens — the index needs random access and its first scan reads the
+  whole document, so a streamed index would not show the first screen sooner.
 - [ ] **vvg: `--samples` / `--matrix` choices** (S–M) — the viewer and exports
   take both; vvg follows the defaults (struct samples, wide matrices) but has
   no toolbar control or command-line flag for them yet.

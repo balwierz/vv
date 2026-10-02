@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **vvg: Find in the JSON tree.** The Find bar searches a tree tab's keys
+  and values (case-insensitive text, or a regex), highlights matching rows,
+  and opens the tree to the next hit; F3 / Enter steps on, wrapping at the
+  end. The scan runs off the UI thread with a progress bar and Cancel, so
+  multi-GB documents stay responsive.
 - **vvg: JSON tree.** A JSON document opens in vvg as a tree tab over the
   same lazy index as the terminal viewer (children loaded on expand; key,
   value and type columns; jq path and validation in the status bar; the

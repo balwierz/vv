@@ -113,10 +113,15 @@ bool JsonTreeModel::canFetchMore(const QModelIndex& parent) const {
 
 void JsonTreeModel::fetchMore(const QModelIndex& parent) {
     if (!canFetchMore(parent)) return;
+    fetchTo(parent, (int64_t)items_[(size_t)itemOf(parent)].kids.size() + kFetchBatch);
+}
+
+void JsonTreeModel::fetchTo(const QModelIndex& parent, int64_t upto) {
+    if (!canFetchMore(parent)) return;
     const int pi = itemOf(parent);
     const int64_t have = (int64_t)items_[(size_t)pi].kids.size();
     std::vector<Item> got;
-    for (int64_t i = have; i < items_[(size_t)pi].node.count && (int)got.size() < kFetchBatch; ++i) {
+    for (int64_t i = have; i < items_[(size_t)pi].node.count && i < upto; ++i) {
         JNode c;
         if (!doc_->child(items_[(size_t)pi].node, i, &c)) break;
         Item k;
@@ -224,6 +229,10 @@ QVariant JsonTreeModel::data(const QModelIndex& idx, int role) const {
             default: return QBrush(QGuiApplication::palette().color(QPalette::PlaceholderText));
         }
     }
+    if (role == Qt::BackgroundRole && rowMatches(it)) {
+        const bool dark = QGuiApplication::palette().color(QPalette::Base).lightness() < 128;
+        return QBrush(dark ? QColor(0x5c, 0x4b, 0x12) : QColor(0xff, 0xf1, 0x9e));
+    }
     if (role == Qt::FontRole && idx.column() == Key && it > 0) {
         QFont f;
         f.setBold(true);
@@ -273,6 +282,39 @@ QModelIndex JsonTreeModel::recordsAt(const QModelIndex& idx) const {
         if (doc_->child(n, 0, &first) && first.kind == JKind::Object) return i;
     }
     return {};
+}
+
+bool JsonTreeModel::rowMatches(int item) const {
+    if (query_.isEmpty() || item <= 0) return false;
+    const Item& it = items_[(size_t)item];
+    const JNode& par = items_[(size_t)it.parent].node;
+    if (par.kind == JKind::Object && !par.virt) {
+        const std::string_view k = doc_->key(it.node);
+        if (!k.empty() && pat_.match(k)) return true;
+    }
+    const JNode& n = it.node;
+    if (n.container() || n.kind == JKind::Error) return false;
+    std::string_view b = doc_->bytes(n);
+    if (n.kind == JKind::String && b.size() >= 2) b = b.substr(1, b.size() - 2);
+    return pat_.match(b.substr(0, std::min<size_t>(b.size(), 1 << 16)));
+}
+
+void JsonTreeModel::setSearch(const QString& query) {
+    if (query == query_) return;
+    query_ = query;
+    pat_.compile(query.toStdString());   // the view repaints its viewport
+}
+
+QModelIndex JsonTreeModel::indexForChain(const std::vector<std::pair<JNode, int64_t>>& chain) {
+    if (chain.empty()) return {};
+    QModelIndex at = index(0, 0);
+    for (size_t k = 1; k < chain.size(); ++k) {
+        const int64_t want = chain[k].second;
+        fetchTo(at, want + 1);
+        if (want >= rowCount(at)) return {};
+        at = index((int)want, 0, at);
+    }
+    return at;
 }
 
 QString JsonTreeModel::summary() const {

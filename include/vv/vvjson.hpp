@@ -12,7 +12,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cctype>
 #include <cstring>
+#include <functional>
+#include <regex>
 #include <ctime>
 #include <list>
 #include <map>
@@ -61,6 +64,34 @@ JsonError write_json_document(arrow::io::InputStream& in, std::FILE* out,
 
 // Strict validation of a whole stream (no output): the first error, or ok().
 JsonError lex_validate(arrow::io::InputStream& in);
+
+// The tree viewers' search pattern: a case-insensitive substring, or an
+// ECMAScript regex (case-insensitive) when the query uses regex syntax and
+// compiles; a query that does not compile is taken literally.
+struct JsonSearch {
+    std::string lit;
+    std::regex  re;
+    bool        is_re = false;
+    void compile(const std::string& q) {
+        is_re = q.find_first_of(".^$|?*+()[]{}\\") != std::string::npos;
+        lit.clear();
+        if (is_re) {
+            try { re = std::regex(q, std::regex::ECMAScript | std::regex::icase); }
+            catch (...) { is_re = false; }
+        }
+        if (!is_re) for (char c : q) lit += (char)std::tolower((unsigned char)c);
+    }
+    bool match(std::string_view s) const {
+        if (is_re) return std::regex_search(s.begin(), s.end(), re);
+        if (lit.empty() || s.size() < lit.size()) return false;
+        for (size_t i = 0; i + lit.size() <= s.size(); ++i) {
+            size_t k = 0;
+            while (k < lit.size() && std::tolower((unsigned char)s[i + k]) == lit[k]) ++k;
+            if (k == lit.size()) return true;
+        }
+        return false;
+    }
+};
 
 // ── The tree viewers' document: a lazy index over a mapped file ─────────────
 //
@@ -274,6 +305,41 @@ public:
         return (size_t)st.st_size != size_ || st.st_mtime != mtime_;
     }
 
+    // Search the bytes for a key, string (matched without its quotes) or
+    // scalar matching `pat`. Forward: from `from` to the end, then wrapping
+    // from the start; backward: the last hit before `before`, then the last
+    // in the rest. The hit's offset (where its token starts), or UINT64_MAX.
+    // `tick(pos)` is called every 4 MiB scanned; returning false cancels.
+    // Reads only the mapping, so it may run on another thread while the
+    // index is used (not while the document is destroyed).
+    uint64_t search(const JsonSearch& pat, bool forward, uint64_t from, uint64_t before,
+                    const std::function<bool(uint64_t)>& tick, bool* wrapped,
+                    bool* cancelled) const {
+        *wrapped = *cancelled = false;
+        uint64_t hit;
+        if (forward) {
+            hit = scan(pat, std::min<uint64_t>(from, size_), size_, true, tick, cancelled);
+            if (hit == UINT64_MAX && !*cancelled) {
+                hit = scan(pat, 0, std::min<uint64_t>(from, size_), true, tick, cancelled);
+                *wrapped = true;
+            }
+        } else {
+            hit = scan(pat, 0, std::min<uint64_t>(before, size_), false, tick, cancelled);
+            if (hit == UINT64_MAX && !*cancelled) {
+                hit = scan(pat, std::min<uint64_t>(before, size_), size_, false, tick, cancelled);
+                *wrapped = true;
+            }
+        }
+        return *cancelled ? UINT64_MAX : hit;
+    }
+    // Where a search continues from a node: after a scalar (or at it, with
+    // `include`), inside a container after its opening bracket.
+    static uint64_t search_from(const JNode& n, bool include) {
+        if (n.virt) return 0;
+        if (n.container()) return n.off + 1;
+        return include ? n.start() : n.end;
+    }
+
     // The first structural error (where the scanner gave up), if any.
     bool has_struct_err() const { return !struct_err_.empty(); }
     uint64_t struct_err_off() const { return struct_err_off_; }
@@ -321,6 +387,42 @@ private:
     JsonError             valid_err_;
 
     static bool ws(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
+    // One direction of search(): the first (forward) or last (backward) hit
+    // whose token starts in [a, b).
+    uint64_t scan(const JsonSearch& pat, uint64_t a, uint64_t b, bool forward,
+                  const std::function<bool(uint64_t)>& tick, bool* cancelled) const {
+        const char* d = data_;
+        uint64_t i = a, last = UINT64_MAX, next_tick = a + (4u << 20);
+        while (i < b) {
+            if (i >= next_tick) {
+                next_tick = i + (4u << 20);
+                if (tick && !tick(i)) { *cancelled = true; return UINT64_MAX; }
+            }
+            const char c = d[i];
+            if (c == '"') {
+                const uint64_t e0 = skip_string(i, size_);
+                const uint64_t e = e0 == UINT64_MAX ? size_ : e0 - 1;   // the closing quote
+                if (pat.match(std::string_view(d + i + 1, (size_t)(e - i - 1)))) {
+                    if (forward) return i;
+                    last = i;
+                }
+                i = e + 1;
+                continue;
+            }
+            if (c == '-' || (c >= '0' && c <= '9') || c == 't' || c == 'f' || c == 'n') {
+                uint64_t e = i;
+                while (e < b && !std::strchr(" \t\r\n,:[]{}\"", d[e])) ++e;
+                if (pat.match(std::string_view(d + i, (size_t)(e - i)))) {
+                    if (forward) return i;
+                    last = i;
+                }
+                i = std::max(e, i + 1);
+                continue;
+            }
+            ++i;
+        }
+        return last;
+    }
     uint64_t skip_ws(uint64_t i, uint64_t lim) const {
         while (i < lim && ws(data_[i])) ++i;
         return i;

@@ -195,6 +195,22 @@ public:
     int firstTabCols() const { return models_.empty() || !models_.front() ? 0 : models_.front()->columnCount(); }
     // Open JSON documents as tables instead of trees (vv's table flags given).
     void setJsonAsTable(bool on) { jsonAsTable_ = on; }
+    // Self-test: Find in the JSON tree tab, wait for the scan, print the
+    // selected path and the number of highlighted rows on screen.
+    void jsonFindForTest(const QString& q, bool forward) {
+        JsonTab* jt = activeJsonTab();
+        if (!jt && !jsonTabs_.empty()) { tabs_->setCurrentWidget(jsonTabs_.begin()->first); jt = activeJsonTab(); }
+        if (!jt) { std::printf("json-find: no tree tab\n"); return; }
+        findEdit_->setText(q);
+        doJsonFind(jt, forward);
+        while (jt->searching()) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        QCoreApplication::processEvents();
+        const QModelIndex cur = jt->view->currentIndex();
+        std::printf("json-find '%s' %s -> %s%s\n", q.toLocal8Bit().constData(), forward ? "fwd" : "back",
+                    cur.isValid() ? jt->model->path(cur).toLocal8Bit().constData() : "(none)",
+                    statusBar()->currentMessage().contains(QStringLiteral("no match")) ? " (no match)"
+                    : statusBar()->currentMessage().contains(QStringLiteral("wrapped")) ? " (wrapped)" : "");
+    }
     // Self-test: in the active JSON tree tab, select `path` (expanding to it)
     // and print it; with `table`, open the records there as a table tab.
     void jsonTreeForTest(const QString& path, bool table) {
@@ -846,6 +862,11 @@ private:
         tb->addWidget(findEdit_);
         connect(findEdit_, &QLineEdit::returnPressed, this, [this]{ doFind(true); });
         connect(findEdit_, &QLineEdit::textChanged, this, [this](const QString& t){
+            if (JsonTab* jt = activeJsonTab()) {
+                jt->model->setSearch(t);
+                jt->view->viewport()->update();
+                return;
+            }
             if (auto* m = activeModel()) {
                 if (t.isEmpty()) m->clearSearch();
                 else m->setSearch(QRegularExpression(
@@ -877,7 +898,54 @@ private:
         m->setFilterAsync(fx);       // runs off the UI thread; result on finish
     }
 
+    // Find in a JSON tree tab: the next / previous key or value matching the
+    // query after the selected row, scanned off the UI thread (Cancel stops
+    // it); the hit is opened and selected.
+    void doJsonFind(JsonTab* jt, bool forward) {
+        if (jt->searching()) return;
+        const QString q = findEdit_->text();
+        jt->model->setSearch(q);
+        jt->view->viewport()->update();
+        if (q.isEmpty()) return;
+        const QModelIndex cur = jt->view->currentIndex();
+        const vvjson::JNode n = jt->model->node(cur.isValid() ? cur : jt->model->index(0, 0));
+        const uint64_t from = vvjson::JsonDoc::search_from(n, false);
+        const uint64_t before = n.virt ? 0 : n.start();
+        const vvjson::JsonDoc* doc = &jt->model->doc();
+        const vvjson::JsonSearch pat = jt->model->search();
+        if (!jt->finder) {
+            jt->finder = new QFutureWatcher<uint64_t>(jt->view);
+            connect(jt->finder, &QFutureWatcher<uint64_t>::finished, this,
+                    [this, jt] { onJsonFindDone(jt); });
+        }
+        jt->findCancel = false;
+        jt->findPos = 0;
+        progress_->setVisible(true);
+        cancelBtn_->setVisible(true);
+        statusBar()->showMessage(tr("Searching…"));
+        jt->finder->setFuture(QtConcurrent::run([jt, doc, pat, forward, from, before]() {
+            auto tick = [jt](uint64_t pos) { jt->findPos = pos; return !jt->findCancel.load(); };
+            return doc->search(pat, forward, from, before, tick, &jt->findWrapped, &jt->findCancelled);
+        }));
+    }
+    void onJsonFindDone(JsonTab* jt) {
+        progress_->setVisible(false);
+        cancelBtn_->setVisible(false);
+        const uint64_t hit = jt->finder->result();
+        if (jt->findCancelled) { statusBar()->showMessage(tr("find: cancelled"), 2000); return; }
+        if (hit == UINT64_MAX) { statusBar()->showMessage(tr("find: no match"), 2000); return; }
+        const QModelIndex at = jt->model->indexForChain(jt->model->doc().path_to(hit));
+        if (!at.isValid()) { statusBar()->showMessage(tr("find: no match"), 2000); return; }
+        for (QModelIndex p = at.parent(); p.isValid(); p = p.parent()) jt->view->expand(p);
+        jt->view->setCurrentIndex(at);
+        jt->view->scrollTo(at, QAbstractItemView::PositionAtCenter);
+        refreshStatus();
+        if (jt->findWrapped)
+            statusBar()->showMessage(statusBar()->currentMessage() + tr("  |  find wrapped"));
+    }
+
     void doFind(bool forward) {
+        if (JsonTab* jt = activeJsonTab()) { doJsonFind(jt, forward); return; }
         auto* m = activeModel();
         auto* v = activeView();
         if (!m || !v || m->isComputing()) return;   // a worker already owns src_
@@ -1399,6 +1467,16 @@ private:
         QTreeView*     view  = nullptr;
         QString        path;
         std::unique_ptr<QTemporaryFile> tmp; // a compressed file's decompressed copy
+        // Find: a scan of the mapped bytes off the UI thread.
+        QFutureWatcher<uint64_t>* finder = nullptr;   // child of the view
+        std::atomic<bool>     findCancel{false};
+        std::atomic<uint64_t> findPos{0};
+        bool findWrapped = false, findCancelled = false;
+        bool searching() const { return finder && finder->isRunning(); }
+        ~JsonTab() {                         // the scan reads the document: stop it first
+            findCancel = true;
+            if (finder) finder->waitForFinished();
+        }
     };
     std::map<QWidget*, std::unique_ptr<JsonTab>> jsonTabs_;
     bool jsonAsTable_ = false;
@@ -1564,6 +1642,7 @@ private:
         cancelBtn_->setVisible(false);
         connect(cancelBtn_, &QPushButton::clicked, this, [this]{
             if (exportProgress_) exportProgress_->cancel = true;
+            else if (JsonTab* jt = activeJsonTab(); jt && jt->searching()) jt->findCancel = true;
             else if (computingModel_) computingModel_->cancelRecompute();
         });
         statusBar()->addPermanentWidget(progress_);
@@ -2004,6 +2083,12 @@ int main(int argc, char** argv) {
         // records there as a table tab and prints its size.
         if (const char* tp = std::getenv("VVG_TREE"); tp && *tp)
             win.jsonTreeForTest(QString::fromLocal8Bit(tp), std::getenv("VVG_TREE_TABLE") != nullptr);
+        // Optional tree find: VVG_TREE_FIND="q1;q2;…" runs Find (forward;
+        // a query starting with "?" backward) from the selection, one after
+        // another, printing where each lands.
+        if (const char* tf = std::getenv("VVG_TREE_FIND"); tf && *tf)
+            for (const QString& q : QString::fromLocal8Bit(tf).split(QLatin1Char(';')))
+                win.jsonFindForTest(q.startsWith(QLatin1Char('?')) ? q.mid(1) : q, !q.startsWith(QLatin1Char('?')));
         // Optional screenshot for the docs: VVG_SCREENSHOT=out.png, after the
         // options above (tab, sort, detail row, ...); VVG_SCREENSHOT_SIZE=WxH
         // (default 1100x700). Works headless (QT_QPA_PLATFORM=offscreen).

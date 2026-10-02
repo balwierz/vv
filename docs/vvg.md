@@ -35,7 +35,9 @@ vvg takes vv's view flags — `--filter`, `--select`, `--sort`, `--tab`,
 - **JSON tree** — a JSON document (`.json`, `.geojson`, `.ipynb`, `.har`, also
   compressed) opens as a tree: keys, values and types, children loaded as you
   expand, the jq path and validation in the status bar, the value in the detail
-  dock. Right-click → *Open … as Table* shows the array of objects at or above
+  dock. The Find bar searches keys and values (regex or plain text,
+  case-insensitive), highlights matching rows and opens the tree to the next
+  hit (F3 / Enter again for the next). Right-click → *Open … as Table* shows the array of objects at or above
   the row as a table tab; *Copy Value* / *Copy Path*. JSON Lines, or vv's table
   flags (`--filter`, `--select`, …), open as a table directly.
 - **Expand** (on by default) — VCF `INFO` and GFF / GTF `attributes` are split

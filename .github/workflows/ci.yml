@@ -219,6 +219,13 @@ jobs:
           VVG_WINTEST=1 VVG_TABDIMS=1 ./build-gui/gui/vvg --select title "$RUNNER_TEMP/doc.json" | grep -q "tab 'doc.json' rows=1 .*Format: JSON"
           gzip -c "$RUNNER_TEMP/doc.json" > "$RUNNER_TEMP/doc2.json.gz"
           VVG_WINTEST=1 VVG_TREE='.n' ./build-gui/gui/vvg "$RUNNER_TEMP/doc2.json.gz" | grep -q 'json-tree path=.n type=number'
+          # Find in the tree: forward from the root, again (wraps to the only hit),
+          # backward, and a miss keeps the selection.
+          out=$(VVG_WINTEST=1 VVG_TREE_FIND='b;b;?alice;zzz' ./build-gui/gui/vvg "$RUNNER_TEMP/doc.json"); echo "$out"
+          grep -q "json-find 'b' fwd -> .items\[1\].name$" <<<"$out"
+          grep -q "json-find 'b' fwd -> .items\[1\].name (wrapped)" <<<"$out"
+          grep -q "json-find 'alice' back -> .items\[0\].name" <<<"$out"
+          grep -q "json-find 'zzz' fwd -> .items\[0\].name (no match)" <<<"$out"
           # Region re-open (tabix): chr1:1099-1200 overlaps exactly one BED row.
           VVG_WINTEST=1 VVG_REGION=chr1:1099-1200 ./build-gui/gui/vvg tests/data/tiny.bed.gz \
             | grep -q 'rows=1'
@@ -538,6 +545,13 @@ jobs:
           VVG_WINTEST=1 VVG_TABDIMS=1 ./build/gui/vvg --select title "$RUNNER_TEMP/doc.json" | grep -q "tab 'doc.json' rows=1 .*Format: JSON"
           gzip -c "$RUNNER_TEMP/doc.json" > "$RUNNER_TEMP/doc2.json.gz"
           VVG_WINTEST=1 VVG_TREE='.n' ./build/gui/vvg "$RUNNER_TEMP/doc2.json.gz" | grep -q 'json-tree path=.n type=number'
+          # Find in the tree: forward from the root, again (wraps to the only hit),
+          # backward, and a miss keeps the selection.
+          out=$(VVG_WINTEST=1 VVG_TREE_FIND='b;b;?alice;zzz' ./build/gui/vvg "$RUNNER_TEMP/doc.json"); echo "$out"
+          grep -q "json-find 'b' fwd -> .items\[1\].name$" <<<"$out"
+          grep -q "json-find 'b' fwd -> .items\[1\].name (wrapped)" <<<"$out"
+          grep -q "json-find 'alice' back -> .items\[0\].name" <<<"$out"
+          grep -q "json-find 'zzz' fwd -> .items\[0\].name (no match)" <<<"$out"
           VVG_WINTEST=1 VVG_REGION=chr1:1099-1200 ./build/gui/vvg tests/data/tiny.bed.gz \
             | grep -q 'rows=1'
           VVG_WINTEST=1 VVG_REGION=chr1:0-3000 ./build/gui/vvg tests/data/tiny.parquet \

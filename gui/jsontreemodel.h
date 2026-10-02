@@ -40,6 +40,14 @@ public:
     vvjson::JNode node(const QModelIndex& idx) const;
     // A one-line summary for the status bar: size, root kind, validation.
     QString summary() const;
+    // The item for a path from JsonDoc::path_to() (root first), fetching
+    // the children up to each step; invalid when a step is not found.
+    QModelIndex indexForChain(const std::vector<std::pair<vvjson::JNode, int64_t>>& chain);
+    // Highlight rows whose key or value matches (the Find bar); "" clears.
+    void setSearch(const QString& query);
+    bool hasSearch() const { return !query_.isEmpty(); }
+    const vvjson::JsonSearch& search() const { return pat_; }
+    QString searchQuery() const { return query_; }
 
 private:
     struct Item {
@@ -51,7 +59,12 @@ private:
     };
     std::unique_ptr<vvjson::JsonDoc> doc_;
     mutable std::vector<Item> items_;   // [0] is the root
+    QString            query_;
+    vvjson::JsonSearch pat_;
 
+    // Add children of `pi` until there are at least `upto` (capped by the count).
+    void fetchTo(const QModelIndex& parent, int64_t upto);
+    bool rowMatches(int item) const;
     int itemOf(const QModelIndex& idx) const { return idx.isValid() ? (int)idx.internalId() : -1; }
     QString keyText(int item) const;
     QString typeText(const vvjson::JNode& n) const;
