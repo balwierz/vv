@@ -49,7 +49,11 @@ def run(vv, args, keys, cols=100, rows=24, budget=8.0):
         if len(out) <= 50:
             continue
         if pending and time.time() >= nxt:
-            os.write(m, pending.pop(0))
+            k = pending.pop(0)
+            if callable(k):       # an action between keys (e.g. change the file)
+                k()
+            else:
+                os.write(m, k)
             nxt = time.time() + 0.3
         elif not pending and phase == "keys" and time.time() >= nxt:
             # Force a full repaint so the status bar is re-emitted whole.

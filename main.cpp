@@ -10703,6 +10703,64 @@ struct JNode {
     uint64_t start() const { return key_off != UINT64_MAX ? key_off : off; }
 };
 
+// A mapped file that shrinks while it is open (rewritten by another
+// program) makes every read past its new end a SIGBUS. Mappings register
+// here; the handler maps a zero-filled page over a faulting page inside one
+// of them and notes it, so the read sees NUL bytes (which the scanners treat
+// as an error) instead of the process dying. A fault anywhere else gets the
+// default action.
+struct MapGuardSlot {
+    std::atomic<uintptr_t> lo{0}, hi{0};
+    std::atomic<int>       hit{0};
+};
+inline MapGuardSlot g_map_guard[16];
+inline long         g_map_guard_page = 4096;
+
+inline void map_guard_handler(int, siginfo_t* si, void*) {
+    const uintptr_t a = reinterpret_cast<uintptr_t>(si->si_addr);
+    for (MapGuardSlot& sl : g_map_guard) {
+        const uintptr_t lo = sl.lo.load(), hi = sl.hi.load();
+        if (lo == 0 || a < lo || a >= hi) continue;
+        void* page = reinterpret_cast<void*>(a & ~static_cast<uintptr_t>(g_map_guard_page - 1));
+        if (mmap(page, (size_t)g_map_guard_page, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+                 -1, 0) != MAP_FAILED) {
+            sl.hit.store(1);
+            return;                                   // the read is retried, now on zeros
+        }
+        break;
+    }
+    struct sigaction dfl {};
+    dfl.sa_handler = SIG_DFL;
+    sigaction(SIGBUS, &dfl, nullptr);                 // not ours: re-fault with the default
+}
+
+// Register [p, p + n); the slot index, or -1 when all slots are taken.
+inline int map_guard_add(const void* p, size_t n) {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        g_map_guard_page = sysconf(_SC_PAGESIZE) > 0 ? sysconf(_SC_PAGESIZE) : 4096;
+        struct sigaction sa {};
+        sa.sa_sigaction = map_guard_handler;
+        sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGBUS, &sa, nullptr);
+    });
+    for (int i = 0; i < 16; ++i) {
+        uintptr_t expect = 0;
+        if (g_map_guard[i].lo.compare_exchange_strong(expect, reinterpret_cast<uintptr_t>(p))) {
+            g_map_guard[i].hit.store(0);
+            g_map_guard[i].hi.store(reinterpret_cast<uintptr_t>(p) + n);
+            return i;
+        }
+    }
+    return -1;
+}
+inline void map_guard_remove(int i) {
+    if (i < 0) return;
+    g_map_guard[i].hi.store(0);
+    g_map_guard[i].lo.store(0);
+}
+
 class JsonDoc {
 public:
     enum class Root { Value, Sequence, Lines };
@@ -10713,6 +10771,7 @@ public:
     ~JsonDoc() {
         stop_ = true;
         if (validator_.joinable()) validator_.join();
+        map_guard_remove(guard_);
         if (map_) munmap(map_, size_);
     }
 
@@ -10724,6 +10783,7 @@ public:
         struct stat st;
         if (fstat(fd, &st) != 0) { ::close(fd); return "Cannot stat '" + path + "'"; }
         size_ = (size_t)st.st_size;
+        mtime_ = st.st_mtime;
         if (size_ > 0) {
             void* m = mmap(nullptr, size_, PROT_READ, MAP_PRIVATE, fd, 0);
             if (m == MAP_FAILED) {
@@ -10732,6 +10792,7 @@ public:
             }
             map_ = m;
             data_ = static_cast<const char*>(m);
+            guard_ = map_guard_add(m, size_);
         }
         ::close(fd);
         init(lines, validate);
@@ -10821,6 +10882,16 @@ public:
         return out;
     }
 
+    // The file was rewritten since it was mapped (size or modification time
+    // differ); `zeroed`: a read past its new end was answered with zeros.
+    bool file_changed(bool* zeroed = nullptr) const {
+        if (zeroed) *zeroed = guard_ >= 0 && g_map_guard[guard_].hit.load() != 0;
+        if (path_.empty() || !map_) return false;
+        struct stat st;
+        if (::stat(path_.c_str(), &st) != 0) return true;
+        return (size_t)st.st_size != size_ || st.st_mtime != mtime_;
+    }
+
     // The first structural error (where the scanner gave up), if any.
     bool has_struct_err() const { return !struct_err_.empty(); }
     uint64_t struct_err_off() const { return struct_err_off_; }
@@ -10844,6 +10915,8 @@ private:
         bool     complete = false;
     };
     std::string           path_;
+    time_t                mtime_ = 0;
+    int                   guard_ = -1;      // map_guard slot
     void*                 map_ = nullptr;
     const char*           data_ = nullptr;
     size_t                size_ = 0;
@@ -29168,7 +29241,11 @@ private:
         const int pct = doc_.size() ? (int)(100.0 * (double)pos / (double)doc_.size()) : 0;
         right = "@ " + digits_with_sep(std::to_string(pos)) + " (" + std::to_string(pct) + "%)  ";
         const int v = doc_.validation();
-        if (v == 0) {
+        bool zeroed = false;
+        if (doc_.file_changed(&zeroed) || zeroed) {
+            right += std::string(g("⚠ ", "! ")) + (zeroed ? "file shrank on disk: zeros past its end"
+                                                          : "file changed on disk");
+        } else if (v == 0) {
             const int vp = doc_.size() ? (int)(100.0 * (double)doc_.validated_bytes() / (double)doc_.size()) : 0;
             right += "validating " + std::to_string(vp) + "%";
         } else if (v == 1) right += g("✓ valid", "valid");

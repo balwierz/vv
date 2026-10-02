@@ -240,6 +240,16 @@ def main():
     txt, raw, hung = run(vv, [tr], [])
     if "unexpected end of input" not in txt or "invalid at 1:" not in txt or hung:
         bad.append("truncated: no error row / status (hung=%s)" % hung)
+    # A mapped file that shrinks under the viewer: reads past its new end
+    # see zeros instead of killing the process (SIGBUS), and the status says so.
+    sh = os.path.join(tmp, "tree_shrink.json")
+    with open(sh, "w") as f:
+        json.dump([{"i": i, "pad": "x" * 20} for i in range(60000)], f)
+    txt, raw, hung = run(vv, [sh], [lambda: os.truncate(sh, 4096), b"G"])
+    if "file shrank on disk" not in txt or hung:
+        bad.append("shrunk file: no 'file shrank on disk' status (crashed?) hung=%s; tail %r"
+                   % (hung, txt[-300:]))
+
     # "!" goes to the first error.
     bt = os.path.join(tmp, "tree_badtok.json")
     with open(bt, "w") as f:

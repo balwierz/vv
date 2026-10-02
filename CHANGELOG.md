@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `.har`, plus `.gz` / `.zst`) open as JSON documents: the tree viewer on a
   terminal, re-indented on a pipe, a table with a table flag.
 
+### Fixed
+- **JSON tree viewer crash when the file shrinks.** A JSON file rewritten
+  shorter while open made vv die with SIGBUS on the next read past its new
+  end; those reads now see zeros (shown as an error in the tree) and the
+  status line says the file changed on disk.
+
 ## [1.26.1] - 2026-10-02
 
 ### Added
