@@ -112,6 +112,7 @@ gui parquet    "VVG_DETAIL=0,0"  --filter "signal > 10" --sort signal:desc atac_
 gui bam        "VVG_DETAIL=0,0"  reads.bam
 gui sqlite     "VVG_DETAIL=2,0"  --tab runs lab.sqlite
 gui json       "VVG_DETAIL=14,1" events.ndjson
+gui json-tree  "VVG_TREE=.samples[0].metrics" run.json
 
 # ── KDE Dolphin thumbnails (when the KF6 plugins were built) ─────────────────
 if want kde-thumbnails && [ -x "$KDETEST" ]; then

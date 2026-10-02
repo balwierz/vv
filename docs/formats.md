@@ -233,6 +233,7 @@ records); in a pipe it is re-indented, or listed as `path = value` lines with
 ![vv --json-paths](img/vv/json-paths.svg)
 ![vv: NDJSON records as a table](img/vv/ndjson.svg)
 
+![vvg: a JSON document as a tree](img/vvg/json-tree.png)
 ![vvg: NDJSON records](img/vvg/json.png)
 
 Try: `vv run.json` · `curl -s https://api.github.com/repos/balwierz/vv | vv -` ·

@@ -10,6 +10,12 @@
 // the first row, then exits — lets CI validate the in-process core path
 // without a display server.
 
+// Arrow's I/O headers before Qt's: Qt's `signals` macro breaks arrow/util/cancel.h.
+#include <arrow/io/compressed.h>
+#include <arrow/io/file.h>
+#include <arrow/io/memory.h>
+#include <arrow/util/compression.h>
+
 #include <QApplication>
 #include <QIcon>
 #include <QClipboard>
@@ -50,8 +56,13 @@
 #include <QTabWidget>
 #include <QTableView>
 #include <QTableWidget>
+#include <QTemporaryFile>
 #include <QToolBar>
+#include <QTreeView>
 #include <QUrl>
+#include <QVBoxLayout>
+
+#include <map>
 
 #include <cstdio>
 #include <cstdlib>
@@ -61,6 +72,7 @@
 #include <vector>
 
 #include "arrowtablemodel.h"
+#include "jsontreemodel.h"
 #include "vvcommand.h"
 #include "vv/vvcore.hpp"
 
@@ -125,7 +137,9 @@ public:
         connect(tabs_, &QTabWidget::currentChanged, this, [this](int) {
             refreshStatus();
             refreshColumnsMenu();
-            if (auto* v = activeView())
+            if (activeJsonTab())
+                updateDetail({});
+            else if (auto* v = activeView())
                 updateDetail(v->selectionModel()->currentIndex());
         });
 
@@ -150,9 +164,23 @@ public:
     // Open each path through libvvcore (with the current session region/coords/
     // slop/pileup) and add the resulting flattened tabs. Public so the headless
     // window self-test (VVG_WINTEST) can drive it.
-    void openPaths(const QStringList& paths, bool quiet = false) {
-        if (paths.isEmpty()) return;
-        lastDir_ = QFileInfo(paths.first()).absolutePath();
+    void openPaths(const QStringList& paths_in, bool quiet = false) {
+        if (paths_in.isEmpty()) return;
+        lastDir_ = QFileInfo(paths_in.first()).absolutePath();
+        // JSON documents open as a tree (as in vv on a terminal); JSON Lines,
+        // and any file when vv's table flags were given, as a table.
+        QStringList paths;
+        for (const QString& p : paths_in) {
+            if (!jsonAsTable_ && jsonDocumentPath(p)) {
+                const QString e = openJsonTreeTab(p);
+                if (e.isEmpty()) { addRecent(p); openedPaths_ << p; setWindowTitle(p + QStringLiteral(" — vv")); continue; }
+                if (headless_ || quiet) std::fprintf(stderr, "vvg: %s\n", e.toLocal8Bit().constData());
+                else QMessageBox::warning(this, tr("vvg — open"), e);
+                continue;
+            }
+            paths << p;
+        }
+        if (paths.isEmpty()) { refreshStatus(); return; }
         LoadResult r = loadWithSession(paths);
         for (size_t i = 0; i < r.sources.size(); ++i)
             addSourceTab(std::move(r.sources[i]), r.origins[i], r.primary[i], r.expands[i]);
@@ -163,14 +191,45 @@ public:
         refreshStatus();
     }
     int tabCount() const { return tabs_->count(); }
-    int firstTabRows() const { return models_.empty() ? 0 : models_.front()->rowCount(); }
-    int firstTabCols() const { return models_.empty() ? 0 : models_.front()->columnCount(); }
+    int firstTabRows() const { return models_.empty() || !models_.front() ? 0 : models_.front()->rowCount(); }
+    int firstTabCols() const { return models_.empty() || !models_.front() ? 0 : models_.front()->columnCount(); }
+    // Open JSON documents as tables instead of trees (vv's table flags given).
+    void setJsonAsTable(bool on) { jsonAsTable_ = on; }
+    // Self-test: in the active JSON tree tab, select `path` (expanding to it)
+    // and print it; with `table`, open the records there as a table tab.
+    void jsonTreeForTest(const QString& path, bool table) {
+        JsonTab* jt = activeJsonTab();
+        if (!jt && !jsonTabs_.empty()) {
+            tabs_->setCurrentWidget(jsonTabs_.begin()->first);
+            jt = activeJsonTab();
+        }
+        if (!jt) { std::printf("json-tree: no tree tab\n"); return; }
+        QModelIndex at = jt->model->index(0, 0);
+        jt->view->expand(at);
+        if (!path.isEmpty() && path != QStringLiteral(".")) {
+            at = findJsonPath(jt, path);
+            if (!at.isValid()) { std::printf("json-tree: no %s\n", path.toLocal8Bit().constData()); return; }
+        }
+        jt->view->setCurrentIndex(at);
+        std::printf("json-tree path=%s type=%s children=%d value=%s\n",
+                    jt->model->path(at).toLocal8Bit().constData(),
+                    jt->model->index(at.row(), JsonTreeModel::Type, at.parent()).data().toString().toLocal8Bit().constData(),
+                    jt->model->rowCount(at),
+                    jt->model->index(at.row(), JsonTreeModel::Value, at.parent()).data().toString().left(60).toLocal8Bit().constData());
+        if (table) {
+            openRecordsTable(jt, at);
+            std::printf("json-tree table: tabs=%d rows=%d cols=%d label=%s\n", tabs_->count(),
+                        activeModel() ? activeModel()->rowCount() : -1,
+                        activeModel() ? activeModel()->columnCount() : -1,
+                        activeModel() ? activeModel()->source()->tab_label().c_str() : "");
+        }
+    }
     // Print every open tab's materialised dimensions — used by the self-test to
     // confirm dense 2-D matrices are previewed (row/col capped) rather than
     // fully densified.
     void dumpTabDims() const {
         for (auto* m : models_)
-            std::printf("tab '%s' rows=%d cols=%d footer=%s\n",
+            if (m) std::printf("tab '%s' rows=%d cols=%d footer=%s\n",
                         m->source()->tab_label().c_str(),
                         m->rowCount(), m->displayColumnCount(),
                         m->footer().toStdString().c_str());
@@ -237,6 +296,7 @@ public:
     }
 
 private:
+    struct JsonTab;                       // a JSON tree tab (defined below)
     static std::string src_label(ArrowTableModel* m) {
         return m->source()->tab_label();
     }
@@ -366,6 +426,7 @@ private:
             models_.erase(models_.begin() + i);
         }
         if (m) { sortOrder_.remove(m); tabOrigin_.remove(m); filterText_.remove(m); }
+        jsonTabs_.erase(w);   // a JSON tree tab: its model, document and temporary copy
         if (m == pendingFindModel_) pendingFindModel_ = nullptr;
         if (m == computingModel_) {   // its worker is cancelled+joined in ~ArrowTableModel
             computingModel_ = nullptr;
@@ -453,7 +514,7 @@ private:
             smoothScroll_ = on;
             QSettings(QStringLiteral("vv"), QStringLiteral("vvg"))
                 .setValue(QStringLiteral("smoothScroll"), on);
-            for (auto* v : views_) applyScrollMode(v);
+            for (auto* v : views_) if (v) applyScrollMode(v);
         });
 
         auto* help = menuBar()->addMenu(tr("&Help"));
@@ -878,8 +939,32 @@ private:
     // changes nothing, so it returns early; a new row rewrites the values in
     // the existing items, and the name column is rewritten (and resized) only
     // when the model or its column count changes.
+    // The detail dock for a JSON tree tab: the selected node's path, type,
+    // size and value (a string decoded, at most 64 KiB).
+    void updateJsonDetail(JsonTab* jt, const QModelIndex& cur) {
+        detailModel_ = nullptr; detailRow_ = -1;
+        if (!cur.isValid()) { detail_->setRowCount(0); return; }
+        const vvjson::JNode n = jt->model->node(cur);
+        const QString type = jt->model->index(cur.row(), JsonTreeModel::Type, cur.parent()).data().toString();
+        QStringList rows = {tr("Path"), jt->model->path(cur), tr("Type"), type};
+        if (n.container())
+            rows << tr("Children") << QString::number((qlonglong)n.count);
+        if (!n.virt)
+            rows << tr("Size") << QStringLiteral("%1 B").arg((qulonglong)(n.end - n.off));
+        if (!n.container() && n.kind != vvjson::JKind::Error)
+            rows << tr("Value") << jt->model->valueText(cur, 64 << 10);
+        detail_->setRowCount(rows.size() / 2);
+        for (int r = 0; r < rows.size() / 2; ++r)
+            for (int c = 0; c < 2; ++c) {
+                if (QTableWidgetItem* it = detail_->item(r, c)) it->setText(rows[2 * r + c]);
+                else detail_->setItem(r, c, new QTableWidgetItem(rows[2 * r + c]));
+            }
+        detail_->resizeColumnToContents(0);
+    }
+
     void updateDetail(const QModelIndex& cur) {
         if (!detail_) return;
+        if (JsonTab* jt = activeJsonTab()) { updateJsonDetail(jt, jt->view->currentIndex()); return; }
         auto* m = activeModel();
         if (!m || !cur.isValid()) {
             detail_->setRowCount(0);
@@ -1298,8 +1383,176 @@ private:
     }
 
     void refreshStatus() {
+        if (JsonTab* jt = activeJsonTab()) {
+            const QModelIndex cur = jt->view->currentIndex();
+            statusBar()->showMessage(jt->model->summary() +
+                                     (cur.isValid() ? QStringLiteral("  |  ") + jt->model->path(cur) : QString()));
+            return;
+        }
         if (auto* m = activeModel())
             statusBar()->showMessage(m->footer());
+    }
+
+    // ── JSON tree tabs ──────────────────────────────────────────────────────
+    struct JsonTab {
+        JsonTreeModel* model = nullptr;      // owned by the view's parent chain (deleted with it)
+        QTreeView*     view  = nullptr;
+        QString        path;
+        std::unique_ptr<QTemporaryFile> tmp; // a compressed file's decompressed copy
+    };
+    std::map<QWidget*, std::unique_ptr<JsonTab>> jsonTabs_;
+    bool jsonAsTable_ = false;
+
+    JsonTab* activeJsonTab() const {
+        auto it = jsonTabs_.find(tabs_->currentWidget());
+        return it == jsonTabs_.end() ? nullptr : it->second.get();
+    }
+    // .json / .geojson / .ipynb / .har, optionally .gz / .bgz / .zst
+    // (a document; .ndjson / .jsonl records stay tables).
+    static bool jsonDocumentPath(const QString& path) {
+        QString p = path.toLower();
+        for (const char* z : {".gz", ".bgz", ".zst", ".zstd"})
+            if (p.endsWith(QLatin1String(z))) { p.chop((int)std::strlen(z)); break; }
+        return p.endsWith(QLatin1String(".json")) || p.endsWith(QLatin1String(".geojson")) ||
+               p.endsWith(QLatin1String(".ipynb")) || p.endsWith(QLatin1String(".har"));
+    }
+    // Decompress a .gz / .zst file to a temporary file (the tree maps its input).
+    static QString decompressTo(const QString& path, QTemporaryFile* out) {
+        auto raw = arrow::io::ReadableFile::Open(path.toStdString());
+        if (!raw.ok()) return QString::fromStdString(raw.status().ToString());
+        uint8_t magic[4] = {0, 0, 0, 0};
+        auto got = (*raw)->ReadAt(0, 4, magic);
+        if (!got.ok()) return QString::fromStdString(got.status().ToString());
+        arrow::Compression::type comp = arrow::Compression::UNCOMPRESSED;
+        if (magic[0] == 0x1f && magic[1] == 0x8b) comp = arrow::Compression::GZIP;
+        else if (magic[0] == 0x28 && magic[1] == 0xb5 && magic[2] == 0x2f && magic[3] == 0xfd)
+            comp = arrow::Compression::ZSTD;
+        if (comp == arrow::Compression::UNCOMPRESSED) return QStringLiteral("-");   // map it directly
+        if (auto st = (*raw)->Seek(0); !st.ok()) return QString::fromStdString(st.ToString());
+        auto codec = arrow::util::Codec::Create(comp);
+        if (!codec.ok()) return QString::fromStdString(codec.status().ToString());
+        auto in = arrow::io::CompressedInputStream::Make(codec->get(), *raw);
+        if (!in.ok()) return QString::fromStdString(in.status().ToString());
+        if (!out->open()) return QObject::tr("cannot create a temporary file");
+        for (;;) {
+            auto buf = (*in)->Read(1 << 20);
+            if (!buf.ok()) return QString::fromStdString(buf.status().ToString());
+            if ((*buf)->size() == 0) break;
+            if (out->write(reinterpret_cast<const char*>((*buf)->data()), (*buf)->size()) != (*buf)->size())
+                return QObject::tr("writing the decompressed copy failed");
+        }
+        out->flush();
+        return {};
+    }
+    // Open `path` as a JSON tree tab; "" or an error.
+    QString openJsonTreeTab(const QString& path) {
+        auto jt = std::make_unique<JsonTab>();
+        jt->path = path;
+        QString file = path;
+        auto tmp = std::make_unique<QTemporaryFile>(QDir::tempPath() + QStringLiteral("/vvg-XXXXXX.json"));
+        const QString d = decompressTo(path, tmp.get());
+        if (d.isEmpty()) { file = tmp->fileName(); jt->tmp = std::move(tmp); }
+        else if (d != QStringLiteral("-")) return path + QStringLiteral(": ") + d;
+        auto doc = std::make_unique<vvjson::JsonDoc>();
+        const std::string e = doc->open(file.toStdString(), /*lines=*/false);
+        if (!e.empty()) return QString::fromStdString(e);
+        jt->model = new JsonTreeModel(std::move(doc), this);
+        auto* view = new QTreeView(tabs_);
+        jt->view = view;
+        jt->model->setParent(view);
+        view->setModel(jt->model);
+        view->setUniformRowHeights(true);
+        view->setAlternatingRowColors(true);
+        view->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        view->setContextMenuPolicy(Qt::CustomContextMenu);
+        view->header()->setStretchLastSection(false);
+        view->header()->setSectionResizeMode(JsonTreeModel::Value, QHeaderView::Stretch);
+        view->setColumnWidth(JsonTreeModel::Key, 260);
+        view->setColumnWidth(JsonTreeModel::Type, 90);
+        const QModelIndex root = jt->model->index(0, 0);
+        view->expand(root);
+        view->setCurrentIndex(root);
+        JsonTab* raw = jt.get();
+        connect(view->selectionModel(), &QItemSelectionModel::currentChanged, this,
+                [this, raw](const QModelIndex& cur, const QModelIndex&) {
+                    refreshStatus();
+                    if (activeJsonTab() == raw && detail_) updateJsonDetail(raw, cur);
+                });
+        connect(view, &QWidget::customContextMenuRequested, this,
+                [this, raw](const QPoint& pos) { showJsonContextMenu(raw, pos); });
+        // While the background validator runs, keep the status line current.
+        auto* timer = new QTimer(view);
+        connect(timer, &QTimer::timeout, this, [this, raw, timer] {
+            if (activeJsonTab() == raw) refreshStatus();
+            if (raw->model->doc().validation() != 0) timer->stop();
+        });
+        timer->start(300);
+        views_.push_back(nullptr);            // index-aligned with the tabs; not a table
+        models_.push_back(nullptr);
+        jsonTabs_[view] = std::move(jt);
+        const int idx = tabs_->addTab(view, QFileInfo(path).fileName());
+        tabs_->setTabToolTip(idx, path);
+        tabs_->setCurrentIndex(idx);
+        return {};
+    }
+    QModelIndex findJsonPath(JsonTab* jt, const QString& path) {
+        // Walk from the root, expanding (fetching) until the path matches.
+        QModelIndex at = jt->model->index(0, 0);
+        for (int guard = 0; guard < 100000; ++guard) {
+            if (jt->model->path(at) == path) return at;
+            jt->view->expand(at);
+            while (jt->model->canFetchMore(at)) jt->model->fetchMore(at);
+            bool stepped = false;
+            for (int r = 0; r < jt->model->rowCount(at); ++r) {
+                const QModelIndex c = jt->model->index(r, 0, at);
+                const QString cp = jt->model->path(c);
+                if (path == cp || path.startsWith(cp + QLatin1Char('.')) || path.startsWith(cp + QLatin1Char('['))) {
+                    at = c;
+                    stepped = true;
+                    break;
+                }
+            }
+            if (!stepped) return {};
+        }
+        return {};
+    }
+    void openRecordsTable(JsonTab* jt, const QModelIndex& at) {
+        const QModelIndex rec = jt->model->recordsAt(at);
+        std::unique_ptr<TabularSource> src;
+        std::string e;
+        const QString label = QFileInfo(jt->path).fileName() + QLatin1Char(' ') +
+                              (rec.isValid() ? jt->model->path(rec) : QStringLiteral("."));
+        if (rec.isValid()) {
+            const std::string_view b = jt->model->doc().bytes(jt->model->node(rec));
+            auto buf = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(b.data()),
+                                                       (int64_t)b.size());
+            e = open_json_records(std::make_shared<arrow::io::BufferReader>(buf), label.toStdString(), &src);
+        } else {
+            Config cfg;
+            e = open_source(jt->path.toStdString(), cfg, &src);
+        }
+        if (!e.empty()) {
+            const QString msg = tr("No table view: %1").arg(QString::fromStdString(e));
+            if (headless_) std::fprintf(stderr, "vvg: %s\n", msg.toLocal8Bit().constData());
+            else QMessageBox::information(this, tr("vvg — JSON"), msg);
+            return;
+        }
+        addSourceTab(std::move(src), jt->path, true);
+    }
+    void showJsonContextMenu(JsonTab* jt, const QPoint& pos) {
+        const QModelIndex at = jt->view->indexAt(pos);
+        if (!at.isValid()) return;
+        QMenu menu(this);
+        QAction* copyValue = menu.addAction(tr("Copy Value"));
+        QAction* copyPath = menu.addAction(tr("Copy Path"));
+        menu.addSeparator();
+        const QModelIndex rec = jt->model->recordsAt(at);
+        QAction* table = menu.addAction(rec.isValid() ? tr("Open %1 as Table").arg(jt->model->path(rec))
+                                                      : tr("Open Document as Table"));
+        QAction* chosen = menu.exec(jt->view->viewport()->mapToGlobal(pos));
+        if (chosen == copyValue) QGuiApplication::clipboard()->setText(jt->model->valueText(at));
+        else if (chosen == copyPath) QGuiApplication::clipboard()->setText(jt->model->path(at));
+        else if (chosen == table) openRecordsTable(jt, at);
     }
 
     void buildProgressUI() {
@@ -1663,6 +1916,8 @@ int main(int argc, char** argv) {
         win.setHeadless(true);
         if (const char* ex = std::getenv("VVG_EXPAND"); ex && *ex == '0')
             win.setExpandForTest(false);
+        win.setJsonAsTable(!view.filter.isEmpty() || !view.select.isEmpty() ||
+                           !view.sort.isEmpty() || !view.tab.isEmpty());
         win.openPaths(paths, /*quiet=*/true);
         for (const QString& e : win.applyViewOptions(view))
             std::fprintf(stderr, "vvg: %s\n", e.toLocal8Bit().constData());
@@ -1744,6 +1999,11 @@ int main(int argc, char** argv) {
                 std::printf("detail %s -> %s\n", step.toLocal8Bit().constData(),
                             win.detailForTest(rc[0].toInt(), rc[1].toInt()).toLocal8Bit().constData());
             }
+        // Optional JSON tree check: VVG_TREE=<jq path> selects it in the
+        // active tree tab and prints it; VVG_TREE_TABLE=1 then opens the
+        // records there as a table tab and prints its size.
+        if (const char* tp = std::getenv("VVG_TREE"); tp && *tp)
+            win.jsonTreeForTest(QString::fromLocal8Bit(tp), std::getenv("VVG_TREE_TABLE") != nullptr);
         // Optional screenshot for the docs: VVG_SCREENSHOT=out.png, after the
         // options above (tab, sort, detail row, ...); VVG_SCREENSHOT_SIZE=WxH
         // (default 1100x700). Works headless (QT_QPA_PLATFORM=offscreen).
@@ -1774,6 +2034,8 @@ int main(int argc, char** argv) {
     MainWindow win;
     win.show();
     if (!paths.isEmpty()) {
+        win.setJsonAsTable(!view.filter.isEmpty() || !view.select.isEmpty() ||
+                           !view.sort.isEmpty() || !view.tab.isEmpty());
         win.openPaths(paths);
         const QStringList errs = win.applyViewOptions(view);
         for (const QString& e : errs) std::fprintf(stderr, "vvg: %s\n", e.toLocal8Bit().constData());

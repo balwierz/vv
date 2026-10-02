@@ -209,6 +209,16 @@ jobs:
           # App-shell path: build the QMainWindow offscreen and open a file via
           # the same addSourceTab/loadSources path the menus and drag-drop use.
           test "$(VVG_WINTEST=1 ./build-gui/gui/vvg tests/data/tiny.parquet)" = "win_tabs=1"
+          # JSON documents open as a lazy tree tab: a nested path resolves,
+          # and the records at or above it open as a table tab; a table flag
+          # keeps the table, and a .gz document is decompressed for the tree.
+          printf '{"title":"t","items":[{"id":1,"name":"alice"},{"id":2,"name":"bob"}],"n":2}' > "$RUNNER_TEMP/doc.json"
+          out=$(VVG_WINTEST=1 VVG_TREE='.items[1].name' VVG_TREE_TABLE=1 ./build-gui/gui/vvg "$RUNNER_TEMP/doc.json"); echo "$out"
+          grep -q 'json-tree path=.items\[1\].name type=string' <<<"$out"
+          grep -q 'json-tree table: tabs=2 rows=2 cols=2 label=doc.json .items' <<<"$out"
+          VVG_WINTEST=1 VVG_TABDIMS=1 ./build-gui/gui/vvg --select title "$RUNNER_TEMP/doc.json" | grep -q "tab 'doc.json' rows=1 .*Format: JSON"
+          gzip -c "$RUNNER_TEMP/doc.json" > "$RUNNER_TEMP/doc2.json.gz"
+          VVG_WINTEST=1 VVG_TREE='.n' ./build-gui/gui/vvg "$RUNNER_TEMP/doc2.json.gz" | grep -q 'json-tree path=.n type=number'
           # Region re-open (tabix): chr1:1099-1200 overlaps exactly one BED row.
           VVG_WINTEST=1 VVG_REGION=chr1:1099-1200 ./build-gui/gui/vvg tests/data/tiny.bed.gz \
             | grep -q 'rows=1'
@@ -518,6 +528,16 @@ jobs:
           ./build/gui/kde/vvkdetest --allow-empty tests/data/tiny.malformed.npz
           VVG_SELFTEST=1 ./build/gui/vvg tests/data/tiny.parquet
           test "$(VVG_WINTEST=1 ./build/gui/vvg tests/data/tiny.parquet)" = "win_tabs=1"
+          # JSON documents open as a lazy tree tab: a nested path resolves,
+          # and the records at or above it open as a table tab; a table flag
+          # keeps the table, and a .gz document is decompressed for the tree.
+          printf '{"title":"t","items":[{"id":1,"name":"alice"},{"id":2,"name":"bob"}],"n":2}' > "$RUNNER_TEMP/doc.json"
+          out=$(VVG_WINTEST=1 VVG_TREE='.items[1].name' VVG_TREE_TABLE=1 ./build/gui/vvg "$RUNNER_TEMP/doc.json"); echo "$out"
+          grep -q 'json-tree path=.items\[1\].name type=string' <<<"$out"
+          grep -q 'json-tree table: tabs=2 rows=2 cols=2 label=doc.json .items' <<<"$out"
+          VVG_WINTEST=1 VVG_TABDIMS=1 ./build/gui/vvg --select title "$RUNNER_TEMP/doc.json" | grep -q "tab 'doc.json' rows=1 .*Format: JSON"
+          gzip -c "$RUNNER_TEMP/doc.json" > "$RUNNER_TEMP/doc2.json.gz"
+          VVG_WINTEST=1 VVG_TREE='.n' ./build/gui/vvg "$RUNNER_TEMP/doc2.json.gz" | grep -q 'json-tree path=.n type=number'
           VVG_WINTEST=1 VVG_REGION=chr1:1099-1200 ./build/gui/vvg tests/data/tiny.bed.gz \
             | grep -q 'rows=1'
           VVG_WINTEST=1 VVG_REGION=chr1:0-3000 ./build/gui/vvg tests/data/tiny.parquet \

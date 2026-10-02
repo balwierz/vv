@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **vvg: JSON tree.** A JSON document opens in vvg as a tree tab over the
+  same lazy index as the terminal viewer (children loaded on expand; key,
+  value and type columns; jq path and validation in the status bar; the
+  value in the detail dock). The context menu opens the array of objects at
+  or above a row as a table tab, and copies values and paths. JSON Lines and
+  vv's table flags still open a table.
 - **Decompression progress for compressed JSON.** Before the tree opens a
   `.json.gz` / `.zst` (or JSON piped in), the copy it maps is written with
   a progress line on stderr (`vv: decompressing x.json.gz: 1.2 GiB`).

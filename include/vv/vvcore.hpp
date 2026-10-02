@@ -22,6 +22,8 @@
 #include <arrow/api.h>
 #include <arrow/type.h>
 
+namespace arrow { namespace io { class InputStream; } }
+
 // ── CLI / reader configuration ───────────────────────────────────────────────
 // Knobs consumed by open_source() and the readers. Frontends populate the
 // handful they care about (path, region, threads, filter_expr, …) and leave
@@ -386,6 +388,14 @@ public:
 // tab; siblings expand via the WorkbookSource / SqliteSource hooks.
 std::string open_source(const std::string& path, const Config& cfg,
                         std::unique_ptr<TabularSource>* out);
+
+// JSON records — a top-level array of objects, NDJSON, concatenated objects —
+// read from `in` as a table, as open_source() reads a JSON file; for bytes
+// from elsewhere, such as an array inside a document (vvg's tree tab).
+// `label` names the table in its tab and in messages. "" or an error.
+std::string open_json_records(std::shared_ptr<arrow::io::InputStream> in,
+                              const std::string& label,
+                              std::unique_ptr<TabularSource>* out);
 
 // Canonicalise region inputs in `cfg` *before* open_source(): folds --coords
 // (NCBI↔UCSC), --regions-file, and --slop into cfg.region as a UCSC 0-based

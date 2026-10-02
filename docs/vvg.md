@@ -32,6 +32,12 @@ vvg takes vv's view flags — `--filter`, `--select`, `--sort`, `--tab`,
 - **Region bar** — `chr1:1000-2000` (UCSC or NCBI coordinates, optional slop)
   re-opens indexed files over that range; *Pileup* shows BAM / CRAM as mpileup
   rows.
+- **JSON tree** — a JSON document (`.json`, `.geojson`, `.ipynb`, `.har`, also
+  compressed) opens as a tree: keys, values and types, children loaded as you
+  expand, the jq path and validation in the status bar, the value in the detail
+  dock. Right-click → *Open … as Table* shows the array of objects at or above
+  the row as a table tab; *Copy Value* / *Copy Path*. JSON Lines, or vv's table
+  flags (`--filter`, `--select`, …), open as a table directly.
 - **Expand** (on by default) — VCF `INFO` and GFF / GTF `attributes` are split
   into one column per key, sortable and filterable.
 - **Row detail, stats, columns** — a dock with the current row, *Σ Stats* per
@@ -48,6 +54,8 @@ vvg takes vv's view flags — `--filter`, `--select`, `--sort`, `--tab`,
 ![vvg: a VCF with INFO expanded](img/vvg/vcf.png)
 
 ![vvg: an SQLite database, one tab per table](img/vvg/sqlite.png)
+
+![vvg: a JSON document as a tree](img/vvg/json-tree.png)
 
 ## KDE Plasma
 
