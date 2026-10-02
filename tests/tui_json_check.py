@@ -191,6 +191,17 @@ def main():
     txt, raw, hung = run(vv, [nd], [b"t", b"t", b"j"])
     check("back to tree", status(txt), (".[0]", "object"))
 
+    # Several files: t on a JSON file's tab opens its tree; t on the
+    # document there returns to the tabs.
+    csvf = os.path.join(tmp, "other.csv")
+    with open(csvf, "w") as f:
+        f.write("x,y\n1,2\n")
+    txt, raw, hung = run(vv, [nd, csvf], [b"t"])
+    check("tabs: t to tree", status(txt), (".", "document"))
+    txt, raw, hung = run(vv, [nd, csvf], [b"t", b"t"])
+    if "other.csv" not in txt[-3000:] or "Row 1-" not in txt[-3000:]:
+        bad.append("tabs: t in the tree did not return to the tabs")
+
     big = os.path.join(tmp, "tree_big.json")
     with open(big, "w") as f:
         json.dump([{"i": i} for i in range(5000)], f)

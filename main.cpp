@@ -25160,6 +25160,7 @@ class TableTUI {
     bool start_applied_ = false;   // apply_start_view() ran (once per viewer)
     bool tree_return_ = false;     // opened from the JSON tree: `t` goes back
     bool back_to_tree_ = false;    // the viewer closed with `t`
+    std::string tree_request_;     // `t` on a JSON file's tab: the file to view as a tree
     int get_fg_pair(int fg, int bg) {
         if (next_rgb_pair_ >= tui_reserved_pair()) return 0;
         int key = ((fg + 1) << 9) | (bg + 1);
@@ -27516,6 +27517,7 @@ private:
             {"c",             "show / hide columns (overlay)"},
             {"y",             "copy the cursor's cell to the clipboard (OSC52)"},
             {"T",             "pick a color theme (saved to ~/.config/vv/config)"},
+            {"t",             "JSON: the tree view of the file (t there comes back)"},
             {":",             "command line: :N (jump), :q, :theme NAME, :slice N"},
             {"in / & : bars", "←→ ^B ^F  Home End ^A ^E  Del ^D  ^U ^K ^W (word); UTF-8"},
             {"Tab  Shift-Tab","next / previous tab (with multiple files)"},
@@ -27951,6 +27953,10 @@ public:
     // Opened from the JSON tree viewer: `t` closes the table and goes back.
     void set_tree_return(bool on) { tree_return_ = on; }
     bool back_to_tree() const { return back_to_tree_; }
+    // After run_in() returns: the JSON file whose tree `t` asked for, or "".
+    const std::string& tree_request() const { return tree_request_; }
+    // A message for the status line of the next frame.
+    void flash(const std::string& m) { copy_status_ = m; }
 
     // Run in a session of its own; false: the terminal could not start.
     bool run() {
@@ -27971,6 +27977,7 @@ public:
         if (!start_applied_) { apply_start_view(); start_applied_ = true; }
         clearok(stdscr, TRUE);
         back_to_tree_ = false;
+        tree_request_.clear();
 
         bool quit = false;
         while (!quit) {
@@ -28474,7 +28481,15 @@ public:
                     if (!search_query_.empty()) do_search(!search_dir_forward_);
                     break;
                 case 't':
-                    if (tree_return_) { back_to_tree_ = true; quit = true; }
+                    if (tree_return_) { back_to_tree_ = true; quit = true; break; }
+                    // A JSON file's tab (several files open): its tree view.
+                    if (dynamic_cast<JsonSource*>(src_)) {
+                        struct stat jst;
+                        if (::stat(src_->path().c_str(), &jst) == 0 && S_ISREG(jst.st_mode)) {
+                            tree_request_ = src_->path();
+                            quit = true;
+                        }
+                    }
                     break;
                 case KEY_RESIZE: break;
                 default: break;
@@ -29587,6 +29602,73 @@ private:
     }
 };
 
+// A JSON file's tree and the tables opened from it, kept while the viewer
+// runs so the tree's cursor and each table survive switching back and forth.
+struct JsonTreeView {
+    vvjson::JsonDoc doc;
+    std::unique_ptr<JsonTUI> tree;
+    std::map<uint64_t, std::unique_ptr<TableTUI>> tables;   // UINT64_MAX: the whole document
+    std::string label, table_path;
+};
+
+// Run the tree (and the tables `t` opens from it) until the user quits, or,
+// when `whole_to_caller`, until `t` asks for the whole document's table —
+// the caller's own table view of the file. true: that request.
+static bool json_tree_loop(TuiSession& session, JsonTreeView& v, const Config& cfg,
+                           bool whole_to_caller) {
+    for (;;) {
+        if (v.tree->run_in(session) == JsonTUI::Exit::Quit) return false;
+        const JsonTUI::TableTarget& tt = v.tree->table_target();
+        if (tt.whole && whole_to_caller) return true;
+        const uint64_t key = tt.whole ? UINT64_MAX : tt.node.off;
+        std::unique_ptr<TableTUI>& table = v.tables[key];
+        if (!table) {
+            std::unique_ptr<JsonSource> js;
+            std::string e;
+            if (tt.whole) {
+                e = JsonSource::open(v.table_path, cfg, &js);
+            } else {
+                const std::string_view b = v.doc.bytes(tt.node);
+                auto buf = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(b.data()),
+                                                           (int64_t)b.size());
+                e = JsonSource::open_stream(v.label + " " + tt.path,
+                                            std::make_shared<arrow::io::BufferReader>(buf),
+                                            arrow::Compression::UNCOMPRESSED, &js);
+            }
+            if (!e.empty()) {
+                v.tables.erase(key);
+                v.tree->flash(e.find("Empty JSON") != std::string::npos ||
+                              e.find("no JSON records") != std::string::npos
+                                  ? "no table view: no records"
+                                  : tt.whole ? "no table view: this JSON is not a list of records "
+                                               "(t on an array of objects inside it opens that)"
+                                             : "no table view of " + tt.path);
+                continue;
+            }
+            std::vector<std::unique_ptr<TabularSource>> srcs;
+            srcs.push_back(std::move(js));
+            table = std::make_unique<TableTUI>(std::move(srcs), cfg);
+            table->set_tree_return(true);
+        }
+        table->run_in(session);
+        if (!table->back_to_tree()) return false;
+    }
+}
+
+// Open `file` (uncompressed, mappable) as a tree view; the table reader
+// opens `table_path` itself (the original file, compressed or not).
+static std::string open_json_tree_view(const std::string& file, const std::string& table_path,
+                                       const std::string& label, bool lines,
+                                       std::unique_ptr<JsonTreeView>* out) {
+    auto v = std::make_unique<JsonTreeView>();
+    if (auto e = v->doc.open(file, lines); !e.empty()) return e;
+    v->label = label;
+    v->table_path = table_path;
+    v->tree = std::make_unique<JsonTUI>(v->doc, label);
+    *out = std::move(v);
+    return "";
+}
+
 // Run the JSON tree viewer on `file` (an uncompressed file it can map),
 // switching to the table view (`t`) over `table_path`, which the table reader
 // opens itself (the original file, compressed or not). Keys come from the
@@ -29595,52 +29677,13 @@ private:
 static std::string run_json_viewer(const std::string& file, const std::string& table_path,
                                    const std::string& label, bool lines, bool keys_from_tty,
                                    const Config& cfg, bool* term_failed) {
-    vvjson::JsonDoc doc;
-    if (auto e = doc.open(file, lines); !e.empty()) return e;
+    std::unique_ptr<JsonTreeView> view;
+    if (auto e = open_json_tree_view(file, table_path, label, lines, &view); !e.empty()) return e;
     TuiSession session;
     if (!(keys_from_tty ? session.open_tty() : session.open())) { *term_failed = true; return ""; }
-    JsonTUI tree(doc, label);
-    // One table per target: the whole document (key UINT64_MAX) or a nested
-    // array of objects (its offset), read in place from the mapping.
-    std::map<uint64_t, std::unique_ptr<TableTUI>> tables;
-    for (;;) {
-        if (tree.run_in(session) == JsonTUI::Exit::Quit) return "";
-        const JsonTUI::TableTarget& tt = tree.table_target();
-        const uint64_t key = tt.whole ? UINT64_MAX : tt.node.off;
-        std::unique_ptr<TableTUI>& table = tables[key];
-        if (!table) {
-            std::unique_ptr<JsonSource> js;
-            std::string e;
-            if (tt.whole) {
-                e = JsonSource::open(table_path, cfg, &js);
-            } else {
-                const std::string_view b = doc.bytes(tt.node);
-                auto buf = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(b.data()),
-                                                           (int64_t)b.size());
-                e = JsonSource::open_stream(label + " " + tt.path,
-                                            std::make_shared<arrow::io::BufferReader>(buf),
-                                            arrow::Compression::UNCOMPRESSED, &js);
-            }
-            if (!e.empty()) {
-                tables.erase(key);
-                tree.flash(e.find("Empty JSON") != std::string::npos ||
-                           e.find("no JSON records") != std::string::npos
-                               ? "no table view: no records"
-                               : tt.whole ? "no table view: this JSON is not a list of records "
-                                            "(t on an array of objects inside it opens that)"
-                                          : "no table view of " + tt.path);
-                continue;
-            }
-            std::vector<std::unique_ptr<TabularSource>> v;
-            v.push_back(std::move(js));
-            table = std::make_unique<TableTUI>(std::move(v), cfg);
-            table->set_tree_return(true);
-        }
-        table->run_in(session);
-        if (!table->back_to_tree()) return "";
-    }
+    json_tree_loop(session, *view, cfg, /*whole_to_caller=*/false);
+    return "";
 }
-
 #endif  // VV_CORE_LIB (end of ncurses TUI frontend)
 
 // ── Table display (non-interactive) ──────────────────────────────────────────
@@ -31757,7 +31800,37 @@ int main(int argc, char** argv) {
             // first source so the non-interactive fall-through paths
             // below can still use *src.
             TableTUI tui(std::move(tab_srcs), cfg, tui_start);
-            if (tui.run()) return 0;
+            {
+                TuiSession session;
+                if (session.open()) {
+                    // `t` on a JSON file's tab: that file's tree view, in the
+                    // same session; `t` there on the whole document comes back.
+                    std::map<std::string, std::unique_ptr<JsonTreeView>> trees;
+                    for (;;) {
+                        tui.run_in(session);
+                        const std::string jp = tui.tree_request();
+                        if (jp.empty()) return 0;
+                        std::unique_ptr<JsonTreeView>& view = trees[jp];
+                        if (!view) {
+                            std::string file = jp, e;
+                            auto raw = arrow::io::ReadableFile::Open(jp);
+                            if (raw.ok() && sniff_stream_codec(*raw) != arrow::Compression::UNCOMPRESSED) {
+                                std::shared_ptr<arrow::io::InputStream> in;
+                                int64_t bytes = 0;
+                                e = open_json_file(jp, &in);
+                                if (e.empty()) e = spool_stream(in, ".json", &file, &bytes);
+                            }
+                            if (e.empty()) e = open_json_tree_view(file, jp, jp, json_path_kind(jp) == 2, &view);
+                            if (!e.empty()) {
+                                trees.erase(jp);
+                                tui.flash("no tree view: " + e);
+                                continue;
+                            }
+                        }
+                        if (!json_tree_loop(session, *view, cfg, /*whole_to_caller=*/true)) return 0;
+                    }
+                }
+            }
             src = tui.take_first_source();
             // Falling back to a non-interactive view: apply a sort the TUI
             // was going to do.

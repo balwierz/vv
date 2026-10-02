@@ -211,6 +211,7 @@ $ vv tests/data/tiny.lociss        # default when stdout is a terminal
 | Shift + drag   | select text for the OS clipboard (terminal-side)        |
 | `:`            | command line — `:N` (jump to row), `:q` (quit), `:theme NAME` |
 | Tab / Shift+Tab| next / previous file tab (when multiple files are opened) |
+| `t`            | on a JSON file's tab: its tree view (`t` there on the document comes back) |
 | `q`            | quit (Esc clears search / filter / closes overlays)     |
 
 All visible matches are highlighted; the n/N target gets reverse video.

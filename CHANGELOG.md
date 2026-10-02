@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **JSON tree from the multi-file viewer.** With several files open, `t` on
+  a JSON file's tab opens its tree view; `t` there on the document returns
+  to the tabs, and the tree keeps its place between visits.
 - **JSON tree: `t` on nested records.** `t` opens a table of the array of
   objects at or above the cursor — a GeoJSON `.features`, a notebook's
   `.cells`, a HAR's `.log.entries` — read in place from the mapped file;
