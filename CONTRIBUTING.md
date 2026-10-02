@@ -65,8 +65,11 @@ the script plus a reference from `docs/formats.md`.
 
 ## Code style
 
-- Single-file `main.cpp` is intentional. New formats fit alongside the
-  existing source classes.
+- Sources live under `src/` (layout in CLAUDE.md). A new format is a file in
+  `src/formats/` with its reader class kept private and free functions
+  (`open_<format>_source`, small queries) declared in `src/internal.hpp`; the
+  dispatch in `src/core/open.cpp` calls those. Add the file to
+  `VV_CORE_SOURCES` in CMakeLists.txt.
 - Keep changes localized; don't refactor unrelated sections in a feature PR.
 - `.clang-format` defines indentation and column limits; please run it on
   any new code.
@@ -94,7 +97,7 @@ the script plus a reference from `docs/formats.md`.
 
    | File | What |
    |---|---|
-   | `main.cpp` | `kVersion` — feeds `--version` *and* the Parquet writer's `created_by` |
+   | `src/internal.hpp` | `kVersion` — feeds `--version` *and* the Parquet writer's `created_by` |
    | `CMakeLists.txt` | `project(... VERSION ...)` |
    | `CITATION.cff` | `version:` **and** `date-released:` (GitHub's "Cite this repository" box) |
    | `man/vv.1` | the `.TH` line — both the version and the month |

@@ -82,18 +82,44 @@ for someone reading `git log` in two years with no memory of this work:
 
 ## Architecture
 
-The reader core and the CLI/TUI live in one file, `main.cpp`, which flows
-top-to-bottom through the sections below. The public reader surface (`Config`,
+Sources live under `src/`, one file per concern:
+
+```
+src/internal.hpp     shared includes, types, constants, inline helpers and the
+                     declarations of functions used across files
+src/core/            common (colours, themes, formatting), source (TabularSource
+                     helpers), filter (--filter / --select), region, io,
+                     derived (--expand / --flatten / --gt-stats / VCF samples,
+                     open_source()), open (format dispatch, stdin, datasets),
+                     modes (markdown / text / JSON document modes)
+src/formats/         one file per reader family: parquet, lociss, delimited,
+                     htslib (BAM/CRAM/SAM, pileup, BCF, FASTA/FASTQ, --contigs),
+                     ucsc (bigWig/bigBed, 2bit), text, json, sqlite, arrow
+                     (IPC, ORC), workbook (xlsx, ods), hdf5, npz
+src/output/          table (non-interactive table, schema footer), writers
+                     (TSV/CSV/MD/Parquet/Arrow/JSON), reports (--describe, ...)
+src/render/          markdown, image (--heatmap, inline images)
+src/tui/tui.cpp      ncurses table viewer and JSON tree (CLI only)
+src/cli/             args (registry, --help, parse_args), main()
+```
+
+Everything outside `src/cli` and `src/tui` is the reader core: CMake compiles
+it once as the `vvcore_obj` object library (with `VV_CORE_LIB`, so no ncurses)
+and links it into `vv`, `libvvcore` (the Qt GUI `gui/` and the KF6 plugins
+`gui/kde/`) and the fuzz harnesses. The public reader surface (`Config`,
 `TabularSource`, `FilterExpr`, the cell formatters, `open_source`,
-`filter_rows`, `compute_col_stats`) is declared in `include/vv/vvcore.hpp` and
-defined in `main.cpp`. Compiling `main.cpp` with `-DVV_CORE_LIB` excludes
-`main()` and the ncurses TUI, yielding `libvvcore` — the headless core that the
-Qt GUI (`gui/`) and the KF6 plugins (`gui/kde/`) link. The CLI build is
-unchanged by this split (the guards are inactive without the macro).
+`filter_rows`, `compute_col_stats`) is declared in `include/vv/vvcore.hpp`;
+the JSON document index (`vvjson::JsonDoc`) in `include/vv/vvjson.hpp`.
 
-The code flows top-to-bottom through these sections:
+Reader classes stay private to their file. Other code reaches them through
+free functions declared in `src/internal.hpp` — `open_<format>_source()` /
+`open_<format>_stream()` returning a `std::unique_ptr<TabularSource>`, plus
+small queries such as `is_parquet_source()` or `sqlite_sibling_tables()`. A
+function used by one file only stays `static` in it.
 
-1. **`Colors` / `init_colors()`** — ANSI escape codes stored in a global
+The main pieces:
+
+1. **`Colors` / `init_colors()`** (core/common) — ANSI escape codes stored in a global
    `g_color` struct. Colors are only populated when output is a TTY (or
    `--color=always`).
 
@@ -188,8 +214,9 @@ The code flows top-to-bottom through these sections:
 ## Project layout
 
 ```
-main.cpp                  reader core + CLI/TUI (one file)
+src/                      reader core + CLI/TUI (see Architecture)
 include/vv/vvcore.hpp     public reader surface (shared by CLI + GUI + plugins)
+include/vv/vvjson.hpp     JSON document lexer / writers / lazy index (CLI + GUI)
 gui/                      Qt6 desktop viewer (vvg): ArrowTableModel + window
 gui/kde/                  KF6 thumbnailer + KFileMetaData plugins, MIME/.desktop
 CMakeLists.txt            build + install rules (VV_BUILD_GUI opt-in for the GUI)

@@ -15,7 +15,7 @@
 namespace lociss_v4 {
 
 // Decode one (already zstd-decompressed) LociSSD v4 column chunk into an Arrow
-// array. Defined in main.cpp. `buf`/`blen` is the untrusted chunk; the codec
+// array. Defined in src/formats/lociss.cpp. `buf`/`blen` is the untrusted chunk; the codec
 // decoders must validate every on-disk offset/length against it.
 arrow::Result<std::shared_ptr<arrow::Array>>
 decode_colblock(const uint8_t* buf, size_t blen, int codec_id,

@@ -469,8 +469,8 @@ jobs:
         # CMAKE_PREFIX_PATH points it at the right place.
         #
         # VV_BUILD_GUI=ON in the same build dir (unlike Linux's separate
-        # build-gui) so main.cpp compiles once for vv and once for vvcore,
-        # not four times: the macOS release tarball ships vvg next to vv,
+        # build-gui) so the reader core compiles once for vv, vvcore and vvg:
+        # the macOS release tarball ships vvg next to vv,
         # and this is where that configuration gets exercised.
         run: |
           ARROW_PREFIX="$(brew --prefix apache-arrow)"

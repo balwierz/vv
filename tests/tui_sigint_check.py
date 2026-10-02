@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression check for TUI signal handling (main.cpp:13536).
+"""Regression check for TUI signal handling (TuiSession in src/tui/tui.cpp).
 
 Launches `vv <file>` under a pseudo-terminal, waits until the TUI has entered
 the alternate screen, sends Ctrl-C (which the tty turns into SIGINT), and

@@ -2,8 +2,8 @@
 //
 // libvvcore is the headless half of vv: every file-format reader plus the
 // Arrow plumbing, the filter engine, and the cell formatters, with no
-// ncurses and no main(). It is compiled from the same main.cpp as the CLI,
-// guarded by VV_CORE_LIB. The CLI/TUI, the Qt GUI (vvg), and the KF6
+// ncurses and no main(): the sources under src/ except src/cli and src/tui,
+// compiled with VV_CORE_LIB. The CLI/TUI, the Qt GUI (vvg), and the KF6
 // thumbnailer / metadata plugins all consume this header.
 //
 // Only the surface a frontend needs lives here. Concrete source classes

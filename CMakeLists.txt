@@ -89,7 +89,7 @@ endif()
 # ORC adapter detection — Arrow ships `arrow/adapters/orc/adapter.h` only
 # when built with `-DARROW_ORC=ON`. We detect the header in Arrow's
 # include tree and (after `add_executable(vv …)` below) define VV_HAVE_ORC
-# for main.cpp. Without it the OrcSource class is excluded and the .orc
+# for the sources. Without it the OrcSource class is excluded and the .orc
 # dispatch returns a "compiled without ORC" error. The Apache Arrow apt
 # repo, Homebrew's apache-arrow, and our AlmaLinux 8 arrow-build stage
 # all enable ORC.
@@ -158,7 +158,7 @@ include(CheckCXXSourceCompiles)
 # <ncursesw/ncurses_dll.h> — a parent-relative path — so a probe given only
 # the ncursesw/ dir cannot even open the header. That is exactly what happened
 # in the static AlmaLinux 8 build: the header was present and the real compile
-# of main.cpp worked (it gets the parent via CMAKE_PREFIX_PATH), but the probe
+# of the sources worked (it gets the parent via CMAKE_PREFIX_PATH), but the probe
 # could not see it.
 set(_vv_curses_probe_inc ${CURSES_INCLUDE_DIRS})
 foreach(_d IN LISTS CURSES_INCLUDE_DIRS)
@@ -190,7 +190,7 @@ if(NOT VV_NCURSES6_OK)
   # CI never exercises (it runs only on a tag). A convenience check must not be
   # able to fail a build that would otherwise succeed — if we cannot positively
   # prove the ncurses is too old, get out of the way and let the real compile
-  # of main.cpp speak for itself.
+  # of the sources speak for itself.
   check_cxx_source_compiles("
 #include <ncurses.h>
 int main() { return 0; }
@@ -230,7 +230,7 @@ find_package(ZLIB REQUIRED)
 file(GLOB LIBBIGWIG_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/vendored/libBigWig/*.c")
 add_library(bigwig STATIC ${LIBBIGWIG_SRCS})
 # NOCURL: local files only — drops the optional libcurl dependency. Must
-# be PUBLIC so the consumer of bigWig.h (main.cpp) sees it too — the
+# be PUBLIC so the consumer of bigWig.h (src/) sees it too — the
 # header conditionally pulls in <curl/curl.h>.
 target_compile_definitions(bigwig PUBLIC NOCURL)
 target_compile_options(bigwig PRIVATE -O2 -ffunction-sections -fdata-sections -w)
@@ -376,10 +376,28 @@ if(_prefer_static AND TARGET Arrow::arrow_static)
                PATHS "${_static_libs_dir}")
 endif()
 
-# ── Target ────────────────────────────────────────────────────────────────────
-add_executable(vv main.cpp)
+# ── Targets ───────────────────────────────────────────────────────────────────
+# The reader core (src/core, src/formats, src/render, src/output) is compiled
+# once into an object library and linked into vv, libvvcore (GUI / KDE
+# plugins) and the fuzz harnesses. The CLI adds the argument parser, main()
+# and the ncurses viewers.
+set(VV_CORE_SOURCES
+    src/core/common.cpp   src/core/derived.cpp  src/core/filter.cpp
+    src/core/io.cpp       src/core/modes.cpp    src/core/open.cpp
+    src/core/region.cpp   src/core/source.cpp
+    src/formats/arrow.cpp     src/formats/delimited.cpp src/formats/hdf5.cpp
+    src/formats/htslib.cpp    src/formats/json.cpp      src/formats/lociss.cpp
+    src/formats/npz.cpp       src/formats/parquet.cpp   src/formats/sqlite.cpp
+    src/formats/text.cpp      src/formats/ucsc.cpp      src/formats/workbook.cpp
+    src/output/reports.cpp    src/output/table.cpp      src/output/writers.cpp
+    src/render/image.cpp      src/render/markdown.cpp
+)
+set(VV_CLI_SOURCES src/cli/main.cpp src/cli/args.cpp src/tui/tui.cpp)
+
+add_executable(vv ${VV_CLI_SOURCES} $<TARGET_OBJECTS:vvcore_obj>)
 
 target_include_directories(vv PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${ARROW_INCLUDE_DIRS}
     ${PARQUET_INCLUDE_DIRS}
@@ -511,6 +529,15 @@ endif()
 
 target_link_libraries(vv PRIVATE ${_vv_link_common} ${_vv_curses})
 
+# The core objects: vv's include directories and definitions, plus VV_CORE_LIB
+# (no ncurses); linking the reader deps carries their usage requirements
+# (Arrow's interface definitions such as -DNOCURL) to the compile.
+add_library(vvcore_obj OBJECT ${VV_CORE_SOURCES})
+target_compile_definitions(vvcore_obj PRIVATE
+    VV_CORE_LIB=1 $<TARGET_PROPERTY:vv,COMPILE_DEFINITIONS>)
+target_include_directories(vvcore_obj PRIVATE $<TARGET_PROPERTY:vv,INCLUDE_DIRECTORIES>)
+target_link_libraries(vvcore_obj PRIVATE ${_vv_link_common})
+
 # `--gc-sections` is GNU ld; macOS ld64 strips unused sections by default
 # (via `-dead_strip`, which we don't need to pass explicitly).
 if(NOT APPLE)
@@ -540,21 +567,13 @@ message(STATUS "htslib      : ${HTSLIB_VERSION}")
 
 # ── Optional Qt6/KDE graphical frontend ──────────────────────────────────────
 # libvvcore is the headless reader core shared by the Qt GUI (vvg) and the
-# KF6 thumbnailer / metadata plugins. It is the SAME main.cpp, compiled with
-# VV_CORE_LIB so that main() and the ncurses TUI are excluded. We mirror vv's
-# include directories and compile definitions via generator expressions so the
-# core and the CLI never drift; Arrow/Parquet are linked so their interface
-# include dirs + compile macros (e.g. -DNOCURL) reach the core compile.
-# (VV_BUILD_GUI is declared near the top so PIC is set before the deps build.)
+# KF6 thumbnailer / metadata plugins: the same core objects vv links, without
+# the CLI and the ncurses viewers. (VV_BUILD_GUI is declared near the top so
+# PIC is set — for the core objects too — before the deps build.)
 if(VV_BUILD_GUI)
-  add_library(vvcore STATIC main.cpp)
-  set_target_properties(vvcore PROPERTIES POSITION_INDEPENDENT_CODE ON)
-  target_compile_definitions(vvcore PRIVATE
-      VV_CORE_LIB=1
-      $<TARGET_PROPERTY:vv,COMPILE_DEFINITIONS>)
-  target_include_directories(vvcore
-      PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
-      PRIVATE $<TARGET_PROPERTY:vv,INCLUDE_DIRECTORIES>)
+  add_library(vvcore STATIC $<TARGET_OBJECTS:vvcore_obj>)
+  set_target_properties(vvcore PROPERTIES POSITION_INDEPENDENT_CODE ON LINKER_LANGUAGE CXX)
+  target_include_directories(vvcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   # Reuse vv's exact reader-dep link list (minus ncurses) so the GUI links
   # precisely what the CLI links — works for both the static (../static-libs)
   # and the shared Arrow configurations. Propagate the -L static-libs dir too
@@ -571,27 +590,31 @@ if(VV_BUILD_GUI)
 endif()
 
 # ── libFuzzer harnesses (opt-in; needs clang) ────────────────────────────────
-# Compile the reader core (main.cpp with VV_CORE_LIB — no main()/TUI) together
-# with a fuzz entry point, instrumented for libFuzzer + ASan + UBSan, reusing
-# vv's exact reader-dep link list. Off by default; enable with clang:
+# Compile the reader core (with VV_FUZZ, which adds the entry points the
+# harnesses call) instrumented for libFuzzer + ASan + UBSan, once, and link it
+# into each harness with vv's exact reader-dep link list. Off by default;
+# enable with clang:
 #   cmake -S . -B build-fuzz -DVV_BUILD_FUZZERS=ON \
 #     -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
 option(VV_BUILD_FUZZERS "Build libFuzzer harnesses (requires clang)" OFF)
 if(VV_BUILD_FUZZERS)
-  # Each harness = the reader core (main.cpp, VV_CORE_LIB + VV_FUZZ, no main/TUI)
-  # plus its entry point, instrumented for libFuzzer + ASan + UBSan, linking vv's
-  # exact reader deps.
+  set(_fz_flags -fsanitize=fuzzer-no-link,address,undefined -fno-sanitize=vptr
+                -fno-omit-frame-pointer -g)
+  add_library(vvcore_fuzz_obj OBJECT ${VV_CORE_SOURCES})
+  target_compile_definitions(vvcore_fuzz_obj PRIVATE
+      VV_CORE_LIB=1 VV_FUZZ=1 $<TARGET_PROPERTY:vv,COMPILE_DEFINITIONS>)
+  target_include_directories(vvcore_fuzz_obj PRIVATE $<TARGET_PROPERTY:vv,INCLUDE_DIRECTORIES>)
+  target_compile_options(vvcore_fuzz_obj PRIVATE ${_fz_flags})
+  target_link_libraries(vvcore_fuzz_obj PRIVATE ${_vv_link_common})
   foreach(_fz colblock npy lzf json)
-    add_executable(fuzz_${_fz} main.cpp tests/fuzz/fuzz_${_fz}.cpp)
+    add_executable(fuzz_${_fz} tests/fuzz/fuzz_${_fz}.cpp $<TARGET_OBJECTS:vvcore_fuzz_obj>)
     target_compile_definitions(fuzz_${_fz} PRIVATE
         VV_CORE_LIB=1 VV_FUZZ=1
         $<TARGET_PROPERTY:vv,COMPILE_DEFINITIONS>)
     target_include_directories(fuzz_${_fz}
         PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
         PRIVATE $<TARGET_PROPERTY:vv,INCLUDE_DIRECTORIES>)
-    target_compile_options(fuzz_${_fz} PRIVATE
-        -fsanitize=fuzzer-no-link,address,undefined -fno-sanitize=vptr
-        -fno-omit-frame-pointer -g)
+    target_compile_options(fuzz_${_fz} PRIVATE ${_fz_flags})
     target_link_options(fuzz_${_fz} PRIVATE
         -fsanitize=fuzzer,address,undefined)
     target_link_libraries(fuzz_${_fz} PRIVATE ${_vv_link_common})

@@ -576,7 +576,7 @@ private:
     }
 
     // Validate the mapping on a background thread with the strict lexer
-    // (defined in main.cpp, which has the lexer and Arrow's I/O).
+    // (defined in src/formats/json.cpp, with the lexer).
     void start_validation();
 
     static uint64_t key_of(const JNode& n) { return n.virt ? UINT64_MAX : n.off; }

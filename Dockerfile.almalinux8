@@ -192,7 +192,7 @@ RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
         --disable-tools --disable-tests --disable-hl \
         --with-zlib=/build/static-libs --without-szlib \
     && make -j$(nproc) install
-# Note: deprecated symbols are kept enabled — main.cpp uses
+# Note: deprecated symbols are kept enabled — the HDF5 reader uses
 # H5Dvlen_reclaim for variable-length string cleanup; its 1.12+
 # replacement (H5Treclaim) doesn't exist on Ubuntu 22.04's libhdf5
 # 1.10, so the portable choice is to depend on the old name and

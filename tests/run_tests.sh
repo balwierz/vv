@@ -1832,11 +1832,12 @@ PYEOF
     fi
 
     # Every extension the registry claims must actually be reachable: assert
-    # each one appears in the open_source() dispatch ladder in main.cpp.
-    python3 - "$TMP/formats.json" main.cpp <<'PYEOF'
-import json, sys
+    # each one appears in the reader sources (the open_source() dispatch
+    # ladder in src/core/open.cpp, or a reader's own extension test).
+    python3 - "$TMP/formats.json" "$HERE/../src" <<'PYEOF'
+import glob, json, sys
 formats = json.load(open(sys.argv[1]))
-src = open(sys.argv[2]).read()
+src = "".join(open(f).read() for f in sorted(glob.glob(sys.argv[2] + "/**/*.[ch]pp", recursive=True)))
 missing = [e for f in formats for e in f['extensions']
            if ('"%s"' % e) not in src]
 if missing:
@@ -1850,18 +1851,18 @@ PYEOF
     fi
 
     # ...and the converse. formats_all_dispatched above only tests
-    # registry -> main.cpp, which a format can satisfy vacuously (.lociss has
+    # registry -> sources, which a format can satisfy vacuously (.lociss has
     # no ladder branch at all — it dispatches on magic — yet passes because
     # the literal appears in --validate). Assert the other direction too:
     # every extension the ladder tests must be a format the registry knows
     # about. Without this, a format added to the ladder but forgotten in the
     # registry silently falls through to the plain-text fallback.
-    python3 - "$TMP/formats.json" main.cpp <<'PYEOF'
-import json, re, sys
+    python3 - "$TMP/formats.json" "$HERE/../src" <<'PYEOF'
+import glob, json, re, sys
 formats = json.load(open(sys.argv[1]))
 known = {e.lower() for f in formats for e in f['extensions']}
 known |= {e.lower() + '.gz' for f in formats if f['gz'] for e in f['extensions']}
-src = open(sys.argv[2]).read()
+src = "".join(open(f).read() for f in sorted(glob.glob(sys.argv[2] + "/**/*.[ch]pp", recursive=True)))
 # Extensions the ladder branches on but that are NOT format extensions:
 # sidecar index files, output suffixes, and the compression suffix itself.
 allow = {'.gz', '.zst', '.zstd', '.bai', '.csi', '.crai', '.tbi', '.fai', '.gzi', '.idx', '.bgz',
@@ -1886,7 +1887,7 @@ PYEOF
     fi
 
     # Every extension the registry lists must also appear in `--help`. The
-    # drift checks above compare the registry against main.cpp and against the
+    # drift checks above compare the registry against the sources and against the
     # completions, but nothing compared it against the help text — which is
     # how `.bg` stayed listed by --formats and missing from --help since
     # ENCODE support was added.
@@ -1895,10 +1896,10 @@ PYEOF
     # bare % is a conversion: glibc prints "%," literally, but macOS read an
     # argument and emitted a garbage byte (the help was then not UTF-8). Only
     # %s (the program name) and %% may appear.
-    python3 - main.cpp <<'PYEOF'
+    python3 - "$HERE/../src/cli/args.cpp" <<'PYEOF'
 import re, sys
 src = open(sys.argv[1]).read()
-start = src.index("static void print_usage(")
+start = re.search(r"^(static )?void print_usage\(", src, re.M).start()
 body = src[start:src.index("\n}\n", start)]
 lits = "".join(re.findall(r'"((?:[^"\\]|\\.)*)"', body))
 bad = re.findall(r'%(?!%|s)(.)', lits.replace("%%", ""))
