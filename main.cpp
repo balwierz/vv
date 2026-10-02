@@ -5134,6 +5134,13 @@ public:
     }
 };
 
+std::string open_lociss_v4_source(const std::string& path, const Config& cfg, std::unique_ptr<TabularSource>* out) {
+    std::unique_ptr<LocissV4Source> s;
+    std::string e = LocissV4Source::open(path, cfg, &s);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
+
 std::string LocissV4Source::open(const std::string& path, const Config& cfg,
                                  std::unique_ptr<LocissV4Source>* out) {
     auto self = std::make_unique<LocissV4Source>();
@@ -6683,6 +6690,16 @@ public:
     }
 };
 
+std::string open_parquet_source(const std::string& path, const Config& cfg, std::unique_ptr<TabularSource>* out) {
+    std::unique_ptr<ParquetSource> s;
+    std::string e = ParquetSource::open(path, cfg, &s);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
+bool is_parquet_source(const TabularSource& src) {
+    return dynamic_cast<const ParquetSource*>(&src) != nullptr;
+}
+
 // ── Delimited source (CSV / TSV / BED / VCF / GFF3+GTF / SAM, plain or gzip) ──
 
 enum class DelimKind { CSV, TSV, BED, VCF, GFF, SAM, PAF, Mpileup, Mtx };
@@ -7998,6 +8015,51 @@ private:
     }
 };
 
+std::string open_delimited_source(const std::string& path, DelimKind kind, const std::string& region,
+                                  std::unique_ptr<TabularSource>* out, char delim_override = 0,
+                                  HeaderMode header_mode = HeaderMode::Auto,
+                                  TsvDialect dialect = TsvDialect::None,
+                                  const std::vector<std::string>& paf_tags = {}) {
+    std::unique_ptr<DelimitedSource> s;
+    std::string e = DelimitedSource::open(path, kind, region, &s, delim_override, header_mode,
+                                            dialect, paf_tags);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
+std::string open_delimited_stream(std::shared_ptr<arrow::io::InputStream> input,
+                                  const std::string& path_label, DelimKind kind, bool is_gz,
+                                  const std::string& region, std::unique_ptr<TabularSource>* out,
+                                  char delim_override = 0, HeaderMode header_mode = HeaderMode::Auto) {
+    std::unique_ptr<DelimitedSource> s;
+    std::string e = DelimitedSource::open_from_stream(std::move(input), path_label, kind, is_gz,
+                                                        region, &s, delim_override, header_mode);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
+// Post-open adjustments of a DelimitedSource made by the dispatcher; no-ops
+// on any other source.
+void delimited_apply_column_names(TabularSource& src, const std::vector<std::string>& names,
+                                  std::string note) {
+    if (auto* d = dynamic_cast<DelimitedSource*>(&src)) d->apply_column_names(names, std::move(note));
+}
+// A MatrixMarket source's declared shape; false for anything else.
+bool delimited_mtx_shape(TabularSource* src, int64_t* rows, int64_t* cols) {
+    auto* d = dynamic_cast<DelimitedSource*>(src);
+    return d && d->mtx_shape(rows, cols);
+}
+void delimited_apply_tenx_sidecar(TabularSource& src, int kind) {
+    if (auto* d = dynamic_cast<DelimitedSource*>(&src)) d->apply_tenx_sidecar(kind);
+}
+void delimited_apply_bed_variant(TabularSource& src, BedVariant v) {
+    if (auto* d = dynamic_cast<DelimitedSource*>(&src)) d->apply_bed_variant(v);
+}
+std::string delimited_first_line_after_meta(const std::string& path) {
+    return DelimitedSource::first_line_after_meta(path);
+}
+std::string delimited_first_line_after_meta_raw(const std::string& path) {
+    return DelimitedSource::first_line_after_meta_raw(path);
+}
+
 // ── BAM aux-tag support (--tags) ──────────────────────────────────────────────
 //
 // SAM/BAM optional fields (`NM:i:2`, `AS:i:100`, `RG:Z:grp`, `MD:Z:…`) are
@@ -8550,6 +8612,13 @@ public:
     }
 };
 
+std::string open_bam_source(const std::string& path, const Config& cfg, std::unique_ptr<TabularSource>* out) {
+    std::unique_ptr<BamSource> s;
+    std::string e = BamSource::open(path, cfg, &s);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
+
 // ── BAM/CRAM pileup source (`vv x.bam --pileup`) ─────────────────────────────
 //
 // Walks a sorted BAM/CRAM through htslib's bam_plp_auto engine, emitting one
@@ -9001,6 +9070,13 @@ public:
     }
 };
 
+std::string open_bam_pileup_source(const std::string& path, const Config& cfg, std::unique_ptr<TabularSource>* out) {
+    std::unique_ptr<BamPileupSource> s;
+    std::string e = BamPileupSource::open(path, cfg, &s);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
+
 // ── BCF source (binary VCF via htslib) ────────────────────────────────────────
 
 // Reads a BCF file via htslib's bcf_read, reformats each record to the
@@ -9320,6 +9396,13 @@ public:
         }
     }
 };
+
+std::string open_bcf_source(const std::string& path, const Config& cfg, std::unique_ptr<TabularSource>* out) {
+    std::unique_ptr<BcfSource> s;
+    std::string e = BcfSource::open(path, cfg, &s);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
 
 // ── bigBed / bigWig source (libBigWig, vendored) ──────────────────────────────
 //
@@ -9645,6 +9728,13 @@ public:
     }
 };
 
+std::string open_big_source(const std::string& path, const Config& cfg, std::unique_ptr<TabularSource>* out) {
+    std::unique_ptr<BigSource> s;
+    std::string e = BigSource::open(path, cfg, &s);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
+
 // ── FASTA / FASTQ source (kseq.h via htslib BGZF) ─────────────────────────────
 
 KSEQ_INIT(BGZF*, bgzf_read)
@@ -9816,6 +9906,13 @@ public:
         }
     }
 };
+
+std::string open_fastx_source(const std::string& path, bool is_fastq, const Config& cfg, std::unique_ptr<TabularSource>* out) {
+    std::unique_ptr<FastxSource> s;
+    std::string e = FastxSource::open(path, is_fastq, cfg, &s);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
 
 // ── Plain-text source ────────────────────────────────────────────────────────
 //
@@ -10061,6 +10158,19 @@ public:
     bool is_text() const override { return true; }
 };
 
+std::string open_text_stream(const std::string& label, std::shared_ptr<arrow::io::InputStream> in,
+                             std::unique_ptr<TabularSource>* out) {
+    std::unique_ptr<TextSource> s;
+    std::string e = TextSource::open_stream(label, std::move(in), &s);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
+// Whether a text source's last line had a terminator (true for any other source).
+bool text_final_newline(const TabularSource& src) {
+    auto* ts = dynamic_cast<const TextSource*>(&src);
+    return !ts || ts->final_newline();
+}
+
 // ── JSON / NDJSON source ──────────────────────────────────────────────────────
 //
 // Reads newline-delimited JSON (`.ndjson` / `.jsonl`, one object per line) and
@@ -10198,6 +10308,23 @@ public:
                 comp_ == arrow::Compression::ZSTD ? " (zstd)" : "");
     }
 };
+
+std::string open_json_source(const std::string& path, const Config& cfg, std::unique_ptr<TabularSource>* out) {
+    std::unique_ptr<JsonSource> s;
+    std::string e = JsonSource::open(path, cfg, &s);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
+std::string open_json_stream(const std::string& label, std::shared_ptr<arrow::io::InputStream> input,
+                             arrow::Compression::type comp, std::unique_ptr<TabularSource>* out) {
+    std::unique_ptr<JsonSource> s;
+    std::string e = JsonSource::open_stream(label, std::move(input), comp, &s);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
+bool is_json_source(const TabularSource* src) {
+    return dynamic_cast<const JsonSource*>(src) != nullptr;
+}
 
 std::string open_json_records(std::shared_ptr<arrow::io::InputStream> in,
                               const std::string& label,
@@ -10828,6 +10955,16 @@ public:
     std::string footer() const override { return "Format: JSON document"; }
 };
 
+// The decoded stream of JSON on stdin wanted as a document, or nullptr.
+std::shared_ptr<arrow::io::InputStream> json_document_stream(TabularSource* src) {
+    auto* js = dynamic_cast<JsonStreamSource*>(src);
+    return js ? js->stream() : nullptr;
+}
+void make_json_stream_source(const std::string& label, std::shared_ptr<arrow::io::InputStream> in,
+                             std::unique_ptr<TabularSource>* out) {
+    *out = std::make_unique<JsonStreamSource>(label, std::move(in));
+}
+
 // ── 2bit (UCSC) source ────────────────────────────────────────────────────────
 //
 // 2bit is the UCSC binary container for genome-scale DNA sequences
@@ -11016,6 +11153,13 @@ public:
         }
     }
 };
+
+std::string open_twobit_source(const std::string& path, const Config& cfg, std::unique_ptr<TabularSource>* out) {
+    std::unique_ptr<TwoBitSource> s;
+    std::string e = TwoBitSource::open(path, cfg, &s);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
 
 // ── SQLite source ─────────────────────────────────────────────────────────────
 //
@@ -11375,6 +11519,21 @@ public:
     }
 };
 
+std::string open_sqlite_source(const std::string& path, std::unique_ptr<TabularSource>* out) {
+    std::unique_ptr<SqliteSource> s;
+    std::string e = SqliteSource::open_first(path, &s);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
+// The other tables of the database `src` was opened from (none when it is not
+// a SQLite table).
+std::vector<std::unique_ptr<TabularSource>> sqlite_sibling_tables(TabularSource* src) {
+    std::vector<std::unique_ptr<TabularSource>> v;
+    if (auto* sq = dynamic_cast<SqliteSource*>(src))
+        for (auto& s : sq->open_sibling_tables()) v.push_back(std::move(s));
+    return v;
+}
+
 // ── Arrow IPC / Feather source ────────────────────────────────────────────────
 
 class IpcSource : public TabularSource {
@@ -11527,6 +11686,13 @@ public:
     }
 };
 
+std::string open_ipc_source(const std::string& path, bool is_feather, std::unique_ptr<TabularSource>* out) {
+    std::unique_ptr<IpcSource> s;
+    std::string e = IpcSource::open(path, is_feather, &s);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
+
 // ── Apache ORC source ────────────────────────────────────────────────────────
 //
 // Compiled in only when the Arrow build we link against has the ORC adapter
@@ -11620,6 +11786,23 @@ public:
     const std::string& path() const override { return path_; }
     std::string footer() const override { return "Format: Arrow IPC stream"; }
 };
+
+std::string open_ipc_stream_file(const std::string& path, std::unique_ptr<TabularSource>* out) {
+    std::unique_ptr<IpcStreamSource> s;
+    std::string e = IpcStreamSource::open(path, &s);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
+std::string open_ipc_stream(const std::string& label, std::shared_ptr<arrow::io::InputStream> in,
+                            std::unique_ptr<TabularSource>* out) {
+    std::unique_ptr<IpcStreamSource> s;
+    std::string e = IpcStreamSource::open_stream(label, std::move(in), &s);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
+bool looks_like_ipc_stream(const uint8_t* m, size_t n) {
+    return IpcStreamSource::looks_like_stream(m, n);
+}
 
 #if VV_HAVE_ORC
 class OrcSource : public TabularSource {
@@ -11753,6 +11936,13 @@ public:
         return s;
     }
 };
+
+std::string open_orc_source(const std::string& path, std::unique_ptr<TabularSource>* out) {
+    std::unique_ptr<OrcSource> s;
+    std::string e = OrcSource::open(path, &s);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
 #endif  // VV_HAVE_ORC
 
 // ── Format detection + source factory ────────────────────────────────────────
@@ -11989,7 +12179,7 @@ static std::string sniff_text_format(const std::string& head) {
 static bool file_is_ipc_stream(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     uint8_t m[8] = {0};
-    return f.read(reinterpret_cast<char*>(m), 8) && IpcStreamSource::looks_like_stream(m, 8);
+    return f.read(reinterpret_cast<char*>(m), 8) && looks_like_ipc_stream(m, 8);
 }
 
 // True for a path that names a pipe, FIFO, socket or character device —
@@ -12295,6 +12485,13 @@ public:
         return out;
     }
 };
+
+std::string open_xlsx_source(const std::string& path, std::unique_ptr<TabularSource>* out) {
+    std::unique_ptr<XlsxSource> s;
+    std::string e = XlsxSource::open_first(path, &s);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
 
 // ── OpenDocument Spreadsheet (.ods) source ───────────────────────────────────
 //
@@ -12666,6 +12863,13 @@ public:
         return out;
     }
 };
+
+std::string open_ods_source(const std::string& path, std::unique_ptr<TabularSource>* out, bool flat = false) {
+    std::unique_ptr<OdsSource> s;
+    std::string e = OdsSource::open_first(path, &s, flat);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
 
 // ── HDF5 / AnnData viewer (`.h5ad` / `.h5` / `.hdf5` / `.loom`) ──────────────
 //
@@ -13661,6 +13865,14 @@ public:
         return result;
     }
 };
+
+std::string open_hdf5_source(const std::string& path, std::unique_ptr<TabularSource>* out,
+                             int64_t df_row_cap = kDataFrameRowCap, bool matrix_long = false) {
+    std::unique_ptr<Hdf5Source> s;
+    std::string e = Hdf5Source::open_first(path, &s, df_row_cap, matrix_long);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
 
 // ── Read helpers — defined after Hdf5Source so they can be referenced
 // from build_table. ─────────────────────────────────────────────────────────
@@ -17204,6 +17416,19 @@ public:
     }
 };
 
+std::string open_npz_source(const std::string& path, std::unique_ptr<TabularSource>* out) {
+    std::unique_ptr<NpzSource> s;
+    std::string e = NpzSource::open_first(path, &s);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
+std::string open_npy_source(const std::string& path, std::unique_ptr<TabularSource>* out) {
+    std::unique_ptr<NpzSource> s;
+    std::string e = NpzSource::open_npy(path, &s);
+    if (e.empty()) *out = std::move(s);
+    return e;
+}
+
 }  // namespace npz
 
 // ── mpileup --decode-pileup helpers ──────────────────────────────────────────
@@ -19437,6 +19662,10 @@ public:
     }
 };
 
+bool is_expanded_source(const TabularSource& src) {
+    return dynamic_cast<const ExpandedSource*>(&src) != nullptr;
+}
+
 // ── --flatten: struct columns as one column per leaf ────────────────────────
 //
 // A struct column (Parquet / Arrow / JSON nesting) becomes one column per
@@ -20590,8 +20819,7 @@ std::string TenxDirSource::open(const TenxDirFiles& files, const Config& cfg,
     if (!e.empty()) return e;
 
     int64_t mr = 0, mc = 0;
-    auto* d = dynamic_cast<DelimitedSource*>(self->inner_.get());
-    if (!d || !d->mtx_shape(&mr, &mc))
+    if (!delimited_mtx_shape(self->inner_.get(), &mr, &mc))
         return "'" + files.matrix + "' did not open as a MatrixMarket matrix";
     const int64_t nf = self->features_->num_rows(), nb = self->barcodes_->num_rows();
     if (mr == nf && mc == nb)      self->rows_are_features_ = true;
@@ -20694,8 +20922,8 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
     // datasets and --text are handled above and still win.
     if (cfg.in_delimiter != 0 && path != "-") {
         DelimKind dk2 = (cfg.in_delimiter == ',') ? DelimKind::CSV : DelimKind::TSV;
-        std::unique_ptr<DelimitedSource> src;
-        std::string err = DelimitedSource::open(path, dk2, cfg.region, &src,
+        std::unique_ptr<TabularSource> src;
+        std::string err = open_delimited_source(path, dk2, cfg.region, &src,
                                                 cfg.in_delimiter, cfg.header);
         if (!err.empty()) return err;
         *out = std::move(src);
@@ -20725,11 +20953,11 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         };
 
         // An Arrow IPC stream needs no seeking: read it as it arrives.
-        if (IpcStreamSource::looks_like_stream((const uint8_t*)sniff.data(), sniff.size())) {
+        if (looks_like_ipc_stream((const uint8_t*)sniff.data(), sniff.size())) {
             std::shared_ptr<arrow::io::InputStream> in = std::make_shared<PrependInputStream>(
                 std::move(sniff), std::make_shared<FdInputStream>(fd));
-            std::unique_ptr<IpcStreamSource> src;
-            std::string e = IpcStreamSource::open_stream(path, std::move(in), &src);
+            std::unique_ptr<TabularSource> src;
+            std::string e = open_ipc_stream(path, std::move(in), &src);
             if (!e.empty()) return e;
             *out = std::move(src);
             return "";
@@ -20791,8 +21019,8 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
                 if (fmt == "vcf" || fmt == "gff" || fmt == "sam") {
                     const DelimKind k = fmt == "vcf" ? DelimKind::VCF
                                       : fmt == "gff" ? DelimKind::GFF : DelimKind::SAM;
-                    std::unique_ptr<DelimitedSource> src;
-                    std::string e = DelimitedSource::open_from_stream(
+                    std::unique_ptr<TabularSource> src;
+                    std::string e = open_delimited_stream(
                         std::move(input), path, k, is_gz, cfg.region, &src);
                     if (!e.empty()) return e;
                     *out = std::move(src);
@@ -20802,11 +21030,11 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
                     // As a document (the CLI's pretty print / viewer), or as
                     // records for the table modes and the GUI.
                     if (cfg.json_document) {
-                        *out = std::make_unique<JsonStreamSource>(path, std::move(input));
+                        make_json_stream_source(path, std::move(input), out);
                         return "";
                     }
-                    std::unique_ptr<JsonSource> src;
-                    std::string e = JsonSource::open_stream(path, std::move(input), comp, &src);
+                    std::unique_ptr<TabularSource> src;
+                    std::string e = open_json_stream(path, std::move(input), comp, &src);
                     if (!e.empty()) return e;
                     *out = std::move(src);
                     return "";
@@ -20832,8 +21060,8 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         // InputStream, so the already-sniffed, already-gunzipped stream goes
         // straight in.
         if (cfg.force_text) {
-            std::unique_ptr<TextSource> tsrc;
-            std::string terr = TextSource::open_stream(path, std::move(input), &tsrc);
+            std::unique_ptr<TabularSource> tsrc;
+            std::string terr = open_text_stream(path, std::move(input), &tsrc);
             if (!terr.empty()) return terr;
             *out = std::move(tsrc);
             return "";
@@ -20845,8 +21073,8 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         DelimKind kind = DelimKind::TSV;
         if (cfg.in_delimiter == ',' ||
             (cfg.in_delimiter == 0 && cfg.delimiter == ',')) kind = DelimKind::CSV;
-        std::unique_ptr<DelimitedSource> src;
-        std::string e = DelimitedSource::open_from_stream(
+        std::unique_ptr<TabularSource> src;
+        std::string e = open_delimited_stream(
             std::move(input), path, kind, /*is_gz=*/is_gz, cfg.region, &src,
             cfg.in_delimiter, cfg.header);
         if (!e.empty()) return e;
@@ -20858,27 +21086,27 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         is_parquet = true;
     } else if (fends_ci(path, ".arrows") || (fends_ci(path, ".arrow") && file_is_ipc_stream(path))) {
         // The IPC stream format: .arrows, or a stream saved as .arrow.
-        std::unique_ptr<IpcStreamSource> src;
-        std::string err = IpcStreamSource::open(path, &src);
+        std::unique_ptr<TabularSource> src;
+        std::string err = open_ipc_stream_file(path, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
     } else if (fends_ci(path, ".arrow")) {
-        std::unique_ptr<IpcSource> src;
-        std::string err = IpcSource::open(path, false, &src);
+        std::unique_ptr<TabularSource> src;
+        std::string err = open_ipc_source(path, false, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
     } else if (fends_ci(path, ".feather")) {
-        std::unique_ptr<IpcSource> src;
-        std::string err = IpcSource::open(path, true, &src);
+        std::unique_ptr<TabularSource> src;
+        std::string err = open_ipc_source(path, true, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
     } else if (fends_ci(path, ".orc")) {
 #if VV_HAVE_ORC
-        std::unique_ptr<OrcSource> src;
-        std::string err = OrcSource::open(path, &src);
+        std::unique_ptr<TabularSource> src;
+        std::string err = open_orc_source(path, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
 #else
@@ -20895,8 +21123,8 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
             // and emit mpileup-style per-base rows instead of alignment
             // records. Run the decoded view on top if --decode-pileup is
             // also set.
-            std::unique_ptr<BamPileupSource> src;
-            std::string err = BamPileupSource::open(path, cfg, &src);
+            std::unique_ptr<TabularSource> src;
+            std::string err = open_bam_pileup_source(path, cfg, &src);
             if (!err.empty()) return err;
             if (cfg.decode_pileup) {
                 std::unique_ptr<TabularSource> decoded;
@@ -20908,53 +21136,53 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
             }
             return "";
         }
-        std::unique_ptr<BamSource> src;
-        std::string err = BamSource::open(path, cfg, &src);
+        std::unique_ptr<TabularSource> src;
+        std::string err = open_bam_source(path, cfg, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
     } else if (fends_ci(path, ".bcf")) {
-        std::unique_ptr<BcfSource> src;
-        std::string err = BcfSource::open(path, cfg, &src);
+        std::unique_ptr<TabularSource> src;
+        std::string err = open_bcf_source(path, cfg, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
     } else if (fends_ci(path, ".bb") || fends_ci(path, ".bigBed") ||
                fends_ci(path, ".bw") || fends_ci(path, ".bigWig")) {
-        std::unique_ptr<BigSource> src;
-        std::string err = BigSource::open(path, cfg, &src);
+        std::unique_ptr<TabularSource> src;
+        std::string err = open_big_source(path, cfg, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
     } else if (fends_ci(path, ".2bit")) {
-        std::unique_ptr<TwoBitSource> src;
-        std::string err = TwoBitSource::open(path, cfg, &src);
+        std::unique_ptr<TabularSource> src;
+        std::string err = open_twobit_source(path, cfg, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
     } else if (fends_ci(path, ".sqlite")  || fends_ci(path, ".sqlite3") ||
                fends_ci(path, ".db")) {
-        std::unique_ptr<SqliteSource> src;
-        std::string err = SqliteSource::open_first(path, &src);
+        std::unique_ptr<TabularSource> src;
+        std::string err = open_sqlite_source(path, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
     } else if (fends_ci(path, ".xlsx") || fends_ci(path, ".xlsm")) {
-        std::unique_ptr<XlsxSource> src;
-        std::string err = XlsxSource::open_first(path, &src);
+        std::unique_ptr<TabularSource> src;
+        std::string err = open_xlsx_source(path, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
     } else if (fends_ci(path, ".ods") || fends_ci(path, ".fods")) {
         // .fods (flat ODF) is the .ods content.xml as a plain XML file.
-        std::unique_ptr<OdsSource> src;
-        std::string err = OdsSource::open_first(path, &src, fends_ci(path, ".fods"));
+        std::unique_ptr<TabularSource> src;
+        std::string err = open_ods_source(path, &src, fends_ci(path, ".fods"));
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
     } else if (fends_ci(path, ".h5ad") || fends_ci(path, ".h5") ||
                fends_ci(path, ".hdf5") || fends_ci(path, ".loom")) {
-        std::unique_ptr<h5v::Hdf5Source> src;
+        std::unique_ptr<TabularSource> src;
         // The 1000-row cap exists so opening a 10 GB .h5ad in the TUI does not
         // read 310k rows of obs up front. It must apply to THAT and nothing
         // else: every mode that produces a complete answer — a count, an
@@ -20979,31 +21207,31 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         int64_t df_cap = df_preview_only
             ? h5v::kDataFrameRowCap
             : ((cfg.head_rows_set && !whole_frame) ? (int64_t)cfg.head_rows : -1);
-        std::string err = h5v::Hdf5Source::open_first(path, &src, df_cap, cfg.matrix == "long");
+        std::string err = h5v::open_hdf5_source(path, &src, df_cap, cfg.matrix == "long");
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
     } else if (fends_ci(path, ".npz")) {
-        std::unique_ptr<npz::NpzSource> src;
-        std::string err = npz::NpzSource::open_first(path, &src);
+        std::unique_ptr<TabularSource> src;
+        std::string err = npz::open_npz_source(path, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
     } else if (fends_ci(path, ".npy")) {
-        std::unique_ptr<npz::NpzSource> src;
-        std::string err = npz::NpzSource::open_npy(path, &src);
+        std::unique_ptr<TabularSource> src;
+        std::string err = npz::open_npy_source(path, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
     } else if (fastx_ext(path, det, {".fa", ".fasta", ".fna", ".faa", ".ffn", ".frn"})) {
-        std::unique_ptr<FastxSource> src;
-        std::string err = FastxSource::open(path, /*is_fastq=*/false, cfg, &src);
+        std::unique_ptr<TabularSource> src;
+        std::string err = open_fastx_source(path, /*is_fastq=*/false, cfg, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
     } else if (fastx_ext(path, det, {".fq", ".fastq"})) {
-        std::unique_ptr<FastxSource> src;
-        std::string err = FastxSource::open(path, /*is_fastq=*/true, cfg, &src);
+        std::unique_ptr<TabularSource> src;
+        std::string err = open_fastx_source(path, /*is_fastq=*/true, cfg, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
@@ -21013,8 +21241,8 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
                fends_ci(det, ".geojson") || fends_ci(det, ".geojson.gz") ||
                fends_ci(det, ".ipynb")  || fends_ci(det, ".ipynb.gz")   ||
                fends_ci(det, ".har")    || fends_ci(det, ".har.gz")) {
-        std::unique_ptr<JsonSource> src;
-        std::string err = JsonSource::open(path, cfg, &src);
+        std::unique_ptr<TabularSource> src;
+        std::string err = open_json_source(path, cfg, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
@@ -21057,7 +21285,7 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         // A UCSC multiple-alignment file shares .maf with the mutation
         // annotation format; it starts with "##maf" and is not a table.
         if (tsv_dialect_of(det) == TsvDialect::Maf &&
-            DelimitedSource::first_line_after_meta_raw(path).rfind("##maf", 0) == 0)
+            delimited_first_line_after_meta_raw(path).rfind("##maf", 0) == 0)
             return open_text(path, cfg, out);
         dk = DelimKind::TSV;
     } else if (fends_ci(det, ".bed")        || fends_ci(det, ".bed.gz")
@@ -21104,16 +21332,16 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
             is_feather = ((*buf)->size() >= 4 &&
                           m[0]=='F' && m[1]=='E' && m[2]=='A' && m[3]=='1');
         }
-        if (buf.ok() && IpcStreamSource::looks_like_stream((*buf)->data(), (size_t)(*buf)->size())) {
-            std::unique_ptr<IpcStreamSource> src;
-            std::string err = IpcStreamSource::open(path, &src);
+        if (buf.ok() && looks_like_ipc_stream((*buf)->data(), (size_t)(*buf)->size())) {
+            std::unique_ptr<TabularSource> src;
+            std::string err = open_ipc_stream_file(path, &src);
             if (!err.empty()) return err;
             *out = std::move(src);
             return "";
         }
         if (is_ipc || is_feather) {
-            std::unique_ptr<IpcSource> src;
-            std::string err = IpcSource::open(path, is_feather, &src);
+            std::unique_ptr<TabularSource> src;
+            std::string err = open_ipc_source(path, is_feather, &src);
             if (!err.empty()) return err;
             *out = std::move(src);
             return "";
@@ -21123,8 +21351,8 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         if (buf.ok() && (*buf)->size() >= 4) {
             const uint8_t* mm = (*buf)->data();
             if (mm[0]=='L' && mm[1]=='S' && mm[2]=='B' && mm[3]=='1') {
-                std::unique_ptr<LocissV4Source> src;
-                std::string err = LocissV4Source::open(path, cfg, &src);
+                std::unique_ptr<TabularSource> src;
+                std::string err = open_lociss_v4_source(path, cfg, &src);
                 if (!err.empty()) return err;
                 *out = std::move(src);
                 return "";
@@ -21140,8 +21368,8 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
 
     // ── Open appropriate source ───────────────────────────────────────────────
     if (is_parquet) {
-        std::unique_ptr<ParquetSource> src;
-        std::string err = ParquetSource::open(path, cfg, &src);
+        std::unique_ptr<TabularSource> src;
+        std::string err = open_parquet_source(path, cfg, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
@@ -21161,7 +21389,7 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
     std::string plink_note;
     char delim_override = 0;
     if (plink != PlinkTable::None) {
-        const std::string first = DelimitedSource::first_line_after_meta(path);
+        const std::string first = delimited_first_line_after_meta(path);
         const bool headed = (plink == PlinkTable::Pvar || plink == PlinkTable::Psam) &&
                             !first.empty() && first[0] == '#';
         if (!headed) {
@@ -21190,8 +21418,8 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         paf_tags = parse_bam_tag_list(cfg.bam_tags, &terr);
         if (!terr.empty()) return terr;
     }
-    std::unique_ptr<DelimitedSource> src;
-    std::string err = DelimitedSource::open(path, dk, cfg.region, &src, delim_override,
+    std::unique_ptr<TabularSource> src;
+    std::string err = open_delimited_source(path, dk, cfg.region, &src, delim_override,
                                             headerless ? HeaderMode::Off : cfg.header, dialect,
                                             paf_tags);
     if (!err.empty()) return err;
@@ -21200,11 +21428,11 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
     if (dialect == TsvDialect::Bedpe &&
         static_cast<TabularSource&>(*src).schema()->num_fields() > 0 &&
         static_cast<TabularSource&>(*src).schema()->field(0)->name() == "f0")
-        src->apply_column_names({"chrom1", "start1", "end1", "chrom2", "start2", "end2",
-                                 "name", "score", "strand1", "strand2"},
-                                "BEDPE (no header row)");
-    if (tenx) src->apply_tenx_sidecar(tenx);
-    if (headerless && !plink_names.empty()) src->apply_column_names(plink_names, plink_note);
+        delimited_apply_column_names(*src, {"chrom1", "start1", "end1", "chrom2", "start2", "end2",
+                                            "name", "score", "strand1", "strand2"},
+                                     "BEDPE (no header row)");
+    if (tenx) delimited_apply_tenx_sidecar(*src, tenx);
+    if (headerless && !plink_names.empty()) delimited_apply_column_names(*src, plink_names, plink_note);
     // ENCODE peak-family variants ride on top of DelimKind::BED — the
     // dispatch detected them by extension; apply variant-specific naming
     // now that the schema is materialised.
@@ -21216,7 +21444,7 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         else if (fends_ci(path, ".bedGraph")   || fends_ci(path, ".bedGraph.gz")
               || fends_ci(path, ".bg")         || fends_ci(path, ".bg.gz"))         bv = BedVariant::BedGraph;
         else if (fends_ci(path, ".tagAlign")   || fends_ci(path, ".tagAlign.gz"))   bv = BedVariant::TagAlign;
-        if (bv != BedVariant::None) src->apply_bed_variant(bv);
+        if (bv != BedVariant::None) delimited_apply_bed_variant(*src, bv);
     }
     // --decode-pileup: materialise the typed allele-count view from the
     // underlying mpileup source. The original streaming source is consumed
@@ -27442,7 +27670,7 @@ public:
         // --expand did this at the schema level, so the keys are real columns
         // now and building display-only virtual ones on top would show every
         // key twice.
-        const bool pre_expanded = dynamic_cast<const ExpandedSource*>(&src) != nullptr;
+        const bool pre_expanded = is_expanded_source(src);
         int info_col_idx = -1;
         if (!pre_expanded) {
             for (int ci = 0; ci < src_num_cols_; ++ci)
@@ -28078,7 +28306,7 @@ public:
                 case 't':
                     if (tree_return_) { back_to_tree_ = true; quit = true; break; }
                     // A JSON file's tab (several files open): its tree view.
-                    if (dynamic_cast<JsonSource*>(src_)) {
+                    if (is_json_source(src_)) {
                         struct stat jst;
                         if (::stat(src_->path().c_str(), &jst) == 0 && S_ISREG(jst.st_mode)) {
                             tree_request_ = src_->path();
@@ -29150,17 +29378,17 @@ static bool json_tree_loop(TuiSession& session, JsonTreeView& v, const Config& c
         const uint64_t key = tt.whole ? UINT64_MAX : tt.node.off;
         std::unique_ptr<TableTUI>& table = v.tables[key];
         if (!table) {
-            std::unique_ptr<JsonSource> js;
+            std::unique_ptr<TabularSource> js;
             std::string e;
             if (tt.whole) {
-                e = JsonSource::open(v.table_path, cfg, &js);
+                e = open_json_source(v.table_path, cfg, &js);
             } else {
                 const std::string_view b = v.doc.bytes(tt.node);
                 auto buf = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(b.data()),
                                                            (int64_t)b.size());
-                e = JsonSource::open_stream(v.label + " " + tt.path,
-                                            std::make_shared<arrow::io::BufferReader>(buf),
-                                            arrow::Compression::UNCOMPRESSED, &js);
+                e = open_json_stream(v.label + " " + tt.path,
+                                     std::make_shared<arrow::io::BufferReader>(buf),
+                                     arrow::Compression::UNCOMPRESSED, &js);
             }
             if (!e.empty()) {
                 v.tables.erase(key);
@@ -29211,6 +29439,53 @@ static std::string run_json_viewer(const std::string& file, const std::string& t
     json_tree_loop(session, *view, cfg, /*whole_to_caller=*/false);
     return "";
 }
+static int json_path_kind(const std::string& path);
+static std::string open_json_file(const std::string& path,
+                                  std::shared_ptr<arrow::io::InputStream>* out);
+
+// Run the table viewer over `srcs` (several files open as tabs); `t` on a
+// JSON file's tab opens that file's tree in the same terminal session, and
+// `t` there on the whole document comes back. true when the viewer ran;
+// false when the terminal could not start, with the first source handed
+// back in *first for the non-interactive fallback.
+static bool run_table_viewer(std::vector<std::unique_ptr<TabularSource>> srcs, const Config& cfg,
+                             const TuiStart& start, std::unique_ptr<TabularSource>* first) {
+    TableTUI tui(std::move(srcs), cfg, start);
+    {
+        TuiSession session;
+        if (session.open()) {
+            // `t` on a JSON file's tab: that file's tree view, in the
+            // same session; `t` there on the whole document comes back.
+            std::map<std::string, std::unique_ptr<JsonTreeView>> trees;
+            for (;;) {
+                tui.run_in(session);
+                const std::string jp = tui.tree_request();
+                if (jp.empty()) return true;
+                std::unique_ptr<JsonTreeView>& view = trees[jp];
+                if (!view) {
+                    std::string file = jp, e;
+                    auto raw = arrow::io::ReadableFile::Open(jp);
+                    if (raw.ok() && sniff_stream_codec(*raw) != arrow::Compression::UNCOMPRESSED) {
+                        std::shared_ptr<arrow::io::InputStream> in;
+                        int64_t bytes = 0;
+                        e = open_json_file(jp, &in);
+                        if (e.empty()) e = spool_stream(in, ".json", &file, &bytes, jp);
+                    }
+                    if (e.empty()) e = open_json_tree_view(file, jp, jp, json_path_kind(jp) == 2, &view);
+                    if (!e.empty()) {
+                        trees.erase(jp);
+                        tui.flash("no tree view: " + e);
+                        continue;
+                    }
+                }
+                if (!json_tree_loop(session, *view, cfg, /*whole_to_caller=*/true)) return true;
+            }
+        }
+    }
+    *first = tui.take_first_source();
+    return false;
+}
+
 #endif  // VV_CORE_LIB (end of ncurses TUI frontend)
 
 // ── Table display (non-interactive) ──────────────────────────────────────────
@@ -29731,7 +30006,7 @@ static std::string format_label_of(TabularSource& src) {
     const std::string key = "Format: ";
     auto p = f.find(key);
     if (p == std::string::npos)   // plain Parquet's footer starts at "Row groups:"
-        return dynamic_cast<ParquetSource*>(&src) ? "Parquet" : "";
+        return is_parquet_source(src) ? "Parquet" : "";
     std::string rest = f.substr(p + key.size());
     auto bar = rest.find("  |");
     if (bar != std::string::npos) rest.erase(bar);
@@ -29943,7 +30218,7 @@ static int emit_text_stream(TabularSource& src, const Config& cfg) {
     }
     // A trailing line with no terminator must stay that way. Only TextSource
     // knows; anything else (stdin) is treated as newline-terminated.
-    auto* ts = dynamic_cast<TextSource*>(&src);
+    const bool final_newline = text_final_newline(src);
 
     // --tail keeps a bounded ring of the last N lines; everything else
     // streams straight out.
@@ -29990,11 +30265,11 @@ static int emit_text_stream(TabularSource& src, const Config& cfg) {
             std::fwrite(ring[i].data(), 1, ring[i].size(), stdout);
             if (i + 1 < ring.size()) std::fputc('\n', stdout);
         }
-        if (!ring.empty() && (!ts || ts->final_newline())) std::fputc('\n', stdout);
+        if (!ring.empty() && final_newline) std::fputc('\n', stdout);
     } else if (emitted > 0) {
         // The newline after the final line: present unless the file itself
         // ended without one AND we printed all the way to the end.
-        if (truncated || !ts || ts->final_newline()) std::fputc('\n', stdout);
+        if (truncated || final_newline) std::fputc('\n', stdout);
     }
     if (!src.read_status().ok()) {
         std::fprintf(stderr, "vv: %s: %s\n", cfg.path.c_str(),
@@ -30944,7 +31219,7 @@ int main(int argc, char** argv) {
     }
 
     // JSON on stdin, wanted as a document: print it from the decoded stream.
-    if (auto* js = dynamic_cast<JsonStreamSource*>(src.get())) {
+    if (auto json_doc = json_document_stream(src.get())) {
         const std::string label = cfg.path == "-" ? "stdin" : cfg.path;
         // A terminal on stdout: the tree viewer, reading keys from the
         // controlling terminal (stdin carries the data), over a copy of the
@@ -30953,7 +31228,7 @@ int main(int argc, char** argv) {
             (cfg.json_tree || cfg.interactive || isatty(STDOUT_FILENO))) {
             std::string tmp;
             int64_t bytes = 0;
-            if (auto e = spool_stream(js->stream(), ".json", &tmp, &bytes, label); !e.empty()) {
+            if (auto e = spool_stream(json_doc, ".json", &tmp, &bytes, label); !e.empty()) {
                 report(label, e);
                 return 1;
             }
@@ -30968,7 +31243,7 @@ int main(int argc, char** argv) {
             if (auto e = print_json_document(*in, cfg, false); !e.empty()) { report(label, e); return 1; }
             return 0;
         }
-        if (auto e = print_json_document(*js->stream(), cfg, false); !e.empty()) {
+        if (auto e = print_json_document(*json_doc, cfg, false); !e.empty()) {
             report(cfg.path == "-" ? "stdin" : cfg.path, e);
             return 1;
         }
@@ -31290,10 +31565,8 @@ int main(int argc, char** argv) {
             // SQLite: a single positional that points at a multi-table
             // database expands into one tab per user table. The handle
             // is shared (refcounted) across the sibling sources.
-            if (auto* sq = dynamic_cast<SqliteSource*>(tab_srcs.back().get())) {
-                for (auto& s : sq->open_sibling_tables())
-                    tab_srcs.push_back(std::move(s));
-            }
+            for (auto& s : sqlite_sibling_tables(tab_srcs.back().get()))
+                tab_srcs.push_back(std::move(s));
             // Spreadsheet (.xlsx today, future .ods): one tab per sheet,
             // sharing the underlying workbook handle.
             if (auto* wb = dynamic_cast<WorkbookSource*>(tab_srcs.back().get())) {
@@ -31313,10 +31586,8 @@ int main(int argc, char** argv) {
                     return 1;
                 }
                 tab_srcs.push_back(std::move(s));
-                if (auto* sq = dynamic_cast<SqliteSource*>(tab_srcs.back().get())) {
-                    for (auto& es : sq->open_sibling_tables())
-                        tab_srcs.push_back(std::move(es));
-                }
+                for (auto& es : sqlite_sibling_tables(tab_srcs.back().get()))
+                    tab_srcs.push_back(std::move(es));
                 if (auto* wb = dynamic_cast<WorkbookSource*>(tab_srcs.back().get())) {
                     for (auto& es : wb->open_sibling_sheets())
                         tab_srcs.push_back(std::move(es));
@@ -31326,39 +31597,7 @@ int main(int argc, char** argv) {
             // tui.run() fails (e.g. unsupported terminal), reclaim the
             // first source so the non-interactive fall-through paths
             // below can still use *src.
-            TableTUI tui(std::move(tab_srcs), cfg, tui_start);
-            {
-                TuiSession session;
-                if (session.open()) {
-                    // `t` on a JSON file's tab: that file's tree view, in the
-                    // same session; `t` there on the whole document comes back.
-                    std::map<std::string, std::unique_ptr<JsonTreeView>> trees;
-                    for (;;) {
-                        tui.run_in(session);
-                        const std::string jp = tui.tree_request();
-                        if (jp.empty()) return 0;
-                        std::unique_ptr<JsonTreeView>& view = trees[jp];
-                        if (!view) {
-                            std::string file = jp, e;
-                            auto raw = arrow::io::ReadableFile::Open(jp);
-                            if (raw.ok() && sniff_stream_codec(*raw) != arrow::Compression::UNCOMPRESSED) {
-                                std::shared_ptr<arrow::io::InputStream> in;
-                                int64_t bytes = 0;
-                                e = open_json_file(jp, &in);
-                                if (e.empty()) e = spool_stream(in, ".json", &file, &bytes, jp);
-                            }
-                            if (e.empty()) e = open_json_tree_view(file, jp, jp, json_path_kind(jp) == 2, &view);
-                            if (!e.empty()) {
-                                trees.erase(jp);
-                                tui.flash("no tree view: " + e);
-                                continue;
-                            }
-                        }
-                        if (!json_tree_loop(session, *view, cfg, /*whole_to_caller=*/true)) return 0;
-                    }
-                }
-            }
-            src = tui.take_first_source();
+            if (run_table_viewer(std::move(tab_srcs), cfg, tui_start, &src)) return 0;
             // Falling back to a non-interactive view: apply a sort the TUI
             // was going to do.
             if (tui_sorts) {
