@@ -117,6 +117,7 @@ extern "C" {
 #include <vector>
 #include <sys/ioctl.h>
 #include <cerrno>
+#include <langinfo.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -28559,8 +28560,12 @@ public:
     enum class Exit { Quit, OpenTable };
 
     JsonTUI(vvjson::JsonDoc& doc, std::string label) : doc_(doc), label_(std::move(label)) {
-        // Outside a UTF-8 locale (the ASCII frame style) the glyphs are ASCII.
-        ascii_ = g_box && std::strcmp(g_box->vline, "|") == 0;
+        // ASCII glyphs with the ASCII frame style, or when the active locale
+        // (set by TuiSession::open) is not UTF-8 — a LANG naming a locale
+        // the system lacks leaves "C", where ncurses cannot draw them.
+        const char* cs = nl_langinfo(CODESET);
+        ascii_ = (g_box && std::strcmp(g_box->vline, "|") == 0) ||
+                 !cs || std::strcmp(cs, "UTF-8") != 0;
         const uint64_t sz = doc_.size();
         depth_ = doc_.root().virt ? 1 : sz <= (256u << 10) ? 99 : sz <= (16u << 20) ? 2 : 1;
         cur_.push_back({doc_.root(), -1});
