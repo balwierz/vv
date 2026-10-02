@@ -23,4 +23,18 @@
     <category>Science</category>
   </categories>
   <url type="homepage">https://github.com/balwierz/vv</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>An AnnData obs table with the row-detail panel</caption>
+      <image>https://raw.githubusercontent.com/balwierz/vv/main/docs/img/vvg/anndata.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>A Parquet file, filtered and sorted</caption>
+      <image>https://raw.githubusercontent.com/balwierz/vv/main/docs/img/vvg/parquet.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>A multi-sample VCF with INFO split into columns</caption>
+      <image>https://raw.githubusercontent.com/balwierz/vv/main/docs/img/vvg/vcf.png</image>
+    </screenshot>
+  </screenshots>
 </component>
