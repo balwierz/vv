@@ -21371,15 +21371,18 @@ static std::string open_source_dispatch(const std::string& path, const Config& c
         //
         // Sparse / dense X and generic datasets stay capped regardless (see
         // build_table) — those are genuinely previews of a matrix.
+        // A filter or a sort ranges over every row: neither the preview cap
+        // nor -n may limit what is read (-n then cuts the result).
+        const bool whole_frame = !cfg.filter_expr.empty() || !cfg.sort_col.empty();
         const bool df_preview_only =
             !cfg.delimiter && !cfg.count && !cfg.describe &&
             cfg.unique_cols.empty() && cfg.sample_n <= 0 &&
             !cfg.tail_rows_set && !cfg.json_array && !cfg.json_lines &&
             !cfg.md && cfg.parquet_out.empty() && cfg.arrow_out.empty() &&
-            cfg.filter_expr.empty();
+            !whole_frame;
         int64_t df_cap = df_preview_only
             ? h5v::kDataFrameRowCap
-            : (cfg.head_rows_set ? (int64_t)cfg.head_rows : -1);
+            : ((cfg.head_rows_set && !whole_frame) ? (int64_t)cfg.head_rows : -1);
         std::string err = h5v::Hdf5Source::open_first(path, &src, df_cap, cfg.matrix == "long");
         if (!err.empty()) return err;
         *out = std::move(src);

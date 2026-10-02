@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **AnnData `obs` / `var` with `-n` and `--filter` / `--sort`.** `-n N`
+  limited the rows read, so the filter or sort saw only the first N rows
+  (`-n 3 --filter 'cell_type == "B"'` found nothing when the first three
+  cells were not B), and without `--filter` a sort covered only the
+  1000-row preview. Both now range over every row; `-n` cuts the result.
 - **vvg column headers.** A categorical column's header showed Arrow's
   `dictionary<values=string, indices=int32, ordered=0>` and was sized to it;
   it now reads `category[string]` as in vv, and nested types longer than 32

@@ -2440,6 +2440,16 @@ refute_contains "select_no_not_shown_note" "$SEL_TABLE" "not shown"
 assert_contains "c_clamp_not_shown_note" \
     "$("$VV" -n 2 --color=never -c 2 "$DATA/tiny.parquet" 2>&1)" "more column(s) not shown"
 
+# AnnData obs / var with -n and --filter / --sort: the filter and the sort
+# range over every row, then -n cuts the result. -n used to cap the rows read,
+# so `-n 1 --filter 'cluster == "B"'` looked at cell0 only and found nothing.
+assert_eq_file_inline "h5ad_n_filter_whole_frame" \
+    "$("$VV" -n 1 --tab obs --filter 'cluster == "B"' --tsv "$DATA/tiny.h5ad" 2>/dev/null | tail -n +2 | cut -f1)" \
+    "cell1"
+assert_eq_file_inline "h5ad_n_sort_whole_frame" \
+    "$("$VV" -n 1 --tab obs --sort n_counts:desc --tsv "$DATA/tiny.h5ad" 2>/dev/null | tail -n +2 | cut -f1)" \
+    "cell4"
+
 # ── Regressions found by adversarial review of the pattern language ──────────
 # 1. `!X` must never be able to ADD X back. Using "the accumulator is empty" as
 #    the proxy for "no positive term yet" re-seeded the full set after an
