@@ -245,9 +245,11 @@ def main():
     sh = os.path.join(tmp, "tree_shrink.json")
     with open(sh, "w") as f:
         json.dump([{"i": i, "pad": "x" * 20} for i in range(60000)], f)
+    # (Linux raises SIGBUS for the lost pages, answered with zeros; macOS may
+    # keep serving the old pages — either way vv runs on and says so.)
     txt, raw, hung = run(vv, [sh], [lambda: os.truncate(sh, 4096), b"G"])
-    if "file shrank on disk" not in txt or hung:
-        bad.append("shrunk file: no 'file shrank on disk' status (crashed?) hung=%s; tail %r"
+    if not re.search(r"file (shrank|changed) on disk", txt) or hung:
+        bad.append("shrunk file: no 'file shrank / changed on disk' status (crashed?) hung=%s; tail %r"
                    % (hung, txt[-300:]))
 
     # "!" goes to the first error.
@@ -257,13 +259,11 @@ def main():
     txt, raw, hung = run(vv, [bt], [b"!"])
     check("goto error", status(txt), (".a[2].b", "boolean"))
 
-    # macOS: not checked (reported only) — on the CI runner the child had
-    # closed the pty before the first key; not reproducible on Linux.
+    # JSON piped in, keys from the controlling terminal.
     out = run_stdin(vv, b'{"a":1,"b":[true]}', [b"j"])
     if status(out) != (".a", "number"):
         sys.stderr.write("tui_json: stdin output tail: %r\n" % out[-400:])
-        if sys.platform != "darwin":
-            check("stdin", status(out), (".a", "number"))
+    check("stdin", status(out), (".a", "number"))
 
     txt, raw, hung = run(vv, [doc], [b"j"], cols=6, rows=8, budget=5)
     if hung:
