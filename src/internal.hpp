@@ -917,6 +917,9 @@ void delimited_apply_tenx_sidecar(TabularSource& src, int kind);
 
 void delimited_apply_bed_variant(TabularSource& src, BedVariant v);
 
+// R data (src/formats/rdata.cpp): .rds / .RData data frames, vectors, matrices.
+std::string open_rdata_source(const std::string& path, std::unique_ptr<TabularSource>* out);
+
 // UCSC wiggle (src/formats/wig.cpp): fixedStep / variableStep expanded to
 // bedGraph rows.
 std::string open_wig_source(const std::string& path, const Config& cfg,

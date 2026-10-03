@@ -388,7 +388,8 @@ set(VV_CORE_SOURCES
     src/core/region.cpp   src/core/source.cpp
     src/formats/arrow.cpp     src/formats/delimited.cpp src/formats/hdf5.cpp
     src/formats/htslib.cpp    src/formats/json.cpp      src/formats/lociss.cpp
-    src/formats/npz.cpp       src/formats/parquet.cpp   src/formats/sqlite.cpp
+    src/formats/npz.cpp       src/formats/parquet.cpp   src/formats/rdata.cpp
+    src/formats/sqlite.cpp
     src/formats/text.cpp      src/formats/ucsc.cpp      src/formats/wig.cpp
     src/formats/workbook.cpp
     src/output/reports.cpp    src/output/table.cpp      src/output/writers.cpp
@@ -426,6 +427,26 @@ if(BZIP2_FOUND)
   target_include_directories(vv PRIVATE ${BZIP2_INCLUDE_DIRS})
 endif()
 message(STATUS "xz / bzip2 : ${LIBLZMA_FOUND} / ${BZIP2_FOUND}")
+
+# ── librdata (R .rds / .RData reader, vendored) ──────────────────────────────
+# Vendored under vendored/librdata/ (read side only; see its UPSTREAM). MIT.
+# Compressed R files: gzip (zlib), bzip2 and xz when those libraries are found.
+find_package(Iconv)
+file(GLOB LIBRDATA_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/vendored/librdata/*.c")
+add_library(rdata STATIC ${LIBRDATA_SRCS})
+target_compile_options(rdata PRIVATE -O2 -ffunction-sections -fdata-sections -w)
+target_compile_definitions(rdata PRIVATE HAVE_ZLIB=1
+    $<$<BOOL:${BZIP2_FOUND}>:HAVE_BZIP2=1> $<$<BOOL:${LIBLZMA_FOUND}>:HAVE_LZMA=1>)
+target_include_directories(rdata
+    PUBLIC  "${CMAKE_CURRENT_SOURCE_DIR}/vendored/librdata"
+    PRIVATE ${ZLIB_INCLUDE_DIRS} ${BZIP2_INCLUDE_DIRS} ${LIBLZMA_INCLUDE_DIRS})
+target_link_libraries(rdata PUBLIC ZLIB::ZLIB
+    $<$<BOOL:${BZIP2_FOUND}>:${BZIP2_LIBRARIES}> $<$<BOOL:${LIBLZMA_FOUND}>:${LIBLZMA_LIBRARIES}>)
+if(Iconv_FOUND AND NOT Iconv_IS_BUILT_IN)
+  target_include_directories(rdata PRIVATE ${Iconv_INCLUDE_DIRS})
+  target_link_libraries(rdata PUBLIC ${Iconv_LIBRARIES})
+endif()
+target_include_directories(vv PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vendored/librdata")
 
 # Collect all static libs built into static-libs/
 find_library(ZSTD_STATIC         NAMES libzstd.a         PATHS "${_static_libs_dir}" NO_DEFAULT_PATH)
@@ -505,6 +526,7 @@ if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND NCURSES_STATIC_LIB)
       ${HTSLIB_STATIC_LIB}
       bigwig
       md4c
+      rdata
       ${_sqlite}
       # xlsxio + its transitive deps (expat for XML, minizip for ZIP).
       # Order matters for static linking: xlsxio uses expat/minizip
@@ -536,6 +558,7 @@ else()
       $<$<BOOL:${BZIP2_FOUND}>:${BZIP2_LIBRARIES}>
       bigwig
       md4c
+      rdata
       ${SQLITE3_TARGET}
       ${XLSXIO_LIB}
       ${HDF5_LIB}
@@ -623,7 +646,7 @@ if(VV_BUILD_FUZZERS)
   target_include_directories(vvcore_fuzz_obj PRIVATE $<TARGET_PROPERTY:vv,INCLUDE_DIRECTORIES>)
   target_compile_options(vvcore_fuzz_obj PRIVATE ${_fz_flags})
   target_link_libraries(vvcore_fuzz_obj PRIVATE ${_vv_link_common})
-  foreach(_fz colblock npy lzf json)
+  foreach(_fz colblock npy lzf json rdata)
     add_executable(fuzz_${_fz} tests/fuzz/fuzz_${_fz}.cpp $<TARGET_OBJECTS:vvcore_fuzz_obj>)
     target_compile_definitions(fuzz_${_fz} PRIVATE
         VV_CORE_LIB=1 VV_FUZZ=1
@@ -636,7 +659,7 @@ if(VV_BUILD_FUZZERS)
         -fsanitize=fuzzer,address,undefined)
     target_link_libraries(fuzz_${_fz} PRIVATE ${_vv_link_common})
   endforeach()
-  message(STATUS "Fuzzers     : enabled (fuzz_colblock, fuzz_npy, fuzz_lzf, fuzz_json)")
+  message(STATUS "Fuzzers     : enabled (fuzz_colblock, fuzz_npy, fuzz_lzf, fuzz_json, fuzz_rdata)")
 endif()
 
 # ── Install rules ─────────────────────────────────────────────────────────────

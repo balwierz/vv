@@ -70,6 +70,8 @@ static const FormatInfo kFormats[] = {
    true,  false, false, true,  false, ""},
   {"PLINK variant / sample tables", ".bim .fam .pvar .psam", "DelimitedSource",
    true,  false, false, true,  false, ""},
+  {"R data", ".rds .RData .rda", "RdataSource",
+   false, false, true,  false, false, ""},
   {"UCSC wiggle", ".wig", "DelimitedSource",
    true,  false, false, true,  false, ""},
   {"BLAST / DIAMOND tabular", ".m8 .blast6 .outfmt6", "DelimitedSource",
@@ -210,6 +212,8 @@ static void print_usage(const char* prog) {
         "  .h5seurat  .fast5  .nc  .nc4  HDF5-based: h5Seurat, Nanopore FAST5, NetCDF-4\n"
         "  .npz                        NumPy archive — summary tab + per-array tabs (3-D+ scrubs via [/])\n"
         "  .npy                        NumPy single array\n"
+        "  .rds  .RData  .rda          R data frames / vectors / matrices (one tab per\n"
+        "                              object; factors, Date, POSIXct, row names)\n"
         "  .orc                        Apache ORC (columnar; one stripe → one chunk)\n"
         "  .md  .markdown  .mdown  .mkd\n"
         "                              CommonMark + GFM markdown (renders as ANSI;\n"

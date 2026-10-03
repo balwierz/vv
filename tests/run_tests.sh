@@ -1187,6 +1187,22 @@ printf 'CDF\001\000\000\000\000' > "$TMP/classic.nc"
 assert_contains "netcdf3_refused" "$("$VV" "$TMP/classic.nc" 2>&1)" "NetCDF-3 (classic) is not supported"
 
 echo
+echo '── R data (.rds / .RData) ─────────────────────────────'
+# tests/data/make_rdata.R writes the fixtures. Types: character, double,
+# integer, logical, factor (categorical), Date, POSIXct; NA is null.
+assert_eq_file_inline "rds_values" "$("$VV" --tsv "$DATA/tiny.rds")" \
+    "$(printf 'gene\tlog2fc\tn\tsig\ttissue\tday\tts\nBRCA1\t1.5\t10\ttrue\tliver\t2024-01-02\t2024-01-02 10:00:00.000000Z\nTP53\t-0.25\t\tfalse\tbrain\t2024-03-04\t2024-03-04 12:30:00.000000Z\n\t\t3\t\tliver\t\t')"
+RDS_SCHEMA=$("$VV" --schema --color=never "$DATA/tiny.rds")
+assert_contains "rds_factor_categorical" "$RDS_SCHEMA" "category[string]"
+assert_contains "rds_date_type" "$RDS_SCHEMA" "date32"
+assert_eq_file_inline "rds_xz_same" "$("$VV" --tsv "$DATA/tiny.xz.rds")" "$("$VV" --tsv "$DATA/tiny.rds")"
+assert_eq_file_inline "rdata_tabs" "$("$VV" --list-tabs "$DATA/tiny.RData" | tr '\n' ' ')" "df named ids counts "
+assert_eq_file_inline "rdata_row_names" "$("$VV" --tab named --tsv "$DATA/tiny.RData" | head -2)" "$(printf 'index\tx\na\t1')"
+assert_eq_file_inline "rdata_matrix" "$("$VV" --tab counts --tsv "$DATA/tiny.RData")" \
+    "$(printf 'index\tA\tB\tC\nr1\t1\t3\t5\nr2\t2\t4\t6')"
+assert_exit_code "rds_list_refused" 1 "$VV" "$DATA/tiny.list.rds"
+
+echo
 echo '── UCSC wiggle (.wig) ─────────────────────────────────'
 # fixedStep / variableStep (1-based) and bedGraph-style lines (0-based) become
 # bedGraph rows, 0-based half-open; spans and steps applied.

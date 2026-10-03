@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **R data (`.rds`, `.RData`, `.rda`)** via the vendored librdata (MIT):
+  data frames, vectors and dense matrices, one tab per object; factors,
+  `Date`, `POSIXct`, `NA` and row names mapped; gzip / bzip2 / xz files read.
 - **UCSC wiggle (`.wig`)**: `fixedStep` / `variableStep` sections expanded on
   the fly into bedGraph rows (0-based half-open), so they filter, sort and
   export like a bedGraph; a malformed line is reported with its number.

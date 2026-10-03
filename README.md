@@ -43,7 +43,8 @@ More screenshots, one per format: **[docs/formats.md](docs/formats.md)**.
 | PLINK, BEDPE, pairs, GCT, MAF | `.bim` `.fam` `.pvar` `.psam` `.bedpe` `.pairs` `.gct` `.maf` | [notes](docs/formats.md#plink-and-tsv-layouts) |
 | AnnData / MuData / HDF5 / Loom / 10x, FAST5, NetCDF-4 | `.h5ad` `.h5mu` `.h5` `.hdf5` `.loom` `.h5seurat` `.fast5` `.nc` `.nc4` | [screens](docs/formats.md#anndata--hdf5--loom--10x) |
 | MatrixMarket | `.mtx` | [screens](docs/formats.md#matrixmarket) |
-| NumPy | `.npz` `.npy` | [screens](docs/formats.md#numpy) |
+| NumPy | `.npz` `.npy` |
+| R data | `.rds` `.RData` `.rda` | [notes](docs/formats.md#r-data) | [screens](docs/formats.md#numpy) |
 | Parquet, LociSSD | `.parquet` `.lociss` | [screens](docs/formats.md#parquet--arrow--orc) |
 | Arrow IPC / Feather, ORC | `.arrow` `.arrows` `.feather` `.orc` | [screens](docs/formats.md#parquet--arrow--orc) |
 | TSV / CSV | `.tsv` `.csv` | [screens](docs/formats.md#tsv--csv) |

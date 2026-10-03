@@ -18,7 +18,8 @@ build prints. Flags and options are covered in the [manual](USAGE.md).
 **Single cell and matrices** —
 [AnnData / HDF5 / Loom / 10x](#anndata--hdf5--loom--10x) ·
 [MatrixMarket](#matrixmarket) ·
-[NumPy](#numpy)<br>
+[NumPy](#numpy) ·
+[R data](#r-data)<br>
 **Tables** —
 [Parquet / Arrow / ORC](#parquet--arrow--orc) ·
 [TSV / CSV](#tsv--csv) ·
@@ -193,6 +194,19 @@ Try: `vv matrix.mtx.gz` · `vv filtered_feature_bc_matrix/`.
 ![vv: an .npz archive](img/vv/npz.svg)
 
 Try: `vv embedding.npz` · `vv --tab umap --tsv embedding.npz`.
+
+## R data
+
+`.rds` `.RData` `.rda` — data frames, atomic vectors and dense matrices, one
+tab per object in an `.RData` file. Factors become categorical columns, `Date`
+/ `POSIXct` date and timestamp columns, `NA` null; character row names and
+matrix row names become an `index` column. Compressed files (gzip, bzip2, xz)
+are read. Lists and S4 objects (Seurat, SingleCellExperiment, sparse
+`Matrix`) are not: export the part you need (`saveRDS(as.data.frame(x))`,
+`write.csv`) or convert a Seurat object to AnnData.
+
+Try: `vv results.rds` · `vv --tab counts --tsv session.RData` ·
+`vv --filter 'padj < 0.05' --sort log2FoldChange:desc deseq2.rds`.
 
 ## Parquet / Arrow / ORC
 

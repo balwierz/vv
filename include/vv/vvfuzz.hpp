@@ -33,6 +33,10 @@ namespace npz { void npy_fuzz_one(const uint8_t* buf, size_t n); }
 // input, pretty print not a fixed point). Compiled only under VV_FUZZ.
 namespace vvjson { void fuzz_one(const uint8_t* buf, size_t n); }
 
+// Parse an untrusted buffer as an R .rds / .RData file and build its tables;
+// aborts when a built table is not valid. Compiled only under VV_FUZZ.
+void rdata_fuzz_one(const uint8_t* buf, size_t n);
+
 // Decode an untrusted LZF stream (HDF5 filter 32000) into `out`. Returns the
 // decoded length, or 0 on failure (*out_too_small set if `out` ran out of room).
 namespace h5lzf {
