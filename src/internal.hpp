@@ -1098,7 +1098,20 @@ inline constexpr int64_t kDataFrameRowCap = 1000;
 
 std::string open_hdf5_source(const std::string& path, std::unique_ptr<TabularSource>* out,
                              int64_t df_row_cap = kDataFrameRowCap, bool matrix_long = false);
+
+// Shared with the Cooler reader (src/formats/cooler.cpp).
+// A scalar string attribute of an HDF5 object; "" when absent or not a string.
+std::string read_string_attr(hid_t obj, const char* name);
+// "'<dataset path>': cannot read HDF5 dataset: <why>" (names a missing filter).
+std::string h5_read_failure(hid_t dset);
+// Register vv's decoders for HDF5 filters libhdf5 lacks (LZF); once per process.
+void register_hdf5_filters();
 }  // namespace h5v
+
+// Cooler Hi-C contact matrices (src/formats/cooler.cpp): .cool, .mcool.
+bool is_cooler_file(const std::string& path);
+std::string open_cooler_source(const std::string& path, const Config& cfg,
+                               std::unique_ptr<TabularSource>* out);
 namespace npz {
 
 std::string open_npz_source(const std::string& path, std::unique_ptr<TabularSource>* out);

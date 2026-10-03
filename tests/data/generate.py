@@ -2126,6 +2126,87 @@ else:
             g.create_dataset("signal", data=np.arange(8, dtype=np.int16))
 
 
+# tiny.cool / tiny.mcool: Cooler (format-version 3) laid out as the cooler
+# package writes it (h5py only). Genome chr1 (1000 bp) + chr2 (500 bp).
+# tiny.cool: 100 bp bins, bins/chrom an HDF5 enum, a weight column with one
+# NaN, upper-triangle pixels with a few trans contacts. tiny.mcool: the same
+# cooler under /resolutions/100 plus a 250 bp one (int32 bins/chrom, no
+# weight).
+try:
+    import h5py                                              # type: ignore
+    import numpy as np                                       # type: ignore
+except ImportError:
+    print("warn: h5py / numpy not found; skipping tiny.cool / tiny.mcool", file=sys.stderr)
+else:
+    def _cooler(g, binsize, enum_chrom, weight):
+        chroms = [("chr1", 1000), ("chr2", 500)]
+        bc, bs, be = [], [], []
+        for ci, (_, ln) in enumerate(chroms):
+            for st in range(0, ln, binsize):
+                bc.append(ci); bs.append(st); be.append(min(st + binsize, ln))
+        n = len(bc)
+        pix = []
+        for b1 in range(n):
+            for b2 in range(b1, n):
+                if (bc[b1] == bc[b2] and b2 - b1 < 3) or (b1 % 4 == 0 and bc[b2] != bc[b1] and b2 % 3 == 0):
+                    pix.append((b1, b2, 1 + (b1 * 7 + b2 * 3) % 5))
+        g.attrs["format"] = "HDF5::Cooler"
+        g.attrs["format-version"] = 3
+        g.attrs["bin-type"] = "fixed"
+        g.attrs["bin-size"] = binsize
+        g.attrs["storage-mode"] = "symmetric-upper"
+        g.attrs["genome-assembly"] = "toy"
+        g.attrs["generated-by"] = "vv tests/data/generate.py"
+        g.attrs["creation-date"] = "2026-10-03T00:00:00"
+        g.attrs["nbins"] = n
+        g.attrs["nchroms"] = len(chroms)
+        g.attrs["nnz"] = len(pix)
+        g.attrs["sum"] = sum(p[2] for p in pix)
+        g.attrs["metadata"] = '{"protocol": "toy"}'
+        ch = g.create_group("chroms")
+        ch.create_dataset("name", data=np.array([c[0].encode() for c in chroms], dtype="S4"))
+        ch.create_dataset("length", data=np.array([c[1] for c in chroms], dtype=np.int32))
+        b = g.create_group("bins")
+        if enum_chrom:
+            et = h5py.enum_dtype({c[0]: i for i, (c) in enumerate(chroms)}, basetype="i4")
+            b.create_dataset("chrom", data=np.array(bc, dtype=np.int32), dtype=et)
+        else:
+            b.create_dataset("chrom", data=np.array(bc, dtype=np.int32))
+        b.create_dataset("start", data=np.array(bs, dtype=np.int32))
+        b.create_dataset("end", data=np.array(be, dtype=np.int32))
+        if weight:
+            w = np.array([1.0 / (1 + i % 3) for i in range(n)], dtype=np.float64)
+            w[3] = np.nan
+            b.create_dataset("weight", data=w)
+        p = g.create_group("pixels")
+        p.create_dataset("bin1_id", data=np.array([x[0] for x in pix], dtype=np.int64))
+        p.create_dataset("bin2_id", data=np.array([x[1] for x in pix], dtype=np.int64))
+        p.create_dataset("count", data=np.array([x[2] for x in pix], dtype=np.int32))
+        ix = g.create_group("indexes")
+        co = [0]
+        for ci in range(len(chroms)):
+            co.append(co[-1] + bc.count(ci))
+        ix.create_dataset("chrom_offset", data=np.array(co, dtype=np.int64))
+        b1o, k = [], 0
+        for b1 in range(n + 1):
+            while k < len(pix) and pix[k][0] < b1:
+                k += 1
+            b1o.append(k)
+        ix.create_dataset("bin1_offset", data=np.array(b1o, dtype=np.int64))
+    for name in ("tiny.cool", "tiny.mcool"):
+        pth = HERE / name
+        if pth.exists():
+            pth.unlink()
+    with h5py.File(HERE / "tiny.cool", "w") as f:
+        _cooler(f, 100, True, True)
+    with h5py.File(HERE / "tiny.mcool", "w") as f:
+        f.attrs["format"] = "HDF5::MCOOL"
+        f.attrs["format-version"] = 2
+        r = f.create_group("resolutions")
+        _cooler(r.create_group("100"), 100, True, True)
+        _cooler(r.create_group("250"), 250, False, False)
+
+
 def find_kent_tool(name):
     if shutil.which(name): return name
     cand = "/opt/ucsc-kent-genome-tools/" + name

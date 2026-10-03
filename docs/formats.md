@@ -19,7 +19,8 @@ build prints. Flags and options are covered in the [manual](USAGE.md).
 [AnnData / HDF5 / Loom / 10x](#anndata--hdf5--loom--10x) ·
 [MatrixMarket](#matrixmarket) ·
 [NumPy](#numpy) ·
-[R data](#r-data)<br>
+[R data](#r-data) ·
+[Cooler Hi-C](#cooler-hi-c)<br>
 **Tables** —
 [Parquet / Arrow / ORC](#parquet--arrow--orc) ·
 [TSV / CSV](#tsv--csv) ·
@@ -194,6 +195,24 @@ Try: `vv matrix.mtx.gz` · `vv filtered_feature_bc_matrix/`.
 ![vv: an .npz archive](img/vv/npz.svg)
 
 Try: `vv embedding.npz` · `vv --tab umap --tsv embedding.npz`.
+
+## Cooler Hi-C
+
+`.cool` `.mcool` — Hi-C contact matrices in the Cooler HDF5 layout (also an
+`.h5` whose root says `format = HDF5::Cooler`). Tabs: **summary** (resolutions,
+assembly, bins / pixels / sum per resolution, metadata), **chroms**, then per
+resolution **pixels** — one row per stored entry of the upper triangle, joined
+to bin coordinates as `cooler dump --join` prints them, with a `balanced`
+column (count × weight₁ × weight₂) when the bins carry a `weight` — and
+**bins** (chrom, start, end, `weight` and any other balancing vectors). An
+`.mcool` names them per resolution: `pixels@10kb`, `bins@10kb`. Pixels and bins
+are read in chunks, so a multi-gigabyte file opens at once.
+
+`-r` selects the region × region submatrix (bin1 and bin2 both in the region)
+through the file's bin index, and the bins in the region.
+
+Try: `vv --tab pixels@10kb -r chr2:1000000-2000000 sample.mcool` ·
+`vv --tab pixels --filter 'chrom1 == "chr1" AND count >= 10' --tsv sample.cool`.
 
 ## R data
 

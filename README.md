@@ -45,6 +45,7 @@ More screenshots, one per format: **[docs/formats.md](docs/formats.md)**.
 | MatrixMarket | `.mtx` | [screens](docs/formats.md#matrixmarket) |
 | NumPy | `.npz` `.npy` |
 | R data | `.rds` `.RData` `.rda` | [notes](docs/formats.md#r-data) | [screens](docs/formats.md#numpy) |
+| Cooler Hi-C | `.cool` `.mcool` | [notes](docs/formats.md#cooler-hi-c) |
 | Parquet, LociSSD | `.parquet` `.lociss` | [screens](docs/formats.md#parquet--arrow--orc) |
 | Arrow IPC / Feather, ORC | `.arrow` `.arrows` `.feather` `.orc` | [screens](docs/formats.md#parquet--arrow--orc) |
 | TSV / CSV | `.tsv` `.csv` | [screens](docs/formats.md#tsv--csv) |

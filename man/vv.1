@@ -209,6 +209,11 @@ lines and 1.3's column-metadata rows are shown above the schema, not as
 data) and the mutation annotation format (MAF); a UCSC alignment
 \fB.maf\fR (\fB##maf\fR) is shown as text
 .IP \(bu 2
+\fB.cool\fR, \fB.mcool\fR \(en Cooler Hi-C contact matrices (HDF5): summary,
+chroms, pixels joined to bin coordinates (with \fBbalanced\fR when bins carry a
+weight) and bins; per resolution in an .mcool (\fBpixels@10kb\fR,
+\fBbins@10kb\fR). \fB-r\fR selects the region \(mu region submatrix.
+.IP \(bu 2
 \fB.rds\fR, \fB.RData\fR, \fB.rda\fR \(en R data (vendored librdata): data frames,
 vectors and dense matrices, one tab per object; factors as categorical columns,
 Date / POSIXct as date / timestamp, character row names as an \fBindex\fR
@@ -859,6 +864,10 @@ on standard error says so. Unindexed CSV / TSV still need an index;
 \fB.lociss\fR (LociSSD Parquet \(en pruning uses the manifest plus
 Parquet row-group statistics on the \fBStart\fR and \fBMaxEndSoFar\fR
 columns, then a per-row predicate inside surviving row groups).
+.IP \(bu 2
+\fB.cool\fR / \fB.mcool\fR (Cooler) \(en the pixels tabs keep the region
+\(mu region submatrix (both bins in a window), found through the bin1 index;
+the bins tabs keep the bins overlapping a window.
 .RE
 .IP
 Plain \fB.parquet\fR with chrom/start/end columns works without a

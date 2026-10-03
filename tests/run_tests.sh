@@ -1187,6 +1187,32 @@ printf 'CDF\001\000\000\000\000' > "$TMP/classic.nc"
 assert_contains "netcdf3_refused" "$("$VV" "$TMP/classic.nc" 2>&1)" "NetCDF-3 (classic) is not supported"
 
 echo
+echo '── Cooler (.cool / .mcool) ────────────────────────────'
+# generate.py: chr1 1000 bp + chr2 500 bp, 100 bp bins, weight 1/(1 + bin % 3)
+# with bin 3 NaN; tiny.mcool adds a 250 bp resolution without weights.
+assert_eq_file_inline "cool_tabs" "$("$VV" --list-tabs "$DATA/tiny.cool" | tr '\n' ' ')" "summary chroms pixels bins "
+assert_eq_file_inline "cool_pixels_joined" "$("$VV" --tab pixels --tsv "$DATA/tiny.cool" | head -5)" \
+    "$(printf 'chrom1\tstart1\tend1\tchrom2\tstart2\tend2\tcount\tbalanced\nchr1\t0\t100\tchr1\t0\t100\t1\t1\nchr1\t0\t100\tchr1\t100\t200\t4\t2\nchr1\t0\t100\tchr1\t200\t300\t2\t0.6666666666666666\nchr1\t0\t100\tchr2\t200\t300\t2\t2')"
+# bin 3 has no weight: its pixels have a null balanced value
+assert_eq_file_inline "cool_balanced_null" \
+    "$("$VV" --tab pixels --filter 'start2 == 300 AND end2 == 400' --tsv "$DATA/tiny.cool" | sed -n 2p)" \
+    "$(printf 'chr1\t100\t200\tchr1\t300\t400\t2\t')"
+assert_eq_file_inline "cool_pixels_count" "$("$VV" --tab pixels --count "$DATA/tiny.cool")" "42"
+assert_eq_file_inline "cool_bins" "$("$VV" --tab bins --tsv "$DATA/tiny.cool" | sed -n '1p;11,12p')" \
+    "$(printf 'chrom\tstart\tend\tweight\nchr1\t900\t1000\t1\nchr2\t0\t100\t0.5')"
+# -r: the region x region submatrix (bins 1-2 of chr1), no "not applied" warning
+COOL_R=$("$VV" -r chr1:100-300 --tab pixels --tsv "$DATA/tiny.cool" 2>&1)
+assert_eq_file_inline "cool_region_submatrix" "$COOL_R" \
+    "$(printf 'chrom1\tstart1\tend1\tchrom2\tstart2\tend2\tcount\tbalanced\nchr1\t100\t200\tchr1\t100\t200\t1\t0.25\nchr1\t100\t200\tchr1\t200\t300\t4\t0.6666666666666666\nchr1\t200\t300\tchr1\t200\t300\t1\t0.1111111111111111')"
+assert_eq_file_inline "cool_region_trans" "$("$VV" -r chr1:0-100,chr2:200-300 --tab pixels --count "$DATA/tiny.cool")" "3"
+assert_eq_file_inline "cool_region_bins" "$("$VV" -r chr2:150-250 --tab bins --tsv "$DATA/tiny.cool" 2>&1 | cut -f1-3 | tail -n +2 | tr '\n' ' ')" \
+    "chr2	100	200 chr2	200	300 "
+assert_eq_file_inline "mcool_tabs" "$("$VV" --list-tabs "$DATA/tiny.mcool" | tr '\n' ' ')" \
+    "summary chroms pixels@100bp pixels@250bp bins@100bp bins@250bp "
+assert_eq_file_inline "mcool_res_unbalanced" "$("$VV" --tab pixels@250bp --tsv "$DATA/tiny.mcool" | head -2)" \
+    "$(printf 'chrom1\tstart1\tend1\tchrom2\tstart2\tend2\tcount\nchr1\t0\t250\tchr1\t0\t250\t1')"
+assert_contains "cool_summary" "$("$VV" --tsv "$DATA/tiny.mcool")" "resolutions	100bp, 250bp"
+
 echo '── R data (.rds / .RData) ─────────────────────────────'
 # tests/data/make_rdata.R writes the fixtures. Types: character, double,
 # integer, logical, factor (categorical), Date, POSIXct; NA is null.

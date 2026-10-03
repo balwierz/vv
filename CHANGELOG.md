@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Cooler Hi-C matrices (`.cool`, `.mcool`)**: summary, chroms, pixels
+  joined to bin coordinates (with `balanced` when the bins carry a weight)
+  and bins, one pixels / bins tab per `.mcool` resolution; streamed in
+  chunks; `-r` selects the region × region submatrix via the bin index.
 - **R data (`.rds`, `.RData`, `.rda`)** via the vendored librdata (MIT):
   data frames, vectors and dense matrices, one tab per object; factors,
   `Date`, `POSIXct`, `NA` and row names mapped; gzip / bzip2 / xz files read.

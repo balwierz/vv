@@ -94,6 +94,8 @@ static const FormatInfo kFormats[] = {
    false, false, true,  false, false, ""},
   {"HDF5 / AnnData / Loom", ".h5ad .h5 .hdf5 .loom .h5mu .h5seurat .fast5 .nc .nc4", "Hdf5Source",
    false, false, true,  false, false, ""},
+  {"Cooler Hi-C matrix", ".cool .mcool", "PixelsSource",
+   false, true,  true,  true,  false, ""},
   {"NumPy archive", ".npz", "NpzSource",
    false, false, true,  false, false, ""},
   {"NumPy array", ".npy", "NpzSource",
@@ -210,6 +212,8 @@ static void print_usage(const char* prog) {
         "  .h5  .hdf5  .loom           generic HDF5 — hierarchy tab + per-dataset tabs\n"
         "  .h5mu                       MuData — joint obs / var + each modality's AnnData tabs\n"
         "  .h5seurat  .fast5  .nc  .nc4  HDF5-based: h5Seurat, Nanopore FAST5, NetCDF-4\n"
+        "  .cool  .mcool               Cooler Hi-C matrix — summary / chroms / pixels\n"
+        "                              (joined to bins, balanced) / bins; -r region\n"
         "  .npz                        NumPy archive — summary tab + per-array tabs (3-D+ scrubs via [/])\n"
         "  .npy                        NumPy single array\n"
         "  .rds  .RData  .rda          R data frames / vectors / matrices (one tab per\n"
@@ -467,8 +471,9 @@ static void print_usage(const char* prog) {
         "                           VCF, GFF, and the samtools/tabix CLI)\n"
         "  Supported on indexed BAM/CRAM (.bai/.csi/.crai), tabix-indexed\n"
         "  VCF/BED/GFF/TSV, indexed BCF (.csi/.tbi), LociSSD (.lociss),\n"
-        "  plain sorted Parquet with chrom/start/end columns, and\n"
-        "  bigBed/bigWig. Unindexed BED/VCF/GFF/SAM/PAF/mpileup text is\n"
+        "  plain sorted Parquet with chrom/start/end columns,\n"
+        "  bigBed/bigWig, Cooler (.cool / .mcool: the region x region\n"
+        "  submatrix). Unindexed BED/VCF/GFF/SAM/PAF/mpileup text is\n"
         "  read in full and filtered, with a note on stderr; other formats\n"
         "  with no region index warn on stderr and show the whole file.\n"
         "  Coordinates follow the UCSC convention\n"

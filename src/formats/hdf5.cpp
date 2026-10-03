@@ -91,7 +91,7 @@ static std::unique_ptr<hid_t, H5Closer> own(hid_t id, Fn closer) {
 
 // Look up a string attribute on an HDF5 object. Returns "" when absent
 // or non-string.
-static std::string read_string_attr(hid_t obj, const char* name) {
+std::string read_string_attr(hid_t obj, const char* name) {
     if (H5Aexists(obj, name) <= 0) return std::string{};
     hid_t a = H5Aopen(obj, name, H5P_DEFAULT);
     if (a < 0) return std::string{};
@@ -196,7 +196,7 @@ static std::string h5_read_why(hid_t dset) {
 }
 
 // "'<dataset path>': cannot read HDF5 dataset: <why>".
-static std::string h5_read_failure(hid_t dset) {
+std::string h5_read_failure(hid_t dset) {
     std::string name = "?";
     ssize_t n = H5Iget_name(dset, nullptr, 0);
     if (n > 0) {
@@ -263,7 +263,7 @@ static size_t h5_lzf_filter(unsigned flags, size_t cd_nelmts,
 
 // Register the LZF decoder with libhdf5 once per process, unless a plugin for
 // filter 32000 is already available (e.g. via HDF5_PLUGIN_PATH).
-static void register_hdf5_filters() {
+void register_hdf5_filters() {
     static const bool done = [] {
         static const H5Z_class2_t lzf = {
             H5Z_CLASS_T_VERS, (H5Z_filter_t)32000,
