@@ -442,6 +442,42 @@ static int lseek_st(rdata_ctx_t *ctx, size_t len) {
     return ctx->io->seek(len, SEEK_CUR, ctx->io->io_ctx);
 }
 
+/* vv: read `len` bytes into a new buffer of len + extra bytes, grown as the
+ * data arrives, so a declared length the file cannot back is not allocated
+ * up front. */
+static rdata_error_t read_st_alloc(rdata_ctx_t *ctx, size_t len, size_t extra, char **out) {
+    char *buf = NULL;
+    size_t have = 0;
+    *out = NULL;
+    while (have < len) {
+        size_t want = len - have;
+        size_t chunk = have > ((size_t)1 << 20) ? have : ((size_t)1 << 20);
+        if (want > chunk)
+            want = chunk;
+        char *grown = realloc(buf, have + want);
+        if (grown == NULL) {
+            free(buf);
+            return RDATA_ERROR_MALLOC;
+        }
+        buf = grown;
+        if (read_st(ctx, buf + have, want) != (ssize_t)want) {
+            free(buf);
+            return RDATA_ERROR_READ;
+        }
+        have += want;
+    }
+    if (extra || len == 0) {
+        char *grown = realloc(buf, len + extra + (len + extra == 0));
+        if (grown == NULL) {
+            free(buf);
+            return RDATA_ERROR_MALLOC;
+        }
+        buf = grown;
+    }
+    *out = buf;
+    return RDATA_OK;
+}
+
 static rdata_error_t init_bz_stream(rdata_ctx_t *ctx) {
     rdata_error_t retval = RDATA_OK;
     ctx->strm_buffer = malloc(STREAM_BUFFER_SIZE);
@@ -1105,15 +1141,8 @@ static rdata_error_t read_character_string(char **key, unsigned int gp, rdata_ct
         return RDATA_ERROR_PARSE;
     }
 
-    if ((string = rdata_malloc(length)) == NULL) {
-        retval = RDATA_ERROR_MALLOC;
+    if ((retval = read_st_alloc(ctx, length, 0, &string)) != RDATA_OK)  /* vv */
         goto cleanup;
-    }
-
-    if (read_st(ctx, string, length) != length) {
-        retval = RDATA_ERROR_READ;
-        goto cleanup;
-    }
 
     if ((utf8_string = rdata_malloc(4*(size_t)length+1)) == NULL) {
         retval = RDATA_ERROR_MALLOC;
@@ -1326,8 +1355,11 @@ static rdata_error_t read_compact_seq(const char *name, bool is_real,
         vals[1] = byteswap_double(vals[1]);
         vals[2] = byteswap_double(vals[2]);
     }
-    /* vv: capped at 2^28 elements, since the sequence is materialized from three numbers */
-    if (!(vals[0] >= 0 && vals[0] <= (1 << 28))) {
+    /* vv: capped, since the sequence is materialized from three numbers */
+#ifndef RDATA_MAX_COMPACT_SEQ
+#define RDATA_MAX_COMPACT_SEQ (1 << 27)
+#endif
+    if (!(vals[0] >= 0 && vals[0] <= RDATA_MAX_COMPACT_SEQ)) {
         retval = RDATA_ERROR_PARSE;
         goto cleanup;
     }
@@ -1683,16 +1715,16 @@ static rdata_error_t read_string_vector_n(int attributes, int32_t length,
             goto cleanup;
         }
 
-        if ((size_t)string_length + 1 > buffer_size) {
-            buffer_size = (size_t)string_length + 1;
-            if ((buffer = rdata_realloc(buffer, buffer_size)) == NULL) {
-                retval = RDATA_ERROR_MALLOC;
-                goto cleanup;
-            }
-        }
-
         if (string_length >= 0) {
-            if (read_st(ctx, buffer, string_length) != string_length) {
+            if ((size_t)string_length + 1 > buffer_size) {
+                /* vv: a longer string is read into a buffer grown as it arrives */
+                char *longer = NULL;
+                if ((retval = read_st_alloc(ctx, string_length, 1, &longer)) != RDATA_OK)
+                    goto cleanup;
+                free(buffer);
+                buffer = longer;
+                buffer_size = (size_t)string_length + 1;
+            } else if (read_st(ctx, buffer, string_length) != string_length) {
                 retval = RDATA_ERROR_READ;
                 goto cleanup;
             }
@@ -1797,26 +1829,10 @@ static rdata_error_t read_value_vector_data(rdata_sexptype_header_t header, void
     buf_len = (size_t)length * input_elem_size;
     
     if (buf_len) {
-        /* vv: grow the buffer as the data arrives, so a declared length the
-         * file cannot back does not allocate it up front */
-        size_t have = 0;
-        while (have < buf_len) {
-            size_t want = buf_len - have;
-            size_t chunk = have > ((size_t)1 << 20) ? have : ((size_t)1 << 20);
-            if (want > chunk)
-                want = chunk;
-            void *grown = realloc(vals, have + want);
-            if (grown == NULL) {
-                retval = RDATA_ERROR_MALLOC;
-                goto cleanup;
-            }
-            vals = grown;
-            if (read_st(ctx, (char *)vals + have, want) != (ssize_t)want) {
-                retval = RDATA_ERROR_READ;
-                goto cleanup;
-            }
-            have += want;
-        }
+        char *data = NULL;  /* vv: grown as the data arrives */
+        if ((retval = read_st_alloc(ctx, buf_len, 0, &data)) != RDATA_OK)
+            goto cleanup;
+        vals = data;
         
         if (ctx->machine_needs_byteswap) {
             if (input_elem_size == sizeof(double)) {

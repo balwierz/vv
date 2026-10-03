@@ -20,14 +20,18 @@ Local patches (marked `vv:` in the code):
   rdata_read.c       read_string_vector_n rejects string lengths below -1
                      (NA) instead of passing (size_t)(len + 1) to realloc;
                      UTF-8 buffer sizes are computed in size_t.
-  rdata_read.c       compact sequences (ALTREP, e.g. 1:n) are limited to 2^28
-                     elements (they are materialized from three numbers, so
-                     a few bytes could otherwise ask for 16 GB), integer
+  rdata_read.c       compact sequences (ALTREP, e.g. 1:n) are limited to
+                     RDATA_MAX_COMPACT_SEQ elements, 2^27 by default and 2^20
+                     in fuzz builds (they are materialized from three
+                     numbers, so a few bytes could otherwise ask for 16 GB),
+                     integer
                      sequences must stay within int32, and the sequence
                      buffers are checked for NULL.
-  rdata_read.c       read_value_vector_data rejects negative lengths and grows
-                     its buffer as data is read instead of allocating the
-                     declared length up front.
+  rdata_read.c       read_value_vector_data rejects negative lengths; it,
+                     read_character_string and read_string_vector_n read
+                     through read_st_alloc, which grows the buffer as data
+                     arrives instead of allocating the declared length up
+                     front.
   rdata_read.c       lseek_st skips compressed data through a fixed 64 KiB
                      buffer instead of allocating the skipped length.
   rdata_read.c       an unnamed dimnames axis (NULL) is reported with one

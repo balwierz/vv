@@ -436,6 +436,11 @@ find_package(Iconv)
 file(GLOB LIBRDATA_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/vendored/librdata/*.c")
 add_library(rdata STATIC ${LIBRDATA_SRCS})
 target_compile_options(rdata PRIVATE -O2 -ffunction-sections -fdata-sections -w)
+# Fuzz builds cap ALTREP compact sequences lower (see vendored/librdata/UPSTREAM)
+# so the fuzzer explores parsing rather than the memory limit.
+if(VV_BUILD_FUZZERS)
+  target_compile_definitions(rdata PRIVATE RDATA_MAX_COMPACT_SEQ=1048576)
+endif()
 target_compile_definitions(rdata PRIVATE HAVE_ZLIB=1
     $<$<BOOL:${BZIP2_FOUND}>:HAVE_BZIP2=1> $<$<BOOL:${LIBLZMA_FOUND}>:HAVE_LZMA=1>)
 target_include_directories(rdata
