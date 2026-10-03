@@ -277,7 +277,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install dependencies
-        run: brew install cmake apache-arrow htslib ncurses xlsxio expat minizip hdf5 xz qt
+        run: brew install cmake apache-arrow htslib ncurses xlsxio expat minizip hdf5 xz c-blosc qt
 
       - name: Configure
         # Homebrew's ncurses is keg-only, and Arrow/xlsxio/... each live under

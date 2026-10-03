@@ -187,7 +187,7 @@ Ubuntu 26.04+, where the distro carries them.)
 sudo apt-get install -y \
   cmake g++ git pkg-config \
   libncurses-dev libhts-dev libsqlite3-dev zlib1g-dev \
-  libexpat1-dev libminizip-dev libhdf5-dev liblzma-dev libbz2-dev
+  libexpat1-dev libminizip-dev libhdf5-dev liblzma-dev libbz2-dev libblosc-dev
 
 sudo apt-get install -y ca-certificates lsb-release wget
 wget https://packages.apache.org/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
@@ -210,7 +210,7 @@ Prebuilt RPMs for the current Fedora are published with each release (see
 # Fedora 43+
 sudo dnf install cmake gcc-c++ git pkgconf-pkg-config \
     libarrow-devel parquet-libs-devel htslib-devel ncurses-devel \
-    hdf5-devel sqlite-devel expat-devel zlib-devel minizip-ng-compat-devel xz-devel bzip2-devel
+    hdf5-devel sqlite-devel expat-devel zlib-devel minizip-ng-compat-devel xz-devel bzip2-devel blosc-devel
 
 # Fedora 44+ additionally (Arrow ≥ 21 split the compute kernels out):
 sudo dnf install libarrow-compute-devel
@@ -225,7 +225,7 @@ sudo dnf install epel-release dnf-plugins-core
 sudo dnf config-manager --set-enabled crb     # EL8: --set-enabled powertools
 sudo dnf install cmake gcc-c++ git pkgconf-pkg-config \
     libarrow-devel parquet-libs-devel htslib-devel ncurses-devel \
-    hdf5-devel sqlite-devel expat-devel zlib-devel minizip-devel xz-devel bzip2-devel
+    hdf5-devel sqlite-devel expat-devel zlib-devel minizip-devel xz-devel bzip2-devel blosc-devel
 ```
 
 On EL10 minizip is `minizip-ng-compat-devel` instead. **EL8 and EL9 are not
@@ -237,7 +237,7 @@ than the Arrow 20–23 vv is developed against. Use the static tarball.
 See the Arch Linux section above — `htslib` and `xlsxio` come from the AUR.
 
 ```sh
-sudo pacman -S --needed base-devel git cmake arrow ncurses zlib xz bzip2 \
+sudo pacman -S --needed base-devel git cmake arrow ncurses zlib xz bzip2 blosc \
                         hdf5 sqlite expat minizip
 paru -S htslib xlsxio
 ```
@@ -289,7 +289,7 @@ static: install the Homebrew deps below, plus `qt` if you use `vvg`. The full
 test suite (CLI and GUI, offscreen) runs on macOS in CI. To build from source:
 
 ```sh
-brew install cmake apache-arrow htslib ncurses xlsxio expat minizip hdf5 xz
+brew install cmake apache-arrow htslib ncurses xlsxio expat minizip hdf5 xz c-blosc
 ```
 
 Every one of those lives under its own prefix, so **each has to be named**.

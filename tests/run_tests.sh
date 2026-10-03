@@ -1187,6 +1187,67 @@ printf 'CDF\001\000\000\000\000' > "$TMP/classic.nc"
 assert_contains "netcdf3_refused" "$("$VV" "$TMP/classic.nc" 2>&1)" "NetCDF-3 (classic) is not supported"
 
 echo
+echo '── Zarr (.zarr / .zarr.zip) ───────────────────────────'
+# generate.py rewrites AnnData / MuData fixtures with write_zarr (v2): every tab
+# must match the .h5ad / .h5mu, zipped and unzipped to a directory (given with
+# a trailing slash). The summary's storage rows (chunking, compression, bytes
+# on disk) differ by design and are left out.
+zarr_no_storage() {
+    grep -v -e ' storage	' -e '/data	' -e '/indices	' -e '/indptr	' -e '^file size	' \
+            -e ' row slice	' -e ' column slice	'
+}
+zarr_equiv() {   # zarr_equiv NAME H5 ZIP
+    local name=$1 h=$2 z=$3 d="$TMP/$1.dir" ok=1 t
+    [ -f "$z" ] || return 0
+    rm -rf "$d"; mkdir -p "$d"; python3 -m zipfile -e "$z" "$d"
+    [ "$("$VV" --list-tabs "$h")" = "$("$VV" --list-tabs "$z")" ] || ok=0
+    [ "$("$VV" --list-tabs "$h")" = "$("$VV" --list-tabs "$d/")" ] || ok=0
+    while IFS= read -r t; do
+        a=$("$VV" --tab "$t" --tsv "$h" 2>&1 | zarr_no_storage)
+        [ "$a" = "$("$VV" --tab "$t" --tsv "$z" 2>&1 | zarr_no_storage)" ] || { ok=0; echo "    differs: [$t] zip"; }
+        [ "$a" = "$("$VV" --tab "$t" --tsv "$d/" 2>&1 | zarr_no_storage)" ] || { ok=0; echo "    differs: [$t] dir"; }
+    done < <("$VV" --list-tabs "$h")
+    assert_eq_file_inline "zarr_equiv_$name" "$ok" "1"
+}
+for n in tiny tiny.csc tiny.raw tiny.obsp tiny.nullstr tiny.uns tiny.cattypes tiny.sparselayer; do
+    zarr_equiv "$n" "$DATA/$n.h5ad" "$DATA/$n.zarr.zip"
+done
+zarr_equiv "mudata" "$DATA/tiny.h5mu" "$DATA/tiny.mudata.zarr.zip"
+if [ -f "$DATA/tiny.csc.zarr.zip" ]; then
+    # the whole-matrix paths: --matrix long and the full-matrix export
+    assert_eq_file_inline "zarr_matrix_long" \
+        "$("$VV" --matrix long --tab 'X (long)' --tsv "$DATA/tiny.csc.zarr.zip")" \
+        "$("$VV" --matrix long --tab 'X (long)' --tsv "$DATA/tiny.csc.h5ad")"
+    "$VV" --tab 'X (preview)' --parquet "$TMP/zx.parquet" "$DATA/tiny.raw.zarr.zip" 2>/dev/null
+    "$VV" --tab 'X (preview)' --parquet "$TMP/hx.parquet" "$DATA/tiny.raw.h5ad" 2>/dev/null
+    assert_eq_file_inline "zarr_matrix_export" "$("$VV" --tsv "$TMP/zx.parquet")" "$("$VV" --tsv "$TMP/hx.parquet")"
+    assert_eq_file_inline "zarr_stdin" "$("$VV" --tab obs --tsv - < "$DATA/tiny.zarr.zip" 2>/dev/null)" \
+        "$("$VV" --tab obs --tsv "$DATA/tiny.zarr.zip")"
+    assert_contains "zarr_footer" "$("$VV" -n 3 --color=never "$DATA/tiny.csc.zarr.zip" 2>&1)" "Format: AnnData (summary)"
+fi
+if [ -f "$DATA/codecs.zarr.zip" ]; then
+    # One array per codec / layout (values checked against zarr-python when the
+    # golden was recorded): the hierarchy, then every array.
+    {
+        "$VV" --tsv "$DATA/codecs.zarr.zip"
+        "$VV" --list-tabs "$DATA/codecs.zarr.zip" | tail -n +2 | while IFS= read -r t; do
+            echo "## $t"; "$VV" --tab "$t" --tsv "$DATA/codecs.zarr.zip" 2>&1
+        done
+    } > "$TMP/zarr_codecs.out"
+    if [ -f "$GOLDEN/zarr_codecs.expected" ]; then
+        assert_eq_file "zarr_codecs" "$TMP/zarr_codecs.out" "$GOLDEN/zarr_codecs.expected"
+    else
+        missing_golden "zarr_codecs" "$TMP/zarr_codecs.out"
+    fi
+    # A corrupt chunk and an unknown codec: an error naming the array, exit 1.
+    ZD="$TMP/codecs.zarr"; rm -rf "$ZD"; mkdir -p "$ZD"; python3 -m zipfile -e "$DATA/codecs.zarr.zip" "$ZD"
+    printf 'garbage' > "$ZD/f8_blosc_lz4/0.0"
+    assert_exit_code "zarr_corrupt_chunk_exit" 1 "$VV" --tab /f8_blosc_lz4 --tsv "$ZD"
+    assert_contains "zarr_corrupt_chunk_msg" "$("$VV" --tab /f8_blosc_lz4 --tsv "$ZD" 2>&1)" "'/f8_blosc_lz4': chunk f8_blosc_lz4/0.0: blosc: corrupt header"
+    sed -i.bak 's/"id": *"zstd"/"id": "fancy"/' "$ZD/i4_zstd_F/.zarray"
+    assert_contains "zarr_unknown_codec" "$("$VV" --tab /i4_zstd_F --tsv "$ZD" 2>&1)" "unsupported compressor 'fancy'"
+fi
+
 echo '── Nanopore POD5 ──────────────────────────────────────'
 # tests/data/make_pod5.py (the pod5 package) writes tiny.pod5: 3 reads,
 # samples (i * (k + 1)) % 200, i < 50 + 10k.

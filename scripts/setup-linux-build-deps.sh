@@ -37,7 +37,7 @@ $SUDO apt-get remove -y libcurl4-openssl-dev || true
 $SUDO apt-get install -y -V \
   cmake g++ git curl libcurl4-gnutls-dev \
   libhts-dev libncurses-dev libsqlite3-dev \
-  libexpat1-dev libminizip-dev libhdf5-dev liblzma-dev libbz2-dev pkg-config \
+  libexpat1-dev libminizip-dev libhdf5-dev liblzma-dev libbz2-dev libblosc-dev pkg-config \
   python3 python3-venv python3-pip \
   python3-pysam tabix bcftools samtools tmux ca-certificates lsb-release wget
 

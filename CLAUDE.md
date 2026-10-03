@@ -96,8 +96,10 @@ src/formats/         one file per reader family: parquet, lociss, delimited,
                      htslib (BAM/CRAM/SAM, pileup, BCF, FASTA/FASTQ, --contigs),
                      ucsc (bigWig/bigBed, 2bit), text, json, sqlite, arrow
                      (IPC, ORC), workbook (xlsx, ods), genbank (GenBank / EMBL),
-                     hdf5, cooler (Hi-C .cool / .mcool on HDF5), npz, pod5, rdata
-                     (R .rds / .RData via vendored/librdata), wig
+                     hdf5 (+ store.hpp: the Store interface its AnnData / generic
+                     readers use), zarr (a Store over .zarr / .zarr.zip), cooler
+                     (Hi-C .cool / .mcool on HDF5), npz, pod5, rdata (R .rds /
+                     .RData via vendored/librdata), wig
 src/output/          table (non-interactive table, schema footer), writers
                      (TSV/CSV/MD/Parquet/Arrow/JSON), reports (--describe, ...)
 src/render/          markdown, image (--heatmap, inline images)

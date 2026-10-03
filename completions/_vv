@@ -97,7 +97,7 @@ _vv() {
         '*.2bit' '*.wig' '*.wig.gz' '*.wig.zst' '*.wig.bz2' '*.wig.xz'
         '*.sqlite' '*.sqlite3' '*.db'
         '*.xlsx' '*.xlsm' '*.ods' '*.fods'
-        '*.orc' '*.pod5' '*.gb' '*.gb.gz' '*.gb.zst' '*.gb.bz2' '*.gb.xz' '*.gbk' '*.gbk.gz' '*.gbk.zst' '*.gbk.bz2' '*.gbk.xz' '*.gbff' '*.gbff.gz' '*.gbff.zst' '*.gbff.bz2' '*.gbff.xz' '*.genbank' '*.genbank.gz' '*.genbank.zst' '*.genbank.bz2' '*.genbank.xz' '*.embl' '*.embl.gz' '*.embl.zst' '*.embl.bz2' '*.embl.xz' '*.cool' '*.mcool' '*.rds' '*.RData' '*.rda' '*.npz' '*.npy'
+        '*.orc' '*.zarr' '*.zarr.zip' '*.pod5' '*.gb' '*.gb.gz' '*.gb.zst' '*.gb.bz2' '*.gb.xz' '*.gbk' '*.gbk.gz' '*.gbk.zst' '*.gbk.bz2' '*.gbk.xz' '*.gbff' '*.gbff.gz' '*.gbff.zst' '*.gbff.bz2' '*.gbff.xz' '*.genbank' '*.genbank.gz' '*.genbank.zst' '*.genbank.bz2' '*.genbank.xz' '*.embl' '*.embl.gz' '*.embl.zst' '*.embl.bz2' '*.embl.xz' '*.cool' '*.mcool' '*.rds' '*.RData' '*.rda' '*.npz' '*.npy'
         '*.pileup' '*.pileup.gz' '*.pileup.bz2' '*.pileup.xz' '*.pileup.zst' '*.mpileup' '*.mpileup.gz' '*.mpileup.bz2' '*.mpileup.xz' '*.mpileup.zst' '*.pile' '*.pile.gz' '*.pile.bz2' '*.pile.xz' '*.pile.zst'
         '*.md' '*.markdown' '*.mdown' '*.mkd'
         '*.txt' '*.txt.gz' '*.txt.bz2' '*.txt.xz' '*.txt.zst' '*.text' '*.text.gz' '*.text.bz2' '*.text.xz' '*.text.zst' '*.log' '*.log.gz' '*.log.bz2' '*.log.xz' '*.log.zst'

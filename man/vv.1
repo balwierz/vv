@@ -217,6 +217,11 @@ features overlapping a window on a record.
 \fB.pod5\fR \(en Oxford Nanopore POD5: reads (read_id as UUID text), signal (VBZ
 samples decoded to a list of int16; one row per stored chunk) and run_info tabs.
 .IP \(bu 2
+\fB.zarr\fR, \fB.zarr.zip\fR \(en Zarr v2 stores, a directory or a zip: AnnData and
+MuData stores open with the same tabs as \fB.h5ad\fR / \fB.h5mu\fR; other stores as a
+hierarchy tab plus one tab per 1-D / 2-D array. Compressors blosc, zstd, gzip,
+zlib, lz4, bz2.
+.IP \(bu 2
 \fB.cool\fR, \fB.mcool\fR \(en Cooler Hi-C contact matrices (HDF5): summary,
 chroms, pixels joined to bin coordinates (with \fBbalanced\fR when bins carry a
 weight) and bins; per resolution in an .mcool (\fBpixels@10kb\fR,

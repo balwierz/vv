@@ -467,7 +467,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install dependencies
-        run: brew install cmake apache-arrow htslib ncurses xlsxio expat minizip hdf5 xz qt
+        run: brew install cmake apache-arrow htslib ncurses xlsxio expat minizip hdf5 xz c-blosc qt
       - name: Configure
         # Homebrew's `apache-arrow` formula installs to its own prefix
         # (`$(brew --prefix apache-arrow)` — typically /opt/homebrew/opt/…

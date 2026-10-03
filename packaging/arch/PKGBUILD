@@ -17,7 +17,7 @@ license=('MIT')
 # `git` is required: CMake fetches mimalloc v2.1.9 from GitHub at configure
 # time (FetchContent, no vendored copy). `htslib` and `xlsxio` are AUR-only,
 # so `makepkg -s` cannot install them — see INSTALL.md.
-makedepends=('cmake' 'gcc' 'git' 'arrow' 'htslib' 'ncurses' 'hdf5' 'sqlite' 'xz' 'bzip2'
+makedepends=('cmake' 'gcc' 'git' 'arrow' 'htslib' 'ncurses' 'hdf5' 'sqlite' 'xz' 'bzip2' 'blosc'
              'expat' 'minizip' 'xlsxio' 'zlib'
              'qt6-base' 'extra-cmake-modules' 'kio' 'kcoreaddons' 'kfilemetadata')
 source=("$pkgbase-$pkgver.tar.gz::https://github.com/balwierz/$pkgbase/archive/refs/tags/v$pkgver.tar.gz")
@@ -36,7 +36,7 @@ build() {
 
 package_vv() {
     pkgdesc="Universal data/genomic file viewer — CLI + ncurses TUI"
-    depends=('arrow' 'htslib' 'ncurses' 'hdf5' 'sqlite' 'xz' 'bzip2'
+    depends=('arrow' 'htslib' 'ncurses' 'hdf5' 'sqlite' 'xz' 'bzip2' 'blosc'
              'expat' 'minizip' 'xlsxio')
     cd "$pkgbase-$pkgver"
     install -Dm755 ../build/vv "$pkgdir/usr/bin/vv"
@@ -50,7 +50,7 @@ package_vv() {
 
 package_vv-gui() {
     pkgdesc="Qt6/KDE desktop viewer for vv — windowed table view + Dolphin integration"
-    depends=('vv' 'qt6-base' 'arrow' 'hdf5' 'sqlite' 'kio' 'kcoreaddons' 'kfilemetadata')
+    depends=('vv' 'qt6-base' 'arrow' 'hdf5' 'sqlite' 'blosc' 'kio' 'kcoreaddons' 'kfilemetadata')
     cd "$pkgbase-$pkgver"
     install -Dm755 ../build/gui/vvg "$pkgdir/usr/bin/vvg"
     # KF6 plugins.

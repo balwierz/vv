@@ -13,6 +13,7 @@ class Vv < Formula
   # The formula used to declare only arrow/htslib/ncurses and could not get
   # past configure.
   depends_on "apache-arrow"
+  depends_on "c-blosc"
   depends_on "expat"
   depends_on "hdf5"
   depends_on "htslib"

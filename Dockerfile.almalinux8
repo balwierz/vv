@@ -104,6 +104,27 @@ RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
         -DBUILD_SHARED_LIBS=OFF && \
     cmake --build lz4-bld -j$(nproc) && cmake --install lz4-bld
 
+# ── c-blosc 1.x (Zarr chunks), against the static lz4 / zstd / zlib ─────────
+# Its bundled copies of those codecs would duplicate their symbols in the
+# final link, so the external ones are preferred and Snappy is off.
+FROM base AS build-blosc
+COPY --from=build-zlib /build/static-libs /build/static-libs
+COPY --from=build-zstd /build/static-libs /build/static-libs
+COPY --from=build-lz4  /build/static-libs /build/static-libs
+RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
+    tar xf /build/src/blosc.tar.gz && mv c-blosc-* blosc-src && \
+    cmake -S blosc-src -B blosc-bld \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/static-libs \
+        -DCMAKE_PREFIX_PATH=/build/static-libs \
+        -DCMAKE_C_FLAGS="-O2 -flto=auto -ffunction-sections -fdata-sections" \
+        -DBUILD_SHARED=OFF -DBUILD_STATIC=ON -DBUILD_TESTS=OFF \
+        -DBUILD_BENCHMARKS=OFF -DBUILD_FUZZERS=OFF \
+        -DPREFER_EXTERNAL_LZ4=ON -DPREFER_EXTERNAL_ZLIB=ON -DPREFER_EXTERNAL_ZSTD=ON \
+        -DDEACTIVATE_SNAPPY=ON && \
+    cmake --build blosc-bld -j$(nproc) && cmake --install blosc-bld && \
+    rm -f /build/static-libs/lib/libblosc.so* /build/static-libs/lib64/libblosc.so*
+
 # ── bzip2 ─────────────────────────────────────────────────────────────────────
 FROM base AS build-bzip2
 RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
@@ -350,6 +371,7 @@ FROM base AS static-libs
 COPY --from=build-zlib     /build/static-libs /build/static-libs
 COPY --from=build-zstd     /build/static-libs /build/static-libs
 COPY --from=build-lz4      /build/static-libs /build/static-libs
+COPY --from=build-blosc    /build/static-libs /build/static-libs
 COPY --from=build-bzip2    /build/static-libs /build/static-libs
 COPY --from=build-xz       /build/static-libs /build/static-libs
 COPY --from=build-deflate  /build/static-libs /build/static-libs

@@ -36,6 +36,7 @@ fetch() {
 
 # ── direct upstream releases (canonical URLs, archive bytes stable) ─────────
 fetch absl.tar.gz       https://github.com/abseil/abseil-cpp/archive/refs/tags/20240722.0.tar.gz
+fetch blosc.tar.gz      https://github.com/Blosc/c-blosc/archive/refs/tags/v1.21.6.tar.gz
 fetch arrow.tar.gz      https://github.com/apache/arrow/archive/refs/tags/apache-arrow-23.0.1.tar.gz
 fetch brotli.tar.gz     https://github.com/google/brotli/archive/refs/tags/v1.1.0.tar.gz
 fetch bzip2.tar.gz      https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz

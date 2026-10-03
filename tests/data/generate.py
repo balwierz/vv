@@ -2263,6 +2263,100 @@ else:
         _p.write_text(_p.read_text().replace('/pseudo=""', "/pseudo"))
 
 
+# Zarr fixtures, zipped with the members sorted (metadata first) and stored
+# uncompressed, as zarr's ZipStore writes them; the tests also unzip them to a
+# directory. *.zarr.zip: AnnData fixtures above rewritten with write_zarr (v2),
+# so each tab must match the .h5ad's; tiny.mudata.zarr.zip: tiny.h5mu copied
+# node by node; codecs.zarr.zip: one array per codec / layout (blosc lz4 /
+# zstd with shuffle / bitshuffle, zstd, gzip, zlib, lz4, bz2, none, Fortran
+# order, big-endian, float16, "/" chunk keys, missing chunks = fill,
+# <U / |S / vlen strings).
+try:
+    import anndata                                           # type: ignore
+    import numcodecs                                         # type: ignore
+    import numpy as np                                       # type: ignore
+    import zarr                                              # type: ignore
+    import h5py                                              # type: ignore
+except ImportError:
+    print("warn: anndata / zarr / numcodecs / h5py not found; skipping *.zarr.zip", file=sys.stderr)
+else:
+    import tempfile, warnings, zipfile
+    warnings.filterwarnings("ignore")
+    def _zip_store(src, dst):
+        if dst.exists():
+            dst.unlink()
+        names = sorted(str(p.relative_to(src)) for p in Path(src).rglob("*") if p.is_file())
+        with zipfile.ZipFile(dst, "w", zipfile.ZIP_STORED) as z:
+            for n in names:
+                z.write(Path(src) / n, n)
+    anndata.settings.allow_write_nullable_strings = True
+    with tempfile.TemporaryDirectory() as tmp:
+        for name in ("tiny", "tiny.csc", "tiny.raw", "tiny.obsp", "tiny.nullstr", "tiny.uns",
+                     "tiny.cattypes", "tiny.sparselayer"):
+            d = Path(tmp) / (name + ".zarr")
+            anndata.read_h5ad(HERE / (name + ".h5ad")).write_zarr(d)
+            _zip_store(d, HERE / (name + ".zarr.zip"))
+        # MuData: copy tiny.h5mu's groups, arrays and attributes.
+        d = Path(tmp) / "mudata.zarr"
+        root = zarr.open_group(d, mode="w", zarr_format=2)
+        def _attrs(src, dst):
+            for k, v in src.attrs.items():
+                if isinstance(v, bytes): v = v.decode()
+                elif isinstance(v, np.ndarray): v = [x.decode() if isinstance(x, bytes) else x.item() if hasattr(x, "item") else x for x in v]
+                elif hasattr(v, "item"): v = v.item()
+                dst.attrs[k] = v
+        def _copy(src, dst):
+            _attrs(src, dst)
+            for k, v in src.items():
+                if isinstance(v, h5py.Group):
+                    _copy(v, dst.create_group(k))
+                else:
+                    data = v[()]
+                    if v.dtype.kind == "O" or h5py.check_string_dtype(v.dtype):
+                        vals = np.array([x.decode() if isinstance(x, bytes) else x for x in np.ravel(data)], dtype=object)
+                        a = dst.create_array(k, shape=vals.shape, dtype=str, filters=[numcodecs.VLenUTF8()],
+                                             compressors=numcodecs.Blosc("lz4", 5, numcodecs.Blosc.SHUFFLE))
+                        a[...] = vals
+                    else:
+                        a = dst.create_array(k, shape=data.shape, dtype=data.dtype,
+                                             compressors=numcodecs.Blosc("lz4", 5, numcodecs.Blosc.SHUFFLE))
+                        a[...] = data
+                    _attrs(v, a)
+        with h5py.File(HERE / "tiny.h5mu", "r") as f:
+            _copy(f, root)
+        _zip_store(d, HERE / "tiny.mudata.zarr.zip")
+        # The codec / layout matrix.
+        d = Path(tmp) / "codecs.zarr"
+        root = zarr.open_group(d, mode="w", zarr_format=2)
+        def _arr(name, data, chunks, comp=None, filters=None, order="C", sep=".", dtype=None, fill=None):
+            a = root.create_array(name, shape=data.shape, chunks=chunks,
+                                  dtype=dtype if dtype is not None else data.dtype, compressors=comp,
+                                  filters=filters, order=order, fill_value=fill,
+                                  chunk_key_encoding={"name": "v2", "separator": sep})
+            a[...] = data
+        r, c = np.mgrid[0:37, 0:23]
+        B = numcodecs.Blosc
+        _arr("f8_blosc_lz4", (r * 100 + c + 0.5).astype("<f8"), (8, 5), B("lz4", 5, B.SHUFFLE))
+        _arr("i4_zstd_F", (r * 100 + c).astype("<i4"), (8, 5), numcodecs.Zstd(3), order="F")
+        _arr("f4_blosc_zstd_bitshuffle", (r * 0.25 - c).astype("<f4"), (6, 7), B("zstd", 3, B.BITSHUFFLE))
+        _arr("i8_slash_keys", (r * 2 + c).astype("<i8"), (10, 10), B("blosclz"), sep="/")
+        _arr("u2_gzip", np.arange(50, dtype="<u2") * 3, (7,), numcodecs.GZip(5))
+        _arr("i8_lz4", np.arange(50, dtype="<i8") * -1000000007, (16,), numcodecs.LZ4())
+        _arr("f4_bz2", np.linspace(-1, 1, 50).astype("<f4"), (9,), numcodecs.BZ2())
+        _arr("b1_zlib", np.arange(11) % 3 == 0, (4,), numcodecs.Zlib(1))
+        _arr("f8_bigendian", np.arange(10, dtype=">f8") / 8, (3,))
+        _arr("i2_bigendian_zstd", (np.arange(10) - 5).astype(">i2"), (4,), numcodecs.Zstd(1))
+        _arr("f2_half", np.array([0, 1.5, -2.25, 65504, 0.0001, np.inf], dtype="<f2"), (4,))
+        _arr("str_vlen", np.array(["alpha", "", "\u03b3\u03ac\u03bc\u03bc\u03b1", "delta", "e" * 40,
+                                   "f", "g", "h", "i", "j", "k", "l", "m"], dtype=object), (5,),
+             B("zstd", 1, B.BITSHUFFLE), filters=[numcodecs.VLenUTF8()], dtype=str)
+        _arr("str_U", np.array(["ab", "\u00fcn\u00ef", "", "xyzxyzx", "q", "rr"], dtype="<U7"), (4,), numcodecs.Zstd(1))
+        _arr("str_S", np.array([b"ab", b"", b"xyz", b"12345", b"q", b"rr"], dtype="|S5"), (4,))
+        m = root.create_array("i4_missing_chunks", shape=(20,), chunks=(6,), dtype="<i4", fill_value=7, compressors=None)
+        m[0:6] = np.arange(6)                      # chunks 1-3 never written: fill value 7
+        _zip_store(d, HERE / "codecs.zarr.zip")
+
+
 def find_kent_tool(name):
     if shutil.which(name): return name
     cand = "/opt/ucsc-kent-genome-tools/" + name

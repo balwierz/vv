@@ -393,6 +393,7 @@ set(VV_CORE_SOURCES
     src/formats/rdata.cpp
     src/formats/sqlite.cpp
     src/formats/text.cpp      src/formats/ucsc.cpp      src/formats/wig.cpp
+    src/formats/zarr.cpp
     src/formats/workbook.cpp
     src/output/reports.cpp    src/output/table.cpp      src/output/writers.cpp
     src/render/image.cpp      src/render/markdown.cpp
@@ -429,6 +430,19 @@ if(BZIP2_FOUND)
   target_include_directories(vv PRIVATE ${BZIP2_INCLUDE_DIRS})
 endif()
 message(STATUS "xz / bzip2 : ${LIBLZMA_FOUND} / ${BZIP2_FOUND}")
+# Blosc-compressed Zarr chunks (src/formats/zarr.cpp), when c-blosc 1.x is
+# found (the static build compiles it against the static lz4 / zstd / zlib);
+# without it a Blosc chunk is refused with "built without Blosc".
+find_path(BLOSC_INCLUDE_DIR blosc.h)
+find_library(BLOSC_LIBRARY NAMES blosc)
+if(BLOSC_INCLUDE_DIR AND BLOSC_LIBRARY)
+  set(BLOSC_FOUND TRUE)
+  target_compile_definitions(vv PRIVATE VV_HAVE_BLOSC=1)
+  target_include_directories(vv PRIVATE ${BLOSC_INCLUDE_DIR})
+else()
+  set(BLOSC_FOUND FALSE)
+endif()
+message(STATUS "blosc      : ${BLOSC_FOUND} ${BLOSC_LIBRARY}")
 
 # ── librdata (R .rds / .RData reader, vendored) ──────────────────────────────
 # Vendored under vendored/librdata/ (read side only; see its UPSTREAM). MIT.
@@ -540,6 +554,7 @@ if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND NCURSES_STATIC_LIB)
       # symbols, so they have to follow it.
       ${_xlsxio} ${_expat} ${_minizip}
       ${_hdf5}
+      $<$<BOOL:${BLOSC_FOUND}>:${BLOSC_LIBRARY}>
       ${_deflate} ${_zlib} ${_bz2} ${_lzma} ${_lz4} ${_zstd}
       ${_brotlienc} ${_brotlidec} ${_brotlicommon}
       ${_snappy} ${_utf8proc} ${_re2} ${_thrift}
@@ -563,6 +578,7 @@ else()
       ${HTSLIB_LINK_LIBRARIES}
       $<$<BOOL:${LIBLZMA_FOUND}>:${LIBLZMA_LIBRARIES}>
       $<$<BOOL:${BZIP2_FOUND}>:${BZIP2_LIBRARIES}>
+      $<$<BOOL:${BLOSC_FOUND}>:${BLOSC_LIBRARY}>
       bigwig
       md4c
       rdata

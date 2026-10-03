@@ -98,6 +98,8 @@ static const FormatInfo kFormats[] = {
    true,  true,  true,  false, false, ""},
   {"Nanopore POD5", ".pod5", "Pod5Tab",
    false, false, true,  true,  true,  ""},
+  {"Zarr store", ".zarr .zarr.zip", "ZarrStore",
+   false, false, true,  false, false, ""},
   {"Cooler Hi-C matrix", ".cool .mcool", "PixelsSource",
    false, true,  true,  true,  false, ""},
   {"NumPy archive", ".npz", "NpzSource",
@@ -216,6 +218,8 @@ static void print_usage(const char* prog) {
         "  .h5  .hdf5  .loom           generic HDF5 — hierarchy tab + per-dataset tabs\n"
         "  .h5mu                       MuData — joint obs / var + each modality's AnnData tabs\n"
         "  .h5seurat  .fast5  .nc  .nc4  HDF5-based: h5Seurat, Nanopore FAST5, NetCDF-4\n"
+        "  .zarr  .zarr.zip            Zarr store (directory or zip): AnnData / MuData as\n"
+        "                              their .h5ad / .h5mu; others as hierarchy + arrays\n"
         "  .cool  .mcool               Cooler Hi-C matrix — summary / chroms / pixels\n"
         "                              (joined to bins, balanced) / bins; -r region\n"
         "  .pod5                       Oxford Nanopore POD5 — reads / signal (decoded\n"
@@ -260,7 +264,8 @@ static void print_usage(const char* prog) {
         "                              vv <(zcat x.parquet.gz)\n"
         "  DIR/                        a directory: concatenate the data files under\n"
         "                              it (Parquet/Arrow/ORC/CSV/TSV/JSON). Hive\n"
-        "                              key=value/ path parts become columns\n"
+        "                              key=value/ path parts become columns (a Zarr\n"
+        "                              store or a 10x matrix directory is read as one)\n"
         "  (`vv --formats` prints this table with capability columns;\n"
         "   add --json for the machine-readable form)\n"
         "  (unknown extensions: identified by magic bytes, else sniffed as text;\n"

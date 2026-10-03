@@ -92,6 +92,11 @@ static std::string pipe_binary_ext(const std::string& head) {
         if (first == "[Content_Types].xml" || first.rfind("xl/", 0) == 0 ||
             first.rfind("_rels/", 0) == 0 || first.rfind("docProps/", 0) == 0)
                                                   return ".xlsx";
+        // A zipped Zarr store whose metadata comes first (zarr's ZipStore,
+        // or a zipped directory: the same names under one folder).
+        const std::string leaf = first.substr(first.find('/') == std::string::npos ? 0 : first.find('/') + 1);
+        if (leaf == ".zgroup" || leaf == ".zarray" || leaf == ".zattrs" || leaf == "zarr.json")
+                                                  return ".zarr.zip";
     }
     return "";
 }
@@ -913,6 +918,30 @@ std::string TenxDirSource::open(const TenxDirFiles& files, const Config& cfg,
     return "";
 }
 
+// The obs / var row cap for an AnnData store (HDF5 or Zarr). The 1000-row cap
+// exists so opening a 10 GB .h5ad in the TUI does not read 310k rows of obs up
+// front. It must apply to THAT and nothing else: every mode that produces a
+// complete answer — a count, an aggregate, an export, a delimited dump — has
+// to see all the rows. Only --tsv/--csv used to escape it, so `--count` on a
+// 310,385-row obs answered "1000", `--unique` reported "of 1000", and
+// `--parquet out.parquet` wrote 1000 of 8563 rows. That last one is data loss
+// during a format conversion. Sparse / dense X and generic datasets stay
+// capped regardless (see build_table) — those are genuinely previews of a
+// matrix. A filter or a sort ranges over every row: neither the preview cap
+// nor -n may limit what is read (-n then cuts the result).
+int64_t anndata_df_row_cap(const Config& cfg) {
+    const bool whole_frame = !cfg.filter_expr.empty() || !cfg.sort_col.empty();
+    const bool df_preview_only =
+        !cfg.delimiter && !cfg.count && !cfg.describe &&
+        cfg.unique_cols.empty() && cfg.sample_n <= 0 &&
+        !cfg.tail_rows_set && !cfg.json_array && !cfg.json_lines &&
+        !cfg.md && cfg.parquet_out.empty() && cfg.arrow_out.empty() &&
+        !whole_frame;
+    return df_preview_only
+        ? h5v::kDataFrameRowCap
+        : ((cfg.head_rows_set && !whole_frame) ? (int64_t)cfg.head_rows : -1);
+}
+
 std::string open_source_dispatch(const std::string& path, const Config& cfg,
                          std::unique_ptr<TabularSource>* out) {
     // ── Determine file kind ──────────────────────────────────────────────────
@@ -950,6 +979,10 @@ std::string open_source_dispatch(const std::string& path, const Config& cfg,
     {
         std::error_code ec;
         if (std::filesystem::is_directory(path, ec)) {
+            // A Zarr store (AnnData / MuData / OME-Zarr ...): one hierarchy,
+            // not a dataset of files — its v3 zarr.json files would otherwise
+            // be read as JSON records.
+            if (h5v::is_zarr_dir(path)) return h5v::open_zarr_source(path, cfg, out);
             if (!cfg.region.empty())
                 return "'" + path + "': -r/--region is not supported on a "
                        "directory dataset";
@@ -1260,34 +1293,12 @@ std::string open_source_dispatch(const std::string& path, const Config& cfg,
                        "(convert with `nccopy -k nc4 " + path + " out.nc`)";
         }
         std::unique_ptr<TabularSource> src;
-        // The 1000-row cap exists so opening a 10 GB .h5ad in the TUI does not
-        // read 310k rows of obs up front. It must apply to THAT and nothing
-        // else: every mode that produces a complete answer — a count, an
-        // aggregate, an export, a delimited dump — has to see all the rows.
-        //
-        // Only --tsv/--csv used to escape it, so `--count` on a 310,385-row
-        // obs answered "1000", `--unique` reported "of 1000", and
-        // `--parquet out.parquet` wrote 1000 of 8563 rows. That last one is
-        // data loss during a format conversion.
-        //
-        // Sparse / dense X and generic datasets stay capped regardless (see
-        // build_table) — those are genuinely previews of a matrix.
-        // A filter or a sort ranges over every row: neither the preview cap
-        // nor -n may limit what is read (-n then cuts the result).
-        const bool whole_frame = !cfg.filter_expr.empty() || !cfg.sort_col.empty();
-        const bool df_preview_only =
-            !cfg.delimiter && !cfg.count && !cfg.describe &&
-            cfg.unique_cols.empty() && cfg.sample_n <= 0 &&
-            !cfg.tail_rows_set && !cfg.json_array && !cfg.json_lines &&
-            !cfg.md && cfg.parquet_out.empty() && cfg.arrow_out.empty() &&
-            !whole_frame;
-        int64_t df_cap = df_preview_only
-            ? h5v::kDataFrameRowCap
-            : ((cfg.head_rows_set && !whole_frame) ? (int64_t)cfg.head_rows : -1);
-        std::string err = h5v::open_hdf5_source(path, &src, df_cap, cfg.matrix == "long");
+        std::string err = h5v::open_hdf5_source(path, &src, anndata_df_row_cap(cfg), cfg.matrix == "long");
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
+    } else if (fends_ci(path, ".zarr.zip")) {
+        return h5v::open_zarr_source(path, cfg, out);
     } else if (fends_ci(path, ".npz")) {
         std::unique_ptr<TabularSource> src;
         std::string err = npz::open_npz_source(path, &src);

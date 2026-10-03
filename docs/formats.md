@@ -17,6 +17,7 @@ build prints. Flags and options are covered in the [manual](USAGE.md).
 [PLINK and TSV layouts](#plink-and-tsv-layouts)<br>
 **Single cell and matrices** —
 [AnnData / HDF5 / Loom / 10x](#anndata--hdf5--loom--10x) ·
+[Zarr](#zarr) ·
 [MatrixMarket](#matrixmarket) ·
 [NumPy](#numpy) ·
 [R data](#r-data) ·
@@ -180,6 +181,21 @@ converts it).
 Try: `vv pbmc.h5ad` · `vv --tab obs --filter 'cell_type == "B"' pbmc.h5ad` ·
 `vv --tab X --matrix long --tsv pbmc.h5ad > counts.tsv`.
 More: [`--schema`](USAGE.md#--schema), [`--matrix`](USAGE.md#data-exploration).
+
+## Zarr
+
+`.zarr` directories (or any directory with Zarr metadata at its root) and
+zipped stores (`.zarr.zip`, also on stdin). An AnnData or MuData store
+written with `write_zarr` opens with the same tabs as its `.h5ad` / `.h5mu`
+— summary, `X`, `obs`, `var`, `obsm`, `layers`, `obsp`, `raw`, `uns`,
+modalities — and the summary's storage rows show the chunking and codecs.
+Any other store (OME-Zarr images, xarray datasets) opens as a hierarchy tab
+plus one tab per 1-D / 2-D array. Zarr v2 is read: compressors blosc, zstd,
+gzip, zlib, lz4, bz2; C and Fortran order; vlen-utf8, fixed `U` / `S`
+strings; missing chunks read as the fill value.
+
+Try: `vv pbmc.zarr` · `vv --tab obs --tsv pbmc.zarr.zip` ·
+`vv --tab 'X (preview)' --parquet x.parquet pbmc.zarr`.
 
 ## MatrixMarket
 

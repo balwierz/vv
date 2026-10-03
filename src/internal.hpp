@@ -1099,6 +1099,11 @@ inline constexpr int64_t kDataFrameRowCap = 1000;
 std::string open_hdf5_source(const std::string& path, std::unique_ptr<TabularSource>* out,
                              int64_t df_row_cap = kDataFrameRowCap, bool matrix_long = false);
 
+// Zarr stores (src/formats/zarr.cpp): a .zarr directory or a .zarr.zip.
+bool is_zarr_dir(const std::string& path);
+std::string open_zarr_source(const std::string& path, const Config& cfg,
+                             std::unique_ptr<TabularSource>* out);
+
 // Shared with the Cooler reader (src/formats/cooler.cpp).
 // A scalar string attribute of an HDF5 object; "" when absent or not a string.
 std::string read_string_attr(hid_t obj, const char* name);
@@ -1114,6 +1119,10 @@ std::string open_genbank_source(const std::string& path, const Config& cfg,
 
 // Oxford Nanopore POD5 (src/formats/pod5.cpp): reads / signal / run_info tabs.
 std::string open_pod5_source(const std::string& path, std::unique_ptr<TabularSource>* out);
+
+// The obs / var row cap of an AnnData store for this run (src/core/open.cpp):
+// the preview cap in the viewer, every row (or -n) for a complete answer.
+int64_t anndata_df_row_cap(const Config& cfg);
 
 // Cooler Hi-C contact matrices (src/formats/cooler.cpp): .cool, .mcool.
 bool is_cooler_file(const std::string& path);

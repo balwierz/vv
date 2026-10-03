@@ -2325,7 +2325,7 @@ static std::vector<OpenSpec> scan_generic(const Store& store) {
     int n_dsets = 0;
     for (const HierarchyRow& r : store.hierarchy()) {
         if (n_dsets > 32) break;                 // cap to keep tab count sane
-        if (r.kind != "Dataset" || r.path == "/") continue;
+        if (r.kind != "Dataset") continue;        // (a Zarr store's root can be an array)
         std::vector<hsize_t> dims;
         for (int64_t x : r.dims) dims.push_back((hsize_t)x);
         if (r.dims.size() == 1) {
