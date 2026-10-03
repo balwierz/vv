@@ -120,13 +120,32 @@ user-facing summary).
 - AnnData `uns` (unstructured) decoding — nested groups / scalars /
   free-form arrays. v1 skips. A follow-up could surface scalars and
   string entries using the existing hierarchy-table machinery.
-- Cooler (`.cool`, `.mcool`) Hi-C contact matrices — HDF5 backbone
-  but very different layout (bins / pixels / chroms). Worth a
-  follow-up dedicated source class on top of the existing HDF5
-  plumbing.
+- Zarr stores (`.zarr` directories, zipped `.zarr.zip`): AnnData and
+  OME-Zarr write them; v2 / v3 metadata is JSON, chunks are Blosc / zstd
+  / gzip compressed. Would reuse the AnnData tab layout of the HDF5 reader.
+- DuckDB (`.duckdb`) — one tab per table like SQLite; needs libduckdb
+  (large) or a read through its C API built as an optional dependency.
+- SAS (`.sas7bdat`, `.xpt`), Stata (`.dta`), SPSS (`.sav`, `.por`) via
+  ReadStat (MIT, same author and API style as the vendored librdata).
+- GFA assembly graphs (`.gfa`): segments / links / paths as tabs.
+- PDB / mmCIF structures (`.pdb`, `.cif`): atom records as a table.
+- mzTab (proteomics / metabolomics): the MTD / PRT / PSM / SML sections
+  as tabs.
+- `.scool` (single-cell Cooler, one cooler per cell under /cells): not
+  routed to the Cooler reader yet; opens in the generic HDF5 view.
+- R lists and S4 objects (Seurat, SingleCellExperiment, sparse
+  `Matrix`) in `.rds` / `.RData`: librdata reads only data frames,
+  atomic vectors and dense matrices.
 - Galaxy `.dat` / Galaxy archive — niche but visible.
 
 ### Done
+- Compressed text: `.xz` and `.bz2` alongside `.gz` / `.zst`, by content.
+- BLAST / DIAMOND tabular (`.m8`, `.blast6`, `.outfmt6`), UCSC wiggle
+  (`.wig`), HDF5 aliases (`.h5mu` MuData, `.h5seurat`, `.fast5`,
+  `.nc` / `.nc4`).
+- R `.rds` / `.RData` (vendored librdata, fuzzed), Cooler `.cool` /
+  `.mcool` (pixels joined to bins, `-r` submatrix), GenBank / EMBL,
+  Nanopore POD5 (VBZ signal decoded).
 - `.bgz` suffix read as `.gz` (VCF / BED / FASTQ / FASTA, `-r` via the `.tbi`); `*.vcf.bgz` in the KDE MIME package.
 - `vv x.bam --pileup -f ref.fa` — reference-aware pileup (shipped 1.15.0,
   #73). Fills the `ref` column from an indexed FASTA and renders matches as
