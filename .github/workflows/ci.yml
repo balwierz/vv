@@ -86,7 +86,7 @@ jobs:
       # read / overflow / misaligned load / null memcpy fails here. Needs clang
       # (libFuzzer). Deterministic seed; a clean tree survives far more than this
       # budget's iterations, so it is not flaky.
-      - name: Fuzz smoke (decode_colblock + npy + lzf + rdata)
+      - name: Fuzz smoke (decode_colblock + npy + lzf + rdata + pod5)
         if: matrix.os == '24.04'
         env:
           ARROW_DEFAULT_MEMORY_POOL: system
@@ -96,7 +96,7 @@ jobs:
           sudo apt-get install -y -V clang
           cmake -S . -B build-fuzz -DVV_BUILD_FUZZERS=ON -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
-          cmake --build build-fuzz -j"$(nproc)" --target fuzz_colblock fuzz_npy fuzz_lzf fuzz_rdata
+          cmake --build build-fuzz -j"$(nproc)" --target fuzz_colblock fuzz_npy fuzz_lzf fuzz_rdata fuzz_pod5
           ./build-fuzz/fuzz_colblock -max_total_time=40 -seed=1
           ./build-fuzz/fuzz_npy      -max_total_time=40 -seed=1
           ./build-fuzz/fuzz_lzf      -max_total_time=30 -seed=1
@@ -104,6 +104,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/rdata-corpus"
           cp tests/data/*.rds tests/data/*.RData "$RUNNER_TEMP/rdata-corpus/"
           ./build-fuzz/fuzz_rdata    -max_total_time=40 -seed=1 "$RUNNER_TEMP/rdata-corpus"
+          mkdir -p "$RUNNER_TEMP/pod5-corpus"
+          cp tests/data/tiny.pod5 "$RUNNER_TEMP/pod5-corpus/"
+          ./build-fuzz/fuzz_pod5     -max_total_time=40 -seed=1 "$RUNNER_TEMP/pod5-corpus"
 
       # ── Qt6/KDE GUI (24.04 only) ─────────────────────────────────────────
       # Reuses the shared Arrow / htslib / hdf5 / sqlite / xlsxio stack

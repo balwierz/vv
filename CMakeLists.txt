@@ -389,7 +389,8 @@ set(VV_CORE_SOURCES
     src/formats/arrow.cpp     src/formats/cooler.cpp    src/formats/delimited.cpp
     src/formats/genbank.cpp   src/formats/hdf5.cpp
     src/formats/htslib.cpp    src/formats/json.cpp      src/formats/lociss.cpp
-    src/formats/npz.cpp       src/formats/parquet.cpp   src/formats/rdata.cpp
+    src/formats/npz.cpp       src/formats/parquet.cpp   src/formats/pod5.cpp
+    src/formats/rdata.cpp
     src/formats/sqlite.cpp
     src/formats/text.cpp      src/formats/ucsc.cpp      src/formats/wig.cpp
     src/formats/workbook.cpp
@@ -652,7 +653,7 @@ if(VV_BUILD_FUZZERS)
   target_include_directories(vvcore_fuzz_obj PRIVATE $<TARGET_PROPERTY:vv,INCLUDE_DIRECTORIES>)
   target_compile_options(vvcore_fuzz_obj PRIVATE ${_fz_flags})
   target_link_libraries(vvcore_fuzz_obj PRIVATE ${_vv_link_common})
-  foreach(_fz colblock npy lzf json rdata)
+  foreach(_fz colblock npy lzf json rdata pod5)
     add_executable(fuzz_${_fz} tests/fuzz/fuzz_${_fz}.cpp $<TARGET_OBJECTS:vvcore_fuzz_obj>)
     target_compile_definitions(fuzz_${_fz} PRIVATE
         VV_CORE_LIB=1 VV_FUZZ=1
@@ -665,7 +666,7 @@ if(VV_BUILD_FUZZERS)
         -fsanitize=fuzzer,address,undefined)
     target_link_libraries(fuzz_${_fz} PRIVATE ${_vv_link_common})
   endforeach()
-  message(STATUS "Fuzzers     : enabled (fuzz_colblock, fuzz_npy, fuzz_lzf, fuzz_json, fuzz_rdata)")
+  message(STATUS "Fuzzers     : enabled (fuzz_colblock, fuzz_npy, fuzz_lzf, fuzz_json, fuzz_rdata, fuzz_pod5)")
 endif()
 
 # ── Install rules ─────────────────────────────────────────────────────────────

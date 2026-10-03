@@ -96,6 +96,8 @@ static const FormatInfo kFormats[] = {
    false, false, true,  false, false, ""},
   {"GenBank / EMBL", ".gb .gbk .gbff .genbank .embl", "FlatFileSource",
    true,  true,  true,  false, false, ""},
+  {"Nanopore POD5", ".pod5", "Pod5Tab",
+   false, false, true,  true,  true,  ""},
   {"Cooler Hi-C matrix", ".cool .mcool", "PixelsSource",
    false, true,  true,  true,  false, ""},
   {"NumPy archive", ".npz", "NpzSource",
@@ -216,6 +218,8 @@ static void print_usage(const char* prog) {
         "  .h5seurat  .fast5  .nc  .nc4  HDF5-based: h5Seurat, Nanopore FAST5, NetCDF-4\n"
         "  .cool  .mcool               Cooler Hi-C matrix — summary / chroms / pixels\n"
         "                              (joined to bins, balanced) / bins; -r region\n"
+        "  .pod5                       Oxford Nanopore POD5 — reads / signal (decoded\n"
+        "                              VBZ samples) / run_info tabs\n"
         "  .npz                        NumPy archive — summary tab + per-array tabs (3-D+ scrubs via [/])\n"
         "  .npy                        NumPy single array\n"
         "  .rds  .RData  .rda          R data frames / vectors / matrices (one tab per\n"

@@ -1187,6 +1187,21 @@ printf 'CDF\001\000\000\000\000' > "$TMP/classic.nc"
 assert_contains "netcdf3_refused" "$("$VV" "$TMP/classic.nc" 2>&1)" "NetCDF-3 (classic) is not supported"
 
 echo
+echo '── Nanopore POD5 ──────────────────────────────────────'
+# tests/data/make_pod5.py (the pod5 package) writes tiny.pod5: 3 reads,
+# samples (i * (k + 1)) % 200, i < 50 + 10k.
+assert_eq_file_inline "pod5_tabs" "$("$VV" --list-tabs "$DATA/tiny.pod5" | tr '\n' ' ')" "reads signal run_info "
+assert_eq_file_inline "pod5_reads" \
+    "$("$VV" --select read_id,read_number,num_samples,channel,pore_type,end_reason,run_info --tsv "$DATA/tiny.pod5")" \
+    "$(printf 'read_id\tread_number\tnum_samples\tchannel\tpore_type\tend_reason\trun_info\n00000000-0000-0000-0000-000000001234\t100\t50\t10\ttoy_pore\tsignal_positive\tacq-0001\n00000000-0000-0000-0000-000000001235\t101\t60\t11\ttoy_pore\tsignal_positive\tacq-0001\n00000000-0000-0000-0000-000000001236\t102\t70\t12\ttoy_pore\tsignal_positive\tacq-0001')"
+# VBZ decoded: read 2 (k = 1) is 0, 2, 4, ... and has 60 samples
+POD5_SIG=$("$VV" --tab signal --filter 'samples == 60' --json "$DATA/tiny.pod5")
+assert_contains "pod5_signal_decoded" "$POD5_SIG" '"signal": [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20,'
+assert_eq_file_inline "pod5_signal_length" "$(python3 -c 'import json,sys; print(len(json.load(sys.stdin)[0]["signal"]))' <<<"$POD5_SIG")" "60"
+assert_contains "pod5_run_info" "$("$VV" --tab run_info --tsv "$DATA/tiny.pod5")" "FAX00001"
+POD5_BAD="$TMP/trunc.pod5"; head -c 4000 "$DATA/tiny.pod5" > "$POD5_BAD"
+assert_exit_code "pod5_truncated_refused" 1 "$VV" "$POD5_BAD"
+
 echo '── GenBank / EMBL ─────────────────────────────────────'
 # generate.py writes the same two records with Biopython as GenBank and EMBL.
 assert_eq_file_inline "gb_tabs" "$("$VV" --list-tabs "$DATA/tiny.gb" | tr '\n' ' ')" "features records sequences "

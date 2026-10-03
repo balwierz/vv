@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Oxford Nanopore POD5 (`.pod5`)**: reads, signal (VBZ samples decoded to
+  int16 lists) and run_info tabs; read_id shown as UUID text.
 - **GenBank / EMBL flat files (`.gb`, `.gbk`, `.gbff`, `.genbank`, `.embl`)**:
   features (qualifiers as columns, 0-based start / end, strand, location),
   records and sequences tabs; `-r` filters features by record and span.

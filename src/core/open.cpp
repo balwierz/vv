@@ -1239,6 +1239,8 @@ std::string open_source_dispatch(const std::string& path, const Config& cfg,
                    return false;
                }()) {
         return open_genbank_source(path, cfg, out);
+    } else if (fends_ci(path, ".pod5")) {
+        return open_pod5_source(path, out);
     } else if (fends_ci(path, ".cool") || fends_ci(path, ".mcool") ||
                ((fends_ci(path, ".h5") || fends_ci(path, ".hdf5")) && is_cooler_file(path))) {
         return open_cooler_source(path, cfg, out);

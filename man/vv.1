@@ -214,6 +214,9 @@ flat files: features (start / end 0-based half-open, the location as written,
 one column per qualifier), records and sequences tabs. \fB-r\fR keeps the
 features overlapping a window on a record.
 .IP \(bu 2
+\fB.pod5\fR \(en Oxford Nanopore POD5: reads (read_id as UUID text), signal (VBZ
+samples decoded to a list of int16; one row per stored chunk) and run_info tabs.
+.IP \(bu 2
 \fB.cool\fR, \fB.mcool\fR \(en Cooler Hi-C contact matrices (HDF5): summary,
 chroms, pixels joined to bin coordinates (with \fBbalanced\fR when bins carry a
 weight) and bins; per resolution in an .mcool (\fBpixels@10kb\fR,

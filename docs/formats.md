@@ -21,7 +21,8 @@ build prints. Flags and options are covered in the [manual](USAGE.md).
 [NumPy](#numpy) ·
 [R data](#r-data) ·
 [Cooler Hi-C](#cooler-hi-c) ·
-[GenBank / EMBL](#genbank--embl)<br>
+[GenBank / EMBL](#genbank--embl) ·
+[Nanopore POD5](#nanopore-pod5)<br>
 **Tables** —
 [Parquet / Arrow / ORC](#parquet--arrow--orc) ·
 [TSV / CSV](#tsv--csv) ·
@@ -196,6 +197,20 @@ Try: `vv matrix.mtx.gz` · `vv filtered_feature_bc_matrix/`.
 ![vv: an .npz archive](img/vv/npz.svg)
 
 Try: `vv embedding.npz` · `vv --tab umap --tsv embedding.npz`.
+
+## Nanopore POD5
+
+`.pod5` — Oxford Nanopore's raw-signal container (Arrow tables inside one
+file). Tabs: **reads** — one row per read: `read_id` (as UUID text),
+read number, start sample, `num_samples`, channel, well, pore type,
+calibration, end reason, run, scaling and level columns; **signal** — one
+row per stored signal chunk (a long read spans several): `read_id`, the
+samples decoded from VBZ (zstd + stream-VByte deltas) as a list of int16, and
+their count; **run_info** — acquisition, flow cell, kit, protocol, sample rate
+and the context / tracking tags. Record batches are read on demand.
+
+Try: `vv --select read_id,channel,num_samples,end_reason --sort num_samples:desc run.pod5` ·
+`vv --tab run_info --vertical run.pod5`.
 
 ## GenBank / EMBL
 

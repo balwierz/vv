@@ -33,6 +33,10 @@ namespace npz { void npy_fuzz_one(const uint8_t* buf, size_t n); }
 // input, pretty print not a fixed point). Compiled only under VV_FUZZ.
 namespace vvjson { void fuzz_one(const uint8_t* buf, size_t n); }
 
+// Open an untrusted buffer as a POD5 file and read every tab; VBZ-decode it
+// too. Aborts when a built table is not valid. Compiled only under VV_FUZZ.
+void pod5_fuzz_one(const uint8_t* buf, size_t n);
+
 // Parse an untrusted buffer as an R .rds / .RData file and build its tables;
 // aborts when a built table is not valid. Compiled only under VV_FUZZ.
 void rdata_fuzz_one(const uint8_t* buf, size_t n);

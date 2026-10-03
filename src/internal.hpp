@@ -1112,6 +1112,9 @@ void register_hdf5_filters();
 std::string open_genbank_source(const std::string& path, const Config& cfg,
                                 std::unique_ptr<TabularSource>* out);
 
+// Oxford Nanopore POD5 (src/formats/pod5.cpp): reads / signal / run_info tabs.
+std::string open_pod5_source(const std::string& path, std::unique_ptr<TabularSource>* out);
+
 // Cooler Hi-C contact matrices (src/formats/cooler.cpp): .cool, .mcool.
 bool is_cooler_file(const std::string& path);
 std::string open_cooler_source(const std::string& path, const Config& cfg,
