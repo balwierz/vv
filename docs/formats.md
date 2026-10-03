@@ -143,6 +143,8 @@ mismatch gapopen qstart qend sstart send evalue bitscore`) and typed, with
 `pident`, `evalue` and `bitscore` always real. A custom `-outfmt "6 ..."` file
 keeps generic column names.
 
+![vv: BLAST -outfmt 6 hits with the standard columns named](img/vv/blast.svg)
+
 Try: `vv hits.m8` · `vv --filter 'evalue < 1e-10 and pident > 90' --sort bitscore:desc hits.m8` ·
 `vv --unique qseqid hits.m8`.
 
@@ -209,6 +211,8 @@ samples decoded from VBZ (zstd + stream-VByte deltas) as a list of int16, and
 their count; **run_info** — acquisition, flow cell, kit, protocol, sample rate
 and the context / tracking tags. Record batches are read on demand.
 
+![vv: the reads table of a POD5 run](img/vv/pod5.svg)
+
 Try: `vv --select read_id,channel,num_samples,end_reason --sort num_samples:desc run.pod5` ·
 `vv --tab run_info --vertical run.pod5`.
 
@@ -228,6 +232,8 @@ The file is read into memory (an 11 MB E. coli EMBL record opens in 0.06 s).
 `-r` keeps the features overlapping a window, the record named by its
 accession.version, accession or locus name.
 
+![vv: GenBank features of a cloning vector](img/vv/genbank.svg)
+
 Try: `vv --filter 'type == "CDS"' --select locus_tag,product,start,end NC_000913.gbff` ·
 `vv -r NC_001416.1:0-5000 lambda.gb`.
 
@@ -246,6 +252,8 @@ are read in chunks, so a multi-gigabyte file opens at once.
 `-r` selects the region × region submatrix (bin1 and bin2 both in the region)
 through the file's bin index, and the bins in the region.
 
+![vv: Hi-C pixels joined to bins, a 100 kb region of an .mcool](img/vv/cooler.svg)
+
 Try: `vv --tab pixels@10kb -r chr2:1000000-2000000 sample.mcool` ·
 `vv --tab pixels --filter 'chrom1 == "chr1" AND count >= 10' --tsv sample.cool`.
 
@@ -258,6 +266,8 @@ matrix row names become an `index` column. Compressed files (gzip, bzip2, xz)
 are read. Lists and S4 objects (Seurat, SingleCellExperiment, sparse
 `Matrix`) are not: export the part you need (`saveRDS(as.data.frame(x))`,
 `write.csv`) or convert a Seurat object to AnnData.
+
+![vv: a DESeq2 results data frame saved with saveRDS](img/vv/rds.svg)
 
 Try: `vv results.rds` · `vv --tab counts --tsv session.RData` ·
 `vv --filter 'padj < 0.05' --sort log2FoldChange:desc deseq2.rds`.

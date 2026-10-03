@@ -336,4 +336,151 @@ try:
 except ImportError:
     pass
 
+
+# ── R: a DESeq2 results table (.rds) ────────────────────────────────────────
+if tool("Rscript"):
+    rows = []
+    for g, *_ in GENES:
+        lfc = round(R.gauss(0, 2), 3)
+        rows.append((g, round(R.uniform(20, 9000), 1), lfc, round(R.uniform(0.1, 0.6), 3),
+                     10 ** -R.uniform(0.2, 12)))
+    tsv = os.path.join(out, "deseq2.tsv")
+    with open(tsv, "w") as f:
+        f.write("gene\tbaseMean\tlog2FoldChange\tlfcSE\tpvalue\n")
+        for r in rows:
+            f.write("%s\t%s\t%s\t%s\t%.3g\n" % r)
+    subprocess.run(["Rscript", "-e",
+        "d <- read.delim('%s', stringsAsFactors = FALSE); d$padj <- p.adjust(d$pvalue, 'BH');"
+        "d$direction <- factor(ifelse(d$log2FoldChange > 0, 'up', 'down'));"
+        "rownames(d) <- d$gene; d$gene <- NULL; saveRDS(d, '%s')" % (tsv, os.path.join(out, "deseq2.rds"))],
+        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    os.remove(tsv)
+else:
+    note("Rscript not found; skipping deseq2.rds")
+
+# ── Hi-C: a two-resolution .mcool (chr17 + chr7, first 2 Mb) ───────────────
+try:
+    import h5py, numpy as np
+    def cooler(g, binsize):
+        chroms = [("chr17", 2_000_000), ("chr7", 2_000_000)]
+        bc, bs, be = [], [], []
+        for ci, (_, ln) in enumerate(chroms):
+            for st in range(0, ln, binsize):
+                bc.append(ci); bs.append(st); be.append(min(st + binsize, ln))
+        n = len(bc)
+        rng = np.random.default_rng(binsize)
+        b1, b2, cnt = [], [], []
+        for i in range(n):
+            for j in range(i, n):
+                d = j - i
+                if bc[i] == bc[j] and d < 40:
+                    lam = 400.0 / (1 + d) ** 1.1
+                elif bc[i] != bc[j] and rng.random() < 0.01:
+                    lam = 1.5
+                else:
+                    continue
+                c = int(rng.poisson(lam))
+                if c:
+                    b1.append(i); b2.append(j); cnt.append(c)
+        g.attrs.update({"format": "HDF5::Cooler", "format-version": 3, "bin-type": "fixed",
+                        "bin-size": binsize, "storage-mode": "symmetric-upper", "genome-assembly": "hg38",
+                        "nbins": n, "nchroms": 2, "nnz": len(cnt), "sum": int(sum(cnt)),
+                        "generated-by": "cooler-0.10.2", "creation-date": "2026-09-30T12:00:00"})
+        g.create_dataset("chroms/name", data=np.array([c[0].encode() for c in chroms], dtype="S5"))
+        g.create_dataset("chroms/length", data=np.array([c[1] for c in chroms], dtype=np.int32))
+        g.create_dataset("bins/chrom", data=np.array(bc, dtype=np.int32),
+                         dtype=h5py.enum_dtype({"chr17": 0, "chr7": 1}, basetype="i4"))
+        g.create_dataset("bins/start", data=np.array(bs, dtype=np.int32))
+        g.create_dataset("bins/end", data=np.array(be, dtype=np.int32))
+        w = rng.uniform(0.002, 0.02, n); w[rng.random(n) < 0.03] = np.nan
+        g.create_dataset("bins/weight", data=w)
+        g.create_dataset("pixels/bin1_id", data=np.array(b1, dtype=np.int64))
+        g.create_dataset("pixels/bin2_id", data=np.array(b2, dtype=np.int64))
+        g.create_dataset("pixels/count", data=np.array(cnt, dtype=np.int32))
+        co = [0, bc.count(0), n]
+        g.create_dataset("indexes/chrom_offset", data=np.array(co, dtype=np.int64))
+        off = np.searchsorted(np.array(b1), np.arange(n + 1))
+        g.create_dataset("indexes/bin1_offset", data=off.astype(np.int64))
+    with h5py.File(os.path.join(out, "hic.mcool"), "w") as f:
+        f.attrs["format"] = "HDF5::MCOOL"; f.attrs["format-version"] = 2
+        for res in (10_000, 50_000):
+            cooler(f.create_group("resolutions/%d" % res), res)
+except ImportError:
+    note("h5py / numpy not found; skipping hic.mcool")
+
+# ── GenBank: a cloning vector (.gb) ─────────────────────────────────────────
+try:
+    from Bio.Seq import Seq
+    from Bio.SeqRecord import SeqRecord
+    from Bio.SeqFeature import SeqFeature, SimpleLocation
+    from Bio import SeqIO
+    seq = Seq("".join(R.choice("ACGT") for _ in range(2686)))
+    rec = SeqRecord(seq, id="L09137.2", name="SYNPUC19CV",
+                    description="pUC19c cloning vector (beta-galactosidase mRNA on complementary strand)")
+    rec.annotations = {"molecule_type": "DNA", "topology": "circular", "data_file_division": "SYN",
+                       "date": "18-DEC-2018", "accessions": ["L09137"], "sequence_version": 2,
+                       "organism": "synthetic construct", "taxonomy": ["other sequences", "artificial sequences", "vectors"]}
+    def feat(s, e, strand, typ, **q):
+        return SeqFeature(SimpleLocation(s, e, strand=strand), type=typ, qualifiers={k: [v] for k, v in q.items()})
+    rec.features = [
+        feat(0, 2686, 1, "source", organism="synthetic construct", mol_type="other DNA"),
+        feat(145, 469, -1, "gene", gene="lacZ"),
+        feat(145, 469, -1, "CDS", gene="lacZ", codon_start="1", product="beta-galactosidase alpha peptide",
+             protein_id="AAA03418.1", translation="MTMITPSLHACRSTLEDPRVPSSNSLAVVLQRRDWENPGVTQLNRLAAHPPFASWRNSEEARTDRPSQQLRSLNGEWRLMRYFLLTHLCGISHRIWCTLSTICSDAA"),
+        feat(396, 453, -1, "misc_feature", note="multiple cloning site"),
+        feat(1625, 2486, -1, "gene", gene="bla"),
+        feat(1625, 2486, -1, "CDS", gene="bla", codon_start="1", product="beta-lactamase", protein_id="AAA03419.1",
+             note="ampicillin resistance", translation="MSIQHFRVALIPFFAAFCLPVFAHPETLVKVKDAEDQLGARVGYIELDLNSGKILESFRPEERFPMMSTFKVLLCGAVLSRIDAGQEQLGRRIHYSQNDLVEYSPVTEKHLTDGMTVRELCSAAITMSDNTAANLLLTTIGGPKELTAFLHNMGDHVTRLDRWEPELNEAIPNDERDTTMPVAMATTLRKLLTGELLTLASRQQLIDWMEADKVAGPLLRSALPAGWFIADKSGAGERGSRGIIAALGPDGKPSRIVVIYTTGSQATMDERNRQIAEIGASLIKHW"),
+        feat(867, 1456, 1, "rep_origin", note="pMB1 origin of replication"),
+    ]
+    SeqIO.write([rec], os.path.join(out, "pUC19.gb"), "genbank")
+except ImportError:
+    note("Biopython not found; skipping pUC19.gb")
+
+# ── Nanopore: a POD5 run ─────────────────────────────────────────────────────
+try:
+    import datetime, uuid
+    import numpy as np
+    import pod5
+    run = pod5.RunInfo(
+        acquisition_id="a3f9c2d1e8b7", acquisition_start_time=datetime.datetime(2026, 9, 30, 9, 15),
+        adc_max=2047, adc_min=-2048, context_tags={"sequencing_kit": "sqk-lsk114", "basecall_config_filename": "dna_r10.4.1_e8.2_400bps_hac.cfg"},
+        experiment_name="PBMC_ONT_run1", flow_cell_id="PAW12345", flow_cell_product_code="FLO-PRO114M",
+        protocol_name="sequencing/sequencing_PRO114_DNA_e8_2_400K:FLO-PRO114M:SQK-LSK114",
+        protocol_run_id="7d1c0f2e-run", protocol_start_time=datetime.datetime(2026, 9, 30, 9, 10),
+        sample_id="PBMC_donor1", sample_rate=5000, sequencing_kit="sqk-lsk114", sequencer_position="1A",
+        sequencer_position_type="PromethION", software="MinKNOW 25.09", system_name="PC24A1",
+        system_type="PromethION 24", tracking_id={"run_id": "7d1c0f2e"})
+    rng = np.random.default_rng(5)
+    reads = []
+    for k in range(400):
+        n = int(rng.integers(4000, 40000))
+        sig = (700 + np.cumsum(rng.normal(0, 6, n))).astype(np.int16)
+        reads.append(pod5.Read(
+            read_id=uuid.UUID(int=int(rng.integers(0, 2**62)) << 64 | int(rng.integers(0, 2**62))),
+            end_reason=pod5.EndReason.from_reason_with_default_forced(
+                pod5.EndReasonEnum.SIGNAL_POSITIVE if rng.random() < 0.9 else pod5.EndReasonEnum.MUX_CHANGE),
+            calibration=pod5.Calibration(offset=-243.0, scale=0.1462), pore=pod5.Pore(channel=int(rng.integers(1, 3000)), well=1, pore_type="not_set"),
+            read_number=1000 + k, start_sample=int(k * 51234), median_before=float(rng.uniform(190, 230)),
+            run_info=run, signal=sig))
+    with pod5.Writer(os.path.join(out, "run.pod5")) as w:
+        w.add_reads(reads)
+except ImportError:
+    note("pod5 not found; skipping run.pod5")
+
+# ── BLAST tabular hits and a wiggle track ───────────────────────────────────
+with open(os.path.join(out, "hits.m8"), "w") as f:
+    for q in range(12):
+        for h in range(R.randint(1, 3)):
+            g = R.choice(GENES)
+            pid = round(R.uniform(78, 100), 3); ln = R.randint(80, 600)
+            f.write("contig_%03d\tNM_%06d.%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.2e\t%.1f\n" % (
+                q, R.randint(1000, 999999), R.randint(1, 4), pid, ln, int(ln * (100 - pid) / 100), R.randint(0, 3),
+                1, ln, R.randint(1, 3000), R.randint(1, 3000), 10 ** -R.uniform(20, 180), ln * pid / 50))
+with open(os.path.join(out, "signal.wig"), "w") as f:
+    f.write('track type=wiggle_0 name="H3K27ac" description="fold change over input"\n')
+    f.write("fixedStep chrom=chr17 start=43044001 step=200 span=200\n")
+    for k in range(60):
+        f.write("%.2f\n" % max(0.0, 2 + 6 * __import__("math").sin(k / 6) + R.gauss(0, 0.7)))
+
 print(out)
