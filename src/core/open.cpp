@@ -1233,6 +1233,12 @@ std::string open_source_dispatch(const std::string& path, const Config& cfg,
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
+    } else if ([&] {
+                   for (const char* x : {".gb", ".gbk", ".gbff", ".genbank", ".embl"})
+                       if (fends_ci(det, x) || fends_ci(det, std::string(x) + ".gz")) return true;
+                   return false;
+               }()) {
+        return open_genbank_source(path, cfg, out);
     } else if (fends_ci(path, ".cool") || fends_ci(path, ".mcool") ||
                ((fends_ci(path, ".h5") || fends_ci(path, ".hdf5")) && is_cooler_file(path))) {
         return open_cooler_source(path, cfg, out);

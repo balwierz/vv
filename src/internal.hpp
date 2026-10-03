@@ -1108,6 +1108,10 @@ std::string h5_read_failure(hid_t dset);
 void register_hdf5_filters();
 }  // namespace h5v
 
+// GenBank / EMBL flat files (src/formats/genbank.cpp): features, records, sequences.
+std::string open_genbank_source(const std::string& path, const Config& cfg,
+                                std::unique_ptr<TabularSource>* out);
+
 // Cooler Hi-C contact matrices (src/formats/cooler.cpp): .cool, .mcool.
 bool is_cooler_file(const std::string& path);
 std::string open_cooler_source(const std::string& path, const Config& cfg,

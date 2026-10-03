@@ -1,0 +1,51 @@
+LOCUS       TOY00001                 120 bp    DNA     linear   SYN 03-OCT-2026
+DEFINITION  Toy organism gene X, complete cds.
+ACCESSION   TOY00001
+VERSION     TOY00001.1
+KEYWORDS    toy; test.
+SOURCE      Toy organism
+  ORGANISM  Toy organism
+            Synthetic; Toys.
+FEATURES             Location/Qualifiers
+     source          1..120
+                     /organism="Toy organism"
+                     /mol_type="genomic DNA"
+                     /db_xref="taxon:32630"
+     gene            complement(join(61..90,11..40))
+                     /gene="toyX"
+                     /locus_tag="TOY_0001"
+     CDS             complement(join(61..90,11..40))
+                     /gene="toyX"
+                     /locus_tag="TOY_0001"
+                     /codon_start=1
+                     /product="toy protein X"
+                     /protein_id="TOYP0001.1"
+                     /db_xref="GeneID:1"
+                     /db_xref="UniProtKB:Q00001"
+                     /note="a note long enough to wrap onto a second line of the
+                     feature table, with ""quotes"" inside"
+                     /translation="MASLAKMASLAKMASLAKMASL"
+     misc_feature    <1..>20
+                     /pseudo
+                     /note="partial"
+ORIGIN
+        1 atggcgttag cctaaatggc gttagcctaa atggcgttag cctaaatggc gttagcctaa
+       61 atggcgttag cctaaatggc gttagcctaa atggcgttag cctaaatggc gttagcctaa
+//
+LOCUS       TOY00002                  60 bp    DNA     circular SYN 03-OCT-2026
+DEFINITION  Toy plasmid pTOY, complete sequence.
+ACCESSION   TOY00002
+VERSION     TOY00002.3
+KEYWORDS    .
+SOURCE      .
+  ORGANISM  Toy organism
+            Synthetic; Toys.
+FEATURES             Location/Qualifiers
+     source          1..60
+                     /organism="Toy organism"
+                     /plasmid="pTOY"
+     rep_origin      5..30
+                     /note="ori"
+ORIGIN
+        1 gattacagat tacagattac agattacaga ttacagatta cagattacag attacagatt
+//

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **GenBank / EMBL flat files (`.gb`, `.gbk`, `.gbff`, `.genbank`, `.embl`)**:
+  features (qualifiers as columns, 0-based start / end, strand, location),
+  records and sequences tabs; `-r` filters features by record and span.
 - **Cooler Hi-C matrices (`.cool`, `.mcool`)**: summary, chroms, pixels
   joined to bin coordinates (with `balanced` when the bins carry a weight)
   and bins, one pixels / bins tab per `.mcool` resolution; streamed in

@@ -20,7 +20,8 @@ build prints. Flags and options are covered in the [manual](USAGE.md).
 [MatrixMarket](#matrixmarket) ·
 [NumPy](#numpy) ·
 [R data](#r-data) ·
-[Cooler Hi-C](#cooler-hi-c)<br>
+[Cooler Hi-C](#cooler-hi-c) ·
+[GenBank / EMBL](#genbank--embl)<br>
 **Tables** —
 [Parquet / Arrow / ORC](#parquet--arrow--orc) ·
 [TSV / CSV](#tsv--csv) ·
@@ -195,6 +196,25 @@ Try: `vv matrix.mtx.gz` · `vv filtered_feature_bc_matrix/`.
 ![vv: an .npz archive](img/vv/npz.svg)
 
 Try: `vv embedding.npz` · `vv --tab umap --tsv embedding.npz`.
+
+## GenBank / EMBL
+
+`.gb` `.gbk` `.gbff` `.genbank` `.embl` (plain or compressed) — NCBI / ENA
+flat files with one or more records. Tabs: **features** — one row per feature:
+`record` (accession.version), `type`, `start` / `end` (0-based half-open, the
+span of all parts), `strand`, `location` as written in the file
+(`complement(join(61..90,11..40))`), then one column per qualifier in order of
+first use (`gene`, `locus_tag`, `product`, `translation`, …; a repeated
+qualifier such as `db_xref` is joined with `; `, a flag such as `/pseudo` is an
+empty string); **records** — locus, length, molecule, topology, division,
+date, definition, organism, taxonomy, keywords, feature count; **sequences**.
+The file is read into memory (an 11 MB E. coli EMBL record opens in 0.06 s).
+
+`-r` keeps the features overlapping a window, the record named by its
+accession.version, accession or locus name.
+
+Try: `vv --filter 'type == "CDS"' --select locus_tag,product,start,end NC_000913.gbff` ·
+`vv -r NC_001416.1:0-5000 lambda.gb`.
 
 ## Cooler Hi-C
 

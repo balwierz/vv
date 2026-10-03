@@ -1187,6 +1187,32 @@ printf 'CDF\001\000\000\000\000' > "$TMP/classic.nc"
 assert_contains "netcdf3_refused" "$("$VV" "$TMP/classic.nc" 2>&1)" "NetCDF-3 (classic) is not supported"
 
 echo
+echo '── GenBank / EMBL ─────────────────────────────────────'
+# generate.py writes the same two records with Biopython as GenBank and EMBL.
+assert_eq_file_inline "gb_tabs" "$("$VV" --list-tabs "$DATA/tiny.gb" | tr '\n' ' ')" "features records sequences "
+assert_eq_file_inline "gb_cds_minus_join" \
+    "$("$VV" --filter 'type == "CDS"' --select record,start,end,strand,location,gene,db_xref,translation --tsv "$DATA/tiny.gb")" \
+    "$(printf 'record\tstart\tend\tstrand\tlocation\tgene\tdb_xref\ttranslation\nTOY00001.1\t10\t90\t-\tcomplement(join(61..90,11..40))\ttoyX\tGeneID:1; UniProtKB:Q00001\tMASLAKMASLAKMASLAKMASL')"
+# a wrapped quoted note: joined with a space, "" unescaped
+assert_contains "gb_note_wrapped" "$("$VV" --filter 'type == "CDS"' --select note --json "$DATA/tiny.gb")" \
+    'a note long enough to wrap onto a second line of the feature table, with \"quotes\" inside'
+# partial ends <1..>20; a flag qualifier is present (empty), not null
+assert_eq_file_inline "gb_partial_flag" \
+    "$("$VV" --filter 'pseudo is not null' --select type,start,end,location --tsv "$DATA/tiny.gb" | tail -1)" \
+    "$(printf 'misc_feature\t0\t20\t<1..>20')"
+assert_eq_file_inline "embl_same_features" "$("$VV" --tsv "$DATA/tiny.embl")" "$("$VV" --tsv "$DATA/tiny.gb")"
+assert_eq_file_inline "gb_records" "$("$VV" --tab records --select record,locus,length,topology,division,definition,taxonomy,features --tsv "$DATA/tiny.gb" | tail -2)" \
+    "$(printf 'TOY00001.1\tTOY00001\t120\tlinear\tSYN\tToy organism gene X, complete cds\tSynthetic; Toys\t4\nTOY00002.3\tTOY00002\t60\tcircular\tSYN\tToy plasmid pTOY, complete sequence\tSynthetic; Toys\t2')"
+assert_eq_file_inline "embl_records" "$("$VV" --tab records --select record,length,topology,keywords --tsv "$DATA/tiny.embl" | sed -n 2p)" \
+    "$(printf 'TOY00001.1\t120\tlinear\ttoy; test')"
+assert_eq_file_inline "gb_sequence" "$("$VV" --tab sequences --tsv "$DATA/tiny.gb" | sed -n 3p)" \
+    "$(printf 'TOY00002.3\t60\tgattacagattacagattacagattacagattacagattacagattacagattacagatt')"
+# -r by accession.version or by locus; no "not applied" warning
+assert_eq_file_inline "gb_region" "$("$VV" -r TOY00002.3:0-10 --select type --tsv "$DATA/tiny.gb" 2>&1 | tr '\n' ' ')" "type source rep_origin "
+assert_eq_file_inline "gb_region_locus" "$("$VV" -r TOY00001:95-100 --select type --tsv "$DATA/tiny.gb" 2>&1 | tr '\n' ' ')" "type source "
+GB_XZ="$TMP/tiny.gb.xz"; xz -c "$DATA/tiny.gb" > "$GB_XZ" 2>/dev/null && \
+    assert_eq_file_inline "gb_compressed" "$("$VV" --count "$GB_XZ")" "6"
+
 echo '── Cooler (.cool / .mcool) ────────────────────────────'
 # generate.py: chr1 1000 bp + chr2 500 bp, 100 bp bins, weight 1/(1 + bin % 3)
 # with bin 3 NaN; tiny.mcool adds a 250 bp resolution without weights.

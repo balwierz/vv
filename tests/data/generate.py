@@ -2207,6 +2207,62 @@ else:
         _cooler(r.create_group("250"), 250, False, False)
 
 
+# tiny.gb / tiny.embl: the same two records written by Biopython as GenBank
+# and EMBL. TOY1 (linear, 120 bp): a gene + CDS on the minus strand as a join
+# of two exons, a partial misc_feature (<1..>20), repeated db_xref, a flag
+# qualifier (/pseudo) and a note long enough to wrap. TOY2 (circular, 60 bp):
+# a source and a rep_origin.
+try:
+    from Bio.Seq import Seq                                  # type: ignore
+    from Bio.SeqRecord import SeqRecord                      # type: ignore
+    from Bio.SeqFeature import SeqFeature, SimpleLocation, CompoundLocation, BeforePosition, AfterPosition  # type: ignore
+    from Bio import SeqIO                                    # type: ignore
+except ImportError:
+    print("warn: Biopython not found; skipping tiny.gb / tiny.embl", file=sys.stderr)
+else:
+    def _rec1():
+        seq = Seq(("ATGGCGTTAGCCTAA" * 8))
+        r = SeqRecord(seq, id="TOY00001.1", name="TOY00001",
+                      description="Toy organism gene X, complete cds")
+        r.annotations = {"molecule_type": "DNA", "topology": "linear", "data_file_division": "SYN",
+                         "date": "03-OCT-2026", "accessions": ["TOY00001"], "sequence_version": 1,
+                         "keywords": ["toy", "test"], "source": "Toy organism",
+                         "organism": "Toy organism", "taxonomy": ["Synthetic", "Toys"]}
+        f = []
+        f.append(SeqFeature(SimpleLocation(0, 120, strand=1), type="source",
+                            qualifiers={"organism": ["Toy organism"], "mol_type": ["genomic DNA"],
+                                        "db_xref": ["taxon:32630"]}))
+        exons = CompoundLocation([SimpleLocation(10, 40, strand=-1), SimpleLocation(60, 90, strand=-1)])
+        f.append(SeqFeature(exons, type="gene", qualifiers={"gene": ["toyX"], "locus_tag": ["TOY_0001"]}))
+        f.append(SeqFeature(exons, type="CDS",
+                            qualifiers={"gene": ["toyX"], "locus_tag": ["TOY_0001"], "codon_start": ["1"],
+                                        "product": ["toy protein X"], "protein_id": ["TOYP0001.1"],
+                                        "db_xref": ["GeneID:1", "UniProtKB:Q00001"],
+                                        "note": ["a note long enough to wrap onto a second line of the "
+                                                 "feature table, with \"quotes\" inside"],
+                                        "translation": ["MASLAKMASLAKMASLAKMASL"]}))
+        f.append(SeqFeature(SimpleLocation(BeforePosition(0), AfterPosition(20), strand=1),
+                            type="misc_feature", qualifiers={"pseudo": [""], "note": ["partial"]}))
+        r.features = f
+        return r
+    def _rec2():
+        r = SeqRecord(Seq("GATTACA" * 8 + "GATT"), id="TOY00002.3", name="TOY00002",
+                      description="Toy plasmid pTOY, complete sequence")
+        r.annotations = {"molecule_type": "DNA", "topology": "circular", "data_file_division": "SYN",
+                         "date": "03-OCT-2026", "accessions": ["TOY00002"], "sequence_version": 3,
+                         "organism": "Toy organism", "taxonomy": ["Synthetic", "Toys"]}
+        r.features = [SeqFeature(SimpleLocation(0, 60, strand=1), type="source",
+                                 qualifiers={"organism": ["Toy organism"], "plasmid": ["pTOY"]}),
+                      SeqFeature(SimpleLocation(4, 30, strand=1), type="rep_origin",
+                                 qualifiers={"note": ["ori"]})]
+        return r
+    for _name, _fmt in (("tiny.gb", "genbank"), ("tiny.embl", "embl")):
+        SeqIO.write([_rec1(), _rec2()], HERE / _name, _fmt)
+        # a flag qualifier is written bare in real files (Biopython adds ="")
+        _p = HERE / _name
+        _p.write_text(_p.read_text().replace('/pseudo=""', "/pseudo"))
+
+
 def find_kent_tool(name):
     if shutil.which(name): return name
     cand = "/opt/ucsc-kent-genome-tools/" + name

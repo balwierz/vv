@@ -387,7 +387,7 @@ set(VV_CORE_SOURCES
     src/core/io.cpp       src/core/modes.cpp    src/core/open.cpp
     src/core/region.cpp   src/core/source.cpp
     src/formats/arrow.cpp     src/formats/cooler.cpp    src/formats/delimited.cpp
-    src/formats/hdf5.cpp
+    src/formats/genbank.cpp   src/formats/hdf5.cpp
     src/formats/htslib.cpp    src/formats/json.cpp      src/formats/lociss.cpp
     src/formats/npz.cpp       src/formats/parquet.cpp   src/formats/rdata.cpp
     src/formats/sqlite.cpp

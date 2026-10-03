@@ -1,0 +1,60 @@
+ID   TOY00001; SV 1; linear; DNA; ; SYN; 120 BP.
+XX
+AC   TOY00001;
+XX
+DE   Toy organism gene X, complete cds
+XX
+KW   toy
+KW   test
+XX
+OS   Toy organism
+OC   Synthetic; Toys.
+XX
+FH   Key             Location/Qualifiers
+FH
+FT   source          1..120
+FT                   /organism="Toy organism"
+FT                   /mol_type="genomic DNA"
+FT                   /db_xref="taxon:32630"
+FT   gene            complement(join(61..90,11..40))
+FT                   /gene="toyX"
+FT                   /locus_tag="TOY_0001"
+FT   CDS             complement(join(61..90,11..40))
+FT                   /gene="toyX"
+FT                   /locus_tag="TOY_0001"
+FT                   /codon_start=1
+FT                   /product="toy protein X"
+FT                   /protein_id="TOYP0001.1"
+FT                   /db_xref="GeneID:1"
+FT                   /db_xref="UniProtKB:Q00001"
+FT                   /note="a note long enough to wrap onto a second line of the
+FT                   feature table, with ""quotes"" inside"
+FT                   /translation="MASLAKMASLAKMASLAKMASL"
+FT   misc_feature    <1..>20
+FT                   /pseudo
+FT                   /note="partial"
+XX
+SQ   Sequence 120 BP; 32 A; 24 C; 32 G; 32 T; 0 other;
+     atggcgttag cctaaatggc gttagcctaa atggcgttag cctaaatggc gttagcctaa        60
+     atggcgttag cctaaatggc gttagcctaa atggcgttag cctaaatggc gttagcctaa       120
+//
+ID   TOY00002; SV 3; circular; DNA; ; SYN; 60 BP.
+XX
+AC   TOY00002;
+XX
+DE   Toy plasmid pTOY, complete sequence
+XX
+OS   Toy organism
+OC   Synthetic; Toys.
+XX
+FH   Key             Location/Qualifiers
+FH
+FT   source          1..60
+FT                   /organism="Toy organism"
+FT                   /plasmid="pTOY"
+FT   rep_origin      5..30
+FT                   /note="ori"
+XX
+SQ   Sequence 60 BP; 25 A; 8 C; 9 G; 18 T; 0 other;
+     gattacagat tacagattac agattacaga ttacagatta cagattacag attacagatt        60
+//

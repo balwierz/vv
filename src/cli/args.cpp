@@ -94,6 +94,8 @@ static const FormatInfo kFormats[] = {
    false, false, true,  false, false, ""},
   {"HDF5 / AnnData / Loom", ".h5ad .h5 .hdf5 .loom .h5mu .h5seurat .fast5 .nc .nc4", "Hdf5Source",
    false, false, true,  false, false, ""},
+  {"GenBank / EMBL", ".gb .gbk .gbff .genbank .embl", "FlatFileSource",
+   true,  true,  true,  false, false, ""},
   {"Cooler Hi-C matrix", ".cool .mcool", "PixelsSource",
    false, true,  true,  true,  false, ""},
   {"NumPy archive", ".npz", "NpzSource",
@@ -225,6 +227,9 @@ static void print_usage(const char* prog) {
         "  .fa  .fasta  .fna  .faa  .ffn  .frn\n"
         "                              sequences (FASTA)\n"
         "  .fq  .fastq                 sequencing reads (FASTQ)\n"
+        "  .gb  .gbk  .gbff  .genbank  .embl\n"
+        "                              GenBank / EMBL flat files — features (qualifiers\n"
+        "                              as columns) / records / sequences tabs\n"
         "  .bcf                        binary VCF (htslib)\n"
         "  .paf  .paf.gz               minimap2 pairwise alignments\n"
         "  .mtx  .mtx.gz               MatrixMarket sparse matrix (row, col, value; 0-based)\n"
@@ -473,7 +478,8 @@ static void print_usage(const char* prog) {
         "  VCF/BED/GFF/TSV, indexed BCF (.csi/.tbi), LociSSD (.lociss),\n"
         "  plain sorted Parquet with chrom/start/end columns,\n"
         "  bigBed/bigWig, Cooler (.cool / .mcool: the region x region\n"
-        "  submatrix). Unindexed BED/VCF/GFF/SAM/PAF/mpileup text is\n"
+        "  submatrix) and GenBank / EMBL features (read in full).\n"
+        "  Unindexed BED/VCF/GFF/SAM/PAF/mpileup text is\n"
         "  read in full and filtered, with a note on stderr; other formats\n"
         "  with no region index warn on stderr and show the whole file.\n"
         "  Coordinates follow the UCSC convention\n"
