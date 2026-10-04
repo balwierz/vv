@@ -2282,6 +2282,9 @@ except ImportError:
 else:
     import tempfile, warnings, zipfile
     warnings.filterwarnings("ignore")
+    # One I/O worker: many small writes to a local store intermittently
+    # deadlocked zarr-python's async layer (3.2.1, Python 3.14).
+    zarr.config.set({"async.concurrency": 1, "threading.max_workers": 1})
     def _zip_store(src, dst):
         if dst.exists():
             dst.unlink()
@@ -2290,6 +2293,8 @@ else:
             for n in names:
                 z.write(Path(src) / n, n)
     anndata.settings.allow_write_nullable_strings = True
+    # Explicit: anndata's default write format moves from Zarr v2 to v3.
+    anndata.settings.zarr_write_format = 2
     with tempfile.TemporaryDirectory() as tmp:
         for name in ("tiny", "tiny.csc", "tiny.raw", "tiny.obsp", "tiny.nullstr", "tiny.uns",
                      "tiny.cattypes", "tiny.sparselayer"):
