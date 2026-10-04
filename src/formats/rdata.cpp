@@ -9,8 +9,6 @@
 
 #include "internal.hpp"
 
-#include <arrow/util/utf8.h>
-
 extern "C" {
 #include <rdata.h>
 }
@@ -43,27 +41,6 @@ struct Ctx {
     std::string              error;
     RObj& cur() { if (objs.empty()) objs.emplace_back(); return objs.back(); }
 };
-
-// Strings R marks as "bytes", or native strings in a file that does not name
-// its encoding, can be any bytes: invalid UTF-8 bytes become U+FFFD.
-std::string valid_utf8(const char* v) {
-    const size_t n = std::strlen(v);
-    const auto* u = reinterpret_cast<const uint8_t*>(v);
-    if (arrow::util::ValidateUTF8(u, (int64_t)n)) return std::string(v, n);
-    std::string out;
-    for (size_t k = 0; k < n;) {
-        const size_t len = u[k] < 0x80 ? 1 : (u[k] >> 5) == 6 ? 2 : (u[k] >> 4) == 14 ? 3
-                         : (u[k] >> 3) == 30 ? 4 : 0;
-        if (len && k + len <= n && arrow::util::ValidateUTF8(u + k, (int64_t)len)) {
-            out.append(v + k, len);
-            k += len;
-        } else {
-            out += "\xef\xbf\xbd";
-            ++k;
-        }
-    }
-    return out;
-}
 
 bool is_na_real(double v) {
     if (!std::isnan(v)) return false;

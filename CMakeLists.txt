@@ -664,12 +664,14 @@ if(VV_BUILD_FUZZERS)
   set(_fz_flags -fsanitize=fuzzer-no-link,address,undefined -fno-sanitize=vptr
                 -fno-omit-frame-pointer -g)
   add_library(vvcore_fuzz_obj OBJECT ${VV_CORE_SOURCES})
+  # (Zarr chunks capped at 16 MiB so the fuzzer explores decoding rather
+  # than the memory limit; see VV_ZARR_MAX_CHUNK in src/formats/zarr.cpp)
   target_compile_definitions(vvcore_fuzz_obj PRIVATE
-      VV_CORE_LIB=1 VV_FUZZ=1 $<TARGET_PROPERTY:vv,COMPILE_DEFINITIONS>)
+      VV_CORE_LIB=1 VV_FUZZ=1 VV_ZARR_MAX_CHUNK=16777216 $<TARGET_PROPERTY:vv,COMPILE_DEFINITIONS>)
   target_include_directories(vvcore_fuzz_obj PRIVATE $<TARGET_PROPERTY:vv,INCLUDE_DIRECTORIES>)
   target_compile_options(vvcore_fuzz_obj PRIVATE ${_fz_flags})
   target_link_libraries(vvcore_fuzz_obj PRIVATE ${_vv_link_common})
-  foreach(_fz colblock npy lzf json rdata pod5)
+  foreach(_fz colblock npy lzf json rdata pod5 zarr)
     add_executable(fuzz_${_fz} tests/fuzz/fuzz_${_fz}.cpp $<TARGET_OBJECTS:vvcore_fuzz_obj>)
     target_compile_definitions(fuzz_${_fz} PRIVATE
         VV_CORE_LIB=1 VV_FUZZ=1
@@ -682,7 +684,7 @@ if(VV_BUILD_FUZZERS)
         -fsanitize=fuzzer,address,undefined)
     target_link_libraries(fuzz_${_fz} PRIVATE ${_vv_link_common})
   endforeach()
-  message(STATUS "Fuzzers     : enabled (fuzz_colblock, fuzz_npy, fuzz_lzf, fuzz_json, fuzz_rdata, fuzz_pod5)")
+  message(STATUS "Fuzzers     : enabled (fuzz_colblock, fuzz_npy, fuzz_lzf, fuzz_json, fuzz_rdata, fuzz_pod5, fuzz_zarr)")
 endif()
 
 # ── Install rules ─────────────────────────────────────────────────────────────

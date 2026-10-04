@@ -1120,6 +1120,9 @@ std::string open_genbank_source(const std::string& path, const Config& cfg,
 // Oxford Nanopore POD5 (src/formats/pod5.cpp): reads / signal / run_info tabs.
 std::string open_pod5_source(const std::string& path, std::unique_ptr<TabularSource>* out);
 
+// Text from a file as valid UTF-8 (invalid bytes → U+FFFD) (src/core/common.cpp).
+std::string valid_utf8(std::string_view v);
+
 // The obs / var row cap of an AnnData store for this run (src/core/open.cpp):
 // the preview cap in the viewer, every row (or -n) for a complete answer.
 int64_t anndata_df_row_cap(const Config& cfg);

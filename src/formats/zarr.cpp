@@ -175,6 +175,7 @@ public:
         } else if (*p_ == '"') {
             v->t = JVal::Str;
             ok = string(&v->s);
+            if (ok) v->s = valid_utf8(v->s);
         } else if (lit("true")) { v->t = JVal::Bool; v->b = true; ok = true; }
         else if (lit("false")) { v->t = JVal::Bool; ok = true; }
         else if (lit("null")) { v->t = JVal::Null; ok = true; }
@@ -212,6 +213,11 @@ public:
         return p_ == end_;
     }
 };
+
+// A JSON number as an integer: NaN, ±Infinity and values beyond int64 → `bad`.
+int64_t to_i64(double d, int64_t bad = -1) {
+    return std::isfinite(d) && std::fabs(d) < 9.2e18 ? (int64_t)d : bad;
+}
 
 bool parse_json(const std::string& text, JVal* v) {
     JsonParser p(text.data(), text.size());
@@ -531,9 +537,17 @@ bool parse_v2_dtype(const std::string& d, ArrayMeta* m) {
 std::vector<int64_t> int_list(const JVal* v) {
     std::vector<int64_t> out;
     if (!v || v->t != JVal::Arr) return out;
-    for (const auto& x : v->a) out.push_back(x.t == JVal::Num ? (int64_t)x.num : -1);
+    for (const auto& x : v->a) out.push_back(x.t == JVal::Num ? to_i64(x.num) : -1);
     return out;
 }
+
+// The largest decoded chunk read (fixed by the dtype and chunk shape, or
+// declared by a vlen / blosc stream). Fuzz builds read smaller chunks so the
+// fuzzer explores decoding rather than the memory limit.
+#ifndef VV_ZARR_MAX_CHUNK
+#define VV_ZARR_MAX_CHUNK ((size_t)1 << 30)
+#endif
+constexpr size_t kMaxDecoded = VV_ZARR_MAX_CHUNK;
 
 // Validates shape / chunks; "" or why the array is unreadable.
 std::string finish_meta(ArrayMeta* m) {
@@ -546,15 +560,15 @@ std::string finish_meta(ArrayMeta* m) {
         if (m->chunk_elems > ((int64_t)1 << 31) / m->chunks[d]) return "chunks larger than 2^31 elements";
         m->chunk_elems *= m->chunks[d];
     }
-    if (m->itemsize > 0 && (uint64_t)m->chunk_elems * (uint64_t)m->itemsize > ((uint64_t)1 << 31))
-        return "a chunk larger than 2 GiB";
+    if (m->itemsize > 0 && (uint64_t)m->chunk_elems * (uint64_t)m->itemsize > kMaxDecoded)
+        return "a chunk larger than " + std::to_string(kMaxDecoded >> 20) + " MiB";
     return "";
 }
 
 std::string codec_label(const Codec& c) {
     if (c.id == "blosc") {
         std::string s = "blosc " + c.conf.str("cname", "lz4");
-        if (const JVal* l = c.conf.get("clevel"); l && l->t == JVal::Num) s += " " + std::to_string((int)l->num);
+        if (const JVal* l = c.conf.get("clevel"); l && l->t == JVal::Num) s += " " + std::to_string(to_i64(l->num, 0));
         if (const JVal* sh = c.conf.get("shuffle")) {
             if (sh->t == JVal::Num) s += sh->num == 1 ? " + shuffle" : sh->num == 2 ? " + bitshuffle" : "";
             else if (sh->t == JVal::Str && sh->s != "noshuffle") s += " + " + sh->s;
@@ -562,13 +576,12 @@ std::string codec_label(const Codec& c) {
         return s;
     }
     if (const JVal* l = c.conf.get("level"); l && l->t == JVal::Num && (c.id == "zstd" || c.id == "gzip" || c.id == "zlib"))
-        return c.id + " " + std::to_string((int)l->num);
+        return c.id + " " + std::to_string(to_i64(l->num, 0));
     return c.id;
 }
 
 // ── Decompression ───────────────────────────────────────────────────────────
 
-constexpr size_t kMaxDecoded = (size_t)1 << 31;    // per chunk
 
 std::string inflate_zlib(const std::string& in, size_t expect, std::string* out) {
     z_stream z{};
@@ -576,13 +589,16 @@ std::string inflate_zlib(const std::string& in, size_t expect, std::string* out)
     z.next_in = (Bytef*)in.data();
     z.avail_in = (uInt)std::min<size_t>(in.size(), UINT_MAX);
     out->clear();
-    std::string buf(expect ? expect : std::max<size_t>(in.size() * 4, 1 << 16), '\0');
+    // Grown as output arrives (up to `expect` when known): a header cannot
+    // make us allocate a size the data does not back.
+    std::string buf(std::min(expect ? expect : kMaxDecoded, std::max<size_t>(in.size() * 4, 1 << 16)), '\0');
     size_t have = 0;
     int r = Z_OK;
     while (r != Z_STREAM_END) {
         if (have == buf.size()) {
-            if (expect || buf.size() >= kMaxDecoded) { inflateEnd(&z); return "decoded chunk too large"; }
-            buf.resize(std::min(buf.size() * 2, kMaxDecoded));
+            const size_t cap = expect ? expect : kMaxDecoded;
+            if (buf.size() >= cap) { inflateEnd(&z); return "decoded chunk too large"; }
+            buf.resize(std::min(buf.size() * 2, cap));
         }
         z.next_out = (Bytef*)buf.data() + have;
         z.avail_out = (uInt)std::min<size_t>(buf.size() - have, UINT_MAX);
@@ -604,12 +620,13 @@ std::string inflate_arrow(arrow::Compression::type t, const char* what, const st
     if (!codec.ok()) return std::string(what) + ": not available in this Arrow build";
     auto dec = (*codec)->MakeDecompressor();
     if (!dec.ok()) return std::string(what) + ": cannot start";
-    std::string buf(expect ? expect : std::max<size_t>(in.size() * 4, 1 << 16), '\0');
+    std::string buf(std::min(expect ? expect : kMaxDecoded, std::max<size_t>(in.size() * 4, 1 << 16)), '\0');
     size_t have = 0, used = 0;
     for (;;) {
         if (have == buf.size()) {
-            if (expect || buf.size() >= kMaxDecoded) return "decoded chunk too large";
-            buf.resize(std::min(buf.size() * 2, kMaxDecoded));
+            const size_t cap = expect ? expect : kMaxDecoded;
+            if (buf.size() >= cap) return "decoded chunk too large";
+            buf.resize(std::min(buf.size() * 2, cap));
         }
         auto r = (*dec)->Decompress((int64_t)(in.size() - used), (const uint8_t*)in.data() + used,
                                     (int64_t)(buf.size() - have), (uint8_t*)buf.data() + have);
@@ -617,7 +634,9 @@ std::string inflate_arrow(arrow::Compression::type t, const char* what, const st
         used += (size_t)r->bytes_read;
         have += (size_t)r->bytes_written;
         if ((*dec)->IsFinished()) break;
-        if (r->bytes_read == 0 && r->bytes_written == 0 && !r->need_more_output)
+        // No progress with room left in the buffer: the input ended (or will
+        // not decode further) before the frame did.
+        if (r->bytes_read == 0 && r->bytes_written == 0 && (!r->need_more_output || have < buf.size()))
             return std::string(what) + ": truncated data";
     }
     buf.resize(have);
@@ -710,7 +729,7 @@ std::string decode_vlen(const std::string& in, int64_t n, std::vector<std::strin
     std::memcpy(&cnt, in.data(), 4);
     if ((int64_t)cnt != n) return "vlen-utf8: " + std::to_string(cnt) + " items for a chunk of " + std::to_string(n);
     out->clear();
-    out->reserve((size_t)n);
+    out->reserve((size_t)std::min<int64_t>(n, (int64_t)in.size() / 4));   // each item takes >= 4 bytes
     size_t at = 4;
     for (uint32_t i = 0; i < cnt; ++i) {
         if (in.size() - at < 4) return "vlen-utf8: truncated data";
@@ -767,7 +786,7 @@ double fill_f64(const ArrayMeta& m) {
 }
 int64_t fill_i64(const ArrayMeta& m) {
     const JVal& f = m.fill;
-    if (f.t == JVal::Num) return f.integral ? f.inum : (int64_t)f.num;
+    if (f.t == JVal::Num) return f.integral ? f.inum : to_i64(f.num, 0);
     if (f.t == JVal::Bool) return f.b ? 1 : 0;
     return 0;
 }
@@ -817,16 +836,16 @@ double elem_f64(const ArrayMeta& m, const Chunk& c, int64_t i) {
 }
 std::string elem_str(const ArrayMeta& m, const Chunk& c, int64_t i) {
     if (c.missing) return fill_str(m);
-    if (m.kind == 'O') return (size_t)i < c.strs.size() ? c.strs[(size_t)i] : std::string();
+    if (m.kind == 'O') return (size_t)i < c.strs.size() ? valid_utf8(c.strs[(size_t)i]) : std::string();
     const char* p = c.bytes.data() + (size_t)i * (size_t)m.itemsize;
-    if (m.kind == 'S') return std::string(p, strnlen(p, (size_t)m.itemsize));
+    if (m.kind == 'S') return valid_utf8(std::string_view(p, strnlen(p, (size_t)m.itemsize)));
     // U: UTF-32 code points (native order after byteswap), NUL-padded
     std::string out;
     for (int k = 0; k < m.itemsize / 4; ++k) {
         uint32_t cp;
         std::memcpy(&cp, p + 4 * k, 4);
         if (cp == 0) break;
-        if (cp > 0x10FFFF) cp = 0xFFFD;
+        if (cp > 0x10FFFF || (cp >= 0xD800 && cp < 0xE000)) cp = 0xFFFD;
         if (cp < 0x80) out += (char)cp;
         else if (cp < 0x800) { out += (char)(0xC0 | (cp >> 6)); out += (char)(0x80 | (cp & 0x3F)); }
         else if (cp < 0x10000) { out += (char)(0xE0 | (cp >> 12)); out += (char)(0x80 | ((cp >> 6) & 0x3F));
@@ -1185,6 +1204,10 @@ public:
         if (kind(group) == NodeKind::Array) return out;
         for (const auto& c : io_->list(p)) {
             if (c.empty() || c[0] == '.') continue;
+            // Names become tab labels and table cells, which must be UTF-8; a
+            // node whose name is not is left out (rather than renamed, which
+            // would no longer find its key).
+            if (valid_utf8(c) != c) continue;
             const std::string child = (group == "/" || group.empty() ? "/" : group + "/") + c;
             if (io_->is_dir(prefix(child)) && kind(child) != NodeKind::Missing) out.push_back(c);
         }
@@ -1203,9 +1226,9 @@ public:
         const JVal* v = a ? a->get(name) : nullptr;
         std::vector<int64_t> out;
         if (!v) return out;
-        if (v->t == JVal::Num) return {(int64_t)v->num};
+        if (v->t == JVal::Num) return {to_i64(v->num, 0)};
         if (v->t == JVal::Arr && v->a.size() <= 1024)
-            for (const auto& x : v->a) out.push_back(x.t == JVal::Num ? (int64_t)x.num : 0);
+            for (const auto& x : v->a) out.push_back(x.t == JVal::Num ? to_i64(x.num, 0) : 0);
         return out;
     }
     bool attr_bool(const std::string& path, const char* name) const override {
@@ -1359,7 +1382,7 @@ bool parse_v3_dtype(const JVal& dt, ArrayMeta* m) {
     const JVal* conf = dt.t == JVal::Obj ? dt.get("configuration") : nullptr;
     auto num = [&](const char* k) {
         const JVal* v = conf ? conf->get(k) : nullptr;
-        return v && v->t == JVal::Num ? (int)v->num : 0;
+        return v && v->t == JVal::Num ? (int)std::clamp<int64_t>(to_i64(v->num, 0), 0, INT32_MAX) : 0;
     };
     m->dtype_label = name;
     if (name == "bool") { m->kind = 'b'; m->itemsize = 1; return true; }
@@ -1559,5 +1582,109 @@ std::string open_zarr_source(const std::string& path, const Config& cfg, std::un
     auto store = std::make_shared<ZarrStore>(std::move(io), v3 ? 3 : 2);
     return open_store_source(std::move(store), path, out, anndata_df_row_cap(cfg), cfg.matrix == "long");
 }
+
+#ifdef VV_FUZZ
+namespace {
+// A store held in memory: the fuzz input is a run of records
+// [u16 key length][key][u32 value length][value].
+class MemIO : public ZarrIO {
+    std::map<std::string, std::string> kv_;
+    std::set<std::string> dirs_;
+public:
+    void put(std::string k, std::string v) {
+        for (size_t sl = k.find('/'); sl != std::string::npos; sl = k.find('/', sl + 1)) dirs_.insert(k.substr(0, sl + 1));
+        kv_[std::move(k)] = std::move(v);
+    }
+    bool read(const std::string& key, std::string* out) const override {
+        auto it = kv_.find(key);
+        if (it == kv_.end()) return false;
+        *out = it->second;
+        return true;
+    }
+    int64_t size(const std::string& key) const override {
+        auto it = kv_.find(key);
+        return it == kv_.end() ? -1 : (int64_t)it->second.size();
+    }
+    bool exists(const std::string& key) const override { return kv_.count(key) > 0; }
+    std::vector<std::string> list(const std::string& prefix) const override {
+        std::set<std::string> names;
+        for (auto it = kv_.lower_bound(prefix); it != kv_.end() && it->first.compare(0, prefix.size(), prefix) == 0; ++it) {
+            const std::string rest = it->first.substr(prefix.size());
+            names.insert(rest.substr(0, rest.find('/')));
+        }
+        return {names.begin(), names.end()};
+    }
+    bool is_dir(const std::string& prefix) const override { return prefix.empty() || dirs_.count(prefix) > 0; }
+    uint64_t bytes_under(const std::string& prefix) const override {
+        uint64_t n = 0;
+        for (auto it = kv_.lower_bound(prefix); it != kv_.end() && it->first.compare(0, prefix.size(), prefix) == 0; ++it)
+            n += it->second.size();
+        return n;
+    }
+    int64_t total_bytes() const override { return (int64_t)bytes_under(""); }
+};
+}  // namespace
+
+// Build a store from an untrusted buffer, read every array through the Store
+// interface and every tab through the AnnData / generic tab code; abort when a
+// built table is not valid.
+void zarr_fuzz_one(const uint8_t* buf, size_t n) {
+    auto io = std::make_unique<MemIO>();
+    size_t at = 0;
+    while (at + 2 <= n) {
+        const size_t kl = (size_t)buf[at] | ((size_t)buf[at + 1] << 8);
+        at += 2;
+        if (at + kl + 4 > n) break;
+        std::string key((const char*)buf + at, kl);
+        at += kl;
+        const size_t vl = (size_t)buf[at] | ((size_t)buf[at + 1] << 8) | ((size_t)buf[at + 2] << 16) |
+                          ((size_t)buf[at + 3] << 24);
+        at += 4;
+        if (vl > n - at) break;
+        io->put(std::move(key), std::string((const char*)buf + at, vl));
+        at += vl;
+    }
+    const int version = io->exists("zarr.json") ? 3 : 2;
+    auto store = std::make_shared<ZarrStore>(std::move(io), version);
+    int nodes = 0;
+    for (const HierarchyRow& r : store->hierarchy()) {
+        if (++nodes > 200) break;
+        if (r.kind != "Dataset") continue;
+        auto ai = store->info(r.path);
+        (void)store->storage(r.path);
+        if (!ai) continue;
+        if (ai->shape.size() <= 1) {
+            const int64_t len = ai->shape.empty() ? 1 : std::min<int64_t>(ai->shape[0], 4096);
+            auto col = store->read_column(r.path, 0, len);
+            if (col.ok()) {
+                auto st = (*col)->ValidateFull();
+                if (!st.ok()) { std::fprintf(stderr, "invalid column %s: %s\n", r.path.c_str(), st.ToString().c_str()); std::abort(); }
+            }
+            std::vector<double> d((size_t)std::max<int64_t>(len, 0));
+            (void)store->read_f64(r.path, 0, ai->shape.empty() ? 0 : len, d.data());
+        } else if (ai->shape.size() == 2) {
+            const int64_t nr = std::min<int64_t>(ai->shape[0], 64), nc = std::min<int64_t>(ai->shape[1], 64);
+            std::vector<double> d((size_t)(nr * nc));
+            (void)store->read_block_f64(r.path, 0, nr, 0, nc, d.data());
+        }
+    }
+    std::unique_ptr<TabularSource> first;
+    if (!open_store_source(store, "fuzz.zarr", &first, kDataFrameRowCap, false).empty()) return;
+    std::vector<std::unique_ptr<TabularSource>> tabs = first->expand_tabs();
+    tabs.insert(tabs.begin(), std::move(first));
+    for (auto& t : tabs) {
+        std::vector<int> cols(t->schema()->num_fields());
+        for (size_t k = 0; k < cols.size(); ++k) cols[k] = (int)k;
+        for (int c = 0; c < 4; ++c) {
+            t->ensure(c);
+            if (c >= t->num_chunks()) break;
+            std::shared_ptr<arrow::Table> tbl;
+            if (!t->read_chunk(c, cols, &tbl).ok()) break;
+            auto st = tbl->ValidateFull();
+            if (!st.ok()) { std::fprintf(stderr, "invalid tab %s: %s\n", t->tab_label().c_str(), st.ToString().c_str()); std::abort(); }
+        }
+    }
+}
+#endif
 
 }  // namespace h5v

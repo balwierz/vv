@@ -5,6 +5,8 @@
 
 #include "internal.hpp"
 
+#include <arrow/util/utf8.h>
+
 // ── Colors ────────────────────────────────────────────────────────────────────
 
 
@@ -1038,4 +1040,27 @@ std::string cell_to_display_string(const arrow::Array& arr, int64_t row) {
             dict_arr.GetValueIndex(row));
     }
     return cell_to_string(arr, row);
+}
+
+// Text from a file as valid UTF-8: invalid bytes become U+FFFD. Arrow string
+// columns must be UTF-8, and R "bytes" strings, Zarr byte strings or a mis-
+// encoded attribute need not be.
+std::string valid_utf8(std::string_view v) {
+    arrow::util::InitializeUTF8();          // ValidateUTF8's tables (idempotent)
+    const auto* u = reinterpret_cast<const uint8_t*>(v.data());
+    const size_t n = v.size();
+    if (arrow::util::ValidateUTF8(u, (int64_t)n)) return std::string(v);
+    std::string out;
+    for (size_t k = 0; k < n;) {
+        const size_t len = u[k] < 0x80 ? 1 : (u[k] >> 5) == 6 ? 2 : (u[k] >> 4) == 14 ? 3
+                         : (u[k] >> 3) == 30 ? 4 : 0;
+        if (len && k + len <= n && arrow::util::ValidateUTF8(u + k, (int64_t)len)) {
+            out.append(v.data() + k, len);
+            k += len;
+        } else {
+            out += "\xef\xbf\xbd";
+            ++k;
+        }
+    }
+    return out;
 }
