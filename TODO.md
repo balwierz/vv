@@ -120,8 +120,6 @@ user-facing summary).
 - AnnData `uns` (unstructured) decoding — nested groups / scalars /
   free-form arrays. v1 skips. A follow-up could surface scalars and
   string entries using the existing hierarchy-table machinery.
-- DuckDB (`.duckdb`) — one tab per table like SQLite; needs libduckdb
-  (large) or a read through its C API built as an optional dependency.
 - SAS (`.sas7bdat`, `.xpt`), Stata (`.dta`), SPSS (`.sav`, `.por`) via
   ReadStat (MIT, same author and API style as the vendored librdata).
 - GFA assembly graphs (`.gfa`): segments / links / paths as tabs.
@@ -145,6 +143,8 @@ user-facing summary).
   Nanopore POD5 (VBZ signal decoded).
 - Zarr v2 / v3 stores (`.zarr`, `.zarr.zip`; sharding; c-blosc): AnnData /
   MuData through the HDF5 reader's tab code via the Store interface.
+- DuckDB (`.duckdb`, `.ddb`) with an optional libduckdb ≥ 1.5.6 (not in the
+  static binary): tables and views, read-only, external access off.
 - `.bgz` suffix read as `.gz` (VCF / BED / FASTQ / FASTA, `-r` via the `.tbi`); `*.vcf.bgz` in the KDE MIME package.
 - `vv x.bam --pileup -f ref.fa` — reference-aware pileup (shipped 1.15.0,
   #73). Fills the `ref` column from an indexed FASTA and renders matches as
