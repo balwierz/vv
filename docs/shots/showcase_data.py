@@ -236,6 +236,8 @@ try:
     a.obsm["X_pca"] = rng.normal(size=(n_cells, 50)).astype(np.float32)
     a.uns["leiden"] = {"params": {"resolution": 1.0}}
     a.write_h5ad(os.path.join(out, "pbmc.h5ad"))
+    shutil.rmtree(os.path.join(out, "pbmc.zarr"), ignore_errors=True)
+    a.write_zarr(os.path.join(out, "pbmc.zarr"))       # the same AnnData as a Zarr store
     scipy.io.mmwrite(os.path.join(out, "matrix.mtx"), X[:500].T.tocoo())
     np.savez(os.path.join(out, "embedding.npz"), umap=a.obsm["X_umap"][:1000],
              cluster=np.array([CELL_TYPES.index(x) for x in ct[:1000]], dtype=np.int32))

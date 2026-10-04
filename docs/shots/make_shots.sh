@@ -109,6 +109,7 @@ MAXL=11 cli cooler  110 --tab pixels@10kb -r chr17:1000000-1100000 -n 6 hic.mcoo
 MAXL=12 cli genbank 118 --tab features --select type,start,end,strand,gene,product,note pUC19.gb
 MAXL=11 cli pod5    110 --tab reads --select read_id,channel,num_samples,end_reason,median_before -n 6 run.pod5
 MAXL=11 cli blast   118 -n 6 hits.m8
+MAXL=20 cli zarr    118 --tab summary -n 16 -w 80 pbmc.zarr
 
 # ── GUI ──────────────────────────────────────────────────────────────────────
 gui anndata    "VVG_DETAIL=3,0"  --tab obs pbmc.h5ad

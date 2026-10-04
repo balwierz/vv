@@ -120,9 +120,6 @@ user-facing summary).
 - AnnData `uns` (unstructured) decoding — nested groups / scalars /
   free-form arrays. v1 skips. A follow-up could surface scalars and
   string entries using the existing hierarchy-table machinery.
-- Zarr stores (`.zarr` directories, zipped `.zarr.zip`): AnnData and
-  OME-Zarr write them; v2 / v3 metadata is JSON, chunks are Blosc / zstd
-  / gzip compressed. Would reuse the AnnData tab layout of the HDF5 reader.
 - DuckDB (`.duckdb`) — one tab per table like SQLite; needs libduckdb
   (large) or a read through its C API built as an optional dependency.
 - SAS (`.sas7bdat`, `.xpt`), Stata (`.dta`), SPSS (`.sav`, `.por`) via
@@ -146,6 +143,8 @@ user-facing summary).
 - R `.rds` / `.RData` (vendored librdata, fuzzed), Cooler `.cool` /
   `.mcool` (pixels joined to bins, `-r` submatrix), GenBank / EMBL,
   Nanopore POD5 (VBZ signal decoded).
+- Zarr v2 / v3 stores (`.zarr`, `.zarr.zip`; sharding; c-blosc): AnnData /
+  MuData through the HDF5 reader's tab code via the Store interface.
 - `.bgz` suffix read as `.gz` (VCF / BED / FASTQ / FASTA, `-r` via the `.tbi`); `*.vcf.bgz` in the KDE MIME package.
 - `vv x.bam --pileup -f ref.fa` — reference-aware pileup (shipped 1.15.0,
   #73). Fills the `ref` column from an indexed FASTA and renders matches as

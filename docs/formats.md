@@ -197,6 +197,8 @@ sharded arrays, reading only the shard index and the inner chunks needed)
 are read, with vlen-utf8 and fixed-width strings; missing chunks read as the
 fill value.
 
+![vv: an AnnData Zarr store's summary, with its chunking and codecs](img/vv/zarr.svg)
+
 Try: `vv pbmc.zarr` · `vv --tab obs --tsv pbmc.zarr.zip` ·
 `vv --tab 'X (preview)' --parquet x.parquet pbmc.zarr`.
 
