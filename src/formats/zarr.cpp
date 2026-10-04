@@ -16,7 +16,10 @@
 // Zarr v3: one `zarr.json` per node (node_type, attributes, data_type,
 // chunk_grid, chunk_key_encoding "c/i/j" or v2-style, fill_value, codecs: an
 // optional transpose, then bytes (endian) or vlen-utf8, then bytes-to-bytes
-// codecs: blosc, gzip, zstd, crc32c).
+// codecs: blosc, gzip, zstd, crc32c). A sharded array (sharding_indexed)
+// stores each outer chunk as one object: its inner chunks back to back and an
+// index of (offset, length) pairs; reads fetch the index and the inner chunks
+// they need.
 
 #include "internal.hpp"
 #include "store.hpp"
@@ -222,6 +225,17 @@ public:
     virtual ~ZarrIO() = default;
     // The bytes stored under `key` ("obs/_index/0"); false when absent.
     virtual bool read(const std::string& key, std::string* out) const = 0;
+    // Bytes [off, off + len) of a key; off < 0 counts from the end. False
+    // when absent or shorter than asked.
+    virtual bool read_range(const std::string& key, int64_t off, int64_t len, std::string* out) const {
+        std::string all;
+        if (!read(key, &all)) return false;
+        if (off < 0) off += (int64_t)all.size();
+        if (off < 0 || len < 0 || (uint64_t)off + (uint64_t)len > all.size()) return false;
+        out->assign(all, (size_t)off, (size_t)len);
+        return true;
+    }
+    virtual int64_t size(const std::string& key) const = 0;   // -1 when absent
     virtual bool exists(const std::string& key) const = 0;
     // Immediate children of a "directory" prefix ("" or "obs/"): names.
     virtual std::vector<std::string> list(const std::string& prefix) const = 0;
@@ -246,6 +260,24 @@ public:
         ss << f.rdbuf();
         *out = ss.str();
         return true;
+    }
+    bool read_range(const std::string& key, int64_t off, int64_t len, std::string* out) const override {
+        const int64_t n = size(key);
+        if (n < 0) return false;
+        if (off < 0) off += n;
+        if (off < 0 || len < 0 || off > n || len > n - off) return false;
+        std::ifstream f(root_ + key, std::ios::binary);
+        if (!f) return false;
+        f.seekg(off);
+        out->assign((size_t)len, '\0');
+        f.read(out->data(), len);
+        return f.gcount() == len;
+    }
+    int64_t size(const std::string& key) const override {
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(root_ + key, ec)) return -1;
+        const auto n = std::filesystem::file_size(root_ + key, ec);
+        return ec ? -1 : (int64_t)n;
     }
     bool exists(const std::string& key) const override {
         std::error_code ec;
@@ -358,6 +390,36 @@ public:
         return n == 0;
     }
     bool exists(const std::string& key) const override { return entries_.count(key) > 0; }
+    int64_t size(const std::string& key) const override {
+        auto it = entries_.find(key);
+        return it == entries_.end() ? -1 : (int64_t)it->second.size;
+    }
+    // Range reads of a member read it whole (members are decompressed
+    // sequentially); the last member is kept for the next range.
+    bool read_range(const std::string& key, int64_t off, int64_t len, std::string* out) const override {
+        std::shared_ptr<const std::string> all;
+        {
+            std::lock_guard<std::mutex> lk(last_mu_);
+            if (last_key_ == key) all = last_;
+        }
+        if (!all) {
+            auto buf = std::make_shared<std::string>();
+            if (!read(key, buf.get())) return false;
+            all = buf;
+            std::lock_guard<std::mutex> lk(last_mu_);
+            last_key_ = key;
+            last_ = all;
+        }
+        if (off < 0) off += (int64_t)all->size();
+        if (off < 0 || len < 0 || (uint64_t)off + (uint64_t)len > all->size()) return false;
+        out->assign(*all, (size_t)off, (size_t)len);
+        return true;
+    }
+private:
+    mutable std::mutex last_mu_;
+    mutable std::string last_key_;
+    mutable std::shared_ptr<const std::string> last_;
+public:
     std::vector<std::string> list(const std::string& prefix) const override {
         std::set<std::string> names;
         for (auto it = entries_.lower_bound(prefix); it != entries_.end(); ++it) {
@@ -406,6 +468,13 @@ struct ArrayMeta {
     bool vlen = false;
     std::string codecs_label;    // the storage summary's "filters"
     std::string unsupported;     // a codec the decoder lacks: why reads fail
+    // Sharded (v3 sharding_indexed): `chunks` are the inner chunks, a shard
+    // holds `shard_ratio[d]` of them per dimension; its index is
+    // n_inner × (offset, length) uint64 at the start or end of the shard.
+    bool sharded = false;
+    std::vector<int64_t> shard_ratio;
+    std::vector<Codec> shard_codecs;   // bytes-to-bytes codecs over a whole shard
+    bool index_at_end = true, index_crc32c = false, index_big_endian = false;
     std::string dtype_label;
     int64_t chunk_elems = 1;
 };
@@ -881,6 +950,100 @@ class ZarrStore : public Store {
         meta_cache_[path] = m;
         return m;
     }
+    // The bytes of inner chunk `idx` of a sharded array: false when the shard
+    // or the chunk is not stored (fill value).
+    arrow::Result<bool> shard_member(const std::string& path, const ArrayMeta& m, const std::vector<int64_t>& idx,
+                                     std::string* out) const {
+        std::vector<int64_t> sidx(idx.size()), inner(idx.size());
+        int64_t n_inner = 1, lin = 0;
+        for (size_t d = 0; d < idx.size(); ++d) {
+            sidx[d] = idx[d] / m.shard_ratio[d];
+            inner[d] = idx[d] % m.shard_ratio[d];
+            n_inner *= m.shard_ratio[d];
+            lin = lin * m.shard_ratio[d] + inner[d];
+        }
+        const std::string skey = chunk_key(path, m, sidx);   // the shard's object
+        int64_t ssize = io_->size(skey);
+        if (ssize < 0) return false;
+        // A shard compressed as a whole is decoded (and cached) whole; index
+        // offsets then refer to the decoded shard.
+        std::shared_ptr<const Chunk> whole;
+        if (!m.shard_codecs.empty()) {
+            const std::string wkey = "#shard:" + skey;
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                if (auto it = lru_index_.find(wkey); it != lru_index_.end()) {
+                    lru_.splice(lru_.begin(), lru_, it->second);
+                    whole = it->second->second;
+                }
+            }
+            if (!whole) {
+                std::string data;
+                if (!io_->read(skey, &data)) return arrow::Status::IOError("'", path, "': cannot read shard ", skey);
+                for (size_t k = m.shard_codecs.size(); k-- > 0;) {
+                    std::string dec;
+                    if (auto e = decompress(m.shard_codecs[k], data, 0, &dec); !e.empty())
+                        return arrow::Status::IOError("'", path, "': shard ", skey, ": ", e);
+                    data = std::move(dec);
+                }
+                auto c = std::make_shared<Chunk>();
+                c->bytes = std::move(data);
+                whole = c;
+                std::lock_guard<std::mutex> lk(mu_);
+                lru_.emplace_front(wkey, whole);
+                lru_index_[wkey] = lru_.begin();
+                lru_bytes_ += whole->bytes.size() + 64;
+            }
+            ssize = (int64_t)whole->bytes.size();
+        }
+        auto range = [&](int64_t off, int64_t len, std::string* o) {
+            if (!whole) return io_->read_range(skey, off, len, o);
+            if (off < 0 || len < 0 || off > ssize || len > ssize - off) return false;
+            o->assign(whole->bytes, (size_t)off, (size_t)len);
+            return true;
+        };
+        const int64_t isize = n_inner * 16 + (m.index_crc32c ? 4 : 0);
+        if (n_inner > ((int64_t)1 << 26) || isize > ssize)
+            return arrow::Status::IOError("'", path, "': shard ", skey, ": index larger than the shard");
+        std::shared_ptr<const Chunk> index;
+        const std::string ikey = "#index:" + skey;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            if (auto it = lru_index_.find(ikey); it != lru_index_.end()) {
+                lru_.splice(lru_.begin(), lru_, it->second);
+                index = it->second->second;
+            }
+        }
+        if (!index) {
+            std::string raw;
+            if (!range(m.index_at_end ? ssize - isize : 0, isize, &raw))
+                return arrow::Status::IOError("'", path, "': shard ", skey, ": cannot read its index");
+            if (m.index_crc32c) {
+                Codec crc{"crc32c", JVal{}};
+                std::string body;
+                if (auto e = decompress(crc, raw, 0, &body); !e.empty())
+                    return arrow::Status::IOError("'", path, "': shard ", skey, " index: ", e);
+                raw = std::move(body);
+            }
+            if (m.index_big_endian) byteswap(raw, 8);
+            auto c = std::make_shared<Chunk>();
+            c->bytes = std::move(raw);
+            index = c;
+            std::lock_guard<std::mutex> lk(mu_);
+            lru_.emplace_front(ikey, index);
+            lru_index_[ikey] = lru_.begin();
+            lru_bytes_ += index->bytes.size() + 64;
+        }
+        uint64_t off = 0, len = 0;
+        std::memcpy(&off, index->bytes.data() + lin * 16, 8);
+        std::memcpy(&len, index->bytes.data() + lin * 16 + 8, 8);
+        if (off == UINT64_MAX && len == UINT64_MAX) return false;    // not stored
+        if (off > (uint64_t)ssize || len > (uint64_t)ssize - off || len > kMaxDecoded)
+            return arrow::Status::IOError("'", path, "': shard ", skey, ": chunk outside the shard");
+        if (!range((int64_t)off, (int64_t)len, out))
+            return arrow::Status::IOError("'", path, "': shard ", skey, ": cannot read a chunk");
+        return true;
+    }
     std::string chunk_key(const std::string& path, const ArrayMeta& m, const std::vector<int64_t>& idx) const {
         std::string k = prefix(path);
         if (idx.empty()) return k + (m.key_prefix.empty() ? "0" : "c");
@@ -894,7 +1057,9 @@ class ZarrStore : public Store {
     // The decoded chunk at grid index `idx`.
     arrow::Result<std::shared_ptr<const Chunk>> chunk(const std::string& path, const ArrayMeta& m,
                                                       const std::vector<int64_t>& idx) const {
-        const std::string key = chunk_key(path, m, idx);
+        // (a sharded array's key names the inner chunk, which has no object
+        // of its own: only a cache key)
+        const std::string key = chunk_key(path, m, idx) + (m.sharded ? "#inner" : "");
         {
             std::lock_guard<std::mutex> lk(mu_);
             if (auto it = lru_index_.find(key); it != lru_index_.end()) {
@@ -904,7 +1069,15 @@ class ZarrStore : public Store {
         }
         auto c = std::make_shared<Chunk>();
         std::string raw;
-        if (!io_->read(key, &raw)) {
+        bool have = false;
+        if (m.sharded) {
+            auto r = shard_member(path, m, idx, &raw);
+            if (!r.ok()) return r.status();
+            have = *r;
+        } else {
+            have = io_->read(key, &raw);
+        }
+        if (!have) {
             c->missing = true;
         } else {
             std::string err;
@@ -1220,6 +1393,64 @@ bool parse_v3_dtype(const JVal& dt, ArrayMeta* m) {
     return false;
 }
 
+// sharding_indexed: the outer chunk (shard) shape is the chunk grid; the
+// inner chunks and their codecs come from the configuration.
+std::string parse_sharding(const JVal& c, ArrayMeta* m) {
+    const JVal* conf = c.get("configuration");
+    if (!conf) return "sharding_indexed without a configuration";
+    const std::vector<int64_t> inner = int_list(conf->get("chunk_shape"));
+    if (inner.size() != m->chunks.size()) return "sharding_indexed: inner chunk rank differs";
+    m->shard_ratio.clear();
+    std::string shape;
+    for (size_t d = 0; d < inner.size(); ++d) {
+        if (inner[d] <= 0 || m->chunks[d] <= 0 || m->chunks[d] % inner[d] != 0)
+            return "sharding_indexed: shards must hold whole inner chunks";
+        m->shard_ratio.push_back(m->chunks[d] / inner[d]);
+        shape += (d ? " \xc3\x97 " : "") + std::to_string(m->chunks[d]);
+    }
+    m->chunks = inner;
+    m->sharded = true;
+    m->index_at_end = conf->str("index_location", "end") != "start";
+    if (const JVal* ic = conf->get("index_codecs"); ic && ic->t == JVal::Arr)
+        for (const JVal& x : ic->a) {
+            const std::string n = x.t == JVal::Str ? x.s : x.str("name");
+            const JVal* xc = x.get("configuration");
+            if (n == "bytes") m->index_big_endian = xc && xc->str("endian", "little") == "big";
+            else if (n == "crc32c") m->index_crc32c = true;
+            else return "sharding_indexed: unsupported index codec '" + n + "'";
+        }
+    // The inner codec chain, as for an unsharded array.
+    const JVal* codecs = conf->get("codecs");
+    if (!codecs || codecs->t != JVal::Arr) return "sharding_indexed without inner codecs";
+    bool a2b = false;
+    std::vector<std::string> labels;
+    for (const JVal& x : codecs->a) {
+        const std::string name = x.t == JVal::Str ? x.s : x.str("name");
+        const JVal* xc = x.get("configuration");
+        const JVal empty;
+        if (!a2b) {
+            if (name == "transpose") {
+                std::vector<int64_t> ord = int_list(xc ? xc->get("order") : nullptr);
+                bool identity = true;
+                for (size_t k = 0; k < ord.size(); ++k) identity = identity && ord[k] == (int64_t)k;
+                if (ord.size() == 2 && ord[0] == 1 && ord[1] == 0) m->fortran = !m->fortran;
+                else if (!identity) m->unsupported = "unsupported transpose order";
+                continue;
+            }
+            a2b = true;
+            if (name == "bytes") m->big_endian = xc && xc->str("endian", "little") == "big";
+            else if (name == "vlen-utf8" || name == "vlen-bytes") m->vlen = true;
+            else m->unsupported = "unsupported inner codec '" + name + "' (nested sharding?)";
+            continue;
+        }
+        m->bytes_codecs.push_back(Codec{name, xc ? *xc : empty});
+        labels.push_back(codec_label(m->bytes_codecs.back()));
+    }
+    m->codecs_label = "sharded (shards of " + shape + ")";
+    for (const auto& l : labels) m->codecs_label += " + " + l;
+    return "";
+}
+
 std::string ZarrStore::parse_v3(const std::string& path, ArrayMeta* m) const {
     const JVal* z = json(prefix(path) + "zarr.json");
     if (!z || z->t != JVal::Obj) return "no readable zarr.json";
@@ -1271,15 +1502,20 @@ std::string ZarrStore::parse_v3(const std::string& path, ArrayMeta* m) const {
                 m->vlen = true;
                 labels.push_back(name);
             } else if (name == "sharding_indexed") {
-                m->unsupported = "sharded arrays (sharding_indexed) are not supported yet";
-                labels.push_back("sharded");
+                // A transpose outside the shards would permute the shard
+                // layout itself; zarr-python puts it inside (inner codecs).
+                if (m->fortran) return "a transpose outside sharding_indexed is not supported";
+                if (auto e = parse_sharding(c, m); !e.empty()) return e;
+                labels.push_back(m->codecs_label);
+                m->codecs_label.clear();
             } else {
                 m->unsupported = "unsupported array-to-bytes codec '" + name + "'";
             }
             continue;
         }
-        m->bytes_codecs.push_back(codec);
-        labels.push_back(name == "blosc" ? codec_label(codec) : codec_label(codec));
+        // after sharding_indexed: codecs over the whole shard
+        (m->sharded ? m->shard_codecs : m->bytes_codecs).push_back(codec);
+        labels.push_back(codec_label(codec));
     }
     if (!a2b) return "no array-to-bytes codec";
     if (m->kind == 'O' && !m->vlen) m->unsupported = "a string array without a vlen-utf8 codec";

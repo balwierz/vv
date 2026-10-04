@@ -192,7 +192,8 @@ modalities — and the summary's storage rows show the chunking and codecs.
 Any other store (OME-Zarr images, xarray datasets) opens as a hierarchy tab
 plus one tab per 1-D / 2-D array. Zarr v2 (compressors blosc, zstd, gzip,
 zlib, lz4, bz2; C and Fortran order) and v3 (`zarr.json`; codecs transpose,
-bytes, vlen-utf8, blosc, gzip, zstd, crc32c; `c/` or v2-style chunk keys)
+bytes, vlen-utf8, blosc, gzip, zstd, crc32c; `c/` or v2-style chunk keys;
+sharded arrays, reading only the shard index and the inner chunks needed)
 are read, with vlen-utf8 and fixed-width strings; missing chunks read as the
 fill value.
 

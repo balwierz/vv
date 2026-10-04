@@ -1274,6 +1274,25 @@ if [ -f "$DATA/codecs.v3.zarr.zip" ]; then
     python3 -c "import sys; p=sys.argv[1]; b=bytearray(open(p,'rb').read()); b[3]^=1; open(p,'wb').write(b)" "$ZD3/i8_crc32c/c/0"
     assert_contains "zarr_v3_crc32c_mismatch" "$("$VV" --tab /i8_crc32c --tsv "$ZD3" 2>&1)" "crc32c: checksum mismatch"
 fi
+if [ -f "$DATA/sharded.zarr.zip" ]; then
+    # v3 sharding: inner chunks read through each shard's index (crc32c),
+    # unstored shards and inner chunks as the fill value, an inner transpose,
+    # the index at the start of a zstd-compressed shard.
+    {
+        "$VV" --tsv "$DATA/sharded.zarr.zip"
+        "$VV" --list-tabs "$DATA/sharded.zarr.zip" | tail -n +2 | while IFS= read -r t; do
+            echo "## $t"; "$VV" --tab "$t" --tsv "$DATA/sharded.zarr.zip" 2>&1
+        done
+    } > "$TMP/zarr_sharded.out"
+    if [ -f "$GOLDEN/zarr_sharded.expected" ]; then
+        assert_eq_file "zarr_sharded" "$TMP/zarr_sharded.out" "$GOLDEN/zarr_sharded.expected"
+    else
+        missing_golden "zarr_sharded" "$TMP/zarr_sharded.out"
+    fi
+    ZS="$TMP/sharded.zarr"; rm -rf "$ZS"; mkdir -p "$ZS"; python3 -m zipfile -e "$DATA/sharded.zarr.zip" "$ZS"
+    assert_eq_file_inline "zarr_sharded_dir_same" "$("$VV" --tab /f8_shards_2d --tsv "$ZS")" \
+        "$("$VV" --tab /f8_shards_2d --tsv "$DATA/sharded.zarr.zip")"
+fi
 
 echo '── Nanopore POD5 ──────────────────────────────────────'
 # tests/data/make_pod5.py (the pod5 package) writes tiny.pod5: 3 reads,

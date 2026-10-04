@@ -2272,7 +2272,9 @@ else:
 # order, big-endian, float16, "/" chunk keys, missing chunks = fill,
 # <U / |S / vlen strings). *.v3.zarr.zip / codecs.v3.zarr.zip: the same as
 # Zarr v3 (transpose, big-endian bytes, blosc, gzip, zstd, crc32c, "v2" chunk
-# keys, fixed and vlen strings, a NaN fill).
+# keys, fixed and vlen strings, a NaN fill). sharded.zarr.zip: v3 sharded
+# arrays (2-D, 1-D, strings, unstored shards / inner chunks, an inner
+# transpose, the index at the start of a zstd-compressed shard).
 try:
     import anndata                                           # type: ignore
     import numcodecs                                         # type: ignore
@@ -2397,6 +2399,26 @@ else:
                               compressors=None)
         m[0:6] = np.arange(6)                      # chunks 1-3 never written: fill value NaN
         _zip_store(d, HERE / "codecs.v3.zarr.zip")
+        # Sharded arrays.
+        from zarr.codecs import ShardingCodec  # type: ignore
+        d = Path(tmp) / "sharded.zarr"
+        root = zarr.open_group(d, mode="w", zarr_format=3)
+        r, c = np.mgrid[0:45, 0:31]
+        root.create_array("f8_shards_2d", shape=(45, 31), chunks=(4, 5), shards=(16, 15), dtype="f8",
+                          compressors=[BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")])[...] = r * 100 + c + 0.25
+        root.create_array("i4_shards_1d", shape=(100,), chunks=(7,), shards=(28,), dtype="i4",
+                          compressors=[ZstdCodec(level=2)])[...] = np.arange(100) * 3 - 50
+        root.create_array("str_shards", shape=(17,), chunks=(3,), shards=(6,), dtype=str)[...] = \
+            np.array([("w%d" % i) * (i % 4) for i in range(17)], dtype=object)
+        p = root.create_array("i8_partial_shards", shape=(40,), chunks=(4,), shards=(12,), dtype="i8", fill_value=-1)
+        p[0:5] = np.arange(5)                      # inner chunks / whole shards left unstored: fill -1
+        p[30:33] = [9, 9, 9]
+        root.create_array("i4_shards_inner_transpose", shape=(20, 9), chunks=(4, 3), shards=(8, 9), dtype="i4",
+                          filters=[TransposeCodec(order=(1, 0))])[...] = r[:20, :9] * 10 + c[:20, :9]
+        root.create_array("i4_index_at_start", shape=(50,), chunks=(10,), dtype="i4",
+                          serializer=ShardingCodec(chunk_shape=(5,), codecs=[BytesCodec(), ZstdCodec(level=1)],
+                                                   index_location="start"))[...] = np.arange(50) * 7
+        _zip_store(d, HERE / "sharded.zarr.zip")
 
 
 def find_kent_tool(name):

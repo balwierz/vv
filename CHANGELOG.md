@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   written with `write_zarr` open with the same tabs as their `.h5ad` /
   `.h5mu`; other stores as a hierarchy plus per-array tabs. Blosc via c-blosc
   (optional, auto-detected), zstd, gzip, zlib, lz4, bz2; v3 transpose, bytes,
-  vlen-utf8 and crc32c.
+  vlen-utf8, crc32c and sharding.
 - **Oxford Nanopore POD5 (`.pod5`)**: reads, signal (VBZ samples decoded to
   int16 lists) and run_info tabs; read_id shown as UUID text.
 - **GenBank / EMBL flat files (`.gb`, `.gbk`, `.gbff`, `.genbank`, `.embl`)**:
