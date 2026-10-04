@@ -12,10 +12,16 @@
 // "i/j" with dimension_separator "/"); a compressor (blosc, zstd, gzip, zlib,
 // lz4, bz2) and filters (vlen-utf8 for text). A group may carry only
 // `.zattrs` (anndata writes its sparse-matrix groups that way).
+//
+// Zarr v3: one `zarr.json` per node (node_type, attributes, data_type,
+// chunk_grid, chunk_key_encoding "c/i/j" or v2-style, fill_value, codecs: an
+// optional transpose, then bytes (endian) or vlen-utf8, then bytes-to-bytes
+// codecs: blosc, gzip, zstd, crc32c).
 
 #include "internal.hpp"
 #include "store.hpp"
 
+#include <array>
 #include <functional>
 #include <list>
 #include <mutex>
@@ -393,8 +399,13 @@ struct ArrayMeta {
     std::string sep = ".";       // chunk key separator
     std::string key_prefix;      // v3 default encoding: "c" + sep
     JVal fill;
-    std::vector<Codec> filters;  // applied after decompression, in reverse
-    std::optional<Codec> compressor;
+    // Decoding: the bytes-to-bytes codecs in reverse (decompression,
+    // checksums), then the array-to-bytes step: vlen strings, or fixed-size
+    // elements in `big_endian` order; `fortran` is the element order.
+    std::vector<Codec> bytes_codecs;
+    bool vlen = false;
+    std::string codecs_label;    // the storage summary's "filters"
+    std::string unsupported;     // a codec the decoder lacks: why reads fail
     std::string dtype_label;
     int64_t chunk_elems = 1;
 };
@@ -547,7 +558,30 @@ std::string inflate_arrow(arrow::Compression::type t, const char* what, const st
 
 // One compressor stage; `expect` is the decoded size when known (fixed-size
 // dtypes), 0 otherwise.
+uint32_t crc32c(const uint8_t* p, size_t n) {
+    static const auto table = [] {
+        std::array<uint32_t, 256> t{};
+        for (uint32_t i = 0; i < 256; ++i) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; ++k) c = (c & 1) ? 0x82F63B78u ^ (c >> 1) : c >> 1;
+            t[i] = c;
+        }
+        return t;
+    }();
+    uint32_t c = 0xFFFFFFFFu;
+    for (size_t i = 0; i < n; ++i) c = table[(c ^ p[i]) & 0xFF] ^ (c >> 8);
+    return c ^ 0xFFFFFFFFu;
+}
+
 std::string decompress(const Codec& c, const std::string& in, size_t expect, std::string* out) {
+    if (c.id == "crc32c") {                      // v3: a little-endian CRC32C appended
+        if (in.size() < 4) return "crc32c: truncated data";
+        uint32_t want = 0;
+        std::memcpy(&want, in.data() + in.size() - 4, 4);
+        if (crc32c((const uint8_t*)in.data(), in.size() - 4) != want) return "crc32c: checksum mismatch";
+        out->assign(in, 0, in.size() - 4);
+        return "";
+    }
     if (c.id == "gzip" || c.id == "zlib") return inflate_zlib(in, expect, out);
     if (c.id == "zstd") return inflate_arrow(arrow::Compression::ZSTD, "zstd", in, expect, out);
     if (c.id == "lz4") {                         // numcodecs: uint32 size + raw LZ4 block
@@ -653,6 +687,12 @@ double fill_f64(const ArrayMeta& m) {
         if (f.s == "NaN") return NAN;
         if (f.s == "Infinity") return INFINITY;
         if (f.s == "-Infinity") return -INFINITY;
+        if (f.s.rfind("0x", 0) == 0) {          // v3: the value's raw bits
+            const uint64_t bits = std::strtoull(f.s.c_str() + 2, nullptr, 16);
+            if (m.itemsize == 2) return half_to_double((uint16_t)bits);
+            if (m.itemsize == 4) { float x; const uint32_t b = (uint32_t)bits; std::memcpy(&x, &b, 4); return x; }
+            double x; std::memcpy(&x, &bits, 8); return x;
+        }
     }
     return 0;
 }
@@ -774,9 +814,20 @@ class ZarrStore : public Store {
         return it->second ? &*it->second : nullptr;
     }
     const JVal* attrs(const std::string& path) const {
+        if (version_ == 3) {
+            const JVal* z = json(prefix(path) + "zarr.json");
+            const JVal* a = z ? z->get("attributes") : nullptr;
+            return a && a->t == JVal::Obj ? a : nullptr;
+        }
         const JVal* a = json(prefix(path) + ".zattrs");
         return a && a->t == JVal::Obj ? a : nullptr;
     }
+    // The node type a v3 zarr.json declares ("array" / "group" / "").
+    std::string v3_node(const std::string& path) const {
+        const JVal* z = json(prefix(path) + "zarr.json");
+        return z ? z->str("node_type") : std::string();
+    }
+    std::string parse_v3(const std::string& path, ArrayMeta* m) const;
     std::shared_ptr<const ArrayMeta> meta(const std::string& path, std::string* why = nullptr) const {
         {
             std::lock_guard<std::mutex> lk(mu_);
@@ -788,26 +839,37 @@ class ZarrStore : public Store {
         }
         std::string err;
         auto m = std::make_shared<ArrayMeta>();
-        const JVal* z = json(prefix(path) + ".zarray");
-        if (!z || z->t != JVal::Obj) err = "no readable .zarray";
-        if (err.empty()) {
+        const JVal* z = version_ == 3 ? nullptr : json(prefix(path) + ".zarray");
+        if (version_ == 3) err = parse_v3(path, m.get());
+        else if (!z || z->t != JVal::Obj) err = "no readable .zarray";
+        if (err.empty() && version_ == 2) {
             m->shape = int_list(z->get("shape"));
             m->chunks = int_list(z->get("chunks"));
             const JVal* dt = z->get("dtype");
             if (!dt || dt->t != JVal::Str || !parse_v2_dtype(dt->s, m.get()))
                 err = "unsupported dtype " + (dt && dt->t == JVal::Str ? dt->s : std::string("(structured)"));
         }
-        if (err.empty()) {
+        if (err.empty() && version_ == 2) {
             m->fortran = z->str("order", "C") == "F";
             m->sep = z->str("dimension_separator", ".");
             if (m->sep != "." && m->sep != "/") m->sep = ".";
             if (const JVal* f = z->get("fill_value")) m->fill = *f;
-            if (const JVal* c = z->get("compressor"); c && c->t == JVal::Obj) m->compressor = Codec{c->str("id"), *c};
+            // filters (applied before the compressor when writing): only the
+            // vlen string encodings are read.
+            std::vector<std::string> labels;
             if (const JVal* fs = z->get("filters"); fs && fs->t == JVal::Arr)
-                for (const auto& f : fs->a) m->filters.push_back(Codec{f.str("id"), f});
-            for (const auto& f : m->filters)
-                if (f.id != "vlen-utf8" && f.id != "vlen-bytes") err = "unsupported filter '" + f.id + "'";
-            if (m->kind == 'O' && m->filters.empty()) err = "object array without a vlen-utf8 filter";
+                for (const auto& f : fs->a) {
+                    const std::string id = f.str("id");
+                    if (id == "vlen-utf8" || id == "vlen-bytes") m->vlen = true;
+                    else err = "unsupported filter '" + id + "'";
+                    labels.push_back(id);
+                }
+            if (const JVal* c = z->get("compressor"); c && c->t == JVal::Obj) {
+                m->bytes_codecs.push_back(Codec{c->str("id"), *c});
+                labels.push_back(codec_label(m->bytes_codecs.back()));
+            }
+            for (const auto& l : labels) m->codecs_label += (m->codecs_label.empty() ? "" : " + ") + l;
+            if (m->kind == 'O' && !m->vlen) err = "object array without a vlen-utf8 filter";
             if (err.empty()) err = finish_meta(m.get());
         }
         std::lock_guard<std::mutex> lk(mu_);
@@ -820,8 +882,9 @@ class ZarrStore : public Store {
         return m;
     }
     std::string chunk_key(const std::string& path, const ArrayMeta& m, const std::vector<int64_t>& idx) const {
-        std::string k = prefix(path) + m.key_prefix;
-        if (idx.empty()) return k + "0";
+        std::string k = prefix(path);
+        if (idx.empty()) return k + (m.key_prefix.empty() ? "0" : "c");
+        k += m.key_prefix;
         for (size_t d = 0; d < idx.size(); ++d) {
             if (d) k += m.sep;
             k += std::to_string(idx[d]);
@@ -866,15 +929,17 @@ class ZarrStore : public Store {
         return std::shared_ptr<const Chunk>(c);
     }
     static std::string decode(const ArrayMeta& m, std::string raw, Chunk* out) {
+        if (!m.unsupported.empty()) return m.unsupported;
         const size_t expect = m.itemsize > 0 ? (size_t)m.chunk_elems * (size_t)m.itemsize : 0;
         std::string data = std::move(raw);
-        if (m.compressor) {
+        for (size_t k = m.bytes_codecs.size(); k-- > 0;) {
             std::string dec;
-            const bool vlen = !m.filters.empty();
-            if (auto e = decompress(*m.compressor, data, vlen ? 0 : expect, &dec); !e.empty()) return e;
+            // the decoded size is known only at the last (first applied) stage
+            const size_t want = (k == 0 && !m.vlen) ? expect : 0;
+            if (auto e = decompress(m.bytes_codecs[k], data, want, &dec); !e.empty()) return e;
             data = std::move(dec);
         }
-        if (!m.filters.empty()) return decode_vlen(data, m.chunk_elems, &out->strs);
+        if (m.vlen) return decode_vlen(data, m.chunk_elems, &out->strs);
         if (data.size() != expect)
             return "decoded " + std::to_string(data.size()) + " bytes, expected " + std::to_string(expect);
         if (m.big_endian && m.kind != 'S') byteswap(data, m.kind == 'U' ? 4 : m.itemsize);
@@ -927,6 +992,11 @@ public:
 
     NodeKind kind(const std::string& path) const override {
         const std::string p = prefix(path);
+        if (version_ == 3) {
+            const std::string t = v3_node(path);
+            return t == "array" ? NodeKind::Array : t == "group" || p.empty() ? NodeKind::Group
+                                                                                : NodeKind::Missing;
+        }
         if (io_->exists(p + ".zarray")) return NodeKind::Array;
         if (io_->exists(p + ".zgroup") || io_->exists(p + ".zattrs") || p.empty()) return NodeKind::Group;
         // A directory without metadata that holds nodes (an implicit group).
@@ -939,7 +1009,7 @@ public:
     std::vector<std::string> children(const std::string& group) const override {
         std::vector<std::string> out;
         const std::string p = prefix(group);
-        if (io_->exists(p + ".zarray")) return out;
+        if (kind(group) == NodeKind::Array) return out;
         for (const auto& c : io_->list(p)) {
             if (c.empty() || c[0] == '.') continue;
             const std::string child = (group == "/" || group.empty() ? "/" : group + "/") + c;
@@ -975,7 +1045,7 @@ public:
         if (!m) {
             if (kind(path) != NodeKind::Array) return std::nullopt;
             ArrayInfo ai;                      // an array we cannot decode
-            const JVal* z = json(prefix(path) + ".zarray");
+            const JVal* z = json(prefix(path) + (version_ == 3 ? "zarr.json" : ".zarray"));
             if (z) ai.shape = int_list(z->get("shape"));
             ai.dtype = "?";
             return ai;
@@ -1068,10 +1138,7 @@ public:
         si.chunked = !m->chunks.empty();
         si.chunk = m->chunks;
         si.chunk_elems = m->chunk_elems;
-        std::string f;
-        for (auto it = m->filters.rbegin(); it != m->filters.rend(); ++it) f += (f.empty() ? "" : " + ") + it->id;
-        if (m->compressor) f += (f.empty() ? "" : " + ") + codec_label(*m->compressor);
-        si.filters = f.empty() ? "no compression" : f;
+        si.filters = m->codecs_label.empty() ? "no compression" : m->codecs_label;
         si.stored = io_->bytes_under(prefix(path));
         return si;
     }
@@ -1112,6 +1179,114 @@ public:
     }
 };
 
+// A v3 data_type: a name ("int32", "string") or an object for the
+// extension types zarr-python writes (fixed-length strings, datetimes).
+bool parse_v3_dtype(const JVal& dt, ArrayMeta* m) {
+    std::string name = dt.t == JVal::Str ? dt.s : dt.str("name");
+    const JVal* conf = dt.t == JVal::Obj ? dt.get("configuration") : nullptr;
+    auto num = [&](const char* k) {
+        const JVal* v = conf ? conf->get(k) : nullptr;
+        return v && v->t == JVal::Num ? (int)v->num : 0;
+    };
+    m->dtype_label = name;
+    if (name == "bool") { m->kind = 'b'; m->itemsize = 1; return true; }
+    for (int bits : {8, 16, 32, 64}) {
+        if (name == "int" + std::to_string(bits)) { m->kind = 'i'; m->itemsize = bits / 8; return true; }
+        if (name == "uint" + std::to_string(bits)) { m->kind = 'u'; m->itemsize = bits / 8; return true; }
+    }
+    if (name == "float16" || name == "float32" || name == "float64") {
+        m->kind = 'f';
+        m->itemsize = std::atoi(name.c_str() + 5) / 8;
+        return true;
+    }
+    if (name == "string" || name == "bytes" || name == "variable_length_utf8") {
+        m->kind = 'O'; m->itemsize = 0; m->dtype_label = "string"; return true;
+    }
+    if (name == "fixed_length_utf32") {
+        const int lb = num("length_bytes");
+        if (lb <= 0 || lb % 4 || lb > (1 << 22)) return false;
+        m->kind = 'U'; m->itemsize = lb; m->dtype_label = "string[" + std::to_string(lb / 4) + "]";
+        return true;
+    }
+    if (name == "null_terminated_bytes" || name == "fixed_length_bytes" || name == "fixed_length_ascii") {
+        const int lb = num("length_bytes");
+        if (lb <= 0 || lb > (1 << 22)) return false;
+        m->kind = 'S'; m->itemsize = lb; m->dtype_label = "string[" + std::to_string(lb) + "]";
+        return true;
+    }
+    if (name == "numpy.datetime64" || name == "numpy.timedelta64") {
+        m->kind = 'M'; m->itemsize = 8; return true;
+    }
+    return false;
+}
+
+std::string ZarrStore::parse_v3(const std::string& path, ArrayMeta* m) const {
+    const JVal* z = json(prefix(path) + "zarr.json");
+    if (!z || z->t != JVal::Obj) return "no readable zarr.json";
+    if (z->str("node_type") != "array") return "not an array";
+    m->shape = int_list(z->get("shape"));
+    const JVal* dt = z->get("data_type");
+    if (!dt || !parse_v3_dtype(*dt, m))
+        return "unsupported data_type " + (dt && dt->t == JVal::Str ? dt->s : dt ? dt->str("name") : "");
+    const JVal* grid = z->get("chunk_grid");
+    if (!grid || grid->str("name") != "regular") return "unsupported chunk_grid";
+    const JVal* gc = grid->get("configuration");
+    m->chunks = int_list(gc ? gc->get("chunk_shape") : nullptr);
+    if (const JVal* ke = z->get("chunk_key_encoding")) {
+        const JVal* kc = ke->get("configuration");
+        const std::string name = ke->str("name", "default");
+        m->sep = kc ? kc->str("separator", name == "v2" ? "." : "/") : (name == "v2" ? "." : "/");
+        if (m->sep != "." && m->sep != "/") m->sep = "/";
+        m->key_prefix = name == "v2" ? "" : "c" + m->sep;
+    } else {
+        m->sep = "/";
+        m->key_prefix = "c/";
+    }
+    if (const JVal* f = z->get("fill_value")) m->fill = *f;
+    const JVal* codecs = z->get("codecs");
+    if (!codecs || codecs->t != JVal::Arr) return "no codecs";
+    bool a2b = false;
+    std::vector<std::string> labels;
+    for (const JVal& c : codecs->a) {
+        const std::string name = c.t == JVal::Str ? c.s : c.str("name");
+        const JVal* conf = c.get("configuration");
+        const JVal empty;
+        Codec codec{name, conf ? *conf : empty};
+        if (!a2b) {
+            if (name == "transpose") {
+                // order [1, 0] on a 2-D array is Fortran order; the identity is
+                // nothing; other permutations are not read.
+                std::vector<int64_t> ord = int_list(conf ? conf->get("order") : nullptr);
+                bool identity = true;
+                for (size_t k = 0; k < ord.size(); ++k) identity = identity && ord[k] == (int64_t)k;
+                if (ord.size() == 2 && ord[0] == 1 && ord[1] == 0) m->fortran = !m->fortran;
+                else if (!identity) m->unsupported = "unsupported transpose order";
+                labels.push_back("transpose");
+                continue;
+            }
+            a2b = true;
+            if (name == "bytes") {
+                m->big_endian = conf && conf->str("endian", "little") == "big";
+            } else if (name == "vlen-utf8" || name == "vlen-bytes") {
+                m->vlen = true;
+                labels.push_back(name);
+            } else if (name == "sharding_indexed") {
+                m->unsupported = "sharded arrays (sharding_indexed) are not supported yet";
+                labels.push_back("sharded");
+            } else {
+                m->unsupported = "unsupported array-to-bytes codec '" + name + "'";
+            }
+            continue;
+        }
+        m->bytes_codecs.push_back(codec);
+        labels.push_back(name == "blosc" ? codec_label(codec) : codec_label(codec));
+    }
+    if (!a2b) return "no array-to-bytes codec";
+    if (m->kind == 'O' && !m->vlen) m->unsupported = "a string array without a vlen-utf8 codec";
+    for (const auto& l : labels) m->codecs_label += (m->codecs_label.empty() ? "" : " + ") + l;
+    return finish_meta(m);
+}
+
 std::string strip_slash(std::string p) {
     while (p.size() > 1 && p.back() == '/') p.pop_back();
     return p;
@@ -1142,12 +1317,10 @@ std::string open_zarr_source(const std::string& path, const Config& cfg, std::un
         io = std::move(z);
     }
     const bool v2 = io->exists(".zgroup") || io->exists(".zarray") || io->exists(".zattrs");
-    if (!v2) {
-        if (io->exists("zarr.json"))
-            return "'" + path + "': Zarr v3 stores are not supported yet";
+    const bool v3 = io->exists("zarr.json");
+    if (!v2 && !v3)
         return "'" + path + "': not a Zarr store (no .zgroup / .zarray / zarr.json at its root)";
-    }
-    auto store = std::make_shared<ZarrStore>(std::move(io), 2);
+    auto store = std::make_shared<ZarrStore>(std::move(io), v3 ? 3 : 2);
     return open_store_source(std::move(store), path, out, anndata_df_row_cap(cfg), cfg.matrix == "long");
 }
 

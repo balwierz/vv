@@ -1213,6 +1213,16 @@ for n in tiny tiny.csc tiny.raw tiny.obsp tiny.nullstr tiny.uns tiny.cattypes ti
     zarr_equiv "$n" "$DATA/$n.h5ad" "$DATA/$n.zarr.zip"
 done
 zarr_equiv "mudata" "$DATA/tiny.h5mu" "$DATA/tiny.mudata.zarr.zip"
+# The same as Zarr v3 (zarr.json; c/ chunk keys; bytes + zstd codecs).
+for n in tiny tiny.csc tiny.raw tiny.obsp; do
+    zarr_equiv "v3_$n" "$DATA/$n.h5ad" "$DATA/$n.v3.zarr.zip"
+done
+zarr_equiv "v3_mudata" "$DATA/tiny.h5mu" "$DATA/tiny.mudata.v3.zarr.zip"
+if [ -d "$TMP/v3_tiny.dir" ]; then
+    # A v3 store's zarr.json files are not a JSON dataset: a directory with
+    # one at its root opens as the store whatever it is called.
+    assert_eq_file_inline "zarr_v3_dir_not_dataset" "$("$VV" --list-tabs "$TMP/v3_tiny.dir" | head -2 | tr '\n' ' ')" "summary X (preview) "
+fi
 if [ -f "$DATA/tiny.csc.zarr.zip" ]; then
     # the whole-matrix paths: --matrix long and the full-matrix export
     assert_eq_file_inline "zarr_matrix_long" \
@@ -1246,6 +1256,23 @@ if [ -f "$DATA/codecs.zarr.zip" ]; then
     assert_contains "zarr_corrupt_chunk_msg" "$("$VV" --tab /f8_blosc_lz4 --tsv "$ZD" 2>&1)" "'/f8_blosc_lz4': chunk f8_blosc_lz4/0.0: blosc: corrupt header"
     sed -i.bak 's/"id": *"zstd"/"id": "fancy"/' "$ZD/i4_zstd_F/.zarray"
     assert_contains "zarr_unknown_codec" "$("$VV" --tab /i4_zstd_F --tsv "$ZD" 2>&1)" "unsupported compressor 'fancy'"
+fi
+if [ -f "$DATA/codecs.v3.zarr.zip" ]; then
+    {
+        "$VV" --tsv "$DATA/codecs.v3.zarr.zip"
+        "$VV" --list-tabs "$DATA/codecs.v3.zarr.zip" | tail -n +2 | while IFS= read -r t; do
+            echo "## $t"; "$VV" --tab "$t" --tsv "$DATA/codecs.v3.zarr.zip" 2>&1
+        done
+    } > "$TMP/zarr_codecs_v3.out"
+    if [ -f "$GOLDEN/zarr_codecs_v3.expected" ]; then
+        assert_eq_file "zarr_codecs_v3" "$TMP/zarr_codecs_v3.out" "$GOLDEN/zarr_codecs_v3.expected"
+    else
+        missing_golden "zarr_codecs_v3" "$TMP/zarr_codecs_v3.out"
+    fi
+    # crc32c guards each chunk: one flipped byte is an error, not wrong values.
+    ZD3="$TMP/codecs3.zarr"; rm -rf "$ZD3"; mkdir -p "$ZD3"; python3 -m zipfile -e "$DATA/codecs.v3.zarr.zip" "$ZD3"
+    python3 -c "import sys; p=sys.argv[1]; b=bytearray(open(p,'rb').read()); b[3]^=1; open(p,'wb').write(b)" "$ZD3/i8_crc32c/c/0"
+    assert_contains "zarr_v3_crc32c_mismatch" "$("$VV" --tab /i8_crc32c --tsv "$ZD3" 2>&1)" "crc32c: checksum mismatch"
 fi
 
 echo '── Nanopore POD5 ──────────────────────────────────────'

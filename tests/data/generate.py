@@ -2270,7 +2270,9 @@ else:
 # node by node; codecs.zarr.zip: one array per codec / layout (blosc lz4 /
 # zstd with shuffle / bitshuffle, zstd, gzip, zlib, lz4, bz2, none, Fortran
 # order, big-endian, float16, "/" chunk keys, missing chunks = fill,
-# <U / |S / vlen strings).
+# <U / |S / vlen strings). *.v3.zarr.zip / codecs.v3.zarr.zip: the same as
+# Zarr v3 (transpose, big-endian bytes, blosc, gzip, zstd, crc32c, "v2" chunk
+# keys, fixed and vlen strings, a NaN fill).
 try:
     import anndata                                           # type: ignore
     import numcodecs                                         # type: ignore
@@ -2301,9 +2303,13 @@ else:
             d = Path(tmp) / (name + ".zarr")
             anndata.read_h5ad(HERE / (name + ".h5ad")).write_zarr(d)
             _zip_store(d, HERE / (name + ".zarr.zip"))
+        anndata.settings.zarr_write_format = 3
+        for name in ("tiny", "tiny.csc", "tiny.raw", "tiny.obsp"):
+            d = Path(tmp) / (name + ".v3.zarr")
+            anndata.read_h5ad(HERE / (name + ".h5ad")).write_zarr(d)
+            _zip_store(d, HERE / (name + ".v3.zarr.zip"))
+        anndata.settings.zarr_write_format = 2
         # MuData: copy tiny.h5mu's groups, arrays and attributes.
-        d = Path(tmp) / "mudata.zarr"
-        root = zarr.open_group(d, mode="w", zarr_format=2)
         def _attrs(src, dst):
             for k, v in src.attrs.items():
                 if isinstance(v, bytes): v = v.decode()
@@ -2319,17 +2325,22 @@ else:
                     data = v[()]
                     if v.dtype.kind == "O" or h5py.check_string_dtype(v.dtype):
                         vals = np.array([x.decode() if isinstance(x, bytes) else x for x in np.ravel(data)], dtype=object)
-                        a = dst.create_array(k, shape=vals.shape, dtype=str, filters=[numcodecs.VLenUTF8()],
-                                             compressors=numcodecs.Blosc("lz4", 5, numcodecs.Blosc.SHUFFLE))
+                        a = (dst.create_array(k, shape=vals.shape, dtype=str, filters=[numcodecs.VLenUTF8()],
+                                              compressors=numcodecs.Blosc("lz4", 5, numcodecs.Blosc.SHUFFLE))
+                             if dst.metadata.zarr_format == 2 else dst.create_array(k, shape=vals.shape, dtype=str))
                         a[...] = vals
                     else:
-                        a = dst.create_array(k, shape=data.shape, dtype=data.dtype,
-                                             compressors=numcodecs.Blosc("lz4", 5, numcodecs.Blosc.SHUFFLE))
+                        a = (dst.create_array(k, shape=data.shape, dtype=data.dtype,
+                                              compressors=numcodecs.Blosc("lz4", 5, numcodecs.Blosc.SHUFFLE))
+                             if dst.metadata.zarr_format == 2 else dst.create_array(k, shape=data.shape, dtype=data.dtype))
                         a[...] = data
                     _attrs(v, a)
-        with h5py.File(HERE / "tiny.h5mu", "r") as f:
-            _copy(f, root)
-        _zip_store(d, HERE / "tiny.mudata.zarr.zip")
+        for fmt, out in ((2, "tiny.mudata.zarr.zip"), (3, "tiny.mudata.v3.zarr.zip")):
+            d = Path(tmp) / ("mudata%d.zarr" % fmt)
+            root = zarr.open_group(d, mode="w", zarr_format=fmt)
+            with h5py.File(HERE / "tiny.h5mu", "r") as f:
+                _copy(f, root)
+            _zip_store(d, HERE / out)
         # The codec / layout matrix.
         d = Path(tmp) / "codecs.zarr"
         root = zarr.open_group(d, mode="w", zarr_format=2)
@@ -2360,6 +2371,32 @@ else:
         m = root.create_array("i4_missing_chunks", shape=(20,), chunks=(6,), dtype="<i4", fill_value=7, compressors=None)
         m[0:6] = np.arange(6)                      # chunks 1-3 never written: fill value 7
         _zip_store(d, HERE / "codecs.zarr.zip")
+        # The v3 codec matrix.
+        from zarr.codecs import BloscCodec, GzipCodec, ZstdCodec, Crc32cCodec, BytesCodec, TransposeCodec  # type: ignore
+        d = Path(tmp) / "codecs3.zarr"
+        root = zarr.open_group(d, mode="w", zarr_format=3)
+        def _arr3(name, data, chunks, comp=None, filters=None, serializer="auto", keys=None, dtype=None, fill=None):
+            kw = dict(shape=data.shape, chunks=chunks, dtype=dtype if dtype is not None else data.dtype,
+                      compressors=comp, filters=filters, serializer=serializer, fill_value=fill)
+            if keys: kw["chunk_key_encoding"] = keys
+            root.create_array(name, **kw)[...] = data
+        _arr3("f8_blosc", (r * 100 + c + 0.5), (8, 5), [BloscCodec(cname="lz4", clevel=5, shuffle="shuffle")])
+        _arr3("i4_transpose_bigendian", (r * 100 + c).astype("i4"), (8, 5), [ZstdCodec(level=3), Crc32cCodec()],
+              filters=[TransposeCodec(order=(1, 0))], serializer=BytesCodec(endian="big"))
+        _arr3("f4_blosc_bitshuffle", (r * 0.25 - c).astype("f4"), (6, 7),
+              [BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle")])
+        _arr3("u2_gzip_v2keys", np.arange(50, dtype="u2") * 3, (7,), [GzipCodec(level=5)],
+              keys={"name": "v2", "separator": "."})
+        _arr3("i8_crc32c", np.arange(50, dtype="i8") * -1000000007, (16,), [Crc32cCodec()])
+        _arr3("b1_zstd", np.arange(11) % 3 == 0, (4,), [ZstdCodec(level=1)])
+        _arr3("f2_half", np.array([0, 1.5, -2.25, 65504, 0.0001, np.inf], dtype="f2"), (4,))
+        _arr3("str_vlen", np.array(["alpha", "", "\u03b3\u03ac\u03bc\u03bc\u03b1", "delta", "e" * 40, "f", "g"],
+                                   dtype=object), (3,), [ZstdCodec(level=1)], dtype=str)
+        _arr3("str_U", np.array(["ab", "\u00fcn\u00ef", "", "xyzxyzx", "q", "rr"], dtype="<U7"), (4,))
+        m = root.create_array("f8_missing_chunks", shape=(20,), chunks=(6,), dtype="f8", fill_value=np.nan,
+                              compressors=None)
+        m[0:6] = np.arange(6)                      # chunks 1-3 never written: fill value NaN
+        _zip_store(d, HERE / "codecs.v3.zarr.zip")
 
 
 def find_kent_tool(name):
