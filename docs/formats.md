@@ -28,6 +28,7 @@ build prints. Flags and options are covered in the [manual](USAGE.md).
 [Parquet / Arrow / ORC](#parquet--arrow--orc) ·
 [TSV / CSV](#tsv--csv) ·
 [Excel / ODS / SQLite](#excel--ods--sqlite) ·
+[DuckDB](#duckdb) ·
 [Directories and datasets](#directories-and-datasets)<br>
 **Documents** —
 [JSON / NDJSON](#json--ndjson) ·
@@ -333,6 +334,23 @@ table; `--tab NAME` picks one from the command line.
 ![vvg: an SQLite database](img/vvg/sqlite.png)
 
 Try: `vv lab.sqlite` · `vv --tab qc --tsv samples.xlsx`.
+
+## DuckDB
+
+`.duckdb` `.ddb` (and a `.db` whose header is DuckDB's) — one tab per table,
+then per view; tables outside the `main` schema are named `schema.table`.
+Types come through DuckDB's Arrow export: decimals, dates, timestamps, lists,
+structs, enums (as categories). The database is opened read-only with
+extension loading and external file access off, so a view that reads other
+files (`read_csv`, `read_parquet`, httpfs) shows an error in its tab instead.
+Pages of 65,536 rows are fetched as they are viewed, with only the columns
+shown.
+
+DuckDB support is optional: vv links libduckdb ≥ 1.5.6 when it is installed
+at build time (Arch and Homebrew `duckdb`, or DuckDB's `libduckdb` release
+archive); the static release binary is built without it and says so.
+
+Try: `vv analytics.duckdb` · `vv --tab events --filter 'kind == "click"' --count analytics.duckdb`.
 
 ## Directories and datasets
 

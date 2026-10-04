@@ -1127,6 +1127,11 @@ std::string valid_utf8(std::string_view v);
 // the preview cap in the viewer, every row (or -n) for a complete answer.
 int64_t anndata_df_row_cap(const Config& cfg);
 
+// DuckDB databases (src/formats/duckdb.cpp; libduckdb optional, VV_HAVE_DUCKDB).
+bool is_duckdb_file(const std::string& path);
+std::string open_duckdb_source(const std::string& path, const Config& cfg,
+                               std::unique_ptr<TabularSource>* out);
+
 // Cooler Hi-C contact matrices (src/formats/cooler.cpp): .cool, .mcool.
 bool is_cooler_file(const std::string& path);
 std::string open_cooler_source(const std::string& path, const Config& cfg,

@@ -1294,6 +1294,59 @@ if [ -f "$DATA/sharded.zarr.zip" ]; then
         "$("$VV" --tab /f8_shards_2d --tsv "$DATA/sharded.zarr.zip")"
 fi
 
+echo '── DuckDB (.duckdb) ───────────────────────────────────'
+# The database is made here with the duckdb Python module (a DuckDB file is
+# at least a few hundred KB, so it is not committed). Without the module the
+# block skips; without libduckdb in vv only the refusal is checked.
+DDB="$TMP/t.duckdb"
+if python3 - "$DDB" "$TMP" <<'PYEOF' 2>/dev/null
+import sys, duckdb
+db, tmp = sys.argv[1], sys.argv[2]
+c = duckdb.connect(db)
+c.execute("CREATE TYPE mood AS ENUM ('sad', 'ok', 'happy')")
+c.execute("""CREATE TABLE samples (id INTEGER, name VARCHAR, score DOUBLE, price DECIMAL(10,2),
+             day DATE, ok BOOLEAN, tags VARCHAR[], loc STRUCT(chrom VARCHAR, pos BIGINT), m mood)""")
+c.execute("""INSERT INTO samples VALUES
+  (1, 'alpha', 1.5, 12.34, '2024-01-02', true, ['x', 'y'], {'chrom': 'chr1', 'pos': 100}, 'happy'),
+  (2, 'beta', NULL, 0.50, NULL, false, [], {'chrom': 'chr2', 'pos': 200}, 'sad'),
+  (3, NULL, -2.25, NULL, '2024-03-04', NULL, NULL, NULL, NULL)""")
+c.execute("CREATE TABLE big AS SELECT i AS n, i * 2 AS twice, 'r' || i AS label FROM range(200000) t(i)")
+c.execute("CREATE VIEW happy AS SELECT id, name FROM samples WHERE m = 'happy'")
+c.execute("CREATE SCHEMA lab; CREATE TABLE lab.runs (run VARCHAR, reads BIGINT)")
+c.execute("INSERT INTO lab.runs VALUES ('r1', 1000), ('r2', 2000)")
+open(tmp + "/outside.csv", "w").write("a,b\n1,2\n")
+c.execute(f"CREATE VIEW leak AS SELECT * FROM read_csv('{tmp}/outside.csv')")
+c.close()
+PYEOF
+then
+    if "$VV" --list-tabs "$DDB" >/dev/null 2>&1; then
+        assert_eq_file_inline "duckdb_tabs" "$("$VV" --list-tabs "$DDB" | tr '\n' ' ')" "big samples lab.runs happy leak "
+        assert_eq_file_inline "duckdb_types" "$("$VV" --tab samples --tsv "$DDB")" \
+            "$(printf 'id\tname\tscore\tprice\tday\tok\ttags\tloc\tm\n1\talpha\t1.5\t12.34\t2024-01-02\ttrue\t[x, y]\t{chrom: chr1, pos: 100}\thappy\n2\tbeta\t\t0.50\t\tfalse\t[]\t{chrom: chr2, pos: 200}\tsad\n3\t\t-2.25\t\t2024-03-04\t\t\t\t')"
+        assert_contains "duckdb_enum_categorical" "$("$VV" --tab samples --schema --color=never "$DDB")" "category[string]"
+        # 200k rows = four 65,536-row pages: count, the page boundary, the tail
+        assert_eq_file_inline "duckdb_count" "$("$VV" --tab big --count "$DDB")" "200000"
+        assert_eq_file_inline "duckdb_page_boundary" "$("$VV" --tab big --tsv "$DDB" | sed -n '65537,65538p')" \
+            "$(printf '65535\t131070\tr65535\n65536\t131072\tr65536')"
+        assert_eq_file_inline "duckdb_tail" "$("$VV" --tab big --tail 1 --tsv --no-header "$DDB")" "$(printf '199999\t399998\tr199999')"
+        assert_eq_file_inline "duckdb_filter_select" \
+            "$("$VV" --tab big --filter 'n >= 199998' --select label --tsv --no-header "$DDB" | tr '\n' ' ')" "r199998 r199999 "
+        assert_eq_file_inline "duckdb_view" "$("$VV" --tab happy --tsv --no-header "$DDB")" "$(printf '1\talpha')"
+        assert_eq_file_inline "duckdb_schema_table" "$("$VV" --tab lab.runs --count "$DDB")" "2"
+        # Opened with external access off: a view over another file is an
+        # error in its own tab (exit 1), the other tabs unaffected.
+        assert_exit_code "duckdb_external_access_off" 1 "$VV" --tab leak --tsv "$DDB"
+        assert_contains "duckdb_external_access_msg" "$("$VV" --tab leak --tsv "$DDB" 2>&1)" "disabled by configuration"
+        # A .db is SQLite unless its header is DuckDB's.
+        cp "$DDB" "$TMP/duck.db"
+        assert_eq_file_inline "duckdb_db_extension" "$("$VV" --tab lab.runs --count "$TMP/duck.db")" "2"
+    else
+        assert_contains "duckdb_built_without" "$("$VV" "$DDB" 2>&1)" "built without DuckDB support"
+    fi
+else
+    echo "  skip  DuckDB (python3 duckdb module not installed)"
+fi
+
 echo '── Nanopore POD5 ──────────────────────────────────────'
 # tests/data/make_pod5.py (the pod5 package) writes tiny.pod5: 3 reads,
 # samples (i * (k + 1)) % 200, i < 50 + 10k.

@@ -222,6 +222,10 @@ MuData stores open with the same tabs as \fB.h5ad\fR / \fB.h5mu\fR; other stores
 hierarchy tab plus one tab per 1-D / 2-D array. Codecs blosc, zstd, gzip,
 zlib, lz4, bz2 (v2), transpose, bytes, vlen-utf8, crc32c and sharding (v3).
 .IP \(bu 2
+\fB.duckdb\fR, \fB.ddb\fR \(en DuckDB databases (and a \fB.db\fR with DuckDB's header),
+read-only with external file access off: one tab per table and view. Optional:
+needs libduckdb \(>= 1.5.6 at build time; the static release binary has none.
+.IP \(bu 2
 \fB.cool\fR, \fB.mcool\fR \(en Cooler Hi-C contact matrices (HDF5): summary,
 chroms, pixels joined to bin coordinates (with \fBbalanced\fR when bins carry a
 weight) and bins; per resolution in an .mcool (\fBpixels@10kb\fR,

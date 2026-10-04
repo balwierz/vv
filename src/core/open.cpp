@@ -76,6 +76,7 @@ static std::string pipe_binary_ext(const std::string& head) {
     if (at(0, "LSB1", 4))                       return ".lociss";
     if (at(0, "CRAM", 4))                       return ".cram";
     if (at(0, "SQLite format 3\0", 16))         return ".sqlite";
+    if (at(8, "DUCK", 4))                       return ".duckdb";
     if (at(0, "\x89HDF\r\n\x1a\n", 8))           return ".h5";
     if (at(0, "\x93NUMPY", 6))                  return ".npy";
     if (at(0, "\x26\xfc\x8f\x88", 4))            return ".bw";     // 0x888FFC26 LE
@@ -1246,6 +1247,10 @@ std::string open_source_dispatch(const std::string& path, const Config& cfg,
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";
+    } else if (fends_ci(path, ".duckdb") || fends_ci(path, ".ddb") ||
+               (fends_ci(path, ".db") && is_duckdb_file(path))) {
+        // (a .db is SQLite unless its header is DuckDB's)
+        return open_duckdb_source(path, cfg, out);
     } else if (fends_ci(path, ".sqlite")  || fends_ci(path, ".sqlite3") ||
                fends_ci(path, ".db")) {
         std::unique_ptr<TabularSource> src;

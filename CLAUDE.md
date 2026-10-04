@@ -95,7 +95,8 @@ src/core/            common (colours, themes, formatting), source (TabularSource
 src/formats/         one file per reader family: parquet, lociss, delimited,
                      htslib (BAM/CRAM/SAM, pileup, BCF, FASTA/FASTQ, --contigs),
                      ucsc (bigWig/bigBed, 2bit), text, json, sqlite, arrow
-                     (IPC, ORC), workbook (xlsx, ods), genbank (GenBank / EMBL),
+                     (IPC, ORC), workbook (xlsx, ods), duckdb (optional libduckdb),
+                     genbank (GenBank / EMBL),
                      hdf5 (+ store.hpp: the Store interface its AnnData / generic
                      readers use), zarr (a Store over .zarr / .zarr.zip), cooler
                      (Hi-C .cool / .mcool on HDF5), npz, pod5, rdata (R .rds /

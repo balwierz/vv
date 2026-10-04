@@ -387,6 +387,7 @@ set(VV_CORE_SOURCES
     src/core/io.cpp       src/core/modes.cpp    src/core/open.cpp
     src/core/region.cpp   src/core/source.cpp
     src/formats/arrow.cpp     src/formats/cooler.cpp    src/formats/delimited.cpp
+    src/formats/duckdb.cpp
     src/formats/genbank.cpp   src/formats/hdf5.cpp
     src/formats/htslib.cpp    src/formats/json.cpp      src/formats/lociss.cpp
     src/formats/npz.cpp       src/formats/parquet.cpp   src/formats/pod5.cpp
@@ -443,6 +444,24 @@ else()
   set(BLOSC_FOUND FALSE)
 endif()
 message(STATUS "blosc      : ${BLOSC_FOUND} ${BLOSC_LIBRARY}")
+# DuckDB databases (src/formats/duckdb.cpp), when libduckdb >= 1.5.6 (its
+# stable Arrow export: duckdb_data_chunk_to_arrow) is found. Not part of the
+# static build. Without it .duckdb files are refused with "built without
+# DuckDB support".
+find_path(DUCKDB_INCLUDE_DIR duckdb.h)
+find_library(DUCKDB_LIBRARY NAMES duckdb)
+set(DUCKDB_FOUND FALSE)
+if(DUCKDB_INCLUDE_DIR AND DUCKDB_LIBRARY)
+  file(STRINGS "${DUCKDB_INCLUDE_DIR}/duckdb.h" _duckdb_arrow REGEX "duckdb_data_chunk_to_arrow")
+  if(_duckdb_arrow)
+    set(DUCKDB_FOUND TRUE)
+    target_compile_definitions(vv PRIVATE VV_HAVE_DUCKDB=1)
+    target_include_directories(vv PRIVATE ${DUCKDB_INCLUDE_DIR})
+  else()
+    message(STATUS "duckdb.h lacks duckdb_data_chunk_to_arrow (DuckDB < 1.5.6): DuckDB support off")
+  endif()
+endif()
+message(STATUS "duckdb     : ${DUCKDB_FOUND} ${DUCKDB_LIBRARY}")
 
 # ── librdata (R .rds / .RData reader, vendored) ──────────────────────────────
 # Vendored under vendored/librdata/ (read side only; see its UPSTREAM). MIT.
@@ -555,6 +574,7 @@ if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND NCURSES_STATIC_LIB)
       ${_xlsxio} ${_expat} ${_minizip}
       ${_hdf5}
       $<$<BOOL:${BLOSC_FOUND}>:${BLOSC_LIBRARY}>
+      $<$<BOOL:${DUCKDB_FOUND}>:${DUCKDB_LIBRARY}>
       ${_deflate} ${_zlib} ${_bz2} ${_lzma} ${_lz4} ${_zstd}
       ${_brotlienc} ${_brotlidec} ${_brotlicommon}
       ${_snappy} ${_utf8proc} ${_re2} ${_thrift}
@@ -579,6 +599,7 @@ else()
       $<$<BOOL:${LIBLZMA_FOUND}>:${LIBLZMA_LIBRARIES}>
       $<$<BOOL:${BZIP2_FOUND}>:${BZIP2_LIBRARIES}>
       $<$<BOOL:${BLOSC_FOUND}>:${BLOSC_LIBRARY}>
+      $<$<BOOL:${DUCKDB_FOUND}>:${DUCKDB_LIBRARY}>
       bigwig
       md4c
       rdata

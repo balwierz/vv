@@ -26,7 +26,18 @@ jobs:
         run: |
           python3 -m venv /tmp/vvpy
           /tmp/vvpy/bin/pip install --upgrade pip
-          /tmp/vvpy/bin/pip install pyarrow openpyxl odfpy anndata h5py scipy
+          /tmp/vvpy/bin/pip install pyarrow openpyxl odfpy anndata h5py scipy duckdb==1.5.6
+
+      # DuckDB support is optional (libduckdb is not in Ubuntu's archive): the
+      # test jobs build with DuckDB's own libduckdb release so the DuckDB
+      # reader is tested; the packaging jobs build without it.
+      - name: Install libduckdb (tests)
+        run: |
+          curl -fsSL --retry 3 -o /tmp/libduckdb.zip \
+            https://github.com/duckdb/duckdb/releases/download/v1.5.6/libduckdb-linux-amd64.zip
+          sudo unzip -o -j /tmp/libduckdb.zip duckdb.h -d /usr/local/include
+          sudo unzip -o -j /tmp/libduckdb.zip libduckdb.so -d /usr/local/lib
+          sudo ldconfig
 
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -469,7 +480,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install dependencies
-        run: brew install cmake apache-arrow htslib ncurses xlsxio expat minizip hdf5 xz c-blosc qt
+        run: brew install cmake apache-arrow htslib ncurses xlsxio expat minizip hdf5 xz c-blosc duckdb qt
       - name: Configure
         # Homebrew's `apache-arrow` formula installs to its own prefix
         # (`$(brew --prefix apache-arrow)` — typically /opt/homebrew/opt/…
@@ -505,7 +516,7 @@ jobs:
         run: |
           python3 -m venv /tmp/vvpy
           /tmp/vvpy/bin/pip install --upgrade pip
-          /tmp/vvpy/bin/pip install pyarrow openpyxl odfpy anndata h5py scipy
+          /tmp/vvpy/bin/pip install pyarrow openpyxl odfpy anndata h5py scipy duckdb==1.5.6
       - name: Install fixture tools
         # bgzip/tabix come with brew's htslib (already installed above);
         # bcftools is separate. samtools and tmux unlock ~10 further tests

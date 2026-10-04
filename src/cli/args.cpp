@@ -86,6 +86,8 @@ static const FormatInfo kFormats[] = {
    false, true,  false, true,  false, "native block-level overlap; no sidecar index"},
   {"UCSC 2bit", ".2bit", "TwoBitSource",
    false, false, false, false, false, ""},
+  {"DuckDB", ".duckdb .ddb", "DuckSource",
+   false, false, true,  false, true,  ""},
   {"SQLite", ".sqlite .sqlite3 .db", "SqliteSource",
    false, false, true,  true,  false, ""},
   {"Excel workbook", ".xlsx .xlsm", "XlsxSource",
@@ -211,6 +213,8 @@ static void print_usage(const char* prog) {
         "  .wig                        UCSC wiggle (fixedStep / variableStep → intervals)\n"
         "  .2bit                       UCSC 2bit (sequence index: name/length/blocks)\n"
         "  .sqlite  .sqlite3  .db      SQLite database (each table → one TUI tab)\n"
+        "  .duckdb  .ddb               DuckDB database, read-only (each table / view → one\n"
+        "                              tab; a .db with DuckDB's header too; needs libduckdb)\n"
         "  .xlsx  .xlsm                Excel spreadsheet (each sheet → one TUI tab)\n"
         "  .ods  .fods                 OpenDocument spreadsheet, zipped or flat\n"
         "                              XML (each sheet → one TUI tab)\n"

@@ -175,7 +175,10 @@ any is missing. There is no partial build.
 - libxlsxio — **not packaged by any major distribution**; see below
 
 libBigWig, md4c and librdata are vendored under `vendored/` and need no packages.
-Optional and auto-detected: Arrow's ORC adapter, and KF6 for the GUI plugins.
+Optional and auto-detected: Arrow's ORC adapter, KF6 for the GUI plugins, and
+libduckdb ≥ 1.5.6 for `.duckdb` files (`duckdb` on Arch and Homebrew; elsewhere
+unpack DuckDB's `libduckdb-<os>-<arch>.zip` release and point
+`CMAKE_PREFIX_PATH` at it). The static release binary is built without DuckDB.
 
 ### Debian / Ubuntu
 

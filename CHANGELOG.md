@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **DuckDB databases (`.duckdb`, `.ddb`)** when built with libduckdb ≥ 1.5.6
+  (optional; not in the static binary): one tab per table and view, opened
+  read-only with external file access off; pages fetched as viewed.
 - **Zarr v2 and v3 stores (`.zarr` directories, `.zarr.zip`)**: AnnData and MuData
   written with `write_zarr` open with the same tabs as their `.h5ad` /
   `.h5mu`; other stores as a hierarchy plus per-array tabs. Blosc via c-blosc
