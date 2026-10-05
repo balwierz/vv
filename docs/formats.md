@@ -346,6 +346,8 @@ files (`read_csv`, `read_parquet`, httpfs) shows an error in its tab instead.
 Pages of 65,536 rows are fetched as they are viewed, with only the columns
 shown.
 
+![vv: a DuckDB table with list and struct columns](img/vv/duckdb.svg)
+
 DuckDB support is optional: vv links libduckdb ≥ 1.5.6 when it is installed
 at build time (Arch and Homebrew `duckdb`, or DuckDB's `libduckdb` release
 archive); the static release binary is built without it and says so.

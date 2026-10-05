@@ -268,6 +268,27 @@ db.executemany("INSERT INTO runs VALUES (?,?,?,?,?)",
 db.commit()
 db.close()
 try:
+    import duckdb
+    path = os.path.join(out, "lab.duckdb")
+    if os.path.exists(path):
+        os.remove(path)
+    dd = duckdb.connect(path)
+    dd.execute("CREATE TABLE runs (run VARCHAR, sample VARCHAR, sequenced DATE, reads BIGINT, "
+               "q30 DECIMAL(4,1), lanes INTEGER[], flowcell STRUCT(id VARCHAR, kit VARCHAR))")
+    dd.executemany("INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?)",
+                   [("RUN%03d" % i, R.choice(meta)[0], "2024-%02d-%02d" % (R.randint(1, 12), R.randint(1, 28)),
+                     R.randint(10**8, 9 * 10**8), round(R.uniform(88, 96), 1),
+                     sorted(R.sample([1, 2, 3, 4], R.randint(1, 4))),
+                     {"id": "H%04dDSX%d" % (R.randint(1000, 9999), R.randint(1, 7)),
+                      "kit": R.choice(["S4 v1.5", "S2 v1.5"])}) for i in range(40)])
+    dd.execute("CREATE TABLE samples (sample VARCHAR, population VARCHAR, sex VARCHAR, age INTEGER, "
+               "instrument VARCHAR, mean_coverage DOUBLE, sequenced DATE)")
+    dd.executemany("INSERT INTO samples VALUES (?, ?, ?, ?, ?, ?, ?)", meta)
+    dd.execute("CREATE VIEW low_q30 AS SELECT run, sample, q30 FROM runs WHERE q30 < 90")
+    dd.close()
+except ImportError:
+    note("duckdb (Python) not found; skipping lab.duckdb")
+try:
     import openpyxl
     wb = openpyxl.Workbook()
     ws = wb.active

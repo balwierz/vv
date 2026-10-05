@@ -110,6 +110,7 @@ MAXL=12 cli genbank 118 --tab features --select type,start,end,strand,gene,produ
 MAXL=11 cli pod5    110 --tab reads --select read_id,channel,num_samples,end_reason,median_before -n 6 run.pod5
 MAXL=11 cli blast   118 -n 6 hits.m8
 MAXL=20 cli zarr    118 --tab summary -n 16 -w 80 pbmc.zarr
+MAXL=11 cli duckdb  118 -n 6 lab.duckdb          # needs a vv linked with libduckdb
 
 # ── GUI ──────────────────────────────────────────────────────────────────────
 gui anndata    "VVG_DETAIL=3,0"  --tab obs pbmc.h5ad

@@ -22,8 +22,9 @@ vvg takes vv's view flags — `--filter`, `--select`, `--sort`, `--tab`,
 
 ## What it does
 
-- **Tabs** — files, workbook sheets, SQLite tables, HDF5 / AnnData components
-  and NumPy arrays each get a tab. Open with *File ▸ Open*, drag-and-drop or the
+- **Tabs** — files, workbook sheets, SQLite and DuckDB tables, HDF5 / Zarr /
+  AnnData components, Cooler resolutions, GenBank sections, POD5 tables, R
+  objects and NumPy arrays each get a tab. Open with *File ▸ Open*, drag-and-drop or the
   recent-files list.
 - **Sort, filter, find** — click a header to sort (by type, not text); the
   filter bar uses vv's `--filter` grammar (`score > 5 and chrom == "chr1"`);
