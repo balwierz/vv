@@ -7,10 +7,16 @@
 
      Globs are case-insensitive, so *.bigwig also matches .bigWig and
      *.narrowpeak matches .narrowPeak. Two genomic globs collide with older
-     freedesktop types: *.vcf (text/vcard) and *.sam (application/x-amipro).
-     For a glob tie the content magic decides, so a VCF is recognised by its
-     mandatory ##fileformat=VCF line and a SAM file by its header, while vCards
+     freedesktop types: *.vcf (text/vcard), *.sam (application/x-amipro) and
+     *.gb (application/x-gameboy-rom). For a glob tie the content magic
+     decides, so a VCF is recognised by its mandatory ##fileformat=VCF line, a
+     SAM file by its header and a GenBank file by its LOCUS line, while vCards
      (BEGIN:VCARD) keep resolving to text/vcard.
+
+     The R data type uses RStudio's name (application/x-r-data), so with
+     RStudio installed the two definitions merge into one type. RKWard
+     defines *.rdata / *.rda as application/rdata; where that definition wins
+     the glob tie, the .desktop entry and the plugins list it as well.
 
      bgzip / gzip-compressed text formats get their own types, following
      application/x-compressed-tar: the longer glob (*.vcf.gz) beats *.gz, and
@@ -40,6 +46,9 @@
     <glob pattern="*.hdf5"/>
     <glob pattern="*.h5ad"/>
     <glob pattern="*.loom"/>
+    <glob pattern="*.h5mu"/>
+    <glob pattern="*.h5seurat"/>
+    <glob pattern="*.fast5"/>
     <magic priority="60">
       <match type="string" value="\x89HDF\r\n\x1a\n" offset="0"/>
     </magic>
@@ -280,6 +289,127 @@
     <comment>Matrix Market sparse matrix (compressed)</comment>
     <sub-class-of type="application/gzip"/>
     <glob pattern="*.mtx.gz"/>
+    <icon name="vv"/>
+  </mime-type>
+
+  <!-- Cooler Hi-C matrices are HDF5 files; the glob picks the sub-class. -->
+  <mime-type type="application/x-cooler">
+    <comment>Cooler Hi-C contact matrix</comment>
+    <sub-class-of type="application/x-hdf5"/>
+    <glob pattern="*.cool"/>
+    <glob pattern="*.mcool"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="application/x-zarr+zip">
+    <comment>Zarr store (zip)</comment>
+    <sub-class-of type="application/zip"/>
+    <glob pattern="*.zarr.zip"/>
+    <icon name="vv"/>
+  </mime-type>
+
+  <!-- ── Signal tracks, annotations, sequencing runs ───────────────────── -->
+  <mime-type type="text/x-wiggle">
+    <comment>UCSC wiggle signal track</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.wig"/>
+    <magic priority="60">
+      <match type="string" value="track type=wiggle_0" offset="0"/>
+      <match type="string" value="fixedStep " offset="0"/>
+      <match type="string" value="variableStep " offset="0"/>
+    </magic>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="application/x-compressed-wiggle">
+    <comment>UCSC wiggle signal track (compressed)</comment>
+    <sub-class-of type="application/gzip"/>
+    <glob pattern="*.wig.gz"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="text/x-blast-tabular">
+    <comment>BLAST / DIAMOND tabular hits</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.m8"/>
+    <glob pattern="*.blast6"/>
+    <glob pattern="*.outfmt6"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="application/x-compressed-blast-tabular">
+    <comment>BLAST / DIAMOND tabular hits (compressed)</comment>
+    <sub-class-of type="application/gzip"/>
+    <glob pattern="*.m8.gz"/>
+    <glob pattern="*.blast6.gz"/>
+    <glob pattern="*.outfmt6.gz"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="text/x-genbank">
+    <comment>GenBank sequence record</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.gb"/>
+    <glob pattern="*.gbk"/>
+    <glob pattern="*.gbff"/>
+    <glob pattern="*.genbank"/>
+    <magic priority="60">
+      <match type="string" value="LOCUS " offset="0"/>
+    </magic>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="application/x-compressed-genbank">
+    <comment>GenBank sequence record (compressed)</comment>
+    <sub-class-of type="application/gzip"/>
+    <glob pattern="*.gb.gz"/>
+    <glob pattern="*.gbk.gz"/>
+    <glob pattern="*.gbff.gz"/>
+    <glob pattern="*.genbank.gz"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="text/x-embl">
+    <comment>EMBL sequence record</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.embl"/>
+    <magic priority="60">
+      <match type="string" value="ID   " offset="0"/>
+    </magic>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="application/x-compressed-embl">
+    <comment>EMBL sequence record (compressed)</comment>
+    <sub-class-of type="application/gzip"/>
+    <glob pattern="*.embl.gz"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="application/x-pod5">
+    <comment>Oxford Nanopore POD5 signal data</comment>
+    <glob pattern="*.pod5"/>
+    <magic priority="60">
+      <match type="string" value="\x8bPOD\r\n\x1a\n" offset="0"/>
+    </magic>
+    <icon name="vv"/>
+  </mime-type>
+
+  <!-- ── Databases and R ────────────────────────────────────────────────── -->
+  <!-- DuckDB's header carries "DUCK" at byte 8, so a .db holding a DuckDB
+       database resolves here by content (SQLite's own magic is "SQLite
+       format 3" at byte 0). -->
+  <mime-type type="application/x-duckdb">
+    <comment>DuckDB database</comment>
+    <glob pattern="*.duckdb"/>
+    <glob pattern="*.ddb"/>
+    <magic priority="60">
+      <match type="string" value="DUCK" offset="8"/>
+    </magic>
+    <icon name="vv"/>
+  </mime-type>
+  <!-- .rds / .RData are gzip, xz or bzip2 streams (no magic of their own);
+       an uncompressed workspace starts with RDX2 / RDX3. -->
+  <mime-type type="application/x-r-data">
+    <comment>R data</comment>
+    <glob pattern="*.rds"/>
+    <glob pattern="*.rdata"/>
+    <glob pattern="*.rda"/>
+    <magic priority="60">
+      <match type="string" value="RDX2\n" offset="0"/>
+      <match type="string" value="RDX3\n" offset="0"/>
+    </magic>
     <icon name="vv"/>
   </mime-type>
 </mime-info>

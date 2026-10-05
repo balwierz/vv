@@ -13,5 +13,12 @@ bool vv_within_plugin_budget(const QString& path) {
         ceiling = 8 * MiB;
     else if (ext == QLatin1String("npz"))
         ceiling = 256 * MiB;
+    else if (ext == QLatin1String("rds") || ext == QLatin1String("rdata") ||
+             ext == QLatin1String("rda"))
+        ceiling = 32 * MiB;
+    else if (ext == QLatin1String("gb") || ext == QLatin1String("gbk") ||
+             ext == QLatin1String("gbff") || ext == QLatin1String("genbank") ||
+             ext == QLatin1String("embl"))
+        ceiling = 96 * MiB;
     return ceiling < 0 || fi.size() <= ceiling;
 }

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Desktop integration for the new formats**: shared-mime-info types for
+  Cooler, Zarr zip, wiggle, BLAST tabular, GenBank / EMBL (plain and gzip),
+  POD5, DuckDB (also a `.db` with DuckDB's header) and R data, plus `.h5mu`,
+  `.h5seurat` and `.fast5` as HDF5; vvg opens them and the Dolphin
+  thumbnailer / Information Panel cover all but DuckDB and compressed
+  GenBank / EMBL (R data up to 32 MB, GenBank / EMBL up to 96 MB).
 - **DuckDB databases (`.duckdb`, `.ddb`)** when built with libduckdb ≥ 1.5.6
   (optional; not in the static binary): one tab per table and view, opened
   read-only with external file access off; pages fetched as viewed.

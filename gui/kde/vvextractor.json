@@ -32,6 +32,17 @@
         "application/x-compressed-fastq": { "Version": "1.0" },
         "application/x-2bit": { "Version": "1.0" },
         "text/x-matrix-market": { "Version": "1.0" },
-        "application/x-compressed-matrix-market": { "Version": "1.0" }
+        "application/x-compressed-matrix-market": { "Version": "1.0" },
+        "application/x-cooler": { "Version": "1.0" },
+        "application/x-zarr+zip": { "Version": "1.0" },
+        "text/x-wiggle": { "Version": "1.0" },
+        "application/x-compressed-wiggle": { "Version": "1.0" },
+        "text/x-blast-tabular": { "Version": "1.0" },
+        "application/x-compressed-blast-tabular": { "Version": "1.0" },
+        "text/x-genbank": { "Version": "1.0" },
+        "text/x-embl": { "Version": "1.0" },
+        "application/x-pod5": { "Version": "1.0" },
+        "application/x-r-data": { "Version": "1.0" },
+        "application/rdata": { "Version": "1.0" }
     }
 }

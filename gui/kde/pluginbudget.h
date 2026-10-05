@@ -12,6 +12,9 @@
 //   .xlsx / .xlsm   the whole first sheet      ~64 ms and ~17 MB RSS per MB
 //   .ods            the whole content.xml      ~95 ms and ~65 MB RSS per MB
 //   .npz            the whole first array      ~3 ms and ~2 MB RSS per MB
+//   .rds / .RData   the whole object           ~12 ms and ~9 MB RSS per MB
+//                   (of the compressed file)
+//   .gb / .embl     the whole file             ~3.5 ms and ~4.5 MB RSS per MB
 //
 // (measured on an 8-core desktop). vv_within_plugin_budget() refuses those
 // above a per-format size ceiling that keeps them near one second, and the

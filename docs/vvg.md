@@ -69,13 +69,18 @@ The `vv-gui` package also integrates with Dolphin:
 - **Information Panel** — row and column counts, schema, codec, writer; for
   BAM / SAM / VCF / BCF the reference count, assembly, sort order, read groups
   and samples;
-- MIME types for the genomic formats, so `.vcf` is not taken for a vCard nor
-  `.bam` for an archive.
+- MIME types for the genomic formats, so `.vcf` is not taken for a vCard,
+  `.bam` for an archive nor `.gb` for a Game Boy ROM; also Cooler, Zarr zip,
+  wiggle, BLAST tabular, GenBank / EMBL, POD5, DuckDB and R data.
 
 ![Dolphin thumbnails: Parquet, VCF, AnnData, BAM](img/vvg/kde-thumbnails.png)
 
 CRAM and FASTA get no thumbnail or panel entry: a CRAM may fetch its reference
-over the network, and a FASTA's first record can be a whole chromosome.
+over the network, and a FASTA's first record can be a whole chromosome. Nor do
+DuckDB files (opening one takes a lock that would block a writer while it is
+indexed) or compressed GenBank / EMBL. Formats read whole at open get a
+thumbnail only up to a size limit: xlsx 16 MB, ods 8 MB, npz 256 MB, R data
+32 MB, GenBank / EMBL 96 MB.
 
 ## Install
 

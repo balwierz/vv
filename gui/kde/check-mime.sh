@@ -12,7 +12,10 @@
 # there while a real install resolves it to text/vcard.) Then checks:
 #   1. real files resolve to the expected type by name + content, including the
 #      glob collisions with text/vcard (*.vcf) and application/x-amipro (*.sam);
-#   2. every type the .desktop entry, thumbnailer or extractor lists is known;
+#   2. every type the .desktop entry, thumbnailer or extractor lists is known,
+#      except the third-party names in $thirdparty, defined by other packages
+#      (RKWard's application/rdata) and listed so vv stays in "Open with" where
+#      their definition wins a glob tie;
 #   3. the thumbnailer and extractor list only types the .desktop entry lists,
 #      the extractor's .json and .cpp lists agree, and neither plugin handles
 #      CRAM (decoding may fetch the reference over the network) or FASTA (a
@@ -47,6 +50,14 @@ printf '%%%%MatrixMarket matrix coordinate integer general\n2 2 1\n1 1 5\n' > "$
 gzip -c "$f/matrix.mtx" > "$f/matrix.mtx.gz"
 printf 'chr1\t0\t10\t1.5\n' > "$f/signal.bg"
 cp "$data/tiny.vcf" "$f/variants-no-extension"
+printf 'track type=wiggle_0\nfixedStep chrom=chr1 start=1 step=1\n0.5\n' > "$f/signal.wig"
+gzip -c "$f/signal.wig" > "$f/signal.wig.gz"
+printf 'q1\ts1\t98.5\t100\t1\t0\t1\t100\t1\t100\t1e-50\t180\n' > "$f/hits.m8"
+gzip -c "$f/hits.m8" > "$f/hits.m8.gz"
+cp "$data/tiny.gb" "$f/plasmid.gbff"
+gzip -c "$data/tiny.gb" > "$f/plasmid.gbff.gz"
+gzip -c "$data/tiny.embl" > "$f/tiny.embl.gz"
+printf 'xxxxxxxxDUCK\0\0\0\0' > "$f/warehouse.db"
 
 expect=(
   "$f/contact.vcf"              text/vcard
@@ -81,13 +92,31 @@ expect=(
   "$f/matrix.mtx"               text/x-matrix-market
   "$f/matrix.mtx.gz"            application/x-compressed-matrix-market
   "$data/tiny.parquet"          application/vnd.apache.parquet
+  "$data/tiny.cool"             application/x-cooler
+  "$data/tiny.mcool"            application/x-cooler
+  "$data/tiny.h5mu"             application/x-hdf5
+  "$data/tiny.zarr.zip"         application/x-zarr+zip
+  "$f/signal.wig"               text/x-wiggle
+  "$f/signal.wig.gz"            application/x-compressed-wiggle
+  "$f/hits.m8"                  text/x-blast-tabular
+  "$f/hits.m8.gz"               application/x-compressed-blast-tabular
+  "$data/tiny.gb"               text/x-genbank
+  "$f/plasmid.gbff"             text/x-genbank
+  "$f/plasmid.gbff.gz"          application/x-compressed-genbank
+  "$data/tiny.embl"             text/x-embl
+  "$f/tiny.embl.gz"             application/x-compressed-embl
+  "$data/tiny.pod5"             application/x-pod5
+  "$data/tiny.rds"              application/x-r-data
+  "$data/tiny.xz.rds"           application/x-r-data
+  "$data/tiny.RData"            "application/x-r-data|application/rdata"
+  "$f/warehouse.db"             application/x-duckdb
 )
 files=()
 for (( i = 0; i < ${#expect[@]}; i += 2 )); do files+=("${expect[i]}"); done
 mapfile -t got < <("$vvkdetest" --mime "${files[@]}" | cut -f2)
 for (( i = 0; i < ${#expect[@]}; i += 2 )); do
   want=${expect[i+1]} have=${got[i/2]:-}
-  if [[ $have != "$want" ]]; then
+  if [[ "|$want|" != *"|$have|"* ]]; then
     echo "FAIL: $(basename "${expect[i]}") resolves to '$have', expected '$want'"
     fail=1
   fi
@@ -102,8 +131,10 @@ extr_json=$(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv
 extr_cpp=$(grep -o 'QStringLiteral("[^"]*/[^"]*")' "$here/vvextractor.cpp" \
           | sed 's/QStringLiteral("\(.*\)")/\1/' | sort)
 
+thirdparty=(application/rdata)
+own=$(grep -vxF -f <(printf '%s\n' "${thirdparty[@]}") <<<"$desktop")
 # shellcheck disable=SC2086
-if ! "$vvkdetest" --mime-types $desktop; then fail=1; fi
+if ! "$vvkdetest" --mime-types $own; then fail=1; fi
 extra=$(comm -23 <(printf '%s\n' "$thumb" "$extr_json" | sort -u) <(printf '%s\n' "$desktop"))
 if [[ -n $extra ]]; then echo "FAIL: plugin types missing from the .desktop entry:"; echo "$extra"; fail=1; fi
 if [[ $extr_json != "$extr_cpp" ]]; then

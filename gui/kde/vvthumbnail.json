@@ -35,6 +35,17 @@
         "application/x-compressed-fastq",
         "application/x-2bit",
         "text/x-matrix-market",
-        "application/x-compressed-matrix-market"
+        "application/x-compressed-matrix-market",
+        "application/x-cooler",
+        "application/x-zarr+zip",
+        "text/x-wiggle",
+        "application/x-compressed-wiggle",
+        "text/x-blast-tabular",
+        "application/x-compressed-blast-tabular",
+        "text/x-genbank",
+        "text/x-embl",
+        "application/x-pod5",
+        "application/x-r-data",
+        "application/rdata"
     ]
 }

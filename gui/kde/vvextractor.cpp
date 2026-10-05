@@ -56,6 +56,21 @@ public:
             QStringLiteral("application/x-2bit"),
             QStringLiteral("text/x-matrix-market"),
             QStringLiteral("application/x-compressed-matrix-market"),
+            QStringLiteral("application/x-cooler"),
+            QStringLiteral("application/x-zarr+zip"),
+            QStringLiteral("text/x-wiggle"),
+            QStringLiteral("application/x-compressed-wiggle"),
+            QStringLiteral("text/x-blast-tabular"),
+            QStringLiteral("application/x-compressed-blast-tabular"),
+            QStringLiteral("application/x-pod5"),
+            // Read whole at open; vv_within_plugin_budget() caps their size.
+            // Not the compressed GenBank / EMBL types (the cap is on the
+            // compressed size), nor DuckDB (opening takes a lock that blocks
+            // a writer while Baloo indexes).
+            QStringLiteral("text/x-genbank"),
+            QStringLiteral("text/x-embl"),
+            QStringLiteral("application/x-r-data"),
+            QStringLiteral("application/rdata"),     // RKWard's name for .RData
         };
     }
 
