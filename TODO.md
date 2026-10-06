@@ -442,7 +442,7 @@ work that touches the same code:
   text VCF). Typed per-sample fields: done — decided 2026-10-01: a struct per
   sample by default (`--flatten` → `S1.GT`, `S1.DP`), `--samples long` one row
   per record × sample, `--samples text` the packed strings.
-- [ ] **Static binary: system terminfo** (S) — `Dockerfile.almalinux8` builds
+- [x] **Static binary: system terminfo** (S) — done: the distributions' terminfo dirs are searched and tmux / screen / alacritty / foot / linux added as fallbacks. `Dockerfile.almalinux8` built
   ncurses with `--with-fallbacks=xterm-256color,xterm,vt100,ansi` and no
   `--with-terminfo-dirs`, so the released static binary finds no other
   terminal description: under tmux / screen (`TERM=tmux-256color`,

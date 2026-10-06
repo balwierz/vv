@@ -333,6 +333,11 @@ RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
     cmake --build thrift-bld -j$(nproc) && cmake --install thrift-bld
 
 # ── ncurses ───────────────────────────────────────────────────────────────────
+# The prefix is a build directory, so the terminfo search path is set to the
+# distributions' own databases (Debian / Ubuntu: /lib + /usr/share; Fedora /
+# RHEL / Arch: /usr/share; /etc for local entries); $TERMINFO and ~/.terminfo
+# are searched first as usual. The fallbacks are compiled in for a system
+# with no database at all (minimal containers).
 FROM base AS build-ncurses
 RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
     tar xf /build/src/ncurses.tar.gz && mv ncurses-* ncurses-src && \
@@ -342,7 +347,9 @@ RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
         --disable-shared --enable-static --with-termlib \
         --enable-widec --without-ada --without-cxx-binding \
         --without-manpages --without-progs --without-tests \
-        --with-fallbacks=xterm-256color,xterm,vt100,ansi && \
+        --with-terminfo-dirs=/etc/terminfo:/lib/terminfo:/usr/share/terminfo:/usr/lib/terminfo \
+        --with-default-terminfo-dir=/usr/share/terminfo \
+        --with-fallbacks=xterm-256color,xterm,tmux-256color,tmux,screen-256color,screen,alacritty,foot,linux,vt100,ansi && \
     make -j$(nproc) && make install
 
 # ── htslib (static, no network backends) ─────────────────────────────────────

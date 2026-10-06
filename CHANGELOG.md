@@ -82,6 +82,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   terminal, re-indented on a pipe, a table with a table flag.
 
 ### Fixed
+- **Static binary: the interactive viewer starts under tmux, screen,
+  kitty, alacritty, foot and other terminals.** ncurses in the static build
+  searched only its build prefix for terminal descriptions, so any `TERM`
+  but `xterm-256color` / `xterm` / `vt100` / `ansi` fell back to plain
+  output. It now searches `/etc/terminfo`, `/lib/terminfo`,
+  `/usr/share/terminfo` and `/usr/lib/terminfo` (after `$TERMINFO` and
+  `~/.terminfo`), and compiles in tmux / screen / alacritty / foot / linux
+  entries for systems with no database.
 - The AnnData / MuData / Loom / 10x **summary tab shows its values whole**
   (table view and TUI) instead of eliding them at 32 / 50 characters; `-w`
   still caps when given. The TUI's **Enter detail pane wraps** a value wider
