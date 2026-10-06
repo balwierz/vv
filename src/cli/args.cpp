@@ -102,7 +102,7 @@ static const FormatInfo kFormats[] = {
    false, false, true,  true,  true,  ""},
   {"Zarr store", ".zarr .zarr.zip", "ZarrStore",
    false, false, true,  false, false, ""},
-  {"Cooler Hi-C matrix", ".cool .mcool", "PixelsSource",
+  {"Cooler Hi-C matrix", ".cool .mcool .scool", "PixelsSource",
    false, true,  true,  true,  false, ""},
   {"NumPy archive", ".npz", "NpzSource",
    false, false, true,  false, false, ""},
@@ -224,8 +224,9 @@ static void print_usage(const char* prog) {
         "  .h5seurat  .fast5  .nc  .nc4  HDF5-based: h5Seurat, Nanopore FAST5, NetCDF-4\n"
         "  .zarr  .zarr.zip            Zarr store (directory or zip): AnnData / MuData as\n"
         "                              their .h5ad / .h5mu; others as hierarchy + arrays\n"
-        "  .cool  .mcool               Cooler Hi-C matrix — summary / chroms / pixels\n"
-        "                              (joined to bins, balanced) / bins; -r region\n"
+        "  .cool  .mcool  .scool       Cooler Hi-C matrix — summary / chroms / pixels\n"
+        "                              (joined to bins, balanced) / bins; -r region;\n"
+        "                              .scool: a cells tab, pixels of every cell\n"
         "  .pod5                       Oxford Nanopore POD5 — reads / signal (decoded\n"
         "                              VBZ samples) / run_info tabs\n"
         "  .npz                        NumPy archive — summary tab + per-array tabs (3-D+ scrubs via [/])\n"

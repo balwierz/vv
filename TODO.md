@@ -123,8 +123,6 @@ user-facing summary).
 - PDB / mmCIF structures (`.pdb`, `.cif`): atom records as a table.
 - mzTab (proteomics / metabolomics): the MTD / PRT / PSM / SML sections
   as tabs.
-- `.scool` (single-cell Cooler, one cooler per cell under /cells): not
-  routed to the Cooler reader yet; opens in the generic HDF5 view.
 - R lists and S4 objects (Seurat, SingleCellExperiment, sparse
   `Matrix`) in `.rds` / `.RData`: librdata reads only data frames,
   atomic vectors and dense matrices.

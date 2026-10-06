@@ -94,6 +94,7 @@ expect=(
   "$data/tiny.parquet"          application/vnd.apache.parquet
   "$data/tiny.cool"             application/x-cooler
   "$data/tiny.mcool"            application/x-cooler
+  "$data/tiny.scool"            application/x-cooler
   "$data/tiny.h5mu"             application/x-hdf5
   "$data/tiny.zarr.zip"         application/x-zarr+zip
   "$f/signal.wig"               text/x-wiggle

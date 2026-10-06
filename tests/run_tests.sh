@@ -1413,6 +1413,25 @@ assert_eq_file_inline "mcool_tabs" "$("$VV" --list-tabs "$DATA/tiny.mcool" | tr 
 assert_eq_file_inline "mcool_res_unbalanced" "$("$VV" --tab pixels@250bp --tsv "$DATA/tiny.mcool" | head -2)" \
     "$(printf 'chrom1\tstart1\tend1\tchrom2\tstart2\tend2\tcount\nchr1\t0\t250\tchr1\t0\t250\t1')"
 assert_contains "cool_summary" "$("$VV" --tsv "$DATA/tiny.mcool")" "resolutions	100bp, 250bp"
+# Single-cell .scool: shared bins at the root, one cooler per cell under
+# /cells; one pixels tab over all cells with a leading cell column.
+SC="$DATA/tiny.scool"
+assert_eq_file_inline "scool_tabs" "$("$VV" --list-tabs "$SC" | tr '\n' ' ')" "summary chroms cells pixels bins "
+assert_eq_file_inline "scool_cells" "$("$VV" --tab cells --tsv --no-header "$SC" | tr '\t\n' ',;')" \
+    "cellA,4,10;cellB,2,;cellC,1,1;"
+assert_eq_file_inline "scool_pixels" "$("$VV" --tab pixels --tsv "$SC" | sed -n '1p;5,6p;8p')" \
+    "$(printf 'cell\tchrom1\tstart1\tend1\tchrom2\tstart2\tend2\tcount\ncellA\tchr2\t0\t10\tchr2\t20\t30\t4\ncellB\tchr1\t20\t30\tchr1\t40\t50\t5\ncellC\tchr2\t10\t20\tchr2\t20\t30\t1')"
+assert_eq_file_inline "scool_count" "$("$VV" --tab pixels --count "$SC")" "7"
+assert_eq_file_inline "scool_filter_cell" \
+    "$("$VV" --tab pixels --filter 'cell == "cellB"' --select count --tsv --no-header "$SC" | tr '\n' ' ')" "5 6 "
+# -r: each cell's region x region submatrix through its own bin1 index
+assert_eq_file_inline "scool_region" \
+    "$("$VV" --tab pixels -r chr1:0-30 --select cell,count --tsv --no-header "$SC" | tr '\t\n' ',;')" \
+    "cellA,3;cellA,1;cellA,2;"
+assert_eq_file_inline "scool_bins" "$("$VV" --tab bins --count "$SC")" "8"
+assert_contains "scool_summary" "$("$VV" --tsv "$SC")" "$(printf 'cells\t3')"
+assert_eq_file_inline "scool_h5_ext" "$(cp "$SC" "$TMP/sc.h5"; "$VV" --list-tabs "$TMP/sc.h5" | head -3 | tr '\n' ' ')" \
+    "summary chroms cells "
 
 echo '── R data (.rds / .RData) ─────────────────────────────'
 # tests/data/make_rdata.R writes the fixtures. Types: character, double,

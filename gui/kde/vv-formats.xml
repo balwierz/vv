@@ -298,6 +298,7 @@
     <sub-class-of type="application/x-hdf5"/>
     <glob pattern="*.cool"/>
     <glob pattern="*.mcool"/>
+    <glob pattern="*.scool"/>
     <icon name="vv"/>
   </mime-type>
   <mime-type type="application/x-zarr+zip">

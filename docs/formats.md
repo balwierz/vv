@@ -261,7 +261,7 @@ Try: `vv --filter 'type == "CDS"' --select locus_tag,product,start,end NC_000913
 
 ## Cooler Hi-C
 
-`.cool` `.mcool` — Hi-C contact matrices in the Cooler HDF5 layout (also an
+`.cool` `.mcool` `.scool` — Hi-C contact matrices in the Cooler HDF5 layout (also an
 `.h5` whose root says `format = HDF5::Cooler`). Tabs: **summary** (resolutions,
 assembly, bins / pixels / sum per resolution, metadata), **chroms**, then per
 resolution **pixels** — one row per stored entry of the upper triangle, joined
@@ -273,6 +273,12 @@ are read in chunks, so a multi-gigabyte file opens at once.
 
 `-r` selects the region × region submatrix (bin1 and bin2 both in the region)
 through the file's bin index, and the bins in the region.
+
+A single-cell `.scool` (one cooler per cell under `/cells`, sharing the root's
+bins) opens as **summary**, **chroms**, **cells** (stored pixels and count sum
+per cell), one **pixels** tab over every cell with a leading `cell` column —
+`--filter 'cell == "cell_0042"'` picks one, `-r` applies to each — and
+**bins**.
 
 ![vv: Hi-C pixels joined to bins, a 100 kb region of an .mcool](img/vv/cooler.svg)
 

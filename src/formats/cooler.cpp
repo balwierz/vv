@@ -11,6 +11,12 @@
 // coordinates (as `cooler dump --join`, plus `balanced` when the bins carry a
 // weight) and the bins. Bins and pixels are streamed in hyperslab chunks; -r
 // selects the region × region submatrix through the bin1 index.
+//
+// A single-cell .scool holds the shared /chroms and /bins at the root and one
+// cooler per cell under /cells/<id> (its bins / chroms hard links to the
+// root's, its own pixels and indexes). Tabs: summary, chroms, cells (pixels
+// and count sum per cell), one pixels tab over every cell with a leading
+// `cell` column, and bins.
 
 #include "internal.hpp"
 
@@ -198,6 +204,7 @@ struct Cooler {
     std::shared_ptr<arrow::Array> chrom_dict;
     std::string error;
     bool loaded = false;
+    bool has_pixels = true;           // false: an .scool root (pixels are per cell)
 
     int64_t nbins() const { return (int64_t)bin_start.size(); }
     std::string path(const std::string& sub) const {
@@ -228,9 +235,11 @@ struct Cooler {
                 if (c < 0 || c >= (int32_t)chroms.size()) c = -1;
             if (len_1d(f, path("bins/weight")) == n)
                 if (auto er = read_1d(f, path("bins/weight"), 0, n, &weight); !er.empty()) return er;
-            nnz = std::max<int64_t>(0, len_1d(f, path("pixels/bin1_id")));
-            if (len_1d(f, path("pixels/bin2_id")) != nnz || len_1d(f, path("pixels/count")) != nnz)
-                return "pixels/bin1_id, bin2_id and count must be 1-D of one length";
+            if (has_pixels) {
+                nnz = std::max<int64_t>(0, len_1d(f, path("pixels/bin1_id")));
+                if (len_1d(f, path("pixels/bin2_id")) != nnz || len_1d(f, path("pixels/count")) != nnz)
+                    return "pixels/bin1_id, bin2_id and count must be 1-D of one length";
+            }
             // chrom_offset (indexes) or, when absent, from bins/chrom.
             const int64_t nc = (int64_t)chroms.size();
             if (len_1d(f, path("indexes/chrom_offset")) == nc + 1) {
@@ -470,6 +479,13 @@ public:
 // sizes are known only once read (the source is then forward-scanned).
 class PixelsSource : public CoolerTab {
     struct Slice { int64_t p0, p1, first_row, rows; };
+    // The group holding pixels/ and indexes/: the cooler's root, or one cell
+    // of an .scool (whose bins are the root's).
+    std::string pix_root_;
+    int64_t nnz_ = 0;
+    std::string pix(const std::string& sub) const {
+        return pix_root_ == "/" ? "/" + sub : pix_root_ + "/" + sub;
+    }
     std::vector<std::pair<int64_t, int64_t>> bin_ranges_;
     std::vector<std::pair<int64_t, int64_t>> cand_;       // candidate pixel ranges
     mutable std::vector<Slice> slices_;
@@ -487,9 +503,11 @@ class PixelsSource : public CoolerTab {
         init_ = true;
         auto* self = const_cast<PixelsSource*>(this);
         if (const std::string& e = c_->load(); !e.empty()) { self->status_ = arrow::Status::IOError(e); return; }
+        if (!status_.ok()) { done_ = true; return; }
+        if (pix_root_ == c_->root) self->nnz_ = c_->nnz;
         if (!region_) {
-            for (int64_t p = 0; p < c_->nnz; p += kRowsPerChunk) {
-                const int64_t n = std::min(kRowsPerChunk, c_->nnz - p);
+            for (int64_t p = 0; p < nnz_; p += kRowsPerChunk) {
+                const int64_t n = std::min(kRowsPerChunk, nnz_ - p);
                 slices_.push_back({p, p + n, p, n});
             }
             done_ = true;
@@ -502,26 +520,26 @@ class PixelsSource : public CoolerTab {
         self->bin_ranges_ = c_->region_bins(ws);
         const int64_t nb = c_->nbins();
         std::vector<int64_t> off;   // nbins + 1, sized like the bins already read
-        if (len_1d(*c_->file, c_->path("indexes/bin1_offset")) == nb + 1) {
-            if (auto e = read_1d(*c_->file, c_->path("indexes/bin1_offset"), 0, nb + 1, &off); !e.empty()) {
+        if (len_1d(*c_->file, pix("indexes/bin1_offset")) == nb + 1) {
+            if (auto e = read_1d(*c_->file, pix("indexes/bin1_offset"), 0, nb + 1, &off); !e.empty()) {
                 self->status_ = arrow::Status::IOError(e);
                 return;
             }
         } else {
-            self->status_ = arrow::Status::IOError("'" + c_->root + "': no indexes/bin1_offset for -r");
+            self->status_ = arrow::Status::IOError("'" + pix_root_ + "': no indexes/bin1_offset for -r");
             return;
         }
         for (size_t k = 0; k < off.size(); ++k)
-            off[k] = std::clamp<int64_t>(off[k], k ? off[k - 1] : 0, c_->nnz);
+            off[k] = std::clamp<int64_t>(off[k], k ? off[k - 1] : 0, nnz_);
         for (const auto& r : bin_ranges_)
             if (off[(size_t)r.first] < off[(size_t)r.second])
                 self->cand_.emplace_back(off[(size_t)r.first], off[(size_t)r.second]);
         if (cand_.empty()) done_ = true;
     }
     arrow::Status read_ids(int64_t p0, int64_t n, std::vector<int64_t>* b1, std::vector<int64_t>* b2) const {
-        if (auto e = read_1d(*c_->file, c_->path("pixels/bin1_id"), p0, n, b1); !e.empty())
+        if (auto e = read_1d(*c_->file, pix("pixels/bin1_id"), p0, n, b1); !e.empty())
             return arrow::Status::IOError(e);
-        if (auto e = read_1d(*c_->file, c_->path("pixels/bin2_id"), p0, n, b2); !e.empty())
+        if (auto e = read_1d(*c_->file, pix("pixels/bin2_id"), p0, n, b2); !e.empty())
             return arrow::Status::IOError(e);
         return arrow::Status::OK();
     }
@@ -548,9 +566,17 @@ class PixelsSource : public CoolerTab {
         }
     }
 public:
-    PixelsSource(std::string path, std::string label, std::shared_ptr<Cooler> c, const std::string& region)
-        : CoolerTab(std::move(path), std::move(label), std::move(c), region) {
-        count_float_ = float_dataset(*c_->file, c_->path("pixels/count"));
+    PixelsSource(std::string path, std::string label, std::shared_ptr<Cooler> c, const std::string& region,
+                 std::string pix_root = "")
+        : CoolerTab(std::move(path), std::move(label), std::move(c), region),
+          pix_root_(pix_root.empty() ? c_->root : std::move(pix_root)) {
+        if (pix_root_ != c_->root) {
+            nnz_ = std::max<int64_t>(0, len_1d(*c_->file, pix("pixels/bin1_id")));
+            if (len_1d(*c_->file, pix("pixels/bin2_id")) != nnz_ || len_1d(*c_->file, pix("pixels/count")) != nnz_)
+                status_ = arrow::Status::IOError("'" + pix_root_ +
+                                                 "': pixels/bin1_id, bin2_id and count must be 1-D of one length");
+        }
+        count_float_ = float_dataset(*c_->file, pix("pixels/count"));
         balanced_ = len_1d(*c_->file, c_->path("bins/weight")) == len_1d(*c_->file, c_->path("bins/start"));
         const auto chrom_t = arrow::dictionary(arrow::int32(), arrow::utf8());
         arrow::FieldVector f{arrow::field("chrom1", chrom_t), arrow::field("start1", arrow::int64()),
@@ -577,7 +603,7 @@ public:
     arrow::Status read_status() const override { init(); return status_; }
     std::string footer() const override {
         init();
-        std::string s = "Format: Cooler pixels  |  " + what_() + "  |  " + std::to_string(c_->nnz) +
+        std::string s = "Format: Cooler pixels  |  " + what_() + "  |  " + std::to_string(nnz_) +
                         " stored pixels (upper triangle)";
         if (balanced_) s += "  |  balanced = count \xc3\x97 weight1 \xc3\x97 weight2";
         return s;
@@ -591,7 +617,7 @@ public:
         std::vector<int64_t> b1, b2, ci;
         std::vector<double> cf;
         ARROW_RETURN_NOT_OK(read_ids(s.p0, n, &b1, &b2));
-        const std::string cnt = c_->path("pixels/count");
+        const std::string cnt = pix("pixels/count");
         if (auto e = count_float_ ? read_1d(*c_->file, cnt, s.p0, n, &cf) : read_1d(*c_->file, cnt, s.p0, n, &ci);
             !e.empty())
             return arrow::Status::IOError(e);
@@ -628,18 +654,130 @@ public:
     }
 };
 
+// An .scool's pixels: every cell's PixelsSource in turn (each made when
+// reached), with a leading `cell` column. Chunks are discovered forward, as a
+// cell's chunk count is known only once it is opened (and, with -r, read).
+class ScoolPixelsSource : public TabularSource {
+    struct Chunk { size_t cell; int child; int64_t first_row, rows; };
+    std::string path_;
+    std::shared_ptr<Cooler> c_;
+    std::vector<std::string> cells_;
+    std::string region_;
+    std::shared_ptr<arrow::Schema> schema_;
+    std::shared_ptr<arrow::Array> cell_dict_;
+    mutable std::vector<std::unique_ptr<PixelsSource>> children_;
+    mutable std::vector<Chunk> chunks_;
+    mutable size_t next_cell_ = 0;
+    mutable int cur_chunk_ = 0;
+    mutable bool done_ = false;
+    mutable arrow::Status status_;
+
+    PixelsSource* child(size_t k) const {
+        if (!children_[k])
+            children_[k] = std::make_unique<PixelsSource>(path_, "pixels", c_, region_, "/cells/" + cells_[k]);
+        return children_[k].get();
+    }
+    int64_t rows_so_far() const { return chunks_.empty() ? 0 : chunks_.back().first_row + chunks_.back().rows; }
+    // Discover the next chunk; false at the end or on an error.
+    bool advance() const {
+        while (!done_ && status_.ok()) {
+            if (next_cell_ >= cells_.size()) { done_ = true; return false; }
+            PixelsSource* ch = child(next_cell_);
+            ch->ensure(cur_chunk_);
+            if (cur_chunk_ < ch->num_chunks()) {
+                const ChunkMeta m = ch->chunk_meta(cur_chunk_);
+                if (m.num_rows > 0) {
+                    chunks_.push_back({next_cell_, cur_chunk_, rows_so_far(), m.num_rows});
+                    ++cur_chunk_;
+                    return true;
+                }
+                ++cur_chunk_;
+                continue;
+            }
+            if (!ch->read_status().ok()) { status_ = ch->read_status(); return false; }
+            ++next_cell_;
+            cur_chunk_ = 0;
+        }
+        return false;
+    }
+public:
+    ScoolPixelsSource(std::string path, std::shared_ptr<Cooler> c, std::vector<std::string> cells,
+                      std::string region)
+        : path_(std::move(path)), c_(std::move(c)), cells_(std::move(cells)), region_(std::move(region)),
+          children_(cells_.size()) {
+        arrow::StringBuilder b;
+        ARROW_UNUSED(b.AppendValues(cells_));
+        ARROW_UNUSED(b.Finish(&cell_dict_));
+        // The cells share the root's bins, so every cell's pixel columns are
+        // those of the first (count int or float as stored there).
+        arrow::FieldVector f{arrow::field("cell", arrow::dictionary(arrow::int32(), arrow::utf8()))};
+        if (!cells_.empty())
+            for (const auto& fl : child(0)->schema()->fields()) f.push_back(fl);
+        schema_ = arrow::schema(f);
+    }
+    const std::string& path() const override { return path_; }
+    std::string tab_label() const override { return "pixels"; }
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    int64_t total_rows() const override { return done_ ? rows_so_far() : -1; }
+    int num_chunks() const override { return (int)chunks_.size(); }
+    void ensure(int i) override { while ((int)chunks_.size() <= i && advance()) {} }
+    ChunkMeta chunk_meta(int i) const override {
+        if (i < 0 || i >= (int)chunks_.size()) return {0, 0};
+        return {chunks_[(size_t)i].first_row, chunks_[(size_t)i].rows};
+    }
+    arrow::Status read_status() const override { return status_; }
+    bool region_applied() const override { return !region_.empty(); }
+    std::string footer() const override {
+        return "Format: Cooler pixels (.scool)  |  " + bp_label(c_->binsize) + " bins  |  " +
+               std::to_string(cells_.size()) + " cells, one row per stored pixel of each";
+    }
+    arrow::Status read_chunk(int i, const std::vector<int>& cols, std::shared_ptr<arrow::Table>* out) override {
+        ensure(i);
+        ARROW_RETURN_NOT_OK(status_);
+        if (i < 0 || i >= (int)chunks_.size()) return arrow::Status::IndexError("chunk ", i);
+        const Chunk ck = chunks_[(size_t)i];
+        std::vector<int> inner;
+        for (int c : cols) if (c > 0) inner.push_back(c - 1);
+        std::shared_ptr<arrow::Table> t;
+        ARROW_RETURN_NOT_OK(child(ck.cell)->read_chunk(ck.child, inner, &t));
+        arrow::FieldVector fields;
+        arrow::ChunkedArrayVector arrays;
+        size_t next_inner = 0;
+        for (int c : cols) {
+            if (c == 0) {
+                arrow::Int32Builder ib;
+                ARROW_RETURN_NOT_OK(ib.AppendValues(std::vector<int32_t>((size_t)t->num_rows(), (int32_t)ck.cell)));
+                std::shared_ptr<arrow::Array> idx;
+                ARROW_RETURN_NOT_OK(ib.Finish(&idx));
+                ARROW_ASSIGN_OR_RAISE(auto d, arrow::DictionaryArray::FromArrays(schema_->field(0)->type(), idx,
+                                                                                 cell_dict_));
+                fields.push_back(schema_->field(0));
+                arrays.push_back(std::make_shared<arrow::ChunkedArray>(d));
+            } else if (next_inner < (size_t)t->num_columns()) {
+                fields.push_back(t->schema()->field((int)next_inner));
+                arrays.push_back(t->column((int)next_inner));
+                ++next_inner;
+            }
+        }
+        *out = arrow::Table::Make(arrow::schema(fields), arrays, t->num_rows());
+        return arrow::Status::OK();
+    }
+};
+
 struct Summary {
     std::shared_ptr<arrow::Table> summary, chroms;
 };
 
+struct CellInfo { std::string name; int64_t nnz = 0, sum = -1; };
+
 // Summary rows (field, value) and the chroms table.
 std::string build_summary(const std::string& path, const std::vector<std::shared_ptr<Cooler>>& cs,
-                          bool mcool, Summary* out) {
+                          bool mcool, Summary* out, const std::vector<CellInfo>* cells = nullptr) {
     hid_t f = *cs[0]->file;
     std::vector<std::pair<std::string, std::string>> rows;
     auto add = [&](const std::string& k, const std::string& v) { if (!v.empty()) rows.emplace_back(k, v); };
     Hid g0(H5Oopen(f, cs[0]->root.c_str(), H5P_DEFAULT), H5Oclose);
-    add("format", mcool ? "Cooler (multi-resolution .mcool)" : "Cooler");
+    add("format", cells ? "Cooler (single-cell .scool)" : mcool ? "Cooler (multi-resolution .mcool)" : "Cooler");
     add("format-version", std::to_string(int_attr(g0.id, "format-version")));
     if (mcool) {
         std::string res;
@@ -648,8 +786,20 @@ std::string build_summary(const std::string& path, const std::vector<std::shared
     }
     add("genome-assembly", h5v::read_string_attr(g0.id, "genome-assembly"));
     add("storage-mode", h5v::read_string_attr(g0.id, "storage-mode"));
+    if (cells && !cells->empty()) {
+        Hid gc(H5Oopen(f, ("/cells/" + (*cells)[0].name).c_str(), H5P_DEFAULT), H5Oclose);
+        if (gc) add("storage-mode", h5v::read_string_attr(gc.id, "storage-mode"));
+    }
     add("chromosomes", std::to_string(cs[0]->chroms.size()));
+    if (cells) {
+        int64_t total = 0;
+        for (const auto& ci : *cells) total += ci.nnz;
+        add("cells", std::to_string(cells->size()));
+        add("bins", std::to_string(cs[0]->nbins()) + " (" + bp_label(cs[0]->binsize) + "), shared by the cells");
+        add("pixels", std::to_string(total) + " stored, over all cells");
+    }
     for (const auto& c : cs) {
+        if (cells) break;
         std::string v = std::to_string(c->nbins()) + " bins, " + std::to_string(c->nnz) + " pixels";
         Hid g(H5Oopen(f, c->root.c_str(), H5P_DEFAULT), H5Oclose);
         if (H5Aexists(g.id, "sum") > 0) v += ", sum " + std::to_string(int_attr(g.id, "sum"));
@@ -711,7 +861,7 @@ bool is_cooler_file(const std::string& path) {
     }
     if (!f) return false;
     const std::string fmt = h5v::read_string_attr(*f, "format");
-    return fmt == "HDF5::Cooler" || fmt == "HDF5::MCOOL";
+    return fmt == "HDF5::Cooler" || fmt == "HDF5::MCOOL" || fmt == "HDF5::SCOOL";
 }
 
 std::string open_cooler_source(const std::string& path, const Config& cfg, std::unique_ptr<TabularSource>* out) {
@@ -720,6 +870,65 @@ std::string open_cooler_source(const std::string& path, const Config& cfg, std::
     if (!f) return "'" + path + "': cannot open as HDF5";
     const std::string fmt = h5v::read_string_attr(*f, "format");
     const bool mcool = fmt == "HDF5::MCOOL" || (fmt.empty() && exists(*f, "resolutions"));
+    const bool scool = fmt == "HDF5::SCOOL" || (fmt.empty() && exists(*f, "cells") && !exists(*f, "pixels"));
+    if (scool) {
+        if (!exists(*f, "cells")) return "'" + path + "': .scool without /cells";
+        auto c = std::make_shared<Cooler>();
+        c->file = f;
+        c->root = "/";
+        c->binsize = int_attr(*f, "bin-size");
+        c->has_pixels = false;
+        if (auto e = c->load(); !e.empty()) return "'" + path + "': " + e;
+        std::vector<CellInfo> cells;
+        std::vector<std::string> names;
+        {
+            Hid g(H5Gopen2(*f, "cells", H5P_DEFAULT), H5Gclose);
+            for (const auto& n : child_names(g.id)) {
+                Hid cg(H5Gopen2(g.id, n.c_str(), H5P_DEFAULT), H5Gclose);
+                if (!cg) continue;
+                CellInfo ci{n};
+                ci.nnz = std::max<int64_t>(0, len_1d(cg.id, "pixels/bin1_id"));
+                if (H5Aexists(cg.id, "sum") > 0) ci.sum = int_attr(cg.id, "sum");
+                names.push_back(n);
+                cells.push_back(std::move(ci));
+            }
+        }
+        if (cells.empty()) return "'" + path + "': no cells in the .scool";
+        Summary sm;
+        build_summary(path, {c}, false, &sm, &cells);
+        arrow::StringBuilder nb;
+        std::vector<int64_t> nnz, sum;
+        std::vector<bool> has_sum;
+        for (const auto& ci : cells) {
+            ARROW_UNUSED(nb.Append(ci.name));
+            nnz.push_back(ci.nnz);
+            sum.push_back(ci.sum);
+            has_sum.push_back(ci.sum >= 0);
+        }
+        std::shared_ptr<arrow::Array> na;
+        ARROW_UNUSED(nb.Finish(&na));
+        auto cells_tbl = arrow::Table::Make(arrow::schema({arrow::field("cell", arrow::utf8()),
+                                                           arrow::field("pixels", arrow::int64()),
+                                                           arrow::field("sum", arrow::int64())}),
+                                            {na, int64_array(nnz), int64_array(sum, &has_sum)});
+        const std::string region = cfg.region;
+        auto siblings = [path, c, names, region, chroms = sm.chroms, cells_tbl]() {
+            std::vector<std::unique_ptr<TabularSource>> v;
+            v.push_back(std::make_unique<CoolerSummarySource>(chroms, path, "Format: Cooler chromosomes", "chroms",
+                                                              nullptr));
+            v.push_back(std::make_unique<CoolerSummarySource>(
+                cells_tbl, path, "Format: Cooler cells (.scool)  |  " + std::to_string(names.size()) + " cells",
+                "cells", nullptr));
+            v.push_back(std::make_unique<ScoolPixelsSource>(path, c, names, region));
+            v.push_back(std::make_unique<BinsSource>(path, "bins", c, region));
+            return v;
+        };
+        auto first = std::make_unique<CoolerSummarySource>(sm.summary, path, "Format: Cooler (.scool) (summary)",
+                                                           "summary", siblings);
+        first->set_region(!region.empty());
+        *out = std::move(first);
+        return "";
+    }
     std::vector<std::shared_ptr<Cooler>> cs;
     if (mcool) {
         if (!exists(*f, "resolutions")) return "'" + path + "': .mcool without /resolutions";

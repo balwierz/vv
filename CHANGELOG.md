@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Single-cell Cooler (`.scool`)**: summary, chroms, a cells tab (stored
+  pixels and count sum per cell), one pixels tab over every cell with a
+  leading `cell` column (`-r` applied per cell, through each cell's index)
+  and the shared bins.
 - **NumPy string and datetime arrays** in `.npy` / `.npz`: `<U` (UTF-32) and
   `|S` (bytes) as strings (binary when not UTF-8), `datetime64` as dates
   (`Y` / `M` / `W` / `D`) or timestamps (`h` … `ns`, multipliers like

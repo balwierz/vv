@@ -46,7 +46,7 @@ More screenshots, one per format: **[docs/formats.md](docs/formats.md)**.
 | MatrixMarket | `.mtx` | [screens](docs/formats.md#matrixmarket) |
 | NumPy | `.npz` `.npy` |
 | R data | `.rds` `.RData` `.rda` | [notes](docs/formats.md#r-data) | [screens](docs/formats.md#numpy) |
-| Cooler Hi-C | `.cool` `.mcool` | [notes](docs/formats.md#cooler-hi-c) |
+| Cooler Hi-C | `.cool` `.mcool` `.scool` | [notes](docs/formats.md#cooler-hi-c) |
 | GenBank / EMBL | `.gb` `.gbk` `.gbff` `.genbank` `.embl` | [notes](docs/formats.md#genbank--embl) |
 | Nanopore POD5 | `.pod5` | [notes](docs/formats.md#nanopore-pod5) |
 | Parquet, LociSSD | `.parquet` `.lociss` | [screens](docs/formats.md#parquet--arrow--orc) |

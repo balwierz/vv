@@ -2245,6 +2245,52 @@ else:
         _cooler(r.create_group("100"), 100, True, True)
         _cooler(r.create_group("250"), 250, False, False)
 
+    # tiny.scool: single-cell Cooler as cooler.create_scool writes it — the
+    # shared /chroms and /bins at the root, one cooler per cell under
+    # /cells/<id> whose bins / chroms are hard links to the root's, its own
+    # pixels, indexes and nnz / sum attributes. chr1 50 bp + chr2 30 bp, 10 bp
+    # bins; three cells (cellB has no sum attribute).
+    scool = HERE / "tiny.scool"
+    if scool.exists():
+        scool.unlink()
+    sc_bins = [(0, s_) for s_ in range(0, 50, 10)] + [(1, s_) for s_ in range(0, 30, 10)]
+    sc_cells = {"cellA": [(0, 0, 3), (0, 2, 1), (1, 1, 2), (5, 7, 4)],
+                "cellB": [(2, 4, 5), (3, 3, 6)],
+                "cellC": [(6, 7, 1)]}
+    with h5py.File(scool, "w") as f:
+        f.attrs.update({"format": "HDF5::SCOOL", "format-version": 1, "bin-type": "fixed",
+                        "bin-size": 10, "nbins": len(sc_bins), "nchroms": 2, "ncells": len(sc_cells),
+                        "genome-assembly": "toy", "generated-by": "vv tests/data/generate.py",
+                        "creation-date": "2026-10-07T00:00:00"})
+        ch = f.create_group("chroms")
+        ch.create_dataset("name", data=np.array([b"chr1", b"chr2"], dtype="S4"))
+        ch.create_dataset("length", data=np.array([50, 30], dtype=np.int32))
+        b = f.create_group("bins")
+        b.create_dataset("chrom", data=np.array([c for c, _ in sc_bins], dtype=np.int32))
+        b.create_dataset("start", data=np.array([s_ for _, s_ in sc_bins], dtype=np.int32))
+        b.create_dataset("end", data=np.array([s_ + 10 for _, s_ in sc_bins], dtype=np.int32))
+        cg = f.create_group("cells")
+        for name, pix in sc_cells.items():
+            g = cg.create_group(name)
+            g.attrs.update({"format": "HDF5::Cooler", "format-version": 3, "bin-size": 10,
+                            "storage-mode": "symmetric-upper", "nnz": len(pix)})
+            if name != "cellB":
+                g.attrs["sum"] = sum(p_[2] for p_ in pix)
+            g["bins"] = f["bins"]          # hard links, as cooler does
+            g["chroms"] = f["chroms"]
+            px = g.create_group("pixels")
+            px.create_dataset("bin1_id", data=np.array([p_[0] for p_ in pix], dtype=np.int64))
+            px.create_dataset("bin2_id", data=np.array([p_[1] for p_ in pix], dtype=np.int64))
+            px.create_dataset("count", data=np.array([p_[2] for p_ in pix], dtype=np.int32))
+            ix = g.create_group("indexes")
+            ix.create_dataset("chrom_offset", data=np.array([0, 5, 8], dtype=np.int64))
+            b1o, k = [], 0
+            for b1 in range(len(sc_bins) + 1):
+                while k < len(pix) and pix[k][0] < b1:
+                    k += 1
+                b1o.append(k)
+            ix.create_dataset("bin1_offset", data=np.array(b1o, dtype=np.int64))
+
 
 # tiny.gb / tiny.embl: the same two records written by Biopython as GenBank
 # and EMBL. TOY1 (linear, 120 bp): a gene + CDS on the minus strand as a join
