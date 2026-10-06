@@ -300,7 +300,8 @@ public:
     void applyRegionQuery(const QString& region, bool ncbi = false,
                           int slop = 0, bool pileup = false,
                           const QString& tags = QString(), bool gtStats = false,
-                          bool contigs = false) {
+                          bool contigs = false, const QString& samples = QString(),
+                          const QString& matrix = QString()) {
         if (regionEdit_)  regionEdit_->setText(region);
         if (coordsCombo_) coordsCombo_->setCurrentIndex(ncbi ? 1 : 0);
         if (slopSpin_)    slopSpin_->setValue(slop);
@@ -308,6 +309,15 @@ public:
         if (tagsEdit_)     tagsEdit_->setText(tags);
         if (gtStatsAction_) gtStatsAction_->setChecked(gtStats);
         if (contigsAction_) contigsAction_->setChecked(contigs);
+        // Set without a re-open per combo; applyRegion() below re-opens once.
+        if (samplesCombo_ && !samples.isEmpty()) {
+            QSignalBlocker b(samplesCombo_);
+            samplesCombo_->setCurrentText(samples);
+        }
+        if (matrixCombo_ && !matrix.isEmpty()) {
+            QSignalBlocker b(matrixCombo_);
+            matrixCombo_->setCurrentText(matrix);
+        }
         applyRegion();
     }
 
@@ -727,6 +737,25 @@ private:
             tr("GFF/GTF, VCF/BCF: unpack the key=value attributes / INFO column "
                "into one column per key"));
         connect(expandAction_, &QAction::toggled, this, [this](bool){ reopenAll(); });
+
+        // VCF/BCF sample columns (--samples) and HDF5 / AnnData / Loom / 10x
+        // matrix tabs (--matrix): the layouts the CLI offers.
+        tb->addWidget(new QLabel(tr("  samples ")));
+        samplesCombo_ = new QComboBox(tb);
+        samplesCombo_->addItems({QStringLiteral("struct"), QStringLiteral("long"), QStringLiteral("text")});
+        samplesCombo_->setToolTip(
+            tr("VCF/BCF sample columns: struct (one typed struct per sample), "
+               "long (one row per record × sample), text (the packed strings)"));
+        tb->addWidget(samplesCombo_);
+        connect(samplesCombo_, &QComboBox::currentIndexChanged, this, [this](int){ applyRegion(); });
+        tb->addWidget(new QLabel(tr("  matrix ")));
+        matrixCombo_ = new QComboBox(tb);
+        matrixCombo_->addItems({QStringLiteral("wide"), QStringLiteral("long")});
+        matrixCombo_->setToolTip(
+            tr("HDF5 / AnnData / Loom / 10x matrix tabs: wide (cells × genes) or "
+               "long (one row per stored value: obs, var, value)"));
+        tb->addWidget(matrixCombo_);
+        connect(matrixCombo_, &QComboBox::currentIndexChanged, this, [this](int){ applyRegion(); });
     }
 
     void applyRegion() {
@@ -737,6 +766,8 @@ private:
         sessionCfg_.bam_tags         = tagsEdit_->text().trimmed().toStdString();
         sessionCfg_.gt_stats         = gtStatsAction_->isChecked();
         sessionCfg_.contigs          = contigsAction_->isChecked();
+        if (samplesCombo_) sessionCfg_.samples = samplesCombo_->currentText().toStdString();
+        if (matrixCombo_)  sessionCfg_.matrix  = matrixCombo_->currentText().toStdString();
         reopenAll();
     }
 
@@ -1132,6 +1163,8 @@ public:
         s.gtStats = sessionCfg_.gt_stats;
         s.contigs = sessionCfg_.contigs;
         s.expand  = o.expand;
+        s.samples = QString::fromStdString(sessionCfg_.samples);
+        s.matrix  = QString::fromStdString(sessionCfg_.matrix);
         if (m->hasFilter()) s.filter = filterText_.value(m);
         if (m->sortColumn() >= 0) {
             s.sortColumn = m->columnName(m->sortColumn());
@@ -1209,11 +1242,12 @@ public:
 
     // vv's view flags on vvg's command line (vvg --filter … --sort … file).
     struct ViewOptions {
-        QString filter, select, sort, tab, region, tags;
+        QString filter, select, sort, tab, region, tags, samples, matrix;
         bool ncbi = false, pileup = false, gtStats = false, contigs = false;
         int  slop = 0;
         bool session() const {
-            return !region.isEmpty() || !tags.isEmpty() || pileup || gtStats || contigs || slop;
+            return !region.isEmpty() || !tags.isEmpty() || pileup || gtStats || contigs || slop ||
+                   !samples.isEmpty() || !matrix.isEmpty();
         }
     };
     // Apply them after the files open, in vv's order: region / session options
@@ -1226,7 +1260,8 @@ public:
                 QCoreApplication::processEvents();
         };
         if (o.session())
-            applyRegionQuery(o.region, o.ncbi, o.slop, o.pileup, o.tags, o.gtStats, o.contigs);
+            applyRegionQuery(o.region, o.ncbi, o.slop, o.pileup, o.tags, o.gtStats, o.contigs,
+                             o.samples, o.matrix);
         if (!o.tab.isEmpty()) {
             int found = -1;
             for (int i = 0; i < tabs_->count() && found < 0; ++i)
@@ -1688,6 +1723,8 @@ private:
     QAction*                       gtStatsAction_ = nullptr;
     QAction*                       contigsAction_ = nullptr;
     QAction*                       expandAction_  = nullptr;
+    QComboBox*                     samplesCombo_  = nullptr;
+    QComboBox*                     matrixCombo_   = nullptr;
     bool                           smoothScroll_  = true;   // per-pixel scrolling
     QMenu*                         recentMenu_  = nullptr;
     QMenu*                         columnsMenu_ = nullptr;
@@ -1805,6 +1842,15 @@ static bool checkVvCommand() {
     g.path = QStringLiteral("genes.gff3.gz"); g.expand = QStringLiteral("attributes");
     g.filter = QStringLiteral("gene_type == \"lncRNA\"");
     eq(vvCommandLine(g), "vv --expand attributes --filter 'gene_type == \"lncRNA\"' genes.gff3.gz");
+    // Layouts: only a non-default one is written.
+    VvCommandSpec l;
+    l.path = QStringLiteral("c.vcf"); l.samples = QStringLiteral("struct"); l.matrix = QStringLiteral("wide");
+    eq(vvCommandLine(l), "vv c.vcf");
+    l.samples = QStringLiteral("long");
+    eq(vvCommandLine(l), "vv --samples long c.vcf");
+    l.path = QStringLiteral("a.h5ad"); l.samples.clear(); l.matrix = QStringLiteral("long");
+    eq(vvCommandLine(l), "vv --matrix long a.h5ad");
+    if (vvCommandConfig(l).matrix != "long") { std::fprintf(stderr, "vvcommand FAIL: config matrix\n"); ok = false; }
     return ok;
 }
 
@@ -1838,6 +1884,22 @@ int main(int argc, char** argv) {
         else if (a == "--tab")                    value(&view.tab);
         else if (a == "-r" || a == "--region")    value(&view.region);
         else if (a == "--tags")                   value(&view.tags);
+        else if (a == "--samples") {
+            value(&view.samples);
+            if (view.samples != "struct" && view.samples != "long" && view.samples != "text") {
+                std::fprintf(stderr, "vvg: --samples: unknown layout '%s' (use struct|long|text)\n",
+                             view.samples.toLocal8Bit().constData());
+                return 2;
+            }
+        }
+        else if (a == "--matrix") {
+            value(&view.matrix);
+            if (view.matrix != "wide" && view.matrix != "long") {
+                std::fprintf(stderr, "vvg: --matrix: unknown layout '%s' (use wide|long)\n",
+                             view.matrix.toLocal8Bit().constData());
+                return 2;
+            }
+        }
         else if (a == "--coords")                 { value(&tmp); view.ncbi = tmp.compare(QStringLiteral("NCBI"), Qt::CaseInsensitive) == 0; }
         else if (a == "--slop")                   { value(&tmp); view.slop = tmp.toInt(); }
         else if (a == "--pileup")                 view.pileup = true;
@@ -1850,6 +1912,8 @@ int main(int argc, char** argv) {
                         "  --sort COL[:desc] sort by a column\n"
                         "  --tab NAME        open a component tab (or its 0-based index)\n"
                         "  -r, --region R    region query (UCSC coordinates; --coords NCBI)\n"
+                        "  --samples struct|long|text   VCF/BCF sample columns (as in vv)\n"
+                        "  --matrix wide|long           HDF5 / AnnData matrix tabs (as in vv)\n"
                         "  --slop N, --tags LIST, --pileup, --gt-stats, --contigs\n"
                         "                    as in vv\n");
             return 0;

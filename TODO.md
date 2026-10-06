@@ -467,7 +467,7 @@ work that touches the same code:
   decision: compressed input is still decompressed to a temporary copy before
   the tree opens — the index needs random access and its first scan reads the
   whole document, so a streamed index would not show the first screen sooner.
-- [ ] **vvg: `--samples` / `--matrix` choices** (S–M) — the viewer and exports
+- [x] **vvg: `--samples` / `--matrix` choices** (S–M) — done: toolbar combos + flags. The viewer and exports
   take both; vvg follows the defaults (struct samples, wide matrices) but has
   no toolbar control or command-line flag for them yet.
 - [x] **`--flatten` for nested struct paths** (M+).

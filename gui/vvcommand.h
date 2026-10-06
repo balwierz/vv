@@ -19,6 +19,8 @@ struct VvCommandSpec {
     bool        gtStats  = false;
     bool        contigs  = false;
     QString     expand;               // --expand column (attributes / INFO); empty = none
+    QString     samples;              // --samples layout; empty / "struct" = the default
+    QString     matrix;               // --matrix layout; empty / "wide" = the default
     QString     filter;               // --filter expression, as applied
     QString     sortColumn;           // empty = unsorted
     bool        sortDesc = false;

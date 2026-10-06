@@ -16,7 +16,8 @@ vvg -r chr17:43044295-43125483 calls.vcf.gz
 
 vvg takes vv's view flags — `--filter`, `--select`, `--sort`, `--tab`,
 `-r` / `--region` (with `--coords`, `--slop`), `--tags`, `--pileup`,
-`--gt-stats`, `--contigs` — and *Edit ▸ Copy as vv Command* goes the other way.
+`--gt-stats`, `--contigs`, `--samples`, `--matrix` — and *Edit ▸ Copy as vv
+Command* goes the other way.
 
 ![vvg: a Parquet file filtered and sorted](img/vvg/parquet.png)
 
@@ -43,6 +44,10 @@ vvg takes vv's view flags — `--filter`, `--select`, `--sort`, `--tab`,
   flags (`--filter`, `--select`, …), open as a table directly.
 - **Expand** (on by default) — VCF `INFO` and GFF / GTF `attributes` are split
   into one column per key, sortable and filterable.
+- **samples / matrix** — the toolbar's layouts for VCF / BCF sample columns
+  (struct, long: one row per record × sample, text) and HDF5 / AnnData matrix
+  tabs (wide, long: one row per stored value), as vv's `--samples` /
+  `--matrix`.
 - **Row detail, stats, columns** — a dock with the current row, *Σ Stats* per
   column, show / hide columns, go to row, ◀ / ▶ slices for 3-D arrays,
   *Ctrl+C* copies the selection as TSV. *View ▸ Smooth Scrolling* (on by

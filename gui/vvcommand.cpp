@@ -35,6 +35,8 @@ QString vvCommandLine(const VvCommandSpec& s) {
         if (s.gtStats)           w << QStringLiteral("--gt-stats");
         if (!s.expand.isEmpty()) opt("--expand", s.expand);
     }
+    if (!s.samples.isEmpty() && s.samples != QLatin1String("struct")) opt("--samples", s.samples);
+    if (!s.matrix.isEmpty() && s.matrix != QLatin1String("wide"))     opt("--matrix", s.matrix);
     if (!s.filter.isEmpty())     opt("--filter", s.filter);
     // --sort reads a trailing :asc / :desc as the direction, so a name that
     // contains a colon always gets an explicit one.
@@ -64,6 +66,8 @@ Config vvCommandConfig(const VvCommandSpec& s) {
         cfg.gt_stats = s.gtStats;
         cfg.expand_col = s.expand.toStdString();
     }
+    if (!s.samples.isEmpty()) cfg.samples = s.samples.toStdString();
+    if (!s.matrix.isEmpty())  cfg.matrix  = s.matrix.toStdString();
     cfg.filter_expr = s.filter.toStdString();
     cfg.sort_col    = s.sortColumn.toStdString();
     cfg.sort_desc   = s.sortDesc;

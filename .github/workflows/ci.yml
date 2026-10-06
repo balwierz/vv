@@ -356,6 +356,15 @@ jobs:
           grep -q "^cmd=vv --filter 'Score > 0.5' --sort Score:desc --select Score,Chr " <<<"$out"
           VVG_WINTEST=1 VVG_COPYCMD=1 ./build-gui/gui/vvg --tab obs tests/data/tiny.h5ad | grep -q '^cmd=vv --tab obs '
           if ./build-gui/gui/vvg --no-such-option 2>/dev/null; then exit 1; fi
+          # --samples / --matrix (also the toolbar's samples / matrix combos):
+          # the layouts reopen the file and are carried into the copied command.
+          out=$(VVG_WINTEST=1 VVG_TABDIMS=1 VVG_COPYCMD=1 ./build-gui/gui/vvg --samples long tests/data/tiny.samples.bcf)
+          grep -q "tab 'tiny.samples.bcf' rows=4 cols=13 " <<<"$out"
+          grep -q "^cmd=vv --expand INFO --samples long " <<<"$out"
+          out=$(VVG_WINTEST=1 VVG_TABDIMS=1 VVG_COPYCMD=1 VVG_TAB=1 ./build-gui/gui/vvg --matrix long tests/data/tiny.h5ad)
+          grep -q "tab 'X (long)' rows=7 cols=3 " <<<"$out"
+          grep -q "^cmd=vv --tab 'X (long)' --matrix long " <<<"$out"
+          if ./build-gui/gui/vvg --matrix tall tests/data/tiny.h5ad 2>/dev/null; then exit 1; fi
           # AnnData obsp / varp graphs open as streamed edge-list tabs.
           VVG_WINTEST=1 VVG_TABDIMS=1 ./build-gui/gui/vvg tests/data/tiny.obsp.h5ad \
             | grep -q "tab 'obsp\[connectivities\]' rows=4 cols=5 "

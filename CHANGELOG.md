@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `|S` (bytes) as strings (binary when not UTF-8), `datetime64` as dates
   (`Y` / `M` / `W` / `D`) or timestamps (`h` … `ns`, multipliers like
   `[10s]`), `timedelta64` as durations; NaT is null.
+- **vvg: `--samples` / `--matrix`** — toolbar combos and command-line flags
+  for the VCF / BCF sample layout (struct / long / text) and the HDF5 /
+  AnnData matrix layout (wide / long); *Copy as vv Command* and *Export View*
+  carry a non-default choice.
 - **Desktop integration for the new formats**: shared-mime-info types for
   Cooler, Zarr zip, wiggle, BLAST tabular, GenBank / EMBL (plain and gzip),
   POD5, DuckDB (also a `.db` with DuckDB's header) and R data, plus `.h5mu`,
