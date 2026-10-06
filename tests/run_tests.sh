@@ -5237,12 +5237,40 @@ fi
 # Flag INFO key. Exit 0 plus an unreadable file is the worst failure mode there
 # is, so each dtype is round-tripped rather than merely schema-checked.
 # The .npz summary names why an array is not shown: only an object array is
-# pickled; fixed-width strings and datetimes are dtypes vv does not read.
+# pickled; a datetime unit finer than ns has no Arrow type; fixed-width
+# strings and datetimes in the usual units are read.
 if python3 -c 'import numpy' 2>/dev/null; then
-    python3 -c 'import numpy as np, sys; np.savez(sys.argv[1], o=np.array([1, "a"], dtype=object), d=np.array(["2024-01-01"], dtype="M8[D]"), u=np.array(["ab"]))' "$TMP/kinds.npz"
+    python3 -c 'import numpy as np, sys; np.savez(sys.argv[1], o=np.array([1, "a"], dtype=object), d=np.array(["2024-01-01"], dtype="M8[D]"), u=np.array(["ab"]), p=np.array([1], dtype="M8[ps]"))' "$TMP/kinds.npz"
     assert_eq_file_inline "npz_unsupported_kind_labels" \
         "$("$VV" --tsv --tab summary "$TMP/kinds.npz" 2>/dev/null | cut -f1,4 | tail -n +2 | tr '\n' ';')" \
-        "o	(pickled / object — skipped);d	(datetime — not supported);u	(strings — not supported);"
+        "o	(pickled / object — skipped);d	1-D;u	1-D;p	(datetime — unsupported unit / byte order);"
+fi
+# Fixed-width strings and datetimes (tiny.strings.npz): values as numpy prints them.
+STR="$DATA/tiny.strings.npz"
+if [ -f "$STR" ]; then
+    npzcol() { "$VV" --tab "$1" --tsv --no-header "$STR" 2>&1 | tr '\n' '|'; }
+    assert_eq_file_inline "npz_unicode"       "$(npzcol labels)" "CD4 T|B cell|ß日本|"
+    assert_eq_file_inline "npz_unicode_be"    "$(npzcol big)"    "ab|x|"
+    assert_eq_file_inline "npz_bytes"         "$(npzcol codes)"  "AC|G||"
+    assert_eq_file_inline "npz_bytes_binary"  "$(npzcol raw)"    "0xff0061|ok|"
+    assert_eq_file_inline "npz_date_days"     "$(npzcol day)"    "2024-01-02||1969-12-31|"
+    assert_eq_file_inline "npz_date_months"   "$(npzcol mon)"    "2024-03-01|1969-11-01|"
+    assert_eq_file_inline "npz_date_years"    "$(npzcol yr)"     "2024-01-01|1900-01-01|"
+    assert_eq_file_inline "npz_date_weeks"    "$(npzcol wk)"     "1970-01-01|1970-01-08|"
+    assert_eq_file_inline "npz_ts_ns"         "$(npzcol ts)"     "2024-01-02 03:04:05.123456789||"
+    assert_eq_file_inline "npz_ts_hours"      "$(npzcol hrs)"    "2024-01-02 05:00:00|"
+    assert_eq_file_inline "npz_ts_multiplier" "$(npzcol ten)"    "1970-01-01 00:00:30|"
+    assert_eq_file_inline "npz_timedelta"     "$(npzcol dur)"    "90|-5||"
+    assert_eq_file_inline "npz_str_2d_c"      "$(npzcol mat)"    "a	bb|ccc	d|"
+    assert_eq_file_inline "npz_str_2d_f"      "$(npzcol fmat)"   "a	bb|ccc	d|"
+    assert_contains "npz_types" "$("$VV" --tab day --schema --color=never "$STR"; "$VV" --tab ts --schema --color=never "$STR"; "$VV" --tab dur --schema --color=never "$STR")" "date32"
+    assert_contains "npz_types_ts" "$("$VV" --tab ts --schema --color=never "$STR")" "timestamp[ns]"
+    assert_contains "npz_types_dur" "$("$VV" --tab dur --schema --color=never "$STR")" "duration[s]"
+    for T in labels raw day ts dur mat; do
+        "$VV" --tab "$T" --parquet "$TMP/npzs.parquet" "$STR" >/dev/null 2>&1
+        assert_eq_file_inline "npz_${T}_parquet_roundtrip" \
+            "$("$VV" --tsv --no-header "$TMP/npzs.parquet" 2>&1 | tr '\n' '|')" "$(npzcol "$T")"
+    done
 fi
 DT="$DATA/tiny.dtypes.npz"
 for T in i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 b; do

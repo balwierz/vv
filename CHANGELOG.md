@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **NumPy string and datetime arrays** in `.npy` / `.npz`: `<U` (UTF-32) and
+  `|S` (bytes) as strings (binary when not UTF-8), `datetime64` as dates
+  (`Y` / `M` / `W` / `D`) or timestamps (`h` … `ns`, multipliers like
+  `[10s]`), `timedelta64` as durations; NaT is null.
 - **Desktop integration for the new formats**: shared-mime-info types for
   Cooler, Zarr zip, wiggle, BLAST tabular, GenBank / EMBL (plain and gzip),
   POD5, DuckDB (also a `.db` with DuckDB's header) and R data, plus `.h5mu`,

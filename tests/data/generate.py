@@ -1888,6 +1888,27 @@ else:
              f64=np.array([-2.5, 0.0, 2.5], dtype=np.float64),
              b=np.array([True, False, True], dtype=bool))
 
+    # tiny.strings.npz: fixed-width strings and datetimes — <U (UTF-32, also
+    # big-endian), |S (bytes; one non-UTF-8 member stays binary), datetime64
+    # in calendar (Y / M / W / D) and clock (h / s / ns, a [10s] multiplier)
+    # units, timedelta64, NaT, and a C- and an F-ordered 2-D string array.
+    np.savez(HERE / "tiny.strings.npz",
+             labels=np.array(["CD4 T", "B cell", "\u00df\u65e5\u672c"], dtype="U6"),
+             big=np.array(["ab", "x"], dtype=">U3"),
+             codes=np.array([b"AC", b"G", b""], dtype="S4"),
+             raw=np.array([b"\xff\x00a", b"ok"], dtype="S3"),
+             day=np.array(["2024-01-02", "NaT", "1969-12-31"], dtype="M8[D]"),
+             mon=np.array(["2024-03", "1969-11"], dtype="M8[M]"),
+             yr=np.array(["2024", "1900"], dtype="M8[Y]"),
+             wk=np.array([0, 1], dtype="M8[W]"),
+             ts=np.array(["2024-01-02T03:04:05.123456789", "NaT"], dtype="M8[ns]"),
+             hrs=np.array(["2024-01-02T05"], dtype="M8[h]"),
+             ten=np.array([3], dtype="M8[10s]"),
+             dur=np.array([90, -5, np.timedelta64("NaT")], dtype="m8[s]"),
+             mat=np.array([["a", "bb"], ["ccc", "d"]], dtype="U3"),
+             fmat=np.asfortranarray(np.array([["a", "bb"], ["ccc", "d"]], dtype="U3")),
+             ps=np.array([1], dtype="M8[ps]"))
+
     # tiny.zerorow.npz: a Fortran-ordered 2-D array with zero rows. The
     # per-column gather sized its scratch buffer to rows * item_size, so at
     # zero rows the buffer was empty and its data() null — and the F-order

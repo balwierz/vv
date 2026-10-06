@@ -451,7 +451,7 @@ work that touches the same code:
   Fix: `--with-terminfo-dirs=/etc/terminfo:/lib/terminfo:/usr/share/terminfo:/usr/lib/terminfo`
   (+ `--with-default-terminfo-dir=/usr/share/terminfo`) and more fallbacks
   (tmux-256color, screen-256color); check with the Docker build locally.
-- [ ] **NumPy string / datetime arrays** (S) — `.npy` / `.npz` arrays of dtype
+- [x] **NumPy string / datetime arrays** (S) — done (ps / fs / as units stay unsupported). `.npy` / `.npz` arrays of dtype
   `S` / `U` (fixed-width bytes / UTF-32, e.g. cell labels) and `M8` / `m8`
   are listed in the summary as "not supported". Decode `U` (trim trailing
   NULs) and `S` into Arrow strings, `M8[unit]` into timestamps.

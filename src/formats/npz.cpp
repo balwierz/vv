@@ -27,6 +27,14 @@ struct NpyHeader {
     std::string          dtype_str;            // raw "<f4" / "|O" etc.
     size_t               data_offset = 0;
     size_t               item_size = 0;        // bytes per element (0 = unknown)
+    // Non-numeric dtypes decoded to Arrow: 'S' (bytes, item_size wide), 'U'
+    // (UTF-32, item_size / 4 code points), 'M' (datetime64), 'm'
+    // (timedelta64); 0 for the numeric ones. `unit` is the datetime unit
+    // ("D", "s", "ns", …) and `mult` its multiplier ([10s] → 10).
+    char                 special = 0;
+    bool                 big_endian = false;
+    std::string          unit;
+    int64_t              mult = 1;
 };
 
 // Map numpy dtype letter codes onto Arrow types. Endianness must be
@@ -139,7 +147,45 @@ static std::string parse_npy_header(const uint8_t* buf, size_t n, NpyHeader* out
         if (descr.size() >= 3) {
             try { sz = std::stoi(descr.substr(2)); } catch (...) { sz = 0; }
         }
-        if (kind == 'O' || kind == 'S' || kind == 'U' || kind == 'V'
+        if (kind == 'S' || kind == 'U') {
+            // Fixed-width bytes (|S8) / UTF-32 code points (<U11).
+            const bool wide = kind == 'U';
+            if (sz <= 0 || sz > (1 << 24) || (wide && endian != '<' && endian != '>' &&
+                                              endian != '=' && endian != '|')) {
+                out->unsupported = true;
+            } else {
+                out->special    = kind;
+                out->big_endian = endian == '>';
+                out->item_size  = (size_t)sz * (wide ? 4 : 1);
+                out->dtype_id   = arrow::Type::STRING;
+            }
+        } else if ((kind == 'M' || kind == 'm') && sz == 8 && endian != '>') {
+            // datetime64 / timedelta64: "<M8[ns]", "<m8[10s]". NaT is INT64_MIN.
+            const size_t lb = descr.find('['), rb = descr.find(']');
+            std::string u = (lb != std::string::npos && rb != std::string::npos && rb > lb)
+                                ? descr.substr(lb + 1, rb - lb - 1) : "";
+            size_t d = 0;
+            while (d < u.size() && std::isdigit((unsigned char)u[d])) ++d;
+            int64_t mult = 1;
+            if (d > 0) { try { mult = std::stoll(u.substr(0, d)); } catch (...) { mult = 0; } }
+            u = u.substr(d);
+            static const char* kDateUnits[] = {"Y", "M", "W", "D", "h", "m", "s", "ms", "us", "ns"};
+            bool known = false;
+            for (const char* k : kDateUnits) known |= u == k;
+            // A calendar unit has no fixed length, so no timedelta of it.
+            if (kind == 'm' && (u == "Y" || u == "M")) known = false;
+            if (!known || mult <= 0 || mult > 1000000) {
+                out->unsupported = true;
+            } else {
+                out->special   = kind;
+                out->unit      = u;
+                out->mult      = mult;
+                out->item_size = 8;
+                out->dtype_id  = kind == 'm' ? arrow::Type::DURATION
+                               : (u == "Y" || u == "M" || u == "W" || u == "D") ? arrow::Type::DATE32
+                               : arrow::Type::TIMESTAMP;
+            }
+        } else if (kind == 'O' || kind == 'S' || kind == 'U' || kind == 'V'
             || kind == 'M' || kind == 'm') {
             out->unsupported = true;
         } else {
@@ -176,7 +222,7 @@ static std::string parse_npy_header(const uint8_t* buf, size_t n, NpyHeader* out
     // size differs (e.g. "|b0" → item_size 0 for a 1-byte bool) would slip past
     // the shape-fits check below (item_size 0 skips it) and read out of bounds.
     // Pin item_size to what is actually read for a supported dtype.
-    if (!out->unsupported && out->dtype_id != arrow::Type::NA) {
+    if (!out->unsupported && out->dtype_id != arrow::Type::NA && !out->special) {
         size_t real = npy_element_bytes(out->dtype_id);
         if (real == 0) out->unsupported = true;   // supported id with no known size
         else           out->item_size = real;
@@ -252,10 +298,130 @@ static std::shared_ptr<arrow::Array> make_column(const uint8_t* data, int64_t n)
     return a;
 }
 
+// Days from 1970-01-01 to y-m-d (proleptic Gregorian; H. Hinnant's algorithm).
+static int64_t days_from_civil(int64_t y, int64_t m, int64_t d) {
+    y -= m <= 2;
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const int64_t yoe = y - era * 400;
+    const int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+static std::shared_ptr<arrow::DataType> special_type(const NpyHeader& h) {
+    if (h.special == 'M') {
+        if (h.dtype_id == arrow::Type::DATE32) return arrow::date32();
+        const std::string& u = h.unit;
+        return arrow::timestamp(u == "ms" ? arrow::TimeUnit::MILLI : u == "us" ? arrow::TimeUnit::MICRO
+                              : u == "ns" ? arrow::TimeUnit::NANO : arrow::TimeUnit::SECOND);
+    }
+    if (h.special == 'm') {
+        const std::string& u = h.unit;
+        return arrow::duration(u == "ms" ? arrow::TimeUnit::MILLI : u == "us" ? arrow::TimeUnit::MICRO
+                             : u == "ns" ? arrow::TimeUnit::NANO : arrow::TimeUnit::SECOND);
+    }
+    return arrow::utf8();
+}
+
+// Decode n elements of a string / datetime dtype. A value that does not fit
+// the Arrow type (a date beyond int32 days, a multiplied count that
+// overflows) is null, as is NaT.
+static std::shared_ptr<arrow::Array> decode_special(const NpyHeader& h, const uint8_t* data, int64_t n) {
+    std::shared_ptr<arrow::Array> a;
+    if (h.special == 'S' || h.special == 'U') {
+        std::vector<std::string> vals((size_t)n);
+        bool all_utf8 = true;
+        for (int64_t i = 0; i < n; ++i) {
+            const uint8_t* p = data + (size_t)i * h.item_size;
+            std::string& v = vals[(size_t)i];
+            if (h.special == 'S') {
+                size_t len = h.item_size;
+                while (len > 0 && p[len - 1] == 0) --len;       // numpy pads with NULs
+                v.assign((const char*)p, len);
+                if (all_utf8 && valid_utf8(v) != v) all_utf8 = false;
+            } else {
+                size_t chars = h.item_size / 4;
+                auto cp_at = [&](size_t k) {
+                    const uint8_t* q = p + k * 4;
+                    return h.big_endian ? (uint32_t)q[0] << 24 | (uint32_t)q[1] << 16 | (uint32_t)q[2] << 8 | q[3]
+                                        : (uint32_t)q[3] << 24 | (uint32_t)q[2] << 16 | (uint32_t)q[1] << 8 | q[0];
+                };
+                while (chars > 0 && cp_at(chars - 1) == 0) --chars;
+                for (size_t k = 0; k < chars; ++k) {
+                    uint32_t c = cp_at(k);
+                    if (c > 0x10FFFF || (c >= 0xD800 && c <= 0xDFFF)) c = 0xFFFD;
+                    if (c < 0x80) v += (char)c;
+                    else if (c < 0x800) { v += (char)(0xC0 | c >> 6); v += (char)(0x80 | (c & 0x3F)); }
+                    else if (c < 0x10000) { v += (char)(0xE0 | c >> 12); v += (char)(0x80 | (c >> 6 & 0x3F));
+                                            v += (char)(0x80 | (c & 0x3F)); }
+                    else { v += (char)(0xF0 | c >> 18); v += (char)(0x80 | (c >> 12 & 0x3F));
+                           v += (char)(0x80 | (c >> 6 & 0x3F)); v += (char)(0x80 | (c & 0x3F)); }
+                }
+            }
+        }
+        if (all_utf8) {
+            arrow::StringBuilder b;
+            for (auto& v : vals) (void)b.Append(v);
+            (void)b.Finish(&a);
+        } else {                                     // |S holding arbitrary bytes
+            arrow::BinaryBuilder b;
+            for (auto& v : vals) (void)b.Append(v);
+            (void)b.Finish(&a);
+        }
+        return a;
+    }
+    // datetime64 / timedelta64
+    const std::string& u = h.unit;
+    int64_t scale = h.mult;                          // multiply raw counts by this
+    if (u == "h") scale *= 3600;
+    else if (u == "m") scale *= 60;
+    else if (u == "W") scale *= 7;
+    else if (u == "D" && h.special == 'm') scale *= 86400;
+    auto checked = [&](int64_t v, int64_t k, int64_t* out) {
+        return !__builtin_mul_overflow(v, k, out);
+    };
+    if (h.dtype_id == arrow::Type::DATE32) {
+        arrow::Date32Builder b; (void)b.Reserve(n);
+        for (int64_t i = 0; i < n; ++i) {
+            int64_t v; std::memcpy(&v, data + (size_t)i * 8, 8);
+            int64_t days = 0;
+            bool ok = v != INT64_MIN;
+            if (ok && (u == "Y" || u == "M")) {
+                int64_t cnt;
+                ok = checked(v, h.mult, &cnt) && cnt > -100000000 && cnt < 100000000;
+                if (ok) {
+                    int64_t y = 1970, mo = 1;
+                    if (u == "Y") y += cnt;
+                    else { int64_t q = cnt >= 0 ? cnt / 12 : -((-cnt + 11) / 12); y += q; mo += cnt - q * 12; }
+                    days = days_from_civil(y, mo, 1);
+                }
+            } else if (ok) {
+                ok = checked(v, scale, &days);
+            }
+            if (ok && days >= INT32_MIN && days <= INT32_MAX) (void)b.UnsafeAppend((int32_t)days);
+            else (void)b.UnsafeAppendNull();
+        }
+        (void)b.Finish(&a);
+        return a;
+    }
+    std::unique_ptr<arrow::ArrayBuilder> ab;
+    (void)arrow::MakeBuilder(arrow::default_memory_pool(), special_type(h), &ab);
+    for (int64_t i = 0; i < n; ++i) {
+        int64_t v; std::memcpy(&v, data + (size_t)i * 8, 8);
+        int64_t t;
+        if (v == INT64_MIN || !checked(v, scale, &t)) { (void)ab->AppendNull(); continue; }
+        if (h.special == 'm') (void)static_cast<arrow::DurationBuilder*>(ab.get())->Append(t);
+        else                  (void)static_cast<arrow::TimestampBuilder*>(ab.get())->Append(t);
+    }
+    (void)ab->Finish(&a);
+    return a;
+}
+
 static std::shared_ptr<arrow::Array>
-slab_to_arrow(arrow::Type::type id, const uint8_t* data, int64_t n) {
+slab_to_arrow(const NpyHeader& h, const uint8_t* data, int64_t n) {
     using T = arrow::Type;
-    switch (id) {
+    if (h.special) return decode_special(h, data, n);
+    switch (h.dtype_id) {
         case T::BOOL: {
             // numpy bool is 1 byte (0/1). Arrow BoolBuilder appends bool.
             arrow::BooleanBuilder b; (void)b.Reserve(n);
@@ -277,17 +443,13 @@ slab_to_arrow(arrow::Type::type id, const uint8_t* data, int64_t n) {
     }
 }
 
-static std::shared_ptr<arrow::DataType> arrow_dt(arrow::Type::type id) {
-    return arrow_type_for_id(id);
-}
-
 // Convert a 1-D slab to a single-column table.
 static std::shared_ptr<arrow::Table>
-build_1d_table(const std::string& name, arrow::Type::type id,
+build_1d_table(const std::string& name, const NpyHeader& h,
                 const uint8_t* data, int64_t n) {
-    auto col = slab_to_arrow(id, data, n);
+    auto col = slab_to_arrow(h, data, n);
     if (!col) return nullptr;
-    auto schema = arrow::schema({arrow::field(name, arrow_dt(id))});
+    auto schema = arrow::schema({arrow::field(name, col->type())});
     return arrow::Table::Make(schema, {col}, n);
 }
 
@@ -303,7 +465,7 @@ static constexpr int64_t kNpzMaxCols = 4096;
 // Only the first kNpzMaxCols columns are materialised; `full_cols_out` (when
 // non-null) receives the declared width so callers can note any truncation.
 static std::shared_ptr<arrow::Table>
-build_2d_table(arrow::Type::type id, const uint8_t* data,
+build_2d_table(const NpyHeader& h, const uint8_t* data,
                 int64_t rows, int64_t cols, size_t item_size,
                 bool fortran_order, int64_t* full_cols_out = nullptr) {
     if (full_cols_out) *full_cols_out = cols;
@@ -311,7 +473,6 @@ build_2d_table(arrow::Type::type id, const uint8_t* data,
     if (cols > kNpzMaxCols) cols = kNpzMaxCols;
     arrow::FieldVector fields;
     std::vector<std::shared_ptr<arrow::Array>> cols_out;
-    auto dt = arrow_dt(id);
     std::vector<uint8_t> tmp;
     for (int64_t c = 0; c < cols; ++c) {
         // Gather column c. C-order: stride = full_cols * item_size between rows
@@ -335,10 +496,10 @@ build_2d_table(arrow::Type::type id, const uint8_t* data,
                 }
             }
         }
-        auto a = slab_to_arrow(id, tmp.data(), rows);
+        auto a = slab_to_arrow(h, tmp.data(), rows);
         if (!a) return nullptr;
+        fields.push_back(arrow::field("c" + std::to_string(c), a->type()));
         cols_out.push_back(a);
-        fields.push_back(arrow::field("c" + std::to_string(c), dt));
     }
     return arrow::Table::Make(arrow::schema(fields), cols_out, rows);
 }
@@ -459,22 +620,22 @@ void npy_fuzz_one(const uint8_t* buf, size_t n) {
     const uint8_t* data = buf + h.data_offset;
     std::shared_ptr<arrow::Table> tbl;
     if (h.shape.empty()) {
-        (void)slab_to_arrow(h.dtype_id, data, 1);
+        (void)slab_to_arrow(h, data, 1);
     } else if (h.shape.size() == 1) {
-        tbl = build_1d_table("x", h.dtype_id, data, h.shape[0]);
+        tbl = build_1d_table("x", h, data, h.shape[0]);
     } else if (h.shape.size() == 2) {
         int64_t fc = 0;
-        tbl = build_2d_table(h.dtype_id, data, h.shape[0], h.shape[1],
+        tbl = build_2d_table(h, data, h.shape[0], h.shape[1],
                              h.item_size, h.fortran_order, &fc);
     } else {
         int64_t leading = h.shape[0];
         if (leading > 0) {
             int64_t rest = 1;   // product of the trailing dims (bounded: the full
             for (size_t i = 1; i < h.shape.size(); ++i) rest *= h.shape[i]; // product fit `n`)
-            tbl = build_2d_table(h.dtype_id, data, leading, rest,
+            tbl = build_2d_table(h, data, leading, rest,
                                  h.item_size, h.fortran_order);
         } else {
-            tbl = build_2d_table(h.dtype_id, data, 0, 1, h.item_size, h.fortran_order);
+            tbl = build_2d_table(h, data, 0, 1, h.item_size, h.fortran_order);
         }
     }
     (void)tbl;
@@ -524,8 +685,8 @@ class NpzSource : public WorkbookSource {
                     // descr is endian + kind + size ("<U11", "|O", "<M8[ns]").
                     const char k = e.header.dtype_str.size() >= 2 ? e.header.dtype_str[1] : '?';
                     kind = k == 'O' ? "(pickled / object — skipped)"
-                         : (k == 'S' || k == 'U') ? "(strings — not supported)"
-                         : (k == 'M' || k == 'm') ? "(datetime — not supported)"
+                         : (k == 'S' || k == 'U') ? "(strings — unsupported width / byte order)"
+                         : (k == 'M' || k == 'm') ? "(datetime — unsupported unit / byte order)"
                          : "(unsupported dtype — skipped)";
                 }
                 else if (e.header.shape.empty()) kind = "scalar";
@@ -555,16 +716,16 @@ class NpzSource : public WorkbookSource {
         const auto& h = e->header;
         if (h.unsupported) {
             return "'" + spec.entry_name + "': dtype " + h.dtype_str +
-                   " (object/string/structured) not displayable. "
+                   " (object/structured) not displayable. "
                    "Convert to a fixed numeric dtype with python.";
         }
         const uint8_t* data = e->bytes->data() + h.data_offset;
 
         if (h.shape.empty()) {
             // 0-D scalar — render as a single-cell table.
-            auto col = slab_to_arrow(h.dtype_id, data, 1);
+            auto col = slab_to_arrow(h, data, 1);
             if (!col) return "NPZ: dtype not supported for '" + e->name + "'";
-            auto schema = arrow::schema({arrow::field(e->name, arrow_dt(h.dtype_id))});
+            auto schema = arrow::schema({arrow::field(e->name, col->type())});
             *tbl = arrow::Table::Make(schema, {col}, 1);
             *footer = std::string("Format: NumPy ") + (spec.bare_npy ? "NPY" : "NPZ") +
                       "  |  Array: " + e->name +
@@ -573,7 +734,7 @@ class NpzSource : public WorkbookSource {
         }
 
         if (h.shape.size() == 1) {
-            *tbl = build_1d_table(e->name, h.dtype_id, data, h.shape[0]);
+            *tbl = build_1d_table(e->name, h, data, h.shape[0]);
             if (!*tbl) return "NPZ: dtype not supported for '" + e->name + "'";
             *footer = std::string("Format: NumPy ") + (spec.bare_npy ? "NPY" : "NPZ") +
                       "  |  Array: " + e->name +
@@ -584,7 +745,7 @@ class NpzSource : public WorkbookSource {
 
         if (h.shape.size() == 2) {
             int64_t full_c = 0;
-            *tbl = build_2d_table(h.dtype_id, data, h.shape[0], h.shape[1],
+            *tbl = build_2d_table(h, data, h.shape[0], h.shape[1],
                                    h.item_size, h.fortran_order, &full_c);
             if (!*tbl) return "NPZ: dtype not supported for '" + e->name + "'";
             *footer = std::string("Format: NumPy ") + (spec.bare_npy ? "NPY" : "NPZ") +
@@ -606,7 +767,7 @@ class NpzSource : public WorkbookSource {
         if (leading <= 0) {
             // Empty leading axis (e.g. shape (0, …)): nothing to slice, and a
             // negative idx clamp would otherwise form a wild pointer.
-            *tbl = build_2d_table(h.dtype_id, data, /*rows=*/0, /*cols=*/1,
+            *tbl = build_2d_table(h, data, /*rows=*/0, /*cols=*/1,
                                    h.item_size, h.fortran_order);
             if (!*tbl) return "NPZ: dtype not supported for '" + e->name + "'";
             *footer = std::string("Format: NumPy ") + (spec.bare_npy ? "NPY" : "NPZ") +
@@ -627,7 +788,7 @@ class NpzSource : public WorkbookSource {
         const uint8_t* slice_data = data + (size_t)idx * slice_bytes;
 
         int64_t full_c = 0;
-        *tbl = build_2d_table(h.dtype_id, slice_data,
+        *tbl = build_2d_table(h, slice_data,
                                inner_rows, inner_cols,
                                h.item_size, h.fortran_order, &full_c);
         if (!*tbl) return "NPZ: dtype not supported for '" + e->name + "'";
