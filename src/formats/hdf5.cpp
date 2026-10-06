@@ -2681,10 +2681,14 @@ static std::vector<OpenSpec> scan_anndata(const Store& store, const std::string&
                        std::string(parent_name) + "[" + nm + "]",
                        footer_kind, axes, nm};
             // A CSR/CSC entry is a group, not a dataset — scanpy writes layers
-            // of a sparse X this way — so read it like a sparse X.
+            // of a sparse X this way — so read it like a sparse X. obsm / varm
+            // may also hold a pandas DataFrame (per-cell antibody / hashtag
+            // scores, ...): read it like obs, its own index first.
             if (store.kind(g + "/" + nm) == NodeKind::Group) {
                 std::string enc = store.attr_string(g + "/" + nm, "encoding-type");
-                if (enc == "csr_matrix" || enc == "csc_matrix") {
+                if (enc == "dataframe") {
+                    s.kind = OpenSpec::Kind::DataFrame;
+                } else if (enc == "csr_matrix" || enc == "csc_matrix") {
                     int64_t shape[2] = {0, 0};
                     read_shape2(store, g + "/" + nm, shape);
                     s.kind = OpenSpec::Kind::Sparse;

@@ -1209,7 +1209,7 @@ zarr_equiv() {   # zarr_equiv NAME H5 ZIP
     done < <("$VV" --list-tabs "$h")
     assert_eq_file_inline "zarr_equiv_$name" "$ok" "1"
 }
-for n in tiny tiny.csc tiny.raw tiny.obsp tiny.nullstr tiny.uns tiny.cattypes tiny.sparselayer; do
+for n in tiny tiny.csc tiny.raw tiny.obsp tiny.nullstr tiny.uns tiny.cattypes tiny.sparselayer tiny.obsmdf; do
     zarr_equiv "$n" "$DATA/$n.h5ad" "$DATA/$n.zarr.zip"
 done
 zarr_equiv "mudata" "$DATA/tiny.h5mu" "$DATA/tiny.mudata.zarr.zip"
@@ -3535,6 +3535,17 @@ if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
             "cell3,cell2;cell0,cell1;cell1,cell0;"
         assert_contains "h5ad_obsp_summary" "$("$VV" --tab summary --tsv "$OP")" \
             "$(printf 'obsp\tconnectivities, distances')"
+    fi
+    # obsm / varm entries stored as DataFrames open like obs (index first).
+    if [ -f "$DATA/tiny.obsmdf.h5ad" ]; then
+        OD="$DATA/tiny.obsmdf.h5ad"
+        assert_eq_file_inline "h5ad_obsm_dataframe" "$("$VV" --tab 'obsm[HTO]' --tsv "$OD" | tr '\t\n' ',;')" \
+            "_index,CMO_301,CMO_302;cell0,1.5,0;cell1,0,3;cell2,-0.25,0.5;cell3,2,0;"
+        assert_eq_file_inline "h5ad_varm_dataframe" "$("$VV" --tab 'varm[meta]' --tsv "$OD" | tr '\t\n' ',;')" \
+            "_index,biotype,length;gA,coding,1200;gB,lncRNA,800;gC,coding,4500;"
+        assert_eq_file_inline "h5ad_obsm_array_beside_df" "$("$VV" --tab 'obsm[X_pca]' --tsv --no-header "$OD" | tr '\t\n' ',;')" \
+            "cell0,1,2;cell1,3,4;cell2,5,6;cell3,7,8;"
+        assert_contains "h5ad_obsm_dataframe_footer" "$("$VV" --tab 'obsm[HTO]' -n 2 --color=never "$OD")" "Format: AnnData obsm[HTO]"
     fi
     if [ -f "$DATA/tiny.badobsp.h5ad" ]; then
         assert_eq_file_inline "h5ad_badobsp_bounded" \

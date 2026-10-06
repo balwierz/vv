@@ -1748,6 +1748,24 @@ else:
                obsp={"connectivities": conn, "distances": dist},
                varp={"corr": corr}).write_h5ad(obsp_path)
 
+    # tiny.obsmdf.h5ad: DataFrames inside obsm / varm (anndata allows them;
+    # CITE-seq / cell-hashing pipelines store per-cell antibody or hashtag
+    # scores this way), next to an ordinary obsm array.
+    obsmdf_path = HERE / "tiny.obsmdf.h5ad"
+    if obsmdf_path.exists():
+        obsmdf_path.unlink()
+    cells = [f"cell{i}" for i in range(4)]
+    ad.AnnData(X=np.zeros((4, 3), dtype=np.float32),
+               obs=pd.DataFrame(index=cells),
+               var=pd.DataFrame(index=["gA", "gB", "gC"]),
+               obsm={"HTO": pd.DataFrame({"CMO_301": np.array([1.5, 0.0, -0.25, 2.0], dtype=np.float32),
+                                          "CMO_302": np.array([0.0, 3.0, 0.5, 0.0], dtype=np.float32)},
+                                         index=cells),
+                     "X_pca": np.array([[1, 2], [3, 4], [5, 6], [7, 8]], dtype=np.float32)},
+               varm={"meta": pd.DataFrame({"biotype": ["coding", "lncRNA", "coding"],
+                                           "length": [1200, 800, 4500]},
+                                          index=["gA", "gB", "gC"])}).write_h5ad(obsmdf_path)
+
     # tiny.badobsp.h5ad: tiny.obsp.h5ad with a HOSTILE obsp/connectivities —
     # indptr runs backwards and past the 3 stored entries, the shape attribute
     # claims 1000 × 1000, and two column indices are out of range. The edge
@@ -2301,7 +2319,7 @@ else:
     anndata.settings.zarr_write_format = 2
     with tempfile.TemporaryDirectory() as tmp:
         for name in ("tiny", "tiny.csc", "tiny.raw", "tiny.obsp", "tiny.nullstr", "tiny.uns",
-                     "tiny.cattypes", "tiny.sparselayer"):
+                     "tiny.cattypes", "tiny.sparselayer", "tiny.obsmdf"):
             d = Path(tmp) / (name + ".zarr")
             anndata.read_h5ad(HERE / (name + ".h5ad")).write_zarr(d)
             _zip_store(d, HERE / (name + ".zarr.zip"))

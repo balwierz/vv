@@ -82,6 +82,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   terminal, re-indented on a pipe, a table with a table flag.
 
 ### Fixed
+- AnnData `obsm` / `varm` entries stored as pandas DataFrames (per-cell
+  hashtag / antibody scores from CITE-seq and cell-hashing pipelines) open as
+  tables like `obs`, instead of a tab reading "Cannot open dataset".
 - **JSON tree viewer crash when the file shrinks.** A JSON file rewritten
   shorter while open made vv die with SIGBUS on the next read past its new
   end; those reads now see zeros (shown as an error in the tree) and the
