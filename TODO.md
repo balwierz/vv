@@ -117,9 +117,6 @@ user-facing summary).
   `-DARROW_ORC=ON` in `build-arrow`. Apt / Brew / Conda Arrow already
   ship ORC, so the static-only release is the only platform where
   `vv file.orc` reports "compiled without ORC support".
-- AnnData `uns` (unstructured) decoding — nested groups / scalars /
-  free-form arrays. v1 skips. A follow-up could surface scalars and
-  string entries using the existing hierarchy-table machinery.
 - SAS (`.sas7bdat`, `.xpt`), Stata (`.dta`), SPSS (`.sav`, `.por`) via
   ReadStat (MIT, same author and API style as the vendored librdata).
 - GFA assembly graphs (`.gfa`): segments / links / paths as tabs.
