@@ -532,6 +532,14 @@ public:
     }
 
     std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    // An integer partition key (year=2024, run=3) is a label, not a quantity:
+    // shown without digit grouping (2024, not 2_024), still int64 for --filter.
+    std::string format_cell(int col_idx, std::string val) const override {
+        const int k = col_idx - ndata_;
+        if (k >= 0 && k < (int)part_is_int_.size() && part_is_int_[k])
+            val.erase(std::remove(val.begin(), val.end(), '_'), val.end());
+        return val;
+    }
     int64_t total_rows() const override { return all_read_ ? rows_so_far_ : -1; }
     int     num_chunks() const override { return (int)batches_.size(); }
     ChunkMeta chunk_meta(int i) const override {

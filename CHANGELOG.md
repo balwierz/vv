@@ -86,6 +86,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   terminal, re-indented on a pipe, a table with a table flag.
 
 ### Fixed
+- Integer Hive partition keys (`year=2024`) print without digit grouping
+  (`2024`, not `2_024`) in the table view and TUI; they stay int64 for
+  `--filter`.
 - **Static binary: the interactive viewer starts under tmux, screen,
   kitty, alacritty, foot and other terminals.** ncurses in the static build
   searched only its build prefix for terminal descriptions, so any `TERM`

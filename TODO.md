@@ -455,7 +455,7 @@ work that touches the same code:
   `S` / `U` (fixed-width bytes / UTF-32, e.g. cell labels) and `M8` / `m8`
   are listed in the summary as "not supported". Decode `U` (trim trailing
   NULs) and `S` into Arrow strings, `M8[unit]` into timestamps.
-- [ ] **Partition keys with digit grouping** (S) — a Hive dataset's
+- [x] **Partition keys with digit grouping** (S) — done: shown without separators, still int64. A Hive dataset's
   `year=2024` partition column is inferred as int64 and printed `2_024`.
   Partition columns are labels: print them without separators (or read them
   as strings).

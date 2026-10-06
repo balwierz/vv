@@ -1677,6 +1677,9 @@ assert_eq_file_inline "dataset_partition_numeric_filter" "$DH_YEAR" "1 2 "
 DH_FOOT=$("$VV" --color=never "$DH" 2>&1)
 assert_contains "dataset_footer" "$DH_FOOT" "dataset (csv)"
 assert_contains "dataset_footer_partitions" "$DH_FOOT" "Partitions: year, month"
+# An integer partition key is a label: the table / TUI show 2020, not 2_020.
+assert_contains "dataset_partition_no_grouping" "$DH_FOOT" "2020"
+refute_contains "dataset_partition_no_grouping_2" "$DH_FOOT" "2_020"
 
 # A Parquet dataset — same concatenation, string partition (non-integer values).
 DP="$TMP/ds_pq"
