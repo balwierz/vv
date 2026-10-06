@@ -357,6 +357,10 @@ public:
     virtual std::string format_cell(int /*col_idx*/, std::string val) const { return val; }
     // Minimum display-column width for a given column index (TUI pre-sizes columns from this).
     virtual int min_col_width(int /*col_idx*/) const { return 4; }
+    // True for a tab of short metadata (an AnnData / Loom / 10x summary) whose
+    // cells the table view and TUI show in full instead of eliding at the -w
+    // cap (an explicit -w still applies).
+    virtual bool show_cells_in_full() const { return false; }
     // Column names that should be hidden from human-facing views (table,
     // vertical-head, TUI). Delimited and Parquet output keep all columns.
     // Used e.g. to hide the derived `MaxEndSoFar` column in LociSSD files.

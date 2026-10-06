@@ -188,6 +188,7 @@ std::string print_vertical_table(TabularSource& src, const Config& cfg) {
     int64_t n_records = data->num_rows();
 
     // Per-field flag: integer columns skip the max_col_w truncation.
+    const int max_w = (src.show_cells_in_full() && !cfg.max_col_w_set) ? (1 << 20) : cfg.max_col_w;
     std::vector<bool> field_is_int(show_fields);
     for (int f = 0; f < show_fields; ++f)
         field_is_int[f] = is_integer_type(schema->field(col_indices[f])->type()->id());
@@ -205,8 +206,8 @@ std::string print_vertical_table(TabularSource& src, const Config& cfg) {
             for (int64_t r = 0; r < chunk->length(); ++r, ++row) {
                 std::string val = src.format_cell(f_src,
                     cell_to_display_string(*chunk, r));
-                if (!field_is_int[f] && truncate_cuts(val, cfg.max_col_w)) {
-                    val = truncate(std::move(val), cfg.max_col_w);
+                if (!field_is_int[f] && truncate_cuts(val, max_w)) {
+                    val = truncate(std::move(val), max_w);
                     rendered_cut[row][f] = true;
                 }
                 rendered[row][f] = std::move(val);
@@ -391,6 +392,7 @@ std::string print_table(TabularSource& src, const Config& cfg,
         columns.push_back(std::move(idx));
     }
 
+    const int max_w = (src.show_cells_in_full() && !cfg.max_col_w_set) ? (1 << 20) : cfg.max_col_w;
     for (int ci = 0; ci < show_cols; ++ci) {
         int ci_src   = col_indices[ci];          // original source field index
         auto field   = schema->field(ci_src);
@@ -406,14 +408,14 @@ std::string print_table(TabularSource& src, const Config& cfg,
             for (int64_t r = 0; r < chunk->length(); ++r) {
                 std::string val = src.format_cell(ci_src, cell_to_display_string(*chunk, r));
                 // Integer columns must show every digit — skip max_col_w clipping.
-                const bool cut = !is_int && truncate_cuts(val, cfg.max_col_w);
-                if (cut) val = truncate(std::move(val), cfg.max_col_w);
+                const bool cut = !is_int && truncate_cuts(val, max_w);
+                if (cut) val = truncate(std::move(val), max_w);
                 if (display_width(val) > col.width) col.width = display_width(val);
                 col.cells.push_back(std::move(val));
                 col.cut.push_back(cut);
             }
-        if (!is_int) col.width = std::min(col.width, cfg.max_col_w);
-        col.header = truncate(col.header, cfg.max_col_w);
+        if (!is_int) col.width = std::min(col.width, max_w);
+        col.header = truncate(col.header, max_w);
         col.width  = std::max(col.width, display_width(col.header));
         columns.push_back(std::move(col));
     }

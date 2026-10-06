@@ -82,6 +82,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   terminal, re-indented on a pipe, a table with a table flag.
 
 ### Fixed
+- The AnnData / MuData / Loom / 10x **summary tab shows its values whole**
+  (table view and TUI) instead of eliding them at 32 / 50 characters; `-w`
+  still caps when given. The TUI's **Enter detail pane wraps** a value wider
+  than the pane onto continuation lines instead of cutting it with `…` (the
+  byte-wise cut could also split a multi-byte character such as `×`).
 - AnnData `obsm` / `varm` entries stored as pandas DataFrames (per-cell
   hashtag / antibody scores from CITE-seq and cell-hashing pipelines) open as
   tables like `obs`, instead of a tab reading "Cannot open dataset".

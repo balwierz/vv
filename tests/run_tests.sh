@@ -2003,6 +2003,26 @@ if require "tui interactive" tmux; then
         echo "  FAIL  tui_widths_respect_max_col_w (${NX} x's with -w 20)"
     fi
 
+    # The AnnData summary shows its key / value cells whole: in the table view
+    # (unless -w is given), in the TUI's value column, and in the Enter detail
+    # pane, which wraps a value wider than the pane.
+    SUMF="$DATA/tiny.h5ad"
+    assert_contains "summary_table_full" "$("$VV" -n 0 --tab summary --color=never "$SUMF")" "(looks like raw counts)"
+    refute_contains "summary_table_w_caps" "$("$VV" -n 0 -w 20 --tab summary --color=never "$SUMF")" "(looks like raw counts)"
+    tmux kill-session -t vvsum 2>/dev/null
+    tmux new-session -d -s vvsum -x 200 -y 16 "TERM=xterm-256color $VV $SUMF"
+    sleep 2
+    assert_contains "summary_tui_full" "$(tmux capture-pane -p -t vvsum)" "(looks like raw counts)"
+    tmux kill-session -t vvsum 2>/dev/null
+    tmux new-session -d -s vvsum -x 80 -y 20 "TERM=xterm-256color $VV $SUMF"
+    sleep 2
+    tmux send-keys -t vvsum Down Down Down Enter
+    sleep 1
+    SUMP=$(tmux capture-pane -p -t vvsum)
+    tmux kill-session -t vvsum 2>/dev/null
+    assert_contains "summary_detail_wraps" "$(printf '%s' "$SUMP" | tr -s ' ' | tr -d '\n')" "whole numbers (looks like raw counts)"
+    refute_contains "summary_detail_no_ellipsis" "$(printf '%s' "$SUMP" | grep '^│')" "…"
+
     # Auto-size: a string column is fitted to the 95th percentile of its cells,
     # so a 40-char identifier — wider than the old 32-char default — shows in
     # full while a single 70-char value elides. `-w` still caps.

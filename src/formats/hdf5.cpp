@@ -1045,6 +1045,8 @@ public:
     std::vector<std::string> hidden_for_display() const override {
         ensure_built(); return MemoryTableSource::hidden_for_display();
     }
+    // The summary's key / value rows are short and read whole.
+    bool show_cells_in_full() const override { return spec_.kind == OpenSpec::Kind::Summary; }
     PreviewLimit preview_limit() const override {
         ensure_built(); return limit_;
     }

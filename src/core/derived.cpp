@@ -360,6 +360,7 @@ public:
     std::vector<std::string> hidden_for_display() const override {
         return inner_->hidden_for_display();
     }
+    bool show_cells_in_full() const override { return inner_->show_cells_in_full(); }
     std::string format_cell(int col_idx, std::string val) const override {
         return (col_idx < n_inner_) ? inner_->format_cell(col_idx, std::move(val))
                                      : val;
@@ -467,6 +468,7 @@ public:
     std::vector<std::string> hidden_for_display() const override {
         return inner_->hidden_for_display();
     }
+    bool show_cells_in_full() const override { return inner_->show_cells_in_full(); }
     std::string format_cell(int col_idx, std::string val) const override {
         const Flat& fl = flat_[(size_t)col_idx];
         return fl.path.empty() ? inner_->format_cell(fl.inner, std::move(val)) : val;
@@ -791,6 +793,7 @@ public:
     std::vector<std::string> hidden_for_display() const override {
         return inner_->hidden_for_display();
     }
+    bool show_cells_in_full() const override { return inner_->show_cells_in_full(); }
     std::string format_cell(int col_idx, std::string val) const override {
         return (col_idx < n_inner_) ? inner_->format_cell(col_idx, std::move(val))
                                      : val;
@@ -1230,6 +1233,7 @@ public:
     std::vector<std::string> hidden_for_display() const override {
         return inner_->hidden_for_display();
     }
+    bool show_cells_in_full() const override { return inner_->show_cells_in_full(); }
     std::string format_cell(int col_idx, std::string val) const override {
         const OutCol& oc = out_[(size_t)col_idx];
         return oc.kind == OutCol::Pass ? inner_->format_cell(oc.inner, std::move(val)) : val;

@@ -365,7 +365,9 @@ same way (\fB\-\-tags NM,tp,cg\fR), typed from each tag's first
 occurrence in the first 1000 lines.
 .TP
 .BI \-w " WIDTH"
-Maximum cell width in the ASCII table (default: 32).
+Maximum cell width in the ASCII table (default: 32). The summary tab of an
+AnnData, MuData, Loom or 10x HDF5 file shows its cells whole unless \fB\-w\fR is
+given.
 .TP
 .BI \-c " COLS"
 Maximum number of columns to display (default: all).

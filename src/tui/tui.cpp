@@ -414,6 +414,12 @@ class TableTUI {
     std::vector<bool>       width_manual_;   // per virtual col: user resized via `,`/`.`
     bool                    autosized_ = false;  // string widths fitted to content once
     int                     tui_cap_ = 50;   // per-column ceiling for auto-fit (>= -w)
+    bool                    w_set_   = false; // -w given: it caps every tab
+    // The cell / width cap of the active tab: none for a tab that asks for
+    // its cells in full (an AnnData summary), unless -w was given.
+    int cell_cap() const {
+        return (!w_set_ && src_ && src_->show_cells_in_full()) ? (1 << 20) : tui_cap_;
+    }
     std::vector<bool>        right_align_;
     std::vector<bool>        is_bool_;
     std::vector<bool>        is_rgb_;
@@ -1037,7 +1043,7 @@ class TableTUI {
                 std::string formatted = src_->format_cell(sc, std::move(val));
                 // Never truncate integer values — digits must stay readable.
                 if (is_integer_type(chunk->type_id())) return formatted;
-                return truncate(std::move(formatted), tui_cap_);
+                return truncate(std::move(formatted), cell_cap());
             }
             off -= chunk->length();
         }
@@ -1170,8 +1176,9 @@ class TableTUI {
         if (!got_data) return;   // first chunk not loaded yet — retry next frame
 
         WidthPlanOptions opt;
-        opt.percentile = 95;
-        opt.c_max      = tui_cap_;
+        const bool full = cell_cap() > tui_cap_;
+        opt.percentile = full ? 100 : 95;
+        opt.c_max      = cell_cap();
         opt.slack      = 2;
         opt.min_floor  = 4;
         std::vector<int> w = plan_column_widths(samples, floors, 0, opt);
@@ -1252,7 +1259,14 @@ class TableTUI {
             if (freeze_first_col_ && c == 0) continue;   // already shown
             if (!col_is_visible(c)) continue;            // hidden by user (`c` picker)
             int w = col_widths_[c];
-            if (x + w + 2 > scr_c_) break;
+            if (x + w + 2 > scr_c_) {
+                // A full-cell tab's last column (the summary's values) shows
+                // clipped at the screen edge rather than not at all; Enter
+                // opens the whole row.
+                if (cell_cap() > tui_cap_ && !v.empty() && scr_c_ - x - 2 >= 8)
+                    v.push_back({c, x, scr_c_ - x - 2});
+                break;
+            }
             v.push_back({c, x, w});
             x += w + 2;
         }
@@ -2883,6 +2897,41 @@ private:
         int max_inner_w = scr_c_ - 4;                  // leave 2-char margin each side
         int inner_w     = std::min(max_inner_w, label_w + 2 + val_w);
         if (inner_w < 20) inner_w = std::min(max_inner_w, 20);
+        // A value wider than the pane wraps onto continuation lines (under
+        // the value, label blank), at a space where there is one, so every
+        // value can be read whole.
+        std::vector<bool> cont(lines.size(), false);
+        {
+            const int avail_v = std::max(1, inner_w - label_w - 2);
+            std::vector<std::pair<std::string, std::string>> wrapped;
+            std::vector<bool> wcont;
+            for (auto& [l, v] : lines) {
+                if ((int)display_width(v) <= avail_v) {
+                    wrapped.emplace_back(l, v); wcont.push_back(false); continue;
+                }
+                std::string rest = v;
+                bool first = true;
+                while (!rest.empty()) {
+                    size_t cut = utf8_prefix_for_width(rest, avail_v);
+                    if (cut < rest.size()) {
+                        size_t sp = rest.rfind(' ', cut);
+                        if (sp != std::string::npos && sp > cut / 2) cut = sp + 1;
+                    }
+                    if (cut == 0) cut = 1;
+                    std::string piece = rest.substr(0, cut);
+                    while (!piece.empty() && piece.back() == ' ') piece.pop_back();
+                    // A continuation keeps the label (for the sub-entry
+                    // attribute below) but does not print it.
+                    wrapped.emplace_back(l, piece);
+                    wcont.push_back(!first);
+                    first = false;
+                    rest.erase(0, cut);
+                    while (!rest.empty() && rest.front() == ' ') rest.erase(0, 1);
+                }
+            }
+            lines = std::move(wrapped);
+            cont  = std::move(wcont);
+        }
         int pane_w = inner_w + 4;                      // +4: " | " + content + " | "
         int max_inner_h = scr_r_ - 4;
         int inner_h     = std::min((int)lines.size() + 1, max_inner_h);  // +1 for footer hint
@@ -2922,20 +2971,15 @@ private:
             } else if (idx < (int)lines.size()) {
                 const auto& [l, v] = lines[idx];
                 // Fit label
-                std::string L = l;
-                if ((int)display_width(L) > label_w) L.resize(label_w);
-                else L += std::string(label_w - display_width(L), ' ');
+                std::string L = cont[idx] ? std::string() : l;
+                if ((int)display_width(L) > label_w) L.resize(utf8_prefix_for_width(L, label_w));
+                L += std::string(std::max(0, label_w - (int)display_width(L)), ' ');
                 std::string V = v;
                 int avail_v = inner_w - label_w - 2;  // "label: value"
                 if (avail_v < 1) avail_v = 1;
-                if ((int)display_width(V) > avail_v) {
-                    if (avail_v >= 3) {
-                        V.resize(avail_v - 3);
-                        V += g_box->ell;
-                    } else V.resize(avail_v);
-                }
-                else V += std::string(avail_v - display_width(V), ' ');
-                line += L + ": " + V;
+                if ((int)display_width(V) > avail_v) V.resize(utf8_prefix_for_width(V, avail_v));
+                V += std::string(std::max(0, avail_v - (int)display_width(V)), ' ');
+                line += L + (cont[idx] ? "  " : ": ") + V;
             } else {
                 line += std::string(inner_w, ' ');
             }
@@ -3061,6 +3105,7 @@ public:
           src_(sources_.empty() ? nullptr : sources_[0].get()),
           max_col_w_(cfg.max_col_w),
           tui_cap_(cfg.max_col_w_set ? cfg.max_col_w : std::max(cfg.max_col_w, 50)),
+          w_set_(cfg.max_col_w_set),
           no_index_(cfg.no_index),
           max_cols_cfg_(cfg.max_cols)
     {
@@ -3220,7 +3265,7 @@ public:
                 base = std::max(base, 14);
             if (t == arrow::Type::STRING || t == arrow::Type::LARGE_STRING)
                 base = std::max(base, 12);
-            col_widths_[vc]  = is_integer_[vc] ? base : std::min(base, tui_cap_);
+            col_widths_[vc]  = is_integer_[vc] ? base : std::min(base, cell_cap());
             right_align_[vc] = is_numeric_type(t);
             is_bool_[vc]     = v_is_bool[vc];
             is_rgb_[vc]      = (col_names_[vc] == "RGB");

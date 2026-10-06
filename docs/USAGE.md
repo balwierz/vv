@@ -58,7 +58,7 @@ would need horizontal scrolling.
 |---|---|
 | `-n N` | rows to show (default 10; `0` = all) |
 | `--tail N` | the last N rows instead of the first N |
-| `-w W` / `-c N` | maximum cell width (default 32) / maximum columns |
+| `-w W` / `-c N` | maximum cell width (default 32; an AnnData / Loom summary tab shows its cells whole unless `-w` is given) / maximum columns |
 | `--no-index` | no row-index column |
 | `--select COLS` | columns by name, glob, range or type class |
 | `--filter EXPR` | row predicate (`<col> <op> <value>`, `AND` / `OR`) |
