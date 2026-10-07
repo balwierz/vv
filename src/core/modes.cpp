@@ -307,7 +307,7 @@ std::string preview_refusal(const TabularSource& src, const std::string& mode,
            " preview of a " + shape(l.full_rows, l.full_cols) +
            " (rows \xc3\x97 columns) matrix; " + mode +
            " would give the preview as if it were the whole matrix. Exports stream "
-           "HDF5 / AnnData / Loom / Cell Ranger matrices in full, but not NumPy "
+           "HDF5 / AnnData / Loom / Cell Ranger / R matrices in full, but not NumPy "
            "arrays past 4096 columns; use the TUI or the table view to look at "
            "this one";
 }

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **R lists and S4 objects** in `.rds` / `.RData`: a structure tab (every
+  element and slot: R path, class, type, size, first values) and a tab per
+  table-like part named by its path — Seurat (`@meta.data`, assay layers
+  named from the assay's cell / feature maps, reductions, graphs),
+  SingleCellExperiment (assays, `colData`, `rowData`, `reducedDims`), plain
+  lists and environments. Bioconductor `DFrame`s and `GRanges` are tables;
+  Matrix-package sparse matrices (C / T / R layouts; numeric, logical,
+  pattern) preview 1000 × 200, export in full and give `row, col, value`
+  rows with `--matrix long`; bit64 `integer64` reads as int64. R files are
+  now read by vv's own parser of R's serialization format (XDR, native and
+  ASCII; ALTREP compact sequences and deferred strings), replacing the
+  vendored librdata.
 - **Single-cell Cooler (`.scool`)**: summary, chroms, a cells tab (stored
   pixels and count sum per cell), one pixels tab over every cell with a
   leading `cell` column (`-r` applied per cell, through each cell's index)

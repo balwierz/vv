@@ -1,10 +1,11 @@
-// libFuzzer harness for R .rds / .RData files (the vendored librdata parser and
-// vv's conversion of its callbacks into Arrow tables).
+// libFuzzer harness for R .rds / .RData files: vv's reader of R's
+// serialization format (src/formats/rserial.cpp, after gzip / bzip2 / xz /
+// zstd decoding) and the conversion of the object tree into tabs
+// (src/formats/rdata.cpp), wide and --matrix long.
 //
-// librdata decodes R's serialization format (and gzip / bzip2 / xz) from
-// untrusted bytes; the conversion trusts the counts it reports. The harness
-// runs both over an in-memory buffer and checks every built table with
-// ValidateFull().
+// The input is untrusted end to end: lengths, references, nesting, ALTREP
+// states, S4 slots and sparse-matrix indices. The harness builds every tab's
+// first chunks and checks each table with ValidateFull().
 //
 //   cmake -S . -B build-fuzz -DVV_BUILD_FUZZERS=ON \
 //     -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++

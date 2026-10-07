@@ -118,14 +118,11 @@ user-facing summary).
   ship ORC, so the static-only release is the only platform where
   `vv file.orc` reports "compiled without ORC support".
 - SAS (`.sas7bdat`, `.xpt`), Stata (`.dta`), SPSS (`.sav`, `.por`) via
-  ReadStat (MIT, same author and API style as the vendored librdata).
+  ReadStat (MIT).
 - GFA assembly graphs (`.gfa`): segments / links / paths as tabs.
 - PDB / mmCIF structures (`.pdb`, `.cif`): atom records as a table.
 - mzTab (proteomics / metabolomics): the MTD / PRT / PSM / SML sections
   as tabs.
-- R lists and S4 objects (Seurat, SingleCellExperiment, sparse
-  `Matrix`) in `.rds` / `.RData`: librdata reads only data frames,
-  atomic vectors and dense matrices.
 - Galaxy `.dat` / Galaxy archive — niche but visible.
 
 ### Done
@@ -133,7 +130,9 @@ user-facing summary).
 - BLAST / DIAMOND tabular (`.m8`, `.blast6`, `.outfmt6`), UCSC wiggle
   (`.wig`), HDF5 aliases (`.h5mu` MuData, `.h5seurat`, `.fast5`,
   `.nc` / `.nc4`).
-- R `.rds` / `.RData` (vendored librdata, fuzzed), Cooler `.cool` /
+- R `.rds` / `.RData` (vv's own serialization parser, fuzzed: lists, S4
+  objects — Seurat, SingleCellExperiment, sparse Matrix — and environments as
+  a structure tab + a tab per table-like part), Cooler `.cool` / `.scool` /
   `.mcool` (pixels joined to bins, `-r` submatrix), GenBank / EMBL,
   Nanopore POD5 (VBZ signal decoded).
 - Zarr v2 / v3 stores (`.zarr`, `.zarr.zip`; sharding; c-blosc): AnnData /

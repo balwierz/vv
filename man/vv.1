@@ -233,10 +233,14 @@ weight) and bins; per resolution in an .mcool (\fBpixels@10kb\fR,
 single-cell \fB.scool\fR adds a cells tab and shows one pixels tab over every
 cell, with a leading \fBcell\fR column.
 .IP \(bu 2
-\fB.rds\fR, \fB.RData\fR, \fB.rda\fR \(en R data (vendored librdata): data frames,
-vectors and dense matrices, one tab per object; factors as categorical columns,
-Date / POSIXct as date / timestamp, character row names as an \fBindex\fR
-column. Lists and S4 objects (Seurat, sparse matrices) are refused.
+\fB.rds\fR, \fB.RData\fR, \fB.rda\fR \(en R data: data frames, vectors and
+matrices as tables (factors as categorical columns, Date / POSIXct as date /
+timestamp, character row names as an \fBindex\fR column). A list, an S4
+object (Seurat, SingleCellExperiment) or an environment opens as a structure
+tab plus a tab per table-like part, named by its R path
+(\fB@meta.data\fR, \fB@assays$RNA@layers$counts\fR); Matrix-package sparse
+matrices preview their first rows and columns, export in full, and give one
+row per stored value with \fB\-\-matrix long\fR.
 .IP \(bu 2
 \fB.wig\fR \(en UCSC wiggle: \fBfixedStep\fR / \fBvariableStep\fR sections (and
 bedGraph-style lines) expanded into bedGraph rows (Chr, [Beg, End), value;

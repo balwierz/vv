@@ -391,7 +391,7 @@ set(VV_CORE_SOURCES
     src/formats/genbank.cpp   src/formats/hdf5.cpp
     src/formats/htslib.cpp    src/formats/json.cpp      src/formats/lociss.cpp
     src/formats/npz.cpp       src/formats/parquet.cpp   src/formats/pod5.cpp
-    src/formats/rdata.cpp
+    src/formats/rdata.cpp     src/formats/rserial.cpp
     src/formats/sqlite.cpp
     src/formats/text.cpp      src/formats/ucsc.cpp      src/formats/wig.cpp
     src/formats/zarr.cpp
@@ -463,30 +463,6 @@ if(DUCKDB_INCLUDE_DIR AND DUCKDB_LIBRARY)
 endif()
 message(STATUS "duckdb     : ${DUCKDB_FOUND} ${DUCKDB_LIBRARY}")
 
-# ── librdata (R .rds / .RData reader, vendored) ──────────────────────────────
-# Vendored under vendored/librdata/ (read side only; see its UPSTREAM). MIT.
-# Compressed R files: gzip (zlib), bzip2 and xz when those libraries are found.
-find_package(Iconv)
-file(GLOB LIBRDATA_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/vendored/librdata/*.c")
-add_library(rdata STATIC ${LIBRDATA_SRCS})
-target_compile_options(rdata PRIVATE -O2 -ffunction-sections -fdata-sections -w)
-# Fuzz builds cap ALTREP compact sequences lower (see vendored/librdata/UPSTREAM)
-# so the fuzzer explores parsing rather than the memory limit.
-if(VV_BUILD_FUZZERS)
-  target_compile_definitions(rdata PRIVATE RDATA_MAX_COMPACT_SEQ=1048576)
-endif()
-target_compile_definitions(rdata PRIVATE HAVE_ZLIB=1
-    $<$<BOOL:${BZIP2_FOUND}>:HAVE_BZIP2=1> $<$<BOOL:${LIBLZMA_FOUND}>:HAVE_LZMA=1>)
-target_include_directories(rdata
-    PUBLIC  "${CMAKE_CURRENT_SOURCE_DIR}/vendored/librdata"
-    PRIVATE ${ZLIB_INCLUDE_DIRS} ${BZIP2_INCLUDE_DIRS} ${LIBLZMA_INCLUDE_DIRS})
-target_link_libraries(rdata PUBLIC ZLIB::ZLIB
-    $<$<BOOL:${BZIP2_FOUND}>:${BZIP2_LIBRARIES}> $<$<BOOL:${LIBLZMA_FOUND}>:${LIBLZMA_LIBRARIES}>)
-if(Iconv_FOUND AND NOT Iconv_IS_BUILT_IN)
-  target_include_directories(rdata PRIVATE ${Iconv_INCLUDE_DIRS})
-  target_link_libraries(rdata PUBLIC ${Iconv_LIBRARIES})
-endif()
-target_include_directories(vv PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vendored/librdata")
 
 # Collect all static libs built into static-libs/
 find_library(ZSTD_STATIC         NAMES libzstd.a         PATHS "${_static_libs_dir}" NO_DEFAULT_PATH)
@@ -566,7 +542,6 @@ if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND NCURSES_STATIC_LIB)
       ${HTSLIB_STATIC_LIB}
       bigwig
       md4c
-      rdata
       ${_sqlite}
       # xlsxio + its transitive deps (expat for XML, minizip for ZIP).
       # Order matters for static linking: xlsxio uses expat/minizip
@@ -602,7 +577,6 @@ else()
       $<$<BOOL:${DUCKDB_FOUND}>:${DUCKDB_LIBRARY}>
       bigwig
       md4c
-      rdata
       ${SQLITE3_TARGET}
       ${XLSXIO_LIB}
       ${HDF5_LIB}

@@ -1390,7 +1390,7 @@ std::string open_source_dispatch(const std::string& path, const Config& cfg,
             return open_text(path, cfg, out);
         dk = DelimKind::TSV;
     } else if (fends_ci(path, ".rds") || fends_ci(path, ".rdata") || fends_ci(path, ".rda")) {
-        return open_rdata_source(path, out);
+        return open_rdata_source(path, cfg, out);
     } else if (fends_ci(det, ".wig") || fends_ci(det, ".wig.gz")) {
         return open_wig_source(path, cfg, out);
     } else if (fends_ci(det, ".bed")        || fends_ci(det, ".bed.gz")

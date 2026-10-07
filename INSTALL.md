@@ -86,7 +86,7 @@ use the Fedora RPM (below), the Arch split package, or a source build with
 Both RPMs install with their dependencies straight from the Fedora repos —
 Fedora carries Arrow, Qt6, KF6, htslib and HDF5, so unlike the Ubuntu `.deb`
 no private shared libraries ride along. (xlsxio, which no distro packages,
-is built in statically — joining mimalloc, libBigWig, md4c and librdata, the statics
+is built in statically — joining mimalloc, libBigWig and md4c, the statics
 every vv build links.) Like the Debian 13 `.deb`, the `vv-gui` RPM carries
 the Dolphin thumbnailer / KFileMetaData plugins. The `fc<NN>` in the
 filename is the Fedora release the RPMs were built for; on another Fedora,
@@ -174,7 +174,7 @@ any is missing. There is no partial build.
 - HDF5, expat, minizip
 - libxlsxio — **not packaged by any major distribution**; see below
 
-libBigWig, md4c and librdata are vendored under `vendored/` and need no packages.
+libBigWig and md4c are vendored under `vendored/` and need no packages.
 Optional and auto-detected: Arrow's ORC adapter, KF6 for the GUI plugins, and
 libduckdb ≥ 1.5.6 for `.duckdb` files (`duckdb` on Arch and Homebrew; elsewhere
 unpack DuckDB's `libduckdb-<os>-<arch>.zip` release and point

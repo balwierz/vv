@@ -287,18 +287,34 @@ Try: `vv --tab pixels@10kb -r chr2:1000000-2000000 sample.mcool` ·
 
 ## R data
 
-`.rds` `.RData` `.rda` — data frames, atomic vectors and dense matrices, one
-tab per object in an `.RData` file. Factors become categorical columns, `Date`
-/ `POSIXct` date and timestamp columns, `NA` null; character row names and
-matrix row names become an `index` column. Compressed files (gzip, bzip2, xz)
-are read. Lists and S4 objects (Seurat, SingleCellExperiment, sparse
-`Matrix`) are not: export the part you need (`saveRDS(as.data.frame(x))`,
-`write.csv`) or convert a Seurat object to AnnData.
+`.rds` `.RData` `.rda` — any object R saves. A data frame, an atomic vector
+or a matrix is one table (one tab per object in an `.RData` file). Factors
+become categorical columns, `Date` / `POSIXct` date and timestamp columns,
+bit64 `integer64` int64, `NA` null; character row names and matrix row names
+become an `index` column.
+
+A list, an S4 object or an environment opens as a **structure** tab — every
+element and slot with its R path, class, type, size and first values — and
+one tab per table-like part, named by its path: `@meta.data`,
+`@assays$RNA@layers$counts`, `@reductions$pca@cell.embeddings` in a Seurat
+object; `@assays$counts`, `@colData`, `@int_colData$reducedDims$PCA` in a
+SingleCellExperiment; `$df` in a plain list. Bioconductor `DFrame`s and
+`GRanges` are tables; Matrix-package sparse matrices (`dgCMatrix`, `dgTMatrix`,
+`dgRMatrix`, logical and pattern kinds) show their first 1000 rows × 200
+columns, an export streams the whole matrix, and `--matrix long` lists every
+stored value as `row`, `col`, `value`. Seurat v5 layers and SummarizedExperiment
+assays without dimnames take their row and column names from the object.
+
+Read by vv's own parser of R's serialization format: XDR, native-binary and
+ASCII files, gzip / bzip2 / xz / zstd compression, ALTREP compact sequences
+and deferred strings.
 
 ![vv: a DESeq2 results data frame saved with saveRDS](img/vv/rds.svg)
 
 Try: `vv results.rds` · `vv --tab counts --tsv session.RData` ·
-`vv --filter 'padj < 0.05' --sort log2FoldChange:desc deseq2.rds`.
+`vv --filter 'padj < 0.05' --sort log2FoldChange:desc deseq2.rds` ·
+`vv --tab @meta.data --tsv seurat.rds` ·
+`vv --tab '@assays$RNA@layers$counts' --matrix long --parquet counts.parquet seurat.rds`.
 
 ## Parquet / Arrow / ORC
 

@@ -1446,7 +1446,81 @@ assert_eq_file_inline "rdata_tabs" "$("$VV" --list-tabs "$DATA/tiny.RData" | tr 
 assert_eq_file_inline "rdata_row_names" "$("$VV" --tab named --tsv "$DATA/tiny.RData" | head -2)" "$(printf 'index\tx\na\t1')"
 assert_eq_file_inline "rdata_matrix" "$("$VV" --tab counts --tsv "$DATA/tiny.RData")" \
     "$(printf 'index\tA\tB\tC\nr1\t1\t3\t5\nr2\t2\t4\t6')"
-assert_exit_code "rds_list_refused" 1 "$VV" "$DATA/tiny.list.rds"
+# Lists, S4 objects and environments: a structure tab, then a tab per
+# table-like part named by its R path.
+assert_eq_file_inline "rds_list_structure" "$("$VV" --tsv "$DATA/tiny.list.rds")" \
+    "$(printf 'path\tclass\ttype\tsize\tvalue\n.\tlist\tlist\t2\t\n$a\tnumeric\tdouble\t1\t1\n$b\tcharacter\tcharacter\t1\tx')"
+for f in ascii native nocomp; do
+    assert_eq_file_inline "rds_format_$f" "$("$VV" --tsv "$DATA/tiny.$f.rds" | tr '\t\n' ',;')" "a,b;1,x;2,y;3,;"
+done
+NE="$DATA/tiny.nested.rds"
+assert_eq_file_inline "rds_nested_tabs" "$("$VV" --list-tabs "$NE" | tr '\n' ' ')" \
+    'structure $df $inner$m $inner$when $env$counts $ranges $big $z $bytes $seq $chars '
+NE_ST=$("$VV" --tab structure --tsv "$NE")
+assert_contains "rds_nested_env"      "$NE_ST" "$(printf '$env\tenvironment\tenvironment\t1')"
+assert_contains "rds_nested_function" "$NE_ST" "$(printf '$f\tfunction\tclosure')"
+assert_contains "rds_nested_tab_ref"  "$NE_ST" '→ tab $df'
+assert_eq_file_inline "rds_nested_matrix" "$("$VV" --tab '$inner$m' --tsv "$NE" | tr '\t\n' ',;')" "index,p,q;x,1,3;y,2,4;"
+assert_eq_file_inline "rds_granges" "$("$VV" --tab '$ranges' --tsv "$NE" | tr '\t\n' ',;')" \
+    "index,seqnames,start,end,width,strand,score;r1,chr1,100,109,10,+,1.5;r2,chr1,200,219,20,-,2;r3,chr2,50,54,5,*,;"
+assert_eq_file_inline "rds_integer64" "$("$VV" --tab '$big' --tsv --no-header "$NE" | tr '\n' ';')" "9007199254740993;;"
+assert_contains "rds_integer64_type" "$("$VV" --tab '$big' --schema --color=never "$NE")" "int64"
+assert_eq_file_inline "rds_complex_raw" "$("$VV" --tab '$z' --tsv --no-header "$NE" | tr '\n' ';')$("$VV" --tab '$bytes' --tsv --no-header "$NE" | tr '\n' ';')" \
+    "1+0.5i;-2-1i;0;255;"
+assert_eq_file_inline "rds_altrep_compact_seq" "$("$VV" --tab '$seq' --count "$NE")$("$VV" --tab '$seq' --tail 1 --tsv --no-header "$NE")" "100000100000"
+assert_eq_file_inline "rds_altrep_deferred_string" "$("$VV" --tab '$chars' --tsv --no-header "$NE" | tr '\n' ' ')" "10 20 30 "
+assert_eq_file_inline "rds_env_binding" "$("$VV" --tab '$env$counts' --tsv --no-header "$NE" | tr '\t\n' ',;')" "a,1;b,2;"
+# Matrix-package matrices: every layout gives the same table.
+SP="$DATA/tiny.sparse.RData"
+assert_eq_file_inline "rdata_sparse_tabs" "$("$VV" --list-tabs "$SP" | tr '\n' ' ')" "dgc dgt dgr lgc ngc dge wide lst (structure) lst\$df "
+DGC=$("$VV" --tab dgc --tsv "$SP")
+assert_eq_file_inline "rds_dgcmatrix" "$(printf '%s' "$DGC" | sed -n '1,3p;7p' | tr '\t\n' ',;')" \
+    "index,c1,c2,c3,c4;g1,1,0,0,0;g2,0,0,4,0;g6,0,3,0,0"
+assert_eq_file_inline "rds_dgtmatrix" "$("$VV" --tab dgt --tsv "$SP")" "$DGC"
+assert_eq_file_inline "rds_dgrmatrix" "$("$VV" --tab dgr --tsv "$SP")" "$DGC"
+assert_eq_file_inline "rds_lgcmatrix" "$("$VV" --tab lgc --tsv --no-header "$SP" | sed -n 2p)" "$(printf 'g2\tfalse\tfalse\ttrue\tfalse')"
+assert_eq_file_inline "rds_ngcmatrix" "$("$VV" --tab ngc --tsv --no-header "$SP" | sed -n 1p)" "$(printf 'g1\ttrue\tfalse\tfalse\tfalse')"
+assert_eq_file_inline "rds_dgematrix" "$("$VV" --tab dge --tsv "$SP" | tr '\t\n' ',;')" "V1,V2;1.5,3;2,4;"
+assert_eq_file_inline "rds_sparse_long" "$("$VV" --tab dgc --matrix long --tsv "$SP" | tr '\t\n' ',;')" \
+    "row,col,value;g1,c1,1;g3,c1,2;g6,c2,3;g2,c3,4;g4,c4,5;"
+# 1200 x 250: a 1000 x 200 preview; an export streams the whole matrix
+assert_contains "rds_sparse_preview_note" "$("$VV" --tab wide -n 1 --color=never "$SP")" "preview: first 1000 rows × 200 columns"
+assert_eq_file_inline "rds_sparse_full_export" "$("$VV" --tab wide --tsv "$SP" | wc -l | tr -d ' ')x$("$VV" --tab wide --tsv "$SP" | head -1 | tr '\t' '\n' | wc -l | tr -d ' ')" "1201x251"
+assert_eq_file_inline "rds_sparse_long_count" "$("$VV" --tab wide --matrix long --count "$SP")" "3000"
+assert_eq_file_inline "rdata_list_prefix" "$("$VV" --tab 'lst$df' --tsv --no-header "$SP" | tr '\n' ' ')" "1 2 "
+# Seurat v5: layers named from the assay's cell / feature maps; reductions; graphs.
+SO="$DATA/tiny.seurat.rds"
+assert_eq_file_inline "rds_seurat_tabs" "$("$VV" --list-tabs "$SO" | tr '\n' ' ')" \
+    'structure @assays$RNA@layers$counts @assays$RNA@layers$data @meta.data @active.ident @graphs$RNA_snn @reductions$pca@cell.embeddings '
+assert_eq_file_inline "rds_seurat_counts" "$("$VV" --tab '@assays$RNA@layers$counts' --tsv "$SO" | sed -n '1,3p' | tr '\t\n' ',;')" \
+    "index,cell1,cell2,cell3,cell4,cell5;gene1,3,0,0,0,0;gene2,1,7,0,0,0;"
+assert_eq_file_inline "rds_seurat_meta" "$("$VV" --tab '@meta.data' --tsv "$SO" | sed -n '1,2p' | tr '\t\n' ',;')" \
+    "index,orig.ident,nCount_RNA,nFeature_RNA,group;cell1,toy,4,2,a;"
+assert_eq_file_inline "rds_seurat_pca" "$("$VV" --tab '@reductions$pca@cell.embeddings' --tsv "$SO" | sed -n '1,2p' | tr '\t\n' ',;')" \
+    "index,PC_1,PC_2;cell1,0.1,1;"
+assert_eq_file_inline "rds_seurat_graph_long" "$("$VV" --tab '@graphs$RNA_snn' --matrix long --tsv --no-header "$SO" | tr '\t\n' ',;')" \
+    "cell3,cell1,0.25;cell1,cell2,0.5;cell2,cell3,1;"
+assert_contains "rds_seurat_structure" "$("$VV" --tsv "$SO")" "$(printf '@assays$RNA\tAssay5 (SeuratObject)\tS4')"
+assert_eq_file_inline "rds_seurat3_counts" "$("$VV" --tab '@assays$RNA@counts' --tsv "$DATA/tiny.seurat3.rds" | sed -n 2p | tr '\t' ',')" \
+    "gene1,3,0,0,0,0"
+# SingleCellExperiment: assays, colData, rowData (gene names from rowRanges),
+# a reducedDim (cell names from colData).
+SCE="$DATA/tiny.sce.rds"
+assert_eq_file_inline "rds_sce_tabs" "$("$VV" --list-tabs "$SCE" | tr '\n' ' ')" \
+    'structure @int_colData$reducedDims$PCA @rowRanges@elementMetadata @colData @assays$counts @assays$logcounts '
+assert_eq_file_inline "rds_sce_coldata" "$("$VV" --tab '@colData' --tsv "$SCE" | sed -n '1,2p' | tr '\t\n' ',;')" "index,group,n;cell1,a,1;"
+assert_eq_file_inline "rds_sce_rowdata" "$("$VV" --tab '@rowRanges@elementMetadata' --tsv "$SCE" | sed -n '1,2p' | tr '\t\n' ',;')" "index,symbol;gene1,S1;"
+assert_eq_file_inline "rds_sce_reduceddim" "$("$VV" --tab '@int_colData$reducedDims$PCA' --tsv "$SCE" | sed -n '1,2p' | tr '\t\n' ',;')" "index,V1,V2;cell1,1,-1;"
+assert_eq_file_inline "rds_sce_assay" "$("$VV" --tab '@assays$counts' --tsv "$SCE" | sed -n '1,2p' | tr '\t\n' ',;')" \
+    "index,cell1,cell2,cell3,cell4,cell5;gene1,3,0,0,0,0;"
+# Damaged input: a clean error, exit 1.
+head -c 300 "$DATA/tiny.sparse.RData" > "$TMP/trunc.RData"
+assert_exit_code "rds_truncated_exit" 1 "$VV" "$TMP/trunc.RData"
+assert_contains "rds_truncated_gzip_msg" "$("$VV" "$TMP/trunc.RData" 2>&1)" "Truncated compressed stream"
+gzip -dc "$DATA/tiny.sparse.RData" | head -c 300 > "$TMP/trunc_raw.RData"
+assert_contains "rds_truncated_msg" "$("$VV" "$TMP/trunc_raw.RData" 2>&1)" "unexpected end of file"
+printf 'X\n\0\0\0\3\0\4\5\0\0\3\5\0\0\0\0\5UTF-8\0\0\0\143' > "$TMP/badtype.rds"
+assert_contains "rds_unknown_type" "$("$VV" "$TMP/badtype.rds" 2>&1)" "unknown R object type 99"
 
 echo
 echo '── UCSC wiggle (.wig) ─────────────────────────────────'
