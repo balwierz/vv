@@ -178,7 +178,8 @@ libBigWig and md4c are vendored under `vendored/` and need no packages.
 Optional and auto-detected: Arrow's ORC adapter, KF6 for the GUI plugins, and
 libduckdb ≥ 1.5.6 for `.duckdb` files (`duckdb` on Arch and Homebrew; elsewhere
 unpack DuckDB's `libduckdb-<os>-<arch>.zip` release and point
-`CMAKE_PREFIX_PATH` at it). The static release binary is built without DuckDB.
+`CMAKE_PREFIX_PATH` at it; `-DVV_WITH_DUCKDB=OFF` skips the detection). The static
+release binary and the AUR package are built without DuckDB.
 
 ### Debian / Ubuntu
 

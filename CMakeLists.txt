@@ -447,11 +447,15 @@ message(STATUS "blosc      : ${BLOSC_FOUND} ${BLOSC_LIBRARY}")
 # DuckDB databases (src/formats/duckdb.cpp), when libduckdb >= 1.5.6 (its
 # stable Arrow export: duckdb_data_chunk_to_arrow) is found. Not part of the
 # static build. Without it .duckdb files are refused with "built without
-# DuckDB support".
-find_path(DUCKDB_INCLUDE_DIR duckdb.h)
-find_library(DUCKDB_LIBRARY NAMES duckdb)
+# DuckDB support". VV_WITH_DUCKDB=OFF skips the detection, so a package
+# build does not pick up a libduckdb that happens to be installed.
+option(VV_WITH_DUCKDB "Link libduckdb (>= 1.5.6) when it is found" ON)
 set(DUCKDB_FOUND FALSE)
-if(DUCKDB_INCLUDE_DIR AND DUCKDB_LIBRARY)
+if(VV_WITH_DUCKDB)
+  find_path(DUCKDB_INCLUDE_DIR duckdb.h)
+  find_library(DUCKDB_LIBRARY NAMES duckdb)
+endif()
+if(VV_WITH_DUCKDB AND DUCKDB_INCLUDE_DIR AND DUCKDB_LIBRARY)
   file(STRINGS "${DUCKDB_INCLUDE_DIR}/duckdb.h" _duckdb_arrow REGEX "duckdb_data_chunk_to_arrow")
   if(_duckdb_arrow)
     set(DUCKDB_FOUND TRUE)
@@ -461,7 +465,11 @@ if(DUCKDB_INCLUDE_DIR AND DUCKDB_LIBRARY)
     message(STATUS "duckdb.h lacks duckdb_data_chunk_to_arrow (DuckDB < 1.5.6): DuckDB support off")
   endif()
 endif()
-message(STATUS "duckdb     : ${DUCKDB_FOUND} ${DUCKDB_LIBRARY}")
+if(VV_WITH_DUCKDB)
+  message(STATUS "duckdb     : ${DUCKDB_FOUND} ${DUCKDB_LIBRARY}")
+else()
+  message(STATUS "duckdb     : off (VV_WITH_DUCKDB=OFF)")
+endif()
 
 
 # Collect all static libs built into static-libs/
