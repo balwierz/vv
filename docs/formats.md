@@ -310,6 +310,7 @@ ASCII files, gzip / bzip2 / xz / zstd compression, ALTREP compact sequences
 and deferred strings.
 
 ![vv: a DESeq2 results data frame saved with saveRDS](img/vv/rds.svg)
+![vv: the structure tab of a Seurat object, with its tables' tabs](img/vv/rds-seurat.svg)
 
 Try: `vv results.rds` · `vv --tab counts --tsv session.RData` ·
 `vv --filter 'padj < 0.05' --sort log2FoldChange:desc deseq2.rds` ·

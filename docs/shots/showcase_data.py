@@ -381,6 +381,22 @@ if tool("Rscript"):
 else:
     note("Rscript not found; skipping deseq2.rds")
 
+# ── R: a small Seurat object (needs SeuratObject; R_LIBS for a private library)
+if tool("Rscript"):
+    r = subprocess.run(["Rscript", "-e",
+        "suppressPackageStartupMessages({library(Matrix); library(SeuratObject)}); set.seed(3);"
+        "g <- c('CD3E','CD3D','MS4A1','CD79A','LYZ','CD14','NKG7','GNLY','PPBP','HBB');"
+        "m <- rsparsematrix(10, 60, 0.4, rand.x = function(n) as.numeric(rpois(n, 4) + 1));"
+        "dimnames(m) <- list(g, sprintf('AAACCTG-%%02d', 1:60));"
+        "so <- CreateSeuratObject(counts = m, project = 'pbmc');"
+        "so$cell_type <- factor(sample(c('T','B','Mono','NK'), 60, TRUE));"
+        "e <- matrix(rnorm(120), 60, 2, dimnames = list(colnames(m), c('umap_1','umap_2')));"
+        "so[['umap']] <- CreateDimReducObject(embeddings = e, key = 'umap_', assay = 'RNA');"
+        "saveRDS(so, '%s')" % os.path.join(out, "pbmc_seurat.rds")],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if r.returncode != 0:
+        note("SeuratObject not available; skipping pbmc_seurat.rds")
+
 # ── Hi-C: a two-resolution .mcool (chr17 + chr7, first 2 Mb) ───────────────
 try:
     import h5py, numpy as np

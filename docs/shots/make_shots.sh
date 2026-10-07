@@ -105,6 +105,7 @@ cli describe       110 --describe --select signal,pvalue,qvalue,summit atac_peak
 MAXL=22 cli json-paths 110 --json-paths run.json
 cli ndjson         110 -n 6 events.ndjson
 MAXL=11 cli rds     110 -n 6 --sort padj deseq2.rds
+MAXL=20 cli rds-seurat 130 --tab structure -n 16 -w 44 --select path,class,size,value pbmc_seurat.rds   # needs SeuratObject
 MAXL=11 cli cooler  110 --tab pixels@10kb -r chr17:1000000-1100000 -n 6 hic.mcool
 MAXL=12 cli genbank 118 --tab features --select type,start,end,strand,gene,product,note pUC19.gb
 MAXL=11 cli pod5    110 --tab reads --select read_id,channel,num_samples,end_reason,median_before -n 6 run.pod5

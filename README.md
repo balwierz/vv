@@ -42,13 +42,13 @@ More screenshots, one per format: **[docs/formats.md](docs/formats.md)**.
 | BLAST / DIAMOND tabular | `.m8` `.blast6` `.outfmt6` | [notes](docs/formats.md#blast--diamond-tabular) |
 | PLINK, BEDPE, pairs, GCT, MAF | `.bim` `.fam` `.pvar` `.psam` `.bedpe` `.pairs` `.gct` `.maf` | [notes](docs/formats.md#plink-and-tsv-layouts) |
 | AnnData / MuData / HDF5 / Loom / 10x, FAST5, NetCDF-4 | `.h5ad` `.h5mu` `.h5` `.hdf5` `.loom` `.h5seurat` `.fast5` `.nc` `.nc4` | [screens](docs/formats.md#anndata--hdf5--loom--10x) |
-| Zarr (AnnData / MuData, OME-Zarr, xarray) | `.zarr` `.zarr.zip` | [notes](docs/formats.md#zarr) |
+| Zarr (AnnData / MuData, OME-Zarr, xarray) | `.zarr` `.zarr.zip` | [screens](docs/formats.md#zarr) |
 | MatrixMarket | `.mtx` | [screens](docs/formats.md#matrixmarket) |
-| NumPy | `.npz` `.npy` |
-| R data | `.rds` `.RData` `.rda` | [notes](docs/formats.md#r-data) | [screens](docs/formats.md#numpy) |
-| Cooler Hi-C | `.cool` `.mcool` `.scool` | [notes](docs/formats.md#cooler-hi-c) |
-| GenBank / EMBL | `.gb` `.gbk` `.gbff` `.genbank` `.embl` | [notes](docs/formats.md#genbank--embl) |
-| Nanopore POD5 | `.pod5` | [notes](docs/formats.md#nanopore-pod5) |
+| NumPy | `.npz` `.npy` | [screens](docs/formats.md#numpy) |
+| R data, incl. Seurat / SingleCellExperiment / sparse Matrix | `.rds` `.RData` `.rda` | [screens](docs/formats.md#r-data) |
+| Cooler Hi-C, single-cell | `.cool` `.mcool` `.scool` | [screens](docs/formats.md#cooler-hi-c) |
+| GenBank / EMBL | `.gb` `.gbk` `.gbff` `.genbank` `.embl` | [screens](docs/formats.md#genbank--embl) |
+| Nanopore POD5 | `.pod5` | [screens](docs/formats.md#nanopore-pod5) |
 | Parquet, LociSSD | `.parquet` `.lociss` | [screens](docs/formats.md#parquet--arrow--orc) |
 | Arrow IPC / Feather, ORC | `.arrow` `.arrows` `.feather` `.orc` | [screens](docs/formats.md#parquet--arrow--orc) |
 | TSV / CSV | `.tsv` `.csv` | [screens](docs/formats.md#tsv--csv) |
