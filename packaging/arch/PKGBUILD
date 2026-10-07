@@ -5,7 +5,7 @@
 # -DVV_BUILD_GUI=ON produces both; install whichever you want.
 pkgbase=vv
 pkgname=('vv' 'vv-gui')
-pkgver=1.26.1
+pkgver=1.27.0
 pkgrel=1
 pkgdesc="Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)"
 arch=('x86_64' 'aarch64')
@@ -44,7 +44,7 @@ build() {
 package_vv() {
     pkgdesc="Universal data/genomic file viewer — CLI + ncurses TUI"
     depends=('arrow' 'htslib' 'ncurses' 'hdf5' 'sqlite' 'xz' 'bzip2' 'blosc'
-             'expat' 'minizip' 'xlsxio')
+             'expat' 'minizip' 'xlsxio' 'zlib')
     cd "$pkgbase-$pkgver"
     install -Dm755 ../build/vv "$pkgdir/usr/bin/vv"
     ln -s vv "$pkgdir/usr/bin/vh"
@@ -57,7 +57,11 @@ package_vv() {
 
 package_vv-gui() {
     pkgdesc="Qt6/KDE desktop viewer for vv — windowed table view + Dolphin integration"
-    depends=('vv' 'qt6-base' 'arrow' 'hdf5' 'sqlite' 'blosc' 'kio' 'kcoreaddons' 'kfilemetadata')
+    # vvg and the plugins link the reader core themselves; `vv` is for the
+    # command lines vvg copies (Copy as vv Command).
+    depends=('vv' 'qt6-base' 'arrow' 'htslib' 'hdf5' 'sqlite' 'xz' 'bzip2' 'blosc'
+             'expat' 'minizip' 'xlsxio' 'zlib' 'kio' 'kcoreaddons' 'kfilemetadata'
+             'hicolor-icon-theme')
     cd "$pkgbase-$pkgver"
     install -Dm755 ../build/gui/vvg "$pkgdir/usr/bin/vvg"
     # KF6 plugins.

@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.27.0] - 2026-10-07
+
 ### Added
 - **R lists and S4 objects** in `.rds` / `.RData`: a structure tab (every
   element and slot: R path, class, type, size, first values) and a tab per
@@ -16,9 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Matrix-package sparse matrices (C / T / R layouts; numeric, logical,
   pattern) preview 1000 × 200, export in full and give `row, col, value`
   rows with `--matrix long`; bit64 `integer64` reads as int64. R files are
-  now read by vv's own parser of R's serialization format (XDR, native and
-  ASCII; ALTREP compact sequences and deferred strings), replacing the
-  vendored librdata.
+  read by vv's own parser of R's serialization format (XDR, native and
+  ASCII; ALTREP compact sequences and deferred strings).
 - **Single-cell Cooler (`.scool`)**: summary, chroms, a cells tab (stored
   pixels and count sum per cell), one pixels tab over every cell with a
   leading `cell` column (`-r` applied per cell, through each cell's index)
@@ -40,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **DuckDB databases (`.duckdb`, `.ddb`)** when built with libduckdb ≥ 1.5.6
   (optional; not in the static binary): one tab per table and view, opened
   read-only with external file access off; pages fetched as viewed.
+  `-DVV_WITH_DUCKDB=OFF` builds without it even when libduckdb is installed.
 - **Zarr v2 and v3 stores (`.zarr` directories, `.zarr.zip`)**: AnnData and MuData
   written with `write_zarr` open with the same tabs as their `.h5ad` /
   `.h5mu`; other stores as a hierarchy plus per-array tabs. Blosc via c-blosc
@@ -54,7 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   joined to bin coordinates (with `balanced` when the bins carry a weight)
   and bins, one pixels / bins tab per `.mcool` resolution; streamed in
   chunks; `-r` selects the region × region submatrix via the bin index.
-- **R data (`.rds`, `.RData`, `.rda`)** via the vendored librdata (MIT):
+- **R data (`.rds`, `.RData`, `.rda`)**:
   data frames, vectors and dense matrices, one tab per object; factors,
   `Date`, `POSIXct`, `NA` and row names mapped; gzip / bzip2 / xz files read.
 - **UCSC wiggle (`.wig`)**: `fixedStep` / `variableStep` sections expanded on
