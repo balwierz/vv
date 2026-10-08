@@ -388,9 +388,10 @@ public:
         }
         for (int g = 0; m->isComputing() && g < 2000000; ++g) QCoreApplication::processEvents();
         const QModelIndex cur = v->currentIndex();
+        const QString stats = waitColumnStatsForTest();   // before the title: it sets it
         return QStringLiteral("sort=%1 cursor=%2,%3 title=%4 where=%5 %6")
             .arg(m->sortColumn()).arg(cur.row()).arg(cur.column())
-            .arg(colPanel_->titleForTest(), colPanel_->locationForTest(), waitColumnStatsForTest());
+            .arg(colPanel_->titleForTest(), colPanel_->locationForTest(), stats);
     }
     // Window self-test: cursor in column `col`, the view scrolled back to
     // its left edge, then the Column tab's "show in table". Prints the
