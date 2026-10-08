@@ -337,12 +337,12 @@ jobs:
             | grep -qF 'colstats (here) count=3 nulls=0 sum=5'
           # A click on a column header sorts by it and moves the cursor there,
           # so the Column tab summarises the column clicked (cursor was in 0).
-          VVG_WINTEST=1 VVG_HEADERCLICK=3 ./build-gui/gui/vvg tests/data/tiny.parquet \
-            | grep -qE '^headerclick sort=3 cursor=0,3 title=Score .* where=4/5 count=20 nulls=0 sum=9.5 '
+          out=$(VVG_WINTEST=1 VVG_HEADERCLICK=3 ./build-gui/gui/vvg tests/data/tiny.parquet); echo "$out"
+          grep -qE '^headerclick sort=3 cursor=0,3 title=Score .* where=4/5 count=20 nulls=0 sum=9.5 ' <<<"$out"
           # The Column tab says when its column is out of view, and its link
           # scrolls the column into view.
-          VVG_WINTEST=1 VVG_SHOWCOL=4 ./build-gui/gui/vvg tests/data/tiny.parquet \
-            | grep -qE '^showcol before=5/5 out after=5/5 x=[0-9]+ visible=1$'
+          out=$(VVG_WINTEST=1 VVG_SHOWCOL=4 ./build-gui/gui/vvg tests/data/tiny.parquet); echo "$out"
+          grep -qE '^showcol before=5/5 out after=5/5 x=[0-9]+ visible=1$' <<<"$out"
           # A read error (here a malformed first record) is shown in the
           # status bar, not an empty table presented as the file.
           printf '@r1\nACGT\n+\nII\n' > "$RUNNER_TEMP/bad.fq"
@@ -660,12 +660,12 @@ jobs:
             | grep -qF 'colstats (here) count=3 nulls=0 sum=5'
           # A click on a column header sorts by it and moves the cursor there,
           # so the Column tab summarises the column clicked (cursor was in 0).
-          VVG_WINTEST=1 VVG_HEADERCLICK=3 ./build/gui/vvg tests/data/tiny.parquet \
-            | grep -qE '^headerclick sort=3 cursor=0,3 title=Score .* where=4/5 count=20 nulls=0 sum=9.5 '
+          out=$(VVG_WINTEST=1 VVG_HEADERCLICK=3 ./build/gui/vvg tests/data/tiny.parquet); echo "$out"
+          grep -qE '^headerclick sort=3 cursor=0,3 title=Score .* where=4/5 count=20 nulls=0 sum=9.5 ' <<<"$out"
           # The Column tab says when its column is out of view, and its link
           # scrolls the column into view.
-          VVG_WINTEST=1 VVG_SHOWCOL=4 ./build/gui/vvg tests/data/tiny.parquet \
-            | grep -qE '^showcol before=5/5 out after=5/5 x=[0-9]+ visible=1$'
+          out=$(VVG_WINTEST=1 VVG_SHOWCOL=4 ./build/gui/vvg tests/data/tiny.parquet); echo "$out"
+          grep -qE '^showcol before=5/5 out after=5/5 x=[0-9]+ visible=1$' <<<"$out"
           # A read error (here a malformed first record) is shown in the
           # status bar, not an empty table presented as the file.
           printf '@r1\nACGT\n+\nII\n' > "$RUNNER_TEMP/bad.fq"
