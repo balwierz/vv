@@ -226,21 +226,51 @@ bool parse_filter_expr(const std::string& expr,
 class TabularSource;
 std::vector<int64_t> filter_rows(TabularSource& src, const FilterExpr& expr);
 
-// ── Per-column statistics ────────────────────────────────────────────────────
-// Structured form of what --describe computes, for one column. Backs the
-// GUI's stats panel and could back a future structured --describe.
-struct ColStats {
-    std::string name, type;
-    bool        is_numeric = false;
-    int64_t     count = 0;            // non-null values
-    int64_t     nulls = 0;
-    double      min = 0, max = 0, mean = 0;   // numeric only
-    std::string s_min, s_max;                 // string only
-    std::vector<std::string> distinct;        // up to 16 distinct values
-    bool        distinct_overflow = false;    // true if > 16 distinct
-    bool        valid = false;
+// ── Per-column summary ───────────────────────────────────────────────────────
+// What --describe, --value-counts and vvg's Column tab compute, in one pass
+// over a source.
+struct ValueCount {
+    std::string value;                  // as the column renders it (exact floats)
+    int64_t     count = 0;
+    bool        null  = false;          // the null entry (value is empty)
 };
-ColStats compute_col_stats(TabularSource& src, int src_col);
+struct ColumnSummary {
+    std::string name, type;
+    bool        numeric  = false;       // numbers, dates, timestamps, decimals
+    bool        temporal = false;       // a date / timestamp (stats are epoch counts)
+    int64_t     count = 0;              // non-null values
+    int64_t     nulls = 0;              // count + nulls = rows summarised
+    // Numeric. min / max are ±inf when no value converted; mean = sum / count.
+    double      min = 0, max = 0, mean = 0, sum = 0;
+    double      std = 0;                // n - 1 denominator; valid when has_std
+    bool        has_std = false;        // at least two values
+    std::string s_min, s_max;           // non-numeric
+    // Parallel to SummaryOptions::percentiles; empty when no value was kept.
+    std::vector<double> percentiles;
+    bool        percentiles_sampled = false;   // from a uniform sample, not every value
+    // Distinct non-null values: tracked for non-numeric columns, and for every
+    // column when value_counts is set. -1 = more than distinct_cap (or not
+    // tracked).
+    int64_t     distinct = -1;
+    // value_counts: count descending, equal counts by value (numerically for a
+    // numeric column), null last among equals. Empty past distinct_cap.
+    std::vector<ValueCount> values;
+};
+struct SummaryOptions {
+    std::vector<int>    cols;                 // source column indices
+    const FilterExpr*   filter = nullptr;     // parsed against the source's schema
+    int64_t             max_rows = -1;        // -1 = every row
+    std::vector<double> percentiles{25, 50, 75};
+    size_t              distinct_cap = 16;
+    bool                value_counts = false;
+    const std::atomic<bool>* cancel    = nullptr;   // polled once per chunk
+    std::atomic<int64_t>*    rows_done = nullptr;   // rows read so far
+};
+// "" on success; "canceled" when *cancel was set; else the read error. Reads
+// each chunk once in order (ensure + read_chunk): a caller sharing a
+// streaming source with a viewer calls set_retain_all(true) first.
+std::string summarize_columns(TabularSource& src, const SummaryOptions& opt,
+                              std::vector<ColumnSummary>* out);
 
 // ── Source interface ─────────────────────────────────────────────────────────
 struct ChunkMeta { int64_t first_row; int64_t num_rows; };

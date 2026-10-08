@@ -91,7 +91,9 @@ src/core/            common (colours, themes, formatting), source (TabularSource
                      helpers), filter (--filter / --select), region, io,
                      derived (--expand / --flatten / --gt-stats / VCF samples,
                      open_source()), open (format dispatch, stdin, datasets),
-                     modes (markdown / text / JSON document modes)
+                     modes (markdown / text / JSON document modes),
+                     summary (summarize_columns: --describe / --value-counts /
+                     vvg statistics)
 src/formats/         one file per reader family: parquet, lociss, delimited,
                      htslib (BAM/CRAM/SAM, pileup, BCF, FASTA/FASTQ, --contigs),
                      ucsc (bigWig/bigBed, 2bit), text, json, sqlite, arrow

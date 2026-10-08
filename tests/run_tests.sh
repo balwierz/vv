@@ -1908,6 +1908,9 @@ if command -v python3 >/dev/null 2>&1; then
     # 0.475 / 0.7125 and std(ddof=1) 0.29580. Score is float32, hence %.4f.
     SCORE_PCT=$(printf '%s' "$DJ" | python3 -c "import sys,json; d={c['column']:c for c in json.load(sys.stdin)}['Score']; p=d['percentiles']; print('%.4f %.4f %.4f %.5f %s' % (p['25%'], p['50%'], p['75%'], d['std'], d['percentiles_sampled']))")
     assert_eq_file_inline "describe_json_percentiles" "$SCORE_PCT" "0.2375 0.4750 0.7125 0.29580 False"
+    # The sum of a numeric column; an integer column's is an exact integer.
+    SUMS=$(printf '%s' "$DJ" | python3 -c "import sys,json; d={c['column']:c for c in json.load(sys.stdin)}; print(d['Start']['sum'], '%.4f' % d['Score']['sum'], 'sum' in d['Chr'])")
+    assert_eq_file_inline "describe_json_sum" "$SUMS" "96000 9.5000 False"
     # --percentiles picks the columns: 0 and 100 are min and max; 99.5% sits
     # between the two largest values.
     CUSTOM_PCT=$("$VV" --describe --select Start --percentiles 0,99.5,100 --ndjson "$DATA/tiny.parquet" \

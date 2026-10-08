@@ -564,10 +564,17 @@ void ArrowTableModel::findAsync(const QRegularExpression& re) {
         [this, resnap, cf] { return computeFindPos(resnap, cf.get()); }));
 }
 
-ColStats ArrowTableModel::columnStats(int displayCol) const {
-    if (computing_) return {};   // would drain src_ while a worker owns it
-    if (displayCol < 0 || displayCol >= (int)displayCols_.size()) return {};
-    return compute_col_stats(*src_, displayCols_[displayCol]);
+bool ArrowTableModel::columnStats(int displayCol, ColumnSummary* out) const {
+    if (computing_) return false;   // would drain src_ while a worker owns it
+    if (displayCol < 0 || displayCol >= (int)displayCols_.size()) return false;
+    src_->set_retain_all(true);     // the viewer re-reads every chunk afterwards
+    SummaryOptions opt;
+    opt.cols = {displayCols_[displayCol]};
+    opt.value_counts = true;
+    std::vector<ColumnSummary> res;
+    if (!summarize_columns(*src_, opt, &res).empty() || res.empty()) return false;
+    *out = std::move(res[0]);
+    return true;
 }
 
 bool ArrowTableModel::stepSlice(int delta) {

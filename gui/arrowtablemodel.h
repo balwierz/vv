@@ -93,9 +93,10 @@ public:
     void        clearSearch();
     QModelIndex findNext(const QModelIndex& from, bool forward) const;
 
-    // Per-column statistics (count/nulls/min/max/mean/distinct) for the
-    // stats panel. displayCol maps to the underlying source field.
-    ColStats columnStats(int displayCol) const;
+    // Summary of one column (summarize_columns, with value counts) for the
+    // stats panel; valid = false while a worker owns the source.
+    // displayCol maps to the underlying source field.
+    bool columnStats(int displayCol, ColumnSummary* out) const;
 
     // Step the NPZ-style 3-D+ slice axis. Returns true if the source rebuilt.
     bool    stepSlice(int delta);

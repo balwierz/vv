@@ -852,23 +852,24 @@ private:
         auto* v = activeView();
         if (!m || !v) return;
         int col = v->currentIndex().isValid() ? v->currentIndex().column() : 0;
-        ColStats s = m->columnStats(col);
-        if (!s.valid) return;
+        ColumnSummary s;
+        if (!m->columnStats(col, &s)) return;
         QString t = tr("Column: %1\nType: %2\nCount: %3   Nulls: %4\n")
             .arg(QString::fromStdString(s.name), QString::fromStdString(s.type))
             .arg((qlonglong)s.count).arg((qlonglong)s.nulls);
-        if (s.is_numeric && s.count > 0)
-            t += tr("Min: %1   Max: %2   Mean: %3\n")
-                     .arg(s.min).arg(s.max).arg(s.mean, 0, 'g', 6);
+        if (s.numeric && s.count > 0)
+            t += tr("Min: %1   Max: %2   Mean: %3   Sum: %4\n")
+                     .arg(s.min).arg(s.max).arg(s.mean, 0, 'g', 6).arg(s.sum, 0, 'g', 15);
         else if (s.count > 0)
             t += tr("Min: %1   Max: %2\n")
                      .arg(QString::fromStdString(s.s_min),
                           QString::fromStdString(s.s_max));
-        if (s.distinct_overflow)
+        if (s.distinct < 0)
             t += tr("Distinct: > 16\n");
-        else if (!s.distinct.empty()) {
+        else if (s.distinct > 0) {
             QStringList ds;
-            for (const auto& d : s.distinct) ds << QString::fromStdString(d);
+            for (const auto& v : s.values)
+                if (!v.null) ds << QString::fromStdString(v.value);
             t += tr("Distinct (%1): %2\n").arg(ds.size()).arg(ds.join(", "));
         }
         QMessageBox::information(this, tr("Column statistics — %1")
@@ -2035,17 +2036,15 @@ int main(int argc, char** argv) {
         }
         // Optional stats check: VVG_STATS=<displayColIndex>.
         if (const char* sc = std::getenv("VVG_STATS"); sc && *sc) {
-            ColStats s = m.columnStats(std::atoi(sc));
-            if (s.valid) {
+            ColumnSummary s;
+            if (m.columnStats(std::atoi(sc), &s)) {
                 std::printf("stats[%s] %s count=%lld nulls=%lld", sc,
                             s.type.c_str(), (long long)s.count, (long long)s.nulls);
-                if (s.is_numeric && s.count > 0)
-                    std::printf(" min=%g max=%g mean=%g", s.min, s.max, s.mean);
+                if (s.numeric && s.count > 0)
+                    std::printf(" min=%g max=%g mean=%g sum=%g", s.min, s.max, s.mean, s.sum);
                 else if (s.count > 0)
                     std::printf(" smin=%s smax=%s", s.s_min.c_str(), s.s_max.c_str());
-                std::printf(" distinct=%s\n",
-                    s.distinct_overflow ? ">16"
-                                        : std::to_string(s.distinct.size()).c_str());
+                std::printf(" distinct=%lld\n", (long long)s.distinct);
             }
         }
         return 0;

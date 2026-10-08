@@ -731,7 +731,7 @@ first N). Numeric columns get min / max / mean, the standard deviation and
 percentiles; string columns get the distinct count (capped at 16). Dates and
 timestamps show their min / max / mean / percentiles as dates. Respects
 `--select` and `--filter`; `--json` / `--ndjson` give the same numbers
-machine-readable (`std`, `percentiles: {"25%": …}`).
+machine-readable (`sum`, `std`, `percentiles: {"25%": …}`).
 
 * **Std** divides by n − 1, as R's `sd()` and pandas' `std()`.
 * **Percentiles** interpolate linearly between the two nearest values (R's

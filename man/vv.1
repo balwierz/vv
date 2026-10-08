@@ -575,7 +575,7 @@ in JSON). Currently scans the data; doesn't yet read
 Parquet's per-row-group statistics. Add \fB\-\-json\fR (array) or
 \fB\-\-ndjson\fR (one object per line) for machine-readable stats
 (integers exact, floats round-trippable, strings JSON-escaped;
-numeric columns omit \fBdistinct\fR and add \fBstd\fR and
+numeric columns omit \fBdistinct\fR and add \fBsum\fR, \fBstd\fR and
 \fBpercentiles\fR, all-null columns report \fBnull\fR min/max/mean).
 .TP
 .BI \-\-percentiles " list"

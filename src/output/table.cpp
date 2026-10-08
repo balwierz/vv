@@ -616,7 +616,7 @@ std::string render_multitab_table(
 }
 
 // Machine-readable counterpart of print_schema_block. The only structured
-// shape vv had was `--describe --json`, which runs compute_col_stats over
+// shape vv had was `--describe --json`, which summarises
 // every row — on a BAM that is the whole file, so automation reached for the
 // most expensive mode just to learn the column names.
 //

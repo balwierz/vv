@@ -385,7 +385,7 @@ set(VV_CORE_SOURCES
     src/core/common.cpp   src/core/compress.cpp src/core/derived.cpp
     src/core/filter.cpp
     src/core/io.cpp       src/core/modes.cpp    src/core/open.cpp
-    src/core/region.cpp   src/core/source.cpp
+    src/core/region.cpp   src/core/source.cpp   src/core/summary.cpp
     src/formats/arrow.cpp     src/formats/cooler.cpp    src/formats/delimited.cpp
     src/formats/duckdb.cpp
     src/formats/genbank.cpp   src/formats/hdf5.cpp

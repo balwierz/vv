@@ -8,7 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 - `--describe` reports the standard deviation and the 25th / 50th / 75th
-  percentiles of numeric columns (`std` and `percentiles` in `--json`);
+  percentiles of numeric columns (`std` and `percentiles` in `--json`, with
+  the column's `sum`);
   `--percentiles 5,50,95` picks others. Percentiles are exact up to 16 M
   values and estimated from a uniform sample beyond, marked `~`.
 - `--value-counts <cols>` (the new name of `--unique`, which stays as an
