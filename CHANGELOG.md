@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.28.1] - 2026-10-08
+
 ### Changed
 - vvg: clicking a column header sorts by it and puts the cursor in that
   column, so the *Column* tab summarises the column clicked. After a sort,
