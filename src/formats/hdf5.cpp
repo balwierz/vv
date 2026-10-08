@@ -1080,11 +1080,87 @@ public:
     }
 };
 
+std::recursive_mutex& hdf5_mutex() {
+    static std::recursive_mutex m;
+    return m;
+}
+
+namespace {
+// Forwards every TabularSource call to the wrapped HDF5-backed source with
+// hdf5_mutex() held; sources it hands out (siblings, the full matrix) are
+// wrapped too. Destroying it closes the inner source's handles under the lock.
+class H5LockedSource final : public TabularSource {
+    std::unique_ptr<TabularSource> in_;
+    const bool workbook_;
+    using Lock = std::lock_guard<std::recursive_mutex>;
+
+public:
+    explicit H5LockedSource(std::unique_ptr<TabularSource> in)
+        : in_(std::move(in)),
+          workbook_(dynamic_cast<const WorkbookSource*>(in_.get()) != nullptr) {}
+    ~H5LockedSource() override { Lock l(hdf5_mutex()); in_.reset(); }
+    bool workbook() const { return workbook_; }
+
+    std::shared_ptr<arrow::Schema> schema() const override { Lock l(hdf5_mutex()); return in_->schema(); }
+    int64_t total_rows() const override { Lock l(hdf5_mutex()); return in_->total_rows(); }
+    int num_chunks() const override { Lock l(hdf5_mutex()); return in_->num_chunks(); }
+    ChunkMeta chunk_meta(int i) const override { Lock l(hdf5_mutex()); return in_->chunk_meta(i); }
+    arrow::Status read_chunk(int i, const std::vector<int>& cols,
+                             std::shared_ptr<arrow::Table>* out) override {
+        Lock l(hdf5_mutex()); return in_->read_chunk(i, cols, out);
+    }
+    arrow::Status read_first(int64_t rows, const std::vector<int>& cols,
+                             std::shared_ptr<arrow::Table>* out) override {
+        Lock l(hdf5_mutex()); return in_->read_first(rows, cols, out);
+    }
+    void ensure(int i) override { Lock l(hdf5_mutex()); in_->ensure(i); }
+    void set_retain_all(bool r) override { Lock l(hdf5_mutex()); in_->set_retain_all(r); }
+    bool evicted_any() const override { Lock l(hdf5_mutex()); return in_->evicted_any(); }
+    bool region_applied() const override { Lock l(hdf5_mutex()); return in_->region_applied(); }
+    arrow::Status read_status() const override { Lock l(hdf5_mutex()); return in_->read_status(); }
+    bool is_text() const override { Lock l(hdf5_mutex()); return in_->is_text(); }
+    bool change_slice(int delta, bool absolute, int64_t target) override {
+        Lock l(hdf5_mutex()); return in_->change_slice(delta, absolute, target);
+    }
+    const std::string& path() const override { Lock l(hdf5_mutex()); return in_->path(); }
+    std::string tab_label() const override { Lock l(hdf5_mutex()); return in_->tab_label(); }
+    std::string footer() const override { Lock l(hdf5_mutex()); return in_->footer(); }
+    std::string created_by() const override { Lock l(hdf5_mutex()); return in_->created_by(); }
+    std::vector<std::string> preamble_above() const override { Lock l(hdf5_mutex()); return in_->preamble_above(); }
+    std::string top_banner() const override { Lock l(hdf5_mutex()); return in_->top_banner(); }
+    std::vector<std::string> preamble_below() const override { Lock l(hdf5_mutex()); return in_->preamble_below(); }
+    std::string format_cell(int col, std::string val) const override {
+        Lock l(hdf5_mutex()); return in_->format_cell(col, std::move(val));
+    }
+    int min_col_width(int col) const override { Lock l(hdf5_mutex()); return in_->min_col_width(col); }
+    bool show_cells_in_full() const override { Lock l(hdf5_mutex()); return in_->show_cells_in_full(); }
+    std::vector<std::string> hidden_for_display() const override { Lock l(hdf5_mutex()); return in_->hidden_for_display(); }
+    PreviewLimit preview_limit() const override { Lock l(hdf5_mutex()); return in_->preview_limit(); }
+    std::unique_ptr<TabularSource> full_matrix() const override {
+        Lock l(hdf5_mutex());
+        auto m = in_->full_matrix();
+        return m ? lock_hdf5_source(std::move(m)) : nullptr;
+    }
+    std::vector<std::unique_ptr<TabularSource>> expand_tabs() const override {
+        Lock l(hdf5_mutex());
+        auto tabs = in_->expand_tabs();
+        for (auto& t : tabs) t = lock_hdf5_source(std::move(t));
+        return tabs;
+    }
+};
+}  // namespace
+
+std::unique_ptr<TabularSource> lock_hdf5_source(std::unique_ptr<TabularSource> src) {
+    if (!src || dynamic_cast<const H5LockedSource*>(src.get())) return src;
+    return std::make_unique<H5LockedSource>(std::move(src));
+}
+
 std::string open_hdf5_source(const std::string& path, std::unique_ptr<TabularSource>* out,
                              int64_t df_row_cap, bool matrix_long) {
+    std::lock_guard<std::recursive_mutex> l(hdf5_mutex());
     std::unique_ptr<Hdf5Source> s;
     std::string e = Hdf5Source::open_first(path, &s, df_row_cap, matrix_long);
-    if (e.empty()) *out = std::move(s);
+    if (e.empty()) *out = lock_hdf5_source(std::move(s));
     return e;
 }
 
@@ -3619,3 +3695,10 @@ std::string open_store_source(StorePtr store, const std::string& path,
 }
 
 }  // namespace h5v
+
+std::vector<std::unique_ptr<TabularSource>> workbook_siblings(const TabularSource& src) {
+    if (auto* wb = dynamic_cast<const WorkbookSource*>(&src)) return wb->open_sibling_sheets();
+    if (auto* l = dynamic_cast<const h5v::H5LockedSource*>(&src); l && l->workbook())
+        return l->expand_tabs();
+    return {};
+}

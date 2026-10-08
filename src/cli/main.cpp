@@ -674,10 +674,8 @@ int main(int argc, char** argv) {
                 tab_srcs.push_back(std::move(s));
             // Spreadsheet (.xlsx today, future .ods): one tab per sheet,
             // sharing the underlying workbook handle.
-            if (auto* wb = dynamic_cast<WorkbookSource*>(tab_srcs.back().get())) {
-                for (auto& s : wb->open_sibling_sheets())
-                    tab_srcs.push_back(std::move(s));
-            }
+            for (auto& s : workbook_siblings(*tab_srcs.back()))
+                tab_srcs.push_back(std::move(s));
             for (size_t i = 1; i < cfg.paths.size(); ++i) {
                 std::string why = preflight_path(cfg.paths[i]);
                 if (!why.empty()) { report(cfg.paths[i], why); return 1; }
@@ -693,10 +691,8 @@ int main(int argc, char** argv) {
                 tab_srcs.push_back(std::move(s));
                 for (auto& es : sqlite_sibling_tables(tab_srcs.back().get()))
                     tab_srcs.push_back(std::move(es));
-                if (auto* wb = dynamic_cast<WorkbookSource*>(tab_srcs.back().get())) {
-                    for (auto& es : wb->open_sibling_sheets())
-                        tab_srcs.push_back(std::move(es));
-                }
+                for (auto& es : workbook_siblings(*tab_srcs.back()))
+                    tab_srcs.push_back(std::move(es));
             }
             // The TUI takes ownership of the sources while it runs. If
             // tui.run() fails (e.g. unsupported terminal), reclaim the

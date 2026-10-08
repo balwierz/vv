@@ -3818,6 +3818,21 @@ if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
     else
         echo "  skip  h5_matrix_export_loom_10x (needs: python3 h5py numpy scipy)"
     fi
+    # libhdf5 is not thread-safe as distributions build it: vvg reads a second
+    # copy of a tab on a worker (export, the Column tab) while the table reads
+    # the first. Every HDF5-backed source holds one lock around its calls;
+    # without it this check crashes (H5FL_fac_free assertion, SIGSEGV).
+    H5TC="$(dirname "$VV")/h5_threads_check"
+    if [ -x "$H5TC" ]; then
+        H5TF=()
+        for f in tiny.h5ad tiny.csc.h5ad tiny.h5mu tiny.loom tiny.10x.h5 tiny.h5 \
+                 tiny.cool tiny.mcool tiny.scool tiny.fast5; do
+            [ -f "$DATA/$f" ] && H5TF+=("$DATA/$f")
+        done
+        assert_exit_zero "hdf5_reads_from_threads" "$H5TC" "${H5TF[@]}"
+    else
+        echo "  skip  hdf5_reads_from_threads (no $H5TC)"
+    fi
     # Categorical obs columns decode to their string labels, not integer codes.
     # The dictionary cap (VV_CATEGORY_DICT_CAP, default 1,000,000 — raised from
     # 65536, which wrongly coded real high-cardinality columns like CRISPR

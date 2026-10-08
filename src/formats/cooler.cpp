@@ -851,6 +851,7 @@ private:
 }  // namespace
 
 bool is_cooler_file(const std::string& path) {
+    std::lock_guard<std::recursive_mutex> l(h5v::hdf5_mutex());
     H5File f;
     {
         H5E_auto2_t fn; void* data;
@@ -864,7 +865,19 @@ bool is_cooler_file(const std::string& path) {
     return fmt == "HDF5::Cooler" || fmt == "HDF5::MCOOL" || fmt == "HDF5::SCOOL";
 }
 
+static std::string open_cooler_unlocked(const std::string& path, const Config& cfg,
+                                        std::unique_ptr<TabularSource>* out);
+
 std::string open_cooler_source(const std::string& path, const Config& cfg, std::unique_ptr<TabularSource>* out) {
+    std::lock_guard<std::recursive_mutex> l(h5v::hdf5_mutex());
+    std::unique_ptr<TabularSource> src;
+    std::string err = open_cooler_unlocked(path, cfg, &src);
+    if (err.empty()) *out = h5v::lock_hdf5_source(std::move(src));
+    return err;
+}
+
+static std::string open_cooler_unlocked(const std::string& path, const Config& cfg,
+                                        std::unique_ptr<TabularSource>* out) {
     H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
     H5File f = open_file(path);
     if (!f) return "'" + path + "': cannot open as HDF5";

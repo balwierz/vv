@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the numeric ones in the status bar.
 
 ### Fixed
+- vvg could crash when an export read an HDF5 / AnnData / Cooler file on its
+  worker thread while the table read HDF5 too: libhdf5 as distributions
+  build it is not thread-safe. Calls into it are now serialised.
 - `--unique` counted a literal `(null)` string together with nulls, and
   summarised a stream that failed part-way as if it were complete.
 

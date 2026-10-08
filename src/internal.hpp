@@ -1105,7 +1105,17 @@ std::string read_string_attr(hid_t obj, const char* name);
 std::string h5_read_failure(hid_t dset);
 // Register vv's decoders for HDF5 filters libhdf5 lacks (LZF); once per process.
 void register_hdf5_filters();
+// libhdf5 is usually built without its thread-safe option: no two threads may
+// be inside it at once, even on different files. Every HDF5-backed source is
+// returned wrapped by lock_hdf5_source, which holds hdf5_mutex() around each
+// call (and its destruction); the open functions hold it while they run.
+std::recursive_mutex& hdf5_mutex();
+std::unique_ptr<TabularSource> lock_hdf5_source(std::unique_ptr<TabularSource> src);
 }  // namespace h5v
+
+// The sibling tabs the interactive viewer opens beside a workbook-like source
+// (xlsx, ods, HDF5 / AnnData): its sheets; empty for any other source.
+std::vector<std::unique_ptr<TabularSource>> workbook_siblings(const TabularSource& src);
 
 // GenBank / EMBL flat files (src/formats/genbank.cpp): features, records, sequences.
 std::string open_genbank_source(const std::string& path, const Config& cfg,
