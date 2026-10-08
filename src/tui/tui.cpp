@@ -2110,53 +2110,18 @@ class TableTUI {
             freq_note_ = "an INFO key is filtered with --expand INFO";
             return false;
         }
-        auto field = src_->schema()->field(virt_src_col_[freq_col_]);
-        const std::string ident = filter_quote_name(field->name());
-        std::string atom;
-        // A dictionary column compares by its decoded values.
-        const arrow::DataType* vt = field->type().get();
-        if (vt->id() == arrow::Type::DICTIONARY)
-            vt = static_cast<const arrow::DictionaryType&>(*vt).value_type().get();
-        const auto id = vt->id();
-        const bool number = arrow::is_integer(id) || arrow::is_floating(id) ||
-                            arrow::is_decimal(id) || id == arrow::Type::BOOL;
-        const bool text = id == arrow::Type::STRING || id == arrow::Type::LARGE_STRING ||
-                          is_date_or_timestamp(*vt);
-        if (e.is_null) {
-            atom = ident + " is null";
-        } else if (!number && !text) {
-            // Lists, structs, maps, binary and extension columns: == does
-            // not compare their values.
-            freq_note_ = "a " + type_label(*field->type()) + " column cannot be filtered with ==";
+        std::string expr, why;
+        if (!narrow_filter_to_value(filter_active_ ? filter_expr_str_ : std::string(),
+                                    *src_->schema(), virt_src_col_[freq_col_],
+                                    ValueCount{e.value, e.count, e.is_null}, &expr, &why)) {
+            freq_note_ = why == "could not combine with the current filter"
+                       ? why + "; edit it with &" : why;
             return false;
-        } else if (number) {
-            atom = ident + " == " + e.value;
-        } else if (e.value.find('"') == std::string::npos) {
-            atom = ident + " == \"" + e.value + "\"";
-        } else if (e.value.find('\'') == std::string::npos) {
-            atom = ident + " == '" + e.value + "'";
-        } else {
-            freq_note_ = "this value holds both quote characters; no filter can name it";
-            return false;
-        }
-        std::string expr = atom;
-        if (filter_active_) {
-            expr.clear();
-            for (const auto& branch : filter_split_or(filter_expr_str_))
-                expr += (expr.empty() ? "" : " OR ") + branch + " AND " + atom;
         }
         FilterExpr fx;
         std::string err;
         if (!parse_filter_expr(expr, *src_->schema(), &fx, &err)) {
             freq_note_ = err;
-            return false;
-        }
-        // Each OR branch must have gained exactly the one new condition.
-        bool shape_ok = !filter_active_ || fx.groups.size() == filter_fx_.groups.size();
-        for (size_t g = 0; shape_ok && filter_active_ && g < fx.groups.size(); ++g)
-            shape_ok = fx.groups[g].size() == filter_fx_.groups[g].size() + 1;
-        if (!shape_ok) {
-            freq_note_ = "could not combine with the current filter; edit it with &";
             return false;
         }
         filter_fx_       = std::move(fx);

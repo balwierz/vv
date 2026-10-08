@@ -115,6 +115,7 @@ MAXL=11 cli duckdb  118 -n 6 lab.duckdb          # needs a vv linked with libduc
 
 # ── GUI ──────────────────────────────────────────────────────────────────────
 gui anndata    "VVG_DETAIL=3,0"  --tab obs pbmc.h5ad
+gui column-stats "VVG_COLSTATS=1" --tab obs pbmc.h5ad
 gui vcf        "VVG_DETAIL=2,1"  cohort.vcf.gz
 gui parquet    "VVG_DETAIL=0,0"  --filter "signal > 10" --sort signal:desc atac_peaks.parquet
 gui bam        "VVG_DETAIL=0,0"  reads.bam

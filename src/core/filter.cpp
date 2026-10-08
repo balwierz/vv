@@ -1104,3 +1104,56 @@ std::string apply_region_modifiers(Config& cfg) {
     }
     return "";
 }
+
+bool narrow_filter_to_value(const std::string& current, const arrow::Schema& schema,
+                            int col, const ValueCount& v, std::string* out,
+                            std::string* why) {
+    if (col < 0 || col >= schema.num_fields()) { *why = "no such column"; return false; }
+    auto field = schema.field(col);
+    const std::string ident = filter_quote_name(field->name());
+    // A dictionary column compares by its decoded values.
+    const arrow::DataType* vt = field->type().get();
+    if (vt->id() == arrow::Type::DICTIONARY)
+        vt = static_cast<const arrow::DictionaryType&>(*vt).value_type().get();
+    const auto id = vt->id();
+    const bool number = arrow::is_integer(id) || arrow::is_floating(id) ||
+                        arrow::is_decimal(id) || id == arrow::Type::BOOL;
+    const bool text = id == arrow::Type::STRING || id == arrow::Type::LARGE_STRING ||
+                      is_date_or_timestamp(*vt);
+    std::string atom;
+    if (v.null) {
+        atom = ident + " is null";
+    } else if (!number && !text) {
+        // Lists, structs, maps, binary and extension columns: == does not
+        // compare their values.
+        *why = "a " + type_label(*field->type()) + " column cannot be filtered with ==";
+        return false;
+    } else if (number) {
+        atom = ident + " == " + v.value;
+    } else if (v.value.find('"') == std::string::npos) {
+        atom = ident + " == \"" + v.value + "\"";
+    } else if (v.value.find('\'') == std::string::npos) {
+        atom = ident + " == '" + v.value + "'";
+    } else {
+        *why = "this value holds both quote characters; no filter can name it";
+        return false;
+    }
+    std::string expr = atom;
+    FilterExpr before;
+    const bool had = !current.empty();
+    if (had) {
+        if (!parse_filter_expr(current, schema, &before, why)) return false;
+        expr.clear();
+        for (const auto& branch : filter_split_or(current))
+            expr += (expr.empty() ? "" : " OR ") + branch + " AND " + atom;
+    }
+    FilterExpr fx;
+    if (!parse_filter_expr(expr, schema, &fx, why)) return false;
+    // Each OR branch must have gained exactly the one new condition.
+    bool shape_ok = !had || fx.groups.size() == before.groups.size();
+    for (size_t g = 0; shape_ok && had && g < fx.groups.size(); ++g)
+        shape_ok = fx.groups[g].size() == before.groups[g].size() + 1;
+    if (!shape_ok) { *why = "could not combine with the current filter"; return false; }
+    *out = expr;
+    return true;
+}

@@ -212,3 +212,16 @@ std::string summarize_columns(TabularSource& src, const SummaryOptions& opt,
     }
     return "";
 }
+
+std::string format_temporal_value(double v, const std::shared_ptr<arrow::DataType>& t) {
+    std::shared_ptr<arrow::Scalar> sc;
+    const int64_t n = (int64_t)std::llround(v);
+    switch (t->id()) {
+        case arrow::Type::DATE32:    sc = std::make_shared<arrow::Date32Scalar>((int32_t)n); break;
+        case arrow::Type::DATE64:    sc = std::make_shared<arrow::Date64Scalar>(n); break;
+        case arrow::Type::TIMESTAMP: sc = std::make_shared<arrow::TimestampScalar>(n, t); break;
+        default: return "";
+    }
+    auto arr = arrow::MakeArrayFromScalar(*sc, 1);
+    return arr.ok() ? cell_to_string(**arr, 0) : "";
+}

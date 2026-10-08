@@ -45,6 +45,7 @@ QString vvCommandLine(const VvCommandSpec& s) {
                                       : s.sortColumn.contains(QLatin1Char(':'))
                                             ? QStringLiteral(":asc") : QString()));
     if (!s.select.isEmpty())     opt("--select", s.select.join(QLatin1Char(',')));
+    if (s.describe)              w << QStringLiteral("--describe");
     w << shellQuote(s.path);
     return w.join(QLatin1Char(' '));
 }
@@ -72,5 +73,6 @@ Config vvCommandConfig(const VvCommandSpec& s) {
     cfg.sort_col    = s.sortColumn.toStdString();
     cfg.sort_desc   = s.sortDesc;
     cfg.select_cols = s.select.join(QLatin1Char(',')).toStdString();
+    cfg.describe    = s.describe;
     return cfg;
 }

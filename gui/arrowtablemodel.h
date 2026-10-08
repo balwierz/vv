@@ -99,10 +99,12 @@ public:
     void        clearSearch();
     QModelIndex findNext(const QModelIndex& from, bool forward) const;
 
-    // Summary of one column (summarize_columns, with value counts) for the
-    // stats panel; valid = false while a worker owns the source.
-    // displayCol maps to the underlying source field.
-    bool columnStats(int displayCol, ColumnSummary* out) const;
+    // Summaries of display columns over the rows the filter keeps, read from
+    // this model's own source on the calling thread (summarize_columns, with
+    // value counts) — for a tab that cannot be opened again elsewhere. False
+    // with *err while a worker owns the source or on a read error.
+    bool summarize(const std::vector<int>& displayCols, std::vector<ColumnSummary>* out,
+                   QString* err) const;
 
     // Step the NPZ-style 3-D+ slice axis. Returns true if the source rebuilt.
     bool    stepSlice(int delta);

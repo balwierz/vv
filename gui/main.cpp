@@ -74,6 +74,7 @@
 #include "arrowtablemodel.h"
 #include "jsontreemodel.h"
 #include "vvcommand.h"
+#include "columnpanel.h"
 #include "vv/vvcore.hpp"
 
 // Open every path through libvvcore (using a shared base Config so a later
@@ -136,6 +137,7 @@ public:
                 [this](int i){ closeTab(i); });
         connect(tabs_, &QTabWidget::currentChanged, this, [this](int) {
             if (selTimer_) selTimer_->start();
+            if (colTimer_) colTimer_->start();
             refreshStatus();
             refreshColumnsMenu();
             if (activeJsonTab())
@@ -283,6 +285,30 @@ public:
             .arg(vals.join(QLatin1Char(',')))
             .arg(before && before == first ? 1 : 0);
     }
+    // Window self-test: put the cursor in column `col`, show its Column-tab
+    // summary (scanning on the worker, or Compute for a tab that cannot be
+    // re-read) and return what the panel shows.
+    QString columnStatsForTest(int col) {
+        auto* v = activeView();
+        if (!v) return QStringLiteral("no view");
+        colDock_->show();
+        colDock_->raise();
+        v->selectionModel()->setCurrentIndex(v->model()->index(0, col),
+                                             QItemSelectionModel::ClearAndSelect);
+        refreshColumnStats(true);
+        QElapsedTimer t;
+        t.start();
+        while (statsProg_ && t.elapsed() < 60000) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            QThread::msleep(5);
+        }
+        auto* m = activeModel();
+        if (m && !tabOrigin_.value(m).reopen && !colPanel_->summary()) {
+            computeColumnStatsHere();
+            return QStringLiteral("(here) ") + colPanel_->describeForTest();
+        }
+        return colPanel_->describeForTest();
+    }
     // Window self-test: select the block (r0, c0)-(r1, c1) and return the
     // status bar's selection summary.
     QString selectionSummaryForTest(int r0, int c0, int r1, int c1) {
@@ -401,7 +427,9 @@ private:
     void addSourceTab(std::unique_ptr<TabularSource> src, const QString& origin,
                       bool primary, const QString& expand = QString()) {
         auto* model = new ArrowTableModel(std::move(src), this);
-        tabOrigin_[model] = TabOrigin{origin, primary, expand};
+        const QFileInfo ofi(origin);
+        tabOrigin_[model] = TabOrigin{origin, primary, expand,
+                                      origin != QLatin1String("-") && (ofi.isFile() || ofi.isDir())};
         auto* view  = new QTableView(tabs_);
         view->setModel(model);
         view->setAlternatingRowColors(true);
@@ -433,8 +461,9 @@ private:
                 });
 
         connect(view->selectionModel(), &QItemSelectionModel::currentChanged,
-                this, [this](const QModelIndex& cur, const QModelIndex&) {
+                this, [this](const QModelIndex& cur, const QModelIndex& prev) {
                     updateDetail(cur);
+                    if (colTimer_ && cur.column() != prev.column()) colTimer_->start();
                 });
         connect(view->selectionModel(), &QItemSelectionModel::selectionChanged,
                 selTimer_, [this]{ selTimer_->start(); });
@@ -467,7 +496,8 @@ private:
             views_.erase(views_.begin() + i);
             models_.erase(models_.begin() + i);
         }
-        if (m) { sortOrder_.remove(m); tabOrigin_.remove(m); filterText_.remove(m); }
+        if (m) { sortOrder_.remove(m); tabOrigin_.remove(m); filterText_.remove(m); statsCache_.remove(m); }
+        if (m && m == statsModel_) cancelColumnStats();
         jsonTabs_.erase(w);   // a JSON tree tab: its model, document and temporary copy
         if (m == pendingFindModel_) pendingFindModel_ = nullptr;
         if (m == computingModel_) {   // its worker is cancelled+joined in ~ArrowTableModel
@@ -538,6 +568,7 @@ private:
         edit->addAction(findNext);
 
         auto* view = menuBar()->addMenu(tr("&View"));
+        viewMenu_ = view;
         QAction* go = new QAction(tr("&Go to Row…"), this);
         go->setShortcut(QKeySequence(QStringLiteral("Ctrl+G")));
         connect(go, &QAction::triggered, this, [this]{ gotoRow(); });
@@ -834,14 +865,302 @@ private:
     }
 
     void buildDetailDock() {
-        auto* dock = new QDockWidget(tr("Row detail"), this);
-        detail_ = new QTableWidget(0, 2, dock);
+        colTimer_ = new QTimer(this);
+        colTimer_->setSingleShot(true);
+        colTimer_->setInterval(150);
+        connect(colTimer_, &QTimer::timeout, this, [this] { refreshColumnStats(); });
+        statsPoll_ = new QTimer(this);
+        statsPoll_->setInterval(250);
+        connect(statsPoll_, &QTimer::timeout, this, [this] { showColumnStatsProgress(); });
+        statsWatcher_ = new QFutureWatcher<StatsResult>(this);
+        connect(statsWatcher_, &QFutureWatcher<StatsResult>::finished, this,
+                [this] { onColumnStatsDone(); });
+        rowDock_ = new QDockWidget(tr("Row"), this);
+        rowDock_->setObjectName(QStringLiteral("rowDock"));
+        detail_ = new QTableWidget(0, 2, rowDock_);
         detail_->setHorizontalHeaderLabels({tr("Column"), tr("Value")});
         detail_->horizontalHeader()->setStretchLastSection(true);
         detail_->verticalHeader()->setVisible(false);
         detail_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-        dock->setWidget(detail_);
-        addDockWidget(Qt::RightDockWidgetArea, dock);
+        rowDock_->setWidget(detail_);
+        addDockWidget(Qt::RightDockWidgetArea, rowDock_);
+
+        // The Column tab: the cursor column's summary, computed on demand.
+        colDock_ = new QDockWidget(tr("Column"), this);
+        colDock_->setObjectName(QStringLiteral("columnDock"));
+        colPanel_ = new ColumnPanel(colDock_);
+        colDock_->setWidget(colPanel_);
+        addDockWidget(Qt::RightDockWidgetArea, colDock_);
+        tabifyDockWidget(rowDock_, colDock_);
+        rowDock_->raise();
+        connect(colDock_, &QDockWidget::visibilityChanged, this,
+                [this](bool on) { if (on) colTimer_->start(); else cancelColumnStats(); });
+        connect(colPanel_, &ColumnPanel::cancelRequested, this, [this] {
+            cancelColumnStats();
+            colPanel_->showNote(tr("Column"), tr("Canceled."));
+        });
+        connect(colPanel_, &ColumnPanel::computeRequested, this, [this] { computeColumnStatsHere(); });
+        connect(colPanel_, &ColumnPanel::filterToValueRequested, this,
+                [this](int i) { filterToValue(i); });
+        connect(colPanel_, &ColumnPanel::copyCommandRequested, this, [this] { copyColumnCommand(); });
+        if (viewMenu_) {
+            viewMenu_->addSeparator();
+            viewMenu_->addAction(rowDock_->toggleViewAction());
+            viewMenu_->addAction(colDock_->toggleViewAction());
+        }
+    }
+
+    // ── Column tab ──────────────────────────────────────────────────────────
+    // Summaries come from summarize_columns over a second copy of the tab,
+    // opened on a worker (open_view_source, as export does), so the table
+    // stays usable while a large file is scanned. One scan covers every
+    // column (up to kStatsAllColumns): on a row-oriented file one column
+    // costs the whole read anyway, and moving the cursor is then instant.
+    // Results are cached per tab and filter.
+    struct StatsResult {
+        std::string                error;
+        std::vector<int>           cols;        // source columns, parallel to sums
+        std::vector<ColumnSummary> sums;
+        int64_t                    totalRows = -1;   // of the copy read
+        PreviewLimit               limit;            // of the copy read
+    };
+    struct StatsCache {
+        QString                    filter;
+        std::map<int, ColumnSummary> bySrcCol;
+        int64_t                    totalRows = -1;
+        PreviewLimit               limit;
+    };
+    static constexpr int kStatsAllColumns = 256;
+
+    int currentColumn(QTableView* v) const {
+        const QModelIndex cur = v->selectionModel() ? v->selectionModel()->currentIndex()
+                                                    : QModelIndex();
+        return cur.isValid() ? cur.column() : 0;
+    }
+    QString activeFilterText(ArrowTableModel* m) const {
+        return m->hasFilter() ? filterText_.value(m) : QString();
+    }
+    void cancelColumnStats() {
+        if (statsProg_) statsProg_->cancel = true;
+        statsProg_.reset();
+        statsModel_ = nullptr;
+        statsPoll_->stop();
+    }
+
+    // Show the cursor column's summary: from the cache, from the scan in
+    // progress, or by starting one. `force` runs even with the dock hidden
+    // (the window self-test).
+    void refreshColumnStats(bool force = false) {
+        if (!colPanel_ || (!force && !colPanel_->isVisible())) return;
+        auto* m = activeModel();
+        auto* v = activeView();
+        if (!m || !v) {
+            colPanel_->showNote(tr("Column"), activeJsonTab()
+                ? tr("A JSON tree has no columns. Right-click a list of records and open it as a table to summarise it.")
+                : QString());
+            return;
+        }
+        if (m->displayColumnCount() == 0) { colPanel_->showNote(tr("Column"), tr("No columns.")); return; }
+        const int col = std::min(currentColumn(v), m->displayColumnCount() - 1);
+        const int sc = m->sourceColumn(col);
+        const QString title = m->columnName(col);
+        const QString filter = activeFilterText(m);
+        if (m->isComputing()) {
+            colPanel_->showNote(title, tr("Waiting for the table's filter or sort to finish…"));
+            return;
+        }
+        auto it = statsCache_.find(m);
+        if (it != statsCache_.end() && it->filter == filter) {
+            auto s = it->bySrcCol.find(sc);
+            if (s != it->bySrcCol.end()) {
+                colPanel_->showSummary(s->second, m->summableDigits(col),
+                                       m->source()->schema()->field(sc)->type(),
+                                       statsScope(m, *it, s->second));
+                return;
+            }
+        }
+        if (statsProg_ && statsModel_ == m && statsFilter_ == filter &&
+            std::find(statsCols_.begin(), statsCols_.end(), sc) != statsCols_.end()) {
+            showColumnStatsProgress();
+            return;
+        }
+        cancelColumnStats();
+        if (!tabOrigin_.value(m).reopen) {
+            colPanel_->showNote(title,
+                tr("This tab was read from a pipe or from a node of a JSON document, so it "
+                   "cannot be read again in the background. Compute summarises it here; "
+                   "the window waits until it is done."), true);
+            return;
+        }
+        startColumnStats(m, col, filter);
+    }
+
+    void startColumnStats(ArrowTableModel* m, int col, const QString& filter) {
+        VvCommandSpec spec;
+        if (!specForModel(m, viewOf(m), &spec)) return;
+        Config cfg = vvCommandConfig(spec);
+        cfg.describe = true;          // an AnnData frame is read in full
+        cfg.select_cols.clear();
+        cfg.sort_col.clear();
+        cfg.filter_expr.clear();      // applied while summarising
+        std::vector<int> cols;
+        if (m->displayColumnCount() <= kStatsAllColumns)
+            for (int c = 0; c < m->displayColumnCount(); ++c) cols.push_back(m->sourceColumn(c));
+        else
+            cols.push_back(m->sourceColumn(col));
+        statsFutures_.erase(std::remove_if(statsFutures_.begin(), statsFutures_.end(),
+                                           [](const QFuture<StatsResult>& f) { return f.isFinished(); }),
+                            statsFutures_.end());
+        auto prog = std::make_shared<ExportProgress>();
+        statsProg_   = prog;
+        statsModel_  = m;
+        statsFilter_ = filter;
+        statsCols_   = cols;
+        auto schema = m->source()->schema();
+        const std::string ftext = filter.toStdString();
+        QFuture<StatsResult> f = QtConcurrent::run([cfg, cols, schema, ftext, prog] {
+            StatsResult r;
+            r.cols = cols;
+            std::unique_ptr<TabularSource> src;
+            r.error = open_view_source(cfg, &src);
+            if (!r.error.empty()) return r;
+            if (!src->schema()->Equals(*schema)) {
+                r.error = "the file has changed since it was opened; reopen it";
+                return r;
+            }
+            FilterExpr fx;
+            if (!ftext.empty() && !parse_filter_expr(ftext, *src->schema(), &fx, &r.error))
+                return r;
+            SummaryOptions opt;
+            opt.cols         = cols;
+            opt.filter       = ftext.empty() ? nullptr : &fx;
+            opt.distinct_cap = 10000;
+            opt.value_counts = true;
+            opt.cancel       = &prog->cancel;
+            opt.rows_done    = &prog->rows;
+            r.error = summarize_columns(*src, opt, &r.sums);
+            r.totalRows = src->total_rows();
+            r.limit     = src->preview_limit();
+            return r;
+        });
+        statsFutures_.append(f);
+        statsWatcher_->setFuture(f);
+        statsPoll_->start();
+        showColumnStatsProgress();
+    }
+
+    void showColumnStatsProgress() {
+        auto* m = activeModel();
+        if (!statsProg_ || !m || statsModel_ != m) return;
+        const PreviewLimit lim = m->source()->preview_limit();
+        const qint64 total = lim.rows_capped() ? lim.full_rows : m->source()->total_rows();
+        auto* v = activeView();
+        const int col = v ? std::min(currentColumn(v), m->displayColumnCount() - 1) : 0;
+        colPanel_->showBusy(m->columnName(col),
+                            statsCols_.size() > 1 ? tr("Summarising every column… %1 rows read")
+                                                  : tr("Summarising… %1 rows read"),
+                            statsProg_->rows.load(), total);
+    }
+
+    void onColumnStatsDone() {
+        // A superseded or canceled scan: its result is dropped.
+        if (!statsProg_ || statsProg_->cancel) return;
+        StatsResult r = statsWatcher_->result();
+        ArrowTableModel* m = statsModel_;
+        const QString filter = statsFilter_;
+        statsProg_.reset();
+        statsModel_ = nullptr;
+        statsPoll_->stop();
+        statsFutures_.erase(std::remove_if(statsFutures_.begin(), statsFutures_.end(),
+                                           [](const QFuture<StatsResult>& f) { return f.isFinished(); }),
+                            statsFutures_.end());
+        if (!m || std::find(models_.begin(), models_.end(), m) == models_.end()) return;
+        if (!r.error.empty()) {
+            if (m == activeModel())
+                colPanel_->showNote(tr("Column"), tr("Cannot summarise this tab: %1")
+                                                      .arg(QString::fromStdString(r.error)));
+            return;
+        }
+        StatsCache& c = statsCache_[m];
+        if (c.filter != filter) c = StatsCache{};
+        c.filter    = filter;
+        c.totalRows = r.totalRows;
+        c.limit     = r.limit;
+        for (size_t i = 0; i < r.sums.size(); ++i) c.bySrcCol[r.cols[i]] = std::move(r.sums[i]);
+        if (m == activeModel()) refreshColumnStats(true);
+    }
+
+    // A tab that cannot be re-read (stdin, a JSON node): summarise the
+    // table's own source here, with the window waiting.
+    void computeColumnStatsHere() {
+        auto* m = activeModel();
+        if (!m || m->isComputing()) return;
+        std::vector<int> cols;
+        for (int c = 0; c < m->displayColumnCount(); ++c) cols.push_back(c);
+        std::vector<ColumnSummary> sums;
+        QString err;
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        const bool ok = m->summarize(cols, &sums, &err);
+        QApplication::restoreOverrideCursor();
+        if (!ok) { colPanel_->showNote(tr("Column"), tr("Cannot summarise this tab: %1").arg(err)); return; }
+        StatsCache& c = statsCache_[m];
+        c = StatsCache{};
+        c.filter    = activeFilterText(m);
+        c.totalRows = m->source()->total_rows();
+        c.limit     = m->source()->preview_limit();
+        for (size_t i = 0; i < sums.size(); ++i) c.bySrcCol[m->sourceColumn(cols[i])] = std::move(sums[i]);
+        refreshColumnStats(true);
+    }
+
+    QString statsScope(ArrowTableModel* m, const StatsCache& c, const ColumnSummary& s) const {
+        const qint64 rows = s.count + s.nulls;
+        QString scope = c.filter.isEmpty()
+            ? tr("All %L1 rows").arg(rows)
+            : (c.totalRows >= 0 ? tr("Filter: %1 — %L2 of %L3 rows").arg(c.filter).arg(rows).arg(c.totalRows)
+                                : tr("Filter: %1 — %L2 rows").arg(c.filter).arg(rows));
+        if (c.limit.capped())
+            scope += tr(". A preview: the first %L1 rows × %L2 columns of %L3 × %L4.")
+                         .arg(c.limit.shown_rows).arg(c.limit.shown_cols)
+                         .arg(c.limit.full_rows).arg(c.limit.full_cols);
+        else if (m->source()->preview_limit().rows_capped())
+            scope += tr(" (the table shows the first %L1).").arg(m->source()->preview_limit().shown_rows);
+        return scope;
+    }
+
+    // Double-click on a value: narrow the filter to it.
+    void filterToValue(int i) {
+        auto* m = activeModel();
+        const ColumnSummary* s = colPanel_->summary();
+        if (!m || !s || i < 0 || i >= (int)s->values.size()) return;
+        int sc = -1;
+        for (int c = 0; c < m->displayColumnCount(); ++c)
+            if (m->columnName(c).toStdString() == s->name) { sc = m->sourceColumn(c); break; }
+        std::string expr, why;
+        if (sc < 0 || !narrow_filter_to_value(activeFilterText(m).toStdString(), *m->source()->schema(),
+                                              sc, s->values[i], &expr, &why)) {
+            statusBar()->showMessage(tr("filter: %1").arg(QString::fromStdString(why)), 4000);
+            return;
+        }
+        filterEdit_->setText(QString::fromStdString(expr));
+        applyFilter();
+    }
+
+    void copyColumnCommand() {
+        auto* m = activeModel();
+        auto* v = activeView();
+        VvCommandSpec spec;
+        if (!m || !v || !specForModel(m, v, &spec)) return;
+        spec.select     = {m->columnName(std::min(currentColumn(v), m->displayColumnCount() - 1))};
+        spec.sortColumn.clear();
+        spec.describe   = true;
+        QApplication::clipboard()->setText(vvCommandLine(spec));
+        statusBar()->showMessage(tr("Copied the vv command"), 2000);
+    }
+
+    QTableView* viewOf(ArrowTableModel* m) const {
+        for (size_t i = 0; i < models_.size(); ++i)
+            if (models_[i] == m) return views_[i];
+        return nullptr;
     }
 
     void buildToolbar() {
@@ -863,33 +1182,11 @@ private:
         connect(st, &QAction::triggered, this, [this]{ showStats(); });
     }
 
+    // Σ Stats: the Column tab of the right dock.
     void showStats() {
-        auto* m = activeModel();
-        auto* v = activeView();
-        if (!m || !v) return;
-        int col = v->currentIndex().isValid() ? v->currentIndex().column() : 0;
-        ColumnSummary s;
-        if (!m->columnStats(col, &s)) return;
-        QString t = tr("Column: %1\nType: %2\nCount: %3   Nulls: %4\n")
-            .arg(QString::fromStdString(s.name), QString::fromStdString(s.type))
-            .arg((qlonglong)s.count).arg((qlonglong)s.nulls);
-        if (s.numeric && s.count > 0)
-            t += tr("Min: %1   Max: %2   Mean: %3   Sum: %4\n")
-                     .arg(s.min).arg(s.max).arg(s.mean, 0, 'g', 6).arg(s.sum, 0, 'g', 15);
-        else if (s.count > 0)
-            t += tr("Min: %1   Max: %2\n")
-                     .arg(QString::fromStdString(s.s_min),
-                          QString::fromStdString(s.s_max));
-        if (s.distinct < 0)
-            t += tr("Distinct: > 16\n");
-        else if (s.distinct > 0) {
-            QStringList ds;
-            for (const auto& v : s.values)
-                if (!v.null) ds << QString::fromStdString(v.value);
-            t += tr("Distinct (%1): %2\n").arg(ds.size()).arg(ds.join(", "));
-        }
-        QMessageBox::information(this, tr("Column statistics — %1")
-                                 .arg(QString::fromStdString(s.name)), t);
+        colDock_->show();
+        colDock_->raise();
+        colTimer_->start();
     }
 
     void buildSearchBar() {
@@ -1104,6 +1401,11 @@ private:
     }
 
     void copySelection() {
+        if (colPanel_ && colPanel_->isAncestorOf(QApplication::focusWidget())) {
+            if (colPanel_->copySelection())
+                statusBar()->showMessage(tr("Copied"), 2000);
+            return;
+        }
         auto* v = activeView();
         if (!v) return;
         auto sel = v->selectionModel()->selectedIndexes();
@@ -1164,8 +1466,9 @@ public:
     // The active tab's state as command options (file, tab, session region
     // options, filter, sort, visible columns). False when no tab is open.
     bool specForActiveTab(VvCommandSpec* out) const {
-        auto* m = activeModel();
-        auto* v = activeView();
+        return specForModel(activeModel(), activeView(), out);
+    }
+    bool specForModel(ArrowTableModel* m, QTableView* v, VvCommandSpec* out) const {
         if (!m || !v) return false;
         VvCommandSpec& s = *out;
         s = VvCommandSpec{};
@@ -1668,6 +1971,7 @@ private:
             return;
         }
         addSourceTab(std::move(src), jt->path, true);
+        if (rec.isValid() && !models_.empty()) tabOrigin_[models_.back()].reopen = false;
     }
     void showJsonContextMenu(JsonTab* jt, const QPoint& pos) {
         const QModelIndex at = jt->view->indexAt(pos);
@@ -1724,7 +2028,8 @@ private:
         for (const auto& r : sel) cells += (qint64)r.width() * r.height();
         if (cells < 2) return hide();
         if (cells > kSelectionSumMaxCells) {
-            selSum_->setText(tr("Σ: more than %L1 cells selected").arg(kSelectionSumMaxCells));
+            selSum_->setText(tr("Σ: more than %L1 cells selected — see the Column tab")
+                                 .arg(kSelectionSumMaxCells));
             selSum_->setVisible(true);
             return;
         }
@@ -1776,6 +2081,7 @@ private:
     }
     void onRecomputeFinished(ArrowTableModel* m) {
         if (m == computingModel_) computingModel_ = nullptr;
+        if (colTimer_) colTimer_->start();
         progress_->setVisible(false);
         cancelBtn_->setVisible(false);
         if (m != activeModel()) return;
@@ -1830,7 +2136,22 @@ private:
     std::vector<QTableView*>       views_;
     std::vector<ArrowTableModel*>  models_;
     QMap<ArrowTableModel*, Qt::SortOrder> sortOrder_;
-    struct TabOrigin { QString path; bool primary = true; QString expand; };
+    // reopen: the tab can be opened again from `path` (not stdin / a FIFO, not
+    // a table made from a JSON-tree node).
+    QMenu*                                viewMenu_  = nullptr;
+    QDockWidget*                          rowDock_   = nullptr;
+    QDockWidget*                          colDock_   = nullptr;
+    ColumnPanel*                          colPanel_  = nullptr;
+    QTimer*                               colTimer_  = nullptr;   // debounces cursor moves
+    QTimer*                               statsPoll_ = nullptr;   // progress of a scan
+    QFutureWatcher<StatsResult>*          statsWatcher_ = nullptr;
+    QList<QFuture<StatsResult>>           statsFutures_;          // joined on close
+    std::shared_ptr<ExportProgress>       statsProg_;             // the current scan
+    QPointer<ArrowTableModel>             statsModel_;
+    QString                               statsFilter_;
+    std::vector<int>                      statsCols_;
+    QMap<ArrowTableModel*, StatsCache>    statsCache_;
+    struct TabOrigin { QString path; bool primary = true; QString expand; bool reopen = true; };
     QMap<ArrowTableModel*, TabOrigin>     tabOrigin_;    // file + first-tab flag
     QMap<ArrowTableModel*, QString>       filterText_;   // applied --filter text
     // Export View As…: one export at a time, on a worker thread.
@@ -1849,6 +2170,8 @@ public:
             if (exportProgress_) exportProgress_->cancel = true;
             exportWatcher_->waitForFinished();
         }
+        cancelColumnStats();
+        for (auto& f : statsFutures_) f.waitForFinished();
     }
 };
 
@@ -2121,19 +2444,6 @@ int main(int argc, char** argv) {
             } else
                 std::printf("find '%s' -> no match\n", se);
         }
-        // Optional stats check: VVG_STATS=<displayColIndex>.
-        if (const char* sc = std::getenv("VVG_STATS"); sc && *sc) {
-            ColumnSummary s;
-            if (m.columnStats(std::atoi(sc), &s)) {
-                std::printf("stats[%s] %s count=%lld nulls=%lld", sc,
-                            s.type.c_str(), (long long)s.count, (long long)s.nulls);
-                if (s.numeric && s.count > 0)
-                    std::printf(" min=%g max=%g mean=%g sum=%g", s.min, s.max, s.mean, s.sum);
-                else if (s.count > 0)
-                    std::printf(" smin=%s smax=%s", s.s_min.c_str(), s.s_max.c_str());
-                std::printf(" distinct=%lld\n", (long long)s.distinct);
-            }
-        }
         return 0;
     }
 
@@ -2228,6 +2538,10 @@ int main(int argc, char** argv) {
                 std::printf("detail %s -> %s\n", step.toLocal8Bit().constData(),
                             win.detailForTest(rc[0].toInt(), rc[1].toInt()).toLocal8Bit().constData());
             }
+        // Optional Column tab: VVG_COLSTATS=<display column> prints
+        // "colstats <statistic=value …> top=… scope=…".
+        if (const char* cs = std::getenv("VVG_COLSTATS"); cs && *cs)
+            std::printf("colstats %s\n", win.columnStatsForTest(std::atoi(cs)).toUtf8().constData());
         // Optional selection summary: VVG_SELSUM="r0,c0,r1,c1" selects that
         // block and prints "selsum <status-bar text>".
         if (const char* ss = std::getenv("VVG_SELSUM"); ss && *ss) {

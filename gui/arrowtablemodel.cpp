@@ -597,16 +597,20 @@ void ArrowTableModel::findAsync(const QRegularExpression& re) {
         [this, resnap, cf] { return computeFindPos(resnap, cf.get()); }));
 }
 
-bool ArrowTableModel::columnStats(int displayCol, ColumnSummary* out) const {
-    if (computing_) return false;   // would drain src_ while a worker owns it
-    if (displayCol < 0 || displayCol >= (int)displayCols_.size()) return false;
-    src_->set_retain_all(true);     // the viewer re-reads every chunk afterwards
+bool ArrowTableModel::summarize(const std::vector<int>& displayCols,
+                                std::vector<ColumnSummary>* out, QString* err) const {
+    if (computing_) { *err = QStringLiteral("the table is busy"); return false; }
     SummaryOptions opt;
-    opt.cols = {displayCols_[displayCol]};
+    for (int c : displayCols) {
+        if (c < 0 || c >= (int)displayCols_.size()) { *err = QStringLiteral("no such column"); return false; }
+        opt.cols.push_back(displayCols_[c]);
+    }
+    opt.filter       = hasFilter_ ? &filter_ : nullptr;
+    opt.distinct_cap = 10000;
     opt.value_counts = true;
-    std::vector<ColumnSummary> res;
-    if (!summarize_columns(*src_, opt, &res).empty() || res.empty()) return false;
-    *out = std::move(res[0]);
+    src_->set_retain_all(true);     // the viewer re-reads every chunk afterwards
+    const std::string e = summarize_columns(*src_, opt, out);
+    if (!e.empty()) { *err = QString::fromStdString(e); return false; }
     return true;
 }
 

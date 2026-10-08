@@ -25,6 +25,7 @@ struct VvCommandSpec {
     QString     sortColumn;           // empty = unsorted
     bool        sortDesc = false;
     QStringList select;               // --select terms; empty = all columns
+    bool        describe = false;     // --describe (the Column tab's command)
 };
 
 // POSIX shell quoting: the word unchanged when it is made only of characters

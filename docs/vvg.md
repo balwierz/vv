@@ -3,7 +3,7 @@
 `vvg` is a Qt6 window over the same reader as `vv`: it opens every format vv
 does ([gallery](formats.md)), one tab per file, sheet, table or component.
 
-![vvg: an AnnData obs table with the row-detail dock](img/vvg/anndata.png)
+![vvg: an AnnData obs table with the Row tab of the dock](img/vvg/anndata.png)
 
 ## Start
 
@@ -48,21 +48,38 @@ Command* goes the other way.
   (struct, long: one row per record × sample, text) and HDF5 / AnnData matrix
   tabs (wide, long: one row per stored value), as vv's `--samples` /
   `--matrix`.
-- **Row detail, stats, columns** — a dock with the current row, *Σ Stats* per
-  column, show / hide columns, go to row, ◀ / ▶ slices for 3-D arrays,
-  *Ctrl+C* copies the selection as TSV. *View ▸ Smooth Scrolling* (on by
+- **Row and Column** — the right dock's *Row* tab lists every field of the
+  current row; its *Column* tab summarises the cursor's column (below).
+  *View ▸ Columns* shows / hides columns; go to row, ◀ / ▶ slices for 3-D
+  arrays; *Ctrl+C* copies the selection as TSV. *View ▸ Smooth Scrolling* (on by
   default) scrolls by pixels; off, by whole rows and columns.
 - **Selection summary** — select two or more cells and the status bar shows
   `Σ 13200.3 · mean 1100.025 · min 0 · max 3200 · 12 numbers` over the
   numeric cells among them (text, dates and hidden columns are skipped; up to
   1,000,000 cells). The numbers are plain, without digit grouping, and the
   text can be selected and copied.
+- **Column tab** (*Σ Stats* raises it) — the cursor column's count, nulls,
+  sum, mean, standard deviation, min, 25% / median / 75%, max and distinct
+  count, and its values with their counts and shares (the 50 most frequent;
+  up to 10,000 distinct values are counted). Over the rows the filter keeps,
+  and over the whole tab even where the table shows a preview: an AnnData
+  `obs` of 300,000 cells is summarised in full, a matrix tab is labelled as
+  the preview it is. It is computed in the background on a second copy of
+  the tab, so the table stays usable while a large file is read (*Cancel*
+  stops it); one pass covers every column, so moving the cursor afterwards
+  is instant. A tab read from a pipe is summarised on request (*Compute*).
+  The values are plain numbers in ordinary cells: *Ctrl+C* copies the
+  selected ones as TSV; right-click for *Copy All as TSV* and *Copy as vv
+  Command* (`vv … --describe --select col`). Double-click a value to filter
+  the table to it.
 - **Copy as vv command** (*Ctrl+Alt+C*) — the `vv` command line that reproduces
   the tab: file, `--tab`, region options, `--filter`, `--sort`, `--select`.
 - **Export view** (*Ctrl+E*) — the tab's rows after filter / sort / column
   choice, to Parquet, Arrow, TSV, CSV, JSON or NDJSON, written by vv's own
   writers (every row, not only the visible ones), in the background with
   *Cancel*.
+
+![vvg: the Column tab summarising an AnnData obs column](img/vvg/column-stats.png)
 
 ![vvg: a VCF with INFO expanded](img/vvg/vcf.png)
 

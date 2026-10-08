@@ -348,6 +348,19 @@ std::string select_tab(std::unique_ptr<TabularSource>& src,
     return "";
 }
 
+std::string open_view_source(Config cfg, std::unique_ptr<TabularSource>* out) {
+    if (auto err = apply_region_modifiers(cfg); !err.empty()) return err;
+    std::unique_ptr<TabularSource> src;
+    if (auto err = open_source(cfg.path, cfg, &src); !err.empty() || !src)
+        return err.empty() ? "cannot open '" + cfg.path + "'" : err;
+    if (!cfg.tab.empty())
+        if (auto err = select_tab(src, cfg.tab); !err.empty()) return err;
+    if (!src->read_status().ok())
+        return shorten_reader_error(src->read_status().ToString());
+    *out = std::move(src);
+    return "";
+}
+
 std::string export_view(const Config& cfg_in, const std::string& out_path,
                         ExportFormat format, ExportProgress* progress) {
     namespace fs = std::filesystem;
@@ -382,14 +395,8 @@ std::string export_view(const Config& cfg_in, const std::string& out_path,
         case ExportFormat::Json:    cfg.json_array = true;  mode = "a JSON export";    break;
         case ExportFormat::Ndjson:  cfg.json_lines = true;  mode = "an NDJSON export"; break;
     }
-    if (auto err = apply_region_modifiers(cfg); !err.empty()) return err;
     std::unique_ptr<TabularSource> src;
-    if (auto err = open_source(cfg.path, cfg, &src); !err.empty() || !src)
-        return err.empty() ? "cannot open '" + cfg.path + "'" : err;
-    if (!cfg.tab.empty())
-        if (auto err = select_tab(src, cfg.tab); !err.empty()) return err;
-    if (!src->read_status().ok())
-        return shorten_reader_error(src->read_status().ToString());
+    if (auto err = open_view_source(cfg, &src); !err.empty()) return err;
     if (src->preview_limit().capped())                 // stream a whole matrix
         if (auto full = src->full_matrix()) src = std::move(full);
     if (auto err = preview_refusal(*src, mode); !err.empty()) return err;

@@ -280,6 +280,20 @@ struct SummaryOptions {
 std::string summarize_columns(TabularSource& src, const SummaryOptions& opt,
                               std::vector<ColumnSummary>* out);
 
+// A date / timestamp statistic (a count of days / ms / … since the epoch, as
+// ColumnSummary holds it) as the column shows its values: 2024-06-15,
+// 2024-06-15 12:30:00.000. "" for any other type.
+std::string format_temporal_value(double v, const std::shared_ptr<arrow::DataType>& t);
+
+// The --filter expression keeping only the rows whose column `col` holds `v`
+// (`col == value`, or `col is null`), ANDed into every OR branch of `current`
+// ("" = no filter yet). False, with *why set, when no expression can name the
+// value (a nested or binary column, a value holding both quote characters) or
+// the result does not parse as that combination.
+bool narrow_filter_to_value(const std::string& current, const arrow::Schema& schema,
+                            int col, const ValueCount& v, std::string* out,
+                            std::string* why);
+
 // ── Source interface ─────────────────────────────────────────────────────────
 struct ChunkMeta { int64_t first_row; int64_t num_rows; };
 
@@ -480,6 +494,11 @@ struct ExportProgress {
     std::atomic<bool>    cancel{false};
     std::atomic<int64_t> rows{0};
 };
+// Open the tab `cfg` names (path, tab, region options, expand / samples /
+// matrix) as a new, independent source — what export_view and vvg's Column
+// tab read on a worker thread while the window keeps its own copy. The output
+// modes set in cfg size an AnnData frame's preview as for the CLI.
+std::string open_view_source(Config cfg, std::unique_ptr<TabularSource>* out);
 std::string export_view(const Config& cfg, const std::string& out_path,
                         ExportFormat format, ExportProgress* progress);
 

@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   with `--json` / `--ndjson`.
 - vvg: selecting two or more cells shows the sum, mean, min, max and count of
   the numeric ones in the status bar.
+- vvg: a *Column* tab beside *Row* in the right dock (replacing the *Σ Stats*
+  popup) summarises the cursor column — count, nulls, sum, mean, std,
+  percentiles, distinct values and their counts — over the rows the filter
+  keeps and over the whole tab (an AnnData `obs` beyond the table's
+  1000-row preview included), computed in the background on a second copy
+  of the tab; copyable cells, double-click a value to filter to it.
 
 ### Fixed
 - vvg could crash when an export read an HDF5 / AnnData / Cooler file on its
