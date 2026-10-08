@@ -135,6 +135,7 @@ public:
         connect(tabs_, &QTabWidget::tabCloseRequested, this,
                 [this](int i){ closeTab(i); });
         connect(tabs_, &QTabWidget::currentChanged, this, [this](int) {
+            if (selTimer_) selTimer_->start();
             refreshStatus();
             refreshColumnsMenu();
             if (activeJsonTab())
@@ -282,6 +283,17 @@ public:
             .arg(vals.join(QLatin1Char(',')))
             .arg(before && before == first ? 1 : 0);
     }
+    // Window self-test: select the block (r0, c0)-(r1, c1) and return the
+    // status bar's selection summary.
+    QString selectionSummaryForTest(int r0, int c0, int r1, int c1) {
+        auto* v = activeView();
+        if (!v) return QStringLiteral("no view");
+        QItemSelection sel(v->model()->index(r0, c0), v->model()->index(r1, c1));
+        v->selectionModel()->select(sel, QItemSelectionModel::ClearAndSelect);
+        updateSelectionSummary();
+        return selSum_->isVisible() || !selSum_->text().isEmpty() ? selSum_->text()
+                                                                  : QStringLiteral("(none)");
+    }
     // Drive the *async* find end-to-end: scan off-thread, pump until the match
     // list is installed, return the number of matches.
     qint64 findAsyncForTest(const QString& pattern) {
@@ -424,6 +436,10 @@ private:
                 this, [this](const QModelIndex& cur, const QModelIndex&) {
                     updateDetail(cur);
                 });
+        connect(view->selectionModel(), &QItemSelectionModel::selectionChanged,
+                selTimer_, [this]{ selTimer_->start(); });
+        connect(model, &QAbstractItemModel::modelReset,
+                selTimer_, [this]{ selTimer_->start(); });
 
         // Background filter/sort progress for this model.
         connect(model, &ArrowTableModel::recomputeStarted, this,
@@ -1681,11 +1697,79 @@ private:
             else if (JsonTab* jt = activeJsonTab(); jt && jt->searching()) jt->findCancel = true;
             else if (computingModel_) computingModel_->cancelRecompute();
         });
+        // The selection summary is a permanent widget so that timed status
+        // messages and refreshStatus() leave it alone; selectable, to copy.
+        selSum_ = new QLabel(this);
+        selSum_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        selSum_->setVisible(false);
+        selTimer_ = new QTimer(this);
+        selTimer_->setSingleShot(true);
+        selTimer_->setInterval(100);
+        connect(selTimer_, &QTimer::timeout, this, [this]{ updateSelectionSummary(); });
+        statusBar()->addPermanentWidget(selSum_);
         statusBar()->addPermanentWidget(progress_);
         statusBar()->addPermanentWidget(cancelBtn_);
     }
+
+    // Σ of the numeric cells selected in the active table: sum, mean, min, max
+    // and how many numbers, from the cells themselves (hidden columns and
+    // text skipped). Shown for two or more selected cells.
+    void updateSelectionSummary() {
+        auto hide = [this]{ selSum_->clear(); selSum_->setVisible(false); };
+        auto* v = activeView();
+        auto* m = activeModel();
+        if (!v || !m || m->isComputing() || !v->selectionModel()) return hide();
+        const QItemSelection sel = v->selectionModel()->selection();
+        qint64 cells = 0;
+        for (const auto& r : sel) cells += (qint64)r.width() * r.height();
+        if (cells < 2) return hide();
+        if (cells > kSelectionSumMaxCells) {
+            selSum_->setText(tr("Σ: more than %L1 cells selected").arg(kSelectionSumMaxCells));
+            selSum_->setVisible(true);
+            return;
+        }
+        long double sum = 0;
+        double mn = 0, mx = 0;
+        qint64 n = 0;
+        int digits = 19;
+        for (int i = 0; i < sel.size(); ++i) {
+            const QItemSelectionRange& r = sel[i];
+            for (int c = r.left(); c <= r.right(); ++c) {
+                const int dg = m->summableDigits(c);
+                if (dg == 0 || v->isColumnHidden(c)) continue;
+                for (int row = r.top(); row <= r.bottom(); ++row) {
+                    // Ranges may overlap (Ctrl+click): count a cell once.
+                    bool seen = false;
+                    for (int j = 0; j < i && !seen; ++j)
+                        seen = sel[j].contains(row, c, QModelIndex());
+                    if (seen) continue;
+                    const QVariant x = m->data(m->index(row, c), ArrowTableModel::NumericRole);
+                    if (!x.isValid()) continue;
+                    const double d = x.toDouble();
+                    if (n == 0 || d < mn) mn = d;
+                    if (n == 0 || d > mx) mx = d;
+                    sum += d;
+                    ++n;
+                    digits = std::min(digits, dg);
+                }
+            }
+        }
+        if (n == 0) return hide();
+        auto num = [](long double x, int dg) {
+            char buf[64];
+            std::snprintf(buf, sizeof buf, "%.*Lg", dg, x);
+            return QString::fromLatin1(buf);
+        };
+        // An integer column's mean is not an integer: at most 15 digits.
+        selSum_->setText(tr("Σ %1 · mean %2 · min %3 · max %4 · %L5 numbers")
+                             .arg(num(sum, digits), num(sum / n, std::min(digits, 15)),
+                                  num(mn, digits), num(mx, digits))
+                             .arg(n));
+        selSum_->setVisible(true);
+    }
     void onRecomputeStarted(ArrowTableModel* m) {
         computingModel_ = m;
+        selSum_->setVisible(false);
         progress_->setVisible(true);
         cancelBtn_->setVisible(true);
         statusBar()->showMessage(tr("Working…"));
@@ -1729,6 +1813,9 @@ private:
     bool                           smoothScroll_  = true;   // per-pixel scrolling
     QMenu*                         recentMenu_  = nullptr;
     QMenu*                         columnsMenu_ = nullptr;
+    static constexpr qint64        kSelectionSumMaxCells = 1'000'000;
+    QLabel*                        selSum_     = nullptr;   // status-bar Σ of the selection
+    QTimer*                        selTimer_   = nullptr;   // coalesces selection changes
     QProgressBar*                  progress_   = nullptr;
     QPushButton*                   cancelBtn_  = nullptr;
     ArrowTableModel*               computingModel_ = nullptr;  // model with a live worker
@@ -2141,6 +2228,14 @@ int main(int argc, char** argv) {
                 std::printf("detail %s -> %s\n", step.toLocal8Bit().constData(),
                             win.detailForTest(rc[0].toInt(), rc[1].toInt()).toLocal8Bit().constData());
             }
+        // Optional selection summary: VVG_SELSUM="r0,c0,r1,c1" selects that
+        // block and prints "selsum <status-bar text>".
+        if (const char* ss = std::getenv("VVG_SELSUM"); ss && *ss) {
+            const QStringList q = QString::fromLocal8Bit(ss).split(QLatin1Char(','));
+            if (q.size() == 4)
+                std::printf("selsum %s\n", win.selectionSummaryForTest(
+                    q[0].toInt(), q[1].toInt(), q[2].toInt(), q[3].toInt()).toUtf8().constData());
+        }
         // Optional JSON tree check: VVG_TREE=<jq path> selects it in the
         // active tree tab and prints it; VVG_TREE_TABLE=1 then opens the
         // records there as a table tab and prints its size.

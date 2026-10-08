@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   alias): each value's share of the rows next to its count, and every value
   as `column, value, count, fraction` rows with `--tsv` / `--csv` or as JSON
   with `--json` / `--ndjson`.
+- vvg: selecting two or more cells shows the sum, mean, min, max and count of
+  the numeric ones in the status bar.
 
 ### Fixed
 - `--unique` counted a literal `(null)` string together with nulls, and

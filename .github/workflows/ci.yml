@@ -310,6 +310,14 @@ jobs:
           # moving along a row leaves it as is.
           VVG_WINTEST=1 VVG_DETAIL='0,0;0,2;3,1' ./build-gui/gui/vvg tests/data/tiny.parquet | tr '\n' ' ' \
             | grep -q "detail 0,0 -> row=0 rows=5 values=chr1,100 reused=0 detail 0,2 -> row=0 rows=5 values=chr1,100 reused=1 detail 3,1 -> row=3 rows=5 values=chr1,3_100 reused=1"
+          # The status bar sums the selected numeric cells (Score 0, .05, .1,
+          # .15; Start + End + Score of rows 0-3, the text columns skipped);
+          # one cell shows nothing.
+          VVG_WINTEST=1 VVG_SELSUM='0,3,3,3' ./build-gui/gui/vvg tests/data/tiny.parquet \
+            | grep -qxF 'selsum Σ 0.3 · mean 0.075 · min 0 · max 0.15 · 4 numbers'
+          VVG_WINTEST=1 VVG_SELSUM='0,0,3,4' ./build-gui/gui/vvg tests/data/tiny.parquet \
+            | grep -qxF 'selsum Σ 13200.3 · mean 1100.025 · min 0 · max 3200 · 12 numbers'
+          VVG_WINTEST=1 VVG_SELSUM='2,1,2,1' ./build-gui/gui/vvg tests/data/tiny.parquet | grep -qxF 'selsum (none)'
           # A read error (here a malformed first record) is shown in the
           # status bar, not an empty table presented as the file.
           printf '@r1\nACGT\n+\nII\n' > "$RUNNER_TEMP/bad.fq"
@@ -600,6 +608,14 @@ jobs:
           # moving along a row leaves it as is.
           VVG_WINTEST=1 VVG_DETAIL='0,0;0,2;3,1' ./build/gui/vvg tests/data/tiny.parquet | tr '\n' ' ' \
             | grep -q "detail 0,0 -> row=0 rows=5 values=chr1,100 reused=0 detail 0,2 -> row=0 rows=5 values=chr1,100 reused=1 detail 3,1 -> row=3 rows=5 values=chr1,3_100 reused=1"
+          # The status bar sums the selected numeric cells (Score 0, .05, .1,
+          # .15; Start + End + Score of rows 0-3, the text columns skipped);
+          # one cell shows nothing.
+          VVG_WINTEST=1 VVG_SELSUM='0,3,3,3' ./build/gui/vvg tests/data/tiny.parquet \
+            | grep -qxF 'selsum Σ 0.3 · mean 0.075 · min 0 · max 0.15 · 4 numbers'
+          VVG_WINTEST=1 VVG_SELSUM='0,0,3,4' ./build/gui/vvg tests/data/tiny.parquet \
+            | grep -qxF 'selsum Σ 13200.3 · mean 1100.025 · min 0 · max 3200 · 12 numbers'
+          VVG_WINTEST=1 VVG_SELSUM='2,1,2,1' ./build/gui/vvg tests/data/tiny.parquet | grep -qxF 'selsum (none)'
           # A read error (here a malformed first record) is shown in the
           # status bar, not an empty table presented as the file.
           printf '@r1\nACGT\n+\nII\n' > "$RUNNER_TEMP/bad.fq"

@@ -164,6 +164,37 @@ QString ArrowTableModel::cellText(int viewRow, int dispCol) const {
     return QString::fromStdString(raw);
 }
 
+QVariant ArrowTableModel::cellNumber(int viewRow, int dispCol) const {
+    if (summableDigits(dispCol) == 0) return {};
+    const LoadedChunk* lc = chunkForRow(sourceRow(viewRow));
+    if (!lc || !lc->table) return {};
+    if (dispCol < 0 || dispCol >= lc->table->num_columns()) return {};
+    int64_t local = sourceRow(viewRow) - lc->first_row;
+    for (const auto& a : lc->table->column(dispCol)->chunks()) {
+        if (local < a->length()) {
+            double d;
+            if (!array_value_as_double(*a, local, &d)) return {};
+            return d;
+        }
+        local -= a->length();
+    }
+    return {};
+}
+
+int ArrowTableModel::summableDigits(int displayCol) const {
+    if (displayCol < 0 || displayCol >= (int)displayCols_.size()) return 0;
+    const arrow::DataType* t = src_->schema()->field(displayCols_[displayCol])->type().get();
+    if (t->id() == arrow::Type::DICTIONARY)
+        t = static_cast<const arrow::DictionaryType&>(*t).value_type().get();
+    const auto id = t->id();
+    if (!is_numeric_type(id) || is_date_or_timestamp(*t) ||
+        id == arrow::Type::TIME32 || id == arrow::Type::TIME64)
+        return 0;
+    if (arrow::is_integer(id)) return 19;
+    if (id == arrow::Type::FLOAT || id == arrow::Type::HALF_FLOAT) return 7;
+    return 15;
+}
+
 QString ArrowTableModel::rawCellText(int viewRow, int dispCol) const {
     const LoadedChunk* lc = chunkForRow(sourceRow(viewRow));
     if (!lc || !lc->table) return {};
@@ -204,6 +235,8 @@ QVariant ArrowTableModel::data(const QModelIndex& index, int role) const {
         return displayText(index.row(), index.column());
     if (role == RawTextRole)
         return rawCellText(index.row(), index.column());
+    if (role == NumericRole)
+        return cellNumber(index.row(), index.column());
     if (role == Qt::BackgroundRole && hasSearch_) {
         if (searchRe_.match(displayText(index.row(), index.column())).hasMatch())
             return QBrush(QColor(255, 235, 130));   // soft yellow highlight

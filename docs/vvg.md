@@ -52,6 +52,11 @@ Command* goes the other way.
   column, show / hide columns, go to row, ◀ / ▶ slices for 3-D arrays,
   *Ctrl+C* copies the selection as TSV. *View ▸ Smooth Scrolling* (on by
   default) scrolls by pixels; off, by whole rows and columns.
+- **Selection summary** — select two or more cells and the status bar shows
+  `Σ 13200.3 · mean 1100.025 · min 0 · max 3200 · 12 numbers` over the
+  numeric cells among them (text, dates and hidden columns are skipped; up to
+  1,000,000 cells). The numbers are plain, without digit grouping, and the
+  text can be selected and copied.
 - **Copy as vv command** (*Ctrl+Alt+C*) — the `vv` command line that reproduces
   the tab: file, `--tab`, region options, `--filter`, `--sort`, `--select`.
 - **Export view** (*Ctrl+E*) — the tab's rows after filter / sort / column

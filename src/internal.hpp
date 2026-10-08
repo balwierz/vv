@@ -420,8 +420,6 @@ void osc52_copy(const std::string& s);
 
 bool is_integer_type(arrow::Type::type t);
 
-bool is_numeric_type(arrow::Type::type t);
-
 uint32_t utf8_decode(const std::string& s, size_t i, int* len);
 
 int codepoint_width(uint32_t cp);
@@ -680,10 +678,6 @@ bool tabix_index_exists(const std::string& path);
 std::string filter_quote_name(const std::string& name);
 
 std::vector<std::string> filter_split_or(const std::string& s);
-
-bool is_date_or_timestamp(const arrow::DataType& t);
-
-bool array_value_as_double(const arrow::Array& a, int64_t r, double* out);
 
 bool cell_as_double(const arrow::Table& tbl, int col, int64_t row,
                      double* out);

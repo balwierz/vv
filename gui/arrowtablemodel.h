@@ -32,7 +32,13 @@ public:
 
     // Cell value without display formatting (no digit grouping), for the
     // clipboard — pasting "1000000" is more useful than "1_000_000".
-    enum { RawTextRole = Qt::UserRole + 1 };
+    // RawTextRole: the cell without digit grouping. NumericRole: the cell as
+    // a double for a column summableDigits() accepts; invalid otherwise.
+    enum { RawTextRole = Qt::UserRole + 1, NumericRole = Qt::UserRole + 2 };
+    // Significant digits a sum over this display column is shown with: 19
+    // for integers (exact), 7 for float32 / float16, 15 for other numbers;
+    // 0 when its cells are not summed (text, dates, times, nested types).
+    int summableDigits(int displayCol) const;
 
     int      rowCount(const QModelIndex& parent = {}) const override;
     int      columnCount(const QModelIndex& parent = {}) const override;
@@ -127,6 +133,7 @@ private:
     }
     QString   cellText(int viewRow, int dispCol) const;
     QString   rawCellText(int viewRow, int dispCol) const;
+    QVariant  cellNumber(int viewRow, int dispCol) const;
     void      drainStreaming() const;
     std::shared_ptr<arrow::ChunkedArray> readFullColumn(int srcCol) const;
     void      reseedRowCount();
