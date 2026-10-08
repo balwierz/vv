@@ -24,7 +24,7 @@ _vv_file_arg() {
     valopts=(-n -w -c -@ --threads --decode-threads --delimiter --in-delimiter -d --header --color --theme --box
              -r --region --window --regions-file --region-cols --slop --coords
              --tail --sort --tags --expand --parquet --arrow --feather --compression
-             --image-mode --samples --matrix -f --fasta --select --cols --filter --tab --unique
+             --image-mode --samples --matrix -f --fasta --select --cols --filter --tab --unique --value-counts --percentiles
              --sample --exclude-flags --ff --require-flags --rf --min-mapq --min-bq)
     local i tok
     for (( i = 2; i < CURRENT; i++ )); do
@@ -165,7 +165,8 @@ _vv() {
         '--filter+[Row predicate]:expr:_vv_column' \
         '--schema[Print schema and exit]' \
         '--tab+[View a named component tab (AnnData obs/var/X, sheet)]:name:_vv_tabs' \
-        '--describe[Per-column statistics (add --json/--ndjson for machine-readable)]' \
+        '--describe[Per-column statistics incl. std and percentiles (add --json/--ndjson for machine-readable)]' \
+        '--percentiles+[--describe percentiles, comma-separated 0-100 (default 25,50,75)]:list:' \
         '--count[Print the row count and exit]' \
         '--stats[Parquet metadata dump]' \
         '--contigs[List reference sequences (name, length) and detect the assembly]' \
@@ -176,7 +177,7 @@ _vv() {
         '--json-paths[JSON: one path = value line per leaf]' \
         '--no-tree[JSON: read it as a table of records]' \
         '--gt-stats[VCF/BCF: add per-variant genotype summary columns (het/hom/missing, AC/AN/AF, call_rate)]' \
-        '--unique+[Distinct value counts]:cols:' \
+        '(--value-counts --unique)'{--value-counts,--unique}'+[Count of each distinct value per column]:cols:_vv_columns' \
         '--distinct[Drop duplicate rows (SQL SELECT DISTINCT), over the shown columns]' \
         '--sample+[Reservoir-sample N rows]:n:' \
         "*:file:_files -g '${(j:|:)file_exts}'"

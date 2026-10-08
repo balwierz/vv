@@ -385,8 +385,14 @@ static void print_usage(const char* prog) {
         "  --tab <name>        view a named component tab (AnnData obs/var/X,\n"
         "                      a workbook sheet, …) instead of the first; e.g.\n"
         "                      `vv cells.h5ad --tab obs -n 20`\n"
-        "  --describe          per-column statistics and exit (add --json /\n"
-        "                      --ndjson for machine-readable stats)\n"
+        "  --describe          per-column statistics and exit: count, nulls,\n"
+        "                      min / max, mean, standard deviation and the 25th /\n"
+        "                      50th / 75th percentiles (add --json / --ndjson for\n"
+        "                      machine-readable stats)\n"
+        "  --percentiles <list>  --describe's percentiles, comma-separated in\n"
+        "                      0-100 (default 25,50,75; '' for none). Exact up to\n"
+        "                      16 M values in all; above that from a uniform\n"
+        "                      sample, shown as ~value\n"
         "  --count             print the row count and exit (honours -r and\n"
         "                      --filter). An indexed BAM / BCF / VCF.gz is\n"
         "                      counted from its index when nothing filters\n"
@@ -407,7 +413,10 @@ static void print_usage(const char* prog) {
         "                      n_hom_alt/n_missing, AC/AN/AF, call_rate. A fixed\n"
         "                      set whatever the sample count; `--filter 'AF > 0.05'`\n"
         "                      and `--sort call_rate` work on them\n"
-        "  --unique <cols>     comma-separated columns: print distinct-value counts\n"
+        "  --value-counts <cols>  comma-separated columns: each distinct value with\n"
+        "                      its count and share of the rows, most frequent\n"
+        "                      first (top 50; --tsv / --csv / --json list all).\n"
+        "                      Honours --filter. Alias: --unique\n"
         "  --distinct          drop duplicate rows (SQL SELECT DISTINCT), keeping\n"
         "                      the first of each. Over the shown columns, so\n"
         "                      `--select chrom --distinct` lists distinct chroms;\n"
@@ -548,8 +557,36 @@ static int parse_sam_flag_list(const std::string& list, std::string* err) {
     return mask;
 }
 
+// --percentiles: comma-separated numbers in [0, 100], returned ascending and
+// without duplicates. An empty list is valid (no percentile columns).
+static bool parse_percentiles(const std::string& list, std::vector<double>* out,
+                              std::string* err) {
+    out->clear();
+    size_t p = 0;
+    while (p < list.size()) {
+        size_t c = list.find(',', p);
+        std::string t = list.substr(p, c == std::string::npos ? std::string::npos : c - p);
+        while (!t.empty() && std::isspace((unsigned char)t.front())) t.erase(0, 1);
+        while (!t.empty() && std::isspace((unsigned char)t.back()))  t.pop_back();
+        if (!t.empty() && t.back() == '%') t.pop_back();
+        char* end = nullptr;
+        double v = t.empty() ? -1 : std::strtod(t.c_str(), &end);
+        if (t.empty() || *end || !(v >= 0 && v <= 100)) {
+            *err = "'" + t + "' is not a percentile (a number from 0 to 100)";
+            return false;
+        }
+        out->push_back(v);
+        if (c == std::string::npos) break;
+        p = c + 1;
+    }
+    std::sort(out->begin(), out->end());
+    out->erase(std::unique(out->begin(), out->end()), out->end());
+    return true;
+}
+
 Config parse_args(int argc, char** argv) {
     const char* pileup_opt = nullptr;   // a --pileup filter option, if given
+    bool percentiles_set = false;
     Config cfg;
     // If invoked as `vh` (a symlink/copy of vv), default to vertical-head mode:
     // a "head"-style preview transposed so wide tables fit without horizontal
@@ -690,8 +727,16 @@ Config parse_args(int argc, char** argv) {
             cfg.distinct = true;
         } else if (!std::strcmp(argv[i], "--box") && i + 1 < argc) {
             cfg.box_style = argv[++i];
-        } else if (!std::strcmp(argv[i], "--unique") && i + 1 < argc) {
+        } else if ((!std::strcmp(argv[i], "--value-counts") ||
+                    !std::strcmp(argv[i], "--unique")) && i + 1 < argc) {
             cfg.unique_cols = argv[++i];
+        } else if (!std::strcmp(argv[i], "--percentiles") && i + 1 < argc) {
+            percentiles_set = true;
+            std::string err;
+            if (!parse_percentiles(argv[++i], &cfg.percentiles, &err)) {
+                std::fprintf(stderr, "--percentiles: %s\n", err.c_str());
+                std::exit(2);
+            }
         } else if (!std::strcmp(argv[i], "--sample") && i + 1 < argc) {
             cfg.sample_n = std::max(0, std::atoi(argv[++i]));
         } else if (!std::strcmp(argv[i], "--filter") && i + 1 < argc) {
@@ -839,7 +884,7 @@ Config parse_args(int argc, char** argv) {
                 "--regions-file", "--region-cols", "--slop", "--coords",
                 "--tail", "--sort", "--tags", "-@", "--threads", "--decode-threads", "--parquet",
                 "--arrow", "--feather",
-                "--compression", "--unique", "--sample", "--filter",
+                "--compression", "--unique", "--value-counts", "--percentiles", "--sample", "--filter",
                 "--select", "--cols", "--image-mode", "--tab", "--theme",
                 "--expand", "--samples", "--matrix",
                 "--delimiter", "--in-delimiter", "-d", "--header",
@@ -857,6 +902,10 @@ Config parse_args(int argc, char** argv) {
     }
     // --formats describes vv itself, so it takes no input file.
     if (cfg.list_formats) return cfg;
+    if (percentiles_set && !cfg.describe) {
+        std::fprintf(stderr, "--percentiles applies to --describe\n");
+        std::exit(2);
+    }
     if (cfg.path.empty()) { print_usage(argv[0]); std::exit(1); }
     // NO_COLOR (https://no-color.org): any non-empty value disables colour,
     // unless the user explicitly chose --color=always/never (those win, per the

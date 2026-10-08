@@ -1903,7 +1903,46 @@ if command -v python3 >/dev/null 2>&1; then
     assert_exit_zero "describe_ndjson_parses" python3 -c "import sys; import json; [json.loads(l) for l in sys.stdin if l.strip()]" <<<"$NDJ"
     CHR_DISTINCT=$(printf '%s' "$NDJ" | python3 -c "import sys,json; rows=[json.loads(l) for l in sys.stdin if l.strip()]; d={c['column']:c for c in rows}; print(d['Chr']['distinct'], d['Chr']['numeric'])")
     assert_eq_file_inline "describe_ndjson_distinct" "$CHR_DISTINCT" "2 False"
+    # Std (n - 1) and percentiles (linear interpolation, R type 7 / NumPy's
+    # default): Score is 0, 0.05, ..., 0.95; numpy.percentile gives 0.2375 /
+    # 0.475 / 0.7125 and std(ddof=1) 0.29580. Score is float32, hence %.4f.
+    SCORE_PCT=$(printf '%s' "$DJ" | python3 -c "import sys,json; d={c['column']:c for c in json.load(sys.stdin)}['Score']; p=d['percentiles']; print('%.4f %.4f %.4f %.5f %s' % (p['25%'], p['50%'], p['75%'], d['std'], d['percentiles_sampled']))")
+    assert_eq_file_inline "describe_json_percentiles" "$SCORE_PCT" "0.2375 0.4750 0.7125 0.29580 False"
+    # --percentiles picks the columns: 0 and 100 are min and max; 99.5% sits
+    # between the two largest values.
+    CUSTOM_PCT=$("$VV" --describe --select Start --percentiles 0,99.5,100 --ndjson "$DATA/tiny.parquet" \
+        | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(sorted(d['percentiles'].items()) == sorted({'0%': d['min'], '99.5%': d['percentiles']['99.5%'], '100%': d['max']}.items()), list(d['percentiles']))")
+    assert_eq_file_inline "describe_custom_percentiles" "$CUSTOM_PCT" "True ['0%', '99.5%', '100%']"
+    # Past the value budget the percentiles come from a uniform sample and say
+    # so: "~" in the table, percentiles_sampled in JSON.
+    SAMPLED=$(VV_DESCRIBE_SAMPLE_CAP=4 "$VV" --describe --select Start --ndjson "$DATA/tiny.parquet" \
+        | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['percentiles_sampled'])")
+    assert_eq_file_inline "describe_percentiles_sampled_json" "$SAMPLED" "True"
 fi
+DPCT_TXT=$("$VV" --describe --color=never "$DATA/tiny.parquet")
+assert_contains "describe_has_std_column" "$DPCT_TXT" "Std"
+assert_contains "describe_has_median_column" "$DPCT_TXT" "50%"
+assert_contains "describe_percentiles_sampled_text" \
+    "$(VV_DESCRIBE_SAMPLE_CAP=4 "$VV" --describe --select Start --color=never "$DATA/tiny.parquet")" "~"
+# No numeric column shown: no Std / percentile columns. An empty list drops
+# the percentiles but keeps Std.
+refute_contains "describe_no_numeric_no_std" \
+    "$("$VV" --describe --select Chr --color=never "$DATA/tiny.parquet")" "Std"
+DNOPCT=$("$VV" --describe --percentiles '' --color=never "$DATA/tiny.parquet")
+refute_contains "describe_empty_percentiles" "$DNOPCT" "%"
+assert_contains "describe_empty_percentiles_keeps_std" "$DNOPCT" "Std"
+assert_exit_code "percentiles_out_of_range" 2 "$VV" --describe --percentiles 101 "$DATA/tiny.parquet"
+assert_exit_code "percentiles_not_a_number" 2 "$VV" --describe --percentiles 25,x "$DATA/tiny.parquet"
+assert_exit_code "percentiles_needs_describe" 2 "$VV" --percentiles 50 "$DATA/tiny.parquet"
+# A null is not a value: 1.5 / 2.5 / 3.5 and a null have median 2.5. One
+# value has no standard deviation ("-").
+DNULL="$TMP/dnull.csv"
+printf 'v,w\n1.5,7\nnan,\n2.5,\n3.5,\n' > "$DNULL"
+assert_eq_file_inline "describe_median_skips_null" \
+    "$("$VV" --describe --select v --percentiles 50 --color=never "$DNULL" | awk 'NR==3 {print $9}')" "2.5"
+assert_eq_file_inline "describe_std_needs_two" \
+    "$("$VV" --describe --select w --color=never "$DNULL" | awk 'NR==3 {print $8}')" "-"
+rm -f "$DNULL"
 # Temporal/decimal columns are numeric: the value extractor must read date /
 # timestamp / decimal (previously skipped → blank stats, blank heatmap).
 if [ -f "$DATA/tiny.temporal.parquet" ]; then
@@ -3070,6 +3109,42 @@ printf 'x\nb\na\nb\na\nc\n' > "$UDET"
 UDET_ORDER=$("$VV" --unique x "$UDET" 2>/dev/null | grep -E '^  [a-z]' | awk '{print $1}' | tr '\n' ' ')
 assert_eq_file_inline "unique_tie_order_deterministic" "$UDET_ORDER" "a b c "
 rm -f "$UDET"
+# --value-counts is the same report; each value also gets its share of rows.
+assert_eq_file_inline "value_counts_alias_of_unique" \
+    "$("$VV" --value-counts Chromosome "$DATA/tiny.lociss")" "$UNIQ_OUT"
+VC="$TMP/vc.csv"
+printf 'g,n\na,10\nb,9\na,\nb,10\na,9\n,3\n' > "$VC"
+VC_TXT=$("$VV" --value-counts g --color=never "$VC")
+assert_contains "value_counts_percent" "$VC_TXT" "a           3  50.0%"
+assert_contains "value_counts_null_entry" "$VC_TXT" "(null)      1  16.7%"
+# Equal counts of a numeric column order by number: 9 before 10 (as text,
+# "10" < "9").
+assert_eq_file_inline "value_counts_numeric_ties" \
+    "$("$VV" --value-counts n --tsv --no-header "$VC" | cut -f2 | tr '\n' ' ')" "9 10 3  "
+# --tsv / --csv: long form (column, value, count, fraction), null as an empty
+# field, every value.
+assert_eq_file_inline "value_counts_csv" "$("$VV" --value-counts g --csv "$VC")" \
+    "column,value,count,fraction
+g,a,3,0.5
+g,b,2,0.333333
+g,,1,0.166667"
+if command -v python3 >/dev/null 2>&1; then
+    # --json: numbers stay numbers, null is null.
+    assert_eq_file_inline "value_counts_json" \
+        "$("$VV" --value-counts g,n --json "$VC" | python3 -c 'import json,sys; print([(c["column"], c["rows"], c["distinct"], [v["value"] for v in c["values"]]) for c in json.load(sys.stdin)])')" \
+        "[('g', 6, 3, ['a', 'b', None]), ('n', 6, 4, [9, 10, 3, None])]"
+fi
+# Honours --filter: the counts and the total are over the matching rows.
+assert_contains "value_counts_filter" "$("$VV" --value-counts g --filter 'n >= 10' --color=never "$VC")" \
+    "2 distinct value(s) (of 2)"
+# The text report stops at 50 values; --tsv lists all of them.
+VC60="$TMP/vc60.tsv"
+{ echo k; seq 1 60; } > "$VC60"
+assert_contains "value_counts_text_top50" "$("$VV" --value-counts k --color=never "$VC60")" \
+    "10 more distinct value(s); --tsv lists all"
+assert_eq_file_inline "value_counts_tsv_all" \
+    "$("$VV" --value-counts k --tsv --no-header "$VC60" | wc -l | tr -d ' ')" "60"
+rm -f "$VC" "$VC60"
 
 # --sample: pulls a subset and preserves the hidden-column convention.
 SAMPLE_OUT=$("$VV" --tsv --no-header --sample 2 "$DATA/tiny.lociss" | wc -l | tr -d ' ')

@@ -392,6 +392,16 @@ std::string print_describe(TabularSource& src, const Config& cfg) {
         std::string  s_min, s_max;
         std::set<std::string> distinct;     // capped at 16
         bool         distinct_overflow = false;
+        // Standard deviation, by Welford's update (stable where a sum of
+        // squares cancels).
+        int64_t      w_n = 0;
+        long double  w_mean = 0.0L, w_m2 = 0.0L;
+        // Percentiles: every non-NaN value up to `sample_cap`, then a uniform
+        // reservoir sample of that size (Algorithm R, fixed seed so the output
+        // is reproducible).
+        std::vector<double> sample;
+        int64_t      sample_seen = 0;
+        uint64_t     rng = 0x9e3779b97f4a7c15ULL;
     };
     std::vector<ColStat> stats(requested.size());
     for (size_t k = 0; k < requested.size(); ++k) {
@@ -408,6 +418,25 @@ std::string print_describe(TabularSource& src, const Config& cfg) {
     // it explicitly, matching the --json/--md/--parquet output paths.
     int64_t rows_left = (!cfg.head_rows_set || cfg.head_rows <= 0)
                         ? INT64_MAX : (int64_t)cfg.head_rows;
+
+    // Values kept for the percentiles: 16 Mi doubles (128 MiB) shared by the
+    // numeric columns, at least 1024 each so a wide matrix still gets an
+    // estimate.
+    const bool want_pct = !cfg.percentiles.empty();
+    int64_t n_numeric = 0;
+    for (auto& cs : stats) n_numeric += cs.is_num;
+    int64_t sample_cap = std::max<int64_t>(1024, (int64_t{1} << 24) /
+                                                 std::max<int64_t>(1, n_numeric));
+    // Test hook: a small cap exercises the sampled path on a small file.
+    if (const char* e = std::getenv("VV_DESCRIBE_SAMPLE_CAP"); e && std::atoll(e) > 0)
+        sample_cap = std::atoll(e);
+    auto splitmix = [](uint64_t& x) {
+        uint64_t z = (x += 0x9e3779b97f4a7c15ULL);
+        z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+        z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+        return z ^ (z >> 31);
+    };
+
     for (int c = 0; rows_left > 0; ++c) {
         src.ensure(c);
         if (c >= src.num_chunks()) break;
@@ -435,6 +464,19 @@ std::string print_describe(TabularSource& src, const Config& cfg) {
                         if (d < cs.d_min) cs.d_min = d;
                         if (d > cs.d_max) cs.d_max = d;
                         cs.sum += d;
+                        ++cs.w_n;
+                        const long double delta = d - cs.w_mean;
+                        cs.w_mean += delta / cs.w_n;
+                        cs.w_m2   += delta * (d - cs.w_mean);
+                        if (want_pct && !std::isnan(d)) {
+                            if ((int64_t)cs.sample.size() < sample_cap) {
+                                cs.sample.push_back(d);
+                            } else {
+                                uint64_t j = splitmix(cs.rng) % (uint64_t)(cs.sample_seen + 1);
+                                if (j < (uint64_t)sample_cap) cs.sample[j] = d;
+                            }
+                            ++cs.sample_seen;
+                        }
                     } else {
                         std::string s = cell_to_string(*ch, r);
                         if (cs.count == 1 || s < cs.s_min) cs.s_min = s;
@@ -456,6 +498,36 @@ std::string print_describe(TabularSource& src, const Config& cfg) {
     // must not be summarised as if the rows read so far were the whole table.
     if (!src.read_status().ok())
         return shorten_reader_error(src.read_status().ToString());
+
+    // Percentiles by linear interpolation between the closest ranks (R's
+    // type 7, NumPy's and pandas' default); std with n - 1 in the denominator
+    // (R's sd(), pandas' std()).
+    std::vector<std::vector<double>> pct(stats.size());
+    std::vector<bool> pct_sampled(stats.size(), false);
+    for (size_t k = 0; k < stats.size(); ++k) {
+        auto& v = stats[k].sample;
+        if (v.empty()) continue;
+        std::sort(v.begin(), v.end());
+        for (double p : cfg.percentiles) {
+            const double h = (double)(v.size() - 1) * p / 100.0;
+            const size_t lo = (size_t)std::floor(h);
+            const size_t hi = std::min(lo + 1, v.size() - 1);
+            pct[k].push_back(v[lo] + (h - (double)lo) * (v[hi] - v[lo]));
+        }
+        pct_sampled[k] = stats[k].sample_seen > (int64_t)v.size();
+        std::vector<double>().swap(v);
+    }
+    auto std_of = [](const ColStat& cs, double* out) {
+        if (cs.w_n < 2) return false;
+        *out = (double)std::sqrt(cs.w_m2 / (long double)(cs.w_n - 1));
+        return true;
+    };
+    // "25%", "99.5%"
+    auto pct_label = [](double p) {
+        char buf[32];
+        std::snprintf(buf, sizeof buf, "%g%%", p);
+        return std::string(buf);
+    };
 
     // Machine-readable stats: `--describe --json` emits a JSON array of per-column
     // objects, `--describe --ndjson` one object per line. Numbers are exact
@@ -489,6 +561,20 @@ std::string print_describe(TabularSource& src, const Config& cfg) {
             } else {
                 std::printf(",\"min\":"); json_emit_string(cs.s_min);
                 std::printf(",\"max\":"); json_emit_string(cs.s_max);
+            }
+            if (cs.is_num) {
+                double sd;
+                std::printf(",\"std\":%s", std_of(cs, &sd) ? jnum(sd).c_str() : "null");
+                if (!cfg.percentiles.empty()) {
+                    std::printf(",\"percentiles\":{");
+                    for (size_t i = 0; i < cfg.percentiles.size(); ++i) {
+                        if (i) std::putchar(',');
+                        json_emit_string(pct_label(cfg.percentiles[i]));
+                        std::printf(":%s", pct[k].empty() ? "null" : jnum(pct[k][i]).c_str());
+                    }
+                    std::printf("},\"percentiles_sampled\":%s",
+                                pct_sampled[k] ? "true" : "false");
+                }
             }
             if (!cs.is_num) {
                 if (cs.distinct_overflow)
@@ -525,65 +611,74 @@ std::string print_describe(TabularSource& src, const Config& cfg) {
     };
     auto width = [](const std::string& s) { return (int)display_width(s); };
 
-    int wN = 6, wT = 4, wC = 5, wL = 5, wMin = 3, wMax = 3, wMean = 4, wD = 8;
-    std::vector<std::array<std::string,7>> rows;  // name, type, count, nulls, min, max, mean
-    std::vector<std::string> distincts;
-    for (auto& cs : stats) {
+    // Std and the percentiles appear when a numeric column is shown.
+    const bool num_cols = n_numeric > 0;
+    std::vector<std::string> head = {"Column", "Type", "Count", "Nulls", "Min", "Max", "Mean"};
+    if (num_cols) {
+        head.push_back("Std");
+        for (double p : cfg.percentiles) head.push_back(pct_label(p));
+    }
+    head.push_back("Distinct");
+    const size_t n_out = head.size();
+    // Count and Nulls are right-aligned; Column, Type, Min and Max are cut at
+    // 40 columns.
+    auto right = [](size_t i) { return i == 2 || i == 3; };
+    auto capped = [](size_t i) { return i <= 1 || i == 4 || i == 5; };
+
+    std::vector<std::vector<std::string>> rows;
+    for (size_t k = 0; k < stats.size(); ++k) {
+        auto& cs = stats[k];
+        const bool temporal = cs.is_num && is_date_or_timestamp(*cs.dtype);
+        auto fmt = [&](double v) { return temporal ? fmt_temporal(v, cs.dtype) : fmt_num(v); };
         std::string mn, mx, me;
         if (cs.count == 0) {
             mn = "-"; mx = "-"; me = "-";
-        } else if (cs.is_num && is_date_or_timestamp(*cs.dtype)) {
-            mn = fmt_temporal(cs.d_min, cs.dtype);
-            mx = fmt_temporal(cs.d_max, cs.dtype);
-            me = fmt_temporal((double)(cs.sum / (long double)cs.count), cs.dtype);
         } else if (cs.is_num) {
-            mn = fmt_num(cs.d_min);
-            mx = fmt_num(cs.d_max);
-            me = fmt_num((double)(cs.sum / (long double)cs.count));
+            mn = fmt(cs.d_min);
+            mx = fmt(cs.d_max);
+            me = fmt((double)(cs.sum / (long double)cs.count));
         } else {
             mn = cs.s_min; mx = cs.s_max; me = "";
         }
-        std::string dn = cs.is_num ? ""
-                       : (cs.distinct_overflow ? ">16"
-                         : std::to_string(cs.distinct.size()));
-        std::string sc = std::to_string(cs.count);
-        std::string sn = std::to_string(cs.nulls);
-        wN = std::max(wN, width(cs.name));
-        wT = std::max(wT, width(cs.type));
-        wC = std::max(wC, width(sc));
-        wL = std::max(wL, width(sn));
-        wMin = std::max(wMin, width(mn));
-        wMax = std::max(wMax, width(mx));
-        wMean = std::max(wMean, width(me));
-        wD = std::max(wD, width(dn));
-        rows.push_back({cs.name, cs.type, sc, sn, mn, mx, me});
-        distincts.push_back(dn);
+        std::vector<std::string> r = {cs.name, cs.type, std::to_string(cs.count),
+                                      std::to_string(cs.nulls), mn, mx, me};
+        if (num_cols) {
+            double sd;
+            if (!cs.is_num || temporal) r.push_back("");
+            else if (!std_of(cs, &sd)) r.push_back("-");
+            else r.push_back(std::isnan(sd) ? "nan" : fmt_num(sd));   // not "-nan"
+            for (size_t i = 0; i < cfg.percentiles.size(); ++i) {
+                if (!cs.is_num)          r.push_back("");
+                else if (pct[k].empty()) r.push_back("-");
+                else r.push_back((pct_sampled[k] ? "~" : "") + fmt(pct[k][i]));
+            }
+        }
+        r.push_back(cs.is_num ? ""
+                    : (cs.distinct_overflow ? ">16" : std::to_string(cs.distinct.size())));
+        rows.push_back(std::move(r));
     }
-    auto trim_col = [](int& w) { if (w > 40) w = 40; };
-    trim_col(wN); trim_col(wT); trim_col(wMin); trim_col(wMax); trim_col(wMean);
 
-    std::printf("%s%-*s  %-*s  %*s  %*s  %-*s  %-*s  %-*s  %-*s%s\n",
-                g_color.header,
-                wN,    "Column", wT, "Type", wC, "Count", wL, "Nulls",
-                wMin,  "Min",    wMax, "Max", wMean, "Mean", wD, "Distinct",
-                g_color.reset);
-    std::printf("%s%s  %s  %s  %s  %s  %s  %s  %s%s\n",
-                g_color.border,
-                std::string(wN,'-').c_str(), std::string(wT,'-').c_str(),
-                std::string(wC,'-').c_str(), std::string(wL,'-').c_str(),
-                std::string(wMin,'-').c_str(), std::string(wMax,'-').c_str(),
-                std::string(wMean,'-').c_str(), std::string(wD,'-').c_str(),
-                g_color.reset);
-    for (size_t k = 0; k < rows.size(); ++k) {
-        auto& r = rows[k];
-        std::printf("%-*s  %-*s  %*s  %*s  %-*s  %-*s  %-*s  %-*s\n",
-                    wN, truncate(r[0], wN).c_str(),
-                    wT, truncate(r[1], wT).c_str(),
-                    wC, r[2].c_str(), wL, r[3].c_str(),
-                    wMin,  truncate(r[4], wMin).c_str(),
-                    wMax,  truncate(r[5], wMax).c_str(),
-                    wMean, r[6].c_str(),
-                    wD,    distincts[k].c_str());
+    std::vector<int> w(n_out);
+    for (size_t i = 0; i < n_out; ++i) {
+        w[i] = width(head[i]);
+        for (auto& r : rows) w[i] = std::max(w[i], width(r[i]));
+        if (w[i] > 40 && i != n_out - 1) w[i] = 40;
+    }
+    auto pad = [&](const std::string& v, size_t i) {
+        std::string t = capped(i) ? truncate(v, w[i]) : v;
+        std::string fill(std::max(0, w[i] - width(t)), ' ');
+        return right(i) ? fill + t : t + fill;
+    };
+    std::string line = g_color.header;
+    for (size_t i = 0; i < n_out; ++i) line += (i ? "  " : "") + pad(head[i], i);
+    std::printf("%s%s\n", line.c_str(), g_color.reset);
+    line = g_color.border;
+    for (size_t i = 0; i < n_out; ++i) line += (i ? "  " : "") + std::string(w[i], '-');
+    std::printf("%s%s\n", line.c_str(), g_color.reset);
+    for (auto& r : rows) {
+        line.clear();
+        for (size_t i = 0; i < n_out; ++i) line += (i ? "  " : "") + pad(r[i], i);
+        std::printf("%s\n", line.c_str());
     }
     return "";
 }
@@ -598,10 +693,10 @@ std::string print_describe(TabularSource& src, const Config& cfg) {
 // sources, prints the schema block and a note that detailed stats are
 // Parquet-only.
 
-// ── --unique: distinct value counts per column ───────────────────────────────
+// ── --value-counts (--unique): distinct value counts per column ─────────────
 std::string print_unique(TabularSource& src, const Config& cfg) {
     ExactFloats exact;   // values are identity keys: never merge by rounding
-    if (cfg.unique_cols.empty()) return "--unique needs a comma-separated column list";
+    if (cfg.unique_cols.empty()) return "--value-counts needs a comma-separated column list";
     auto schema = src.schema();
     std::vector<int> cols;
     std::vector<std::string> unknown;
@@ -622,9 +717,9 @@ std::string print_unique(TabularSource& src, const Config& cfg) {
     }
     if (!unknown.empty()) {
         std::string u; for (auto& n : unknown) { if (!u.empty()) u += ","; u += n; }
-        return "unknown column(s) in --unique: " + u;
+        return "unknown column(s) in --value-counts: " + u;
     }
-    if (cols.empty()) return "--unique: no columns specified";
+    if (cols.empty()) return "--value-counts: no columns specified";
 
     FilterExpr fx;
     bool have_filter = false;
@@ -641,6 +736,7 @@ std::string print_unique(TabularSource& src, const Config& cfg) {
     // unbounded here, so on a high-cardinality column the tree dominates. The
     // final sort imposes a deterministic order, so iteration order is moot.
     std::vector<std::unordered_map<std::string, int64_t>> counts(cols.size());
+    std::vector<int64_t> nulls(cols.size(), 0);   // kept apart: no string can stand for null
     int64_t total = 0;
     for (int c = 0; ; ++c) {
         src.ensure(c);
@@ -658,48 +754,140 @@ std::string print_unique(TabularSource& src, const Config& cfg) {
             for (auto& ch : col->chunks()) {
                 int64_t n = ch->length();
                 for (int64_t r = 0; r < n; ++r) {
-                    std::string v = ch->IsNull(r) ? "(null)" : cell_to_string(*ch, r);
-                    counts[k][v]++;
+                    if (ch->IsNull(r)) ++nulls[k];
+                    else               counts[k][cell_to_string(*ch, r)]++;
                 }
             }
         }
     }
 
-    // Output per column: top N entries sorted by count desc.
-    constexpr int kTop = 50;
-    bool first = true;
+    // A stream that failed part-way must not be counted as if the rows read
+    // so far were the whole table.
+    if (!src.read_status().ok())
+        return shorten_reader_error(src.read_status().ToString());
+
+    // Per column: entries by count descending; equal counts by value ascending
+    // (numerically for a numeric column) so the output is deterministic
+    // despite the hash map's unspecified order. Null is an entry like any
+    // other value.
+    struct Entry { std::string value; int64_t count; bool null; };
+    std::vector<std::vector<Entry>> sorted(cols.size());
     for (size_t k = 0; k < cols.size(); ++k) {
-        if (!first) std::printf("\n");
-        first = false;
-        auto& m = counts[k];
-        std::vector<std::pair<std::string,int64_t>> entries(m.begin(), m.end());
-        // Count descending; ties broken by value ascending so the output is
-        // deterministic despite the hash map's unspecified iteration order.
-        std::sort(entries.begin(), entries.end(),
-            [](const auto& a, const auto& b) {
-                if (a.second != b.second) return a.second > b.second;
-                return a.first < b.first;
-            });
+        const bool numeric = is_numeric_type(schema->field(cols[k])->type()->id());
+        auto& e = sorted[k];
+        e.reserve(counts[k].size() + 1);
+        for (auto& [v, n] : counts[k]) e.push_back({v, n, false});
+        std::unordered_map<std::string, int64_t>().swap(counts[k]);
+        if (nulls[k]) e.push_back({"", nulls[k], true});
+        auto as_num = [](const std::string& v) {
+            char* end = nullptr;
+            double d = std::strtod(v.c_str(), &end);
+            return (end && !*end && !v.empty()) ? d : std::numeric_limits<double>::quiet_NaN();
+        };
+        std::sort(e.begin(), e.end(), [&](const Entry& a, const Entry& b) {
+            if (a.count != b.count) return a.count > b.count;
+            if (a.null != b.null) return b.null;            // null last among equals
+            if (numeric) {
+                double x = as_num(a.value), y = as_num(b.value);
+                if (x < y) return true;
+                if (y < x) return false;
+            }
+            return a.value < b.value;
+        });
+    }
+    auto pct_of = [&](int64_t n) {
+        char buf[32];
+        std::snprintf(buf, sizeof buf, "%.1f%%", total ? 100.0 * (double)n / (double)total : 0.0);
+        return std::string(buf);
+    };
+    auto frac_of = [&](int64_t n) {
+        char buf[40];
+        std::snprintf(buf, sizeof buf, "%.6g", total ? (double)n / (double)total : 0.0);
+        return std::string(buf);
+    };
+
+    // --tsv / --csv / --delimiter: one row per (column, value), every value.
+    if (cfg.delimiter) {
+        const char sep = cfg.delimiter;
+        if (!cfg.no_header) {
+            const char* h[] = {"column", "value", "count", "fraction"};
+            for (int i = 0; i < 4; ++i) {
+                if (i) std::putchar(sep);
+                write_csv_field(h[i], sep);
+            }
+            std::putchar('\n');
+        }
+        for (size_t k = 0; k < cols.size(); ++k)
+            for (auto& e : sorted[k]) {
+                write_csv_field(schema->field(cols[k])->name(), sep);
+                std::putchar(sep);
+                if (!e.null) write_csv_field(e.value, sep);
+                std::printf("%c%lld%c%s\n", sep, (long long)e.count, sep, frac_of(e.count).c_str());
+            }
+        return "";
+    }
+
+    // --json / --ndjson: one object per column with every value.
+    if (cfg.json_array || cfg.json_lines) {
+        if (cfg.json_array) std::putchar('[');
+        for (size_t k = 0; k < cols.size(); ++k) {
+            if (cfg.json_array && k) std::putchar(',');
+            std::printf("{\"column\":");
+            json_emit_string(schema->field(cols[k])->name());
+            std::printf(",\"rows\":%lld,\"distinct\":%zu,\"values\":[",
+                        (long long)total, sorted[k].size());
+            const bool numeric = is_numeric_type(schema->field(cols[k])->type()->id());
+            for (size_t i = 0; i < sorted[k].size(); ++i) {
+                auto& e = sorted[k][i];
+                std::printf("%s{\"value\":", i ? "," : "");
+                // A number stays a number; NaN / Inf (not JSON) and anything
+                // else a numeric column renders (a date) is a string.
+                char* end = nullptr;
+                double d = e.null ? 0 : std::strtod(e.value.c_str(), &end);
+                if (e.null) std::printf("null");
+                else if (numeric && !e.value.empty() && !*end && std::isfinite(d) &&
+                         e.value.find_first_of("xXnN") == std::string::npos)
+                    std::fputs(e.value.c_str(), stdout);
+                else        json_emit_string(e.value);
+                std::printf(",\"count\":%lld,\"fraction\":%s}",
+                            (long long)e.count, frac_of(e.count).c_str());
+            }
+            std::printf("]}");
+            if (cfg.json_lines) std::putchar('\n');
+        }
+        if (cfg.json_array) std::printf("]\n");
+        return "";
+    }
+
+    // Text: the 50 most frequent values per column.
+    constexpr size_t kTop = 50;
+    for (size_t k = 0; k < cols.size(); ++k) {
+        if (k) std::printf("\n");
+        auto& entries = sorted[k];
         std::printf("%s%s%s — %s%zu%s distinct value(s) (of %s%lld%s)\n",
                     g_color.header, schema->field(cols[k])->name().c_str(),
                     g_color.reset,
                     g_color.number, entries.size(), g_color.reset,
                     g_color.number, (long long)total, g_color.reset);
-        int wV = 5, wC2 = 5;
-        size_t n_show = std::min((size_t)kTop, entries.size());
+        auto label = [](const Entry& e) { return e.null ? std::string("(null)") : e.value; };
+        int wV = 5, wC2 = 5, wP = 4;
+        size_t n_show = std::min(kTop, entries.size());
         for (size_t i = 0; i < n_show; ++i) {
-            wV  = std::max(wV,  (int)display_width(entries[i].first));
+            wV  = std::max(wV,  (int)display_width(label(entries[i])));
             wC2 = std::max(wC2, (int)display_width(
-                digits_with_sep(std::to_string(entries[i].second))));
+                digits_with_sep(std::to_string(entries[i].count))));
+            wP  = std::max(wP, (int)pct_of(entries[i].count).size());
         }
         if (wV > 50) wV = 50;
         for (size_t i = 0; i < n_show; ++i) {
-            std::printf("  %-*s  %*s\n",
-                        wV,  truncate(entries[i].first, wV).c_str(),
-                        wC2, digits_with_sep(std::to_string(entries[i].second)).c_str());
+            std::string v = truncate(label(entries[i]), wV);
+            std::printf("  %s%s  %*s  %*s\n", v.c_str(),
+                        std::string(std::max(0, wV - (int)display_width(v)), ' ').c_str(),
+                        wC2, digits_with_sep(std::to_string(entries[i].count)).c_str(),
+                        wP, pct_of(entries[i].count).c_str());
         }
         if (entries.size() > n_show)
-            std::printf("  %s... %zu more distinct value(s)%s\n",
+            std::printf("  %s... %zu more distinct value(s); --tsv lists all%s\n",
                         g_color.meta_key, entries.size() - n_show, g_color.reset);
     }
     return "";

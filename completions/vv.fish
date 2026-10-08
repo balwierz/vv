@@ -15,7 +15,7 @@ end
 function __vv_file
     set -l valopts n w c @ threads decode-threads delimiter in-delimiter d header color theme box r region \
         window regions-file region-cols slop coords tail sort tags expand parquet arrow \
-        feather compression image-mode samples matrix f fasta select cols filter tab unique sample \
+        feather compression image-mode samples matrix f fasta select cols filter tab unique value-counts percentiles sample \
         exclude-flags ff require-flags rf min-mapq min-bq
     set -l toks (commandline -opc)
     set -l i 2
@@ -149,7 +149,8 @@ complete -c vv -c vh -l cols -x -a '(__vv_columns_csv)' -d 'Alias of --select'
 complete -c vv -c vh -l filter -x -a '(__vv_columns)' -d 'Row predicate: <col> <op> <value> [AND/OR ...]'
 complete -c vv -c vh -l schema             -d 'Print schema + metadata and exit'
 complete -c vv -c vh -l tab -x -a '(__vv_tabs)' -d 'View a named component tab (AnnData obs/var/X, sheet)'
-complete -c vv -c vh -l describe           -d 'Per-column statistics (add --json/--ndjson for machine-readable)'
+complete -c vv -c vh -l describe           -d 'Per-column statistics incl. std and percentiles (add --json/--ndjson for machine-readable)'
+complete -c vv -c vh -l percentiles -x     -d '--describe percentiles, comma-separated 0-100 (default 25,50,75)'
 complete -c vv -c vh -l count              -d 'Print the row count and exit'
 complete -c vv -c vh -l stats              -d 'Parquet metadata dump (no data read)'
 complete -c vv -c vh -l contigs            -d 'BAM/CRAM/SAM, VCF/BCF: list reference sequences + detect assembly'
@@ -160,6 +161,7 @@ complete -c vv -c vh -l pretty             -d 'JSON: print the document re-inden
 complete -c vv -c vh -l json-paths         -d 'JSON: one path = value line per leaf'
 complete -c vv -c vh -l no-tree            -d 'JSON: read it as a table of records'
 complete -c vv -c vh -l gt-stats           -d 'VCF/BCF: add per-variant genotype summary columns (het/hom/missing, AC/AN/AF, call_rate)'
-complete -c vv -c vh -l unique -r          -d 'Distinct value counts per column'
+complete -c vv -c vh -l value-counts -x -a '(__vv_columns_csv)' -d 'Count of each distinct value per column'
+complete -c vv -c vh -l unique -x -a '(__vv_columns_csv)' -d 'Alias of --value-counts'
 complete -c vv -c vh -l distinct           -d 'Drop duplicate rows (SQL SELECT DISTINCT), over the shown columns'
 complete -c vv -c vh -l sample -r          -d 'Reservoir-sample N random rows'

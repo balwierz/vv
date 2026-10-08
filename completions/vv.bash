@@ -24,7 +24,7 @@ _vv_input_file() {
     local val_opts=' -n -w -c -@ --threads --decode-threads --delimiter --in-delimiter -d --header --color
         --theme --box -r --region --window --regions-file --region-cols --slop --coords
         --tail --sort --tags --expand --parquet --arrow --feather --compression --image-mode
-        --samples --matrix -f --fasta --select --cols --filter --tab --unique --sample
+        --samples --matrix -f --fasta --select --cols --filter --tab --unique --value-counts --percentiles --sample
         --exclude-flags --ff --require-flags --rf --min-mapq --min-bq '
     for (( i = 1; i < ${#words[@]}; i++ )); do
         tok=${words[i]}
@@ -103,7 +103,7 @@ _vv() {
             ;;
         # Column-name lists: complete the current comma-segment from the file's
         # actual columns. -o nospace so the user can keep appending with a comma.
-        --select|--cols|--region-cols)
+        --select|--cols|--region-cols|--value-counts|--unique)
             _vv_complete_columns ','
             (( ${#COMPREPLY[@]} )) && compopt -o nospace 2>/dev/null
             return
@@ -142,7 +142,7 @@ _vv() {
         --min-mapq|--min-bq)
             return
             ;;
-        --slop|--sample|--tail|--unique)
+        --slop|--sample|--tail|--percentiles)
             # Numeric / free-form argument — no completion
             return
             ;;
@@ -202,7 +202,7 @@ _vv() {
                 --expand --formats --list-columns --list-tabs
                 -f --fasta
                 --tab
-                --unique --distinct --sample --sort --tags
+                --value-counts --unique --percentiles --distinct --sample --sort --tags
                 --box
                 --vertical
                 --no-header

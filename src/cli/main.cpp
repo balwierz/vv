@@ -414,7 +414,7 @@ int main(int argc, char** argv) {
         else if (cfg.delimiter == ',')            mode = "--csv";
         else if (cfg.delimiter)                   mode = "--delimiter";
         else if (cfg.describe)                  { mode = "--describe"; honours_n = false; }
-        else if (!cfg.unique_cols.empty())      { mode = "--unique";   honours_n = false; }
+        else if (!cfg.unique_cols.empty())      { mode = "--value-counts"; honours_n = false; }
         else if (cfg.sample_n > 0)              { mode = "--sample";   honours_n = false; }
         else if (cfg.tail_rows_set)             { mode = "--tail";     honours_n = false; }
         else if (cfg.count) { mode = "--count"; honours_n = false; cols_matter = false; }
@@ -553,7 +553,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    // --unique: distinct value counts per column.
+    // --value-counts (--unique): distinct value counts per column.
     if (!cfg.unique_cols.empty()) {
         std::string err = print_unique(*src, cfg);
         if (!err.empty()) { report(cfg.path, err); return 1; }

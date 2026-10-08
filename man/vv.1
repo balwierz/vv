@@ -468,7 +468,7 @@ the payload of those formats as a single opaque string \(en once expanded the
 keys behave like any other column, so
 .B \-\-select ,
 .B \-\-filter ,
-.B \-\-unique
+.B \-\-value\-counts
 and the Parquet / Arrow writers all see them.
 .IP
 For VCF the key set and their types come from the \fB##INFO=<...>\fR
@@ -563,14 +563,24 @@ or aggregating a capped one exits 1 with its real shape instead of writing
 the preview; \fB\-\-count\fR works when every row is in the preview.
 .TP
 .B \-\-describe
-Per-column statistics: count, nulls, min, max, mean (numeric),
+Per-column statistics: count, nulls, min, max, mean, standard deviation
+(n \- 1 denominator) and the 25th / 50th / 75th percentiles (numeric;
+linear interpolation, R's quantile type 7; nulls and NaN left out),
 distinct count (string, capped at 16). Respects \fB\-\-select\fR
-and \fB\-\-filter\fR. Currently scans the data; doesn't yet read
+and \fB\-\-filter\fR. Percentiles are exact up to 16 million values
+in all (shared by the numeric columns, at least 1024 each); a column
+with more is summarised from a uniform random sample of that size and
+its percentiles print as \fB~\fR\fIvalue\fR (\fBpercentiles_sampled\fR
+in JSON). Currently scans the data; doesn't yet read
 Parquet's per-row-group statistics. Add \fB\-\-json\fR (array) or
 \fB\-\-ndjson\fR (one object per line) for machine-readable stats
 (integers exact, floats round-trippable, strings JSON-escaped;
-numeric columns omit \fBdistinct\fR, all-null columns report
-\fBnull\fR min/max/mean).
+numeric columns omit \fBdistinct\fR and add \fBstd\fR and
+\fBpercentiles\fR, all-null columns report \fBnull\fR min/max/mean).
+.TP
+.BI \-\-percentiles " list"
+The percentiles \fB\-\-describe\fR reports: comma-separated numbers
+from 0 to 100 (default \fB25,50,75\fR; an empty list for none).
 .TP
 .B \-\-count
 Print the number of rows and exit. Reflects a \fB\-r\fR region
@@ -646,10 +656,13 @@ and a \fB./.\fR call is missing. The columns are numeric, so
 work on them. Streaming, so a cohort VCF larger than memory still
 previews.
 .TP
-.BI \-\-unique " cols"
-Distinct-value counts per column, comma-separated. Each block lists up
-to 50 most frequent values; further values are summarised. Respects
-\fB\-\-filter\fR.
+.BI \-\-value\-counts " cols"
+Each distinct value of the columns (comma-separated) with its count and
+share of the rows, most frequent first; null counts as a value.
+Respects \fB\-\-filter\fR. The text report lists the 50 most frequent
+values per column; \fB\-\-tsv\fR / \fB\-\-csv\fR give every value as
+\fIcolumn, value, count, fraction\fR rows and \fB\-\-json\fR /
+\fB\-\-ndjson\fR one object per column. \fB\-\-unique\fR is an alias.
 .TP
 .B \-\-distinct
 Drop duplicate rows, keeping the first occurrence of each \(en SQL
@@ -660,7 +673,7 @@ chromosomes and \fB\-\-select chrom,strand \-\-distinct\fR the distinct
 pairs. Honours \fB\-\-filter\fR (filter first, then deduplicate) and
 composes with \fB\-\-sort\fR, \fB\-\-count\fR (which then counts the
 distinct rows), and every view / export mode. Distinct from
-\fB\-\-unique\fR, which is a per-column value-frequency table rather
+\fB\-\-value\-counts\fR, which is a per-column value-frequency table rather
 than row deduplication. Materialises the result in memory, like
 \fB\-\-sort\fR.
 .TP

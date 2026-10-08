@@ -64,9 +64,11 @@ struct Config {
     bool        vertical       = false;  // --vertical (or invoked as `vh`)
     bool        schema_only    = false;  // --schema: print schema + footer, exit
     bool        describe       = false;  // --describe: per-column statistics
+    std::vector<double> percentiles{25, 50, 75};  // --percentiles: --describe's
+                                         // quantile columns (0-100, ascending)
     bool        stats_only     = false;  // --stats: Parquet metadata dump (no data read)
     bool        count          = false;  // --count: print row count and exit
-    std::string unique_cols;             // --unique COL[,COL,...] : distinct value counts
+    std::string unique_cols;             // --value-counts / --unique COL[,COL,...]
     bool        distinct       = false;  // --distinct: drop duplicate rows (SQL
                                          // SELECT DISTINCT), over the shown columns
     int         sample_n       = 0;      // --sample N (reservoir sample of N rows)

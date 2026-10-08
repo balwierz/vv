@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `--describe` reports the standard deviation and the 25th / 50th / 75th
+  percentiles of numeric columns (`std` and `percentiles` in `--json`);
+  `--percentiles 5,50,95` picks others. Percentiles are exact up to 16 M
+  values and estimated from a uniform sample beyond, marked `~`.
+- `--value-counts <cols>` (the new name of `--unique`, which stays as an
+  alias): each value's share of the rows next to its count, and every value
+  as `column, value, count, fraction` rows with `--tsv` / `--csv` or as JSON
+  with `--json` / `--ndjson`.
+
+### Fixed
+- `--unique` counted a literal `(null)` string together with nulls, and
+  summarised a stream that failed part-way as if it were complete.
+
 ## [1.27.0] - 2026-10-07
 
 ### Added

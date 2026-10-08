@@ -148,7 +148,7 @@ keeps generic column names.
 ![vv: BLAST -outfmt 6 hits with the standard columns named](img/vv/blast.svg)
 
 Try: `vv hits.m8` · `vv --filter 'evalue < 1e-10 and pident > 90' --sort bitscore:desc hits.m8` ·
-`vv --unique qseqid hits.m8`.
+`vv --value-counts qseqid hits.m8`.
 
 ## PLINK and TSV layouts
 

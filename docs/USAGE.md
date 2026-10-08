@@ -67,7 +67,7 @@ would need horizontal scrolling.
 | `--tab NAME` | a sheet, table or component of a multi-table file |
 | `--tsv` `--csv` `--json` `--ndjson` `--md` | text output |
 | `--parquet OUT` / `--arrow OUT` | convert (`-` for stdout) |
-| `--schema` `--describe` `--stats` `--unique` `--distinct` `--sample N` `--contigs` `--seq-stats` `--gt-stats` | data exploration |
+| `--schema` `--describe` `--stats` `--value-counts` `--distinct` `--sample N` `--contigs` `--seq-stats` `--gt-stats` | data exploration |
 | `--heatmap` | numeric columns as a terminal image |
 | `--vertical` | transposed (`vh`) preview |
 | `--theme NAME` / `--box unicode\|ascii` / `--color auto\|always\|never` | appearance |
@@ -342,7 +342,7 @@ Windows export is not what "binary file" means to the person who exported it.
 
 `-n N` (`0` = all), `--tail N`, `--count` (= `wc -l`), `--filter`,
 `--list-columns` and `-r` (which warns, per `--region`'s usual rule) all work.
-The column-shaped flags — `--schema`, `--describe`, `--stats`, `--unique`,
+The column-shaped flags — `--schema`, `--describe`, `--stats`, `--value-counts`,
 `--sample`, `--select`, `--tsv`/`--csv`, `--json`, `--parquet`, `--arrow`,
 `--heatmap`, `--tab`, `--expand` — exit 1 with a message, rather than
 answering a question that has no meaning over one column of prose.
@@ -717,18 +717,32 @@ values under `metadata`.
 
 ```sh
 $ vv --describe tests/data/tiny.lociss
-Column      Type    Count  Nulls  Min     Max     Mean  Distinct
-----------  ------  -----  -----  ------  ------  ----  --------
-Chromosome  string      5      0  chr1    chr2          2       
-Start       int32       5      0  100     1500    660           
-End         int32       5      0  200     1800    880           
-Name        string      5      0  peak_0  peak_4        5       
-Score       double      5      0  0.1     0.9     0.48          
+Column      Type    Count  Nulls  Min     Max     Mean  Std       25%  50%  75%   Distinct
+----------  ------  -----  -----  ------  ------  ----  --------  ---  ---  ----  --------
+Chromosome  string      5      0  chr1    chr2                                    2       
+Start       int32       5      0  100     1500    660   585.662   200  500  1000          
+End         int32       5      0  200     1800    880   641.872   400  800  1200          
+Name        string      5      0  peak_0  peak_4                                  5       
+Score       double      5      0  0.1     0.9     0.48  0.334664  0.2  0.5  0.7           
 ```
 
-Pandas-style per-column summary. Numeric columns get min / max / mean;
-string columns get distinct count (capped at 16). Respects
-`--select` and `--filter`.
+Pandas-style per-column summary over every row (`-n N` limits it to the
+first N). Numeric columns get min / max / mean, the standard deviation and
+percentiles; string columns get the distinct count (capped at 16). Dates and
+timestamps show their min / max / mean / percentiles as dates. Respects
+`--select` and `--filter`; `--json` / `--ndjson` give the same numbers
+machine-readable (`std`, `percentiles: {"25%": …}`).
+
+* **Std** divides by n − 1, as R's `sd()` and pandas' `std()`.
+* **Percentiles** interpolate linearly between the two nearest values (R's
+  quantile type 7, NumPy's and pandas' default). Nulls and NaN are left
+  out. `--percentiles 5,50,95` picks others (`0` and `100` are min and max;
+  `''` shows none).
+* **Memory.** Percentiles need the values themselves: up to 16 million
+  values in all are kept (128 MiB, shared by the numeric columns, at least
+  1024 each). A column with more is summarised from a uniform random sample
+  of that size, and its percentiles show as `~value` (`"percentiles_sampled":
+  true` in JSON). Count, nulls, min, max, mean and std are always exact.
 
 ## `--stats` (Parquet-only)
 
@@ -990,18 +1004,29 @@ a **fixed** set that answers the usual questions:
   memory still previews. Needs a VCF/BCF with a `FORMAT` column and at least one
   sample; a sites-only VCF or a non-variant file is a clean error.
 
-## `--unique`
+## `--value-counts`
 
 ```sh
-$ vv --unique Chromosome tests/data/tiny.lociss
+$ vv --value-counts Chromosome tests/data/tiny.lociss
 Chromosome — 2 distinct value(s) (of 5)
-  chr1       3
-  chr2       2
+  chr1       3  60.0%
+  chr2       2  40.0%
+$ vv tests/data/tiny.h5ad --tab obs --value-counts cluster --tsv
+column	value	count	fraction
+cluster	A	3	0.6
+cluster	B	2	0.4
 ```
 
-Distinct value counts per column, sorted descending. Top-50 values
-per column; further values summarised. Multiple columns
-comma-separated. Honours `--filter`.
+Each distinct value of a column with its count and share of the rows, most
+frequent first (equal counts by value, numerically for a number column);
+null is counted as a value of its own. Several columns are comma-separated.
+Honours `--filter`, so the counts and the total are over the matching rows.
+The text report lists the 50 most frequent values per column; `--tsv` /
+`--csv` give every value as `column, value, count, fraction` rows (null as an
+empty field) and `--json` / `--ndjson` one object per column (`rows`,
+`distinct`, `values: [{value, count, fraction}]`; numbers as numbers, null as
+`null`). `--unique` is an alias. In the viewer, `F` on a column shows the
+same counts.
 
 ## `--distinct`
 
@@ -1018,7 +1043,7 @@ bare `--distinct` deduplicates whole displayed rows, while `--select chrom
 --distinct` lists the distinct chromosomes and `--select chrom,strand
 --distinct` the distinct pairs. The result carries only those columns.
 
-* **Not `--unique`.** `--unique COL` prints a per-column value-frequency table
+* **Not `--value-counts`.** `--value-counts COL` prints a per-column value-frequency table
   (how many times each value appears); `--distinct` deduplicates whole rows and
   hands back a table of the surviving rows, so it composes with everything.
 * **Composes.** Honours `--filter` (rows are filtered first, then
