@@ -3,6 +3,13 @@
 # Split package: `vv` (the CLI/TUI, lean deps) and `vv-gui` (the Qt6/KDE
 # desktop viewer + Dolphin thumbnailer / metadata plugins). One build with
 # -DVV_BUILD_GUI=ON produces both; install whichever you want.
+#
+# Not the terminal image viewer: until October 2026 the AUR package `vv` was
+# wolfpld's image viewer (https://github.com/wolfpld/vv, last version 3.2-1).
+# This `vv` is a different program, the data / genomic file viewer from
+# https://github.com/balwierz/vv. vv.install says so on install, and warns
+# when it replaces the image viewer. No epoch: 1.x sorts below 3.2, so an AUR
+# helper does not offer this package as an upgrade of the image viewer.
 pkgbase=vv
 pkgname=('vv' 'vv-gui')
 pkgver=1.28.0
@@ -45,6 +52,7 @@ package_vv() {
     pkgdesc="Universal data/genomic file viewer — CLI + ncurses TUI"
     depends=('arrow' 'htslib' 'ncurses' 'hdf5' 'sqlite' 'xz' 'bzip2' 'blosc'
              'expat' 'minizip' 'xlsxio' 'zlib')
+    install=vv.install
     cd "$pkgbase-$pkgver"
     install -Dm755 ../build/vv "$pkgdir/usr/bin/vv"
     ln -s vv "$pkgdir/usr/bin/vh"
