@@ -27,7 +27,7 @@
 %global xlsxio_version 0.2.36
 
 Name:           vv
-Version:        1.27.0
+Version:        1.28.0
 Release:        1%{?dist}
 Summary:        Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)
 License:        MIT
@@ -146,6 +146,13 @@ rm -f  %{buildroot}%{_libdir}/pkgconfig/mimalloc.pc
 %{_datadir}/icons/hicolor/scalable/apps/vv.svg
 
 %changelog
+* Thu Oct 08 2026 Piotr Balwierz <nikt@tuta.com> - 1.28.0-1
+- Update to 1.28.0: --describe reports std and percentiles (--percentiles);
+  --value-counts with shares and TSV / JSON output; vvg sums the selected
+  cells in the status bar and summarises the cursor column in a Column tab
+  computed in the background; HDF5 calls serialised across threads (vvg
+  export crash).
+
 * Wed Oct 07 2026 Piotr Balwierz <nikt@tuta.com> - 1.27.0-1
 - Update to 1.27.0: new formats — Zarr v2 / v3 stores, DuckDB (when built
   with libduckdb), Nanopore POD5, GenBank / EMBL, Cooler .cool / .mcool /

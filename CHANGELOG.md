@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.28.0] - 2026-10-08
+
 ### Added
 - `--describe` reports the standard deviation and the 25th / 50th / 75th
   percentiles of numeric columns (`std` and `percentiles` in `--json`, with
