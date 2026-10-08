@@ -27,7 +27,8 @@ Command* goes the other way.
   AnnData components, Cooler resolutions, GenBank sections, POD5 tables, R
   objects and NumPy arrays each get a tab. Open with *File ▸ Open*, drag-and-drop or the
   recent-files list.
-- **Sort, filter, find** — click a header to sort (by type, not text); the
+- **Sort, filter, find** — click a header to sort (by type, not text) and
+  put the cursor in that column; the
   filter bar uses vv's `--filter` grammar (`score > 5 and chrom == "chr1"`);
   the find bar takes a regex. All three run off the UI thread with a progress
   bar and *Cancel*, so multi-GB files stay responsive.
@@ -58,7 +59,10 @@ Command* goes the other way.
   numeric cells among them (text, dates and hidden columns are skipped; up to
   1,000,000 cells). The numbers are plain, without digit grouping, and the
   text can be selected and copied.
-- **Column tab** (*Σ Stats* raises it) — the cursor column's count, nulls,
+- **Column tab** (*Σ Stats* raises it) — the cursor column, tinted in the
+  table, by name and position (*Column 7 of 120*); click the name, or
+  *→ show in table* when the column is scrolled out of view, to bring it
+  back into view. Its count, nulls,
   sum, mean, standard deviation, min, 25% / median / 75%, max and distinct
   count, and its values with their counts and shares (the 50 most frequent;
   up to 10,000 distinct values are counted). Over the rows the filter keeps,

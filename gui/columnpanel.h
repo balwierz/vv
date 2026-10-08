@@ -27,6 +27,11 @@ public:
     void showBusy(const QString& title, const QString& text, qint64 rows, qint64 total);
     // Nothing to summarise, or an error; `offerCompute` shows the Compute button.
     void showNote(const QString& title, const QString& text, bool offerCompute = false);
+    // Where the column is in the table: display column `col` (0-based) of
+    // `count`, and whether it is out of view (scrolled away or hidden).
+    // col < 0: no column. While set, the column name in the title is a link
+    // that asks for the column to be shown (showColumnRequested).
+    void setLocation(int col, int count, bool outOfView, bool hidden = false);
 
     const ColumnSummary* summary() const { return has_ ? &sum_ : nullptr; }
     // The selected cells of the focused table as TSV (all of it when nothing
@@ -35,20 +40,27 @@ public:
     QString allAsTsv() const;
     // "statistic=value …" for the window self-test.
     QString describeForTest() const;
+    // The title and location lines as plain text, for the window self-test.
+    QString titleForTest() const { return titlePlain_; }
+    QString locationForTest() const;
 
 signals:
     void cancelRequested();
     void computeRequested();
     void filterToValueRequested(int valueIndex);   // index into summary()->values
     void copyCommandRequested();
+    void showColumnRequested();
 
 private:
     void showTables(bool on);
+    void setTitle(const QString& plain, const QString& suffix = {});
+    void renderLocation();
     void contextMenu(QTableWidget* t, const QPoint& pos);
 
     QVBoxLayout*  lay_     = nullptr;
     QLabel*       title_   = nullptr;
     QLabel*       scope_   = nullptr;
+    QLabel*       where_   = nullptr;
     QTableWidget* stats_   = nullptr;
     QLabel*       topHead_ = nullptr;
     QTableWidget* top_     = nullptr;
@@ -56,6 +68,11 @@ private:
     QProgressBar* bar_     = nullptr;
     QLabel*       note_    = nullptr;
     QPushButton*  compute_ = nullptr;
+    QString       titlePlain_;     // the title without markup ("name · type")
+    QString       titleName_;      // its column-name part (the link)
+    QString       titleSuffix_;
+    int           locCol_ = -1, locCount_ = 0;
+    bool          locOut_ = false, locHidden_ = false;
     ColumnSummary sum_;
     bool          has_ = false;
 };

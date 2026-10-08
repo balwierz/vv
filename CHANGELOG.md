@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- vvg: clicking a column header sorts by it and puts the cursor in that
+  column, so the *Column* tab summarises the column clicked. After a sort,
+  filter or find the cursor stays in its column (on the top row) instead of
+  being dropped.
+- vvg: the cursor column is tinted in the table, and the *Column* tab shows
+  its position (*Column 7 of 120*); the column name, and *→ show in table*
+  when the column is scrolled out of view, scroll it into view and flash it.
+
 ## [1.28.0] - 2026-10-08
 
 ### Added

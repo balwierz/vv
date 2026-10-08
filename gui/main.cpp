@@ -28,6 +28,11 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QFutureWatcher>
+#include <QGraphicsOpacityEffect>
+#include <QHash>
+#include <QPainter>
+#include <QPropertyAnimation>
+#include <QStyledItemDelegate>
 #include <QTimer>
 #include <QThread>
 #include <QElapsedTimer>
@@ -44,6 +49,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QMouseEvent>
 #include <QProgressBar>
 #include <QPointer>
 #include <QPushButton>
@@ -122,6 +128,47 @@ static LoadResult loadSources(const Config& base, const QStringList& paths,
         r.opened << p;
     }
     return r;
+}
+
+// Tints the cursor column, the one the Column tab summarises, so it stands
+// out from its neighbours; selection and search highlights paint over it.
+class CursorColumnDelegate : public QStyledItemDelegate {
+public:
+    explicit CursorColumnDelegate(QTableView* view) : QStyledItemDelegate(view), view_(view) {}
+    void paint(QPainter* p, const QStyleOptionViewItem& opt, const QModelIndex& idx) const override {
+        if (idx.column() == view_->currentIndex().column()) {
+            QColor c = opt.palette.color(QPalette::Highlight);
+            c.setAlpha(40);
+            p->fillRect(opt.rect, c);
+        }
+        QStyledItemDelegate::paint(p, opt, idx);
+    }
+private:
+    QTableView* view_;
+};
+
+// A highlight over `r` of `host` that fades out, drawing the eye to a column
+// just scrolled into view.
+static void flashRect(QWidget* host, const QRect& r) {
+    auto* w = new QWidget(host);
+    w->setAttribute(Qt::WA_TransparentForMouseEvents);
+    w->setAutoFillBackground(true);
+    QPalette pal = w->palette();
+    QColor c = host->palette().color(QPalette::Highlight);
+    c.setAlpha(110);
+    pal.setColor(QPalette::Window, c);
+    w->setPalette(pal);
+    w->setGeometry(r);
+    auto* eff = new QGraphicsOpacityEffect(w);
+    w->setGraphicsEffect(eff);
+    auto* anim = new QPropertyAnimation(eff, "opacity", w);
+    anim->setDuration(900);
+    anim->setStartValue(1.0);
+    anim->setEndValue(0.0);
+    anim->setEasingCurve(QEasingCurve::InQuad);
+    QObject::connect(anim, &QPropertyAnimation::finished, w, &QObject::deleteLater);
+    w->show();
+    anim->start();
 }
 
 class MainWindow : public QMainWindow {
@@ -295,6 +342,9 @@ public:
         colDock_->raise();
         v->selectionModel()->setCurrentIndex(v->model()->index(0, col),
                                              QItemSelectionModel::ClearAndSelect);
+        return waitColumnStatsForTest();
+    }
+    QString waitColumnStatsForTest() {
         refreshColumnStats(true);
         QElapsedTimer t;
         t.start();
@@ -308,6 +358,57 @@ public:
             return QStringLiteral("(here) ") + colPanel_->describeForTest();
         }
         return colPanel_->describeForTest();
+    }
+    // Fixed geometry for the location checks, independent of fonts:
+    // 100-px columns in a 200-px view.
+    void fixGeometryForTest(QTableView* v) {
+        for (int c = 0; c < v->model()->columnCount(); ++c)
+            v->horizontalHeader()->resizeSection(c, 100);
+        v->resize(200, 300);
+        QCoreApplication::processEvents();
+    }
+    // Window self-test: cursor in column 0, then a mouse click on the header
+    // of column `col` (scrolled into view first, as a user sees it). Prints
+    // the sort column, the cursor column after the sort and the Column tab.
+    QString headerClickForTest(int col) {
+        auto* v = activeView();
+        auto* m = activeModel();
+        if (!v || !m || col < 0 || col >= m->displayColumnCount()) return QStringLiteral("no column");
+        colDock_->show();
+        colDock_->raise();
+        fixGeometryForTest(v);
+        v->selectionModel()->setCurrentIndex(m->index(0, 0), QItemSelectionModel::ClearAndSelect);
+        v->scrollTo(m->index(0, col));
+        QHeaderView* h = v->horizontalHeader();
+        const QPointF at(h->sectionViewportPosition(col) + h->sectionSize(col) / 2.0, h->height() / 2.0);
+        for (QEvent::Type t : {QEvent::MouseButtonPress, QEvent::MouseButtonRelease}) {
+            QMouseEvent ev(t, at, h->viewport()->mapToGlobal(at), Qt::LeftButton,
+                           t == QEvent::MouseButtonPress ? Qt::LeftButton : Qt::NoButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(h->viewport(), &ev);
+        }
+        for (int g = 0; m->isComputing() && g < 2000000; ++g) QCoreApplication::processEvents();
+        const QModelIndex cur = v->currentIndex();
+        return QStringLiteral("sort=%1 cursor=%2,%3 title=%4 where=%5 %6")
+            .arg(m->sortColumn()).arg(cur.row()).arg(cur.column())
+            .arg(colPanel_->titleForTest(), colPanel_->locationForTest(), waitColumnStatsForTest());
+    }
+    // Window self-test: cursor in column `col`, the view scrolled back to
+    // its left edge, then the Column tab's "show in table". Prints the
+    // location before and after, and the column's position in the view.
+    QString showColumnForTest(int col) {
+        auto* v = activeView();
+        auto* m = activeModel();
+        if (!v || !m || col < 0 || col >= m->displayColumnCount()) return QStringLiteral("no column");
+        fixGeometryForTest(v);
+        v->selectionModel()->setCurrentIndex(m->index(0, col), QItemSelectionModel::ClearAndSelect);
+        v->horizontalScrollBar()->setValue(0);
+        updateColumnLocation();
+        const QString before = colPanel_->locationForTest();
+        emit colPanel_->showColumnRequested();
+        const int x = v->columnViewportPosition(col);
+        return QStringLiteral("before=%1 after=%2 x=%3 visible=%4")
+            .arg(before, colPanel_->locationForTest()).arg(x)
+            .arg(x >= 0 && x + v->columnWidth(col) <= v->viewport()->width() ? 1 : 0);
     }
     // Window self-test: select the block (r0, c0)-(r1, c1) and return the
     // status bar's selection summary.
@@ -439,6 +540,7 @@ private:
         autosizeColumns(view, model);
         view->setEditTriggers(QAbstractItemView::NoEditTriggers);
         view->setSelectionBehavior(QAbstractItemView::SelectItems);
+        view->setItemDelegate(new CursorColumnDelegate(view));
         view->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(view, &QWidget::customContextMenuRequested, this,
                 [this, view](const QPoint& p){ showTableContextMenu(view, p); });
@@ -447,9 +549,11 @@ private:
             view->fontMetrics().height() + 6);
 
         // Click a column header to sort (toggle asc/desc), typed via Arrow,
-        // off the UI thread.
+        // off the UI thread. The cursor moves to that column, so the Column
+        // tab summarises the column clicked.
         connect(view->horizontalHeader(), &QHeaderView::sectionClicked,
                 this, [this, view, model](int section) {
+                    keepCol_[model] = section;
                     Qt::SortOrder ord = Qt::AscendingOrder;
                     if (model->sortColumn() == section &&
                         sortOrder_.value(model, Qt::AscendingOrder) == Qt::AscendingOrder)
@@ -460,11 +564,36 @@ private:
                     view->horizontalHeader()->setSortIndicator(section, ord);
                 });
 
+        // A filter, sort or find resets the model twice (blank, then the new
+        // order), and a reset drops the view's cursor. Keep its column: the
+        // cursor comes back in it, on the top row, once the job is done.
+        connect(model, &QAbstractItemModel::modelAboutToBeReset, this, [this, view, model] {
+            const QModelIndex cur = view->currentIndex();
+            if (cur.isValid() && !keepCol_.contains(model)) keepCol_[model] = cur.column();
+        });
+        connect(model, &QAbstractItemModel::modelReset, this, [this, view, model] {
+            if (model->isComputing() || !keepCol_.contains(model)) return;
+            const int col = keepCol_.take(model);
+            if (col < model->columnCount() && model->rowCount() > 0)
+                view->selectionModel()->setCurrentIndex(
+                    model->index(std::max(0, view->rowAt(0)), col),
+                    QItemSelectionModel::ClearAndSelect);
+        });
+
         connect(view->selectionModel(), &QItemSelectionModel::currentChanged,
-                this, [this](const QModelIndex& cur, const QModelIndex& prev) {
+                this, [this, view](const QModelIndex& cur, const QModelIndex& prev) {
                     updateDetail(cur);
-                    if (colTimer_ && cur.column() != prev.column()) colTimer_->start();
+                    if (cur.column() != prev.column()) {
+                        view->viewport()->update();   // the column tint
+                        updateColumnLocation();
+                        if (colTimer_) colTimer_->start();
+                    }
                 });
+        // The Column tab says when its column is scrolled out of view.
+        connect(view->horizontalScrollBar(), &QScrollBar::valueChanged,
+                this, [this] { updateColumnLocation(); });
+        connect(view->horizontalHeader(), &QHeaderView::sectionResized,
+                this, [this] { updateColumnLocation(); });
         connect(view->selectionModel(), &QItemSelectionModel::selectionChanged,
                 selTimer_, [this]{ selTimer_->start(); });
         connect(model, &QAbstractItemModel::modelReset,
@@ -496,7 +625,7 @@ private:
             views_.erase(views_.begin() + i);
             models_.erase(models_.begin() + i);
         }
-        if (m) { sortOrder_.remove(m); tabOrigin_.remove(m); filterText_.remove(m); statsCache_.remove(m); }
+        if (m) { sortOrder_.remove(m); tabOrigin_.remove(m); filterText_.remove(m); statsCache_.remove(m); keepCol_.remove(m); }
         if (m && m == statsModel_) cancelColumnStats();
         jsonTabs_.erase(w);   // a JSON tree tab: its model, document and temporary copy
         if (m == pendingFindModel_) pendingFindModel_ = nullptr;
@@ -903,6 +1032,7 @@ private:
         connect(colPanel_, &ColumnPanel::filterToValueRequested, this,
                 [this](int i) { filterToValue(i); });
         connect(colPanel_, &ColumnPanel::copyCommandRequested, this, [this] { copyColumnCommand(); });
+        connect(colPanel_, &ColumnPanel::showColumnRequested, this, [this] { showCursorColumn(); });
         if (viewMenu_) {
             viewMenu_->addSeparator();
             viewMenu_->addAction(rowDock_->toggleViewAction());
@@ -932,10 +1062,49 @@ private:
     };
     static constexpr int kStatsAllColumns = 256;
 
+    // The cursor column; while a job has the model blank, the column the
+    // cursor will come back in.
     int currentColumn(QTableView* v) const {
         const QModelIndex cur = v->selectionModel() ? v->selectionModel()->currentIndex()
                                                     : QModelIndex();
-        return cur.isValid() ? cur.column() : 0;
+        if (cur.isValid()) return cur.column();
+        auto* m = qobject_cast<ArrowTableModel*>(v->model());
+        return m ? keepCol_.value(m, 0) : 0;
+    }
+    // Tell the Column tab where its column is: its position, and whether it
+    // is hidden or scrolled out of the view.
+    void updateColumnLocation() {
+        if (!colPanel_) return;
+        auto* m = activeModel();
+        auto* v = activeView();
+        if (!m || !v || m->displayColumnCount() == 0) { colPanel_->setLocation(-1, 0, false); return; }
+        const int col = std::min(currentColumn(v), m->displayColumnCount() - 1);
+        const bool hidden = v->isColumnHidden(col);
+        const int x = v->columnViewportPosition(col);
+        const bool out = hidden || x + v->columnWidth(col) <= 0 || x >= v->viewport()->width();
+        colPanel_->setLocation(col, m->displayColumnCount(), out, hidden);
+    }
+    // Scroll the Column tab's column into view (keeping the rows in view)
+    // and flash it.
+    void showCursorColumn() {
+        auto* m = activeModel();
+        auto* v = activeView();
+        if (!m || !v || m->displayColumnCount() == 0) return;
+        const int col = std::min(currentColumn(v), m->displayColumnCount() - 1);
+        if (v->isColumnHidden(col)) return;
+        QHeaderView* h = v->horizontalHeader();
+        if (m->rowCount() > 0)
+            v->scrollTo(m->index(std::max(0, v->rowAt(0)), col), QAbstractItemView::EnsureVisible);
+        else   // no rows to scroll to: move the header's scroll bar
+            v->horizontalScrollBar()->setValue(
+                v->horizontalScrollMode() == QAbstractItemView::ScrollPerPixel
+                    ? h->sectionPosition(col) : h->visualIndex(col));
+        flashRect(v->viewport(), QRect(v->columnViewportPosition(col), 0,
+                                       v->columnWidth(col), v->viewport()->height()));
+        flashRect(h->viewport(), QRect(h->sectionViewportPosition(col), 0,
+                                       h->sectionSize(col), h->height()));
+        v->setFocus();
+        updateColumnLocation();
     }
     QString activeFilterText(ArrowTableModel* m) const {
         return m->hasFilter() ? filterText_.value(m) : QString();
@@ -952,6 +1121,7 @@ private:
     // (the window self-test).
     void refreshColumnStats(bool force = false) {
         if (!colPanel_ || (!force && !colPanel_->isVisible())) return;
+        updateColumnLocation();
         auto* m = activeModel();
         auto* v = activeView();
         if (!m || !v) {
@@ -2143,6 +2313,7 @@ private:
     QDockWidget*                          colDock_   = nullptr;
     ColumnPanel*                          colPanel_  = nullptr;
     QTimer*                               colTimer_  = nullptr;   // debounces cursor moves
+    QHash<ArrowTableModel*, int>          keepCol_;   // cursor column across a model reset
     QTimer*                               statsPoll_ = nullptr;   // progress of a scan
     QFutureWatcher<StatsResult>*          statsWatcher_ = nullptr;
     QList<QFuture<StatsResult>>           statsFutures_;          // joined on close
@@ -2542,6 +2713,15 @@ int main(int argc, char** argv) {
         // "colstats <statistic=value …> top=… scope=…".
         if (const char* cs = std::getenv("VVG_COLSTATS"); cs && *cs)
             std::printf("colstats %s\n", win.columnStatsForTest(std::atoi(cs)).toUtf8().constData());
+        // Optional header click: VVG_HEADERCLICK=<display column> clicks
+        // that column's header and prints "headerclick sort=… cursor=r,c
+        // title=… where=… <Column tab>".
+        if (const char* hc = std::getenv("VVG_HEADERCLICK"); hc && *hc)
+            std::printf("headerclick %s\n", win.headerClickForTest(std::atoi(hc)).toUtf8().constData());
+        // Optional Column-tab location: VVG_SHOWCOL=<display column> prints
+        // "showcol before=… after=… x=… visible=…".
+        if (const char* sc = std::getenv("VVG_SHOWCOL"); sc && *sc)
+            std::printf("showcol %s\n", win.showColumnForTest(std::atoi(sc)).toUtf8().constData());
         // Optional selection summary: VVG_SELSUM="r0,c0,r1,c1" selects that
         // block and prints "selsum <status-bar text>".
         if (const char* ss = std::getenv("VVG_SELSUM"); ss && *ss) {

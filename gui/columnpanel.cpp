@@ -65,11 +65,17 @@ QString tableTsv(const QTableWidget* t, bool all) {
 ColumnPanel::ColumnPanel(QWidget* parent) : QWidget(parent) {
     auto* lay = new QVBoxLayout(this);
     title_ = new QLabel(this);
-    title_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    title_->setTextFormat(Qt::RichText);
+    title_->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse);
     QFont bold = title_->font();
     bold.setBold(true);
     title_->setFont(bold);
     title_->setWordWrap(true);
+    connect(title_, &QLabel::linkActivated, this, [this] { emit showColumnRequested(); });
+    where_ = new QLabel(this);
+    where_->setTextFormat(Qt::RichText);
+    where_->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse);
+    connect(where_, &QLabel::linkActivated, this, [this] { emit showColumnRequested(); });
     scope_ = new QLabel(this);
     scope_->setWordWrap(true);
     scope_->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -110,6 +116,7 @@ ColumnPanel::ColumnPanel(QWidget* parent) : QWidget(parent) {
     connect(compute_, &QPushButton::clicked, this, &ColumnPanel::computeRequested);
 
     lay->addWidget(title_);
+    lay->addWidget(where_);
     lay->addWidget(scope_);
     lay->addWidget(stats_);
     lay->addWidget(topHead_);
@@ -132,6 +139,51 @@ void ColumnPanel::showTables(bool on) {
     lay_->setStretch(lay_->count() - 1, top ? 0 : 1);
 }
 
+namespace {
+const QString kShowLink = QStringLiteral("show");
+QString link(const QString& text) {
+    return QStringLiteral("<a href=\"%1\" style=\"text-decoration:none\">%2</a>")
+        .arg(kShowLink, text.toHtmlEscaped());
+}
+}  // namespace
+
+// The title is "name · suffix"; with a location, the name is a link that
+// shows the column in the table.
+void ColumnPanel::setTitle(const QString& plain, const QString& suffix) {
+    titleName_   = plain;
+    titleSuffix_ = suffix;
+    titlePlain_  = suffix.isEmpty() ? plain : plain + QStringLiteral(" · ") + suffix;
+    renderLocation();
+}
+
+void ColumnPanel::setLocation(int col, int count, bool outOfView, bool hidden) {
+    locCol_ = col;
+    locCount_ = count;
+    locOut_ = outOfView;
+    locHidden_ = hidden;
+    renderLocation();
+}
+
+void ColumnPanel::renderLocation() {
+    const bool loc = locCol_ >= 0 && !titleName_.isEmpty();
+    QString t = loc && !locHidden_ ? link(titleName_) : titleName_.toHtmlEscaped();
+    if (!titleSuffix_.isEmpty()) t += QStringLiteral(" · ") + titleSuffix_.toHtmlEscaped();
+    title_->setText(t);
+    title_->setToolTip(loc && !locHidden_ ? tr("Show this column in the table") : QString());
+    if (!loc) { where_->clear(); where_->setVisible(false); return; }
+    QString w = tr("Column %1 of %2").arg(locCol_ + 1).arg(locCount_);
+    if (locHidden_) w += QStringLiteral(" · ") + tr("hidden").toHtmlEscaped();
+    else if (locOut_) w += QStringLiteral(" · ") + link(tr("→ show in table"));
+    where_->setText(w);
+    where_->setVisible(true);
+}
+
+QString ColumnPanel::locationForTest() const {
+    if (locCol_ < 0) return QStringLiteral("none");
+    return QStringLiteral("%1/%2%3").arg(locCol_ + 1).arg(locCount_)
+        .arg(locHidden_ ? QStringLiteral(" hidden") : locOut_ ? QStringLiteral(" out") : QString());
+}
+
 void ColumnPanel::showSummary(const ColumnSummary& s, int digits,
                               const std::shared_ptr<arrow::DataType>& type,
                               const QString& scope) {
@@ -140,8 +192,7 @@ void ColumnPanel::showSummary(const ColumnSummary& s, int digits,
     if (digits <= 0) digits = 15;
     // A mean / std / percentile: 10 significant digits are plenty to read.
     const int fd = std::min(digits, 10);
-    title_->setText(QStringLiteral("%1 · %2").arg(QString::fromStdString(s.name),
-                                                  QString::fromStdString(s.type)));
+    setTitle(QString::fromStdString(s.name), QString::fromStdString(s.type));
     scope_->setText(scope);
     const int64_t rows = s.count + s.nulls;
     auto stat = [&](double v, int dg) {
@@ -219,7 +270,7 @@ void ColumnPanel::showSummary(const ColumnSummary& s, int digits,
 
 void ColumnPanel::showBusy(const QString& title, const QString& text, qint64 rows, qint64 total) {
     has_ = false;
-    title_->setText(title);
+    setTitle(title);
     scope_->setText(text.arg(QLocale().toString(rows)));
     if (total > 0) { bar_->setRange(0, 1000); bar_->setValue((int)std::min<qint64>(1000, rows * 1000 / total)); }
     else bar_->setRange(0, 0);
@@ -231,7 +282,7 @@ void ColumnPanel::showBusy(const QString& title, const QString& text, qint64 row
 
 void ColumnPanel::showNote(const QString& title, const QString& text, bool offerCompute) {
     has_ = false;
-    title_->setText(title);
+    setTitle(title);
     scope_->clear();
     note_->setText(text);
     showTables(false);
@@ -249,7 +300,7 @@ bool ColumnPanel::copySelection() {
 }
 
 QString ColumnPanel::allAsTsv() const {
-    QString out = title_->text() + QLatin1Char('\n') + tableTsv(stats_, true);
+    QString out = titlePlain_ + QLatin1Char('\n') + tableTsv(stats_, true);
     if (top_->rowCount() > 0)
         out += QLatin1Char('\n') + tr("Value\tCount\t%") + QLatin1Char('\n') + tableTsv(top_, true);
     return out;
