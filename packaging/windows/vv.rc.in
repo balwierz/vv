@@ -1,0 +1,31 @@
+// Windows resources of vv.exe and vvg.exe (CMake configure_file): the
+// application manifest (UTF-8 code page), the icon and the version block.
+// vv.ico is generated from gui/kde/icons/vv.svg:
+//   magick -background none -density 384 gui/kde/icons/vv.svg -resize 256x256 PNG32:vv256.png
+//   python3 -c "from PIL import Image; Image.open('vv256.png').save('vv.ico',
+//       sizes=[(256,256),(64,64),(48,48),(32,32),(24,24),(16,16)])"
+
+1 24 "@VV_WIN_DIR@/vv.manifest"        // 24 = RT_MANIFEST, 1 = the process manifest
+1 ICON "@VV_WIN_DIR@/vv.ico"
+
+1 VERSIONINFO
+FILEVERSION     @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+PRODUCTVERSION  @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName",      "vv contributors"
+      VALUE "FileDescription",  "vv - universal data / genomic file viewer"
+      VALUE "FileVersion",      "@PROJECT_VERSION@"
+      VALUE "LegalCopyright",   "MIT License"
+      VALUE "ProductName",      "vv"
+      VALUE "ProductVersion",   "@PROJECT_VERSION@"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

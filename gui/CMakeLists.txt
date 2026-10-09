@@ -16,6 +16,10 @@ add_executable(vvg
     vvg.qrc
 )
 target_include_directories(vvg PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+if(WIN32)
+  target_sources(vvg PRIVATE "${VV_WIN_RC}")   # manifest, icon, version (top level)
+  set_target_properties(vvg PROPERTIES WIN32_EXECUTABLE ON)   # no console window
+endif()
 target_link_libraries(vvg PRIVATE vvcore Qt6::Widgets Qt6::Concurrent)
 
 message(STATUS "GUI target  : vvg (Qt6 ${Qt6_VERSION})")

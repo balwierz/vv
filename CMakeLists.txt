@@ -438,6 +438,14 @@ endif()
 if(NOT VV_WITH_TUI)
   target_compile_definitions(vv PRIVATE VV_NO_TUI=1)
 endif()
+# Windows: the application manifest (UTF-8 process code page), icon and
+# version block, shared with vvg.
+if(WIN32)
+  set(VV_WIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/packaging/windows")
+  configure_file(packaging/windows/vv.rc.in "${CMAKE_CURRENT_BINARY_DIR}/vv.rc" @ONLY)
+  set(VV_WIN_RC "${CMAKE_CURRENT_BINARY_DIR}/vv.rc")
+  target_sources(vv PRIVATE "${VV_WIN_RC}")
+endif()
 # xz and bzip2 input (src/core/compress.cpp), when liblzma / libbz2 are found;
 # without them those files are refused with "built without xz support".
 find_package(LibLZMA)
