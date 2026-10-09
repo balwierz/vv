@@ -10,7 +10,13 @@
 
 #ifndef VV_CORE_LIB   // CLI entry point — excluded from libvvcore
 int main(int argc, char** argv) {
+    init_console();
     Config cfg = parse_args(argc, argv);
+#ifdef VV_NO_TUI
+    if (cfg.interactive)
+        std::fprintf(stderr, "vv: built without the interactive viewer; -i ignored "
+                             "(vvg is the desktop viewer)\n");
+#endif
 
     // --formats: the registry, no input file needed.
     if (cfg.list_formats) {

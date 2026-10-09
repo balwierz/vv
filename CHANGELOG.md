@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Windows build** with MSYS2 UCRT64 (MinGW-w64): vv without the ncurses
+  viewers (`-DVV_WITH_TUI=OFF`, the default there; `-i` is ignored with a
+  note) and vvg. Built and tested in CI (`.github/workflows/windows.yml`);
+  build steps in INSTALL.md. No Windows package is published yet.
+
 ## [1.28.1] - 2026-10-08
 
 ### Changed

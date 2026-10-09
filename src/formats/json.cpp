@@ -810,7 +810,7 @@ void fuzz_one(const uint8_t* buf, size_t n) {
     // (so checkpoints and evicted pages are exercised): children lie inside
     // their parent in increasing order, and an accepted document has as many
     // scalars in the tree as the lexer reported.
-    setenv("VV_JSON_CHECKPOINT", "4", 1);
+    set_env("VV_JSON_CHECKPOINT", "4");
     JsonDoc doc;
     doc.open_buffer(in.data(), in.size(), /*lines=*/false, /*validate=*/false);
     struct Count : Visitor {

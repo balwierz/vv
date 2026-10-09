@@ -52,6 +52,9 @@ static TermBg classify_osc11_reply(const std::string& s) {
 // bounded timeout; restores termios; Unknown on no/garbled reply (so callers
 // fall back to the dark-terminal default with no regression).
 static TermBg query_osc11_bg() {
+#ifdef _WIN32
+    return TermBg::Unknown;   // no termios / poll on the console; COLORFGBG still applies
+#else
     if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) return TermBg::Unknown;
     struct termios saved;
     if (tcgetattr(STDIN_FILENO, &saved) != 0) return TermBg::Unknown;
@@ -77,6 +80,7 @@ static TermBg query_osc11_bg() {
     }
     tcsetattr(STDIN_FILENO, TCSANOW, &saved);
     return classify_osc11_reply(resp);
+#endif
 }
 
 // Resolve the terminal background once (before ncurses takes over the tty):
@@ -145,6 +149,10 @@ static std::string xdg_config_dir() {
     if (xdg && *xdg) return std::string(xdg) + "/vv";
     const char* home = std::getenv("HOME");
     if (home && *home) return std::string(home) + "/.config/vv";
+#ifdef _WIN32
+    const char* appdata = std::getenv("APPDATA");   // C:\Users\<name>\AppData\Roaming
+    if (appdata && *appdata) return std::string(appdata) + "/vv";
+#endif
     return "";
 }
 
@@ -169,11 +177,9 @@ bool save_user_setting(const std::string& key, const std::string& value) {
     if (dir.empty()) return false;
     // mkdir -p $XDG/vv (the parent $XDG_CONFIG_HOME usually exists but
     // create it too just in case — first run on a fresh home).
-    auto slash = dir.rfind('/');
-    if (slash != std::string::npos) {
-        ::mkdir(dir.substr(0, slash).c_str(), 0755);  // ok if exists
-    }
-    if (::mkdir(dir.c_str(), 0755) != 0 && errno != EEXIST) return false;
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (!std::filesystem::is_directory(dir, ec)) return false;
     std::string path = dir + "/config";
 
     std::vector<std::string> lines;

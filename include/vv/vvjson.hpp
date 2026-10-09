@@ -29,10 +29,12 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <sys/stat.h>
+#ifndef _WIN32
 #include <signal.h>
 #include <sys/mman.h>
-#include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 namespace arrow { namespace io { class InputStream; } }
 
@@ -129,6 +131,16 @@ struct MapGuardSlot {
 inline MapGuardSlot g_map_guard[16];
 inline long         g_map_guard_page = 4096;
 
+#ifdef _WIN32
+// Windows refuses to truncate a file while it is mapped, so there is nothing
+// to guard. map_file / unmap_file (src/core/platform.cpp) map a whole file
+// read-only; an empty file gives no view and size 0.
+inline int  map_guard_add(const void*, size_t) { return -1; }
+inline void map_guard_remove(int) {}
+std::string map_file(const std::string& path, void** view, size_t* size);
+void        unmap_file(void* view);
+#else
+
 inline void map_guard_handler(int, siginfo_t* si, void*) {
     const uintptr_t a = reinterpret_cast<uintptr_t>(si->si_addr);
     for (MapGuardSlot& sl : g_map_guard) {
@@ -173,6 +185,7 @@ inline void map_guard_remove(int i) {
     g_map_guard[i].hi.store(0);
     g_map_guard[i].lo.store(0);
 }
+#endif  // _WIN32
 
 class JsonDoc {
 public:
@@ -185,12 +198,23 @@ public:
         stop_ = true;
         if (validator_.joinable()) validator_.join();
         map_guard_remove(guard_);
+#ifdef _WIN32
+        if (map_) unmap_file(map_);
+#else
         if (map_) munmap(map_, size_);
+#endif
     }
 
     // Map `path` (a regular, uncompressed file). `lines`: NDJSON / JSON Lines.
     std::string open(const std::string& path, bool lines, bool validate = true) {
         path_ = path;
+#ifdef _WIN32
+        struct stat st;
+        if (::stat(path.c_str(), &st) != 0) return "Cannot open '" + path + "': " + std::strerror(errno);
+        mtime_ = st.st_mtime;
+        if (auto e = map_file(path, &map_, &size_); !e.empty()) return e;
+        data_ = static_cast<const char*>(map_);
+#else
         int fd = ::open(path.c_str(), O_RDONLY);
         if (fd < 0) return "Cannot open '" + path + "': " + std::strerror(errno);
         struct stat st;
@@ -208,6 +232,7 @@ public:
             guard_ = map_guard_add(m, size_);
         }
         ::close(fd);
+#endif
         init(lines, validate);
         return "";
     }

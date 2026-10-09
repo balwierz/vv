@@ -117,9 +117,8 @@ static void draw_row(const std::vector<Column>& cols,
 
 // Detect terminal width. Falls back to $COLUMNS, then 80.
 int detect_terminal_width() {
-    struct winsize ws;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
-        return ws.ws_col;
+    int cols = 0, rows = 0;
+    if (term_size(STDOUT_FILENO, &cols, &rows)) return cols;
     if (const char* c = std::getenv("COLUMNS")) {
         int w = std::atoi(c);
         if (w > 0) return w;

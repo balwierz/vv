@@ -53,10 +53,8 @@ static std::vector<uint32_t> viridis_palette(int n) {
 
 // Terminal size in character cells (fallback 80x24).
 static void term_cells(int* cols, int* rows) {
-    struct winsize ws{};
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) {
-        *cols = ws.ws_col; *rows = ws.ws_row > 0 ? ws.ws_row : 24;
-    } else { *cols = 80; *rows = 24; }
+    if (term_size(STDOUT_FILENO, cols, rows)) { if (*rows <= 0) *rows = 24; }
+    else { *cols = 80; *rows = 24; }
 }
 
 // Nearest-neighbour resample of a palette-indexed image to (tw, th).

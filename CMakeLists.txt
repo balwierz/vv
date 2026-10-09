@@ -23,6 +23,16 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# The ncurses viewers (table viewer, JSON tree). Off on Windows, where vv is
+# the table / document output and vvg the interactive viewer; the CLI is then
+# built with VV_NO_TUI and needs no curses library.
+if(WIN32)
+  set(_vv_tui_default OFF)
+else()
+  set(_vv_tui_default ON)
+endif()
+option(VV_WITH_TUI "Build vv's ncurses viewers (needs ncurses >= 6)" ${_vv_tui_default})
+
 # `-march=x86-64` would force the baseline-x86_64 ABI — fine on x86 (it's the
 # default for 64-bit gcc anyway) but fatal on aarch64 / arm64 where gcc
 # rejects the value. Let gcc pick the host-appropriate default; the static
@@ -145,6 +155,7 @@ endforeach()
 # would build, then silently drop scroll-wheel-down — the class of silent
 # degradation removed in #86 / #100. Better to fail at configure with the fix
 # in the message.
+if(VV_WITH_TUI)
 set(CURSES_NEED_NCURSES TRUE)
 # The wide-character library (ncursesw). The narrow libncurses that FindCurses
 # picks by default on Debian / Ubuntu prints every byte of a UTF-8 glyph
@@ -217,6 +228,11 @@ int main() { return 0; }
 endif()
 unset(CMAKE_REQUIRED_INCLUDES)
 unset(_vv_curses_probe_inc)
+else()
+  set(CURSES_INCLUDE_DIRS "")
+  set(CURSES_LIBRARIES "")
+  message(STATUS "ncurses    : not used (VV_WITH_TUI=OFF)")
+endif()
 
 # ── htslib (BAM support) ─────────────────────────────────────────────────────
 find_package(PkgConfig REQUIRED)
@@ -385,6 +401,7 @@ set(VV_CORE_SOURCES
     src/core/common.cpp   src/core/compress.cpp src/core/derived.cpp
     src/core/filter.cpp
     src/core/io.cpp       src/core/modes.cpp    src/core/open.cpp
+    src/core/platform.cpp
     src/core/region.cpp   src/core/source.cpp   src/core/summary.cpp
     src/formats/arrow.cpp     src/formats/cooler.cpp    src/formats/delimited.cpp
     src/formats/duckdb.cpp
@@ -417,6 +434,9 @@ target_include_directories(vv PRIVATE
 )
 if(ARROW_ORC_HEADER)
   target_compile_definitions(vv PRIVATE VV_HAVE_ORC=1)
+endif()
+if(NOT VV_WITH_TUI)
+  target_compile_definitions(vv PRIVATE VV_NO_TUI=1)
 endif()
 # xz and bzip2 input (src/core/compress.cpp), when liblzma / libbz2 are found;
 # without them those files are refused with "built without xz support".
@@ -507,7 +527,7 @@ message(STATUS "Static absl libs found: ${_nabsl}")
 
 find_library(ATOMIC_STATIC NAMES libatomic.a)
 
-if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND NCURSES_STATIC_LIB)
+if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND (NCURSES_STATIC_LIB OR NOT VV_WITH_TUI))
   message(STATUS "Static linking: htslib=${HTSLIB_STATIC_LIB}  ncurses=${NCURSES_STATIC_LIB}")
   set(_tinfo_lib "")
   if(NCURSES_STATIC_TINFO)
@@ -536,7 +556,10 @@ if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND NCURSES_STATIC_LIB)
   # Split into the common reader-dep list (shared with libvvcore / the GUI)
   # and the ncurses bits, which only the CLI/TUI needs. libvvcore reuses
   # _vv_link_common verbatim so the GUI links exactly what the CLI links.
-  set(_vv_curses ${NCURSES_STATIC_LIB} ${_tinfo_lib})
+  set(_vv_curses "")
+  if(VV_WITH_TUI)
+    set(_vv_curses ${NCURSES_STATIC_LIB} ${_tinfo_lib})
+  endif()
   set(_vv_link_common
       ${PARQUET_TARGET}
       # arrow_compute kernels live in a separate archive; wrap in

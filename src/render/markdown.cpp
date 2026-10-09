@@ -1474,8 +1474,11 @@ std::string parse_markdown_file(const std::string& path,
 // on $PATH (execlp returns; the child cat's its stdin to the original
 // terminal stdout so the user still sees the content). SIGPIPE is
 // ignored during emit because the user may quit less mid-render.
-static int g_pager_pid = -1;
+[[maybe_unused]] static int g_pager_pid = -1;
 void emit_via_pager(const std::function<void()>& emit_fn) {
+#ifdef _WIN32
+    emit_fn();   // no fork / exec: written straight to the console
+#else
     int pfd[2];
     if (pipe(pfd) != 0) { emit_fn(); return; }
     // Set this BEFORE forking. setenv() takes a libc lock and is not
@@ -1484,7 +1487,7 @@ void emit_via_pager(const std::function<void()>& emit_fn) {
     // a lock another thread held at fork time. Doing it in the parent is
     // harmless: the value only matters to the exec'd `less`, and setenv(...,0)
     // still leaves a user-provided LESSANSIENDCHARS alone.
-    setenv("LESSANSIENDCHARS", "mK", 0);
+    set_env("LESSANSIENDCHARS", "mK", false);
     pid_t pid = fork();
     if (pid < 0) {
         close(pfd[0]); close(pfd[1]);
@@ -1535,6 +1538,7 @@ void emit_via_pager(const std::function<void()>& emit_fn) {
     signal(SIGPIPE, prev);
     waitpid(pid, nullptr, 0);
     g_pager_pid = -1;
+#endif
 }
 
 // Emit the prose body of `doc` to stdout as ANSI. Tables are referenced

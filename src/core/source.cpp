@@ -201,8 +201,7 @@ std::vector<int> select_field_indices(
         // 4. Glob.
         if (term.find_first_of("*?") != std::string::npos) {
             for (int i = 0; i < n_fields; ++i)
-                if (fnmatch(term.c_str(), schema->field(i)->name().c_str(),
-                            0) == 0)
+                if (glob_match(term.c_str(), schema->field(i)->name().c_str()))
                     hits.push_back(i);
             *matched = !hits.empty();
             return hits;

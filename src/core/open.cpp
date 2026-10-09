@@ -51,7 +51,11 @@ static void spool_signal(int sig) {
 static void spool_register(const std::string& path) {
     if (g_n_spooled == 0) {
         std::atexit(remove_spooled_files);
+#ifdef SIGHUP
         for (int sig : {SIGINT, SIGTERM, SIGHUP}) {
+#else
+        for (int sig : {SIGINT, SIGTERM}) {   // Windows: no SIGHUP
+#endif
             auto prev = signal(sig, spool_signal);
             if (prev != SIG_DFL) signal(sig, prev);   // someone else handles it
         }
@@ -108,14 +112,10 @@ static std::string pipe_binary_ext(const std::string& head) {
 // else .tsv.gz). The file is removed at exit.
 static std::string spool_pipe(int fd, const std::string& head, std::string ext,
                               std::string* path_out, int64_t* bytes_out) {
-    const char* tmpdir = std::getenv("TMPDIR");
-    std::string tmpl = std::string(tmpdir && *tmpdir ? tmpdir : "/tmp") + "/vv-pipe-XXXXXX";
-    std::vector<char> name(tmpl.begin(), tmpl.end());
-    name.push_back('\0');
-    int out = ::mkstemp(name.data());
-    if (out < 0) return "cannot create a temporary file in " + tmpl.substr(0, tmpl.rfind('/')) +
+    std::string path = temp_dir() + "/vv-pipe-XXXXXX";
+    int out = make_temp_file(&path);
+    if (out < 0) return "cannot create a temporary file in " + temp_dir() +
                         ": " + std::strerror(errno) + " (set TMPDIR)";
-    std::string path(name.data());
     spool_register(path);
     int64_t total = 0;
     auto put = [&](const char* p, size_t n) -> bool {
@@ -179,14 +179,10 @@ std::string human_bytes(int64_t sz) {
 std::string spool_stream(const std::shared_ptr<arrow::io::InputStream>& in,
                          const std::string& ext, std::string* path_out,
                          int64_t* bytes_out, const std::string& progress) {
-    const char* tmpdir = std::getenv("TMPDIR");
-    std::string tmpl = std::string(tmpdir && *tmpdir ? tmpdir : "/tmp") + "/vv-pipe-XXXXXX";
-    std::vector<char> name(tmpl.begin(), tmpl.end());
-    name.push_back('\0');
-    int out = ::mkstemp(name.data());
+    std::string path = temp_dir() + "/vv-pipe-XXXXXX";
+    int out = make_temp_file(&path);
     if (out < 0) return "cannot create a temporary file: " + std::string(std::strerror(errno)) +
                         " (set TMPDIR)";
-    std::string path(name.data());
     spool_register(path);
     int64_t total = 0, shown_at = 0;
     const bool show = !progress.empty() && isatty(STDERR_FILENO);
@@ -247,14 +243,6 @@ static bool file_is_ipc_stream(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     uint8_t m[8] = {0};
     return f.read(reinterpret_cast<char*>(m), 8) && looks_like_ipc_stream(m, 8);
-}
-
-// True for a path that names a pipe, FIFO, socket or character device —
-// process substitution's /dev/fd/N — rather than a regular file.
-bool path_is_pipe(const std::string& path) {
-    struct stat st;
-    if (::stat(path.c_str(), &st) != 0) return false;
-    return S_ISFIFO(st.st_mode) || S_ISCHR(st.st_mode) || S_ISSOCK(st.st_mode);
 }
 
 // ── Directory / partitioned-dataset source ────────────────────────────────────
@@ -837,7 +825,7 @@ static bool is_plink_bed(const std::string& path) {
 // exports it to a VCF vv reads and the sidecars that vv reads as they are.
 static std::string plink_genotype_refusal(const std::string& path, bool pgen) {
     std::filesystem::path p(path);
-    std::string stem = (p.parent_path() / p.stem()).string();
+    std::string stem = (p.parent_path() / p.stem()).generic_string();   // `/`, as given
     if (stem.find_first_of(" '\"$`\\") != std::string::npos) stem = "'" + stem + "'";
     const std::string name = p.stem().string();
     return std::string("a PLINK ") + (pgen ? "2 .pgen" : "1 .bed") + " genotype file (binary), " +
@@ -1043,7 +1031,7 @@ std::string open_source_dispatch(const std::string& path, const Config& cfg,
                 return "Refusing to read from a terminal on stdin. "
                        "Did you mean to pipe data in (`cat foo.tsv | vv -`)?";
         } else {
-            fd = ::open(path.c_str(), O_RDONLY);
+            fd = ::open(path.c_str(), O_RDONLY | O_BINARY);
             if (fd < 0) return "Cannot open '" + path + "': " + std::strerror(errno);
             if (isatty(fd)) { ::close(fd); return "'" + path + "' is a terminal, not a file"; }
         }

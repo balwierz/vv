@@ -110,25 +110,28 @@ extern "C" {
 #include <mutex>
 #include <thread>
 #include <string>
-#include <fnmatch.h>   // --select globs (POSIX; present on Linux + macOS)
 #include <unistd.h>
-#include <termios.h>
-#include <poll.h>
-#include <sys/wait.h>
 #include <signal.h>
 #include <unordered_map>
 #include <vector>
-#include <sys/ioctl.h>
 #include <cerrno>
-#include <langinfo.h>
-#include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#ifndef _WIN32
+#include <termios.h>
+#include <poll.h>
+#include <sys/wait.h>
+#include <langinfo.h>
+#endif
+#ifndef O_BINARY   // Windows: open(2) translates line endings unless asked not to
+#define O_BINARY 0
+#endif
 
 // The ncurses TUI is the CLI frontend only. libvvcore (VV_CORE_LIB) is the
 // headless reader core shared with the Qt GUI / KDE plugins and must not pull
 // in ncurses or define main().
-#ifndef VV_CORE_LIB
+// VV_NO_TUI: a CLI built without the viewer (Windows), headless like the core.
+#if !defined(VV_CORE_LIB) && !defined(VV_NO_TUI)
 #include <ncurses.h>
 #undef OK   // ncurses defines OK as 0; conflicts with arrow::Status::OK()
 #else
@@ -1010,7 +1013,6 @@ std::string spool_stream(const std::shared_ptr<arrow::io::InputStream>& in,
                          const std::string& ext, std::string* path_out,
                          int64_t* bytes_out, const std::string& progress = "");
 
-bool path_is_pipe(const std::string& path);
 
 // ── In-memory adapter: wrap an Arrow Table as a TabularSource ────────────────
 //
@@ -1348,6 +1350,26 @@ std::string open_json_file(const std::string& path,
 bool run_table_viewer(std::vector<std::unique_ptr<TabularSource>> srcs, const Config& cfg,
                       const TuiStart& start, std::unique_ptr<TabularSource>* first);
 #endif
+
+// ── Platform (src/core/platform.cpp) ─────────────────────────────────────────
+// The system calls whose POSIX and Windows forms differ.
+
+// The terminal's size in cells; false when `fd` is not a terminal.
+bool term_size(int fd, int* cols, int* rows);
+// fnmatch(3) with no flags: `*`, `?`, `[...]` and `\` escapes.
+bool glob_match(const char* pattern, const char* name);
+// mkstemps(3): replace the six Xs before the last `suffix_len` characters of
+// `*tmpl` and create that file; its descriptor, or -1.
+int make_temp_file(std::string* tmpl, int suffix_len = 0);
+// The directory for temporary files: $TMPDIR, else the system's.
+std::string temp_dir();
+void set_env(const char* name, const char* value, bool overwrite = true);
+// A character device, FIFO or socket (stdin redirected from one, /dev/stdin, a
+// process substitution): read once and spooled, not opened by name.
+bool path_is_pipe(const std::string& path);
+// Windows: UTF-8 console output, ANSI escape processing and binary stdin /
+// stdout (no line-ending translation). Nothing elsewhere.
+void init_console();
 
 int detect_terminal_width();
 

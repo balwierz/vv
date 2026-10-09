@@ -131,11 +131,16 @@ std::string document_flag_error(const Config& cfg, DocKind kind) {
 // question — main() asks it twice (once to decide whether --tail may stream,
 // once to actually launch), and the two must not drift.
 bool tui_wanted(const Config& cfg) {
+#ifdef VV_NO_TUI
+    (void)cfg;
+    return false;   // built without the viewers: always the table / document output
+#else
     bool auto_tui = !cfg.no_interactive && !cfg.delimiter && !cfg.vertical
                     && cfg.parquet_out.empty() && cfg.arrow_out.empty()
                     && !cfg.head_rows_set
                     && isatty(STDOUT_FILENO) && isatty(STDIN_FILENO);
     return cfg.interactive || auto_tui;
+#endif
 }
 
 // Stream a text source to stdout verbatim: the bytes that came in, with the
@@ -238,7 +243,11 @@ std::string preflight_path(const std::string& path) {
     // A directory is a dataset (concatenated data files); let the dataset
     // opener validate its contents and report any problem.
     if (!S_ISDIR(st.st_mode) &&
-        !S_ISREG(st.st_mode) && !S_ISFIFO(st.st_mode) && !S_ISLNK(st.st_mode))
+        !S_ISREG(st.st_mode) && !S_ISFIFO(st.st_mode)
+#ifdef S_ISLNK
+        && !S_ISLNK(st.st_mode)
+#endif
+        )
         return "not a regular file";
     if (::access(path.c_str(), R_OK) != 0) return "permission denied";
     return "";

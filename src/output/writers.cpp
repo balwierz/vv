@@ -243,14 +243,12 @@ static bool resolve_compression(const std::string& name,
     return true;
 }
 
-// Build an mkstemps() template under $TMPDIR (falling back to /tmp). The
-// `--parquet -` / `--arrow -` spools need a seekable file; hardcoding /tmp
-// breaks containers whose /tmp is tiny or read-only.
+// Build an mkstemps() template under $TMPDIR (falling back to the system's
+// temporary directory). The `--parquet -` / `--arrow -` spools need a
+// seekable file; hardcoding /tmp breaks containers whose /tmp is tiny or
+// read-only.
 static std::string spool_template(const char* name) {
-    const char* dir = std::getenv("TMPDIR");
-    std::string d = (dir && *dir) ? dir : "/tmp";
-    if (d.back() == '/') d.pop_back();
-    return d + "/" + name;
+    return temp_dir() + "/" + name;
 }
 
 // Stream the source's chunks into a Parquet file at cfg.parquet_out.
@@ -291,14 +289,11 @@ std::string write_parquet(TabularSource& src, const Config& cfg) {
     std::string out_path = cfg.parquet_out;
     int tmp_fd = -1;
     if (to_stdout) {
-        std::string tmpl_s = spool_template("vv-parquet-XXXXXX.parquet");
-        std::vector<char> tmpl(tmpl_s.begin(), tmpl_s.end());
-        tmpl.push_back('\0');
-        tmp_fd = mkstemps(tmpl.data(), 8);  // suffix length = ".parquet" = 8
+        out_path = spool_template("vv-parquet-XXXXXX.parquet");
+        tmp_fd = make_temp_file(&out_path, 8);  // suffix length = ".parquet" = 8
         if (tmp_fd < 0)
             return std::string("Cannot create temp file for --parquet -: ") +
                    std::strerror(errno);
-        out_path = tmpl.data();
         // Keep fd open (Arrow opens the path by name); we'll clean up below.
         ::close(tmp_fd);
         tmp_fd = -1;
@@ -444,14 +439,11 @@ std::string write_arrow(TabularSource& src, const Config& cfg) {
     bool to_stdout = (cfg.arrow_out == "-");
     std::string out_path = cfg.arrow_out;
     if (to_stdout) {
-        std::string tmpl_s = spool_template("vv-arrow-XXXXXX.arrow");
-        std::vector<char> tmpl(tmpl_s.begin(), tmpl_s.end());
-        tmpl.push_back('\0');
-        int fd = mkstemps(tmpl.data(), 6);   // suffix ".arrow" = 6
+        out_path = spool_template("vv-arrow-XXXXXX.arrow");
+        int fd = make_temp_file(&out_path, 6);   // suffix ".arrow" = 6
         if (fd < 0)
             return std::string("Cannot create temp file for --arrow -: ") +
                    std::strerror(errno);
-        out_path = tmpl.data();
         ::close(fd);
     }
 

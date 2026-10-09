@@ -7,8 +7,9 @@
 
 // ── Interactive TUI viewer (ncurses) ─────────────────────────────────────────
 // Everything from here through the end of TableTUI is the ncurses CLI
-// frontend; excluded from libvvcore (the headless reader core).
-#ifndef VV_CORE_LIB
+// frontend; excluded from libvvcore (the headless reader core) and from a CLI
+// built with VV_NO_TUI (Windows).
+#if !defined(VV_CORE_LIB) && !defined(VV_NO_TUI)
 
 // One run of a text line that shares a single attribute + colour.
 struct AnsiRun {
@@ -4948,6 +4949,21 @@ bool run_table_viewer(std::vector<std::unique_ptr<TabularSource>> srcs, const Co
         }
     }
     *first = tui.take_first_source();
+    return false;
+}
+
+#elif !defined(VV_CORE_LIB)   // VV_NO_TUI: the CLI without the viewers
+
+// tui_wanted() is false in this build, so only an explicit --tree gets here.
+std::string run_json_viewer(const std::string&, const std::string&, const std::string&,
+                            bool, bool, const Config&, bool* term_failed) {
+    *term_failed = false;
+    return "this vv is built without the interactive viewer (vvg is the desktop viewer)";
+}
+
+bool run_table_viewer(std::vector<std::unique_ptr<TabularSource>> srcs, const Config&,
+                      const TuiStart&, std::unique_ptr<TabularSource>* first) {
+    if (!srcs.empty()) *first = std::move(srcs.front());
     return false;
 }
 

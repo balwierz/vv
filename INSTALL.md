@@ -322,6 +322,33 @@ silently:
 Unlike the Linux tarball, the macOS one is **not** a static binary — it links
 the Homebrew libraries above, so install them before running it.
 
+### Windows (MSYS2)
+
+No Windows package is published yet. vv and vvg build natively with
+[MSYS2](https://www.msys2.org/)'s UCRT64 environment (MinGW-w64 GCC; htslib
+does not build with MSVC), and CI builds and tests them on every push. In the
+*MSYS2 UCRT64* shell:
+
+```sh
+pacman -S --needed git mingw-w64-ucrt-x86_64-{toolchain,cmake,ninja,pkgconf} \
+  mingw-w64-ucrt-x86_64-{arrow,htslib,hdf5,sqlite3,xlsxio,minizip,expat,zlib,xz,bzip2,blosc} \
+  mingw-w64-ucrt-x86_64-{qt6-base,qt6-svg}
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DVV_BUILD_GUI=ON
+cmake --build build
+```
+
+`build/vv.exe` and `build/gui/vvg.exe` link the MSYS2 DLLs, so run them from
+that shell (or with `C:\msys64\ucrt64\bin` on `PATH`). On Windows:
+
+- **No interactive terminal viewer.** vv prints the table / document output
+  (`-i` is ignored with a note); vvg is the interactive viewer. The build sets
+  `-DVV_WITH_TUI=OFF` by default, so ncurses is not needed.
+- **No pager** for Markdown documents; they are written to the console.
+- **Process substitution** (`<(…)`) hands vv a path Windows cannot open;
+  pipe into stdin instead (`… | vv -`).
+
+Under WSL the Linux packages and the static binary work as they are.
+
 ### Build
 
 ```sh
