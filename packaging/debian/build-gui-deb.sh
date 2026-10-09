@@ -143,14 +143,18 @@ done
 if [ "${#bundle[@]}" -gt 0 ]; then
     install -d "$root$bundle_dir"
     for name in "${!bundle[@]}"; do
+        # Copied unmodified. A bundled lib may need a bundled sibling
+        # (libparquet → libarrow); the payloads' DT_RPATH below resolves it,
+        # so the copies get no RPATH of their own. Rewriting them with
+        # patchelf 0.18 broke Arrow 26's arm64 libarrow (an appended RW
+        # segment; protobuf then aborted at load on corrupt descriptor data).
         install -m644 "$(realpath -- "${bundle[$name]}")" "$root$bundle_dir/$name"
-        # A bundled lib may need a bundled sibling (libparquet → libarrow).
-        patchelf --force-rpath --set-rpath '$ORIGIN' "$root$bundle_dir/$name"
         echo "bundled: $name ($(owner_pkg "${bundle[$name]}" || echo 'no package'))"
     done
     # DT_RPATH, not RUNPATH: --force-rpath makes the entry apply to the whole
     # resolution chain, so libparquet's own NEEDED libarrow also resolves from
-    # the bundle when loaded via vvg (RUNPATH would cover direct deps only).
+    # the bundle when loaded via vvg or a plugin (RUNPATH would cover direct
+    # deps only).
     for elf in "${payloads[@]}"; do
         patchelf --force-rpath --set-rpath "$bundle_dir" "$elf"
     done
