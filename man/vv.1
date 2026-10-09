@@ -1232,7 +1232,8 @@ vh wide.parquet
 .I $XDG_CONFIG_HOME/vv/config
 .RS
 User configuration file (default
-\fI$HOME/.config/vv/config\fR). Plain INI-style \fBkey = value\fR
+\fI$HOME/.config/vv/config\fR; on Windows with neither variable set,
+\fI%APPDATA%\\vv\\config\fR). Plain INI-style \fBkey = value\fR
 syntax; lines starting with \fB#\fR are comments. CLI flags always
 win over the config file.
 .IP

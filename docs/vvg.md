@@ -115,7 +115,9 @@ thumbnail only up to a size limit: xlsx 16 MB, ods 8 MB, npz 256 MB, R data
 
 ## Install
 
-Packages: `vv-gui` for Debian / Ubuntu, Fedora and Arch —
+Packages: `vv-gui` for Debian / Ubuntu, Fedora and Arch, the macOS tarball,
+and the Windows installer (`vv-<ver>-windows-x86_64.msi`, which puts *vv
+Viewer* in the Start menu) —
 [INSTALL.md](../INSTALL.md#prebuilt-binaries). From source:
 `cmake -DVV_BUILD_GUI=ON` ([details](../INSTALL.md#optional-qt6-gui--dvv_build_guion));
 vvg needs Qt6, and the KF6 `kio`, `kcoreaddons` and `kfilemetadata` modules add

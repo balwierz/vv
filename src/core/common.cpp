@@ -143,7 +143,8 @@ void init_colors() {
 // extensible — future keys (default --threads, --decode-threads, etc.)
 // slot in without breaking forward / backward compatibility.
 
-// Return $XDG_CONFIG_HOME/vv or $HOME/.config/vv, "" if neither is set.
+// Return $XDG_CONFIG_HOME/vv, $HOME/.config/vv or (Windows) %APPDATA%/vv,
+// "" if none is set.
 static std::string xdg_config_dir() {
     const char* xdg = std::getenv("XDG_CONFIG_HOME");
     if (xdg && *xdg) return std::string(xdg) + "/vv";

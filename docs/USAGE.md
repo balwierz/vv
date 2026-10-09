@@ -1299,7 +1299,9 @@ conversion use a shell loop.
 ## User config file (`~/.config/vv/config`)
 
 `vv` reads its config from `$XDG_CONFIG_HOME/vv/config` (default
-`~/.config/vv/config`) at startup. Format is plain INI-style
+`~/.config/vv/config`) at startup; on Windows with neither `XDG_CONFIG_HOME`
+nor `HOME` set — a plain PowerShell or `cmd` session — from
+`%APPDATA%\vv\config`. Format is plain INI-style
 `key = value`; lines starting with `#` are comments. Unknown keys
 are ignored, so a config written for a newer vv doesn't break an
 older one.
@@ -1523,8 +1525,10 @@ vv --tsv --sample 1000 huge.parquet | head    # head of a random sample
 
 # Building and installing
 
-See `INSTALL.md` for the complete matrix (`.deb`, static binary, Arch
-PKGBUILD, source build). vv is **not** published on Bioconda, Homebrew or
+See `INSTALL.md` for the complete matrix (`.deb`, `.rpm`, static binary,
+macOS tarball, Windows `.msi`, Arch PKGBUILD, source build). The Windows
+build has no interactive terminal viewer (`-i` is ignored with a note); `vvg`
+takes its place there. vv is **not** published on Bioconda, Homebrew or
 the AUR — those recipes exist in `packaging/` but have not been submitted.
 Quick start:
 
