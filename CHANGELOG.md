@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   script open; CI installs the MSI, runs it with only Windows on `PATH`
   (non-ASCII file names included) and uninstalls it.
 
+### Fixed
+- `vv -i` with no terminal (stdout a pipe or file, or keys from a closed
+  stdin) spun at 100% CPU; it now falls back to the table output at once.
+  With the data on stdin (`cat x | vv -i -`) keys come from the terminal.
+
 ## [1.28.1] - 2026-10-08
 
 ### Changed
