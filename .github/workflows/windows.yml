@@ -1,0 +1,98 @@
+name: Windows
+
+# Native Windows build with MSYS2 UCRT64 (MinGW-w64 GCC; htslib has no MSVC
+# build): vv without the ncurses viewers (VV_WITH_TUI=OFF) and vvg, then the
+# smoke suite. The suite skips its pty / interactive-viewer checks here (no
+# pty module in Windows Python, no viewer in this vv); everything else runs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Build & test (Windows, MSYS2 UCRT64)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      PYTHONUTF8: "1"   # Windows Python reads and writes UTF-8, as on Linux / macOS
+    steps:
+      # The fixtures and goldens are compared byte for byte: no CRLF checkout.
+      - name: Keep LF line endings
+        shell: pwsh
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v6
+
+      # Fixture generation and the suite's Python checks use Windows CPython
+      # (pyarrow, h5py, scipy and anndata ship wheels for it, not for MSYS2's
+      # Python); path-type inherit puts it on the MSYS2 shell's PATH.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          path-type: inherit
+          install: >-
+            git
+            diffutils
+            zstd
+          pacboy: >-
+            toolchain:p cmake:p ninja:p pkgconf:p
+            arrow:p htslib:p hdf5:p sqlite3:p xlsxio:p minizip:p expat:p
+            zlib:p xz:p bzip2:p blosc:p qt6-base:p qt6-svg:p
+
+      # MSYS2's own Python comes in as a dependency and would shadow it:
+      # python / python3 wrappers for Windows CPython, first on PATH in the
+      # steps that need them.
+      - name: Install fixture tools
+        run: |
+          pybin="$(cygpath -u "$RUNNER_TEMP")/pybin"
+          mkdir -p "$pybin"
+          for n in python python3; do
+            printf '#!/bin/sh\nexec "%s/python.exe" "$@"\n' "$(cygpath -u "$pythonLocation")" > "$pybin/$n"
+            chmod +x "$pybin/$n"
+          done
+          "$pybin/python" -m pip install pyarrow openpyxl odfpy anndata h5py scipy
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DVV_BUILD_GUI=ON
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Sanity check
+        run: |
+          set -e
+          ./build/vv.exe --version
+          ./build/vv.exe -n 3 tests/data/tiny.parquet
+          ./build/vv.exe --tsv tests/data/tiny.parquet | head -3
+          ./build/vv.exe --describe --select Score tests/data/tiny.parquet
+          ./build/vv.exe -n 2 tests/data/tiny.vcf
+          ./build/vv.exe -n 2 tests/data/tiny.bam
+          ./build/vv.exe -n 2 --tab obs tests/data/tiny.h5ad
+          # stdin and --parquet - (binary mode on both ends)
+          cat tests/data/tiny.parquet | ./build/vv.exe -n 2 -
+          ./build/vv.exe --parquet - tests/data/tiny.parquet | ./build/vv.exe --count -
+
+      - name: vvg self-test (offscreen)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -e
+          VVG_SELFTEST=1 ./build/gui/vvg.exe tests/data/tiny.parquet
+          VVG_WINTEST=1 VVG_COLSTATS=3 ./build/gui/vvg.exe tests/data/tiny.parquet
+
+      - name: Generate test fixtures
+        run: PATH="$(cygpath -u "$RUNNER_TEMP")/pybin:$PATH" python tests/data/generate.py
+
+      - name: Smoke tests
+        run: PATH="$(cygpath -u "$RUNNER_TEMP")/pybin:$PATH" VV="$PWD/build/vv.exe" tests/run_tests.sh

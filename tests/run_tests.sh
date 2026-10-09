@@ -6,6 +6,18 @@ set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
 VV=${VV:-$ROOT/build/vv}
+# Windows (MSYS2 / Git Bash): vv.exe and Windows Python are native programs.
+# Hand them D:/… paths and switch MSYS's argument conversion off — it rewrites
+# any argument that starts with `/`, HDF5 / Zarr tab names (`--tab /X`)
+# included, and leaves paths inside other arguments (`--filter '… @/tmp/x'`)
+# unconverted.
+WINDOWS=""
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        WINDOWS=1
+        export MSYS2_ARG_CONV_EXCL='*'
+        HERE=$(cygpath -m "$HERE"); ROOT=$(cygpath -m "$ROOT"); VV=$(cygpath -m "$VV") ;;
+esac
 DATA=$HERE/data
 GOLDEN=$HERE/golden
 
@@ -36,6 +48,20 @@ echo
 
 mkdir -p "$GOLDEN"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+[ -n "$WINDOWS" ] && TMP=$(cygpath -m "$TMP")
+
+# The checks that drive vv under a pseudo-terminal need Python's pty module
+# (not on Windows); those of the interactive viewer also need a vv built with
+# it (VV_WITH_TUI, off on Windows). They are skipped otherwise.
+HAVE_PTY=""
+command -v python3 >/dev/null 2>&1 && python3 -c 'import pty' 2>/dev/null && HAVE_PTY=1
+HAVE_TUI=1
+# (--count never starts the viewer; without one, -i only draws a note.)
+"$VV" -i --count "$DATA/tiny.tsv" </dev/null 2>&1 >/dev/null |
+    grep -q "built without the interactive viewer" && HAVE_TUI=""
+TUI_PTY=""
+[ -n "$HAVE_PTY" ] && [ -n "$HAVE_TUI" ] && TUI_PTY=1
+[ -z "$TUI_PTY" ] && echo "(skipping the pty / interactive-viewer checks: pty=${HAVE_PTY:-no} viewer=${HAVE_TUI:-no})"
 
 # Hermetic config: a developer's real ~/.config/vv/config (theme,
 # max_col_width, …) must not leak into golden output. Tests that exercise
@@ -1075,7 +1101,8 @@ if [ -f "$ARS" ]; then
     cp "$ARS" "$TMP/stream_noext"
     assert_eq_file_inline "arrows_saved_as_arrow" "$("$VV" --count "$TMP/stream.arrow")" "20"
     assert_eq_file_inline "arrows_no_extension"   "$("$VV" --count "$TMP/stream_noext")" "20"
-    assert_eq_file_inline "arrows_procsub"        "$("$VV" --count <(cat "$ARS"))" "20"
+    # Process substitution hands a native vv.exe a /dev/fd path: not on Windows.
+    [ -z "$WINDOWS" ] && assert_eq_file_inline "arrows_procsub" "$("$VV" --count <(cat "$ARS"))" "20"
     assert_eq_file_inline "arrows_stdin"          "$("$VV" --count - < "$ARS" 2>&1)" "20"
     assert_eq_file_inline "arrows_tail"  "$("$VV" --tsv --no-header --tail 1 --select Score "$ARS")" "0.95"
     assert_eq_file_inline "arrows_sort"  "$("$VV" --tsv --no-header -n 1 --sort Score:desc --select Score "$ARS")" "0.95"
@@ -1124,7 +1151,7 @@ SPOOL="$TMP/spool"; mkdir -p "$SPOOL"
 for f in tiny.parquet tiny.arrow tiny.orc tiny.bam tiny.bcf tiny.vcf.gz tiny.bed.gz \
          tiny.sqlite tiny.h5ad tiny.npz tiny.xlsx tiny.ods tiny.bw tiny.2bit tiny.lociss \
          tiny.tsv tiny.csv; do
-    [ -f "$DATA/$f" ] || continue
+    [ -f "$DATA/$f" ] && [ -z "$WINDOWS" ] || continue   # no /dev/fd paths on Windows
     want=$("$VV" --count "$DATA/$f" 2>/dev/null)
     assert_eq_file_inline "pipe_count [$f]" \
         "$(TMPDIR="$SPOOL" "$VV" --count <(cat "$DATA/$f") 2>/dev/null)" "$want"
@@ -1136,7 +1163,8 @@ assert_contains "pipe_copy_note" \
     "binary input needs random access; copied it to $SPOOL/vv-pipe-"
 assert_eq_file_inline "pipe_temp_files_removed" "$(ls "$SPOOL" | wc -l | tr -d ' ')" "0"
 # Killed mid-copy (a FIFO that stalls after 100 bytes), the temporary file is
-# removed too.
+# removed too. (POSIX FIFOs and signals: not on Windows.)
+if [ -z "$WINDOWS" ]; then
 mkfifo "$TMP/stall.fifo"
 ( head -c 100 "$DATA/tiny.parquet"; sleep 5 ) > "$TMP/stall.fifo" &
 STALL=$!
@@ -1148,6 +1176,7 @@ kill -TERM "$VVPID" 2>/dev/null; wait "$VVPID" 2>/dev/null
 assert_eq_file_inline "pipe_temp_file_removed_on_sigterm" "$(ls "$SPOOL" | wc -l | tr -d ' ')" "0"
 kill "$STALL" 2>/dev/null; wait "$STALL" 2>/dev/null
 rm -f "$TMP/stall.fifo"
+fi
 
 echo
 echo '── zstd (.zst) auto-decompression ─────────────────────'
@@ -3318,6 +3347,7 @@ assert_contains "theme_unknown_lists_choices" "$BAD_THEME" "default, dark, light
 # Config-file persistence: a theme set in ~/.config/vv/config (XDG) is
 # picked up when --theme isn't passed; explicit --theme overrides.
 TMP_XDG=$(mktemp -d)
+[ -n "$WINDOWS" ] && TMP_XDG=$(cygpath -m "$TMP_XDG")
 mkdir -p "$TMP_XDG/vv"
 printf 'theme = solarized-dark\n' > "$TMP_XDG/vv/config"
 # solarized-dark uses 256-color "38;5;240" for borders, the default
@@ -3350,8 +3380,10 @@ assert_exit_code "multifile_cli_extra_paths_exit" 1 \
 # --count is the case that silently reported the first file's row count.
 assert_exit_code "multifile_count_exit" 1 "$VV" --count "$DATA/tiny.bed" "$DATA/tiny.csv"
 # An unopenable second positional must still error out cleanly.
-MULTI_BAD=$("$VV" -i "$DATA/tiny.parquet" /no/such/file 2>&1 || true)
-assert_contains "multifile_bad_second_path_errors" "$MULTI_BAD" "not found"
+if [ -n "$HAVE_TUI" ]; then
+    MULTI_BAD=$("$VV" -i "$DATA/tiny.parquet" /no/such/file 2>&1 || true)
+    assert_contains "multifile_bad_second_path_errors" "$MULTI_BAD" "not found"
+fi
 
 # ENCODE peak / signal family — extension dispatch + typed-column naming.
 if [ -f "$DATA/tiny.narrowPeak" ]; then
@@ -4726,7 +4758,7 @@ rm -f "$TMP/vh"
 
 # Multiple positionals: markdown returns early and renders only cfg.path, so on
 # a TTY it silently showed the first file and exited 0.
-if command -v python3 >/dev/null 2>&1; then
+if [ -n "$TUI_PTY" ]; then
     printf '# B\n\nsecond body\n' > "$TMP/doc2.md"
     MDMULTI=$(run_on_pty "$VV" "$MDDOC" "$TMP/doc2.md" 2>&1 || true)
     assert_contains "md_multifile_rejected" "$MDMULTI" "only supported in the interactive viewer"
@@ -4821,7 +4853,8 @@ if command -v python3 >/dev/null 2>&1; then
     else
         FAIL=$((FAIL + 1)); echo "  FAIL  heatmap_iterm_matches_kitty"
     fi
-    if run_with_timeout 120 python3 "$HERE/image_auto_check.py" "$VV" "$DATA/tiny.parquet"; then
+    if [ -z "$HAVE_PTY" ]; then :
+    elif run_with_timeout 120 python3 "$HERE/image_auto_check.py" "$VV" "$DATA/tiny.parquet"; then
         PASS=$((PASS + 1)); echo "  ok    heatmap_auto_backend_by_terminal"
     else
         FAIL=$((FAIL + 1)); echo "  FAIL  heatmap_auto_backend_by_terminal"
@@ -4837,7 +4870,7 @@ echo "── TUI signal handling ───────────────�
 # Ctrl-C (SIGINT) in the interactive TUI must restore the terminal (endwin)
 # before the process dies — otherwise the shell is left in raw/alt-screen mode.
 # Driven under a pty by tui_sigint_check.py (needs python3; soft-skip otherwise).
-if command -v python3 >/dev/null 2>&1; then
+if [ -n "$TUI_PTY" ]; then
     if python3 "$HERE/tui_sigint_check.py" "$VV" "$DATA/tiny.parquet"; then
         PASS=$((PASS+1)); echo "  ok    tui_sigint_restores_terminal"
     else
@@ -4851,7 +4884,7 @@ fi
 # must not crash when the TUI pages to the bottom — chunk_meta() past the failed
 # batch used to read out of bounds. Driven under a pty; the harness fails if vv
 # dies from a signal.
-if command -v python3 >/dev/null 2>&1 && [ -f "$DATA/tiny.corrupt.arrow" ]; then
+if [ -n "$TUI_PTY" ] && [ -f "$DATA/tiny.corrupt.arrow" ]; then
     if run_with_timeout 60 python3 "$HERE/tui_corrupt_chunk_check.py" "$VV" "$DATA/tiny.corrupt.arrow"; then
         PASS=$((PASS+1)); echo "  ok    tui_corrupt_ipc_no_crash"
     else
@@ -4864,7 +4897,7 @@ fi
 # Zebra stripe adapts to the terminal background (VV_BACKGROUND=light → subtle
 # light-grey 254 instead of the near-black 235 that swallows text on light
 # terminals, e.g. JupyterLab's web terminal).
-if command -v python3 >/dev/null 2>&1; then
+if [ -n "$TUI_PTY" ]; then
     if python3 "$HERE/tui_zebra_check.py" "$VV" "$DATA/tiny.parquet"; then
         PASS=$((PASS+1)); echo "  ok    tui_zebra_adapts_to_background"
     else
@@ -4876,7 +4909,7 @@ fi
 
 # A single column wider than the terminal must still render (clamped), not a
 # blank table. Drive the TUI at 20 cols on a 40-char-wide column under a pty.
-if command -v python3 >/dev/null 2>&1; then
+if [ -n "$TUI_PTY" ]; then
     printf 'this_is_a_very_wide_single_column_name12\nvA\nvB\nvC\n' > "$TMP/wide.csv"
     if python3 "$HERE/tui_wide_column_check.py" "$VV" "$TMP/wide.csv"; then
         PASS=$((PASS+1)); echo "  ok    tui_wide_column_not_blank"
@@ -4889,7 +4922,7 @@ fi
 
 # Auto-launched TUI that can't initialise (bad TERM, no -i) must note the
 # fallback on stderr instead of silently degrading to a static table.
-if command -v python3 >/dev/null 2>&1; then
+if [ -n "$TUI_PTY" ]; then
     if python3 "$HERE/tui_fallback_note_check.py" "$VV" "$DATA/tiny.parquet" "Chr"; then
         PASS=$((PASS+1)); echo "  ok    tui_fallback_note_on_init_failure"
     else
@@ -4904,7 +4937,7 @@ fi
 # The discriminating check is that moving the cursor no longer drags the
 # viewport (verified by running this harness against a pre-cursor build, where
 # it fails with "moving the cursor scrolled the viewport: Col 4-5/5").
-if command -v python3 >/dev/null 2>&1; then
+if [ -n "$TUI_PTY" ]; then
     if run_with_timeout 120 python3 "$HERE/tui_cursor_check.py" "$VV" \
             "$DATA/tiny.parquet" "$DATA/tiny.bed"; then
         PASS=$((PASS+1)); echo "  ok    tui_cell_cursor"
@@ -4919,7 +4952,7 @@ fi
 # layout and sort (so & / Esc / u work on them). On a terminal --filter and
 # --select were ignored and --sort was baked in. Verified discriminating: on
 # the previous build the filter / select / sort / bad-filter checks fail.
-if command -v python3 >/dev/null 2>&1; then
+if [ -n "$TUI_PTY" ]; then
     if run_with_timeout 120 python3 "$HERE/tui_start_view_check.py" "$VV" "$DATA/tiny.parquet"; then
         PASS=$((PASS+1)); echo "  ok    tui_start_view"
     else
@@ -4933,7 +4966,7 @@ fi
 # narrows the filter to one value (ANDed into every OR branch). Checks the
 # counts, filtered counts, the AND / OR combination, a float32 value and the
 # refusal on a list column. On the previous build F does nothing.
-if command -v python3 >/dev/null 2>&1; then
+if [ -n "$TUI_PTY" ]; then
     if run_with_timeout 120 python3 "$HERE/tui_freq_check.py" "$VV" "$DATA/tiny.parquet"; then
         PASS=$((PASS+1)); echo "  ok    tui_freq_sheet"
     else
@@ -4947,7 +4980,7 @@ fi
 # Backspace / Delete, Ctrl-U / K / W) in whole UTF-8 characters; they took
 # ASCII only, appended at the end, and Backspace removed one byte. On the
 # previous build every check fails.
-if command -v python3 >/dev/null 2>&1; then
+if [ -n "$TUI_PTY" ]; then
     if run_with_timeout 300 python3 "$HERE/tui_line_edit_check.py" "$VV" "$DATA/tiny.parquet" "$TMP"; then
         PASS=$((PASS+1)); echo "  ok    tui_line_edit"
     else
@@ -4961,7 +4994,7 @@ fi
 # screen (FASTQ batches close early on a byte budget): it read one batch per
 # redraw and left rows blank under a status bar that claimed them. On the
 # previous build reads 15-19 of a 24-row screen are missing.
-if command -v python3 >/dev/null 2>&1; then
+if [ -n "$TUI_PTY" ]; then
     if run_with_timeout 120 python3 "$HERE/tui_stream_fill_check.py" "$VV" "$TMP"; then
         PASS=$((PASS+1)); echo "  ok    tui_stream_fill"
     else
@@ -4973,7 +5006,7 @@ fi
 
 # The viewer opens --matrix long / --samples long in their long layouts, and
 # multi-sample VCF samples as structs by default.
-if command -v python3 >/dev/null 2>&1; then
+if [ -n "$TUI_PTY" ]; then
     if run_with_timeout 120 python3 "$HERE/tui_layout_check.py" "$VV" "$DATA"; then
         PASS=$((PASS+1)); echo "  ok    tui_long_layouts"
     else
@@ -4985,7 +5018,7 @@ assert_exit_code "matrix_bad_value" 2 "$VV" --matrix tall "$DATA/tiny.h5ad"
 
 # The JSON tree viewer: navigation, folding, search, copy (OSC 52), the
 # table view and back, index pages, a truncated file, stdin via /dev/tty.
-if command -v python3 >/dev/null 2>&1; then
+if [ -n "$TUI_PTY" ]; then
     if run_with_timeout 300 python3 "$HERE/tui_json_check.py" "$VV" "$TMP"; then
         PASS=$((PASS+1)); echo "  ok    tui_json_tree"
     else
@@ -5019,7 +5052,7 @@ os.kill(pid, signal.SIGKILL); os.waitpid(pid, 0)
 print(needle in out)
 PYFP
 }
-if command -v python3 >/dev/null 2>&1; then
+if [ -n "$TUI_PTY" ]; then
     printf '{"id":1,"name":"alice"}\n{"id":2,"name":"bob"}\n' > "$TMP/first_paint.ndjson"
     assert_eq_file_inline "tui_json_table_first_paint" \
         "$(first_paint alice 80 --no-tree "$TMP/first_paint.ndjson")" "True"
@@ -5040,7 +5073,7 @@ fi
 
 # Search in a sorted view whose order cycles through every row group lands on
 # the match (and n wraps to it); each chunk is scanned once per search.
-if command -v python3 >/dev/null 2>&1; then
+if [ -n "$TUI_PTY" ]; then
     if run_with_timeout 120 python3 "$HERE/tui_sorted_search_check.py" "$VV" "$TMP"; then
         PASS=$((PASS+1)); echo "  ok    tui_sorted_search"
     else
@@ -5054,7 +5087,7 @@ fi
 # move only the viewport, which the next draw scrolled back to the cursor, so
 # nothing past the first screen was reachable. Verified discriminating: on the
 # previous build every check fails (row 150 / 250 never shown; y copies r0).
-if command -v python3 >/dev/null 2>&1; then
+if [ -n "$TUI_PTY" ]; then
     if run_with_timeout 120 python3 "$HERE/tui_search_goto_check.py" "$VV" "$TMP"; then
         PASS=$((PASS+1)); echo "  ok    tui_search_goto_cursor"
     else
@@ -5102,7 +5135,7 @@ fi
 # used to report that partial answer as if it were complete — evicted_any()
 # existed for exactly this and had no callers. FASTQ batches every 4096
 # records, so 20k records span several batches without a >16 MiB fixture.
-if command -v python3 >/dev/null 2>&1; then
+if [ -n "$TUI_PTY" ]; then
     awk 'BEGIN{for(i=1;i<=20000;i++)printf "@r%d\nACGTACGT\n+\nIIIIIIII\n",i}' \
         > "$TMP/partial.fq"
     if python3 "$HERE/tui_partial_pass_check.py" "$VV" "$TMP/partial.fq"; then
@@ -5407,7 +5440,7 @@ assert_contains "text_region_warning_shown" "$TXT_REG" "no region index"
 # fall through to the table renderer" implementation fails both. Verified by
 # running this harness against a build with the text branch removed from
 # draw_data_row: it reports 8 distinct failures.
-if command -v python3 >/dev/null 2>&1; then
+if [ -n "$TUI_PTY" ]; then
     if run_with_timeout 180 python3 "$HERE/text_tui_check.py" "$VV" "$TMP"; then
         PASS=$((PASS+1)); echo "  ok    text_tui_document_view"
     else

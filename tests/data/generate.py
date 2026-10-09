@@ -1198,9 +1198,15 @@ else:
     wideenum_path = HERE / "tiny.wideenum.h5"
     try:
         import ctypes, ctypes.util
-        _lib = ctypes.CDLL(ctypes.util.find_library("hdf5") or "libhdf5.so")
+        _hdf5 = ctypes.util.find_library("hdf5")
+        if not _hdf5 and sys.platform == "win32":
+            # Windows: the hdf5.dll bundled in the h5py wheel.
+            import h5py
+            _dlls = sorted(Path(h5py.__file__).parent.glob("hdf5*.dll"))
+            _hdf5 = str(_dlls[0]) if _dlls else None
+        _lib = ctypes.CDLL(_hdf5 or "libhdf5.so")
         _lib.H5open()          # populates the predefined-type globals below
-        _hid = ctypes.c_long
+        _hid = ctypes.c_int64  # hid_t (c_long is 32-bit on Windows)
         for _fn, _arg, _res in (
             ("H5Fcreate", [ctypes.c_char_p, ctypes.c_uint, _hid, _hid], _hid),
             ("H5Tcopy", [_hid], _hid),
