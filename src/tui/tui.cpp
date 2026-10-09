@@ -196,7 +196,14 @@ public:
     // Start ncurses on stdout, reading keys from `in` (stdin when null; the
     // controlling terminal when stdin carries the data). false: the terminal
     // could not be initialised.
+    //
+    // Both ends must be terminals. With stdout a pipe or file, or keys read
+    // from a stdin at EOF (`vv -i x </dev/null`, `cat x | vv -i -`), getch()
+    // returns ERR at once, every time, and the key loop spun at 100% CPU.
     bool open(std::FILE* in = nullptr) {
+        if (!isatty(STDOUT_FILENO)) return false;
+        if (!in && !isatty(STDIN_FILENO)) return open_tty();   // keys from the terminal
+        if (in && !isatty(fileno(in))) return false;
         setlocale(LC_ALL, "");
         static bool bg_detected = false;
         if (!bg_detected) { detect_term_bg(); bg_detected = true; }   // OSC 11 query, once

@@ -4866,6 +4866,16 @@ assert_contains "help_has_heatmap"    "$HM_HELP" "--heatmap"
 assert_contains "help_has_image_mode" "$HM_HELP" "--image-mode"
 
 echo
+# -i with no terminal falls back to the table at once. ncurses used to start
+# on the pipe and read keys from a stdin at EOF: getch() returned ERR forever
+# and vv spun at 100% CPU until killed.
+if [ -n "$HAVE_TUI" ]; then
+    NOTERM=$(run_with_timeout 20 "$VV" -i --color=never "$DATA/tiny.tsv" </dev/null 2>&1)
+    assert_eq_file_inline "tui_no_terminal_exits" "$?" "0"
+    assert_contains "tui_no_terminal_note" "$NOTERM" "cannot start the interactive viewer"
+    assert_contains "tui_no_terminal_table" "$NOTERM" "│ name │"
+fi
+
 echo "── TUI signal handling ───────────────────────────────────"
 # Ctrl-C (SIGINT) in the interactive TUI must restore the terminal (endwin)
 # before the process dies — otherwise the shell is left in raw/alt-screen mode.

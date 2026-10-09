@@ -717,7 +717,8 @@ int main(int argc, char** argv) {
             // so the user saw a static table with no hint the interactive
             // viewer was even attempted. Note the fallback either way.
             if (cfg.interactive)
-                std::fprintf(stderr, "error: cannot initialize terminal (missing terminfo?)\n");
+                std::fprintf(stderr, "error: cannot start the interactive viewer "
+                                     "(no terminal, or missing terminfo)\n");
             else
                 std::fprintf(stderr, "vv: interactive viewer unavailable "
                              "(terminal init failed); showing non-interactive "
