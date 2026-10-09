@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The Windows installer: vv.exe, vvg.exe and the DLLs / Qt plugins that
+  packaging/windows/stage.sh collects, installed per machine to
+  C:\Program Files\vv, which is appended to the system PATH, with a Start
+  menu entry for vvg. Built with WiX Toolset v5 (MS-RL):
+
+    wix build packaging/windows/vv.wxs -arch x64 -d Version=1.28.1
+        -d StageDir=C:\path\to\stage -o vv-1.28.1-windows-x86_64.msi
+
+  The package is not signed: Windows SmartScreen names no publisher.
+  UpgradeCode must never change; a newer version replaces an older one.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="vv" Manufacturer="vv contributors" Version="$(var.Version)"
+           UpgradeCode="{3C63EC2B-087B-4E93-9446-7C50A268024F}"
+           Scope="perMachine" Language="1033">
+    <SummaryInformation Description="vv - universal data / genomic file viewer" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of vv is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="vv.ico" SourceFile="$(sys.SOURCEFILEDIR)vv.ico" />
+    <Property Id="ARPPRODUCTICON" Value="vv.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/balwierz/vv" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/balwierz/vv/blob/main/docs/USAGE.md" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="vv" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <Feature Id="Main" Title="vv">
+      <Files Directory="INSTALLFOLDER" Include="$(var.StageDir)\**" />
+
+      <!-- `vv` and `vvg` from any terminal. -->
+      <Component Id="SystemPath" Directory="INSTALLFOLDER">
+        <Environment Id="PathEntry" Name="PATH" Value="[INSTALLFOLDER]" Action="set"
+                     Part="last" System="yes" Permanent="no" />
+        <RegistryValue Root="HKLM" Key="Software\vv" Name="InstallDir" Type="string"
+                       Value="[INSTALLFOLDER]" KeyPath="yes" />
+      </Component>
+
+      <Component Id="StartMenu" Directory="ProgramMenuFolder">
+        <Shortcut Id="VvgShortcut" Name="vv Viewer"
+                  Description="Desktop viewer for tabular and genomic files"
+                  Target="[INSTALLFOLDER]vvg.exe" WorkingDirectory="INSTALLFOLDER"
+                  Icon="vv.ico" />
+        <RegistryValue Root="HKLM" Key="Software\vv" Name="StartMenuShortcut" Type="integer"
+                       Value="1" KeyPath="yes" />
+      </Component>
+    </Feature>
+  </Package>
+</Wix>

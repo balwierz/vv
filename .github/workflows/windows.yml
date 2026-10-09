@@ -1,9 +1,11 @@
 name: Windows
 
 # Native Windows build with MSYS2 UCRT64 (MinGW-w64 GCC; htslib has no MSVC
-# build): vv without the ncurses viewers (VV_WITH_TUI=OFF) and vvg, then the
-# smoke suite. The suite skips its pty / interactive-viewer checks here (no
-# pty module in Windows Python, no viewer in this vv); everything else runs.
+# build): vv without the ncurses viewers (VV_WITH_TUI=OFF) and vvg, packaged
+# and install-tested as an MSI (.github/actions/windows-build, shared with
+# release.yml), then the smoke suite. The suite skips its pty /
+# interactive-viewer checks here (no pty module in Windows Python, no viewer
+# in this vv); everything else runs. The MSI is kept as a workflow artifact.
 
 on:
   push:
@@ -36,19 +38,15 @@ jobs:
         with:
           python-version: "3.13"
 
-      - uses: msys2/setup-msys2@v2
+      # MSYS2, build, MSI, install / run / uninstall test.
+      - name: Build and package
+        id: win
+        uses: ./.github/actions/windows-build
+
+      - uses: actions/upload-artifact@v7
         with:
-          msystem: UCRT64
-          update: true
-          path-type: inherit
-          install: >-
-            git
-            diffutils
-            zstd
-          pacboy: >-
-            toolchain:p cmake:p ninja:p pkgconf:p
-            arrow:p htslib:p hdf5:p sqlite3:p xlsxio:p minizip:p expat:p
-            zlib:p xz:p bzip2:p blosc:p qt6-base:p qt6-svg:p
+          name: windows-msi
+          path: ${{ steps.win.outputs.msi }}
 
       # MSYS2's own Python comes in as a dependency and would shadow it:
       # python / python3 wrappers for Windows CPython, first on PATH in the
@@ -62,12 +60,6 @@ jobs:
             chmod +x "$pybin/$n"
           done
           "$pybin/python" -m pip install pyarrow openpyxl odfpy anndata h5py scipy
-
-      - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DVV_BUILD_GUI=ON
-
-      - name: Build
-        run: cmake --build build
 
       - name: Sanity check
         run: |

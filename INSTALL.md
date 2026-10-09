@@ -16,6 +16,7 @@ Every tagged release publishes, for **x86_64** and **aarch64**:
 | `vv-<ver>-1.fc<NN>.<arch>.rpm` | Fedora package — CLI, deps from the Fedora repos |
 | `vv-gui-<ver>-1.fc<NN>.<arch>.rpm` | Fedora package — Qt6 GUI **with the KF6 Dolphin plugins** |
 | `vv-<ver>-macos-arm64.tar.gz` | Apple Silicon `vv` + `vvg`; **not** static — needs the Homebrew deps |
+| `vv-<ver>-windows-x86_64.msi` | Windows 10 / 11 installer: `vv` + `vvg` with their DLLs (releases after 1.28.1) |
 | `SHA256SUMS` | checksums for everything above |
 
 Replace `1.28.1` below with the
@@ -153,6 +154,21 @@ directly if you only want the CLI.
 The PKGBUILD builds the **tagged release tarball it pins**, not your working
 tree. To package local changes, bump `pkgver` and re-run `updpkgsums`
 (from `pacman-contrib`), or use the source build below.
+
+### Windows
+
+Run `vv-<ver>-windows-x86_64.msi`. It installs `vv` and `vvg` to
+`C:\Program Files\vv`, adds that folder to the system `PATH` (open a new
+terminal afterwards), and puts *vv Viewer* (`vvg`) in the Start menu;
+uninstall from *Settings ▸ Apps*. Everything it needs is inside — no MSYS2,
+Qt or Python. The package is **not code-signed**, so SmartScreen shows
+"Windows protected your PC" on the first run: *More info ▸ Run anyway*. Check
+it against `SHA256SUMS` first (`Get-FileHash vv-*.msi` in PowerShell).
+
+On Windows, vv prints tables and documents but has no interactive terminal
+viewer (`-i` is ignored with a note); `vvg` is the interactive viewer. File
+names may use any characters (vv runs with UTF-8 as its code page, Windows 10
+1903 or later).
 
 ### Not currently published
 
@@ -338,7 +354,17 @@ cmake --build build
 ```
 
 `build/vv.exe` and `build/gui/vvg.exe` link the MSYS2 DLLs, so run them from
-that shell (or with `C:\msys64\ucrt64\bin` on `PATH`). On Windows:
+that shell (or with `C:\msys64\ucrt64\bin` on `PATH`). To build the MSI as
+CI does, stage the install tree and run [WiX](https://wixtoolset.org/) v5
+(`dotnet tool install --global wix --version 5.0.2`):
+
+```sh
+packaging/windows/stage.sh build stage     # vv, vvg, their DLLs and Qt plugins
+wix build packaging/windows/vv.wxs -arch x64 -d Version=1.28.1 \
+  -d StageDir="$(cygpath -w "$PWD/stage")" -o vv.msi
+```
+
+On Windows:
 
 - **No interactive terminal viewer.** vv prints the table / document output
   (`-i` is ignored with a note); vvg is the interactive viewer. The build sets

@@ -252,6 +252,27 @@ user-facing summary).
 - `--coords UCSC|NCBI` — UCSC (0-based half-open) vs NCBI (1-based
   inclusive); conversion happens once in `apply_region_modifiers`.
 
+## Windows
+
+### Open
+- **MSIX.** An MSIX installs only when signed by a certificate the machine
+  trusts. The no-cost routes: the Microsoft Store (registration is free for
+  individual developers; the Store signs the package), SignPath Foundation's
+  free signing for open-source projects (an application, and their
+  certificate then signs the MSI too), or a self-signed certificate users
+  import into *Trusted People* themselves (admin rights; poor experience).
+  The MSI covers installation meanwhile.
+- The ncurses viewers on Windows (MSYS2 ships ncurses with a Windows console
+  driver); `VV_WITH_TUI=OFF` there for now.
+- File associations in the MSI (open `.parquet`, `.h5ad`, … in vvg from
+  Explorer), a winget manifest, Windows on ARM.
+
+### Done
+- Native build with MSYS2 UCRT64 (`src/core/platform.cpp`; vv without the
+  viewers, vvg), CI (`.github/workflows/windows.yml`), the WiX MSI with a
+  UTF-8 code-page manifest, install-tested in CI and published by
+  release.yml.
+
 ## Quality / signal
 
 ### Open

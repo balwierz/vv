@@ -10,7 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Windows build** with MSYS2 UCRT64 (MinGW-w64): vv without the ncurses
   viewers (`-DVV_WITH_TUI=OFF`, the default there; `-i` is ignored with a
   note) and vvg. Built and tested in CI (`.github/workflows/windows.yml`);
-  build steps in INSTALL.md. No Windows package is published yet.
+  build steps in INSTALL.md.
+- **Windows installer** (`vv-<ver>-windows-x86_64.msi`, built with WiX):
+  vv, vvg and their DLLs in `C:\Program Files\vv`, added to the system
+  `PATH`, with a Start-menu entry for vvg. Not code-signed. Both programs
+  carry a manifest that makes UTF-8 their code page, so file names in any
+  script open; CI installs the MSI, runs it with only Windows on `PATH`
+  (non-ASCII file names included) and uninstalls it.
 
 ## [1.28.1] - 2026-10-08
 

@@ -360,9 +360,40 @@ jobs:
             vv-*-macos-arm64.tar.gz
             SHA256SUMS-macos-arm64
 
+  windows:
+    name: Build MSI (Windows, MSYS2 UCRT64)
+    runs-on: windows-latest
+    steps:
+      - name: Keep LF line endings
+        shell: pwsh
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v6
+
+      # MSYS2 build, the MSI, and its install / run / uninstall test; the same
+      # action CI runs on every push.
+      - name: Build and package
+        id: win
+        uses: ./.github/actions/windows-build
+
+      - name: Checksum
+        shell: pwsh
+        run: |
+          $msi = '${{ steps.win.outputs.msi }}'
+          $h = (Get-FileHash -Algorithm SHA256 $msi).Hash.ToLower()
+          [IO.File]::WriteAllText("$PWD\SHA256SUMS-windows", "$h  $msi`n")
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-x86_64
+          path: |
+            ${{ steps.win.outputs.msi }}
+            SHA256SUMS-windows
+
   release:
     name: Publish GitHub Release
-    needs: [static-linux, gui-linux, gui-debian, rpm-linux, macos-arm64]
+    needs: [static-linux, gui-linux, gui-debian, rpm-linux, macos-arm64, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -388,6 +419,7 @@ jobs:
           find dist-all -name 'vv-gui_*.deb'        -exec cp {} release/ \;
           find dist-all -name 'vv-[0-9]*.rpm'       -exec cp {} release/ \;
           find dist-all -name 'vv-gui-[0-9]*.rpm'   -exec cp {} release/ \;
+          find dist-all -name 'vv-*-windows-*.msi'  -exec cp {} release/ \;
           # Merge per-arch SHA256SUMS into one file so the user can verify
           # any tarball or .deb with `sha256sum -c SHA256SUMS`.
           (cd release && find ../dist-all -name 'SHA256SUMS-*' \
@@ -420,4 +452,5 @@ jobs:
             release/vv-gui_*.deb
             release/vv-[0-9]*.rpm
             release/vv-gui-[0-9]*.rpm
+            release/vv-*-windows-*.msi
             release/SHA256SUMS

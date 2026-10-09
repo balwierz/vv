@@ -1,0 +1,98 @@
+# The Windows build shared by CI (windows.yml) and release.yml: MSYS2 UCRT64
+# packages, vv + vvg, the staged install tree (packaging/windows/stage.sh),
+# the WiX MSI (packaging/windows/vv.wxs), and a test of that MSI as a user
+# gets it — installed, run with only C:\Windows on PATH (so a DLL missing
+# from the package cannot be found elsewhere on the runner), uninstalled.
+name: Build vv for Windows and package the MSI
+description: >
+  MSYS2 UCRT64 build of vv and vvg (-DVV_BUILD_GUI=ON), the MSI, and an
+  install / run / uninstall test of it.
+
+outputs:
+  msi:
+    description: File name of the MSI, in the workspace root
+    value: ${{ steps.msi.outputs.msi }}
+
+runs:
+  using: composite
+  steps:
+    - uses: msys2/setup-msys2@v2
+      with:
+        msystem: UCRT64
+        update: true
+        path-type: inherit
+        install: >-
+          git
+          diffutils
+          zstd
+        pacboy: >-
+          toolchain:p cmake:p ninja:p pkgconf:p
+          arrow:p htslib:p hdf5:p sqlite3:p xlsxio:p minizip:p expat:p
+          zlib:p xz:p bzip2:p blosc:p qt6-base:p qt6-svg:p
+
+    - name: Configure and build
+      shell: msys2 {0}
+      run: |
+        cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DVV_BUILD_GUI=ON
+        cmake --build build
+
+    - name: Stage the install tree
+      id: stage
+      shell: msys2 {0}
+      run: |
+        packaging/windows/stage.sh build stage
+        echo "version=$(./build/vv.exe --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+    - name: Build the MSI (WiX v5)
+      id: msi
+      shell: pwsh
+      run: |
+        dotnet tool install --global wix --version 5.0.2
+        $v = '${{ steps.stage.outputs.version }}'
+        $msi = "vv-$v-windows-x86_64.msi"
+        wix build packaging/windows/vv.wxs -arch x64 -d "Version=$v" -d "StageDir=$PWD\stage" -o $msi
+        if ($LASTEXITCODE) { exit 1 }
+        Get-Item $msi | Format-Table Name, Length
+        "msi=$msi" >> $env:GITHUB_OUTPUT
+
+    - name: Install, run and uninstall the MSI
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $msi = "$PWD\${{ steps.msi.outputs.msi }}"
+        function Msi($argv) {
+          $p = Start-Process msiexec -ArgumentList $argv -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content msi.log -Tail 60; throw "msiexec ${argv}: exit $($p.ExitCode)" }
+        }
+        function Expect($what, $out, $want) {
+          if (-not ("$out" -match $want)) { throw "${what}: got '$out', want /$want/" }
+          Write-Output "ok  $what"
+        }
+        Msi "/i `"$msi`" /qn /l*v msi.log"
+        $dir = "$env:ProgramFiles\vv"
+        # The system PATH gained the install directory.
+        $syspath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+        Expect 'install dir on the system PATH' $syspath ([regex]::Escape($dir))
+        # Only Windows itself on PATH from here: every DLL must come from $dir.
+        $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+        Expect 'vv --version' (& "$dir\vv.exe" --version) '^vv \d+\.\d+\.\d+$'
+        Expect 'vv --count' (& "$dir\vv.exe" --count tests\data\tiny.parquet) '^20$'
+        Expect 'vv HDF5' (& "$dir\vv.exe" --count --tab obs tests\data\tiny.h5ad) '^\d+$'
+        Expect 'vv BAM' (& "$dir\vv.exe" --count tests\data\tiny.bam) '^\d+$'
+        # A non-ASCII file name (the UTF-8 code page from the manifest).
+        $u = Join-Path $env:RUNNER_TEMP "t$([char]0xEB)st_$([char]0x65E5)$([char]0x672C).parquet"
+        Copy-Item tests\data\tiny.parquet $u
+        Expect 'vv on a UTF-8 file name' (& "$dir\vv.exe" --count $u) '^20$'
+        $env:QT_QPA_PLATFORM = 'offscreen'
+        $env:VVG_SELFTEST = '1'
+        # vvg is a GUI-subsystem program: piping its output makes pwsh wait.
+        $o = (& "$dir\vvg.exe" tests\data\tiny.parquet | Out-String)
+        Write-Output $o
+        Expect 'vvg self-test' $o 'icon=ok'
+        Expect 'vvg reads the file' $o 'tabs=1 rows=20 cols=5'
+        $o = (& "$dir\vvg.exe" $u | Out-String)
+        Expect 'vvg on a UTF-8 file name' $o 'tabs=1 rows=20 cols=5'
+        Remove-Item Env:VVG_SELFTEST
+        Msi "/x `"$msi`" /qn /l*v msi.log"
+        if (Test-Path "$dir\vv.exe") { throw 'uninstall left vv.exe behind' }
+        Write-Output 'ok  uninstall'
