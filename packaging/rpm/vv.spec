@@ -27,7 +27,7 @@
 %global xlsxio_version 0.2.36
 
 Name:           vv
-Version:        1.28.1
+Version:        1.29.0
 Release:        1%{?dist}
 Summary:        Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)
 License:        MIT
@@ -146,10 +146,11 @@ rm -f  %{buildroot}%{_libdir}/pkgconfig/mimalloc.pc
 %{_datadir}/icons/hicolor/scalable/apps/vv.svg
 
 %changelog
-* Thu Oct 08 2026 Piotr Balwierz <nikt@tuta.com> - 1.28.1-1
-- Update to 1.28.1: vvg moves the cursor to a clicked column header, keeps
-  the cursor column across sort / filter / find, tints the cursor column and
-  shows its position in the Column tab with a link back to it.
+* Fri Oct 09 2026 Piotr Balwierz <nikt@tuta.com> - 1.29.0-1
+- Update to 1.29.0: Windows build (MSYS2) and MSI installer; vv -i with no
+  terminal no longer spins; vvg moves the cursor to a clicked column header,
+  keeps the cursor column across sort / filter / find, tints it and shows its
+  position in the Column tab with a link back to it.
 
 * Thu Oct 08 2026 Piotr Balwierz <nikt@tuta.com> - 1.28.0-1
 - Update to 1.28.0: --describe reports std and percentiles (--percentiles);

@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.29.0] - 2026-10-09
+
 ### Added
 - **Windows build** with MSYS2 UCRT64 (MinGW-w64): vv without the ncurses
   viewers (`-DVV_WITH_TUI=OFF`, the default there; `-i` is ignored with a
@@ -18,13 +20,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   script open; CI installs the MSI, runs it with only Windows on `PATH`
   (non-ASCII file names included) and uninstalls it.
 
-### Fixed
-- `vv -i` with no terminal (stdout a pipe or file, or keys from a closed
-  stdin) spun at 100% CPU; it now falls back to the table output at once.
-  With the data on stdin (`cat x | vv -i -`) keys come from the terminal.
-
-## [1.28.1] - 2026-10-08
-
 ### Changed
 - vvg: clicking a column header sorts by it and puts the cursor in that
   column, so the *Column* tab summarises the column clicked. After a sort,
@@ -33,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - vvg: the cursor column is tinted in the table, and the *Column* tab shows
   its position (*Column 7 of 120*); the column name, and *→ show in table*
   when the column is scrolled out of view, scroll it into view and flash it.
+
+### Fixed
+- `vv -i` with no terminal (stdout a pipe or file, or keys from a closed
+  stdin) spun at 100% CPU; it now falls back to the table output at once.
+  With the data on stdin (`cat x | vv -i -`) keys come from the terminal.
 
 ## [1.28.0] - 2026-10-08
 

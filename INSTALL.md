@@ -16,17 +16,17 @@ Every tagged release publishes, for **x86_64** and **aarch64**:
 | `vv-<ver>-1.fc<NN>.<arch>.rpm` | Fedora package — CLI, deps from the Fedora repos |
 | `vv-gui-<ver>-1.fc<NN>.<arch>.rpm` | Fedora package — Qt6 GUI **with the KF6 Dolphin plugins** |
 | `vv-<ver>-macos-arm64.tar.gz` | Apple Silicon `vv` + `vvg`; **not** static — needs the Homebrew deps |
-| `vv-<ver>-windows-x86_64.msi` | Windows 10 / 11 installer: `vv` + `vvg` with their DLLs (releases after 1.28.1) |
+| `vv-<ver>-windows-x86_64.msi` | Windows 10 / 11 installer: `vv` + `vvg` with their DLLs (from 1.29.0) |
 | `SHA256SUMS` | checksums for everything above |
 
-Replace `1.28.1` below with the
+Replace `1.29.0` below with the
 [latest release](https://github.com/balwierz/vv/releases/latest) if newer.
 
 ### Debian / Ubuntu
 
 ```sh
-curl -LO https://github.com/balwierz/vv/releases/download/v1.28.1/vv_1.28.1-1_amd64.deb
-sudo apt install ./vv_1.28.1-1_amd64.deb        # use arm64 on ARM
+curl -LO https://github.com/balwierz/vv/releases/download/v1.29.0/vv_1.29.0-1_amd64.deb
+sudo apt install ./vv_1.29.0-1_amd64.deb        # use arm64 on ARM
 ```
 
 The package installs `/usr/bin/vv`, the man page and the shell completions.
@@ -42,15 +42,15 @@ resolves from the standard archive, so **no third-party apt repository is
 needed**:
 
 ```sh
-curl -LO https://github.com/balwierz/vv/releases/download/v1.28.1/vv-gui_1.28.1-1+ubuntu24.04_amd64.deb
-sudo apt install ./vv-gui_1.28.1-1+ubuntu24.04_amd64.deb   # use arm64 on ARM
+curl -LO https://github.com/balwierz/vv/releases/download/v1.29.0/vv-gui_1.29.0-1+ubuntu24.04_amd64.deb
+sudo apt install ./vv-gui_1.29.0-1+ubuntu24.04_amd64.deb   # use arm64 on ARM
 ```
 
 On Debian:
 
 ```sh
-curl -LO https://github.com/balwierz/vv/releases/download/v1.28.1/vv-gui_1.28.1-1+debian13_amd64.deb
-sudo apt install ./vv-gui_1.28.1-1+debian13_amd64.deb      # use arm64 on ARM
+curl -LO https://github.com/balwierz/vv/releases/download/v1.29.0/vv-gui_1.29.0-1+debian13_amd64.deb
+sudo apt install ./vv-gui_1.29.0-1+debian13_amd64.deb      # use arm64 on ARM
 ```
 
 Debian 13 packages KF6, so the Debian flavors — unlike the Ubuntu one, since
@@ -65,8 +65,8 @@ instead — it is rebuilt against whatever testing currently calls those
 libraries:
 
 ```sh
-curl -LO https://github.com/balwierz/vv/releases/download/v1.28.1/vv-gui_1.28.1-1+debianforky_amd64.deb
-sudo apt install ./vv-gui_1.28.1-1+debianforky_amd64.deb   # use arm64 on ARM
+curl -LO https://github.com/balwierz/vv/releases/download/v1.29.0/vv-gui_1.29.0-1+debianforky_amd64.deb
+sudo apt install ./vv-gui_1.29.0-1+debianforky_amd64.deb   # use arm64 on ARM
 ```
 
 Testing keeps moving between vv releases, so if apt objects, grab the
@@ -101,15 +101,15 @@ sudo dnf install ./vv-*.rpm        # CLI + GUI in one transaction
 ### Static binary (any modern Linux)
 
 ```sh
-base=https://github.com/balwierz/vv/releases/download/v1.28.1
+base=https://github.com/balwierz/vv/releases/download/v1.29.0
 arch=x86_64    # aarch64 on ARM (AWS Graviton, Raspberry Pi 5, …)
 
-curl -LO $base/vv-1.28.1-linux-$arch.tar.gz
+curl -LO $base/vv-1.29.0-linux-$arch.tar.gz
 curl -LO $base/SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS
 
-tar -xzf vv-1.28.1-linux-$arch.tar.gz
-sudo install vv-1.28.1-linux-$arch/vv /usr/local/bin/
+tar -xzf vv-1.29.0-linux-$arch.tar.gz
+sudo install vv-1.29.0-linux-$arch/vv /usr/local/bin/
 ```
 
 Requires glibc ≥ 2.28 (RHEL/Rocky/AlmaLinux 8+, Debian 10+, Ubuntu 18.04+).
@@ -340,7 +340,7 @@ the Homebrew libraries above, so install them before running it.
 
 ### Windows (MSYS2)
 
-No Windows package is published yet. vv and vvg build natively with
+To build from source: vv and vvg build natively with
 [MSYS2](https://www.msys2.org/)'s UCRT64 environment (MinGW-w64 GCC; htslib
 does not build with MSVC), and CI builds and tests them on every push. In the
 *MSYS2 UCRT64* shell:
@@ -360,7 +360,7 @@ CI does, stage the install tree and run [WiX](https://wixtoolset.org/) v5
 
 ```sh
 packaging/windows/stage.sh build stage     # vv, vvg, their DLLs and Qt plugins
-wix build packaging/windows/vv.wxs -arch x64 -d Version=1.28.1 \
+wix build packaging/windows/vv.wxs -arch x64 -d Version=1.29.0 \
   -d StageDir="$(cygpath -w "$PWD/stage")" -o vv.msi
 ```
 

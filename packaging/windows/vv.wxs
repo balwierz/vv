@@ -5,8 +5,8 @@
   C:\Program Files\vv, which is appended to the system PATH, with a Start
   menu entry for vvg. Built with WiX Toolset v5 (MS-RL):
 
-    wix build packaging/windows/vv.wxs -arch x64 -d Version=1.28.1
-        -d StageDir=C:\path\to\stage -o vv-1.28.1-windows-x86_64.msi
+    wix build packaging/windows/vv.wxs -arch x64 -d Version=1.29.0
+        -d StageDir=C:\path\to\stage -o vv-1.29.0-windows-x86_64.msi
 
   The package is not signed: Windows SmartScreen names no publisher.
   UpgradeCode must never change; a newer version replaces an older one.
