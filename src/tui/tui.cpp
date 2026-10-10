@@ -481,6 +481,12 @@ class TableTUI {
     std::map<int, CachedRG> cache_;
     std::list<int>          lru_;
     static constexpr int    MAX_CACHE = 4;
+    // Chunks the frame being drawn reads from: a sorted or filtered view can
+    // show rows of more than MAX_CACHE chunks at once, and evicting one of
+    // them left its rows blank. ensure_cols evicts others first, and the
+    // cache may hold all of these (cache_limit_).
+    std::vector<int>        frame_pin_;
+    size_t                  cache_limit_ = MAX_CACHE;
 
     // Per-frame formatted-cell memo, keyed by frame_key(source_row, virt_col).
     // The width-fitting pass and the render pass both want the formatted text
@@ -947,13 +953,27 @@ class TableTUI {
     void ensure_cols(int c, const std::vector<int>& src_cols,
                       int64_t need_rows = -1) {
         const int64_t chunk_total = src_->chunk_meta(c).num_rows;
-        const int64_t target =
-            (need_rows < 0 || need_rows > chunk_total) ? chunk_total : need_rows;
-
         auto it = cache_.find(c);
+        const int64_t have = it == cache_.end() ? 0 : it->second.num_rows;
+        int64_t target = chunk_total;
+        if (need_rows >= 0 && need_rows < chunk_total) {
+            // A partial read grows geometrically: each step re-reads from the
+            // top, so growing by the rows scrolled re-decoded the chunk's head
+            // on every keystroke. Read it whole once half of it is wanted, and
+            // never fewer rows than are loaded (the columns stay one length).
+            int64_t want = std::max(need_rows, have > 0 && need_rows > have ? 2 * have : need_rows);
+            target = want * 2 >= chunk_total ? chunk_total : std::max(want, have);
+        }
+
         if (it == cache_.end()) {
-            if ((int)cache_.size() >= MAX_CACHE) {
-                cache_.erase(lru_.back()); lru_.pop_back();
+            while (cache_.size() >= cache_limit_) {
+                // The least recently used chunk the frame does not draw from.
+                auto victim = std::find_if(lru_.rbegin(), lru_.rend(), [&](int v) {
+                    return std::find(frame_pin_.begin(), frame_pin_.end(), v) == frame_pin_.end();
+                });
+                if (victim == lru_.rend()) break;
+                cache_.erase(*victim);
+                lru_.erase(std::next(victim).base());
             }
             CachedRG cr;
             cr.first_row = src_->chunk_meta(c).first_row;
@@ -1206,6 +1226,24 @@ class TableTUI {
             if (src_->num_chunks() == 0) return;
         }
         std::vector<int> src_cols = src_cols_for_virt(visible_virt_cols);
+        frame_pin_.clear();
+        cache_limit_ = MAX_CACHE;
+        if (!sort_order_.empty()) {
+            // A sorted or filtered view draws source rows from anywhere in the
+            // file (rebuild_display_order has read it to the end): load every
+            // chunk the visible rows come from, whole, and keep them all for
+            // this frame. Memory: the visible columns of those chunks.
+            const int64_t bot = std::min<int64_t>(top_row_ + (int64_t)data_lines() - 1,
+                                                  (int64_t)sort_order_.size() - 1);
+            for (int64_t r = std::max<int64_t>(top_row_, 0); r <= bot; ++r) {
+                const int c = chunk_for_row(sort_order_[(size_t)r]);
+                if (c >= 0 && std::find(frame_pin_.begin(), frame_pin_.end(), c) == frame_pin_.end())
+                    frame_pin_.push_back(c);
+            }
+            cache_limit_ = std::max<size_t>(MAX_CACHE, frame_pin_.size());
+            for (int c : frame_pin_) ensure_cols(c, src_cols);
+            return;
+        }
         int top_chunk = chunk_for_row(top_row_);
         // First paint of a Parquet file: only need rows within (and just
         // past) the visible window. ensure_cols's read_first fast path

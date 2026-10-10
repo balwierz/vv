@@ -5168,6 +5168,16 @@ else
     echo "  skip  tui_sorted_search (python3 not found)"
 fi
 
+# A sorted view whose screen draws rows of 20 row groups (more than the four
+# chunks the viewer caches) draws every one of them, after G and PgDn too.
+if [ -n "$TUI_PTY" ]; then
+    if run_with_timeout 120 python3 "$HERE/tui_sorted_view_check.py" "$VV" "$TMP"; then
+        PASS=$((PASS+1)); echo "  ok    tui_sorted_view"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_sorted_view"
+    fi
+fi
+
 # `/` search, n / N and :N move the cell cursor to their target. They used to
 # move only the viewport, which the next draw scrolled back to the cursor, so
 # nothing past the first screen was reachable. Verified discriminating: on the

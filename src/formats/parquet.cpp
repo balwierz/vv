@@ -94,6 +94,7 @@ static GenomicCoordCols detect_coord_columns(const arrow::Schema& schema,
 
 class ParquetSource : public TabularSource {
     std::unique_ptr<parquet::arrow::FileReader> reader_;
+    int64_t batch_size_ = 0;   // the reader's batch size as opened (-n's)
     std::shared_ptr<parquet::FileMetaData>      meta_;
     std::shared_ptr<arrow::Schema>              schema_;
     std::string                                  path_;
@@ -157,6 +158,7 @@ public:
         props.set_pre_buffer(true);
         props.set_use_threads(true);   // parallel column decode within a row group
         if (cfg.head_rows > 0) props.set_batch_size(cfg.head_rows);
+        self->batch_size_ = props.batch_size();
 
         // Larger buffered-stream window helps cold reads from spinning disks /
         // network FS by amortising small column-chunk fetches.
@@ -635,6 +637,15 @@ public:
             acc += meta_->RowGroup(i)->num_rows();
         }
         if (rgs.empty()) return arrow::Status::OK();
+        // Batches of the rows asked for, up to Arrow's default 64 Ki: the
+        // reader's own batch size is -n's (10 by default), which split a
+        // 100,000-row read into 10,000 chunks per column. The batch reader
+        // consults the size at every ReadNext, so restore it on return.
+        reader_->set_batch_size(std::max<int64_t>(1, std::min<int64_t>(rows, 65536)));
+        struct Restore {
+            parquet::arrow::FileReader* r; int64_t n;
+            ~Restore() { r->set_batch_size(n); }
+        } restore{reader_.get(), batch_size_};
         ARROW_ASSIGN_OR_RAISE(auto rb_uniq,
             reader_->GetRecordBatchReader(rgs, arrow_to_leaf_indices(cols)));
         std::shared_ptr<arrow::RecordBatchReader> rb(std::move(rb_uniq));

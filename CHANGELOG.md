@@ -32,7 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   1.2 s / 0.64 GB, `--describe` 13.2 s → 2.8 s, `--tail 5` 29 s / 9.8 GB →
   0.24 s / 0.29 GB.
 
+- The interactive viewer scrolls through a large first Parquet row group
+  without re-reading its head in 10-row batches on every key: 2,000 PgDn
+  into a 1 M-row row group took 168 s, now 0.8 s.
+
 ### Fixed
+- The interactive viewer drew blank rows in a sorted or filtered view whose
+  screen showed rows of more than four chunks (row groups, batches); every
+  chunk the screen draws from is now loaded and kept for the frame.
 - `--distinct` on a file with an unreadable column printed nothing when that
   column was not among the compared ones; it now reads only the compared and
   filter columns, like `--select`.
