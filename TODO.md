@@ -216,6 +216,38 @@ user-facing summary).
   BGZF decompression (`bgzf_mt`, as FASTX uses) buys nothing: measured on a
   50 M-line bgzipped VCF, 5.7 s either way, and previews got slower because
   Arrow's read-ahead fills sooner.
+- **Arrow IPC / Feather random access.** `.arrow` decodes batches 0..i in
+  order on the way to batch i and never frees one; `.feather` (v2 is the IPC
+  file format) is read whole at open (`src/formats/arrow.cpp`). A
+  `RecordBatchFileReader` reads any batch directly, with `included_fields`
+  for projection; a small LRU like the Parquet region cache would bound it.
+- **Parquet directories** (`DatasetSource`, `src/core/open.cpp`) read each
+  child chunk with every column and count rows by reading; children's
+  footers would give the counts and their own projection.
+- **Parquet row-group read-ahead** for exports and the TUI: decode is under
+  10 % of an export after the threaded formatter (12.2 M rows, `--tsv`
+  1.7 s); worth it on cold network storage only.
+- **HDF5 dataset handles and chunk cache.** `Hdf5Store::read_slab` opens and
+  closes the dataset per block, which drops HDF5's chunk cache: a chunked,
+  compressed dense `X` re-inflates chunks a block straddles. No effect on
+  contiguous `X` (the benchmark files); align blocks to the chunk rows and
+  keep one handle per dataset with `H5Pset_chunk_cache`.
+- **vvg lazy sibling tabs.** Every tab of an AnnData file is built at open
+  (`addSourceTab` builds the model, which reads the component); building a
+  tab when first shown would defer the reads.
+- **TUI: Ctrl-C during a long pass.** Signals are blocked outside `getch()`,
+  so a drain, sort, filter or search cannot be stopped and vv exits after it
+  finishes; poll a pending SIGINT once per chunk and cancel the pass.
+- **Decorator `read_first`.** `ExpandedSource`, `FlattenSource`,
+  `GenotypeStatsSource` and `VcfSamplesSource` (`src/core/derived.cpp`) derive
+  the whole first chunk for a head read; delegating to the inner source's
+  `read_first` would derive only the rows shown.
+- **CSV column projection.** `ConvertOptions::include_columns` is never set,
+  so `--select`, `--count` and `--describe --select` convert every column
+  (parsing stays serial, see above).
+- **Export quirks kept for byte-identical output:** a string cell equal to
+  `∅` exports as an empty field, and an unquoted TSV / CSV field ends at its
+  first NUL byte (`finish_csv_field`, `src/core/format_fast.cpp`).
 
 ### Done
 - ARM64 static binary in the release workflow — the release CI
