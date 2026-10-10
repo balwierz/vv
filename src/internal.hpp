@@ -333,7 +333,7 @@ int effective_threads(const Config& cfg);
 
 int effective_decode_threads(const Config& cfg);
 
-inline constexpr const char* kVersion = "1.29.0";
+inline constexpr const char* kVersion = "1.30.0";
 
 void json_emit_string(const std::string& v);
 

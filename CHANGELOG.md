@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.30.0] - 2026-10-10
+
 ### Changed
 - `--tsv`, `--csv`, `--json` and `--ndjson` format cells several times
   faster and on `--threads` threads, writing in row order (the output is

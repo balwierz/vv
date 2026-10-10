@@ -27,7 +27,7 @@
 %global xlsxio_version 0.2.36
 
 Name:           vv
-Version:        1.29.0
+Version:        1.30.0
 Release:        1%{?dist}
 Summary:        Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)
 License:        MIT
@@ -146,6 +146,13 @@ rm -f  %{buildroot}%{_libdir}/pkgconfig/mimalloc.pc
 %{_datadir}/icons/hicolor/scalable/apps/vv.svg
 
 %changelog
+* Sat Oct 10 2026 Piotr Balwierz <nikt@tuta.com> - 1.30.0-1
+- Update to 1.30.0: faster exports on several threads (byte-identical
+  output); --tail / --sample / --distinct hold only their result; filters
+  evaluated on column arrays; HDF5 / Zarr float32 stays float32; fixes for
+  blank rows in sorted TUI views, vvg sort / find on long streams, VCF / GFF
+  with numeric chromosome names and GFF3 ### lines.
+
 * Fri Oct 09 2026 Piotr Balwierz <nikt@tuta.com> - 1.29.0-1
 - Update to 1.29.0: Windows build (MSYS2) and MSI installer; vv -i with no
   terminal no longer spins; vvg moves the cursor to a clicked column header,
