@@ -53,6 +53,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   18,753 × 30,872 AnnData `X`: `--tsv` 13.1 s → 6.5 s, 12.8 GB → 7.7 GB of
   text.
 
+- `--describe` and `--value-counts` summarise a table of 8 or more columns
+  a column per thread (`--threads`; the result is the same for any count):
+  a dense 18,753 × 30,872 AnnData `X` 12.4 s → 7.5 s, a 12-column Parquet
+  file 3.4 s → 2.0 s. vvg's *Column* tab uses the same code.
+- `--tail N` on plain text keeps its last N lines in a ring that drops the
+  oldest in constant time: `--tail 100000` of a 3 M-line log took 268 s,
+  now 0.05 s.
+
 ### Fixed
 - A VCF or GFF whose first 16 MiB name chromosomes only by numbers (Ensembl:
   `1` … `22`) failed at the first other name (`X`, `GL000008.2`): the

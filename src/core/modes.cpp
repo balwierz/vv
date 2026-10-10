@@ -5,6 +5,8 @@
 
 #include "internal.hpp"
 
+#include <deque>
+
 // ── Document modes (markdown today; plain text next) ─────────────────────────
 //
 // A "document" is a file vv renders rather than tabulates. It returns early in
@@ -168,7 +170,7 @@ int emit_text_stream(TabularSource& src, const Config& cfg) {
     // --tail keeps a bounded ring of the last N lines; everything else
     // streams straight out.
     const bool tail = cfg.tail_rows_set && cfg.tail_rows > 0;
-    std::vector<std::string> ring;
+    std::deque<std::string> ring;
     int64_t limit = (cfg.head_rows_set && cfg.head_rows > 0)
                     ? (int64_t)cfg.head_rows : INT64_MAX;
     if (cfg.head_rows_set && cfg.head_rows == 0) limit = INT64_MAX;  // -n 0 = all
@@ -195,7 +197,7 @@ int emit_text_stream(TabularSource& src, const Config& cfg) {
                 if (tail) {
                     ring.emplace_back(v.data(), v.size());
                     if ((int64_t)ring.size() > (int64_t)cfg.tail_rows)
-                        ring.erase(ring.begin());
+                        ring.pop_front();
                     continue;
                 }
                 if (emitted > 0) std::fputc('\n', stdout);

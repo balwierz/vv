@@ -333,6 +333,7 @@ std::string print_describe(TabularSource& src, const Config& cfg) {
     opt.filter      = have_filter ? &fx : nullptr;
     opt.max_rows    = (!cfg.head_rows_set || cfg.head_rows <= 0) ? -1 : (int64_t)cfg.head_rows;
     opt.percentiles = cfg.percentiles;
+    opt.threads     = effective_threads(cfg);
     std::vector<ColumnSummary> stats;
     if (auto err = summarize_columns(src, opt, &stats); !err.empty()) return err;
     int64_t n_numeric = 0;
@@ -537,6 +538,7 @@ std::string print_unique(TabularSource& src, const Config& cfg) {
     opt.percentiles  = {};
     opt.distinct_cap = SIZE_MAX;
     opt.value_counts = true;
+    opt.threads      = effective_threads(cfg);
     std::vector<ColumnSummary> sums;
     if (auto err = summarize_columns(src, opt, &sums); !err.empty()) return err;
     // Every column saw the same rows.

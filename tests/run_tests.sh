@@ -5512,6 +5512,21 @@ else
 fi
 assert_eq_file_inline "text_tail" \
     "$("$VV" --tail 2 "$TXT" 2>/dev/null)" "$(printf '\nfourth after a blank')"
+# A table with many columns is summarised a column per thread; the result
+# does not depend on the thread count (20 columns x 5,000 rows, with nulls,
+# text and value counts).
+awk 'BEGIN { OFS = "\t"; h = "c0"; for (j = 1; j < 20; j++) h = h OFS "c" j; print h
+             for (i = 0; i < 5000; i++) { l = (i % 7 ? i * 0.37 : "");
+                 for (j = 1; j < 20; j++) l = l OFS (j % 5 ? (i * j) % 101 / 3 : "t" (i * j) % 13); print l } }' > "$TMP/wide20.tsv"
+assert_eq_file_inline "describe_threads_same" \
+    "$("$VV" -@ 1 --describe "$TMP/wide20.tsv" | cksum) $("$VV" -@ 1 --value-counts c1,c5 --tsv "$TMP/wide20.tsv" | cksum)" \
+    "$("$VV" -@ 4 --describe "$TMP/wide20.tsv" | cksum) $("$VV" -@ 4 --value-counts c1,c5 --tsv "$TMP/wide20.tsv" | cksum)"
+# The text --tail ring drops its oldest line in constant time (it erased
+# the front of a vector per line: 3 M lines, --tail 100000 took 268 s).
+seq 1 200000 | sed 's/^/log line /' > "$TMP/tail200k.log"
+assert_eq_file_inline "text_tail_large_ring" \
+    "$(run_with_timeout 20 "$VV" --tail 50000 "$TMP/tail200k.log" | cksum)" \
+    "$(tail -n 50000 "$TMP/tail200k.log" | cksum)"
 # --filter over the `line` column is grep, and the column name is documented.
 assert_eq_file_inline "text_filter_greps" \
     "$("$VV" --filter 'line contains "line"' "$TXT" 2>/dev/null)" "first line"

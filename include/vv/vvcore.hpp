@@ -285,6 +285,10 @@ struct SummaryOptions {
     bool                value_counts = false;
     const std::atomic<bool>* cancel    = nullptr;   // polled once per chunk
     std::atomic<int64_t>*    rows_done = nullptr;   // rows read so far
+    // Threads for a table with many columns (each column on one thread at a
+    // time, so the result does not depend on it); 0 = effective_threads'
+    // default.
+    int                 threads = 0;
 };
 // "" on success; "canceled" when *cancel was set; else the read error. Reads
 // each chunk once in order (ensure + read_chunk): a caller sharing a

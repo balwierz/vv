@@ -82,9 +82,20 @@ std::string summarize_columns(TabularSource& src, const SummaryOptions& opt,
     const std::vector<int> read_set = have_filter
         ? union_with_filter(opt.cols, *opt.filter) : opt.cols;
     std::vector<int> pos(n, -1);   // each column's place in read_set
-    for (size_t k = 0; k < n; ++k)
-        for (size_t j = 0; j < read_set.size(); ++j)
-            if (read_set[j] == opt.cols[k]) { pos[k] = (int)j; break; }
+    {
+        std::vector<int> at(schema->num_fields(), -1);
+        for (size_t j = read_set.size(); j-- > 0;) at[(size_t)read_set[j]] = (int)j;
+        for (size_t k = 0; k < n; ++k) pos[k] = at[(size_t)opt.cols[k]];
+    }
+    // A wide table is summarised on several threads, a column per thread at
+    // a time: each column's statistics are its own, so nothing depends on the
+    // thread count. Not for a column whose text cannot be computed
+    // concurrently (format_thread_safe).
+    int threads = opt.threads > 0 ? opt.threads : effective_threads(Config{});
+    if (n < 8) threads = 1;
+    for (size_t k = 0; k < n && threads > 1; ++k)
+        if (!format_thread_safe(*schema->field(opt.cols[k])->type())) threads = 1;
+    const bool exact_floats = opt.value_counts;
 
     int64_t rows_left = opt.max_rows < 0 ? INT64_MAX : opt.max_rows;
     for (int c = 0; rows_left > 0; ++c) {
@@ -99,7 +110,7 @@ std::string summarize_columns(TabularSource& src, const SummaryOptions& opt,
         const int64_t take = std::min(tbl->num_rows(), rows_left);
         if (take < tbl->num_rows()) tbl = tbl->Slice(0, take);
 
-        for (size_t k = 0; k < n; ++k) {
+        auto summarize_column = [&](size_t k) {
             Acc& a = acc[k];
             for (auto& ch : tbl->column(pos[k])->chunks()) {
                 const int64_t len = ch->length();
@@ -145,6 +156,22 @@ std::string summarize_columns(TabularSource& src, const SummaryOptions& opt,
                     a.counts.emplace(std::move(s), 1);
                 }
             }
+        };
+        if (threads > 1 && tbl->num_rows() * (int64_t)n >= (int64_t{1} << 16)) {
+            for (size_t k = 0; k < n; ++k)
+                for (const auto& ch : tbl->column(pos[k])->chunks()) prepare_parallel_format(*ch);
+            std::atomic<size_t> next{0};
+            auto work = [&] {
+                std::optional<ExactFloats> ef;   // thread-local: hand it on
+                if (exact_floats) ef.emplace();
+                for (size_t k; (k = next.fetch_add(1)) < n;) summarize_column(k);
+            };
+            std::vector<std::thread> pool;
+            for (int t = 1; t < threads; ++t) pool.emplace_back(work);
+            work();
+            for (auto& t : pool) t.join();
+        } else {
+            for (size_t k = 0; k < n; ++k) summarize_column(k);
         }
         rows_left -= take;
     }
