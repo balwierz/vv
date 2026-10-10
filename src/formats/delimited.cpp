@@ -274,21 +274,34 @@ public:
         return std::shared_ptr<arrow::Buffer>(std::move(buf));
     }
 };
+// Each line cut to its first `max_fields` tab-separated fields (SAM, GFF:
+// optional trailing fields Arrow's fixed-width parser would reject). With
+// `comment` set, lines starting with it are dropped wherever they are — GFF3
+// puts `###` and `#` lines between records — and `##FASTA` ends the records
+// (GFF3: sequences follow).
 class TruncateFieldsStream : public arrow::io::InputStream {
     std::shared_ptr<arrow::io::InputStream> inner_;
     LineReader   lr_;          // buffered reader — avoids one-byte-at-a-time reads
     int          max_fields_;
+    char         comment_;
     std::string  out_buf_;
     size_t       out_pos_    = 0;
     bool         inner_done_ = false;
 
     bool refill() {
         out_pos_ = 0;
-        do {
+        for (;;) {
             bool ok = lr_.read_line(&out_buf_);
             if (!ok && out_buf_.empty()) { inner_done_ = true; return false; }
             if (!ok) inner_done_ = true;
-        } while (out_buf_.empty());
+            if (out_buf_.empty()) continue;
+            if (comment_ && out_buf_[0] == comment_) {
+                if (out_buf_.rfind("##FASTA", 0) == 0) { inner_done_ = true; out_buf_.clear(); return false; }
+                if (inner_done_) { out_buf_.clear(); return false; }
+                continue;
+            }
+            break;
+        }
         // Truncate to at most max_fields tab-separated fields
         const char* b = out_buf_.data();
         const char* e = b + out_buf_.size();
@@ -304,8 +317,9 @@ class TruncateFieldsStream : public arrow::io::InputStream {
     }
 
 public:
-    TruncateFieldsStream(std::shared_ptr<arrow::io::InputStream> inner, int max_fields)
-        : inner_(inner), lr_(inner), max_fields_(max_fields) {}
+    TruncateFieldsStream(std::shared_ptr<arrow::io::InputStream> inner, int max_fields,
+                         char comment = 0)
+        : inner_(inner), lr_(inner), max_fields_(max_fields), comment_(comment) {}
 
     arrow::Status Close() override { return inner_->Close(); }
     bool closed() const override { return inner_->closed(); }
@@ -1147,7 +1161,7 @@ private:
                     put_back.empty() ? input
                     : std::shared_ptr<arrow::io::InputStream>(
                         std::make_shared<PrependInputStream>(std::move(put_back), input));
-                input = std::make_shared<TruncateFieldsStream>(base, 9);
+                input = std::make_shared<TruncateFieldsStream>(base, 9, '#');
                 put_back.clear();
                 break;
             }
@@ -1253,7 +1267,7 @@ private:
                 TabixInputStream::open(path, regions_to_htslib(region), &tabix);
             if (!err.empty()) return err;
             std::shared_ptr<arrow::io::InputStream> ti = tabix;
-            if (kind == DelimKind::GFF) ti = std::make_shared<TruncateFieldsStream>(ti, 9);
+            if (kind == DelimKind::GFF) ti = std::make_shared<TruncateFieldsStream>(ti, 9, '#');
             if (kind == DelimKind::SAM) ti = std::make_shared<TruncateFieldsStream>(ti, 11);
             input = ti;
             self->region_applied_ = true;
@@ -1291,6 +1305,14 @@ private:
             const char ty = t < self->paf_tag_types_.size() ? self->paf_tag_types_[t] : 'Z';
             col_types.push_back({self->paf_tags_[t], ty == 'i' ? arrow::int64()
                                                     : ty == 'f' ? arrow::float64() : arrow::utf8()});
+        }
+        // Chromosome names are text even when the first block holds only
+        // numeric ones (Ensembl: 1 … 22, then X, GL000008.2), and a GFF phase
+        // is 0 / 1 / 2 or "." (a block of CDS rows alone would make it int64).
+        if (kind == DelimKind::VCF) col_types.push_back({"CHROM", arrow::utf8()});
+        if (kind == DelimKind::GFF) {
+            col_types.push_back({"seqname", arrow::utf8()});
+            col_types.push_back({"frame", arrow::utf8()});
         }
         // BLAST tabular (standard 12 columns, read headerless as f0..): percent
         // identity, e-value and bit score are reals even when the first block

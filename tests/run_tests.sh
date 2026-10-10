@@ -2062,6 +2062,25 @@ assert cols['AF'] == 'double', cols['AF']
 " 2>/dev/null && { PASS=$((PASS+1)); echo "  ok    expand_vcf_types_from_header"; } \
    || { FAIL=$((FAIL+1)); echo "  FAIL  expand_vcf_types_from_header"; }
 
+# Chromosome names numeric in the first block (Ensembl: 1 … 22) and text
+# later (X, GL000008.2) stay text: the column used to be inferred int64 and
+# the read failed at the first other name. GFF3's `###` / `#` lines between
+# records are skipped, and `##FASTA` ends the records. 1 MiB blocks put only
+# numeric names in the first.
+awk 'BEGIN { print "##fileformat=VCFv4.2"; print "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"
+             for (i = 0; i < 60000; i++) printf "%d\t%d\t.\tA\tG\t50\tPASS\tDP=10\n", 1 + int(i * 22 / 60000), i * 10 + 1
+             print "X\t5\t.\tA\tG\t50\tPASS\tDP=10" }' > "$TMP/ens.vcf"
+assert_eq_file_inline "vcf_numeric_then_text_chrom" \
+    "$(VV_CSV_BLOCK_MB=1 "$VV" --tsv --no-header "$TMP/ens.vcf" 2>&1 | tail -1 | cut -f1,2)" "$(printf 'X\t5')"
+awk 'BEGIN { print "##gff-version 3"
+             for (i = 0; i < 60000; i++) { printf "%d\tens\tCDS\t%d\t%d\t.\t+\t0\tID=c%d\n", 1 + int(i * 22 / 60000), i * 10 + 1, i * 10 + 5, i
+                                           if (i % 1000 == 999) print "###" }
+             print "# a comment"
+             print "GL000008.2\tens\tgene\t1\t9\t.\t-\t.\tID=g1"
+             print "##FASTA"; print ">GL000008.2"; print "ACGT" }' > "$TMP/ens.gff3"
+assert_eq_file_inline "gff_comments_and_text_seqname" \
+    "$(VV_CSV_BLOCK_MB=1 "$VV" --count "$TMP/ens.gff3" 2>&1) $(VV_CSV_BLOCK_MB=1 "$VV" --tsv --no-header "$TMP/ens.gff3" 2>&1 | tail -1 | cut -f1,8)" \
+    "60001 $(printf 'GL000008.2\t.')"
 # GTF: nothing is declared, so keys come from the first chunk in first-seen
 # order. gencode repeats `tag`; the first occurrence wins and it yields ONE
 # column, not two.

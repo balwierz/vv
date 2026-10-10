@@ -47,6 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   0.75 s → 0.47 s.
 
 ### Fixed
+- A VCF or GFF whose first 16 MiB name chromosomes only by numbers (Ensembl:
+  `1` … `22`) failed at the first other name (`X`, `GL000008.2`): the
+  chromosome column was inferred as an integer. VCF `CHROM` and GFF `seqname`
+  and `frame` are read as text.
+- GFF3 `###` and `#` lines between records stopped the read ("Expected 9
+  columns, got 1"); they are skipped, and `##FASTA` ends the records. The
+  Ensembl GRCh38 GFF3 (10.7 M records) now opens.
 - The config file's `threads` key now sizes Arrow's thread pool too (Parquet
   decode, CSV parsing); it was read after the pool was sized.
 - vvg sorted a stream longer than its retained batches (the last 64, e.g. a
