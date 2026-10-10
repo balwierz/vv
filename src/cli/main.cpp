@@ -537,8 +537,7 @@ int main(int argc, char** argv) {
                 if (c >= src->num_chunks()) break;
                 std::shared_ptr<arrow::Table> tbl;
                 if (!src->read_chunk(c, read_set, &tbl).ok() || !tbl) continue;
-                tbl = apply_filter(tbl, fx, read_set);
-                if (tbl) total += tbl->num_rows();
+                total += count_filter_matches(*tbl, fx, read_set);
             }
         }
         if (!src->read_status().ok()) {

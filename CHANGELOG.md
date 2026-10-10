@@ -23,6 +23,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `--sort … --select guide` 4.9 GB → 1.7 GB, `--distinct --select library`
   2.1 GB → 0.07 GB.
 
+- `--filter` evaluates each atom on the column's Arrow array directly (string
+  tests on views, the regex compiled once per table) and `--count --filter`
+  counts without building the matching rows. A filter keeping more than 64
+  runs of rows copies them into one array per column instead of returning a
+  table of one slice per run. 12.2 M-row Parquet, `ambient_mean > 1` (4.9 M
+  rows in 2.1 M runs): `--count` 1.5 s → 0.18 s, `--tsv` 14.7 s / 1.8 GB →
+  1.2 s / 0.64 GB, `--describe` 13.2 s → 2.8 s, `--tail 5` 29 s / 9.8 GB →
+  0.24 s / 0.29 GB.
+
 ### Fixed
 - `--distinct` on a file with an unreadable column printed nothing when that
   column was not among the compared ones; it now reads only the compared and

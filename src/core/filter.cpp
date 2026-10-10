@@ -575,8 +575,7 @@ bool parse_filter_expr(const std::string& expr,
 }
 
 // Walk a ChunkedArray to the array holding `row`, returning it plus the
-// offset inside it. One copy of the loop that cell_as_int / cell_as_double /
-// cell_as_string / cell_is_null all used to carry separately.
+// offset inside it.
 static const arrow::Array* locate_cell(const arrow::Table& tbl, int col,
                                        int64_t row, int64_t* off) {
     auto chunked = tbl.column(col);
@@ -588,16 +587,6 @@ static const arrow::Array* locate_cell(const arrow::Table& tbl, int col,
     return nullptr;
 }
 
-// True when the cell exists and holds a null. Distinct from "could not read
-// it": `is null` must match an actual null, not an unsupported type.
-static bool cell_is_null(const arrow::Table& tbl, int col, int64_t row) {
-    int64_t off = 0;
-    const arrow::Array* a = locate_cell(tbl, col, row, &off);
-    return a && a->IsNull(off);
-}
-
-// Get the int64 / double / string value of cell (col_idx, row) in `tbl`.
-// Returns false for nulls or unsupported types.
 // Resolve a possibly dictionary-encoded cell to its underlying value array and
 // index. For a plain array this is just (&a, r); for a DictionaryArray it is
 // the dictionary's array at the decoded index. Returns false when the cell is
@@ -622,47 +611,38 @@ static bool resolve_dict_cell(const arrow::Array& a, int64_t r,
 
 // An integer-typed cell as int64; false for null, a non-integer type (floats
 // included), or a uint64 beyond int64.
-static bool cell_as_int(const arrow::Table& tbl, int col, int64_t row,
-                         int64_t* out) {
-    auto chunked = tbl.column(col);
-    int64_t r = row;
-    for (const auto& ch : chunked->chunks()) {
-        if (r < ch->length()) {
-            const arrow::Array* a; int64_t i;
-            if (!resolve_dict_cell(*ch, r, &a, &i)) return false;
-            switch (a->type_id()) {
-                case arrow::Type::INT64:  *out = static_cast<const arrow::Int64Array&>(*a).Value(i);  return true;
-                case arrow::Type::INT32:  *out = static_cast<const arrow::Int32Array&>(*a).Value(i);  return true;
-                case arrow::Type::INT16:  *out = static_cast<const arrow::Int16Array&>(*a).Value(i);  return true;
-                case arrow::Type::INT8:   *out = static_cast<const arrow::Int8Array&>(*a).Value(i);   return true;
-                case arrow::Type::UINT32: *out = (int64_t)static_cast<const arrow::UInt32Array&>(*a).Value(i); return true;
-                case arrow::Type::UINT16: *out = static_cast<const arrow::UInt16Array&>(*a).Value(i); return true;
-                case arrow::Type::UINT8:  *out = static_cast<const arrow::UInt8Array&>(*a).Value(i);  return true;
-                case arrow::Type::UINT64: {
-                    const uint64_t u = static_cast<const arrow::UInt64Array&>(*a).Value(i);
-                    if (u > (uint64_t)INT64_MAX) return false;   // compare as double
-                    *out = (int64_t)u;
-                    return true;
-                }
-                // Temporal columns are integers underneath (days, ms, us,
-                // ns since the epoch): read the count exactly, so a
-                // nanosecond timestamp compares without double rounding.
-                case arrow::Type::DATE32: *out = static_cast<const arrow::Date32Array&>(*a).Value(i); return true;
-                case arrow::Type::DATE64: *out = static_cast<const arrow::Date64Array&>(*a).Value(i); return true;
-                case arrow::Type::TIMESTAMP: *out = static_cast<const arrow::TimestampArray&>(*a).Value(i); return true;
-                case arrow::Type::TIME32: *out = static_cast<const arrow::Time32Array&>(*a).Value(i); return true;
-                case arrow::Type::TIME64: *out = static_cast<const arrow::Time64Array&>(*a).Value(i); return true;
-                case arrow::Type::DURATION: *out = static_cast<const arrow::DurationArray&>(*a).Value(i); return true;
-                case arrow::Type::BOOL: *out = static_cast<const arrow::BooleanArray&>(*a).Value(i) ? 1 : 0; return true;
-                // FLOAT / DOUBLE are not integers: truncating them made
-                // `Score > 0` compare 0.05 as 0 and match nothing. The caller
-                // compares them as doubles.
-                default: return false;
-            }
+static bool value_as_int(const arrow::Array& ch, int64_t r, int64_t* out) {
+    const arrow::Array* a; int64_t i;
+    if (!resolve_dict_cell(ch, r, &a, &i)) return false;
+    switch (a->type_id()) {
+        case arrow::Type::INT64:  *out = static_cast<const arrow::Int64Array&>(*a).Value(i);  return true;
+        case arrow::Type::INT32:  *out = static_cast<const arrow::Int32Array&>(*a).Value(i);  return true;
+        case arrow::Type::INT16:  *out = static_cast<const arrow::Int16Array&>(*a).Value(i);  return true;
+        case arrow::Type::INT8:   *out = static_cast<const arrow::Int8Array&>(*a).Value(i);   return true;
+        case arrow::Type::UINT32: *out = (int64_t)static_cast<const arrow::UInt32Array&>(*a).Value(i); return true;
+        case arrow::Type::UINT16: *out = static_cast<const arrow::UInt16Array&>(*a).Value(i); return true;
+        case arrow::Type::UINT8:  *out = static_cast<const arrow::UInt8Array&>(*a).Value(i);  return true;
+        case arrow::Type::UINT64: {
+            const uint64_t u = static_cast<const arrow::UInt64Array&>(*a).Value(i);
+            if (u > (uint64_t)INT64_MAX) return false;   // compare as double
+            *out = (int64_t)u;
+            return true;
         }
-        r -= ch->length();
+        // Temporal columns are integers underneath (days, ms, us,
+        // ns since the epoch): read the count exactly, so a
+        // nanosecond timestamp compares without double rounding.
+        case arrow::Type::DATE32: *out = static_cast<const arrow::Date32Array&>(*a).Value(i); return true;
+        case arrow::Type::DATE64: *out = static_cast<const arrow::Date64Array&>(*a).Value(i); return true;
+        case arrow::Type::TIMESTAMP: *out = static_cast<const arrow::TimestampArray&>(*a).Value(i); return true;
+        case arrow::Type::TIME32: *out = static_cast<const arrow::Time32Array&>(*a).Value(i); return true;
+        case arrow::Type::TIME64: *out = static_cast<const arrow::Time64Array&>(*a).Value(i); return true;
+        case arrow::Type::DURATION: *out = static_cast<const arrow::DurationArray&>(*a).Value(i); return true;
+        case arrow::Type::BOOL: *out = static_cast<const arrow::BooleanArray&>(*a).Value(i) ? 1 : 0; return true;
+        // FLOAT / DOUBLE are not integers: truncating them made
+        // `Score > 0` compare 0.05 as 0 and match nothing. The caller
+        // compares them as doubles.
+        default: return false;
     }
-    return false;
 }
 // Extract any value of a type is_numeric_type() accepts from array `a` at
 // index `r` as a double. Returns false on null or a genuinely non-numeric
@@ -734,22 +714,15 @@ bool cell_as_double(const arrow::Table& tbl, int col, int64_t row,
     }
     return false;
 }
-static bool cell_as_string(const arrow::Table& tbl, int col, int64_t row,
-                            std::string* out) {
-    auto chunked = tbl.column(col);
-    int64_t r = row;
-    for (const auto& ch : chunked->chunks()) {
-        if (r < ch->length()) {
-            const arrow::Array* a; int64_t i;
-            if (!resolve_dict_cell(*ch, r, &a, &i)) return false;
-            if (a->type_id() == arrow::Type::STRING)
-                { *out = static_cast<const arrow::StringArray&>(*a).GetString(i); return true; }
-            if (a->type_id() == arrow::Type::LARGE_STRING)
-                { *out = static_cast<const arrow::LargeStringArray&>(*a).GetString(i); return true; }
-            return false;
-        }
-        r -= ch->length();
-    }
+// A string cell (plain or dictionary-encoded) as a view into its array;
+// false for null or a non-string type.
+static bool value_as_view(const arrow::Array& ch, int64_t r, std::string_view* out) {
+    const arrow::Array* a; int64_t i;
+    if (!resolve_dict_cell(ch, r, &a, &i)) return false;
+    if (a->type_id() == arrow::Type::STRING)
+        { *out = static_cast<const arrow::StringArray&>(*a).GetView(i); return true; }
+    if (a->type_id() == arrow::Type::LARGE_STRING)
+        { *out = static_cast<const arrow::LargeStringArray&>(*a).GetView(i); return true; }
     return false;
 }
 
@@ -779,78 +752,64 @@ static const std::regex* filter_regex_for(const std::string& pat) {
     return &it->second;
 }
 
-bool eval_atom(const arrow::Table& tbl, int64_t row, const FilterAtom& a,
-                const std::vector<int>& read_indices) {
-    int tcol = filter_col_in_table(a, read_indices);
-    if (tcol < 0) return false;
-
+// Atom `a` on row `r` of array `ch` (one chunk of the column). `col_float`:
+// the column is float32, whose cells are compared with the literal rounded to
+// float32. `re`: the compiled pattern of a Match / NotMatch atom.
+static bool eval_cell(const FilterAtom& a, const arrow::Array& ch, int64_t r,
+                      bool col_float, const std::regex* re) {
     // Null predicates come first: every other branch treats a null as "no
     // match", which is right for them and wrong here.
-    if (a.op == FilterAtom::IsNull)  return  cell_is_null(tbl, tcol, row);
-    if (a.op == FilterAtom::NotNull) {
-        int64_t off = 0;
-        const arrow::Array* arr = locate_cell(tbl, tcol, row, &off);
-        return arr && !arr->IsNull(off);
-    }
+    if (a.op == FilterAtom::IsNull)  return  ch.IsNull(r);
+    if (a.op == FilterAtom::NotNull) return !ch.IsNull(r);
 
     if (a.op == FilterAtom::Has || a.op == FilterAtom::Lacks) {
         int64_t v;
-        if (!cell_as_int(tbl, tcol, row, &v)) return false;   // null: no match
+        if (!value_as_int(ch, r, &v)) return false;   // null: no match
         return a.op == FilterAtom::Has ? (v & a.i_lit) == a.i_lit
                                        : (v & a.i_lit) == 0;
     }
 
     // String / set predicates read the cell as text whatever the literal
     // looked like, so `Chr in (1,2)` works on a string chrom column.
+    std::string_view s;
     switch (a.op) {
         case FilterAtom::Match:
         case FilterAtom::NotMatch: {
-            std::string s;
-            if (!cell_as_string(tbl, tcol, row, &s)) return false;
-            const std::regex* re = filter_regex_for(a.s_lit);
-            if (!re) return false;
-            bool hit = std::regex_search(s, *re);
+            if (!value_as_view(ch, r, &s) || !re) return false;
+            bool hit = std::regex_search(s.data(), s.data() + s.size(), *re);
             return a.op == FilterAtom::Match ? hit : !hit;
         }
         case FilterAtom::Contains:
         case FilterAtom::NotContains: {
-            std::string s;
-            if (!cell_as_string(tbl, tcol, row, &s)) return false;
-            bool hit = s.find(a.s_lit) != std::string::npos;
+            if (!value_as_view(ch, r, &s)) return false;
+            bool hit = s.find(a.s_lit) != std::string_view::npos;
             return a.op == FilterAtom::Contains ? hit : !hit;
         }
-        case FilterAtom::StartsWith: {
-            std::string s;
-            if (!cell_as_string(tbl, tcol, row, &s)) return false;
+        case FilterAtom::StartsWith:
+            if (!value_as_view(ch, r, &s)) return false;
             return s.rfind(a.s_lit, 0) == 0;
-        }
-        case FilterAtom::EndsWith: {
-            std::string s;
-            if (!cell_as_string(tbl, tcol, row, &s)) return false;
+        case FilterAtom::EndsWith:
+            if (!value_as_view(ch, r, &s)) return false;
             return s.size() >= a.s_lit.size() &&
-                   s.compare(s.size() - a.s_lit.size(), a.s_lit.size(),
-                             a.s_lit) == 0;
-        }
+                   s.compare(s.size() - a.s_lit.size(), a.s_lit.size(), a.s_lit) == 0;
         case FilterAtom::In:
         case FilterAtom::NotIn: {
-            std::string s;
-            if (!cell_as_string(tbl, tcol, row, &s)) {
+            if (!value_as_view(ch, r, &s)) {
                 // Numeric column: compare as numbers, so `Start in (100, 200)`
                 // behaves as written.
                 double d;
-                if (!cell_as_double(tbl, tcol, row, &d)) return false;
+                if (!array_value_as_double(ch, r, &d)) return false;
                 const bool hit = a.set_num && a.set_num->count(d);
                 return a.op == FilterAtom::In ? hit : !hit;
             }
-            const bool hit = a.set_text && a.set_text->count(s);
+            const bool hit = a.set_text && a.set_text->count(std::string(s));
             return a.op == FilterAtom::In ? hit : !hit;
         }
         default: break;   // fall through to the ordering comparisons
     }
 
     if (a.kind == FilterAtom::K_String) {
-        std::string s;
-        if (!cell_as_string(tbl, tcol, row, &s)) return false;
+        if (!value_as_view(ch, r, &s)) return false;
         int c = s.compare(a.s_lit);
         switch (a.op) {
             case FilterAtom::Eq: return c == 0;
@@ -863,7 +822,7 @@ bool eval_atom(const arrow::Table& tbl, int64_t row, const FilterAtom& a,
         }
     } else if (a.kind == FilterAtom::K_Int) {
         int64_t v;
-        if (cell_as_int(tbl, tcol, row, &v)) {
+        if (value_as_int(ch, r, &v)) {
             switch (a.op) {
                 case FilterAtom::Eq: return v == a.i_lit;
                 case FilterAtom::Ne: return v != a.i_lit;
@@ -876,9 +835,9 @@ bool eval_atom(const arrow::Table& tbl, int64_t row, const FilterAtom& a,
         }
         // Fall back to double if the column isn't integral.
         double d;
-        if (!cell_as_double(tbl, tcol, row, &d)) return false;
+        if (!array_value_as_double(ch, r, &d)) return false;
         double L = (double)a.i_lit;
-        if (tbl.column(tcol)->type()->id() == arrow::Type::FLOAT) L = (float)L;
+        if (col_float) L = (float)L;
         switch (a.op) {
             case FilterAtom::Eq: return d == L;
             case FilterAtom::Ne: return d != L;
@@ -890,12 +849,12 @@ bool eval_atom(const arrow::Table& tbl, int64_t row, const FilterAtom& a,
         }
     } else {
         double d;
-        if (!cell_as_double(tbl, tcol, row, &d)) return false;
+        if (!array_value_as_double(ch, r, &d)) return false;
         // A float32 cell is compared with the literal rounded to float32:
         // the column holds 0.05f (0.0500000007…), which `Score == 0.05`
         // never equalled and `Score > 0.05` wrongly matched.
         double L = a.f_lit;
-        if (tbl.column(tcol)->type()->id() == arrow::Type::FLOAT) L = (float)L;
+        if (col_float) L = (float)L;
         switch (a.op) {
             case FilterAtom::Eq: return d == L;
             case FilterAtom::Ne: return d != L;
@@ -909,39 +868,179 @@ bool eval_atom(const arrow::Table& tbl, int64_t row, const FilterAtom& a,
     return false;
 }
 
-// Apply `expr` to `tbl`, returning the subset of rows that match.
-// Builds contiguous matching runs and concatenates them — avoids Arrow's
-// compute kernels (which get GC'd from our static build).
+static const std::regex* regex_of(const FilterAtom& a) {
+    return a.op == FilterAtom::Match || a.op == FilterAtom::NotMatch
+        ? filter_regex_for(a.s_lit) : nullptr;
+}
+
+bool eval_atom(const arrow::Table& tbl, int64_t row, const FilterAtom& a,
+                const std::vector<int>& read_indices) {
+    int tcol = filter_col_in_table(a, read_indices);
+    if (tcol < 0) return false;
+    int64_t off = 0;
+    const arrow::Array* ch = locate_cell(tbl, tcol, row, &off);
+    if (!ch) return false;
+    return eval_cell(a, *ch, off, tbl.column(tcol)->type()->id() == arrow::Type::FLOAT,
+                     regex_of(a));
+}
+
+namespace {
+
+// An atom bound to its column in one table: the column's position, whether
+// it is float32, and the compiled pattern of a Match / NotMatch atom.
+struct BoundAtom {
+    const FilterAtom* a;
+    int tcol;
+    bool col_float;
+    const std::regex* re;
+};
+
+std::vector<std::vector<BoundAtom>> bind_filter(const arrow::Table& tbl, const FilterExpr& expr,
+                                                const std::vector<int>& read_indices) {
+    std::vector<std::vector<BoundAtom>> groups;
+    for (const auto& clause : expr.groups) {
+        groups.emplace_back();
+        for (const auto& a : clause) {
+            const int tcol = filter_col_in_table(a, read_indices);
+            groups.back().push_back({&a, tcol,
+                tcol >= 0 && tbl.column(tcol)->type()->id() == arrow::Type::FLOAT, regex_of(a)});
+        }
+    }
+    return groups;
+}
+
+// Call on_match(row) for each row of `tbl` the filter keeps, in order. The
+// table is walked in batches that share chunk boundaries across columns, so
+// each atom reads its column's array directly.
+template <typename F>
+void for_each_match(const arrow::Table& tbl, const FilterExpr& expr,
+                    const std::vector<int>& read_indices, F&& on_match) {
+    const auto groups = bind_filter(tbl, expr, read_indices);
+    std::vector<std::shared_ptr<arrow::Array>> cols((size_t)tbl.num_columns());
+    arrow::TableBatchReader rdr(tbl);
+    std::shared_ptr<arrow::RecordBatch> batch;
+    int64_t base = 0;
+    while (rdr.ReadNext(&batch).ok() && batch) {
+        for (const auto& g : groups)
+            for (const auto& b : g)
+                if (b.tcol >= 0) cols[(size_t)b.tcol] = batch->column(b.tcol);
+        const int64_t n = batch->num_rows();
+        for (int64_t r = 0; r < n; ++r) {
+            bool any = false;
+            for (const auto& g : groups) {
+                bool all = true;
+                for (const auto& b : g) {
+                    if (b.tcol < 0 ||
+                        !eval_cell(*b.a, *cols[(size_t)b.tcol], r, b.col_float, b.re)) {
+                        all = false;
+                        break;
+                    }
+                }
+                if (all) { any = true; break; }
+            }
+            if (any) on_match(base + r);
+        }
+        base += n;
+    }
+}
+
+}  // namespace
+
+// The rows of `ca` in `runs` ([start, start + length), ascending), copied
+// into one array with the builder's AppendArraySlice (a builder method, not a
+// compute kernel). A dictionary column whose chunks share one dictionary
+// keeps it and copies only the indices; an extension column copies its
+// storage.
+static arrow::Result<std::shared_ptr<arrow::Array>>
+copy_runs(const arrow::ChunkedArray& ca, const std::vector<std::pair<int64_t, int64_t>>& runs,
+          int64_t total) {
+    const auto& type = ca.type();
+    if (type->id() == arrow::Type::EXTENSION) {
+        arrow::ArrayVector storage;
+        for (const auto& ch : ca.chunks())
+            storage.push_back(static_cast<const arrow::ExtensionArray&>(*ch).storage());
+        const arrow::ChunkedArray st(std::move(storage),
+            static_cast<const arrow::ExtensionType&>(*type).storage_type());
+        ARROW_ASSIGN_OR_RAISE(auto copied, copy_runs(st, runs, total));
+        return arrow::ExtensionType::WrapArray(type, copied);
+    }
+    if (type->id() == arrow::Type::DICTIONARY && ca.num_chunks() > 0) {
+        const auto& first = static_cast<const arrow::DictionaryArray&>(*ca.chunk(0)).dictionary();
+        bool shared = true;
+        arrow::ArrayVector indices;
+        for (const auto& ch : ca.chunks()) {
+            const auto& da = static_cast<const arrow::DictionaryArray&>(*ch);
+            if (da.dictionary() != first && !da.dictionary()->Equals(*first)) { shared = false; break; }
+            indices.push_back(da.indices());
+        }
+        if (shared) {
+            const arrow::ChunkedArray idx(std::move(indices),
+                static_cast<const arrow::DictionaryType&>(*type).index_type());
+            ARROW_ASSIGN_OR_RAISE(auto copied, copy_runs(idx, runs, total));
+            return arrow::DictionaryArray::FromArrays(type, copied, first);
+        }
+    }
+    std::unique_ptr<arrow::ArrayBuilder> b;
+    ARROW_RETURN_NOT_OK(arrow::MakeBuilderExactIndex(arrow::default_memory_pool(), type, &b));
+    ARROW_RETURN_NOT_OK(b->Reserve(total));
+    std::vector<arrow::ArraySpan> spans;
+    for (const auto& ch : ca.chunks()) spans.emplace_back(*ch->data());
+    size_t c = 0;
+    int64_t chunk_start = 0;   // first row of chunk c
+    for (auto [start, len] : runs) {
+        while (len > 0) {
+            while (start >= chunk_start + spans[c].length) chunk_start += spans[c++].length;
+            const int64_t take = std::min(len, chunk_start + spans[c].length - start);
+            ARROW_RETURN_NOT_OK(b->AppendArraySlice(spans[c], start - chunk_start, take));
+            start += take;
+            len -= take;
+        }
+    }
+    std::shared_ptr<arrow::Array> out;
+    ARROW_RETURN_NOT_OK(b->Finish(&out));
+    return out;
+}
+
+// Apply `expr` to `tbl`, returning the subset of rows that match. A few runs
+// of matching rows are slices of `tbl`, concatenated (no copy); more than 64
+// are copied into one array per column, so a filter that keeps scattered rows
+// does not leave a table of millions of one-row chunks behind (4.9 M rows in
+// 2.1 M runs: 2.1 M Table slices, each a ChunkedArray per column).
 std::shared_ptr<arrow::Table> apply_filter(
  const std::shared_ptr<arrow::Table>& tbl, const FilterExpr& expr,
  const std::vector<int>& read_indices) {
-    int64_t n = tbl->num_rows();
-    std::vector<std::shared_ptr<arrow::Table>> runs;
-    int64_t run_start = -1;
-    auto flush = [&](int64_t end) {
-        if (run_start >= 0) {
-            runs.push_back(tbl->Slice(run_start, end - run_start));
-            run_start = -1;
-        }
-    };
-    for (int64_t r = 0; r < n; ++r) {
-        bool any = false;
-        for (const auto& clause : expr.groups) {
-            bool all = true;
-            for (const auto& a : clause) {
-                if (!eval_atom(*tbl, r, a, read_indices)) { all = false; break; }
-            }
-            if (all) { any = true; break; }
-        }
-        if (any) { if (run_start < 0) run_start = r; }
-        else     { flush(r); }
-    }
-    flush(n);
+    std::vector<std::pair<int64_t, int64_t>> runs;
+    int64_t kept = 0;
+    for_each_match(*tbl, expr, read_indices, [&](int64_t r) {
+        ++kept;
+        if (!runs.empty() && runs.back().first + runs.back().second == r) { ++runs.back().second; return; }
+        runs.push_back({r, 1});
+    });
     if (runs.empty())
         return tbl->Slice(0, 0);
-    if (runs.size() == 1) return runs[0];
-    auto cr = arrow::ConcatenateTables(runs);
+    if (runs.size() == 1) return tbl->Slice(runs[0].first, runs[0].second);
+    if (runs.size() > 64) {
+        arrow::ArrayVector cols;
+        bool ok = true;
+        for (int c = 0; c < tbl->num_columns() && ok; ++c) {
+            auto copied = copy_runs(*tbl->column(c), runs, kept);
+            if (copied.ok()) cols.push_back(*copied);
+            else ok = false;
+        }
+        if (ok) return arrow::Table::Make(tbl->schema(), cols, kept);
+        // A type without a builder: fall back to slices.
+    }
+    std::vector<std::shared_ptr<arrow::Table>> slices;
+    for (auto [start, len] : runs) slices.push_back(tbl->Slice(start, len));
+    auto cr = arrow::ConcatenateTables(slices);
     return cr.ok() ? cr.ValueOrDie() : tbl;
+}
+
+int64_t count_filter_matches(const arrow::Table& tbl, const FilterExpr& expr,
+                             const std::vector<int>& read_indices) {
+    int64_t n = 0;
+    for_each_match(tbl, expr, read_indices, [&](int64_t) { ++n; });
+    return n;
 }
 
 // Field indices the filter expression references, union'd with `base`.
@@ -973,17 +1072,7 @@ std::vector<int64_t> filter_rows(TabularSource& src, const FilterExpr& expr) {
         ChunkMeta m = src.chunk_meta(c);
         std::shared_ptr<arrow::Table> tbl;
         if (!src.read_chunk(c, all, &tbl).ok() || !tbl) continue;
-        int64_t n = tbl->num_rows();
-        for (int64_t r = 0; r < n; ++r) {
-            bool any = false;
-            for (const auto& clause : expr.groups) {
-                bool good = true;
-                for (const auto& a : clause)
-                    if (!eval_atom(*tbl, r, a, all)) { good = false; break; }
-                if (good) { any = true; break; }
-            }
-            if (any) keep.push_back(m.first_row + r);
-        }
+        for_each_match(*tbl, expr, all, [&](int64_t r) { keep.push_back(m.first_row + r); });
     }
     return keep;
 }

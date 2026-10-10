@@ -857,7 +857,8 @@ std::string build_tail(std::unique_ptr<TabularSource>& src,
         const std::vector<int> fcols = union_with_filter({}, fx);
         for (int i = 0; i <= c; ++i) {
             if (!have_filter) { M += src->chunk_meta(i).num_rows; continue; }
-            if (auto t = read_filtered(*src, i, fcols, fx, true)) M += t->num_rows();
+            std::shared_ptr<arrow::Table> t;
+            if (src->read_chunk(i, fcols, &t).ok() && t) M += count_filter_matches(*t, fx, fcols);
         }
     } else {
         for (int c = 0; ; ++c) {

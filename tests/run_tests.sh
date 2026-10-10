@@ -125,6 +125,12 @@ for mode in --tsv --csv --json --ndjson; do
         assert_eq_file_inline "export_threads_same_bytes_${mode#--}" "differs" ok
     fi
 done
+# A filter that keeps rows in many runs (q == "a,b" drops one row in 97:
+# about 3,000 runs) returns them copied into one array per column; the rows
+# are those a full export shows.
+assert_eq_file_inline "filter_many_runs_rows" \
+    "$("$VV" --tsv --no-header --filter 'q == "a,b"' "$PAR" | cksum)" \
+    "$("$VV" --tsv --no-header "$PAR" | awk -F'\t' '$4 == "a,b"' | cksum)"
 # Empty Arrow IPC (schema, zero record batches): the table view must render the
 # column header + "0 rows" like an empty Parquet, not draw nothing (the seeded
 # zero-row batch was unreachable when num_chunks() reported 0).

@@ -719,6 +719,11 @@ std::shared_ptr<arrow::Table> apply_filter(
  const std::shared_ptr<arrow::Table>& tbl, const FilterExpr& expr,
  const std::vector<int>& read_indices);
 
+// The number of rows of `tbl` that `expr` keeps (apply_filter's row count,
+// without building the table).
+int64_t count_filter_matches(const arrow::Table& tbl, const FilterExpr& expr,
+                             const std::vector<int>& read_indices);
+
 std::vector<int> union_with_filter(
  const std::vector<int>& base, const FilterExpr& expr);
 
