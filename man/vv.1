@@ -341,10 +341,11 @@ is an accepted synonym.
 Number of rows to display (default: 10, 0 = all).
 .TP
 .BI \-\-tail " N"
-Show the last \fIN\fR rows instead of the first \fIN\fR. Reads the
-whole source (filtered by \fB\-\-filter\fR if any) and slices the
-tail. Combines with every view / export mode. For streaming
-sources (BAM, BCF, FASTX, …) this implies a full scan.
+Show the last \fIN\fR rows instead of the first \fIN\fR (filtered by
+\fB\-\-filter\fR if any). Combines with every view / export mode.
+Parquet and ORC read only the trailing row groups / stripes in full;
+streaming sources (TSV, BAM, BCF, FASTX, …) are read through, holding
+just the last chunks.
 .TP
 .BI \-\-sort " COL[:desc]"
 Order rows by column \fICOL\fR before output (ascending by default;
@@ -352,8 +353,9 @@ append \fB:desc\fR to reverse). Numeric columns sort numerically,
 others by their rendered text; null values sort last and equal keys
 keep input order. Reads the whole source (filtered by
 \fB\-\-filter\fR if any) into memory, so it combines with every view /
-export mode. For ordering very large files, a query engine is the
-right tool.
+export mode; an export with \fB\-\-select\fR holds only the selected
+columns and the sort column. For ordering very large files, a query
+engine is the right tool.
 .TP
 .BI \-\-tags " LIST"
 BAM / CRAM / SAM and PAF. Add one column per named optional (aux) tag,
@@ -681,8 +683,7 @@ than row deduplication. Materialises the result in memory, like
 Uniformly random N rows (reservoir sampling) instead of head-N. The
 sample is the row set; combine with \fB\-\-tsv\fR, \fB\-\-parquet\fR,
 or any view mode for output. Honours \fB\-\-filter\fR (filter first,
-then sample). Reads the whole file; document upstream if you only want
-sample-from-the-first-M-rows.
+then sample). Reads the whole file but holds only the sampled rows.
 .TP
 .B \-\-text
 Read the file as plain text whatever its extension says. The escape

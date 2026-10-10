@@ -362,6 +362,12 @@ public:
     // window — i.e. a full-pass result may be incomplete for the freed range.
     // Default: false (nothing is ever evicted).
     virtual bool evicted_any() const { return false; }
+    // True when every chunk is known at open (num_chunks / chunk_meta exact)
+    // and read_chunk(i) works for any i in any order, without reading the
+    // chunks before it — Parquet row groups, ORC stripes, an in-memory table.
+    // A whole-source pass (--tail) may then read only the chunks it needs.
+    // Default: false (a forward-only stream).
+    virtual bool random_access() const { return false; }
     // True when this source actually restricted its scan to Config::region.
     // Only some formats carry an index vv can query (tabix'd text, indexed
     // BAM/CRAM/BCF, bigBed/bigWig, LociSSD, sorted Parquet with chrom/start/

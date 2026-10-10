@@ -5,6 +5,8 @@
 
 #include "internal.hpp"
 
+#include <deque>
+
 // ── --validate: LociSSD invariants check ─────────────────────────────────────
 //
 // Checks performed (per FORMAT_SPEC §3, §5, §7):
@@ -637,17 +639,90 @@ std::string print_unique(TabularSource& src, const Config& cfg) {
     return "";
 }
 
-// ── --sample N: reservoir sample N rows uniformly ────────────────────────────
-//
-// Reads (and optionally filters) the entire source into memory, then picks
-// N rows uniformly without replacement via reservoir sampling. The result
-// is wrapped as a MemoryTableSource so the normal output path renders it.
+// ── --sample / --tail / --sort / --distinct ──────────────────────────────────
+// Each reads the (filtered) source and replaces `src` with a MemoryTableSource
+// of the result, so every view and export renders it alike. They keep what the
+// result needs, not the whole source: the rows sampled so far, the last
+// chunks, the distinct rows; --sort, which needs every row, keeps only the
+// columns it outputs. Gathers use the builders' AppendArraySlice, a plain
+// builder method rather than a compute kernel (those are GC'd from the static
+// build).
+
+static std::shared_ptr<arrow::Table> empty_table(const std::shared_ptr<arrow::Schema>& schema) {
+    std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
+    for (const auto& f : schema->fields())
+        cols.push_back(std::make_shared<arrow::ChunkedArray>(arrow::ArrayVector{}, f->type()));
+    return arrow::Table::Make(schema, cols, 0);
+}
+
+// Rows `idx` of the concatenation of `ca`'s chunks, in that order. Arrow has no
+// builder for an extension type: gather its storage and re-wrap it.
+static arrow::Result<std::shared_ptr<arrow::Array>>
+gather_chunked(const arrow::ChunkedArray& ca, const std::vector<int64_t>& idx) {
+    const auto& type = ca.type();
+    if (type->id() == arrow::Type::EXTENSION) {
+        arrow::ArrayVector storage;
+        for (const auto& ch : ca.chunks())
+            storage.push_back(static_cast<const arrow::ExtensionArray&>(*ch).storage());
+        const arrow::ChunkedArray st(std::move(storage),
+            static_cast<const arrow::ExtensionType&>(*type).storage_type());
+        ARROW_ASSIGN_OR_RAISE(auto g, gather_chunked(st, idx));
+        return arrow::ExtensionType::WrapArray(type, g);
+    }
+    std::unique_ptr<arrow::ArrayBuilder> b;
+    ARROW_RETURN_NOT_OK(arrow::MakeBuilder(arrow::default_memory_pool(), type, &b));
+    if (!idx.empty()) ARROW_RETURN_NOT_OK(b->Reserve((int64_t)idx.size()));
+    std::vector<int64_t> starts;
+    std::vector<arrow::ArraySpan> spans;
+    int64_t at = 0;
+    for (const auto& ch : ca.chunks()) {
+        starts.push_back(at);
+        spans.emplace_back(*ch->data());
+        at += ch->length();
+    }
+    for (int64_t i : idx) {
+        const size_t c = spans.size() == 1 ? 0
+            : (size_t)(std::upper_bound(starts.begin(), starts.end(), i) - starts.begin()) - 1;
+        ARROW_RETURN_NOT_OK(b->AppendArraySlice(spans[c], i - starts[c], 1));
+    }
+    std::shared_ptr<arrow::Array> out;
+    ARROW_RETURN_NOT_OK(b->Finish(&out));
+    return out;
+}
+
+// Rows `idx` of every column of `t`.
+static arrow::Result<std::shared_ptr<arrow::Table>>
+gather_table(const arrow::Table& t, const std::vector<int64_t>& idx) {
+    arrow::ArrayVector cols;
+    for (int c = 0; c < t.num_columns(); ++c) {
+        ARROW_ASSIGN_OR_RAISE(auto g, gather_chunked(*t.column(c), idx));
+        cols.push_back(std::move(g));
+    }
+    return arrow::Table::Make(t.schema(), cols, (int64_t)idx.size());
+}
+
+// Chunk `c` of `src`, columns `cols`, through `fx` when `have_filter`; null
+// when it cannot be read or nothing is left.
+static std::shared_ptr<arrow::Table> read_filtered(TabularSource& src, int c,
+                                                   const std::vector<int>& cols,
+                                                   const FilterExpr& fx, bool have_filter) {
+    std::shared_ptr<arrow::Table> tbl;
+    if (!src.read_chunk(c, cols, &tbl).ok() || !tbl) return nullptr;
+    if (have_filter) tbl = apply_filter(tbl, fx, cols);
+    if (!tbl || tbl->num_rows() == 0) return nullptr;
+    return tbl;
+}
+
+// --sample N: N rows chosen uniformly without replacement (reservoir
+// sampling, Algorithm R, over the rows the filter keeps), in source order.
+// The rows in the sample are copied out of each chunk as it is read, so
+// memory holds the sample, not the source.
 std::string build_sample(std::unique_ptr<TabularSource>& src,
                           const Config& cfg) {
     int N = cfg.sample_n;
     if (N <= 0) return "";
 
-    // Read all data (loading every column so the user can still --select after).
+    // Every column, so the user can still --select after.
     int n_fields = src->schema()->num_fields();
     std::vector<int> all_cols;
     for (int i = 0; i < n_fields; ++i) all_cols.push_back(i);
@@ -661,88 +736,95 @@ std::string build_sample(std::unique_ptr<TabularSource>& src,
         have_filter = true;
     }
 
-    std::vector<std::shared_ptr<arrow::Table>> chunks;
+    // Each sampled row: its index among the kept rows, the piece holding a
+    // copy of it, and its row there (piece -1: still in the current chunk).
+    struct Pick { int64_t idx; int piece; int64_t row; };
+    std::vector<Pick> res;
+    res.reserve((size_t)N);
+    std::vector<std::shared_ptr<arrow::Table>> pieces;
+    int64_t piece_rows = 0;
+    std::mt19937_64 rng(std::random_device{}());
+    int64_t M = 0;
     for (int c = 0; ; ++c) {
         src->ensure(c);
         if (c >= src->num_chunks()) break;
-        std::shared_ptr<arrow::Table> tbl;
-        if (!src->read_chunk(c, all_cols, &tbl).ok()) continue;
-        if (have_filter) tbl = apply_filter(tbl, fx, all_cols);
-        if (tbl && tbl->num_rows() > 0) chunks.push_back(std::move(tbl));
+        auto tbl = read_filtered(*src, c, all_cols, fx, have_filter);
+        if (!tbl) continue;
+        for (int64_t r = 0; r < tbl->num_rows(); ++r, ++M) {
+            if (M < N) { res.push_back({M, -1, r}); continue; }
+            std::uniform_int_distribution<int64_t> dist(0, M);
+            const int64_t j = dist(rng);
+            if (j < N) res[(size_t)j] = {M, -1, r};
+        }
+        // Copy this chunk's rows that are in the sample now.
+        std::vector<size_t> slots;
+        for (size_t k = 0; k < res.size(); ++k)
+            if (res[k].piece < 0) slots.push_back(k);
+        if (slots.empty()) continue;
+        std::sort(slots.begin(), slots.end(),
+                  [&](size_t x, size_t y) { return res[x].row < res[y].row; });
+        std::vector<int64_t> rows;
+        for (size_t k : slots) rows.push_back(res[k].row);
+        auto piece = gather_table(*tbl, rows);
+        if (!piece.ok()) return "--sample: gather failed: " + piece.status().ToString();
+        for (size_t i = 0; i < slots.size(); ++i)
+            res[slots[i]] = {res[slots[i]].idx, (int)pieces.size(), (int64_t)i};
+        pieces.push_back(*piece);
+        piece_rows += (int64_t)rows.size();
+        // Rows replaced since keep their piece alive: compact when the
+        // pieces hold N + 4096 more rows than the sample (about ln(M / N)
+        // times in all).
+        if (piece_rows > 2 * (int64_t)N + 4096) {
+            auto all = arrow::ConcatenateTables(pieces);
+            if (!all.ok()) return "concat failed: " + all.status().ToString();
+            std::vector<int64_t> offs(pieces.size(), 0);
+            for (size_t i = 1; i < pieces.size(); ++i)
+                offs[i] = offs[i - 1] + pieces[i - 1]->num_rows();
+            std::vector<int64_t> live;
+            for (auto& p : res) live.push_back(offs[(size_t)p.piece] + p.row);
+            auto one = gather_table(**all, live);
+            if (!one.ok()) return "--sample: gather failed: " + one.status().ToString();
+            for (size_t k = 0; k < res.size(); ++k) res[k] = {res[k].idx, 0, (int64_t)k};
+            pieces.assign(1, *one);
+            piece_rows = (int64_t)res.size();
+        }
     }
     // A stream that failed part-way is an error, not a shorter table.
     if (!src->read_status().ok())
         return shorten_reader_error(src->read_status().ToString());
     auto hidden_from_src = src->hidden_for_display();
-    if (chunks.empty()) {
-        // Empty result — still build an empty table.
-        std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
-        for (int i = 0; i < n_fields; ++i)
-            cols.push_back(std::make_shared<arrow::ChunkedArray>(
-                arrow::ArrayVector{}, src->schema()->field(i)->type()));
-        auto empty = arrow::Table::Make(src->schema(), cols, 0);
-        std::string old_path = src->path();
-        src = std::make_unique<MemoryTableSource>(empty,
+    std::string old_path = src->path();
+    if (M == 0) {
+        src = std::make_unique<MemoryTableSource>(empty_table(src->schema()),
             "<sample of " + old_path + ">",
             "Sampled rows: 0 (no data after filter)",
             hidden_from_src);
         return "";
     }
-    auto cat = arrow::ConcatenateTables(chunks);
-    if (!cat.ok()) return "concat failed: " + cat.status().ToString();
-    auto master = cat.ValueOrDie();
-    int64_t M = master->num_rows();
-    if (M <= N) {
-        // Smaller than sample size; just keep everything.
-        std::string old_path = src->path();
-        src = std::make_unique<MemoryTableSource>(master,
-            "<sample of " + old_path + ">",
-            "Sampled rows: " + std::to_string(M) + " / " + std::to_string(M) +
-            " (smaller than --sample N)",
-            hidden_from_src);
-        return "";
-    }
-
-    // Reservoir sample: collect N indices into [0, M).
-    std::vector<int64_t> chosen(N);
-    for (int i = 0; i < N; ++i) chosen[i] = i;
-    std::mt19937_64 rng(std::random_device{}());
-    for (int64_t i = N; i < M; ++i) {
-        std::uniform_int_distribution<int64_t> dist(0, i);
-        int64_t j = dist(rng);
-        if (j < N) chosen[j] = i;
-    }
-    std::sort(chosen.begin(), chosen.end());
-
-    // Build the sampled Table by slicing contiguous runs.
-    std::vector<std::shared_ptr<arrow::Table>> runs;
-    int64_t run_start = chosen[0], run_len = 1;
-    for (size_t k = 1; k < chosen.size(); ++k) {
-        if (chosen[k] == run_start + run_len) { ++run_len; continue; }
-        runs.push_back(master->Slice(run_start, run_len));
-        run_start = chosen[k];
-        run_len   = 1;
-    }
-    runs.push_back(master->Slice(run_start, run_len));
-    auto sampled_or = arrow::ConcatenateTables(runs);
-    if (!sampled_or.ok()) return "concat failed: " + sampled_or.status().ToString();
-
-    std::string old_path = src->path();
-    src = std::make_unique<MemoryTableSource>(sampled_or.ValueOrDie(),
+    // The sample in source order.
+    std::sort(res.begin(), res.end(), [](const Pick& x, const Pick& y) { return x.idx < y.idx; });
+    auto all = arrow::ConcatenateTables(pieces);
+    if (!all.ok()) return "concat failed: " + all.status().ToString();
+    std::vector<int64_t> offs(pieces.size(), 0);
+    for (size_t i = 1; i < pieces.size(); ++i) offs[i] = offs[i - 1] + pieces[i - 1]->num_rows();
+    std::vector<int64_t> rows;
+    for (auto& p : res) rows.push_back(offs[(size_t)p.piece] + p.row);
+    auto sampled = gather_table(**all, rows);
+    if (!sampled.ok()) return "--sample: gather failed: " + sampled.status().ToString();
+    src = std::make_unique<MemoryTableSource>(*sampled,
         "<sample of " + old_path + ">",
-        "Sampled rows: " + std::to_string(N) + " / " +
-            std::to_string(M) + " (uniform random)",
+        M <= N ? "Sampled rows: " + std::to_string(M) + " / " + std::to_string(M) +
+                 " (smaller than --sample N)"
+               : "Sampled rows: " + std::to_string(N) + " / " + std::to_string(M) +
+                 " (uniform random)",
         hidden_from_src);
     return "";
 }
 
-// ── --tail N: keep the last N rows of the source ─────────────────────────────
-//
-// Mirrors build_sample's structure: read every chunk through any active
-// --filter, slice off all but the last N rows, then wrap the result as a
-// MemoryTableSource. Streaming sources (BAM, BCF, FASTX, …) are forced
-// through a full scan; bounded sources (Parquet, Arrow IPC) do the same,
-// but Arrow's chunk-cache means we don't re-decode.
+// --tail N: the last N rows the filter keeps. A random-access source (Parquet,
+// ORC) reads only its trailing chunks in full and the rest just to count
+// them (with --filter, only the filter's columns); a stream keeps the last
+// chunks that cover N rows as it goes.
 std::string build_tail(std::unique_ptr<TabularSource>& src,
                         const Config& cfg) {
     int N = cfg.tail_rows;
@@ -761,40 +843,55 @@ std::string build_tail(std::unique_ptr<TabularSource>& src,
         have_filter = true;
     }
 
-    std::vector<std::shared_ptr<arrow::Table>> chunks;
-    for (int c = 0; ; ++c) {
-        src->ensure(c);
-        if (c >= src->num_chunks()) break;
-        std::shared_ptr<arrow::Table> tbl;
-        if (!src->read_chunk(c, all_cols, &tbl).ok()) continue;
-        if (have_filter) tbl = apply_filter(tbl, fx, all_cols);
-        if (tbl && tbl->num_rows() > 0) chunks.push_back(std::move(tbl));
+    std::deque<std::shared_ptr<arrow::Table>> kept;
+    int64_t kept_rows = 0, M = 0;   // M: every row the filter keeps
+    if (src->random_access()) {
+        int c = src->num_chunks() - 1;
+        for (; c >= 0 && kept_rows < N; --c) {
+            auto tbl = read_filtered(*src, c, all_cols, fx, have_filter);
+            if (!tbl) continue;
+            kept_rows += tbl->num_rows();
+            kept.push_front(std::move(tbl));
+        }
+        M = kept_rows;
+        const std::vector<int> fcols = union_with_filter({}, fx);
+        for (int i = 0; i <= c; ++i) {
+            if (!have_filter) { M += src->chunk_meta(i).num_rows; continue; }
+            if (auto t = read_filtered(*src, i, fcols, fx, true)) M += t->num_rows();
+        }
+    } else {
+        for (int c = 0; ; ++c) {
+            src->ensure(c);
+            if (c >= src->num_chunks()) break;
+            auto tbl = read_filtered(*src, c, all_cols, fx, have_filter);
+            if (!tbl) continue;
+            kept_rows += tbl->num_rows();
+            M += tbl->num_rows();
+            kept.push_back(std::move(tbl));
+            while (kept_rows - kept.front()->num_rows() >= N) {
+                kept_rows -= kept.front()->num_rows();
+                kept.pop_front();
+            }
+        }
     }
     // A stream that failed part-way is an error, not a shorter table.
     if (!src->read_status().ok())
         return shorten_reader_error(src->read_status().ToString());
     auto hidden_from_src = src->hidden_for_display();
-    if (chunks.empty()) {
-        std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
-        for (int i = 0; i < n_fields; ++i)
-            cols.push_back(std::make_shared<arrow::ChunkedArray>(
-                arrow::ArrayVector{}, src->schema()->field(i)->type()));
-        auto empty = arrow::Table::Make(src->schema(), cols, 0);
-        std::string old_path = src->path();
-        src = std::make_unique<MemoryTableSource>(empty,
+    std::string old_path = src->path();
+    if (kept.empty()) {
+        src = std::make_unique<MemoryTableSource>(empty_table(src->schema()),
             "<tail of " + old_path + ">",
             "Tail rows: 0 (no data)",
             hidden_from_src);
         return "";
     }
-    auto cat = arrow::ConcatenateTables(chunks);
+    auto cat = arrow::ConcatenateTables(std::vector<std::shared_ptr<arrow::Table>>(kept.begin(), kept.end()));
     if (!cat.ok()) return "concat failed: " + cat.status().ToString();
     auto master = cat.ValueOrDie();
-    int64_t M = master->num_rows();
-    int64_t take = std::min<int64_t>(N, M);
-    auto tail = master->Slice(M - take, take);
+    int64_t take = std::min<int64_t>(N, kept_rows);
+    auto tail = master->Slice(kept_rows - take, take);
 
-    std::string old_path = src->path();
     src = std::make_unique<MemoryTableSource>(tail,
         "<tail of " + old_path + ">",
         "Tail rows: " + std::to_string(take) + " / " + std::to_string(M),
@@ -811,75 +908,62 @@ std::vector<int64_t> stable_sort_order(const arrow::Array& key, bool descending)
     const int64_t N = key.length();
     std::vector<int64_t> order((size_t)N);
     std::iota(order.begin(), order.end(), (int64_t)0);
+    std::vector<char> kn((size_t)N);
+    auto sort_by = [&](const auto& kv) {
+        std::stable_sort(order.begin(), order.end(), [&](int64_t a, int64_t b) -> bool {
+            if (kn[(size_t)a] != kn[(size_t)b]) return !kn[(size_t)a];  // non-null first
+            if (kn[(size_t)a]) return false;
+            return descending ? kv[(size_t)a] > kv[(size_t)b] : kv[(size_t)a] < kv[(size_t)b];
+        });
+    };
     if (is_numeric_type(key.type_id())) {
         std::vector<double> kv((size_t)N);
-        std::vector<char>   kn((size_t)N);
         for (int64_t i = 0; i < N; ++i) {
             double d = 0;
             if (key.IsNull(i)) kn[(size_t)i] = 1;
             else if (array_value_as_double(key, i, &d)) { kn[(size_t)i]=0; kv[(size_t)i]=d; }
             else kn[(size_t)i] = 1;
         }
-        std::stable_sort(order.begin(), order.end(), [&](int64_t a, int64_t b) -> bool {
-            if (kn[(size_t)a] != kn[(size_t)b]) return !kn[(size_t)a];  // non-null first
-            if (kn[(size_t)a]) return false;
-            return descending ? kv[(size_t)a] > kv[(size_t)b] : kv[(size_t)a] < kv[(size_t)b];
-        });
+        sort_by(kv);
+    } else if (key.type_id() == arrow::Type::STRING || key.type_id() == arrow::Type::LARGE_STRING) {
+        // The rendered text of a string is the string: compare views into the
+        // array instead of a copy per row.
+        std::vector<std::string_view> kv((size_t)N);
+        const bool large = key.type_id() == arrow::Type::LARGE_STRING;
+        for (int64_t i = 0; i < N; ++i) {
+            if (key.IsNull(i)) { kn[(size_t)i] = 1; continue; }
+            kv[(size_t)i] = large ? static_cast<const arrow::LargeStringArray&>(key).GetView(i)
+                                  : static_cast<const arrow::StringArray&>(key).GetView(i);
+        }
+        sort_by(kv);
     } else {
         std::vector<std::string> kv((size_t)N);
-        std::vector<char>        kn((size_t)N);
         for (int64_t i = 0; i < N; ++i) {
             if (key.IsNull(i)) kn[(size_t)i] = 1;
             else kv[(size_t)i] = cell_to_string(key, i);
         }
-        std::stable_sort(order.begin(), order.end(), [&](int64_t a, int64_t b) -> bool {
-            if (kn[(size_t)a] != kn[(size_t)b]) return !kn[(size_t)a];  // non-null first
-            if (kn[(size_t)a]) return false;
-            return descending ? kv[(size_t)a] > kv[(size_t)b] : kv[(size_t)a] < kv[(size_t)b];
-        });
+        sort_by(kv);
     }
     return order;
 }
 
-// Rows `idx` of `a`, in that order, via the builder's AppendArraySlice (a plain
-// builder method, not a compute kernel, so it survives --gc-sections). Arrow
-// has no builder for an extension type: gather its storage and re-wrap it.
-static arrow::Result<std::shared_ptr<arrow::Array>>
-gather_rows(const std::shared_ptr<arrow::Array>& a, const std::vector<int64_t>& idx) {
-    if (a->type_id() == arrow::Type::EXTENSION) {
-        auto& ea = static_cast<const arrow::ExtensionArray&>(*a);
-        ARROW_ASSIGN_OR_RAISE(auto st, gather_rows(ea.storage(), idx));
-        return arrow::ExtensionType::WrapArray(a->type(), st);
-    }
-    std::unique_ptr<arrow::ArrayBuilder> b;
-    ARROW_RETURN_NOT_OK(arrow::MakeBuilder(arrow::default_memory_pool(), a->type(), &b));
-    if (!idx.empty()) ARROW_RETURN_NOT_OK(b->Reserve((int64_t)idx.size()));
-    arrow::ArraySpan span(*a->data());
-    for (int64_t i : idx) ARROW_RETURN_NOT_OK(b->AppendArraySlice(span, i, 1));
-    std::shared_ptr<arrow::Array> out;
-    ARROW_RETURN_NOT_OK(b->Finish(&out));
-    return out;
-}
-
-// --sort COL[:asc|:desc]: fully materialise the (filtered) source, stable-sort
-// its rows by one column, and replace `src` with a MemoryTableSource so every
-// downstream view / export renders the sorted result identically. Sorting needs
-// the whole table in memory (a viewer convenience; for ordering huge files, a
-// query engine is the right tool). Numeric columns sort numerically, others by
-// their rendered text, matching the interactive `s` sort; nulls sort last and
-// ties keep input order (stable). Arrow's compute kernels are GC'd from the
-// static build, so the gather is done by hand with AppendArraySlice.
+// --sort COL[:asc|:desc]: stable-sort the (filtered) rows by one column and
+// replace `src` with a MemoryTableSource so every downstream view / export
+// renders the sorted result identically. Every row is held (a viewer
+// convenience; for ordering huge files, a query engine is the right tool),
+// but with `project` (an export, where --select names what is written) only
+// the selected columns and the sort column, and each column is gathered
+// straight from the chunks read and released once gathered. Numeric columns
+// sort numerically, others by their rendered text, matching the interactive
+// `s` sort; nulls sort last and ties keep input order (stable).
 std::string build_sort(std::unique_ptr<TabularSource>& src,
-                        const Config& cfg) {
+                        const Config& cfg, bool project) {
     auto schema = src->schema();
     int n_fields = schema->num_fields();
     int sort_idx = -1;
     for (int i = 0; i < n_fields; ++i)
         if (schema->field(i)->name() == cfg.sort_col) { sort_idx = i; break; }
     if (sort_idx < 0) return "--sort: unknown column '" + cfg.sort_col + "'";
-
-    std::vector<int> all_cols;
-    for (int i = 0; i < n_fields; ++i) all_cols.push_back(i);
 
     FilterExpr fx; bool have_filter = false;
     if (!cfg.filter_expr.empty()) {
@@ -888,14 +972,39 @@ std::string build_sort(std::unique_ptr<TabularSource>& src,
             return "--filter: " + ferr;
         have_filter = true;
     }
-    std::vector<std::shared_ptr<arrow::Table>> chunks;
+
+    // The columns of the result, in schema order.
+    std::vector<int> out_cols;
+    if (project && !cfg.select_cols.empty()) {
+        std::vector<std::string> unknown;
+        std::vector<int> sel = select_field_indices(*src, cfg, &unknown, true);
+        if (unknown.empty()) {   // else keep every column; the writer reports it
+            std::vector<char> want((size_t)n_fields, 0);
+            for (int i : sel) want[(size_t)i] = 1;
+            want[(size_t)sort_idx] = 1;
+            for (int i = 0; i < n_fields; ++i) if (want[(size_t)i]) out_cols.push_back(i);
+        }
+    }
+    const bool all = out_cols.empty();
+    if (all) for (int i = 0; i < n_fields; ++i) out_cols.push_back(i);
+    const std::vector<int> read_set = have_filter ? union_with_filter(out_cols, fx) : out_cols;
+    std::vector<int> pos(out_cols.size());
+    for (size_t k = 0; k < out_cols.size(); ++k)
+        pos[k] = (int)(std::find(read_set.begin(), read_set.end(), out_cols[k]) - read_set.begin());
+    size_t key_k = 0;
+    while (out_cols[key_k] != sort_idx) ++key_k;
+
+    // Each result column's chunks, as read.
+    std::vector<arrow::ArrayVector> cols(out_cols.size());
+    int64_t N = 0;
     for (int c = 0; ; ++c) {
         src->ensure(c);
         if (c >= src->num_chunks()) break;
-        std::shared_ptr<arrow::Table> tbl;
-        if (!src->read_chunk(c, all_cols, &tbl).ok()) continue;
-        if (have_filter) tbl = apply_filter(tbl, fx, all_cols);
-        if (tbl && tbl->num_rows() > 0) chunks.push_back(std::move(tbl));
+        auto tbl = read_filtered(*src, c, read_set, fx, have_filter);
+        if (!tbl) continue;
+        N += tbl->num_rows();
+        for (size_t k = 0; k < out_cols.size(); ++k)
+            for (const auto& ch : tbl->column(pos[k])->chunks()) cols[k].push_back(ch);
     }
     // A stream that failed part-way is an error, not a shorter table.
     if (!src->read_status().ok())
@@ -903,44 +1012,38 @@ std::string build_sort(std::unique_ptr<TabularSource>& src,
     auto hidden_from_src = src->hidden_for_display();
     std::string old_path = src->path();
 
-    std::shared_ptr<arrow::Table> master;
-    if (chunks.empty()) {
-        std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
-        for (int i = 0; i < n_fields; ++i)
-            cols.push_back(std::make_shared<arrow::ChunkedArray>(
-                arrow::ArrayVector{}, schema->field(i)->type()));
-        master = arrow::Table::Make(schema, cols, 0);
-    } else {
-        auto cat = arrow::ConcatenateTables(chunks);
-        if (!cat.ok()) return "--sort: concat failed: " + cat.status().ToString();
-        master = cat.ValueOrDie();
+    std::shared_ptr<arrow::Schema> out_schema = schema;
+    if (!all) {
+        arrow::FieldVector fields;
+        for (int i : out_cols) fields.push_back(schema->field(i));
+        out_schema = arrow::schema(fields, schema->metadata());
     }
-    int64_t N = master->num_rows();
 
-    // Flatten each column to one contiguous array (for the key and the gather).
-    std::vector<std::shared_ptr<arrow::Array>> flat(n_fields);
-    for (int c = 0; c < n_fields; ++c) {
-        auto ch = master->column(c);
-        if (ch->num_chunks() == 1) { flat[c] = ch->chunk(0); continue; }
-        if (ch->num_chunks() == 0) {
-            flat[c] = arrow::MakeArrayOfNull(schema->field(c)->type(), 0).ValueOrDie();
-            continue;
+    std::vector<int64_t> order;
+    {
+        const arrow::ChunkedArray key(cols[key_k], schema->field(sort_idx)->type());
+        std::shared_ptr<arrow::Array> flat;
+        if (key.num_chunks() == 1) flat = key.chunk(0);
+        else if (key.num_chunks() == 0)
+            flat = arrow::MakeArrayOfNull(key.type(), 0).ValueOrDie();
+        else {
+            auto cc = arrow::Concatenate(key.chunks());
+            if (!cc.ok()) return "--sort: concat column failed: " + cc.status().ToString();
+            flat = cc.ValueOrDie();
         }
-        auto cc = arrow::Concatenate(ch->chunks());
-        if (!cc.ok()) return "--sort: concat column failed: " + cc.status().ToString();
-        flat[c] = cc.ValueOrDie();
+        order = stable_sort_order(*flat, cfg.sort_desc);
     }
 
-    std::vector<int64_t> order = stable_sort_order(*flat[sort_idx], cfg.sort_desc);
-
-    // Gather every column into the sorted order.
-    arrow::ArrayVector sorted_cols((size_t)n_fields);
-    for (int c = 0; c < n_fields; ++c) {
-        auto g = gather_rows(flat[c], order);
+    // Gather each column into the sorted order, releasing what was read.
+    arrow::ArrayVector sorted_cols(out_cols.size());
+    for (size_t k = 0; k < out_cols.size(); ++k) {
+        const arrow::ChunkedArray ca(std::move(cols[k]), out_schema->field((int)k)->type());
+        cols[k].clear();
+        auto g = gather_chunked(ca, order);
         if (!g.ok()) return "--sort: gather failed: " + g.status().ToString();
-        sorted_cols[(size_t)c] = *g;
+        sorted_cols[k] = *g;
     }
-    auto sorted = arrow::Table::Make(schema, sorted_cols, N);
+    auto sorted = arrow::Table::Make(out_schema, sorted_cols, N);
 
     src = std::make_unique<MemoryTableSource>(sorted,
         "<sorted " + old_path + ">",
@@ -953,11 +1056,10 @@ std::string build_sort(std::unique_ptr<TabularSource>& src,
 // --distinct: SQL SELECT DISTINCT — drop duplicate rows, keeping the first
 // occurrence, over the columns that would be shown (honouring --select and
 // --filter). So `--select chrom --distinct` lists distinct chromosomes, and a
-// bare `--distinct` deduplicates whole displayed rows. Materialises like --sort
-// (a viewer convenience; a query engine is the tool for deduping huge files);
-// the gather uses AppendArraySlice, not a compute kernel. Produces a
-// MemoryTableSource of the projected, deduplicated rows and clears --select /
-// --filter, which it has already applied.
+// bare `--distinct` deduplicates whole displayed rows. Reads the shown and
+// filter columns chunk by chunk and keeps the distinct rows and their keys.
+// Produces a MemoryTableSource of the projected, deduplicated rows and clears
+// --select / --filter, which it has already applied.
 std::string build_distinct(std::unique_ptr<TabularSource>& src,
                            Config& cfg) {
     ExactFloats exact;   // the row key must not merge floats by rounding
@@ -971,7 +1073,6 @@ std::string build_distinct(std::unique_ptr<TabularSource>& src,
         return "--distinct: no columns to compare";
 
     auto src_schema = src->schema();
-    int n_fields = src_schema->num_fields();
     arrow::FieldVector pf;
     for (int i : proj) pf.push_back(src_schema->field(i));
     auto proj_schema = arrow::schema(pf);
@@ -983,79 +1084,66 @@ std::string build_distinct(std::unique_ptr<TabularSource>& src,
             return "--filter: " + ferr;
         have_filter = true;
     }
-
-    std::vector<int> all_cols;
-    for (int i = 0; i < n_fields; ++i) all_cols.push_back(i);
-
-    std::vector<std::shared_ptr<arrow::Table>> chunks;
-    for (int c = 0; ; ++c) {
-        src->ensure(c);
-        if (c >= src->num_chunks()) break;
-        std::shared_ptr<arrow::Table> tbl;
-        if (!src->read_chunk(c, all_cols, &tbl).ok()) continue;
-        if (have_filter) tbl = apply_filter(tbl, fx, all_cols);
-        if (tbl && tbl->num_rows() > 0) chunks.push_back(std::move(tbl));
-    }
-    std::string old_path = src->path();
-
-    std::shared_ptr<arrow::Table> master;
-    if (chunks.empty()) {
-        std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
-        for (int i = 0; i < n_fields; ++i)
-            cols.push_back(std::make_shared<arrow::ChunkedArray>(
-                arrow::ArrayVector{}, src_schema->field(i)->type()));
-        master = arrow::Table::Make(src_schema, cols, 0);
-    } else {
-        auto cat = arrow::ConcatenateTables(chunks);
-        if (!cat.ok()) return "--distinct: concat failed: " + cat.status().ToString();
-        master = cat.ValueOrDie();
-    }
-    int64_t N = master->num_rows();
-
-    // Flatten just the projected columns (for the key and the gather).
+    const std::vector<int> read_set = have_filter ? union_with_filter(proj, fx) : proj;
     const int np = (int)proj.size();
-    std::vector<std::shared_ptr<arrow::Array>> flat((size_t)np);
-    for (int k = 0; k < np; ++k) {
-        auto ch = master->column(proj[k]);
-        if (ch->num_chunks() == 1) flat[(size_t)k] = ch->chunk(0);
-        else if (ch->num_chunks() == 0)
-            flat[(size_t)k] = arrow::MakeArrayOfNull(
-                src_schema->field(proj[k])->type(), 0).ValueOrDie();
-        else {
-            auto cc = arrow::Concatenate(ch->chunks());
-            if (!cc.ok()) return "--distinct: concat column failed: " + cc.status().ToString();
-            flat[(size_t)k] = cc.ValueOrDie();
-        }
-    }
+    std::vector<int> pos((size_t)np);
+    for (int k = 0; k < np; ++k)
+        pos[(size_t)k] = (int)(std::find(read_set.begin(), read_set.end(), proj[(size_t)k]) - read_set.begin());
 
     // Keep the first occurrence of each distinct projected row. The key joins
     // each cell's rendered text with a null marker and a unit separator that a
     // value can't contain, so distinct rows never collide.
-    std::vector<int64_t> keep;
-    keep.reserve((size_t)N);
     std::unordered_set<std::string> seen;
-    seen.reserve((size_t)N * 2 + 1);
     std::string key;
-    for (int64_t i = 0; i < N; ++i) {
-        key.clear();
+    std::vector<std::shared_ptr<arrow::Table>> pieces;
+    int64_t N = 0, M = 0;
+    for (int c = 0; ; ++c) {
+        src->ensure(c);
+        if (c >= src->num_chunks()) break;
+        auto tbl = read_filtered(*src, c, read_set, fx, have_filter);
+        if (!tbl) continue;
+        const int64_t n = tbl->num_rows();
+        N += n;
+        std::vector<std::shared_ptr<arrow::ChunkedArray>> pcols((size_t)np);
+        std::vector<std::shared_ptr<arrow::Array>> flat((size_t)np);
         for (int k = 0; k < np; ++k) {
-            const arrow::Array& a = *flat[(size_t)k];
-            if (a.IsNull(i)) key.push_back('\x00');
-            else { key.push_back('\x01'); key += cell_to_string(a, i); }
-            key.push_back('\x1f');   // unit separator between columns
+            pcols[(size_t)k] = tbl->column(pos[(size_t)k]);
+            if (pcols[(size_t)k]->num_chunks() == 1) { flat[(size_t)k] = pcols[(size_t)k]->chunk(0); continue; }
+            auto cc = arrow::Concatenate(pcols[(size_t)k]->chunks());
+            if (!cc.ok()) return "--distinct: concat column failed: " + cc.status().ToString();
+            flat[(size_t)k] = cc.ValueOrDie();
         }
-        if (seen.insert(key).second) keep.push_back(i);
+        std::vector<int64_t> keep;
+        for (int64_t i = 0; i < n; ++i) {
+            key.clear();
+            for (int k = 0; k < np; ++k) {
+                const arrow::Array& a = *flat[(size_t)k];
+                if (a.IsNull(i)) key.push_back('\x00');
+                else { key.push_back('\x01'); append_cell(a, i, key); }
+                key.push_back('\x1f');   // unit separator between columns
+            }
+            if (seen.insert(key).second) keep.push_back(i);
+        }
+        if (keep.empty()) continue;
+        arrow::ArrayVector out((size_t)np);
+        for (int k = 0; k < np; ++k) {
+            auto g = gather_chunked(arrow::ChunkedArray(flat[(size_t)k]), keep);
+            if (!g.ok()) return "--distinct: gather failed: " + g.status().ToString();
+            out[(size_t)k] = *g;
+        }
+        M += (int64_t)keep.size();
+        pieces.push_back(arrow::Table::Make(proj_schema, out, (int64_t)keep.size()));
     }
-    int64_t M = (int64_t)keep.size();
+    std::string old_path = src->path();
 
-    // Gather the kept rows for each projected column.
-    arrow::ArrayVector out_cols((size_t)np);
-    for (int k = 0; k < np; ++k) {
-        auto g = gather_rows(flat[(size_t)k], keep);
-        if (!g.ok()) return "--distinct: gather failed: " + g.status().ToString();
-        out_cols[(size_t)k] = *g;
+    std::shared_ptr<arrow::Table> distinct = empty_table(proj_schema);
+    if (!pieces.empty()) {
+        auto cat = arrow::ConcatenateTables(pieces);
+        if (!cat.ok()) return "--distinct: concat failed: " + cat.status().ToString();
+        auto one = (*cat)->CombineChunks();
+        if (!one.ok()) return "--distinct: concat failed: " + one.status().ToString();
+        distinct = *one;
     }
-    auto distinct = arrow::Table::Make(proj_schema, out_cols, M);
 
     src = std::make_unique<MemoryTableSource>(distinct,
         "<distinct " + old_path + ">",

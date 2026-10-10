@@ -654,6 +654,7 @@ public:
         return arrow::Status::OK();
     }
     const std::string& path() const override { return path_; }
+    bool random_access() const override { return true; }
 
     std::string footer() const override {
         int64_t sz = 0;

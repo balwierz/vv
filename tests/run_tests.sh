@@ -3225,6 +3225,39 @@ TAIL_LAST=$("$VV" --tail 1 --tsv --no-header "$DATA/tiny.parquet")
 assert_contains "tail_picks_last_row" "$TAIL_LAST" "7100"  # last row Start
 TAIL_BIG=$("$VV" --tail 100 --tsv --no-header "$DATA/tiny.parquet" | wc -l | tr -d ' ')
 assert_eq_file_inline "tail_larger_than_total_returns_all" "$TAIL_BIG" "20"
+# Parquet reads only its trailing row groups (tiny.parquet: 4 of 5 rows) and
+# counts the rest: the rows and the total match a full pass, across row
+# groups and with a filter.
+assert_eq_file_inline "tail_spans_row_groups" \
+    "$("$VV" --tail 7 --tsv --no-header "$DATA/tiny.parquet")" \
+    "$("$VV" --tsv --no-header "$DATA/tiny.parquet" | tail -7)"
+assert_eq_file_inline "tail_filtered_row_groups" \
+    "$("$VV" --tail 4 --tsv --no-header --filter 'Score < 0.5' "$DATA/tiny.parquet")" \
+    "$("$VV" --tsv --no-header --filter 'Score < 0.5' "$DATA/tiny.parquet" | tail -4)"
+assert_contains "tail_filtered_total" \
+    "$("$VV" --tail 4 -t --color=never --filter 'Score < 0.5' "$DATA/tiny.parquet" 2>&1)" \
+    "Tail rows: 4 / $("$VV" --count --filter 'Score < 0.5' "$DATA/tiny.parquet")"
+# A stream keeps only the trailing chunks; with 1 MiB CSV blocks the last
+# 70,000 rows span several (PAR: the 300,000-row file above).
+assert_eq_file_inline "tail_stream_spans_chunks" \
+    "$(VV_CSV_BLOCK_MB=1 "$VV" --tail 70000 --tsv --no-header "$PAR" | cksum)" \
+    "$("$VV" --tsv --no-header "$PAR" | tail -70000 | cksum)"
+assert_eq_file_inline "tail_stream_filtered" \
+    "$(VV_CSV_BLOCK_MB=1 "$VV" --tail 5000 --tsv --no-header --filter 'q == "a,b"' "$PAR" | cksum)" \
+    "$("$VV" --tsv --no-header --filter 'q == "a,b"' "$PAR" | tail -5000 | cksum)"
+# --sample keeps a copy of the sampled rows only: the result is N distinct
+# rows of the source, in source order, each identical to its source row,
+# also when the copies are compacted (many replacements: N = 20,000 of
+# 300,000 rows read in 1 MiB blocks).
+VV_CSV_BLOCK_MB=1 "$VV" --sample 20000 --tsv --no-header "$PAR" > "$TMP/sample.out"
+"$VV" --tsv --no-header "$PAR" > "$TMP/sample.full"
+assert_eq_file_inline "sample_rows_are_source_rows" \
+    "$(awk -F'\t' 'NR == FNR { full[$1] = $0; next }
+                   { if (full[$1] != $0 || (FNR > 1 && $1 + 0 <= prev)) bad++; prev = $1 + 0; n++ }
+                   END { print n, bad + 0 }' "$TMP/sample.full" "$TMP/sample.out")" "20000 0"
+assert_eq_file_inline "sample_larger_than_total_keeps_all" \
+    "$("$VV" --sample 100 --tsv --no-header "$DATA/tiny.parquet")" \
+    "$("$VV" --tsv --no-header "$DATA/tiny.parquet")"
 
 # --sort: order rows by a column before output. A numeric column sorts
 # numerically (9 < 20 < 100, not the lexical 100 < 20 < 9); :desc reverses it.
@@ -3251,6 +3284,15 @@ assert_eq_file_inline "sort_nulls_last_stable" \
 rm -f "$SORTNULL"
 # An unknown sort column is a clean error, exit 1.
 assert_exit_code "sort_unknown_column_exit1" 1 "$VV" --sort nope "$DATA/tiny.parquet"
+# An export with --select keeps only the selected columns (and the sort
+# column) through the sort; the rows match a full sort cut to the selection,
+# also when the sort column is not selected.
+assert_eq_file_inline "sort_select_without_key" \
+    "$("$VV" --sort Score:desc --select End,Chr --tsv "$DATA/tiny.parquet")" \
+    "$("$VV" --sort Score:desc --tsv "$DATA/tiny.parquet" | awk -F'\t' -v OFS='\t' '{ print $3, $1 }')"
+assert_eq_file_inline "sort_select_filtered" \
+    "$("$VV" --sort Start:desc --select Chr --filter 'Score > 0.4' --tsv --no-header "$DATA/tiny.parquet")" \
+    "$("$VV" --sort Start:desc --filter 'Score > 0.4' --tsv --no-header "$DATA/tiny.parquet" | cut -f1)"
 
 # ── --distinct: drop duplicate rows (SQL SELECT DISTINCT) ──────────────────────
 DISTF="$TMP/dup.csv"

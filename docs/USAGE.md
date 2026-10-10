@@ -1053,8 +1053,9 @@ bare `--distinct` deduplicates whole displayed rows, while `--select chrom
 * **Nulls** are values like any other: two rows that are null in the same place
   collapse to one. Nested `list` / `struct` cells compare by their rendered
   form.
-* Materialises the result in memory, like `--sort`. For deduplicating files too
-  large to hold in memory, a query engine (`duckdb`, `datamash`) is the tool.
+* Holds the distinct rows (and a key per distinct row) in memory, reading only
+  the compared and filter columns. For deduplicating files with too many
+  distinct rows to hold, a query engine (`duckdb`, `datamash`) is the tool.
 
 ## `--sample N`
 
@@ -1064,9 +1065,9 @@ chr2	200	400	peak_3	0.9	400
 chr1	1000	1200	peak_2	0.2	1200
 ```
 
-Reservoir sampling of N rows uniformly without replacement. Reads the
-whole source (applying `--filter` if set), then samples from the
-filtered total. Combines with every view / export mode.
+Reservoir sampling of N rows uniformly without replacement, from the rows
+`--filter` keeps, shown in source order. Reads the whole source but holds
+only the sampled rows. Combines with every view / export mode.
 
 ## `--tail N`
 
@@ -1077,10 +1078,11 @@ chr2	6100	6200	0.9	[TF]
 chr2	7100	7200	0.95	[promoter, TF]
 ```
 
-The last N rows instead of the first N. Reads the source through any
-active `--filter`, then slices the tail. Combines with every view /
-export mode. For streaming sources (BAM, BCF, FASTX, …) this implies
-a full scan.
+The last N rows instead of the first N, through any active `--filter`.
+Combines with every view / export mode. Parquet and ORC read only the
+trailing row groups / stripes (and, to count the total, the rest — with
+`--filter`, only the filter's columns); streaming sources (TSV, BAM, BCF,
+FASTX, …) are read through, holding just the last chunks.
 
 ## `--sort COL[:desc]`
 
@@ -1094,11 +1096,12 @@ chr2	5100	5200	0.85	[]
 Order the rows by one column before any output. Ascending by default;
 append `:desc` to reverse. Numeric columns sort numerically (`9` before
 `100`), others by their rendered text; nulls sort last and equal keys
-keep their input order (stable). Like `--tail`, it reads the whole
-source (honouring `--filter`) into memory and then feeds the sorted
-result to every view / export mode — including the interactive viewer,
-which opens on the sorted rows. For ordering files too large to hold in
-memory, reach for a query engine (`duckdb`, `datamash`).
+keep their input order (stable). It reads the whole source (honouring
+`--filter`) into memory and then feeds the sorted result to every view /
+export mode — including the interactive viewer, which opens on the sorted
+rows. An export with `--select` holds only the selected columns and the
+sort column. For ordering files too large to hold in memory, reach for a
+query engine (`duckdb`, `datamash`).
 
 ## `--tags LIST` (BAM / CRAM / SAM aux tags)
 

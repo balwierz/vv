@@ -341,6 +341,7 @@ public:
     ChunkMeta chunk_meta(int i) const override { return inner_->chunk_meta(i); }
     void    ensure(int i)           override { inner_->ensure(i); }
     void    set_retain_all(bool b)  override { inner_->set_retain_all(b); }
+    bool    random_access() const   override { return inner_->random_access(); }
     bool    evicted_any()     const override { return inner_->evicted_any(); }
     arrow::Status read_status() const override { return inner_->read_status(); }
     bool    region_applied()  const override { return inner_->region_applied(); }
@@ -456,6 +457,7 @@ public:
     ChunkMeta chunk_meta(int i) const override { return inner_->chunk_meta(i); }
     void    ensure(int i)           override { inner_->ensure(i); }
     void    set_retain_all(bool b)  override { inner_->set_retain_all(b); }
+    bool    random_access() const   override { return inner_->random_access(); }
     bool    evicted_any()     const override { return inner_->evicted_any(); }
     arrow::Status read_status() const override { return inner_->read_status(); }
     bool    region_applied()  const override { return inner_->region_applied(); }
@@ -780,6 +782,7 @@ public:
     ChunkMeta chunk_meta(int i) const override { return inner_->chunk_meta(i); }
     void    ensure(int i)           override { inner_->ensure(i); }
     void    set_retain_all(bool b)  override { inner_->set_retain_all(b); }
+    bool    random_access() const   override { return inner_->random_access(); }
     bool    evicted_any()     const override { return inner_->evicted_any(); }
     arrow::Status read_status() const override { return inner_->read_status(); }
     bool    region_applied()  const override { return inner_->region_applied(); }
@@ -1221,6 +1224,7 @@ public:
     }
     void    ensure(int i)           override { inner_->ensure(i); }
     void    set_retain_all(bool b)  override { inner_->set_retain_all(b); }
+    bool    random_access() const   override { return inner_->random_access(); }
     bool    evicted_any()     const override { return inner_->evicted_any(); }
     arrow::Status read_status() const override { return inner_->read_status(); }
     bool    region_applied()  const override { return inner_->region_applied(); }

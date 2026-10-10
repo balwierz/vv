@@ -1115,6 +1115,7 @@ public:
     }
     void ensure(int i) override { Lock l(hdf5_mutex()); in_->ensure(i); }
     void set_retain_all(bool r) override { Lock l(hdf5_mutex()); in_->set_retain_all(r); }
+    bool random_access() const override { Lock l(hdf5_mutex()); return in_->random_access(); }
     bool evicted_any() const override { Lock l(hdf5_mutex()); return in_->evicted_any(); }
     bool region_applied() const override { Lock l(hdf5_mutex()); return in_->region_applied(); }
     arrow::Status read_status() const override { Lock l(hdf5_mutex()); return in_->read_status(); }

@@ -410,7 +410,7 @@ std::string export_view(const Config& cfg_in, const std::string& out_path,
         if (auto full = src->full_matrix()) src = std::move(full);
     if (auto err = preview_refusal(*src, mode); !err.empty()) return err;
     if (!cfg.sort_col.empty()) {
-        if (auto err = build_sort(src, cfg); !err.empty()) return err;
+        if (auto err = build_sort(src, cfg, /*project=*/true); !err.empty()) return err;
         cfg.filter_expr.clear();   // applied during the sort's materialisation
     }
     cfg.head_rows = 0; cfg.head_rows_set = false;

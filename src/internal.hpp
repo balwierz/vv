@@ -1097,6 +1097,7 @@ public:
     const std::string& path() const override { return label_; }
     std::string footer() const override { return footer_str_; }
     std::vector<std::string> hidden_for_display() const override { return hidden_; }
+    bool random_access() const override { return true; }
 };
 
 class WorkbookSource : public MemoryTableSource {
@@ -1346,8 +1347,11 @@ std::string build_sample(std::unique_ptr<TabularSource>& src,
 std::string build_tail(std::unique_ptr<TabularSource>& src,
                         const Config& cfg);
 
+// project: keep only the columns --select names (and the sort column), for
+// a caller whose output is limited to them by name (an export); the TUI's
+// start view refers to columns by index, so it keeps the full schema.
 std::string build_sort(std::unique_ptr<TabularSource>& src,
-                        const Config& cfg);
+                        const Config& cfg, bool project = false);
 
 std::string build_distinct(std::unique_ptr<TabularSource>& src,
                            Config& cfg);

@@ -628,7 +628,7 @@ int main(int argc, char** argv) {
     // --sort COL: materialise + stable-sort the rows, then fall through to the
     // normal view / export path (which now sees a pre-sorted MemoryTableSource).
     if (!cfg.sort_col.empty() && !tui_sorts) {
-        std::string err = build_sort(src, cfg);
+        std::string err = build_sort(src, cfg, /*project=*/!tui_view);
         if (!err.empty()) { report(cfg.path, err); return 1; }
         cfg.filter_expr.clear();   // applied during the sort's materialisation
     }

@@ -12,6 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   byte-identical to before). On a 12.2 M-row Parquet file: `--tsv` 6.8 s →
   1.7 s, `--json` 39.3 s → 3.5 s; AnnData `X`, dense 18,753 × 30,872:
   `--tsv` 50.4 s → 12.2 s; CSR 91,168 × 5,575: 28.0 s → 6.3 s (8 threads).
+- `--tail`, `--sample` and `--distinct` hold only their result instead of the
+  whole source: `--tail` on Parquet / ORC reads just the trailing row groups
+  (and counts the rest), on a stream it keeps the last chunks; `--sample`
+  keeps a copy of the sampled rows; `--distinct` reads only the compared and
+  filter columns. `--sort` gathers straight from the chunks read and, in an
+  export with `--select`, holds only the selected columns. On a 12.2 M-row
+  Parquet file: `--tail 5` 1.7 GB → 0.26 GB, `--tail 5 --filter …`
+  37 s / 10.2 GB → 4.7 s / 1.3 GB, `--sample 5` 1.7 GB → 0.39 GB,
+  `--sort … --select guide` 4.9 GB → 1.7 GB, `--distinct --select library`
+  2.1 GB → 0.07 GB.
+
+### Fixed
+- `--distinct` on a file with an unreadable column printed nothing when that
+  column was not among the compared ones; it now reads only the compared and
+  filter columns, like `--select`.
 
 ## [1.29.0] - 2026-10-09
 
