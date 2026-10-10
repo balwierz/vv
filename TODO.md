@@ -202,6 +202,21 @@ user-facing summary).
 
 ## Performance / build
 
+### Open
+- **Delimited input parses on one core.** Arrow's `csv::StreamingReader`
+  parses its blocks one after another (`use_threads` overlaps I/O only):
+  `vv --count` on a 3.5 GB uncompressed VCF takes 5.6 s with 5.4 s of CPU,
+  whatever `-@` says; pyarrow's streaming reader on 1.2 GB: 1.77 s, its
+  whole-file `read_csv`: 0.43 s on 10 cores. A parallel path would cut the
+  decompressed input at newlines (Arrow's chunker does too, with
+  `newlines_in_values` off), parse each block with the schema the first block
+  inferred (`ConvertOptions::column_types` for every column, same null
+  options) on the CPU pool, and hand the batches out in order; parse-error
+  messages and their row numbers would need care. Until then, multi-threaded
+  BGZF decompression (`bgzf_mt`, as FASTX uses) buys nothing: measured on a
+  50 M-line bgzipped VCF, 5.7 s either way, and previews got slower because
+  Arrow's read-ahead fills sooner.
+
 ### Done
 - ARM64 static binary in the release workflow — the release CI
   matrices over `ubuntu-latest` (x86_64) and `ubuntu-22.04-arm`

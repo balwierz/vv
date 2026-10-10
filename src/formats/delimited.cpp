@@ -283,20 +283,22 @@ class TruncateFieldsStream : public arrow::io::InputStream {
     bool         inner_done_ = false;
 
     bool refill() {
-        out_buf_.clear(); out_pos_ = 0;
-        std::string line;
-        while (line.empty()) {
-            bool ok = lr_.read_line(&line);
-            if (!ok && line.empty()) { inner_done_ = true; return false; }
+        out_pos_ = 0;
+        do {
+            bool ok = lr_.read_line(&out_buf_);
+            if (!ok && out_buf_.empty()) { inner_done_ = true; return false; }
             if (!ok) inner_done_ = true;
-        }
+        } while (out_buf_.empty());
         // Truncate to at most max_fields tab-separated fields
-        int fields = 0;
-        size_t end = line.size();
-        for (size_t i = 0; i < line.size(); ++i) {
-            if (line[i] == '\t' && ++fields == max_fields_) { end = i; break; }
+        const char* b = out_buf_.data();
+        const char* e = b + out_buf_.size();
+        const char* p = b;
+        for (int fields = 0; ; ) {
+            const char* t = static_cast<const char*>(std::memchr(p, '\t', (size_t)(e - p)));
+            if (!t) break;
+            if (++fields == max_fields_) { out_buf_.resize((size_t)(t - b)); break; }
+            p = t + 1;
         }
-        out_buf_ = line.substr(0, end);
         out_buf_ += '\n';
         return true;
     }

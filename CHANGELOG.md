@@ -42,7 +42,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the row is in the chunk of the cell before. Opening an AnnData file:
   0.52 s → 0.21 s (norman19, 44 obs columns).
 
+- SAM, GFF and PAF input is split into lines with `memchr` and cut to its
+  fixed fields without copying each line twice: 3 M SAM records, `--count`
+  0.75 s → 0.47 s.
+
 ### Fixed
+- The config file's `threads` key now sizes Arrow's thread pool too (Parquet
+  decode, CSV parsing); it was read after the pool was sized.
 - vvg sorted a stream longer than its retained batches (the last 64, e.g. a
   FASTQ of long reads) wrongly — rows came out blank and out of order — and
   find missed matches in batches already freed. Sorting now reads only the

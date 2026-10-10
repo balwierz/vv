@@ -624,7 +624,8 @@ class LineReader {
 public:
     explicit LineReader(std::shared_ptr<arrow::io::InputStream> s) : src_(std::move(s)) {}
 
-    // Returns true if a '\n' terminated the line; false on EOF (line may have content).
+    // Returns true if a '\n' terminated the line; false on EOF (line may have
+    // content). Every '\r' is dropped.
     bool read_line(std::string* out) {
         out->clear();
         for (;;) {
@@ -633,11 +634,16 @@ public:
                 refill_buf();
                 if (eof_ && pos_ >= fill_) return !out->empty();
             }
-            while (pos_ < fill_) {
-                char c = buf_[pos_++];
-                if (c == '\n') return true;
-                if (c != '\r') *out += c;
-            }
+            const char* start = buf_ + pos_;
+            const char* nl = static_cast<const char*>(std::memchr(start, '\n', (size_t)(fill_ - pos_)));
+            const char* end = nl ? nl : buf_ + fill_;
+            if (!std::memchr(start, '\r', (size_t)(end - start)))
+                out->append(start, (size_t)(end - start));
+            else
+                for (const char* q = start; q < end; ++q)
+                    if (*q != '\r') *out += *q;
+            pos_ = (int)(end - buf_) + (nl ? 1 : 0);
+            if (nl) return true;
         }
     }
 

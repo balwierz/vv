@@ -24,10 +24,6 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    // Size Arrow's CPU thread pool so use_threads=true on the CSV / Parquet
-    // readers actually has workers available.
-    (void)arrow::SetCpuThreadPoolCapacity(effective_decode_threads(cfg));
-
     // Apply --regions-file and --slop once, before any source-specific
     // region consumer parses cfg.region.
     if (auto e = apply_region_modifiers(cfg); !e.empty()) {
@@ -40,6 +36,10 @@ int main(int argc, char** argv) {
     // absent, which silently discarded every OTHER config key — scrolloff —
     // whenever a theme was named on the command line.)
     load_user_config(cfg);
+    // Size Arrow's CPU thread pool so use_threads=true on the CSV / Parquet
+    // readers actually has workers available — after the config file, whose
+    // `threads` key sets it when neither -@ nor --decode-threads is given.
+    (void)arrow::SetCpuThreadPoolCapacity(effective_decode_threads(cfg));
     // Resolve theme: CLI flag wins; otherwise the config value; otherwise
     // the built-in default.
     if (cfg.theme.empty()) cfg.theme = "default";
