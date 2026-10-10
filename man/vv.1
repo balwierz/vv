@@ -944,7 +944,9 @@ next to the file). If absent, \fBvv\fR prints a hint pointing to
 .BI \-@ ", " \-\-threads " N"
 Number of worker threads for I/O and decoding. \fB0\fR (default) auto-
 detects (cores/2, capped at 8). Drives Arrow's CPU thread pool, htslib
-BAM/CRAM decompression, and BGZF decompression for FASTA/FASTQ.
+BAM/CRAM decompression, BGZF decompression for FASTA/FASTQ, and the text
+formatting of \fB\-\-tsv\fR / \fB\-\-csv\fR / \fB\-\-json\fR / \fB\-\-ndjson\fR
+exports (written in row order: the output does not depend on \fIN\fR).
 .TP
 .BI \-\-decode\-threads " N"
 Override the Arrow CPU thread-pool size used for Parquet column decode

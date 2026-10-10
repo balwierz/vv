@@ -5,6 +5,194 @@
 
 #include "internal.hpp"
 
+#include <condition_variable>
+#include <deque>
+#include <functional>
+#include <mutex>
+
+namespace {
+
+// One output column of a table written row by row: the current row's chunk
+// and offset in it, and the appender of the column's type.
+struct ColCursor {
+    const arrow::ChunkedArray* col = nullptr;
+    CellAppender app = nullptr;
+    int chunk = 0;
+    int64_t off = 0, len = 0;
+    const arrow::Array* arr = nullptr;
+
+    void settle() {
+        const int n = col->num_chunks();
+        while (chunk < n && off >= col->chunk(chunk)->length()) {
+            off -= col->chunk(chunk)->length();
+            ++chunk;
+        }
+        if (chunk < n) { arr = col->chunk(chunk).get(); len = arr->length(); }
+        else           { arr = nullptr; len = INT64_MAX; }
+    }
+    void seek(int64_t row) { chunk = 0; off = row; settle(); }
+    void next() { if (++off >= len) settle(); }
+};
+
+// VV_FORMAT_CHECK=1: compare every exported field with cell_to_string and
+// abort on a difference (a test of the appenders, not for normal use).
+bool format_check() {
+    static const bool on = [] {
+        const char* e = std::getenv("VV_FORMAT_CHECK");
+        return e && *e == '1';
+    }();
+    return on;
+}
+
+void check_field(const std::string& buf, size_t start, const arrow::Array& arr, int64_t row) {
+    const std::string want = cell_to_string(arr, row);
+    if (buf.compare(start, std::string::npos, want) == 0) return;
+    std::fprintf(stderr, "VV_FORMAT_CHECK: %s cell %lld: \"%s\" != \"%s\"\n",
+                 arr.type()->ToString().c_str(), (long long)row,
+                 buf.substr(start).c_str(), want.c_str());
+    std::abort();
+}
+
+// Threads to format the columns `cols` of `schema` on: `want`, or 1 when a
+// column's text cannot be computed concurrently (see format_thread_safe).
+int format_threads(const arrow::Schema& schema, const std::vector<int>& cols, int want) {
+    if (want <= 1) return 1;
+    for (int c : cols)
+        if (!format_thread_safe(*schema.field(c)->type())) return 1;
+    return want;
+}
+
+// Make a chunk's columns safe to format concurrently (see
+// prepare_parallel_format).
+void prepare_columns(const arrow::Table& t, const std::vector<int>& cols) {
+    for (int c : cols)
+        for (const auto& ch : t.column(c)->chunks()) prepare_parallel_format(*ch);
+}
+
+// Text produced on worker threads and written in the order it was submitted.
+// submit() queues a job that appends its text to a buffer; the calling thread
+// writes the finished buffers in order whenever it is in submit() or finish(),
+// so reading the next chunk overlaps formatting the last. At most `window`
+// jobs are queued or unwritten at a time, which bounds the memory held. With
+// threads <= 1 a job runs inside submit(). The bytes written are the same
+// either way.
+class OrderedWriter {
+public:
+    using Job = std::function<void(std::string&)>;
+
+    OrderedWriter(FILE* out, int threads)
+        : out_(out), window_((size_t)std::max(1, threads) * 4), exact_(t_exact_floats) {
+        for (int t = 0; t < threads && threads > 1; ++t)
+            pool_.emplace_back([this] { work(); });
+    }
+    ~OrderedWriter() {                 // an early return: drop what is left
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            stop_ = abandon_ = true;
+        }
+        cv_work_.notify_all();
+        for (auto& t : pool_) t.join();
+    }
+
+    void submit(Job job) {
+        if (pool_.empty()) {
+            buf_.clear();
+            job(buf_);
+            std::fwrite(buf_.data(), 1, buf_.size(), out_);
+            return;
+        }
+        std::unique_lock<std::mutex> lk(m_);
+        for (;;) {
+            flush_done(lk);
+            if (q_.size() < window_) break;
+            cv_done_.wait(lk);
+        }
+        Slot slot;
+        slot.job = std::move(job);
+        q_.push_back(std::move(slot));
+        ++tail_;
+        cv_work_.notify_one();
+    }
+
+    void finish() {
+        if (pool_.empty()) return;
+        std::unique_lock<std::mutex> lk(m_);
+        for (;;) {
+            flush_done(lk);
+            if (q_.empty()) break;
+            cv_done_.wait(lk);
+        }
+    }
+
+private:
+    struct Slot {
+        Job job;
+        std::string text;
+        bool done = false;
+    };
+
+    void work() {
+        std::optional<ExactFloats> ef;   // the guard is thread-local: hand it on
+        if (exact_) ef.emplace();
+        std::unique_lock<std::mutex> lk(m_);
+        for (;;) {
+            cv_work_.wait(lk, [&] { return stop_ || next_ < tail_; });
+            if (abandon_ || next_ >= tail_) return;
+            Slot& s = q_[(size_t)(next_ - head_)];   // deque: stable while queued
+            ++next_;
+            const size_t hint = last_size_;
+            lk.unlock();
+            s.text.reserve(hint + hint / 8);   // one allocation, mostly
+            s.job(s.text);
+            s.job = nullptr;                          // release the chunk early
+            lk.lock();
+            last_size_ = s.text.size();
+            s.done = true;
+            cv_done_.notify_one();
+        }
+    }
+
+    // Write the finished jobs at the head of the queue, in order.
+    void flush_done(std::unique_lock<std::mutex>& lk) {
+        while (!q_.empty() && q_.front().done) {
+            std::string text = std::move(q_.front().text);
+            q_.pop_front();
+            ++head_;
+            lk.unlock();
+            std::fwrite(text.data(), 1, text.size(), out_);
+            std::string().swap(text);          // free it outside the lock
+            lk.lock();
+        }
+    }
+
+    FILE* out_;
+    size_t window_;
+    bool exact_;
+    std::vector<std::thread> pool_;
+    std::mutex m_;
+    std::condition_variable cv_work_, cv_done_;
+    std::deque<Slot> q_;               // q_[0] is job number head_
+    std::string buf_;                  // the single-thread buffer
+    int64_t head_ = 0, next_ = 0, tail_ = 0;
+    size_t last_size_ = 0;             // text of the last job, to reserve
+    bool stop_ = false, abandon_ = false;
+};
+
+// Queue rows [0, n) of a table as jobs of about 256 Ki cells each:
+// fmt(r0, r1, buf) appends the text of rows [r0, r1). Smaller jobs cost more
+// on a wide table, where every job walks the metadata of every column (a
+// 30,872-column matrix: 15.0 s at 64 Ki cells, 10.7 s at 256 Ki, 8 threads).
+void submit_rows(OrderedWriter& w, int64_t n, int64_t cols,
+                 const std::function<void(int64_t, int64_t, std::string&)>& fmt) {
+    const int64_t range = std::max<int64_t>(1, (int64_t{1} << 18) / std::max<int64_t>(1, cols));
+    for (int64_t r0 = 0; r0 < n; r0 += range) {
+        const int64_t r1 = std::min(n, r0 + range);
+        w.submit([fmt, r0, r1](std::string& buf) { fmt(r0, r1, buf); });
+    }
+}
+
+}  // namespace
+
 // ── Delimited output ──────────────────────────────────────────────────────────
 // (write_csv_field is defined above)
 
@@ -35,11 +223,10 @@ std::string write_delimited(TabularSource& src, const Config& cfg) {
     int  show_cols = (int)requested.size();
 
     // Position of each *requested* column within the read projection.
+    std::vector<int> read_pos(src.schema()->num_fields(), -1);
+    for (size_t j = col_indices.size(); j-- > 0;) read_pos[col_indices[j]] = (int)j;
     std::vector<int> req_in_read(requested.size());
-    for (size_t k = 0; k < requested.size(); ++k) {
-        for (size_t j = 0; j < col_indices.size(); ++j)
-            if (col_indices[j] == requested[k]) { req_in_read[k] = (int)j; break; }
-    }
+    for (size_t k = 0; k < requested.size(); ++k) req_in_read[k] = read_pos[requested[k]];
 
     if (!cfg.no_header) {
         for (int ci = 0; ci < show_cols; ++ci) {
@@ -49,34 +236,38 @@ std::string write_delimited(TabularSource& src, const Config& cfg) {
         std::fputc('\n', out);
     }
 
-    struct ChunkCursor {
-        const arrow::ChunkedArray* col;
-        int     chunk_idx    = 0;
-        int64_t row_in_chunk = 0;
-        const arrow::Array& current() const { return *col->chunk(chunk_idx); }
-        void advance() {
-            if (++row_in_chunk >= col->chunk(chunk_idx)->length()) {
-                ++chunk_idx; row_in_chunk = 0;
-            }
+    const int threads = format_threads(*src.schema(), requested, effective_threads(cfg));
+    const bool check = format_check();
+    OrderedWriter writer(out, threads);
+    auto print_rows = [&](std::shared_ptr<arrow::Table> table, int64_t n_rows) {
+        // Read from the read projection, emit in the user's column order.
+        auto proto = std::make_shared<std::vector<ColCursor>>((size_t)show_cols);
+        for (int ci = 0; ci < show_cols; ++ci) {
+            (*proto)[ci].col = table->column(req_in_read[ci]).get();
+            (*proto)[ci].app = pick_appender(*(*proto)[ci].col->type());
         }
-    };
-    auto print_rows = [&](const arrow::Table& table, int64_t n_rows) {
-        // Each cursor points at one column at the requested-output position
-        // (so we read from the read projection but emit in user order).
-        std::vector<ChunkCursor> cursors;
-        cursors.reserve(show_cols);
-        for (int ci = 0; ci < show_cols; ++ci)
-            cursors.push_back({table.column(req_in_read[ci]).get()});
-        for (int64_t r = 0; r < n_rows; ++r) {
-            for (int ci = 0; ci < show_cols; ++ci) {
-                if (ci) std::fputc(sep, out);
-                auto& cur = cursors[ci];
-                std::string val = cell_to_string(cur.current(), cur.row_in_chunk);
-                if (val != NULL_SYMBOL) write_csv_field(val, sep);
-                cur.advance();
+        if (threads > 1) prepare_columns(*table, req_in_read);
+        auto fmt = [table, proto, show_cols, sep, check](int64_t r0, int64_t r1,
+                                                         std::string& buf) {
+            thread_local std::vector<ColCursor> cur;   // no allocation per range
+            cur.assign(proto->begin(), proto->end());
+            for (auto& c : cur) c.seek(r0);
+            for (int64_t r = r0; r < r1; ++r) {
+                for (int ci = 0; ci < show_cols; ++ci) {
+                    if (ci) buf += sep;
+                    ColCursor& c = cur[ci];
+                    if (!c.arr->IsNull(c.off)) {
+                        const size_t start = buf.size();
+                        c.app(*c.arr, c.off, buf);
+                        if (check) check_field(buf, start, *c.arr, c.off);
+                        finish_csv_field(buf, start, sep);
+                    }
+                    c.next();
+                }
+                buf += '\n';
             }
-            std::fputc('\n', out);
-        }
+        };
+        submit_rows(writer, n_rows, show_cols, fmt);
     };
 
     // -n on Parquet: ask the source for just `head_rows` rows. ParquetSource's
@@ -86,7 +277,8 @@ std::string write_delimited(TabularSource& src, const Config& cfg) {
     if (cfg.head_rows > 0 && !have_filter) {
         std::shared_ptr<arrow::Table> table;
         if (src.read_first(rows_left, col_indices, &table).ok() && table) {
-            print_rows(*table, std::min(table->num_rows(), rows_left));
+            print_rows(table, std::min(table->num_rows(), rows_left));
+            writer.finish();
             export_count(std::min(table->num_rows(), rows_left));
             return "";
         }
@@ -111,9 +303,10 @@ std::string write_delimited(TabularSource& src, const Config& cfg) {
         int64_t rg_rows = std::min(table->num_rows(), rows_left);
         rows_left -= rg_rows;
 
-        print_rows(*table, rg_rows);
+        print_rows(table, rg_rows);
         export_count(rg_rows);
     }
+    writer.finish();
     return "";
 }
 
@@ -545,40 +738,24 @@ std::string write_arrow(TabularSource& src, const Config& cfg) {
 
 // Quote a string as a JSON string literal.
 void json_emit_string(const std::string& v) {
-    FILE* out = out_stream();
-    std::fputc('"', out);
-    for (unsigned char c : v) {
-        switch (c) {
-            case '"':  std::fputs("\\\"", out); break;
-            case '\\': std::fputs("\\\\", out); break;
-            case '\b': std::fputs("\\b", out);  break;
-            case '\f': std::fputs("\\f", out);  break;
-            case '\n': std::fputs("\\n", out);  break;
-            case '\r': std::fputs("\\r", out);  break;
-            case '\t': std::fputs("\\t", out);  break;
-            default:
-                if (c < 0x20) std::fprintf(out, "\\u%04x", c);
-                else          std::fputc((int)c, out);
-        }
-    }
-    std::fputc('"', out);
+    std::string buf;
+    json_append_string(buf, v);
+    std::fwrite(buf.data(), 1, buf.size(), out_stream());
 }
 
-// Emit one Arrow cell as a JSON value. Numbers go bare, strings are
+// One Arrow cell as a JSON value, appended. Numbers go bare, strings are
 // quoted, booleans as true/false, nulls as null; lists, structs and maps
 // as JSON arrays / objects (see below).
-static void json_emit_cell(const arrow::Array& arr, int64_t row) {
-    FILE* out = out_stream();
-    if (arr.IsNull(row)) { std::fputs("null", out); return; }
+static void json_append_cell(std::string& out, const arrow::Array& arr, int64_t row) {
+    if (arr.IsNull(row)) { out += "null"; return; }
     if (arr.type_id() == arrow::Type::EXTENSION &&
         static_cast<const arrow::ExtensionType&>(*arr.type()).extension_name() == "arrow.bool8") {
-        std::fputs(cell_to_string(arr, row) == "true" ? "true" : "false", out);
+        out += cell_to_string(arr, row) == "true" ? "true" : "false";
         return;
     }
     switch (arr.type_id()) {
         case arrow::Type::BOOL:
-            std::fputs(static_cast<const arrow::BooleanArray&>(arr).Value(row)
-                       ? "true" : "false", out);
+            out += static_cast<const arrow::BooleanArray&>(arr).Value(row) ? "true" : "false";
             return;
         case arrow::Type::FLOAT: case arrow::Type::DOUBLE: {
             // JSON has no NaN / Infinity literal: write null, as JSON.stringify
@@ -586,94 +763,100 @@ static void json_emit_cell(const arrow::Array& arr, int64_t row) {
             const double v = arr.type_id() == arrow::Type::FLOAT
                 ? (double)static_cast<const arrow::FloatArray&>(arr).Value(row)
                 : static_cast<const arrow::DoubleArray&>(arr).Value(row);
-            if (!std::isfinite(v)) { std::fputs("null", out); return; }
-            std::fputs(cell_to_string(arr, row).c_str(), out);
+            if (!std::isfinite(v)) { out += "null"; return; }
+            pick_appender(*arr.type())(arr, row, out);
             return;
         }
         case arrow::Type::INT8: case arrow::Type::INT16: case arrow::Type::INT32:
         case arrow::Type::INT64: case arrow::Type::UINT8: case arrow::Type::UINT16:
         case arrow::Type::UINT32: case arrow::Type::UINT64:
-            // cell_to_string already produces a decimal representation
-            // suitable for JSON for these types.
-            std::fputs(cell_to_string(arr, row).c_str(), out);
+            // The decimal text cell_to_string gives is valid JSON for these.
+            pick_appender(*arr.type())(arr, row, out);
             return;
-        case arrow::Type::STRING: case arrow::Type::LARGE_STRING:
-            json_emit_string(cell_to_string(arr, row));
+        case arrow::Type::STRING:
+            json_append_string(out, static_cast<const arrow::StringArray&>(arr).GetView(row));
+            return;
+        case arrow::Type::LARGE_STRING:
+            json_append_string(out, static_cast<const arrow::LargeStringArray&>(arr).GetView(row));
             return;
         // Nested values as JSON, recursively (each element typed like a
         // top-level cell): a list as an array, a struct as an object, a map as
         // an object whose keys are the keys' text.
         case arrow::Type::LIST: case arrow::Type::LARGE_LIST: {
             int64_t off, len;
-            std::shared_ptr<arrow::Array> values;
+            const arrow::Array* values;
             if (arr.type_id() == arrow::Type::LIST) {
                 auto& la = static_cast<const arrow::ListArray&>(arr);
-                off = la.value_offset(row); len = la.value_length(row); values = la.values();
+                off = la.value_offset(row); len = la.value_length(row); values = la.values().get();
             } else {
                 auto& la = static_cast<const arrow::LargeListArray&>(arr);
-                off = la.value_offset(row); len = la.value_length(row); values = la.values();
+                off = la.value_offset(row); len = la.value_length(row); values = la.values().get();
             }
-            std::fputc('[', out);
+            out += '[';
             for (int64_t i = 0; i < len; ++i) {
-                if (i) std::fputs(", ", out);
-                json_emit_cell(*values, off + i);
+                if (i) out += ", ";
+                json_append_cell(out, *values, off + i);
             }
-            std::fputc(']', out);
+            out += ']';
             return;
         }
         case arrow::Type::FIXED_SIZE_LIST: {
             auto& la = static_cast<const arrow::FixedSizeListArray&>(arr);
             const int32_t n = la.list_type()->list_size();
             const int64_t off = la.value_offset(row);
-            std::fputc('[', out);
+            out += '[';
             for (int32_t i = 0; i < n; ++i) {
-                if (i) std::fputs(", ", out);
-                json_emit_cell(*la.values(), off + i);
+                if (i) out += ", ";
+                json_append_cell(out, *la.values(), off + i);
             }
-            std::fputc(']', out);
+            out += ']';
             return;
         }
         case arrow::Type::STRUCT: {
             auto& sa = static_cast<const arrow::StructArray&>(arr);
             const auto& st = static_cast<const arrow::StructType&>(*arr.type());
-            std::fputc('{', out);
+            out += '{';
             for (int f = 0; f < st.num_fields(); ++f) {
-                if (f) std::fputs(", ", out);
-                json_emit_string(st.field(f)->name());
-                std::fputs(": ", out);
-                json_emit_cell(*sa.field(f), row);   // field() is offset-adjusted
+                if (f) out += ", ";
+                json_append_string(out, st.field(f)->name());
+                out += ": ";
+                json_append_cell(out, *sa.field(f), row);   // field() is offset-adjusted
             }
-            std::fputc('}', out);
+            out += '}';
             return;
         }
         case arrow::Type::MAP: {
             auto& ma = static_cast<const arrow::MapArray&>(arr);
             const int64_t off = ma.value_offset(row), len = ma.value_length(row);
-            std::fputc('{', out);
+            out += '{';
             for (int64_t i = 0; i < len; ++i) {
-                if (i) std::fputs(", ", out);
-                json_emit_string(cell_to_string(*ma.keys(), off + i));
-                std::fputs(": ", out);
-                json_emit_cell(*ma.items(), off + i);
+                if (i) out += ", ";
+                json_append_string(out, cell_to_string(*ma.keys(), off + i));
+                out += ": ";
+                json_append_cell(out, *ma.items(), off + i);
             }
-            std::fputc('}', out);
+            out += '}';
             return;
         }
         case arrow::Type::DICTIONARY: {
             // The decoded value, typed (a dictionary of ints stays a number).
             auto& da = static_cast<const arrow::DictionaryArray&>(arr);
             const int64_t k = da.GetValueIndex(row);
-            if (k < 0 || k >= da.dictionary()->length()) { std::fputs("null", out); return; }
-            json_emit_cell(*da.dictionary(), k);
+            if (k < 0 || k >= da.dictionary()->length()) { out += "null"; return; }
+            json_append_cell(out, *da.dictionary(), k);
             return;
         }
         case arrow::Type::NA:
-            std::fputs("null", out);
+            out += "null";
             return;
-        default:
+        default: {
             // Other types (dates, decimals, binary, …): their text form.
-            json_emit_string(cell_to_string(arr, row));
+            thread_local std::string text;
+            text.clear();
+            append_cell(arr, row, text);
+            json_append_string(out, text);
             return;
+        }
     }
 }
 
@@ -695,32 +878,27 @@ std::string write_json(TabularSource& src, const Config& cfg) {
     std::vector<int> read_set = have_filter
         ? union_with_filter(requested, fx) : requested;
 
+    // Each requested column's place in the read projection, and its key
+    // written once: `"name": ` (after ", " but for the first).
+    std::vector<int> read_pos(src.schema()->num_fields(), -1);
+    for (size_t j = read_set.size(); j-- > 0;) read_pos[read_set[j]] = (int)j;
+    std::vector<int> pos(requested.size());
+    std::vector<std::string> keys(requested.size());
+    for (size_t k = 0; k < requested.size(); ++k) {
+        pos[k] = read_pos[requested[k]];
+        if (k) keys[k] = ", ";
+        json_append_string(keys[k], src.schema()->field(requested[k])->name());
+        keys[k] += ": ";
+    }
+
     FILE* out = out_stream();
     int64_t rows_left = (cfg.head_rows <= 0) ? INT64_MAX : (int64_t)cfg.head_rows;
-    bool first_row = true;
+    int64_t written = 0;
+    const char* row_sep = cfg.json_array ? ",\n" : "\n";
+    const int threads = format_threads(*src.schema(), requested, effective_threads(cfg));
+    OrderedWriter writer(out, threads);
+    auto shared_keys = std::make_shared<const std::vector<std::string>>(std::move(keys));
     if (cfg.json_array) std::fputc('[', out);
-
-    auto emit_row = [&](const arrow::Table& tbl, int64_t r) {
-        if (!first_row) std::fputs(cfg.json_array ? ",\n" : "\n", out);
-        first_row = false;
-        std::fputc('{', out);
-        for (size_t k = 0; k < requested.size(); ++k) {
-            if (k) std::fputs(", ", out);
-            json_emit_string(src.schema()->field(requested[k])->name());
-            std::fputs(": ", out);
-            // Find the column position in `tbl` (it was loaded as read_set).
-            int p = -1;
-            for (size_t j = 0; j < read_set.size(); ++j)
-                if (read_set[j] == requested[k]) { p = (int)j; break; }
-            auto col = tbl.column(p);
-            int64_t off = r;
-            for (auto& ch : col->chunks()) {
-                if (off < ch->length()) { json_emit_cell(*ch, off); break; }
-                off -= ch->length();
-            }
-        }
-        std::fputc('}', out);
-    };
 
     for (int c = 0; rows_left > 0; ++c) {
         if (export_canceled()) return kExportCanceled;
@@ -730,12 +908,35 @@ std::string write_json(TabularSource& src, const Config& cfg) {
         if (!src.read_chunk(c, read_set, &chunk).ok()) continue;
         if (have_filter) chunk = apply_filter(chunk, fx, read_set);
         if (!chunk || chunk->num_rows() == 0) continue;
-        int64_t take = std::min(chunk->num_rows(), rows_left);
-        for (int64_t r = 0; r < take; ++r) emit_row(*chunk, r);
+        const int64_t take = std::min(chunk->num_rows(), rows_left);
+        auto proto = std::make_shared<std::vector<ColCursor>>(requested.size());
+        for (size_t k = 0; k < requested.size(); ++k) (*proto)[k].col = chunk->column(pos[k]).get();
+        if (threads > 1) prepare_columns(*chunk, pos);
+        const int64_t first = written;
+        auto fmt = [chunk, proto, shared_keys, first, row_sep](int64_t r0, int64_t r1,
+                                                               std::string& buf) {
+            thread_local std::vector<ColCursor> cur;   // no allocation per range
+            cur.assign(proto->begin(), proto->end());
+            for (auto& cc : cur) cc.seek(r0);
+            const std::vector<std::string>& keys = *shared_keys;
+            for (int64_t r = r0; r < r1; ++r) {
+                if (first + r > 0) buf += row_sep;
+                buf += '{';
+                for (size_t k = 0; k < cur.size(); ++k) {
+                    buf += keys[k];
+                    json_append_cell(buf, *cur[k].arr, cur[k].off);
+                    cur[k].next();
+                }
+                buf += '}';
+            }
+        };
+        submit_rows(writer, take, (int64_t)requested.size(), fmt);
+        written += take;
         rows_left -= take;
         export_count(take);
     }
+    writer.finish();
     if (cfg.json_array) std::fputs("]\n", out);
-    else if (!first_row) std::fputc('\n', out);
+    else if (written > 0) std::fputc('\n', out);
     return "";
 }

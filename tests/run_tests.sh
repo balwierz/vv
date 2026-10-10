@@ -98,6 +98,33 @@ run_case fastq_gz_tsv --tsv --no-header "$DATA/tiny.fq.gz"
 run_case tsv_tsv      --tsv --no-header "$DATA/tiny.tsv"
 run_case csv_tsv      --tsv --no-header "$DATA/tiny.csv"
 run_case arrow_tsv    --tsv --no-header "$DATA/tiny.arrow"
+# Every Arrow type an export writes as text, with edge values (see
+# tiny.alltypes.arrow in generate.py): pins the text the writers produce.
+run_case alltypes_tsv    --tsv    "$DATA/tiny.alltypes.arrow"
+run_case alltypes_csv    --csv    "$DATA/tiny.alltypes.arrow"
+run_case alltypes_json   --json   "$DATA/tiny.alltypes.arrow"
+run_case alltypes_ndjson --ndjson "$DATA/tiny.alltypes.arrow"
+run_case alltypes_md     --md     "$DATA/tiny.alltypes.arrow"
+
+# Exports larger than one formatting job (256 Ki cells) are formatted on
+# several threads and written in row order: the bytes must not depend on the
+# thread count, also when a column has many chunks (1 MiB CSV blocks) or a
+# filter has cut the table into runs.
+PAR="$TMP/par.tsv"
+awk 'BEGIN { print "id\tx\tname\tq"; for (i = 0; i < 300000; i++)
+             printf "%d\t%.17g\tn%d\t%s\n", i, i / 7.0, i, (i % 97 ? "a,b" : "say \"hi\"") }' > "$PAR"
+for mode in --tsv --csv --json --ndjson; do
+    "$VV" -@ 1 $mode "$PAR" > "$TMP/par1.out" 2>&1
+    "$VV" -@ 4 $mode "$PAR" > "$TMP/par4.out" 2>&1
+    VV_CSV_BLOCK_MB=1 "$VV" -@ 4 $mode --filter 'q == "a,b"' "$PAR" > "$TMP/par4f.out" 2>&1
+    "$VV" -@ 1 $mode --filter 'q == "a,b"' "$PAR" > "$TMP/par1f.out" 2>&1
+    if cmp -s "$TMP/par1.out" "$TMP/par4.out" && cmp -s "$TMP/par1f.out" "$TMP/par4f.out" &&
+       [ "$(wc -l < "$TMP/par1.out")" -ge 300000 ]; then
+        assert_eq_file_inline "export_threads_same_bytes_${mode#--}" ok ok
+    else
+        assert_eq_file_inline "export_threads_same_bytes_${mode#--}" "differs" ok
+    fi
+done
 # Empty Arrow IPC (schema, zero record batches): the table view must render the
 # column header + "0 rows" like an empty Parquet, not draw nothing (the seeded
 # zero-row batch was unreachable when num_chunks() reported 0).

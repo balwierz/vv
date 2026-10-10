@@ -1350,6 +1350,12 @@ $ vv -@ 4 -n 1000 alignments.bam            # multi-threaded BAM decode
 | Arrow IPC      | lazy: footer only at open; batches decoded on demand |
 | Arrow IPC stream | forward-only: one record batch per chunk, bounded window |
 
+`--tsv`, `--csv`, `--json` and `--ndjson` exports format their text on
+`--threads` threads, in jobs of about 256 Ki cells, and write it in row
+order, so the output is the same for any thread count. The text of a column
+whose cells nest a dictionary (a list of dictionary-encoded strings, say) is
+formatted on one thread.
+
 `--threads 0` (default) auto-picks `min(8, max(2, cores/2))`.
 
 ## `--decode-threads N`

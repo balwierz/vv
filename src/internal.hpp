@@ -480,6 +480,33 @@ inline constexpr const char kExportCanceled[] = "canceled";
 
 void write_csv_field(const std::string& val, char sep);
 
+// ── Cell text for the exporters (core/format_fast.cpp) ───────────────────────
+// cell_to_string()'s text appended to a buffer, with the switch on the type
+// done once per column instead of once per cell. An appender is called for a
+// non-null row only; values inside it (a dictionary entry, a list element)
+// render their own nulls as NULL_SYMBOL, as cell_to_string does. The float
+// appender is chosen by t_exact_floats at the time of the call, so pick inside
+// the ExactFloats guard the text is for.
+using CellAppender = void (*)(const arrow::Array&, int64_t, std::string&);
+CellAppender pick_appender(const arrow::DataType& type);
+// cell_to_string(arr, row) appended to `out`, nulls included.
+void append_cell(const arrow::Array& arr, int64_t row, std::string& out);
+// True when the text of `type` may be computed on several threads at once over
+// the same arrays: a DictionaryArray builds dictionary() on first use without a
+// lock, so a dictionary is allowed only at the top level, after
+// prepare_parallel_format() has run on each of its chunks.
+bool format_thread_safe(const arrow::DataType& type);
+void prepare_parallel_format(const arrow::Array& arr);
+size_t exact_float_chars(double v, bool single, char* buf);   // buf: 40 bytes
+void append_binary_text(const uint8_t* p, int64_t n, std::string& out);
+// The field appended to buf at `start` as write_csv_field writes it: the null
+// symbol becomes an empty field, a field holding the separator, a double quote
+// or a line break is quoted RFC 4180 style, and an unquoted field ends at its
+// first NUL byte.
+void finish_csv_field(std::string& buf, size_t start, char sep);
+// A JSON string literal of `v`, appended.
+void json_append_string(std::string& out, std::string_view v);
+
 // Minimal InputStream that serves 'prefix' bytes first, then delegates to 'rest'.
 // Used to "put back" the first non-preamble line when reading gzipped files.
 class PrependInputStream : public arrow::io::InputStream {

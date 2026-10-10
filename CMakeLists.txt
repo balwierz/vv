@@ -399,7 +399,7 @@ endif()
 # and the ncurses viewers.
 set(VV_CORE_SOURCES
     src/core/common.cpp   src/core/compress.cpp src/core/derived.cpp
-    src/core/filter.cpp
+    src/core/filter.cpp   src/core/format_fast.cpp
     src/core/io.cpp       src/core/modes.cpp    src/core/open.cpp
     src/core/platform.cpp
     src/core/region.cpp   src/core/source.cpp   src/core/summary.cpp

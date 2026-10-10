@@ -93,7 +93,8 @@ src/core/            common (colours, themes, formatting), source (TabularSource
                      open_source()), open (format dispatch, stdin, datasets),
                      modes (markdown / text / JSON document modes),
                      summary (summarize_columns: --describe / --value-counts /
-                     vvg statistics), platform (the calls whose POSIX and
+                     vvg statistics), format_fast (cell text appended per
+                     column type, for the exporters), platform (the calls whose POSIX and
                      Windows forms differ: terminal size, globbing, temp files,
                      file mapping, console modes)
 src/formats/         one file per reader family: parquet, lociss, delimited,

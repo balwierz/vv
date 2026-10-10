@@ -258,6 +258,79 @@ pq.write_table(pa.table({
     "tus": pa.array(_ts, pa.timestamp("us")),
 }), HERE / "tiny.dates.parquet")
 
+# tiny.alltypes.arrow: one column per Arrow type an export writes as text,
+# with edge values (pre-1970 instants with a fraction, years before 1000 and
+# after 9999, values outside the formatters' range, NaN / infinities,
+# subnormals, integer extremes, strings that need CSV quoting, the null
+# symbol as a string) and a null in every column. Arrow IPC, not Parquet,
+# so date64, time32[s], durations and decimal256 keep their exact types.
+# The export goldens of this file pin the text of every type.
+def _alltypes():
+    N = 8
+    def col(vals, typ):
+        vals = list(vals) + [None] * (N - len(vals))
+        return pa.array(vals, typ)
+    day_ms, day_s = 86400000, 86400
+    big = 11248738          # first day Arrow's formatters reject
+    cols = {
+        "i8":   col([-128, 127, 0, -1], pa.int8()),
+        "i16":  col([-32768, 32767, 0], pa.int16()),
+        "i32":  col([-2**31, 2**31 - 1, 0], pa.int32()),
+        "i64":  col([-2**63, 2**63 - 1, 0, 1234567890123], pa.int64()),
+        "u8":   col([0, 255], pa.uint8()),
+        "u16":  col([0, 65535], pa.uint16()),
+        "u32":  col([0, 2**32 - 1], pa.uint32()),
+        "u64":  col([0, 2**64 - 1, 2**63], pa.uint64()),
+        "f32":  col([0.1, -0.0, float("nan"), float("inf"), float("-inf"),
+                     1e-45, 3.4028234663852886e38], pa.float32()),
+        "f64":  col([0.1, -0.0, float("nan"), float("-inf"), 5e-324, 1e300,
+                     0.30000000000000004], pa.float64()),
+        "b":    col([True, False], pa.bool_()),
+        "s":    col(["plain", "comma,here", 'quote"here', "line\nbreak",
+                     "cr\rhere", "tab\there", "∅", ""], pa.string()),
+        "ls":   col(["large", "été 日本"], pa.large_string()),
+        "bin":  col([b"text", b"\x00\x01\xff", b""], pa.binary()),
+        "d32":  col([0, -1, 19782, -719162, 2932896, 3000000, -800000, big],
+                    pa.date32()),
+        "d64":  col([0, -1, 19782 * day_ms, -day_ms - 1, 1709210096789,
+                     3000000 * day_ms, big * day_ms], pa.date64()),
+        "t32s": col([0, 86399, 3661, 86400, -1], pa.time32("s")),
+        "t32m": col([0, 86399999, 45296789, 86400000], pa.time32("ms")),
+        "t64u": col([0, 86399999999, 45296789012, -5], pa.time64("us")),
+        "t64n": col([0, 86399999999999, 45296789012345, 86400 * 10**9],
+                    pa.time64("ns")),
+        "dur_s":  col([0, -5, 123456789], pa.duration("s")),
+        "dur_ms": col([0, -5, 123456789], pa.duration("ms")),
+        "dur_us": col([0, -5, 123456789], pa.duration("us")),
+        "dur_ns": col([0, -5, 123456789], pa.duration("ns")),
+        "dec":    col([_dec.Decimal("1.50"), _dec.Decimal("-0.01"),
+                       _dec.Decimal("0.00"), _dec.Decimal("99999999.99")],
+                      pa.decimal128(10, 2)),
+        "dec0":   col([_dec.Decimal("12345"), _dec.Decimal("-1")],
+                      pa.decimal128(5, 0)),
+        "dec256": col([_dec.Decimal("1234567890123456789012345678901234.56789"),
+                       _dec.Decimal("-0.00001")], pa.decimal256(40, 5)),
+        "dict":   pa.array(["a", "b", "a", None, "c", "a", "b", "c"]).dictionary_encode(),
+    }
+    for unit, scale in (("s", 1), ("ms", 10**3), ("us", 10**6), ("ns", 10**9)):
+        vals = [0, -1, 1709210096 * scale + (scale - 1),
+                -(day_s * 365) * scale - 1]
+        if unit != "ns":
+            vals += [253402300799 * scale,          # 9999-12-31 23:59:59
+                     big * day_s * scale]           # out of range (not for ns)
+        else:
+            vals += [2**63 - 1, -2**63]             # the ns extremes
+        for tz in (None, "UTC", "Europe/Warsaw"):
+            name = "ts_%s%s" % (unit, "" if tz is None else
+                                "_utc" if tz == "UTC" else "_waw")
+            cols[name] = col(vals, pa.timestamp(unit, tz=tz))
+    return pa.table(cols)
+
+with pa.OSFile(str(HERE / "tiny.alltypes.arrow"), "wb") as _f:
+    _t = _alltypes()
+    with pa.ipc.new_file(_f, _t.schema) as _w:
+        _w.write_table(_t)
+
 # tiny.empty.arrow: a valid Arrow IPC with a schema but zero record batches.
 # The reader seeds a zero-row batch so the schema renders, but num_chunks()
 # used to report 0 (num_record_batches_) and the table view drew nothing.

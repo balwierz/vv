@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- `--tsv`, `--csv`, `--json` and `--ndjson` format cells several times
+  faster and on `--threads` threads, writing in row order (the output is
+  byte-identical to before). On a 12.2 M-row Parquet file: `--tsv` 6.8 s →
+  1.7 s, `--json` 39.3 s → 3.5 s; AnnData `X`, dense 18,753 × 30,872:
+  `--tsv` 50.4 s → 12.2 s; CSR 91,168 × 5,575: 28.0 s → 6.3 s (8 threads).
+
 ## [1.29.0] - 2026-10-09
 
 ### Added

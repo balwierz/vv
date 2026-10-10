@@ -797,7 +797,7 @@ int nearest_256(int r, int g, int b) {
 // strings as BINARY with no UTF8 annotation) are shown as that text; anything
 // else — control bytes, invalid UTF-8 — as 0x + hex, so raw bytes never reach
 // the terminal and distinct blobs render distinctly.
-static std::string binary_cell_text(const uint8_t* p, int64_t n) {
+void append_binary_text(const uint8_t* p, int64_t n, std::string& out) {
     bool text = true;
     for (int64_t i = 0; i < n && text;) {
         const uint8_t c = p[i];
@@ -808,31 +808,43 @@ static std::string binary_cell_text(const uint8_t* p, int64_t n) {
             if ((p[i + k] & 0xc0) != 0x80) { text = false; break; }
         i += len;
     }
-    if (text) return std::string(reinterpret_cast<const char*>(p), (size_t)n);
+    if (text) { out.append(reinterpret_cast<const char*>(p), (size_t)n); return; }
     static const char* hex = "0123456789abcdef";
-    std::string out = "0x";
-    out.reserve(2 + 2 * (size_t)n);
+    out.reserve(out.size() + 2 + 2 * (size_t)n);
+    out += "0x";
     for (int64_t i = 0; i < n; ++i) { out += hex[p[i] >> 4]; out += hex[p[i] & 15]; }
+}
+
+static std::string binary_cell_text(const uint8_t* p, int64_t n) {
+    std::string out;
+    append_binary_text(p, n, out);
     return out;
+}
+
+size_t exact_float_chars(double v, bool single, char* buf) {
+    if (std::isnan(v)) { std::memcpy(buf, "nan", 3); return 3; }
+    if (std::isinf(v)) {
+        if (v < 0) { std::memcpy(buf, "-inf", 4); return 4; }
+        std::memcpy(buf, "inf", 3); return 3;
+    }
+#if defined(__cpp_lib_to_chars) || (defined(_GLIBCXX_RELEASE) && _GLIBCXX_RELEASE >= 11)
+    // Shortest round-trip form (Ryu): 2.5x faster than the search below on a
+    // column of random doubles, which need all 17 digits.
+    auto r = single ? std::to_chars(buf, buf + 39, (float)v)
+                    : std::to_chars(buf, buf + 39, v);
+    if (r.ec == std::errc()) return (size_t)(r.ptr - buf);
+#endif
+    for (int p = single ? 6 : 15; p <= (single ? 9 : 17); ++p) {
+        std::snprintf(buf, 40, "%.*g", p, v);
+        if (single ? std::strtof(buf, nullptr) == (float)v : std::strtod(buf, nullptr) == v)
+            break;
+    }
+    return std::strlen(buf);
 }
 
 static std::string exact_float_text(double v, bool single) {
     char buf[40];
-    if (std::isnan(v)) return "nan";
-    if (std::isinf(v)) return v < 0 ? "-inf" : "inf";
-#if defined(__cpp_lib_to_chars) || (defined(_GLIBCXX_RELEASE) && _GLIBCXX_RELEASE >= 11)
-    // Shortest round-trip form (Ryu): 2.5x faster than the search below on a
-    // column of random doubles, which need all 17 digits.
-    auto r = single ? std::to_chars(buf, buf + sizeof buf - 1, (float)v)
-                    : std::to_chars(buf, buf + sizeof buf - 1, v);
-    if (r.ec == std::errc()) return std::string(buf, r.ptr);
-#endif
-    for (int p = single ? 6 : 15; p <= (single ? 9 : 17); ++p) {
-        std::snprintf(buf, sizeof buf, "%.*g", p, v);
-        if (single ? std::strtof(buf, nullptr) == (float)v : std::strtod(buf, nullptr) == v)
-            break;
-    }
-    return buf;
+    return std::string(buf, exact_float_chars(v, single, buf));
 }
 
 std::string cell_to_string(const arrow::Array& arr, int64_t row) {
