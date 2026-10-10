@@ -177,6 +177,31 @@ static void h5_note_preview(int64_t shown_rows, int64_t full_rows,
     t_h5_preview = PreviewLimit{shown_rows, full_rows, shown_cols, full_cols};
 }
 
+// Floating-point data is read as double; a float32 dataset becomes a float32
+// column again (the double holds each float exactly), so its type, its text
+// (shortest float32 form) and its memory are the stored ones.
+static bool is_float32(const ArrayInfo& ai) { return ai.cls == VClass::Float && ai.itemsize == 4; }
+
+template <typename Get>
+static std::shared_ptr<arrow::Array> float_column(int64_t n, bool f32, Get get) {
+    std::shared_ptr<arrow::Array> a;
+    if (f32) {
+        arrow::FloatBuilder b;
+        (void)b.Reserve(n);
+        for (int64_t i = 0; i < n; ++i) b.UnsafeAppend((float)get(i));
+        (void)b.Finish(&a);
+    } else {
+        arrow::DoubleBuilder b;
+        (void)b.Reserve(n);
+        for (int64_t i = 0; i < n; ++i) b.UnsafeAppend(get(i));
+        (void)b.Finish(&a);
+    }
+    return a;
+}
+static std::shared_ptr<arrow::DataType> float_type(bool f32) {
+    return f32 ? arrow::float32() : arrow::float64();
+}
+
 // H5Dread that records the first failure in t_h5_read_error.
 static herr_t h5_read(hid_t dset, hid_t memtype, hid_t ms, hid_t fs, void* buf) {
     herr_t st = H5Dread(dset, memtype, ms, fs, H5P_DEFAULT, buf);
@@ -1234,9 +1259,7 @@ arrow::Result<std::shared_ptr<arrow::Array>> Hdf5Store::read_column(const std::s
     } else if (cls == H5T_FLOAT) {
         std::vector<double> buf((size_t)n);
         hid_t ms = read_n(H5T_NATIVE_DOUBLE, buf.data()); H5Sclose(ms);
-        arrow::DoubleBuilder b;
-        for (auto v : buf) (void)b.Append(v);
-        (void)b.Finish(&arr);
+        arr = float_column(n, tsz == 4, [&](int64_t i) { return buf[(size_t)i]; });
     } else if (cls == H5T_STRING) {
         arrow::StringBuilder b;
         if (H5Tis_variable_str(t)) {
@@ -1366,12 +1389,11 @@ read_2d_dataset_table(const Store& store, const std::string& path, int64_t row_c
         std::vector<double> buf((size_t)(n_rows * n_cols));
         auto st = store.read_block_f64(path, 0, n_rows, 0, n_cols, buf.data());
         if (!st.ok()) { note_read_error(st); return st; }
+        const bool f32 = is_float32(*ai);
         for (int64_t c = 0; c < n_cols; ++c) {
-            arrow::DoubleBuilder b;
-            for (int64_t r = 0; r < n_rows; ++r)
-                (void)b.Append(buf[(size_t)(r * n_cols + c)]);
-            (void)b.Finish(&cols[(size_t)c]);
-            fields[(size_t)c] = arrow::field(names[(size_t)c], arrow::float64());
+            cols[(size_t)c] = float_column(n_rows, f32,
+                [&](int64_t r) { return buf[(size_t)(r * n_cols + c)]; });
+            fields[(size_t)c] = arrow::field(names[(size_t)c], float_type(f32));
         }
     } else if (cls == VClass::Int) {
         std::vector<int64_t> buf((size_t)(n_rows * n_cols));
@@ -1765,13 +1787,12 @@ read_sparse_preview_as(const Store& store, const std::string& group, int64_t n_r
     }
     arrow::FieldVector fields;
     std::vector<std::shared_ptr<arrow::Array>> cols;
+    const auto dinfo = store.info(data_p);
+    const bool f32 = dinfo && is_float32(*dinfo);
     for (int64_t c = 0; c < n_cols; ++c) {
-        arrow::DoubleBuilder b;
-        (void)b.AppendValues(colbuf[(size_t)c]);
-        std::shared_ptr<arrow::Array> a;
-        (void)b.Finish(&a);
-        cols.push_back(std::move(a));
-        fields.push_back(arrow::field("col" + std::to_string(c), arrow::float64()));
+        const auto& v = colbuf[(size_t)c];
+        cols.push_back(float_column((int64_t)v.size(), f32, [&](int64_t i) { return v[(size_t)i]; }));
+        fields.push_back(arrow::field("col" + std::to_string(c), float_type(f32)));
     }
     return arrow::Table::Make(arrow::schema(fields), cols, n_rows);
 }
@@ -1908,6 +1929,7 @@ public:
         Layout      layout = Layout::Dense;
         int64_t     rows = 0, cols = 0;
         bool        ints = false;            // int64 values, else double
+        bool        f32 = false;             // float32 values (read as double)
         std::string row_header;              // row label column ("" = none)
         std::vector<std::string> row_labels, col_names;
         // --matrix long: the column-label column's name ("var", the var
@@ -2016,7 +2038,7 @@ public:
         for (int64_t c = 0; c < plan.cols; ++c)
             fields.push_back(arrow::field(c < (int64_t)plan.col_names.size() ? plan.col_names[(size_t)c]
                                                                              : "col" + std::to_string(c),
-                                          plan.ints ? arrow::int64() : arrow::float64()));
+                                          plan.ints ? arrow::int64() : float_type(plan.f32)));
         self->schema_ = arrow::schema(fields);
         self->plan_ = std::move(plan);
         return self;
@@ -2227,10 +2249,8 @@ public:
                 for (int64_t r = 0; r < n; ++r) b.UnsafeAppend(iv[(size_t)(r * cols_ + ci - label)]);
                 ARROW_RETURN_NOT_OK(b.Finish(&arr));
             } else {
-                arrow::DoubleBuilder b;
-                ARROW_RETURN_NOT_OK(b.Reserve(n));
-                for (int64_t r = 0; r < n; ++r) b.UnsafeAppend(dv[(size_t)(r * cols_ + ci - label)]);
-                ARROW_RETURN_NOT_OK(b.Finish(&arr));
+                const int64_t col = ci - label;
+                arr = float_column(n, plan_.f32, [&](int64_t r) { return dv[(size_t)(r * cols_ + col)]; });
             }
             cols.push_back(std::move(arr));
         }
@@ -2302,7 +2322,7 @@ public:
         self->schema_ = arrow::schema({
             arrow::field(rname, rl ? label_type : arrow::int64()),
             arrow::field(cname, cl ? label_type : arrow::int64()),
-            arrow::field(vname, p.ints ? arrow::int64() : arrow::float64())});
+            arrow::field(vname, p.ints ? arrow::int64() : float_type(p.f32))});
         std::vector<int64_t> counts;
         if (self->wide_->block_counts(&counts)) {
             int64_t at = 0;
@@ -2371,9 +2391,8 @@ public:
                 ARROW_RETURN_NOT_OK(b.AppendValues(e.iv));
                 ARROW_RETURN_NOT_OK(b.Finish(&arr));
             } else {
-                arrow::DoubleBuilder b;
-                ARROW_RETURN_NOT_OK(b.AppendValues(e.dv));
-                ARROW_RETURN_NOT_OK(b.Finish(&arr));
+                arr = float_column((int64_t)e.dv.size(), wide_->plan().f32,
+                                   [&](int64_t k) { return e.dv[(size_t)k]; });
             }
             fields.push_back(schema_->field(c));
             cols.push_back(std::move(arr));
@@ -3402,10 +3421,9 @@ static std::string build_loom_table(const Store& store, const OpenSpec& spec, in
             (void)b.Finish(&a);
             fields.push_back(arrow::field(name, arrow::int64()));
         } else {
-            arrow::DoubleBuilder b;
-            (void)b.AppendValues(dbuf.data() + gi * nc, nc);
-            (void)b.Finish(&a);
-            fields.push_back(arrow::field(name, arrow::float64()));
+            const double* v = dbuf.data() + gi * nc;
+            a = float_column(nc, is_float32(*ai), [&](int64_t i) { return v[i]; });
+            fields.push_back(arrow::field(name, float_type(is_float32(*ai))));
         }
         cols.push_back(a);
     }
@@ -3418,8 +3436,9 @@ static std::string build_loom_table(const Store& store, const OpenSpec& spec, in
 }
 
 // The value type a dense dataset streams as, as its preview shows it: int64
-// for integer data, double for floating point; false for anything else
-// (text, compound), which is not streamed.
+// for integer data, else floating point (float32 when stored so, see
+// is_float32); false for anything else (text, compound), which is not
+// streamed.
 static bool h5_dense_value_type(const ArrayInfo& ai, bool* ints) {
     *ints = ai.cls == VClass::Int;
     return ai.cls == VClass::Int || ai.cls == VClass::Float;
@@ -3460,7 +3479,8 @@ static std::unique_ptr<TabularSource> make_h5_matrix_stream(const StorePtr& file
         }
         // CSC: transposed to CSR in memory when the export first reads.
         p.layout = csr ? Layout::Csr : Layout::Csc; p.rows = shape[0]; p.cols = shape[1];
-        p.format = "AnnData";                      // sparse previews are double
+        p.format = "AnnData";                      // float32 data stays float32, else double
+        if (auto di = store.info(g + "/data")) p.f32 = is_float32(*di);
         break;
     }
     case OpenSpec::Kind::Matrix2D:
@@ -3471,6 +3491,7 @@ static std::unique_ptr<TabularSource> make_h5_matrix_stream(const StorePtr& file
         loom_dims(store, spec.h5_path, &r, &c);
         const bool numeric = h5_dense_value_type(*ai, &p.ints);
         if (!numeric) return nullptr;
+        p.f32 = is_float32(*ai);
         p.rows = r; p.cols = c;
         p.format = spec.kind == OpenSpec::Kind::Matrix2D ? "AnnData" : store.format_name();
         break;
@@ -3500,6 +3521,7 @@ static std::unique_ptr<TabularSource> make_h5_matrix_stream(const StorePtr& file
             p.row_labels = h5_strings(store, g + "/barcodes", nb);
         }
         if (!ok) return nullptr;
+        if (auto di = store.info(g + "/data")) p.f32 = is_float32(*di);
         p.layout = Layout::Csr; p.rows = nb; p.cols = nf;
         p.row_header = "barcode";
         p.long_row = "barcode"; p.long_col = "feature";
@@ -3513,6 +3535,7 @@ static std::unique_ptr<TabularSource> make_h5_matrix_stream(const StorePtr& file
         loom_dims(store, spec.h5_path, &G, &C);
         const bool numeric = h5_dense_value_type(*ai, &p.ints);
         if (!numeric) return nullptr;
+        p.f32 = is_float32(*ai);
         p.layout = Layout::DenseT; p.rows = C; p.cols = G;
         const std::string cell_attr = loom_label_attr(store, "col_attrs", kLoomCellIds);
         const std::string gene_attr = loom_label_attr(store, "row_attrs", kLoomGeneIds);

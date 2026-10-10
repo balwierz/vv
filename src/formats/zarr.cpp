@@ -1273,9 +1273,16 @@ public:
             std::vector<double> v((size_t)n);
             ARROW_RETURN_NOT_OK(visit(path, off, n, 0, 1, 1, [&](int64_t o, const ArrayMeta& mm, const Chunk& c,
                                                                  int64_t i) { v[(size_t)o] = elem_f64(mm, c, i); }));
-            arrow::DoubleBuilder b;
-            ARROW_RETURN_NOT_OK(b.AppendValues(v));
-            ARROW_RETURN_NOT_OK(b.Finish(&arr));
+            if (m->itemsize == 4) {   // float32 stays float32 (as the HDF5 reader keeps it)
+                arrow::FloatBuilder b;
+                ARROW_RETURN_NOT_OK(b.Reserve(n));
+                for (double d : v) b.UnsafeAppend((float)d);
+                ARROW_RETURN_NOT_OK(b.Finish(&arr));
+            } else {
+                arrow::DoubleBuilder b;
+                ARROW_RETURN_NOT_OK(b.AppendValues(v));
+                ARROW_RETURN_NOT_OK(b.Finish(&arr));
+            }
         } else if (cls == VClass::Bool) {
             std::vector<bool> v((size_t)n);
             ARROW_RETURN_NOT_OK(visit(path, off, n, 0, 1, 1, [&](int64_t o, const ArrayMeta& mm, const Chunk& c,

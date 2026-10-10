@@ -46,6 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   fixed fields without copying each line twice: 3 M SAM records, `--count`
   0.75 s → 0.47 s.
 
+- HDF5 / AnnData / Loom / Cell Ranger and Zarr float32 data stays float32
+  (it was widened to double): `--schema` / `--describe` say `float`, and
+  exports write each value's shortest float32 text — `0.00091939373`, not
+  `0.0009193937294185162` — which reads back as the stored value. A dense
+  18,753 × 30,872 AnnData `X`: `--tsv` 13.1 s → 6.5 s, 12.8 GB → 7.7 GB of
+  text.
+
 ### Fixed
 - A VCF or GFF whose first 16 MiB name chromosomes only by numbers (Ensembl:
   `1` … `22`) failed at the first other name (`X`, `GL000008.2`): the
