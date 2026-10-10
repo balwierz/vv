@@ -948,6 +948,50 @@ std::vector<int64_t> stable_sort_order(const arrow::Array& key, bool descending)
     return order;
 }
 
+bool sort_rows_by_column(TabularSource& src, int col, bool descending,
+                         const std::vector<int64_t>* subset,
+                         const std::atomic<bool>* cancel, std::vector<int64_t>* out) {
+    out->clear();
+    src.set_retain_all(true);
+    arrow::ArrayVector keys;
+    std::vector<int64_t> src_row;   // the source row of each key position
+    for (int c = 0; ; ++c) {
+        if (cancel && cancel->load()) return false;
+        src.ensure(c);
+        if (c >= src.num_chunks()) break;
+        std::shared_ptr<arrow::Table> t;
+        if (!src.read_chunk(c, {col}, &t).ok() || !t || t->num_columns() == 0) continue;
+        const int64_t first = src.chunk_meta(c).first_row;
+        for (int64_t i = 0; i < t->num_rows(); ++i) src_row.push_back(first + i);
+        for (const auto& ch : t->column(0)->chunks()) keys.push_back(ch);
+    }
+    if (src_row.empty()) return true;
+    std::shared_ptr<arrow::Array> flat;
+    if (keys.size() == 1) flat = keys[0];
+    else {
+        auto cc = arrow::Concatenate(keys);
+        if (!cc.ok()) return true;
+        flat = *cc;
+    }
+    keys.clear();
+    if (cancel && cancel->load()) return false;
+    std::vector<int64_t> order = stable_sort_order(*flat, descending);
+    flat.reset();
+    if (cancel && cancel->load()) return false;
+    std::vector<char> keep;
+    if (subset) {
+        keep.assign((size_t)(src_row.back() + 1), 0);
+        for (int64_t r : *subset)
+            if (r >= 0 && r < (int64_t)keep.size()) keep[(size_t)r] = 1;
+    }
+    out->reserve(subset ? subset->size() : order.size());
+    for (int64_t p : order) {
+        const int64_t r = src_row[(size_t)p];
+        if (!subset || keep[(size_t)r]) out->push_back(r);
+    }
+    return true;
+}
+
 // --sort COL[:asc|:desc]: stable-sort the (filtered) rows by one column and
 // replace `src` with a MemoryTableSource so every downstream view / export
 // renders the sorted result identically. Every row is held (a viewer

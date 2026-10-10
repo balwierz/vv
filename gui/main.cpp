@@ -481,7 +481,9 @@ private:
         if (ncols <= 0) return {};
         const int ch  = std::max(1, fm.horizontalAdvance(QLatin1Char('0')));
         const int pad = 2 * ch;                 // cell text margins, both sides
-        const int64_t sample = std::min<int64_t>(nrows, 2000);
+        // About 40,000 cells, 64 to 2,000 rows: every cell sampled is decoded
+        // and measured on the UI thread, at open, for every tab.
+        const int64_t sample = std::min<int64_t>(nrows, std::clamp(40000 / ncols, 64, 2000));
 
         std::vector<std::vector<int>> samples((size_t)ncols);
         std::vector<int> floors((size_t)ncols);
@@ -2595,6 +2597,16 @@ int main(int argc, char** argv) {
                 m.setFilter(fx);
                 std::printf("filter '%s' -> %lld/%lld rows\n", fe,
                             (long long)m.viewRows(), (long long)m.sourceTotal());
+                // Sorting within the filter keeps exactly the filtered rows.
+                if (m.columnCount() > 0) {
+                    m.sortByDisplayColumn(m.columnCount() - 1, Qt::DescendingOrder);
+                    std::string r0;
+                    for (int c = 0; c < m.columnCount(); ++c)
+                        r0 += (c ? " | " : "") + m.data(m.index(0, c), Qt::DisplayRole).toString().toStdString();
+                    std::printf("filter_sorted_desc rows=%lld row0=%s\n",
+                                (long long)m.viewRows(), r0.c_str());
+                    m.sortByDisplayColumn(-1, Qt::AscendingOrder);
+                }
             } else {
                 std::printf("filter parse error: %s\n", err.c_str());
             }

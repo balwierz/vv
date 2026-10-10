@@ -6,7 +6,6 @@
 #include <QString>
 #include <QtConcurrent>
 #include <algorithm>
-#include <unordered_set>
 
 namespace {
 std::string chunked_cell(const arrow::ChunkedArray& ca, int64_t i) {
@@ -132,6 +131,10 @@ int ArrowTableModel::chunkIndexForRow(int64_t row) const {
 }
 
 const ArrowTableModel::LoadedChunk* ArrowTableModel::chunkForRow(int64_t row) const {
+    // A view paints cell after cell of the same rows: the chunk of the last
+    // lookup answers without asking the source (whose calls take the HDF5
+    // lock on an HDF5 tab) or touching the LRU list.
+    if (lastChunk_ && row >= lastChunk_->first_row && row < lastChunkEnd_) return lastChunk_;
     int c = chunkIndexForRow(row);
     if (c < 0) return nullptr;
     ChunkMeta m = src_->chunk_meta(c);
@@ -151,7 +154,15 @@ const ArrowTableModel::LoadedChunk* ArrowTableModel::chunkForRow(int64_t row) co
         lru_.remove(c);
         lru_.push_front(c);
     }
-    return &it->second;
+    lastChunk_ = &it->second;   // std::map nodes stay put until erased
+    lastChunkEnd_ = m.first_row + m.num_rows;
+    return lastChunk_;
+}
+
+void ArrowTableModel::clearChunkCache() const {
+    cache_.clear();
+    lru_.clear();
+    lastChunk_ = nullptr;
 }
 
 QString ArrowTableModel::cellText(int viewRow, int dispCol) const {
@@ -288,22 +299,6 @@ void ArrowTableModel::fetchMore(const QModelIndex& parent) {
     }
 }
 
-std::shared_ptr<arrow::ChunkedArray>
-ArrowTableModel::readFullColumn(int srcCol) const {
-    drainStreaming();
-    arrow::ArrayVector chunks;
-    std::shared_ptr<arrow::DataType> type;
-    for (int c = 0; c < src_->num_chunks(); ++c) {
-        std::shared_ptr<arrow::Table> tbl;
-        if (!src_->read_chunk(c, {srcCol}, &tbl).ok() || !tbl) continue;
-        auto col = tbl->column(0);
-        type = col->type();
-        for (const auto& a : col->chunks()) chunks.push_back(a);
-    }
-    if (!type) return nullptr;
-    return std::make_shared<arrow::ChunkedArray>(std::move(chunks), type);
-}
-
 // Pure computation: order_ = filter (kept rows, source order) then sort within
 // them. Polls `cancel` between the (coarse) phases; returns {} if aborted.
 std::vector<int64_t> ArrowTableModel::computeOrderVec(
@@ -316,40 +311,16 @@ std::vector<int64_t> ArrowTableModel::computeOrderVec(
     if (aborted()) return {};
 
     if (sortCol >= 0 && sortCol < (int)displayCols_.size()) {
-        auto ca = readFullColumn(displayCols_[sortCol]);
-        if (aborted()) return {};
-        if (ca && ca->length() > 0) {
-            // Flatten the (possibly multi-chunk) column to one array so
-            // stable_sort_order can index it. stable_sort_order is the reader
-            // core's hand-rolled sort — the same one --sort uses — because
-            // arrow::compute's sort_indices kernel is GC'd from the static build
-            // and is not reliably registered in every Arrow linkage (using it
-            // here made the click-to-sort a silent no-op: the header toggled but
-            // the rows never moved).
-            std::shared_ptr<arrow::Array> flat;
-            if (ca->num_chunks() == 1) {
-                flat = ca->chunk(0);
-            } else {
-                auto cc = arrow::Concatenate(ca->chunks());
-                if (cc.ok()) flat = *cc;
-            }
-            if (flat) {
-                std::vector<int64_t> idx =
-                    stable_sort_order(*flat, order == Qt::DescendingOrder);
-                if (aborted()) return {};
-                if (hasFilter) {
-                    std::unordered_set<int64_t> keep(base.begin(), base.end());
-                    std::vector<int64_t> out;
-                    out.reserve(keep.size());
-                    for (size_t i = 0; i < idx.size(); ++i) {
-                        if ((i & 0xffff) == 0 && aborted()) return {};
-                        if (keep.count(idx[i])) out.push_back(idx[i]);
-                    }
-                    return out;
-                }
-                return idx;
-            }
-        }
+        // The reader core's hand-rolled sort — the same one --sort uses —
+        // because arrow::compute's sort_indices kernel is GC'd from the static
+        // build and is not reliably registered in every Arrow linkage (using it
+        // here made the click-to-sort a silent no-op). It reads only the sort
+        // column, and pins a stream's batches so every row stays readable.
+        std::vector<int64_t> out;
+        if (!sort_rows_by_column(*src_, displayCols_[sortCol], order == Qt::DescendingOrder,
+                                 hasFilter ? &base : nullptr, cancel, &out))
+            return {};
+        return out;
     }
     // No sort (or sort failed): filtered rows in source order, else identity.
     return hasFilter ? base : std::vector<int64_t>{};
@@ -365,7 +336,7 @@ void ArrowTableModel::sortByDisplayColumn(int displayCol, Qt::SortOrder order) {
     if (displayCol < 0 || displayCol >= (int)displayCols_.size()) sortCol_ = -1;
     else { sortCol_ = displayCol; sortOrder_ = order; }
     rebuildOrder();
-    cache_.clear(); lru_.clear();
+    clearChunkCache();
     invalidateFind();
     endResetModel();
 }
@@ -375,7 +346,7 @@ void ArrowTableModel::setFilter(const FilterExpr& expr) {
     filter_ = expr;
     hasFilter_ = true;
     rebuildOrder();
-    cache_.clear(); lru_.clear();
+    clearChunkCache();
     invalidateFind();
     endResetModel();
 }
@@ -385,7 +356,7 @@ void ArrowTableModel::clearFilter() {
     hasFilter_ = false;
     filter_ = FilterExpr{};
     rebuildOrder();
-    cache_.clear(); lru_.clear();
+    clearChunkCache();
     invalidateFind();
     endResetModel();
 }
@@ -446,7 +417,7 @@ void ArrowTableModel::onRecomputeDone() {
     beginResetModel();
     order_ = watcher_->result();
     identity_ = !pendingHasFilter_ && order_.empty();
-    cache_.clear(); lru_.clear();
+    clearChunkCache();
     invalidateFind();                        // match positions are view-relative
     computing_ = false;
     pendingJob_ = Job::None;
@@ -544,6 +515,7 @@ ArrowTableModel::computeFindPos(QRegularExpression re,
             inv.emplace(order_[v], v);
     }
 
+    src_->set_retain_all(true);   // a stream's batches: keep every one read
     drainStreaming();
     const int nch = src_->num_chunks();
     for (int c = 0; c < nch; ++c) {
@@ -618,7 +590,7 @@ bool ArrowTableModel::stepSlice(int delta) {
     if (computing_) return false;   // don't rebuild the source mid-recompute
     if (!src_->change_slice(delta, /*absolute=*/false, 0)) return false;
     beginResetModel();
-    cache_.clear(); lru_.clear(); chunkFirstRow_.clear();   // source rebuilt
+    clearChunkCache(); chunkFirstRow_.clear();   // source rebuilt
     order_.clear(); identity_ = true; sortCol_ = -1;
     hasFilter_ = false; filter_ = FilterExpr{};
     invalidateFind();

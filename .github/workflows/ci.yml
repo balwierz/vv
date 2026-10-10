@@ -306,6 +306,16 @@ jobs:
           # Search highlights the matching cell and not the others.
           VVG_SELFTEST=1 VVG_FIND='chr2' ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -q "^find 'chr2' -> row 12 col 0 = chr2 highlight=1 first=0$"
+          # Sort and find see every row of a stream read in more batches than
+          # the retention window keeps (a FASTQ record per batch, window 1), and
+          # a sort within a filter keeps exactly the filtered rows.
+          awk 'BEGIN { for (i = 0; i < 2000; i++) printf "@r%d\nACGT\n+\nIIII\n", i }' > "$RUNNER_TEMP/long.fq"
+          out=$(VV_FASTX_BATCH_BYTES=50 VV_STREAM_BATCH_CAP=1 VVG_SELFTEST=1 VVG_FIND='^r5$' ./build-gui/gui/vvg "$RUNNER_TEMP/long.fq")
+          echo "$out" | grep -q '^sorted_row0=r0 |'
+          echo "$out" | grep -q '^sorted_row0_desc=r999 |'
+          echo "$out" | grep -qF "find '^r5$' -> row 5 col 0 = r5 "
+          VVG_SELFTEST=1 VVG_FILTER='Score > 0.3' ./build-gui/gui/vvg tests/data/tiny.parquet \
+            | grep -qF 'filter_sorted_desc rows=13 row0=chr1 | 10_100 | 10_200 | 0.5 | [promoter]'
           # The detail dock follows the cursor's row and reuses its items;
           # moving along a row leaves it as is.
           VVG_WINTEST=1 VVG_DETAIL='0,0;0,2;3,1' ./build-gui/gui/vvg tests/data/tiny.parquet | tr '\n' ' ' \
@@ -629,6 +639,16 @@ jobs:
           # Search highlights the matching cell and not the others.
           VVG_SELFTEST=1 VVG_FIND='chr2' ./build/gui/vvg tests/data/tiny.parquet \
             | grep -q "^find 'chr2' -> row 12 col 0 = chr2 highlight=1 first=0$"
+          # Sort and find see every row of a stream read in more batches than
+          # the retention window keeps (a FASTQ record per batch, window 1), and
+          # a sort within a filter keeps exactly the filtered rows.
+          awk 'BEGIN { for (i = 0; i < 2000; i++) printf "@r%d\nACGT\n+\nIIII\n", i }' > "$RUNNER_TEMP/long.fq"
+          out=$(VV_FASTX_BATCH_BYTES=50 VV_STREAM_BATCH_CAP=1 VVG_SELFTEST=1 VVG_FIND='^r5$' ./build/gui/vvg "$RUNNER_TEMP/long.fq")
+          echo "$out" | grep -q '^sorted_row0=r0 |'
+          echo "$out" | grep -q '^sorted_row0_desc=r999 |'
+          echo "$out" | grep -qF "find '^r5$' -> row 5 col 0 = r5 "
+          VVG_SELFTEST=1 VVG_FILTER='Score > 0.3' ./build/gui/vvg tests/data/tiny.parquet \
+            | grep -qF 'filter_sorted_desc rows=13 row0=chr1 | 10_100 | 10_200 | 0.5 | [promoter]'
           # The detail dock follows the cursor's row and reuses its items;
           # moving along a row leaves it as is.
           VVG_WINTEST=1 VVG_DETAIL='0,0;0,2;3,1' ./build/gui/vvg tests/data/tiny.parquet | tr '\n' ' ' \

@@ -59,7 +59,7 @@ public:
     void    clearFilter();
     bool    hasFilter() const { return hasFilter_; }
 
-    // Async variants: filter_rows / readFullColumn / sort_indices run on a
+    // Async variants: filter_rows / sort_rows_by_column run on a
     // worker thread while the model is "blanked" (rowCount()==0, data()=={})
     // so the UI thread never touches the source concurrently; the result is
     // installed on completion. Emit recomputeStarted/Finished/Canceled for a
@@ -137,7 +137,6 @@ private:
     QString   rawCellText(int viewRow, int dispCol) const;
     QVariant  cellNumber(int viewRow, int dispCol) const;
     void      drainStreaming() const;
-    std::shared_ptr<arrow::ChunkedArray> readFullColumn(int srcCol) const;
     void      reseedRowCount();
     void      rebuildOrder();             // sync: order_ = computeOrderVec(...)
     // Pure computation of the display→source permutation from a filter + sort.
@@ -166,6 +165,12 @@ private:
     mutable std::map<int, LoadedChunk> cache_;
     mutable std::list<int>             lru_;
     static constexpr int               kMaxCache = 8;
+    // The chunk of the last chunkForRow and the end of its rows; reset with
+    // the cache (clearChunkCache), and set to the entry chunkForRow returns,
+    // which the eviction there never removes.
+    mutable const LoadedChunk*         lastChunk_ = nullptr;
+    mutable int64_t                    lastChunkEnd_ = 0;
+    void clearChunkCache() const;
     // chunkFirstRow_[c] == chunk_meta(c).first_row, ascending. Indexes source
     // rows → chunks; invariant under sort/filter (those only permute order_),
     // so it is cleared only when the source rebuilds (stepSlice / re-open).

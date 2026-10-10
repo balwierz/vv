@@ -36,7 +36,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   without re-reading its head in 10-row batches on every key: 2,000 PgDn
   into a 1 M-row row group took 168 s, now 0.8 s.
 
+- vvg opens wide tabs faster: column widths are sized from about 40,000
+  sampled cells (at most 2,000 rows) instead of 2,000 rows of every column,
+  and painting a cell no longer asks the source (or takes the HDF5 lock) when
+  the row is in the chunk of the cell before. Opening an AnnData file:
+  0.52 s → 0.21 s (norman19, 44 obs columns).
+
 ### Fixed
+- vvg sorted a stream longer than its retained batches (the last 64, e.g. a
+  FASTQ of long reads) wrongly — rows came out blank and out of order — and
+  find missed matches in batches already freed. Sorting now reads only the
+  sort column with the stream's batches kept, and find keeps them too.
 - The interactive viewer drew blank rows in a sorted or filtered view whose
   screen showed rows of more than four chunks (row groups, batches); every
   chunk the screen draws from is now loaded and kept for the frame.

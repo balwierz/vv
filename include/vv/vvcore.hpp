@@ -191,6 +191,18 @@ bool array_value_as_double(const arrow::Array& a, int64_t r, double* out);
 // --sort and the GUI's click-to-sort.
 std::vector<int64_t> stable_sort_order(const arrow::Array& key, bool descending);
 
+// The source rows of `src` in the order of column `col` (stable_sort_order's
+// order), reading only that column, chunk by chunk. A forward-only source is
+// read to its end with retention pinned (set_retain_all), since a sorted view
+// later reads rows of every chunk; rows of chunks it cannot read (freed before
+// the call) are left out — src.evicted_any() then says so. `subset`
+// (ascending source rows, e.g. filter_rows' result) limits the result to
+// those rows. Returns false when *cancel was set.
+class TabularSource;
+bool sort_rows_by_column(TabularSource& src, int col, bool descending,
+                         const std::vector<int64_t>* subset,
+                         const std::atomic<bool>* cancel, std::vector<int64_t>* out);
+
 // ── Filter engine ────────────────────────────────────────────────────────────
 // The same DSL behind --filter and the TUI's `&` live filter. Parse once
 // against the source schema, then evaluate per row. Reused verbatim by the
