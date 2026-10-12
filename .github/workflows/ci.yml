@@ -398,6 +398,8 @@ jobs:
                 --select Score,Chr tests/data/tiny.parquet)
           grep -q "^cmd=vv --filter 'Score > 0.5' --sort Score:desc --select Score,Chr " <<<"$out"
           VVG_WINTEST=1 VVG_COPYCMD=1 ./build-gui/gui/vvg --tab obs tests/data/tiny.h5ad | grep -q '^cmd=vv --tab obs '
+          # A multi-tab file opens on its first tab (the AnnData summary).
+          VVG_WINTEST=1 VVG_COPYCMD=1 ./build-gui/gui/vvg tests/data/tiny.h5ad | grep -qx 'cmd=vv /[^ ]*/tiny.h5ad'
           if ./build-gui/gui/vvg --no-such-option 2>/dev/null; then exit 1; fi
           # --samples / --matrix (also the toolbar's samples / matrix combos):
           # the layouts reopen the file and are carried into the copied command.

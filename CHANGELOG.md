@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- vvg opens a file with several tabs on its first tab, as `vv` does: the
+  `summary` of an AnnData / MuData file, the first sheet of a workbook. It
+  showed the last tab (`uns`, the last sheet).
+
 ## [1.30.0] - 2026-10-10
 
 ### Changed

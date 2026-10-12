@@ -615,7 +615,9 @@ private:
         views_.push_back(view);
         models_.push_back(model);
         int idx = tabs_->addTab(view, QString::fromStdString(src_label(model)));
-        tabs_->setCurrentIndex(idx);
+        // A file opens on its first tab (an AnnData summary, a workbook's
+        // first sheet), as in vv; sibling tabs open behind it.
+        if (primary) tabs_->setCurrentIndex(idx);
     }
 
     void closeTab(int i) {
