@@ -217,23 +217,39 @@ public:
     void openPaths(const QStringList& paths_in, bool quiet = false) {
         if (paths_in.isEmpty()) return;
         lastDir_ = QFileInfo(paths_in.first()).absolutePath();
+        // Show the first file's first tab once all are open (the first tab
+        // added when that file failed to open).
+        const int firstNew = tabs_->count();
+        int firstFileTab = -1;
         // JSON documents open as a tree (as in vv on a terminal); JSON Lines,
         // and any file when vv's table flags were given, as a table.
         QStringList paths;
         for (const QString& p : paths_in) {
             if (!jsonAsTable_ && jsonDocumentPath(p)) {
                 const QString e = openJsonTreeTab(p);
-                if (e.isEmpty()) { addRecent(p); openedPaths_ << p; setWindowTitle(p + QStringLiteral(" — vv")); continue; }
+                if (e.isEmpty()) {
+                    if (p == paths_in.first()) firstFileTab = tabs_->count() - 1;
+                    addRecent(p); openedPaths_ << p; setWindowTitle(p + QStringLiteral(" — vv"));
+                    continue;
+                }
                 if (headless_ || quiet) std::fprintf(stderr, "vvg: %s\n", e.toLocal8Bit().constData());
                 else QMessageBox::warning(this, tr("vvg — open"), e);
                 continue;
             }
             paths << p;
         }
-        if (paths.isEmpty()) { refreshStatus(); return; }
+        auto showFirst = [&] {
+            if (firstFileTab < 0 && tabs_->count() > firstNew) firstFileTab = firstNew;
+            if (firstFileTab >= 0) tabs_->setCurrentIndex(firstFileTab);
+        };
+        if (paths.isEmpty()) { showFirst(); refreshStatus(); return; }
         LoadResult r = loadWithSession(paths);
-        for (size_t i = 0; i < r.sources.size(); ++i)
+        for (size_t i = 0; i < r.sources.size(); ++i) {
+            if (firstFileTab < 0 && r.primary[i] && r.origins[i] == paths_in.first())
+                firstFileTab = tabs_->count();
             addSourceTab(std::move(r.sources[i]), r.origins[i], r.primary[i], r.expands[i]);
+        }
+        showFirst();
         for (const QString& p : r.opened) { addRecent(p); openedPaths_ << p; }
         reportLoadErrors(r, quiet, tr("vvg — open"));
         if (!r.opened.isEmpty())
@@ -973,6 +989,7 @@ private:
         while (tabs_->count() > 0) closeTab(0);
         for (size_t i = 0; i < r.sources.size(); ++i)
             addSourceTab(std::move(r.sources[i]), r.origins[i], r.primary[i], r.expands[i]);
+        if (tabs_->count() > 0) tabs_->setCurrentIndex(0);
         reportLoadErrors(r, /*quiet=*/false, tr("vvg — region"));
         refreshStatus();
     }

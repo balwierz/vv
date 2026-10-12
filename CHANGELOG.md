@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - vvg opens a file with several tabs on its first tab, as `vv` does: the
   `summary` of an AnnData / MuData file, the first sheet of a workbook. It
   showed the last tab (`uns`, the last sheet).
+- vvg opened with several files shows the first file's first tab, not the
+  last file's. Re-running a region query returns to the first tab.
 
 ## [1.30.0] - 2026-10-10
 
