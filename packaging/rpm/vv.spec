@@ -22,7 +22,7 @@
 %global xlsxio_version 0.2.36
 
 Name:           vv
-Version:        1.30.0
+Version:        1.31.0
 Release:        1%{?dist}
 Summary:        Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)
 License:        MIT
@@ -130,6 +130,12 @@ XLSXIO_A="$(echo $PWD/xlsxio-local/lib*/libxlsxio_read.a)"
 %{_datadir}/icons/hicolor/scalable/apps/vv.svg
 
 %changelog
+* Wed Oct 14 2026 Piotr Balwierz <nikt@tuta.com> - 1.31.0-1
+- Update to 1.31.0: remote input over https / s3 / gs through htslib,
+  FASTA -r with a .fai index, --cite, a histogram in the TUI stats popup and
+  vvg's Column tab; configure no longer fetches mimalloc; vvg opens on the
+  first tab of the first file.
+
 * Sat Oct 10 2026 Piotr Balwierz <nikt@tuta.com> - 1.30.0-1
 - Update to 1.30.0: faster exports on several threads (byte-identical
   output); --tail / --sample / --distinct hold only their result; filters

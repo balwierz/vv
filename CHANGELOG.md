@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.31.0] - 2026-10-14
+
 ### Added
 - `--cite` prints how to cite vv: a line of text and a BibTeX entry with the
   version, the release year and, once the release has one, the DOI. The

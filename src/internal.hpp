@@ -339,7 +339,7 @@ int effective_threads(const Config& cfg);
 
 int effective_decode_threads(const Config& cfg);
 
-inline constexpr const char* kVersion = "1.30.0";
+inline constexpr const char* kVersion = "1.31.0";
 // `bins` equal-width bins over [lo, hi] (the last one closed) counting
 // `values` (NaN and values outside the range skipped); one bin when lo == hi.
 // Empty when lo or hi is not finite or bins < 1.
