@@ -33,14 +33,36 @@ struct Acc {
     bool        overflow = false;
 };
 
-uint64_t splitmix(uint64_t& x) {
-    uint64_t z = (x += 0x9e3779b97f4a7c15ULL);
-    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
-    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
-    return z ^ (z >> 31);
-}
 
 }  // namespace
+
+std::vector<int64_t> histogram_bins(const std::vector<double>& values, double lo, double hi,
+                                    int bins) {
+    if (bins < 1 || !std::isfinite(lo) || !std::isfinite(hi) || hi < lo) return {};
+    if (hi == lo) bins = 1;
+    std::vector<int64_t> h((size_t)bins, 0);
+    const double width = hi - lo;
+    for (double v : values) {
+        if (!(v >= lo && v <= hi)) continue;          // NaN too
+        int b = width > 0 ? (int)((v - lo) / width * bins) : 0;
+        if (b >= bins) b = bins - 1;
+        ++h[(size_t)b];
+    }
+    return h;
+}
+
+std::string sparkline(const std::vector<int64_t>& bins) {
+    int64_t top = 0;
+    for (int64_t c : bins) top = std::max(top, c);
+    std::string out;
+    for (int64_t c : bins) {
+        if (c <= 0 || top <= 0) { out += ' '; continue; }
+        const int level = std::clamp((int)std::ceil(8.0 * (double)c / (double)top), 1, 8);
+        out += "\xe2\x96";
+        out += (char)(0x80 + level);
+    }
+    return out;
+}
 
 std::string summarize_columns(TabularSource& src, const SummaryOptions& opt,
                               std::vector<ColumnSummary>* out) {
@@ -71,7 +93,7 @@ std::string summarize_columns(TabularSource& src, const SummaryOptions& opt,
     // Values kept for the percentiles: 16 Mi doubles (128 MiB) shared by the
     // numeric columns, at least 1024 each so a wide matrix still gets an
     // estimate.
-    const bool want_pct = !opt.percentiles.empty();
+    const bool want_pct = !opt.percentiles.empty() || opt.hist_bins > 0;   // the sample
     int64_t sample_cap = std::max<int64_t>(1024, (int64_t{1} << 24) /
                                                  std::max<int64_t>(1, n_numeric));
     // Test hook: a small cap exercises the sampled path on a small file.
@@ -132,7 +154,7 @@ std::string summarize_columns(TabularSource& src, const SummaryOptions& opt,
                                 if ((int64_t)a.sample.size() < sample_cap) {
                                     a.sample.push_back(d);
                                 } else {
-                                    uint64_t j = splitmix(a.rng) % (uint64_t)(a.sample_seen + 1);
+                                    uint64_t j = splitmix64(a.rng) % (uint64_t)(a.sample_seen + 1);
                                     if (j < (uint64_t)sample_cap) a.sample[j] = d;
                                 }
                                 ++a.sample_seen;
@@ -203,6 +225,7 @@ std::string summarize_columns(TabularSource& src, const SummaryOptions& opt,
         if (!a.sample.empty()) {
             auto& v = a.sample;
             std::sort(v.begin(), v.end());
+            if (opt.hist_bins > 0) cs.hist = histogram_bins(v, cs.min, cs.max, opt.hist_bins);
             for (double p : opt.percentiles) {
                 const double h = (double)(v.size() - 1) * p / 100.0;
                 const size_t lo = (size_t)std::floor(h);

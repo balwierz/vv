@@ -1,6 +1,9 @@
 #include "columnpanel.h"
 
 #include <QApplication>
+#include <QHelpEvent>
+#include <QPainter>
+#include <QToolTip>
 #include <QClipboard>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -13,6 +16,7 @@
 #include <QVBoxLayout>
 
 #include <cmath>
+#include <functional>
 
 namespace {
 
@@ -62,6 +66,86 @@ QString tableTsv(const QTableWidget* t, bool all) {
 
 }  // namespace
 
+// A numeric column's histogram (ColumnSummary::hist): one bar per
+// equal-width bin over [min, max], scaled to the fullest bin, with the range
+// written under the bars; hovering a bar names its interval and count.
+class HistogramBar : public QWidget {
+public:
+    explicit HistogramBar(QWidget* parent) : QWidget(parent) {
+        setFixedHeight(fontMetrics().height() + 56);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    }
+    void set(const ColumnSummary& s, const std::shared_ptr<arrow::DataType>& type, int digits) {
+        bins_ = s.hist;
+        lo_ = s.min;
+        hi_ = s.max;
+        sampled_ = s.percentiles_sampled;
+        label_ = [temporal = s.temporal, type, digits](double v) {
+            return temporal ? QString::fromStdString(format_temporal_value(v, type)) : num(v, digits);
+        };
+        update();
+    }
+    bool empty() const { return bins_.empty(); }
+    QString describe() const {
+        int64_t top = 0;
+        for (int64_t c : bins_) top = std::max(top, c);
+        return QStringLiteral("%1:%2").arg(bins_.size()).arg(top);
+    }
+
+protected:
+    QRect plot() const { return rect().adjusted(1, 4, -1, -(fontMetrics().height() + 4)); }
+    void paintEvent(QPaintEvent*) override {
+        if (bins_.empty()) return;
+        QPainter p(this);
+        const QRect r = plot();
+        int64_t top = 0;
+        for (int64_t c : bins_) top = std::max(top, c);
+        const double w = (double)r.width() / (double)bins_.size();
+        p.setPen(Qt::NoPen);
+        p.setBrush(palette().color(QPalette::Highlight));
+        for (size_t i = 0; i < bins_.size(); ++i) {
+            if (bins_[i] <= 0 || top <= 0) continue;
+            const int h = std::max(1, (int)std::lround((double)r.height() * (double)bins_[i] / (double)top));
+            const int x0 = r.left() + (int)std::lround(w * (double)i);
+            const int x1 = r.left() + (int)std::lround(w * (double)(i + 1));
+            p.drawRect(x0, r.bottom() - h + 1, std::max(1, x1 - x0 - 1), h);
+        }
+        p.setPen(palette().color(QPalette::Mid));
+        p.drawLine(r.left(), r.bottom() + 1, r.right(), r.bottom() + 1);
+        p.setPen(palette().color(QPalette::WindowText));
+        const QRect t = rect().adjusted(1, r.bottom() + 3 - rect().top(), -1, 0);
+        p.drawText(t, Qt::AlignLeft | Qt::AlignTop, label_(lo_));
+        p.drawText(t, Qt::AlignRight | Qt::AlignTop, label_(hi_));
+        if (sampled_) p.drawText(t, Qt::AlignHCenter | Qt::AlignTop, tr("(sample)"));
+    }
+    bool event(QEvent* e) override {
+        if (e->type() == QEvent::ToolTip && !bins_.empty()) {
+            auto* he = static_cast<QHelpEvent*>(e);
+            const QRect r = plot();
+            const int i = (int)((double)(he->pos().x() - r.left()) * (double)bins_.size() / (double)r.width());
+            if (i >= 0 && i < (int)bins_.size()) {
+                const double step = (hi_ - lo_) / (double)bins_.size();
+                const bool last = i + 1 == (int)bins_.size();
+                QToolTip::showText(he->globalPos(),
+                    QStringLiteral("%1 \u2013 %2%3: %4").arg(label_(lo_ + step * i), label_(lo_ + step * (i + 1)),
+                                                     last ? QStringLiteral("") : QStringLiteral(" (excl.)"),
+                                                     QString::number(bins_[(size_t)i])),
+                    this);
+            } else {
+                QToolTip::hideText();
+            }
+            return true;
+        }
+        return QWidget::event(e);
+    }
+
+private:
+    std::vector<int64_t> bins_;
+    double lo_ = 0, hi_ = 0;
+    bool sampled_ = false;
+    std::function<QString(double)> label_ = [](double v) { return num(v, 6); };
+};
+
 ColumnPanel::ColumnPanel(QWidget* parent) : QWidget(parent) {
     auto* lay = new QVBoxLayout(this);
     title_ = new QLabel(this);
@@ -81,6 +165,8 @@ ColumnPanel::ColumnPanel(QWidget* parent) : QWidget(parent) {
     scope_->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
     stats_ = makeTable(this, {tr("Statistic"), tr("Value")});
+    hist_ = new HistogramBar(this);
+    hist_->setToolTip(tr("Distribution over min .. max"));
     topHead_ = new QLabel(this);
     topHead_->setWordWrap(true);
     top_ = makeTable(this, {tr("Value"), tr("Count"), tr("%")});
@@ -119,6 +205,7 @@ ColumnPanel::ColumnPanel(QWidget* parent) : QWidget(parent) {
     lay->addWidget(where_);
     lay->addWidget(scope_);
     lay->addWidget(stats_);
+    lay->addWidget(hist_);
     lay->addWidget(topHead_);
     lay->addWidget(top_, 1);
     lay->addWidget(busy_);
@@ -131,6 +218,7 @@ ColumnPanel::ColumnPanel(QWidget* parent) : QWidget(parent) {
 
 void ColumnPanel::showTables(bool on) {
     stats_->setVisible(on);
+    hist_->setVisible(on && has_ && !hist_->empty());
     topHead_->setVisible(on);
     const bool top = on && top_->rowCount() > 0;
     top_->setVisible(top);
@@ -265,6 +353,7 @@ void ColumnPanel::showSummary(const ColumnSummary& s, int digits,
     busy_->setVisible(false);
     note_->setVisible(false);
     compute_->setVisible(false);
+    hist_->set(s, type, fd);
     showTables(true);
 }
 
@@ -316,6 +405,7 @@ QString ColumnPanel::describeForTest() const {
     for (int r = 0; r < std::min(3, top_->rowCount()); ++r)
         top << top_->item(r, 0)->text() + QLatin1Char(':') + top_->item(r, 1)->text();
     return parts.join(QLatin1Char(' ')) + QStringLiteral(" top=") + top.join(QLatin1Char(',')) +
+           (hist_->empty() ? QString() : QStringLiteral(" hist=") + hist_->describe()) +
            QStringLiteral(" scope=") + scope_->text();
 }
 

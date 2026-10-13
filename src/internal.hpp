@@ -340,6 +340,22 @@ int effective_threads(const Config& cfg);
 int effective_decode_threads(const Config& cfg);
 
 inline constexpr const char* kVersion = "1.30.0";
+// `bins` equal-width bins over [lo, hi] (the last one closed) counting
+// `values` (NaN and values outside the range skipped); one bin when lo == hi.
+// Empty when lo or hi is not finite or bins < 1.
+std::vector<int64_t> histogram_bins(const std::vector<double>& values, double lo, double hi,
+                                    int bins);
+// SplitMix64: the reservoir samplers' random numbers (fixed seeds, so
+// summaries are reproducible).
+inline uint64_t splitmix64(uint64_t& x) {
+    uint64_t z = (x += 0x9e3779b97f4a7c15ULL);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    return z ^ (z >> 31);
+}
+// One row of eight-level block glyphs (U+2581..U+2588), each bin scaled to
+// the largest; an empty bin is a space.
+std::string sparkline(const std::vector<int64_t>& bins);
 // --cite: the year of this release and the DOI to cite (empty until one is
 // minted). Both must match CITATION.cff (the year of `date-released`, and
 // `doi`, absent while kDoi is empty); the suite checks it.

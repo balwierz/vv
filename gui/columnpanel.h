@@ -9,6 +9,7 @@
 
 class QLabel;
 class QVBoxLayout;
+class HistogramBar;
 class QProgressBar;
 class QPushButton;
 class QTableWidget;
@@ -62,6 +63,7 @@ private:
     QLabel*       scope_   = nullptr;
     QLabel*       where_   = nullptr;
     QTableWidget* stats_   = nullptr;
+    HistogramBar* hist_    = nullptr;  // a numeric column's distribution
     QLabel*       topHead_ = nullptr;
     QTableWidget* top_     = nullptr;
     QWidget*      busy_    = nullptr;

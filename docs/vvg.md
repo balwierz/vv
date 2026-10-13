@@ -64,7 +64,9 @@ Command* goes the other way.
   *→ show in table* when the column is scrolled out of view, to bring it
   back into view. Its count, nulls,
   sum, mean, standard deviation, min, 25% / median / 75%, max and distinct
-  count, and its values with their counts and shares (the 50 most frequent;
+  count; for a numeric column a histogram of 32 equal-width bins from min
+  to max (hover a bar for its interval and count); and its values with
+  their counts and shares (the 50 most frequent;
   up to 10,000 distinct values are counted). Over the rows the filter keeps,
   and over the whole tab even where the table shows a preview: an AnnData
   `obs` of 300,000 cells is summarised in full, a matrix tab is labelled as

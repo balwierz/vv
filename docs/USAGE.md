@@ -205,7 +205,7 @@ $ vv tests/data/tiny.lociss        # default when stdout is a terminal
 | `n` / `N`      | next / previous match (direction-aware)                 |
 | `,` / `.`      | narrow / widen the column under the cursor              |
 | `z`            | toggle frozen first column                              |
-| `S`            | per-column stats popup (count, nulls, min, max, mean, distinct) |
+| `S`            | per-column stats popup (count, nulls, min, max, mean, histogram / distinct) |
 | `F`            | value counts of the cursor's column over the filtered rows; Enter filters to the value |
 | editing in `/ ? & :` | ←/→ (Ctrl-B/F), Home/End (Ctrl-A/E), Backspace, Delete (Ctrl-D), Ctrl-U / Ctrl-K (to start / end), Ctrl-W (word); UTF-8 text |
 | `s`            | sort by the cursor's column (toggle asc / desc)         |
@@ -226,7 +226,10 @@ All visible matches are highlighted; the n/N target gets reverse video.
 
 **`S` (stats popup).** Computes count, null count, min, max, mean (numeric
 columns), and distinct-value count (strings, capped at 16) for the active
-column. Triggers a full-file scan with a progress line in the status bar.
+column. A numeric column also gets a histogram row: 32 equal-width bins
+from min to max, one block glyph (`▁`…`█`) per bin scaled to the fullest,
+with the range under it (counted over a uniform sample of 1 Mi values on
+a longer column). Triggers a full-file scan with a progress line in the status bar.
 Any key dismisses the overlay. The active column is the one under the cell
 cursor — the same column that `,` and `.` resize.
 

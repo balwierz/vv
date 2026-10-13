@@ -268,6 +268,11 @@ struct ColumnSummary {
     // Parallel to SummaryOptions::percentiles; empty when no value was kept.
     std::vector<double> percentiles;
     bool        percentiles_sampled = false;   // from a uniform sample, not every value
+    // SummaryOptions::hist_bins equal-width bins over [min, max] (the last bin
+    // closed), counted over the values kept for the percentiles — so from a
+    // sample when percentiles_sampled. Empty when not asked for, when no
+    // finite value was kept, or for a non-numeric column.
+    std::vector<int64_t> hist;
     // Distinct non-null values: tracked for non-numeric columns, and for every
     // column when value_counts is set. -1 = more than distinct_cap (or not
     // tracked).
@@ -281,6 +286,7 @@ struct SummaryOptions {
     const FilterExpr*   filter = nullptr;     // parsed against the source's schema
     int64_t             max_rows = -1;        // -1 = every row
     std::vector<double> percentiles{25, 50, 75};
+    int                 hist_bins = 0;        // > 0: fill ColumnSummary::hist
     size_t              distinct_cap = 16;
     bool                value_counts = false;
     const std::atomic<bool>* cancel    = nullptr;   // polled once per chunk

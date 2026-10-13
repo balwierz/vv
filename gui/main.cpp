@@ -1231,6 +1231,7 @@ private:
             opt.filter       = ftext.empty() ? nullptr : &fx;
             opt.distinct_cap = 10000;
             opt.value_counts = true;
+            opt.hist_bins    = 32;        // the Column tab's histogram
             opt.cancel       = &prog->cancel;
             opt.rows_done    = &prog->rows;
             r.error = summarize_columns(*src, opt, &r.sums);

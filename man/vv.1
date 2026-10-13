@@ -999,7 +999,8 @@ scrolling sideways).
 .TP
 .B S
 Per-column stats popup for the column under the cursor: count,
-null count, min, max, mean (numeric), distinct-value count (strings,
+null count, min, max, mean and a histogram row (numeric: 32 equal-width
+bins from min to max as block glyphs), distinct-value count (strings,
 capped at 16). Triggers a full-file scan with progress shown in the
 status bar. Any key dismisses the popup.
 .TP

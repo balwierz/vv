@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   footer. The static Linux binary has no libcurl and says so. CMake option
   `VV_PREFER_STATIC=OFF` links the system's shared libraries even next to
   `../static-libs` / `../arrow-install`.
+- A histogram of numeric columns: in the TUI's `S` stats popup, a row of 32
+  block glyphs (`▁`…`█`) over min .. max with the range under it; in vvg's
+  Column tab, a bar chart with the interval and count of each bar on hover.
+  Counted over the values kept for the percentiles (a uniform sample on long
+  columns). `--describe` output is unchanged.
 
 ### Changed
 - Building vv no longer needs git or network access: the configure step

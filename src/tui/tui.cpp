@@ -533,6 +533,12 @@ class TableTUI {
         std::string s_min, s_max;
         std::set<std::string> distinct;
         bool        distinct_overflow = false;
+        // Numeric: a uniform sample of the values (all of them up to 1 Mi)
+        // for the histogram row, then the histogram's bins.
+        std::vector<double>  sample;
+        int64_t              seen = 0;
+        uint64_t             rng  = 0x9e3779b97f4a7c15ULL;
+        std::vector<int64_t> hist;
     };
     bool                       stats_open_   = false;
     int                        stats_col_    = -1;   // virtual column index
@@ -1989,6 +1995,16 @@ class TableTUI {
                         if (d < cs.d_min) cs.d_min = d;
                         if (d > cs.d_max) cs.d_max = d;
                         cs.sum += d;
+                        if (!std::isnan(d)) {
+                            constexpr size_t kSampleCap = size_t{1} << 20;
+                            if (cs.sample.size() < kSampleCap) {
+                                cs.sample.push_back(d);
+                            } else {
+                                const uint64_t j = splitmix64(cs.rng) % (uint64_t)(cs.seen + 1);
+                                if (j < kSampleCap) cs.sample[j] = d;
+                            }
+                            ++cs.seen;
+                        }
                     } else {
                         if (cs.count == 1 || raw < cs.s_min) cs.s_min = raw;
                         if (cs.count == 1 || raw > cs.s_max) cs.s_max = raw;
@@ -2003,8 +2019,13 @@ class TableTUI {
                 }
             }
         }
+        if (cs.is_num) {
+            cs.hist = histogram_bins(cs.sample, cs.d_min, cs.d_max, kStatsHistBins);
+            std::vector<double>().swap(cs.sample);
+        }
         stats_data_ = std::move(cs);
     }
+    static constexpr int kStatsHistBins = 32;
 
     // Count the values of virtual column `virt_col` over the rows the live
     // filter keeps. Values are the text a filter literal would need (floats
@@ -2201,6 +2222,18 @@ class TableTUI {
             rows.emplace_back("Min",  fmt_num(cs.d_min));
             rows.emplace_back("Max",  fmt_num(cs.d_max));
             rows.emplace_back("Mean", fmt_num((double)(cs.sum / (long double)cs.count)));
+            // The distribution over [Min, Max], one glyph per equal-width
+            // bin, with the range under it.
+            if (!cs.hist.empty()) {
+                rows.emplace_back("Hist", sparkline(cs.hist));
+                const std::string lo = fmt_num(cs.d_min), hi = fmt_num(cs.d_max);
+                const int w = (int)cs.hist.size();
+                const int gap = w - (int)(lo.size() + hi.size());
+                rows.emplace_back("", gap >= 1 ? lo + std::string((size_t)gap, ' ') + hi
+                                               : lo + " .. " + hi);
+                if (cs.seen > (int64_t)(size_t{1} << 20))
+                    rows.emplace_back("", "(from a sample of " + with_sep(int64_t{1} << 20) + ")");
+            }
         } else {
             rows.emplace_back("Min", cs.s_min);
             rows.emplace_back("Max", cs.s_max);

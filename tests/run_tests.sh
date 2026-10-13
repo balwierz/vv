@@ -5096,6 +5096,17 @@ fi
 # narrows the filter to one value (ANDed into every OR branch). Checks the
 # counts, filtered counts, the AND / OR combination, a float32 value and the
 # refusal on a list column. On the previous build F does nothing.
+# S on a numeric column adds a histogram row (block glyphs over [min, max]);
+# a string column has none.
+if [ -n "$TUI_PTY" ]; then
+    if run_with_timeout 120 python3 "$HERE/tui_stats_hist_check.py" "$VV" "$DATA/tiny.parquet"; then
+        PASS=$((PASS+1)); echo "  ok    tui_stats_histogram"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_stats_histogram"
+    fi
+else
+    echo "  skip  tui_stats_histogram (python3 not found)"
+fi
 if [ -n "$TUI_PTY" ]; then
     if run_with_timeout 120 python3 "$HERE/tui_freq_check.py" "$VV" "$DATA/tiny.parquet"; then
         PASS=$((PASS+1)); echo "  ok    tui_freq_sheet"
