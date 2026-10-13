@@ -107,6 +107,7 @@ _vv() {
     _arguments -s -S \
         '(- *)'{-h,--help}'[Show help]' \
         '(- *)'{-V,--version}'[Print version]' \
+        '(- *)--cite[Print how to cite vv]' \
         '(-i --interactive)'{-i,--interactive}'[Open ncurses row browser]' \
         '--no-interactive[Force plain table output]' \
         '(-t --table)'{-t,--table}'[Force plain table output (alias of --no-interactive)]' \

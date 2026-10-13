@@ -110,7 +110,7 @@ zcat big.tsv.gz | vv -                            # from a pipe
 
 ## Citation, license
 
-Cite via [`CITATION.cff`](CITATION.cff) ("Cite this repository" on GitHub).
+Cite with `vv --cite` (text and BibTeX) or [`CITATION.cff`](CITATION.cff) ("Cite this repository" on GitHub).
 MIT licensed ([LICENSE](LICENSE)); links Apache Arrow (Apache 2.0), htslib,
 ncurses and compression libraries. Bug reports and pull requests
 are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md), the

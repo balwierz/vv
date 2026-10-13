@@ -1560,6 +1560,29 @@ sudo install vv-$ver-linux-x86_64/vv /usr/local/bin/
 * [`CHANGELOG.md`](../CHANGELOG.md) — release notes.
 * [`TODO.md`](../TODO.md) — the planned-feature backlog.
 
+# Citing vv
+
+`vv --cite` prints the citation for the installed version, as a line of
+text and as a BibTeX entry:
+
+```
+$ vv --cite
+Balwierz P. vv: universal genomic file viewer. Version <version>, <year>.
+https://github.com/balwierz/vv
+
+@software{vv,
+  author  = {Balwierz, Piotr},
+  title   = {vv: universal genomic file viewer},
+  version = {<version>},
+  year    = {<year>},
+  url     = {https://github.com/balwierz/vv}
+}
+```
+
+A `DOI:` line and a `doi` field are added once the release has one. The
+same record is in [`CITATION.cff`](../CITATION.cff), which GitHub offers as
+"Cite this repository".
+
 # Reporting bugs
 
 Open an issue at <https://github.com/balwierz/vv/issues>. Include

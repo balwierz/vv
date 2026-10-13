@@ -183,7 +183,7 @@ _vv() {
             ;;
         -*)
             local opts='
-                -h --help -V --version
+                -h --help -V --version --cite
                 -i --interactive --no-interactive --table -t
                 -n -w -c
                 -r --region --window --regions-file --region-cols --slop --coords

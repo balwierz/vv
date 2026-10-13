@@ -5790,6 +5790,18 @@ check_version "citation"    CITATION.cff              "^version: \"$VER\""
 check_version "usage_stamp" docs/USAGE.md             "^date: \"v$VER\""
 check_version "pkgbuild"    packaging/arch/PKGBUILD   "^pkgver=$VER"
 check_version "changelog"   CHANGELOG.md              "^## \[$VER\]"
+
+# --cite: the release year and the DOI the binary prints are the ones in
+# CITATION.cff (no `doi:` there while the binary has none).
+CITE=$("$VV" --cite 2>&1)
+assert_contains "cite_version" "$CITE" "Version $VER,"
+assert_contains "cite_bibtex"  "$CITE" "version = {$VER}"
+assert_contains "cite_url"     "$CITE" "https://github.com/balwierz/vv"
+CFF_YEAR=$(sed -n 's/^date-released: "\([0-9]\{4\}\)-.*/\1/p' CITATION.cff)
+assert_contains "cite_year_matches_citation_cff" "$CITE" "year    = {$CFF_YEAR}"
+CFF_DOI=$(sed -n 's/^doi: "\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' CITATION.cff)
+BIN_DOI=$(printf '%s\n' "$CITE" | sed -n 's/^DOI: //p')
+assert_eq_file_inline "cite_doi_matches_citation_cff" "$CFF_DOI" "$BIN_DOI"
 # The install commands users copy-paste: an un-bumped one silently installs the
 # previous release, or 404s if the old assets were removed.
 check_version "homebrew_url"    packaging/homebrew/vv.rb "tags/v$VER\\.tar\\.gz"

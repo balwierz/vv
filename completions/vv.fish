@@ -69,6 +69,7 @@ end
 # ── Flags ────────────────────────────────────────────────────────────────────
 complete -c vv -c vh -s h -l help          -d 'Show help'
 complete -c vv -c vh -s V -l version       -d 'Print version'
+complete -c vv -c vh -l cite               -d 'Print how to cite vv'
 complete -c vv -c vh -s i -l interactive   -d 'Open ncurses row browser'
 complete -c vv -c vh -l no-interactive     -d 'Force plain table output'
 complete -c vv -c vh -s t -l table         -d 'Force plain table output (alias of --no-interactive)'

@@ -334,6 +334,11 @@ int effective_threads(const Config& cfg);
 int effective_decode_threads(const Config& cfg);
 
 inline constexpr const char* kVersion = "1.30.0";
+// --cite: the year of this release and the DOI to cite (empty until one is
+// minted). Both must match CITATION.cff (the year of `date-released`, and
+// `doi`, absent while kDoi is empty); the suite checks it.
+inline constexpr const char* kReleaseYear = "2026";
+inline constexpr const char* kDoi = "";
 
 void json_emit_string(const std::string& v);
 

@@ -516,8 +516,26 @@ static void print_usage(const char* prog) {
         "                       CSV decode (0 = follow --threads; useful when\n"
         "                       cold reads bottleneck on column decompression)\n"
         "\n  -h / --help         show this help\n"
-        "  -V / --version      print version and exit\n",
+        "  -V / --version      print version and exit\n"
+        "  --cite              print how to cite vv (text and BibTeX) and exit\n",
         prog);
+}
+
+// --cite: the same record as CITATION.cff, as a line of text and as BibTeX.
+static void print_citation() {
+    const bool doi = *kDoi != '\0';
+    std::printf("Balwierz P. vv: universal genomic file viewer. Version %s, %s.\n"
+                "https://github.com/balwierz/vv\n", kVersion, kReleaseYear);
+    if (doi) std::printf("DOI: %s\n", kDoi);
+    std::printf("\n@software{vv,\n"
+                "  author  = {Balwierz, Piotr},\n"
+                "  title   = {vv: universal genomic file viewer},\n"
+                "  version = {%s},\n"
+                "  year    = {%s},\n"
+                "  url     = {https://github.com/balwierz/vv}%s\n",
+                kVersion, kReleaseYear, doi ? "," : "");
+    if (doi) std::printf("  doi     = {%s}\n", kDoi);
+    std::printf("}\n");
 }
 
 // Case-insensitive suffix test; defined with the other path helpers below.
@@ -606,6 +624,8 @@ Config parse_args(int argc, char** argv) {
             print_usage(argv[0]); std::exit(0);
         } else if (!std::strcmp(argv[i], "-V") || !std::strcmp(argv[i], "--version")) {
             std::printf("vv %s\n", kVersion); std::exit(0);
+        } else if (!std::strcmp(argv[i], "--cite")) {
+            print_citation(); std::exit(0);
         } else if (!std::strcmp(argv[i], "--no-index")) {
             cfg.no_index = true;
         } else if (!std::strcmp(argv[i], "--no-header")) {

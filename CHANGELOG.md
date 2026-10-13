@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `--cite` prints how to cite vv: a line of text and a BibTeX entry with the
+  version, the release year and, once the release has one, the DOI. The
+  year and DOI are checked against `CITATION.cff` by the test suite.
+
 ### Changed
 - Building vv no longer needs git or network access: the configure step
   fetched mimalloc, which nothing in vv calls (no `mi_*` symbol reaches the
