@@ -352,8 +352,7 @@ user-facing summary).
 ### Done
 - Sanitizer CI job (ASan + UBSan) — the 24.04 job rebuilds vv with
   `-fsanitize=address,undefined` and reruns the smoke suite
-  (`ARROW_DEFAULT_MEMORY_POOL=system` so Arrow buffers get redzones; mimalloc is
-  `MI_OVERRIDE=OFF` so it doesn't hide them). Verified it catches a reintroduced
+  (`ARROW_DEFAULT_MEMORY_POOL=system` so Arrow buffers get redzones). Verified it catches a reintroduced
   LociSSD v4 DICT overflow; it also surfaced + fixed a real bigWig misaligned
   read (aarch64 UB).
 

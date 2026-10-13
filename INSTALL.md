@@ -87,7 +87,7 @@ use the Fedora RPM (below), the Arch split package, or a source build with
 Both RPMs install with their dependencies straight from the Fedora repos —
 Fedora carries Arrow, Qt6, KF6, htslib and HDF5, so unlike the Ubuntu `.deb`
 no private shared libraries ride along. (xlsxio, which no distro packages,
-is built in statically — joining mimalloc, libBigWig and md4c, the statics
+is built in statically — joining libBigWig and md4c, the statics
 every vv build links.) Like the Debian 13 `.deb`, the `vv-gui` RPM carries
 the Dolphin thumbnailer / KFileMetaData plugins. The `fc<NN>` in the
 filename is the Fedora release the RPMs were built for; on another Fedora,
@@ -183,7 +183,7 @@ exists on those channels yet** — they are prepared, not published. Use the
 Every item below is a **hard** dependency — CMake aborts at configure time if
 any is missing. There is no partial build.
 
-- CMake ≥ 3.16, and `git` + network access (mimalloc is fetched during configure)
+- CMake ≥ 3.16
 - GCC ≥ 10 or Clang ≥ 12 (C++20), and `pkg-config` (htslib is found only via it)
 - Apache Arrow + Parquet development libraries (Arrow ≥ 20 recommended)
 - htslib, ncurses, zlib, SQLite3
@@ -421,7 +421,7 @@ fetched during the build, so dependency versions are fully pinned.
 
 Bundled and linked statically: zlib, zstd, lz4, bzip2, xz, libdeflate,
 brotli, snappy, utf8proc, abseil, re2, thrift, ncurses, htslib 1.21, SQLite,
-expat, minizip-ng, xlsxio, HDF5 1.14.4, mimalloc, the Boost / RapidJSON /
+expat, minizip-ng, xlsxio, HDF5 1.14.4, the Boost / RapidJSON /
 xsimd headers, and Arrow 23.0.1. Parquet compression codecs (snappy, zstd,
 lz4, brotli, bz2) are enabled; ORC is **not**, so the static binary reports
 "compiled without ORC support" on `.orc` files. First build ~60–90 min cold;
@@ -445,8 +445,8 @@ cp completions/_vv ~/.zsh/completions/   # ensure this dir is in fpath
 
 ## Notes
 
-- mimalloc (v2.1.9) is fetched automatically from GitHub during the CMake
-  configure step. An internet connection is required on first source build.
+- The configure step downloads nothing: libBigWig and md4c are vendored
+  under `vendored/`, everything else comes from the system.
 - Arrow, Parquet, htslib, and ncurses are linked statically when the static
   AlmaLinux 8 build is used; the dynamic build uses whichever versions are
   on the system.

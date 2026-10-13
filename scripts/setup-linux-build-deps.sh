@@ -22,8 +22,7 @@ $SUDO apt-get update
 # first so gnutls-dev (and libhts-dev) install cleanly.
 #
 # git + curl: preinstalled on GitHub runners, absent from bare Debian
-# containers (git is needed by CMake's mimalloc FetchContent and the
-# packaging scripts' version derivation). libncurses-dev, not
+# containers (git is needed by the packaging scripts' version derivation). libncurses-dev, not
 # libncursesw5-dev: the transitional -w5 name was REMOVED in Debian 13,
 # while libncurses-dev exists on both distros (see the 1.17.0 changelog —
 # INSTALL.md tripped over exactly this).

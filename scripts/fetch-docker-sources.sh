@@ -43,7 +43,6 @@ fetch bzip2.tar.gz      https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz
 fetch deflate.tar.gz    https://github.com/ebiggers/libdeflate/archive/refs/tags/v1.22.tar.gz
 fetch htslib.tar.bz2    https://github.com/samtools/htslib/releases/download/1.21/htslib-1.21.tar.bz2
 fetch lz4.tar.gz        https://github.com/lz4/lz4/archive/refs/tags/v1.10.0.tar.gz
-fetch mimalloc.tar.gz   https://github.com/microsoft/mimalloc/archive/refs/tags/v2.1.9.tar.gz
 fetch ncurses.tar.gz    https://ftp.gnu.org/gnu/ncurses/ncurses-6.5.tar.gz
 fetch re2.tar.gz        https://github.com/google/re2/archive/refs/tags/2024-07-02.tar.gz
 fetch snappy.tar.gz     https://github.com/google/snappy/archive/refs/tags/1.2.1.tar.gz

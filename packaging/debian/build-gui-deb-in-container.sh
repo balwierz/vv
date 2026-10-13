@@ -31,9 +31,8 @@ $SUDO apt-get install -y -V \
     libkf6kio-dev libkf6coreaddons-dev libkf6filemetadata-dev \
     || echo "KF6 dev packages unavailable; the .deb ships without the Dolphin/KFileMetaData plugins."
 
-# A bind-mounted checkout is owned by the host user; git (mimalloc
-# FetchContent at configure, and build-gui-deb.sh's version suffix) refuses
-# to read it as root without this.
+# A bind-mounted checkout is owned by the host user; git (build-gui-deb.sh's
+# version suffix) refuses to read it as root without this.
 if [ "$(id -u)" = 0 ]; then
     git config --global --add safe.directory "$REPO"
 fi

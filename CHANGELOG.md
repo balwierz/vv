@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- Building vv no longer needs git or network access: the configure step
+  fetched mimalloc, which nothing in vv calls (no `mi_*` symbol reaches the
+  binary; Arrow brings its own allocator). Its install rules also put
+  mimalloc's headers, static library and CMake files into the install
+  prefix; `cmake --install` now installs only `vv`, `vh`, the man page and
+  the shell completions.
+
 ### Fixed
 - vvg opens a file with several tabs on its first tab, as `vv` does: the
   `summary` of an AnnData / MuData file, the first sheet of a workbook. It

@@ -455,10 +455,6 @@ RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
 # ── vv ────────────────────────────────────────────────────────────
 FROM build-arrow AS build-app
 
-# Provide mimalloc source for FetchContent (no internet in build containers)
-RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
-    tar xf /build/src/mimalloc.tar.gz && mv mimalloc-* /build/mimalloc-src
-
 # AlmaLinux 8 cmake installs to lib64/; symlink everything into lib/ so that
 # CMakeLists.txt's find_library(PATHS .../static-libs/lib NO_DEFAULT_PATH) works.
 RUN for f in /build/static-libs/lib64/*.a; do \
@@ -488,8 +484,7 @@ RUN --mount=type=cache,target=/root/.ccache,id=vv-ccache,sharing=locked \
         -DParquet_DIR=/build/arrow-install/lib64/cmake/Parquet \
         -DCURSES_INCLUDE_PATH=/build/static-libs/include/ncursesw \
         -DCURSES_LIBRARY=/build/static-libs/lib/libncursesw.a \
-        -DCMAKE_LIBRARY_PATH="/opt/rh/gcc-toolset-12/root/usr/lib/gcc/x86_64-redhat-linux/12;/build/static-libs/lib" \
-        -DFETCHCONTENT_SOURCE_DIR_MIMALLOC=/build/mimalloc-src && \
+        -DCMAKE_LIBRARY_PATH="/opt/rh/gcc-toolset-12/root/usr/lib/gcc/x86_64-redhat-linux/12;/build/static-libs/lib" && \
     cmake --build /build/app-bld -j$(nproc) && \
     ccache -s | head -30
 

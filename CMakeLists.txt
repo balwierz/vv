@@ -11,7 +11,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Optional Qt6/KDE graphical frontend. Declared early so the in-tree static
-# deps (mimalloc, bigwig, md4c) below are built position-independent — the KF6
+# deps (bigwig, md4c) below are built position-independent — the KF6
 # plugins are shared objects and every archive they pull in must be PIC.
 # (The full GUI target wiring lives further down, after the vv target.)
 option(VV_BUILD_GUI "Build the Qt6/KDE graphical frontend (vvg) + KF6 plugins" OFF)
@@ -39,20 +39,6 @@ option(VV_WITH_TUI "Build vv's ncurses viewers (needs ncurses >= 6)" ${_vv_tui_d
 # release CI matrix runs natively on each architecture.
 add_compile_options(-O2 -ffunction-sections -fdata-sections)
 
-# ── Build mimalloc as a static lib from source ───────────────────────────────
-include(FetchContent)
-FetchContent_Declare(mimalloc
-    GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
-    GIT_TAG        v2.1.9
-    GIT_SHALLOW    TRUE
-)
-set(MI_BUILD_SHARED      OFF CACHE BOOL "" FORCE)
-set(MI_BUILD_OBJECT      OFF CACHE BOOL "" FORCE)
-set(MI_BUILD_TESTS       OFF CACHE BOOL "" FORCE)
-set(MI_INSTALL_TOPLEVEL  OFF CACHE BOOL "" FORCE)
-# Don't override malloc/free — Arrow uses mi_* prefixed API
-set(MI_OVERRIDE          OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(mimalloc)
 
 # ── Arrow / Parquet ───────────────────────────────────────────────────────────
 # Prefer a locally-built static Arrow at ../arrow-install/ (the developer's
@@ -115,8 +101,9 @@ else()
 endif()
 
 # Arrow Compute kernels — separate static archive when building from
-# arrow-install. Needed for LociSSD region filter (equal / less / greater /
-# filter); without it the runtime aborts with "No function registered".
+# arrow-install. vv calls no compute function itself (the LociSSD and Parquet
+# region filters walk rows); the archive is linked whole so that any compute
+# call Arrow makes internally finds its kernel registered.
 if(_prefer_static AND TARGET ArrowCompute::arrow_compute_static)
   set(ARROW_COMPUTE_TARGET ArrowCompute::arrow_compute_static)
 elseif(TARGET ArrowCompute::arrow_compute_shared)
@@ -132,7 +119,7 @@ get_target_property(PARQUET_INCLUDE_DIRS ${PARQUET_TARGET} INTERFACE_INCLUDE_DIR
 # Arrow's imported targets inject explicit /usr/lib/libXXX.so paths into
 # INTERFACE_LINK_LIBRARIES. Remove the ones we supply as static .a files so
 # the linker doesn't add them to the binary's NEEDED list.
-foreach(_t ${ARROW_TARGET} ${PARQUET_TARGET} Arrow::arrow_bundled_dependencies mimalloc-static)
+foreach(_t ${ARROW_TARGET} ${PARQUET_TARGET} Arrow::arrow_bundled_dependencies)
   if(NOT TARGET ${_t})
     continue()
   endif()
@@ -577,7 +564,6 @@ if(TARGET Arrow::arrow_static AND HTSLIB_STATIC_LIB AND (NCURSES_STATIC_LIB OR N
       ${ARROW_COMPUTE_TARGET}
       $<$<BOOL:${ARROW_COMPUTE_TARGET}>:-Wl,--no-whole-archive>
       ${ARROW_TARGET}
-      mimalloc-static
       ${HTSLIB_STATIC_LIB}
       bigwig
       md4c
@@ -608,7 +594,6 @@ else()
       ${PARQUET_TARGET}
       ${ARROW_COMPUTE_TARGET}
       ${ARROW_TARGET}
-      mimalloc-static
       ${HTSLIB_LINK_LIBRARIES}
       $<$<BOOL:${LIBLZMA_FOUND}>:${LIBLZMA_LIBRARIES}>
       $<$<BOOL:${BZIP2_FOUND}>:${BZIP2_LIBRARIES}>

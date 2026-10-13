@@ -67,8 +67,7 @@ jobs:
       # misaligned load) the binary-format parsers are prone to — e.g. the
       # LociSSD v4 DICT/ARENA decoder OOBs. `ARROW_DEFAULT_MEMORY_POOL=system`
       # routes Arrow buffers through the ASan-instrumented allocator so overflows
-      # inside them are caught (mimalloc is built with MI_OVERRIDE=OFF, so it
-      # doesn't hide redzones). vptr is disabled — it false-positives across the
+      # inside them are caught. vptr is disabled — it false-positives across the
       # Arrow shared-library boundary. LeakSanitizer is off (a short-lived CLI
       # legitimately leaves allocations for the OS to reclaim at exit).
       - name: Sanitizer build (ASan + UBSan)

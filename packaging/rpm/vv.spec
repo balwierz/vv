@@ -11,11 +11,6 @@
 # KF6 plugins are shared objects and libvvcore (with xlsxio inside) links
 # into them.
 #
-# mimalloc is fetched by CMake at configure time (FetchContent) and linked
-# statically — the build needs network access. Fine in the release CI's
-# container; a hermetic build (koji/mock) would have to pre-drop the source
-# and pass -DFETCHCONTENT_SOURCE_DIR_MIMALLOC.
-#
 # The CI build overrides Version with the value in CMakeLists.txt (see
 # packaging/rpm/build-rpm.sh); keep the Version below current anyway for
 # standalone `rpmbuild` users — it is in CONTRIBUTING.md's version-bump table.
@@ -37,7 +32,6 @@ Source1:        https://github.com/brechtsanders/xlsxio/archive/refs/tags/%{xlsx
 
 BuildRequires:  gcc-c++
 BuildRequires:  cmake
-BuildRequires:  git-core
 BuildRequires:  pkgconf-pkg-config
 BuildRequires:  libarrow-devel
 BuildRequires:  parquet-libs-devel
@@ -63,7 +57,6 @@ BuildRequires:  kf6-kio-devel
 BuildRequires:  kf6-kcoreaddons-devel
 BuildRequires:  kf6-kfilemetadata-devel
 
-Provides:       bundled(mimalloc) = 2.1.9
 Provides:       bundled(xlsxio) = %{xlsxio_version}
 
 %description
@@ -75,7 +68,6 @@ chunk-lazy ncurses TUI.
 %package gui
 Summary:        Qt6/KDE desktop viewer for vv + Dolphin integration
 Requires:       %{name}%{?_isa} = %{version}-%{release}
-Provides:       bundled(mimalloc) = 2.1.9
 Provides:       bundled(xlsxio) = %{xlsxio_version}
 
 %description gui
@@ -117,14 +109,6 @@ XLSXIO_A="$(echo $PWD/xlsxio-local/lib*/libxlsxio_read.a)"
 # vh symlink, man page, completions, vvg, the KF6 plugins and the
 # desktop/MIME/AppStream/icon assets.
 %cmake_install
-# mimalloc rides in via FetchContent and brings its own install rules along
-# (static archive, headers, cmake config, .pc). It is linked statically into
-# the vv binaries and nothing should ship its dev files — drop them, or the
-# unpackaged-files check fails the build.
-rm -rf %{buildroot}%{_libdir}/mimalloc-2.1 \
-       %{buildroot}%{_includedir}/mimalloc-2.1 \
-       %{buildroot}%{_libdir}/cmake/mimalloc-2.1
-rm -f  %{buildroot}%{_libdir}/pkgconfig/mimalloc.pc
 
 %files
 %license LICENSE
