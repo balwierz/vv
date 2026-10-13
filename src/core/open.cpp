@@ -997,9 +997,11 @@ std::string open_source_dispatch(const std::string& path, const Config& cfg,
     // A server that does not accept range requests serves a URL front to
     // back only: a reader that seeks fails. Read it from a local copy instead
     // — unless -r needs the file's index, which stays on the server.
+    // (HFileRandomAccess names that case "range requests"; "Illegal seek" is
+    // strerror(ESPIPE) from a reader that reports errno itself.)
     if (!err.empty() && is_remote_url(path) &&
-        (err.find("Illegal seek") != std::string::npos ||
-         err.find("range requests") != std::string::npos)) {
+        (err.find("range requests") != std::string::npos ||
+         err.find("Illegal seek") != std::string::npos)) {
         if (!cfg.region.empty())
             return "the server does not accept range requests, which -r on a "
                    "remote file needs; download the file and its index first";

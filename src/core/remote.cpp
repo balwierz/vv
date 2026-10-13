@@ -208,6 +208,9 @@ private:
         char* p = static_cast<char*>(out);
         while (got < nbytes) {
             const ssize_t r = hread(fp_, p + got, (size_t)(nbytes - got));
+            if (r < 0 && errno == ESPIPE)   // hFILE could not reposition the transfer
+                return arrow::Status::IOError(url_, ": cannot read at byte ", position,
+                                              " (the server does not accept range requests)");
             if (r < 0) return arrow::Status::IOError("reading ", url_, ": ", std::strerror(errno));
             if (r == 0) break;
             got += r;
