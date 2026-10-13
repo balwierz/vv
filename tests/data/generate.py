@@ -407,7 +407,7 @@ GGGCCCAAATTT
 >seq3 mitochondrial
 TTTAAAACCCCGGGGAAAA
 """
-(HERE / "tiny.fa").write_text(fa)
+(HERE / "tiny.fa").write_text(fa, newline="\n")   # LF: tiny.fa.fai's offsets assume it
 with open(HERE / "tiny.fa", "rb") as src, gzip.open(HERE / "tiny.fa.gz", "wb") as dst:
     shutil.copyfileobj(src, dst)
 
@@ -431,13 +431,13 @@ def fai_lines(text):
 
 # -r on FASTA: the .fai next to tiny.fa, and a bgzipped copy with its .gzi
 # (bgzip -i) and the same .fai (offsets are in uncompressed bytes).
-(HERE / "tiny.fa.fai").write_text(fai_lines(fa))
+(HERE / "tiny.fa.fai").write_text(fai_lines(fa), newline="\n")
 if have("bgzip"):
     bgz_fa = HERE / "tiny.faidx.fa.gz"
     with open(HERE / "tiny.fa", "rb") as fin, open(bgz_fa, "wb") as fout:
         subprocess.run(["bgzip", "-c", "-i", "-I", str(bgz_fa) + ".gzi"],
                        stdin=fin, stdout=fout, check=True)
-    (HERE / "tiny.faidx.fa.gz.fai").write_text(fai_lines(fa))
+    (HERE / "tiny.faidx.fa.gz.fai").write_text(fai_lines(fa), newline="\n")
 
 # ── 2bit (UCSC sequence container, hand-rolled) ─────────────────────────────
 # Minimal 32-bit little-endian 2bit file with three short sequences.
