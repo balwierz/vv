@@ -6024,6 +6024,15 @@ if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
 fi
 
 
+# scripts/bench: the scripts parse and print their usage (they need network
+# and large downloads, so the suite runs nothing else of them).
+assert_exit_zero "bench_fetch_parses" bash -n "$ROOT/scripts/bench/fetch.sh"
+assert_exit_zero "bench_run_parses"   bash -n "$ROOT/scripts/bench/run.sh"
+assert_contains "bench_run_help" "$(bash "$ROOT/scripts/bench/run.sh" -h 2>&1)" "scripts/bench/run.sh [-v VV] [-n REPS] DIR"
+if command -v python3 >/dev/null 2>&1; then
+    assert_contains "bench_comparators_usage" "$(python3 "$ROOT/scripts/bench/comparators.py" 2>&1)" "parquet_head"
+fi
+
 # ── Remote URLs: https:// / s3:// / gs:// through htslib's hFILE layer ───────
 # A build whose htslib has libcurl reads a URL like a local file: htslib's own
 # readers (BAM, VCF.gz + tabix, FASTA) take it as it is, the Arrow readers read

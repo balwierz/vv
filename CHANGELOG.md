@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Column tab, a bar chart with the interval and count of each bar on hover.
   Counted over the values kept for the percentiles (a uniform sample on long
   columns). `--describe` output is unchanged.
+- `docs/BENCHMARKS.md`: vv against samtools, bcftools, UCSC tools, pyarrow,
+  pandas, anndata and pyBigWig on public files (1000 Genomes VCF and BAM,
+  GENCODE, hg38, ENCODE, CELLxGENE). `scripts/bench/fetch.sh` downloads the
+  inputs with pinned checksums, `scripts/bench/run.sh` re-runs the table.
 
 ### Changed
 - Building vv no longer needs git or network access: the configure step

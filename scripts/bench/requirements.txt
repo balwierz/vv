@@ -1,0 +1,5 @@
+# Python comparators of scripts/bench/run.sh
+pyarrow>=15
+pandas>=2.0
+anndata>=0.10
+pyBigWig>=0.3.22

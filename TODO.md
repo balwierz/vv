@@ -211,6 +211,21 @@ user-facing summary).
 ## Performance / build
 
 ### Open
+- **Wide VCF text** — the 1000 Genomes chr22 VCF (2,504 samples, 11 GB of
+  text decompressed): `--select CHROM,POS,REF,ALT --tsv` takes 36 s / 3.4 GB
+  against `bcftools query`'s 2 s, and `-n 20 -t` 2.0 s / 1.1 GB, because
+  Arrow's CSV reader tokenises every sample field (docs/BENCHMARKS.md, same
+  with `--samples text`). Options: cut the lines after FORMAT
+  (TruncateFieldsStream, as for GFF) when no sample column is read; or read
+  VCF.gz through htslib (vcf_parse leaves the samples unparsed until asked).
+- **CSV block size and memory** — the delimited reader's 16 MiB blocks cost
+  memory without buying speed: `--count` on the 2.2 M-row GENCODE CSV.gz takes
+  1.41 s / 2.4 GB at 16 MiB, 1.24 s / 0.84 GB at 4 MiB, 1.30 s / 0.25 GB at
+  1 MiB (`VV_CSV_BLOCK_MB`); `-n 20` on the chr22 VCF 2.1 s / 1.1 GB vs
+  0.30 s / 0.14 GB at 1 MiB. Arrow infers column types from the first
+  block, so a smaller block risks a type conflict later in a file that loads
+  today; measure on the fixtures + real files (and consider a small first
+  block for previews only) before changing the default.
 - **Delimited input parses on one core.** Arrow's `csv::StreamingReader`
   parses its blocks one after another (`use_threads` overlaps I/O only):
   `vv --count` on a 3.5 GB uncompressed VCF takes 5.6 s with 5.4 s of CPU,

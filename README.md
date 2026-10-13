@@ -25,7 +25,7 @@ More screenshots, one per format: **[docs/formats.md](docs/formats.md)**.
 - **Region queries** — `-r chr1:1000-2000` on indexed BAM / CRAM / VCF / BCF / BED / GFF / bigWig / FASTA (`.fai`), and Parquet with chrom / start / end columns.
 - **Filter, select, sort** — `--filter 'QUAL > 30 and FILTER == "PASS"'`, `--select 'chr*,@numeric'`, `--sort POS:desc`.
 - **Convert** — `--tsv`, `--csv`, `--json`, `--ndjson`, `--md`, `--parquet out.parquet`, `--arrow out.arrow`.
-- **Large files** — reads only what the screen needs, so big Parquet, BAM and JSON files open without a full scan.
+- **Large files** — reads only what the screen needs, so big Parquet, BAM and JSON files open without a full scan ([benchmarks](docs/BENCHMARKS.md)).
 - **Summaries** — `--schema`, `--describe`, `--seq-stats`, `--gt-stats`, `--contigs`, `--value-counts`.
 
 ## Formats
