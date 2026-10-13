@@ -63,7 +63,7 @@ cat > "$root/DEBIAN/control" <<CTL
 Package: vv
 Version: $debver
 Architecture: $arch
-Maintainer: Piotr Balwierz <nikt@tuta.com>
+Maintainer: Piotr Balwierz <piotr.balwierz@genomika.ai>
 Section: science
 Priority: optional
 Homepage: https://github.com/balwierz/vv

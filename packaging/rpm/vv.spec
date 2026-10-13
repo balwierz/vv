@@ -130,33 +130,33 @@ XLSXIO_A="$(echo $PWD/xlsxio-local/lib*/libxlsxio_read.a)"
 %{_datadir}/icons/hicolor/scalable/apps/vv.svg
 
 %changelog
-* Wed Oct 14 2026 Piotr Balwierz <nikt@tuta.com> - 1.31.0-1
+* Wed Oct 14 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.31.0-1
 - Update to 1.31.0: remote input over https / s3 / gs through htslib,
   FASTA -r with a .fai index, --cite, a histogram in the TUI stats popup and
   vvg's Column tab; configure no longer fetches mimalloc; vvg opens on the
   first tab of the first file.
 
-* Sat Oct 10 2026 Piotr Balwierz <nikt@tuta.com> - 1.30.0-1
+* Sat Oct 10 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.30.0-1
 - Update to 1.30.0: faster exports on several threads (byte-identical
   output); --tail / --sample / --distinct hold only their result; filters
   evaluated on column arrays; HDF5 / Zarr float32 stays float32; fixes for
   blank rows in sorted TUI views, vvg sort / find on long streams, VCF / GFF
   with numeric chromosome names and GFF3 ### lines.
 
-* Fri Oct 09 2026 Piotr Balwierz <nikt@tuta.com> - 1.29.0-1
+* Fri Oct 09 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.29.0-1
 - Update to 1.29.0: Windows build (MSYS2) and MSI installer; vv -i with no
   terminal no longer spins; vvg moves the cursor to a clicked column header,
   keeps the cursor column across sort / filter / find, tints it and shows its
   position in the Column tab with a link back to it.
 
-* Thu Oct 08 2026 Piotr Balwierz <nikt@tuta.com> - 1.28.0-1
+* Thu Oct 08 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.28.0-1
 - Update to 1.28.0: --describe reports std and percentiles (--percentiles);
   --value-counts with shares and TSV / JSON output; vvg sums the selected
   cells in the status bar and summarises the cursor column in a Column tab
   computed in the background; HDF5 calls serialised across threads (vvg
   export crash).
 
-* Wed Oct 07 2026 Piotr Balwierz <nikt@tuta.com> - 1.27.0-1
+* Wed Oct 07 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.27.0-1
 - Update to 1.27.0: new formats — Zarr v2 / v3 stores, DuckDB (when built
   with libduckdb), Nanopore POD5, GenBank / EMBL, Cooler .cool / .mcool /
   .scool, R .rds / .RData including lists and S4 objects (Seurat,
@@ -165,20 +165,20 @@ XLSXIO_A="$(echo $PWD/xlsxio-local/lib*/libxlsxio_read.a)"
   and --samples / --matrix; MIME types and Dolphin plugins for the new
   formats; static binary finds the system terminfo.
 
-* Fri Oct 02 2026 Piotr Balwierz <nikt@tuta.com> - 1.26.1-1
+* Fri Oct 02 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.26.1-1
 - Update to 1.26.1: JSON tree strings no longer drawn black on black with
   the wide ncurses library; AnnData -n with --filter / --sort ranges over
   every row; an empty filter result prints the table header; the stats
   popup no longer truncates values; first-frame blank columns fixed.
 
-* Fri Oct 02 2026 Piotr Balwierz <nikt@tuta.com> - 1.26.0-1
+* Fri Oct 02 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.26.0-1
 - Update to 1.26.0: JSON documents open in a folding tree viewer on a
   terminal (jq paths, search, copy, previews, t for the table view); on a
   pipe they print re-indented, or as path = value lines with --json-paths;
   JSON on stdin is recognised by its content; JSON tables no longer open
   blank in the table viewer.
 
-* Thu Oct 01 2026 Piotr Balwierz <nikt@tuta.com> - 1.25.0-1
+* Thu Oct 01 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.25.0-1
 - Update to 1.25.0: multi-sample VCF / BCF samples as typed structs
   (--samples struct|long|text); --matrix long for HDF5 / AnnData / Loom /
   Cell Ranger matrices; whole-matrix exports instead of previews; .fods;
@@ -186,7 +186,7 @@ XLSXIO_A="$(echo $PWD/xlsxio-local/lib*/libxlsxio_read.a)"
   --flatten; per-row-group --stats; PAF --tags; heatmaps in iTerm2 / WezTerm;
   TUI line editing and value counts; read errors reported by every mode.
 
-* Tue Sep 29 2026 Piotr Balwierz <nikt@tuta.com> - 1.24.0-1
+* Tue Sep 29 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.24.0-1
 - Update to 1.24.0: Cell Ranger HDF5, 10x / STARsolo matrix directories,
   MatrixMarket .mtx, Loom and AnnData .raw / obsp / varp open as labelled
   tabs; --filter gains date literals, `in @file`, has / lacks bit flags and
@@ -194,64 +194,64 @@ XLSXIO_A="$(echo $PWD/xlsxio-local/lib*/libxlsxio_read.a)"
   --json writes nested values as JSON; the TUI opens with --filter / --select /
   --sort applied; floats export without rounding; vvg gains export, smooth
   scrolling and attribute expansion; KDE / freedesktop MIME types.
-* Mon Sep 21 2026 Piotr Balwierz <nikt@tuta.com> - 1.23.0-1
+* Mon Sep 21 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.23.0-1
 - Update to 1.23.0: LZF-compressed HDF5 / AnnData files (h5py compression="lzf")
   are read; an HDF5 dataset that cannot be decoded is reported with the
   missing filter named instead of being shown as zeros; AnnData layers, obsm
   and varm entries stored as CSR/CSC sparse matrices open.
-* Thu Sep 04 2026 Piotr Balwierz <nikt@tuta.com> - 1.22.0-1
+* Thu Sep 04 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.22.0-1
 - Update to 1.22.0: CSV/TSV files written by R's write.table()/write.csv() read
   correctly (unnamed row-names/index column, missing values as null); new
   -d/--in-delimiter sets the input field separator (space/semicolon/pipe, incl.
   R's default write.table() .txt); header detection for CSV/TSV without a header
   row, with --header auto|on|off; and a genuine trailing ellipsis in cell data
   is no longer dimmed as a truncation marker.
-* Tue Sep 01 2026 Piotr Balwierz <nikt@tuta.com> - 1.20.0-1
+* Tue Sep 01 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.20.0-1
 - Update to 1.20.0: shell completion now completes a file's columns and tabs
   (--select, --tab, --filter, ...); the Qt viewer gains a proper application
   icon and a Wayland-correct app id. Fixes: bigWig/bigBed reads no longer stop
   at 32768 intervals per chromosome; filtering a dictionary/categorical column
   works; headerless CSVs keep leading-zero IDs; several markdown rendering
   fixes; and a few smaller data-integrity fixes.
-* Wed Aug 26 2026 Piotr Balwierz <nikt@tuta.com> - 1.19.0-1
+* Wed Aug 26 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.19.0-1
 - Update to 1.19.0: the Qt viewer and the interactive TUI size table columns to
   their content at open; --schema and --no-interactive show every tab of a
   multi-tab file (AnnData / Excel / SQLite / HDF5 / NPZ) instead of only the
   first; -t / --table is a short alias for --no-interactive.
 
-* Mon Aug 24 2026 Piotr Balwierz <nikt@tuta.com> - 1.18.7-1
+* Mon Aug 24 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.18.7-1
 - Update to 1.18.7: memory-safety hardening across the HDF5, bigWig/bigBed,
   BAM pileup, Arrow IPC/ORC and LociSSD readers — crafted or unusual files that
   could crash, over-read a buffer or return a wrong answer are now handled or
   rejected cleanly; --validate reports a null/non-integer coordinate instead of
   aborting.
 
-* Thu Aug 20 2026 Piotr Balwierz <nikt@tuta.com> - 1.18.6-1
+* Thu Aug 20 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.18.6-1
 - Update to 1.18.6: AnnData files written before anndata 0.8 now show their
   categories instead of integer codes, and obs/var no longer cap --count,
   --unique or a --parquet/--arrow export at the 1000-row preview.
 
-* Fri Aug 14 2026 Piotr Balwierz <nikt@tuta.com> - 1.18.5-1
+* Fri Aug 14 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.18.5-1
 - Update to 1.18.5: the config file gains background / max_col_width /
   threads keys, and --theme no longer discards the rest of the config.
 
-* Thu Aug 13 2026 Piotr Balwierz <nikt@tuta.com> - 1.18.4-1
+* Thu Aug 13 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.18.4-1
 - Update to 1.18.4: a late terminal reply (OSC 11 background query answered
   slowly, e.g. by web consoles) no longer quits the TUI as a phantom Esc.
 
-* Tue Aug 11 2026 Piotr Balwierz <nikt@tuta.com> - 1.18.3-1
+* Tue Aug 11 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.18.3-1
 - Update to 1.18.3 (adds the Debian testing/sid flavor of the vv-gui .deb;
   the RPMs themselves are unchanged).
 
-* Tue Aug 11 2026 Piotr Balwierz <nikt@tuta.com> - 1.18.2-1
+* Tue Aug 11 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.18.2-1
 - Update to 1.18.2 (adds the Debian 13 flavor of the vv-gui .deb; the RPMs
   themselves are unchanged).
 
-* Mon Aug 10 2026 Piotr Balwierz <nikt@tuta.com> - 1.18.1-1
+* Mon Aug 10 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.18.1-1
 - Update to 1.18.1 — the first release that publishes these RPMs (alongside
   the Ubuntu vv-gui .deb and vvg in the macOS tarball).
 
-* Mon Aug 10 2026 Piotr Balwierz <nikt@tuta.com> - 1.18.0-1
+* Mon Aug 10 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.18.0-1
 - Built and published from release CI (fedora:latest, x86_64 + aarch64).
 - xlsxio bundled as a PIC static archive (no distro packages it); mimalloc
   bundled via FetchContent as always. Both declared with bundled() Provides.
