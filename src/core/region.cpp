@@ -366,7 +366,7 @@ std::string regions_to_htslib(const std::string& canonical) {
 bool tabix_index_exists(const std::string& path) {
     const int level = hts_get_log_level();
     hts_set_log_level(HTS_LOG_OFF);
-    tbx_t* tbx = tbx_index_load(path.c_str());
+    tbx_t* tbx = vv_tbx_index_load(path.c_str());
     hts_set_log_level((htsLogLevel)level);
     if (!tbx) return false;
     tbx_destroy(tbx);

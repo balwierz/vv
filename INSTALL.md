@@ -114,7 +114,9 @@ sudo install vv-1.30.0-linux-$arch/vv /usr/local/bin/
 
 Requires glibc ≥ 2.28 (RHEL/Rocky/AlmaLinux 8+, Debian 10+, Ubuntu 18.04+).
 Arrow, Parquet, htslib, HDF5, SQLite, ncurses and the compression stack are
-all linked statically.
+all linked statically. Its htslib has no libcurl, so this binary (and the
+`.deb` built from it) does not read `https://` / `s3://` / `gs://` URLs; the
+builds against a system htslib do (`vv --formats` shows which).
 
 ### Arch Linux
 
@@ -449,4 +451,7 @@ cp completions/_vv ~/.zsh/completions/   # ensure this dir is in fpath
   under `vendored/`, everything else comes from the system.
 - Arrow, Parquet, htslib, and ncurses are linked statically when the static
   AlmaLinux 8 build is used; the dynamic build uses whichever versions are
-  on the system.
+  on the system. A checkout next to `../static-libs` or `../arrow-install`
+  links those; `-DVV_PREFER_STATIC=OFF` ignores them and links the system's
+  shared libraries (a shared libhts brings its libcurl plugins, so remote
+  URLs work).

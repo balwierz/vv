@@ -46,12 +46,19 @@ add_compile_options(-O2 -ffunction-sections -fdata-sections)
 # system search path (Ubuntu apt, Homebrew, etc.). The hint-based lookups
 # are QUIET — they may legitimately not find anything (e.g. on CI), in
 # which case the REQUIRED fallback below has to succeed.
+#
+# VV_PREFER_STATIC=OFF ignores ../arrow-install and ../static-libs and links
+# the system's shared libraries — e.g. a shared libhts, whose libcurl
+# plugins give remote https:// / s3:// / gs:// input.
+option(VV_PREFER_STATIC "Use ../arrow-install and ../static-libs when present" ON)
 set(_arrow_hint   "${CMAKE_CURRENT_SOURCE_DIR}/../arrow-install/lib/cmake/Arrow")
 set(_parquet_hint "${CMAKE_CURRENT_SOURCE_DIR}/../arrow-install/lib/cmake/Parquet")
 set(_compute_hint "${CMAKE_CURRENT_SOURCE_DIR}/../arrow-install/lib/cmake/ArrowCompute")
-find_package(Arrow        QUIET PATHS "${_arrow_hint}"   NO_DEFAULT_PATH)
-find_package(Parquet      QUIET PATHS "${_parquet_hint}" NO_DEFAULT_PATH)
-find_package(ArrowCompute QUIET PATHS "${_compute_hint}" NO_DEFAULT_PATH)
+if(VV_PREFER_STATIC)
+  find_package(Arrow        QUIET PATHS "${_arrow_hint}"   NO_DEFAULT_PATH)
+  find_package(Parquet      QUIET PATHS "${_parquet_hint}" NO_DEFAULT_PATH)
+  find_package(ArrowCompute QUIET PATHS "${_compute_hint}" NO_DEFAULT_PATH)
+endif()
 
 if(NOT TARGET Arrow::arrow_static AND NOT TARGET Arrow::arrow_shared)
   find_package(Arrow        REQUIRED)
@@ -66,7 +73,7 @@ endif()
 # transitive deps, so the link line would miss BZ2_*, ZSTD_*, etc.
 set(_static_libs_dir "${CMAKE_CURRENT_SOURCE_DIR}/../static-libs/lib")
 set(_prefer_static FALSE)
-if(IS_DIRECTORY "${_static_libs_dir}")
+if(VV_PREFER_STATIC AND IS_DIRECTORY "${_static_libs_dir}")
   set(_prefer_static TRUE)
 endif()
 
@@ -388,7 +395,7 @@ set(VV_CORE_SOURCES
     src/core/common.cpp   src/core/compress.cpp src/core/derived.cpp
     src/core/filter.cpp   src/core/format_fast.cpp
     src/core/io.cpp       src/core/modes.cpp    src/core/open.cpp
-    src/core/platform.cpp
+    src/core/platform.cpp src/core/remote.cpp
     src/core/region.cpp   src/core/source.cpp   src/core/summary.cpp
     src/formats/arrow.cpp     src/formats/cooler.cpp    src/formats/delimited.cpp
     src/formats/duckdb.cpp

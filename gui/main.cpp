@@ -548,8 +548,10 @@ private:
                       bool primary, const QString& expand = QString()) {
         auto* model = new ArrowTableModel(std::move(src), this);
         const QFileInfo ofi(origin);
-        tabOrigin_[model] = TabOrigin{origin, primary, expand,
-                                      origin != QLatin1String("-") && (ofi.isFile() || ofi.isDir())};
+        // A URL can be opened again too (a region query re-opens the files).
+        const bool reopenable = origin != QLatin1String("-") &&
+            (ofi.isFile() || ofi.isDir() || origin.contains(QLatin1String("://")));
+        tabOrigin_[model] = TabOrigin{origin, primary, expand, reopenable};
         auto* view  = new QTableView(tabs_);
         view->setModel(model);
         view->setAlternatingRowColors(true);
@@ -815,7 +817,8 @@ private:
     void addRecent(const QString& path) {
         QSettings s(QStringLiteral("vv"), QStringLiteral("vvg"));
         QStringList recent = s.value(QStringLiteral("recentFiles")).toStringList();
-        QString abs = QFileInfo(path).absoluteFilePath();
+        const QString abs = path.contains(QLatin1String("://")) ? path
+                                                                : QFileInfo(path).absoluteFilePath();
         recent.removeAll(abs);
         recent.prepend(abs);
         while (recent.size() > 10) recent.removeLast();
@@ -1665,7 +1668,7 @@ public:
         VvCommandSpec& s = *out;
         s = VvCommandSpec{};
         const TabOrigin o = tabOrigin_.value(m);
-        s.path = QFileInfo(o.path).absoluteFilePath();
+        s.path = o.path.contains(QLatin1String("://")) ? o.path : QFileInfo(o.path).absoluteFilePath();
         if (!o.primary) s.tab = QString::fromStdString(m->source()->tab_label());
         s.region  = QString::fromStdString(sessionCfg_.region);
         s.ncbi    = sessionCfg_.coords_one_based;

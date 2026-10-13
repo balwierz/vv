@@ -150,7 +150,7 @@ public:
         auto self = std::make_unique<ParquetSource>();
         self->path_ = path;
 
-        auto maybe_file = arrow::io::ReadableFile::Open(path);
+        auto maybe_file = open_input_file(path);
         if (!maybe_file.ok())
             return "Cannot open '" + path + "': " + maybe_file.status().ToString();
 

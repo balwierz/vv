@@ -66,7 +66,7 @@ public:
         self->path_       = path;
         self->is_feather_ = is_feather;
 
-        auto maybe_file = arrow::io::ReadableFile::Open(path);
+        auto maybe_file = open_input_file(path);
         if (!maybe_file.ok())
             return "Cannot open '" + path + "': " + maybe_file.status().ToString();
         auto file = maybe_file.ValueOrDie();
@@ -229,7 +229,7 @@ public:
         return "";
     }
     static std::string open(const std::string& path, std::unique_ptr<IpcStreamSource>* out) {
-        auto f = arrow::io::ReadableFile::Open(path);
+        auto f = open_input_file(path);
         if (!f.ok()) return "Cannot open '" + path + "': " + f.status().ToString();
         return open_stream(path, f.ValueOrDie(), out);
     }
@@ -318,7 +318,7 @@ public:
         auto self = std::make_unique<OrcSource>();
         self->path_ = path;
 
-        auto maybe_file = arrow::io::ReadableFile::Open(path);
+        auto maybe_file = open_input_file(path);
         if (!maybe_file.ok())
             return "Cannot open '" + path + "': " + maybe_file.status().ToString();
         auto file = maybe_file.ValueOrDie();

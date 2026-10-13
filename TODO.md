@@ -36,6 +36,14 @@ user-facing summary).
   when the window is much smaller than a row group.
 
 ### Done
+- Remote input URLs (`https://`, `s3://`, `gs://`) through htslib's hFILE
+  layer (src/core/remote.cpp): htslib's readers take the URL, the Arrow
+  readers read ranges over an hFILE, path-only formats are copied to a
+  temporary file. Needs an htslib with libcurl; the static binary (htslib
+  `--disable-libcurl`) reports `remote: none` in `vv --formats`. Open: libcurl
+  in the static build (static OpenSSL / CA-bundle lookup across
+  distributions); an "Open URL…" dialog in vvg (the copy has no progress UI
+  there yet).
 - `-r` on **BAM / CRAM** (`feat/bam-region`) — `BamSource` loads the index
   and walks htslib's multi-region iterator, so several windows are covered
   in one pass. Previously `-r` was a silent no-op on alignment files: the
@@ -630,12 +638,6 @@ get re-proposed.
   wherever these files live. It dies in the long tail: `--nearest`
   tie-breaking, strandedness, upstream/downstream sign, `-d` vs `-D`, and a
   multi-overlap policy every user re-litigates.
-- **Remote input URLs (`https://`, `s3://`, `gs://`)** — incompatible with the
-  flagship artifact. The AlmaLinux 8 static build deliberately configures
-  htslib `--disable-libcurl --disable-gcs --disable-s3` and Arrow
-  `-DARROW_S3=OFF -DARROW_GCS=OFF`; vendored libBigWig is built `-DNOCURL`.
-  The dev box's libhts has no curl either, so "the support is already linked
-  in" is false on both.
 - **`--tview` / an IGV-style locus panel** — the most tempting item on the list
   and still a different product: read stacking, CIGAR-aware base rendering, a
   reference track, zoom/pan, a second layout engine. `samtools tview` and IGV

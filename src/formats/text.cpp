@@ -154,7 +154,7 @@ public:
         self->path_ = path;
         self->schema_ = arrow::schema({arrow::field("line", arrow::utf8())});
 
-        auto rf = arrow::io::ReadableFile::Open(path);
+        auto rf = open_input_file(path);
         if (!rf.ok())
             return "Cannot open '" + path + "': " + rf.status().ToString();
         auto raw = rf.ValueOrDie();
@@ -269,7 +269,7 @@ bool has_no_extension(const std::string& path) {
 std::string open_text(const std::string& path, const Config& cfg,
                       std::unique_ptr<TabularSource>* out,
                       bool note) {
-    auto rf = arrow::io::ReadableFile::Open(path);
+    auto rf = open_input_file(path);
     if (!rf.ok())
         return "Cannot open '" + path + "': " + rf.status().ToString();
     std::shared_ptr<arrow::io::InputStream> in = rf.ValueOrDie();

@@ -27,7 +27,7 @@ public:
         auto self = std::shared_ptr<TabixInputStream>(new TabixInputStream());
         self->fp_  = hts_open(path.c_str(), "r");
         if (!self->fp_) return "Cannot open '" + path + "' for tabix";
-        self->tbx_ = tbx_index_load(path.c_str());
+        self->tbx_ = vv_tbx_index_load(path.c_str());
         if (!self->tbx_) {
             hts_close(self->fp_); self->fp_ = nullptr;
             return "No tabix index (.tbi) found for '" + path + "'. "
@@ -708,9 +708,9 @@ class DelimitedSource : public TabularSource {
 
     // Open the file as a (possibly decompressed) InputStream.
     static std::string open_stream(const std::string& path, bool is_gz,
-                                    std::shared_ptr<arrow::io::ReadableFile>*  raw_out,
+                                    std::shared_ptr<arrow::io::RandomAccessFile>*  raw_out,
                                     std::shared_ptr<arrow::io::InputStream>*   input_out) {
-        auto maybe_raw = arrow::io::ReadableFile::Open(path);
+        auto maybe_raw = open_input_file(path);
         if (!maybe_raw.ok())
             return "Cannot open '" + path + "': " + maybe_raw.status().ToString();
         auto raw = maybe_raw.ValueOrDie();
@@ -785,7 +785,7 @@ class DelimitedSource : public TabularSource {
     detect_leading_zero_columns(const std::string& path, bool is_gz, char delim,
                                 const std::vector<std::string>& header_names,
                                 bool headerless = false) {
-        std::shared_ptr<arrow::io::ReadableFile> raw;
+        std::shared_ptr<arrow::io::RandomAccessFile> raw;
         std::shared_ptr<arrow::io::InputStream>  input;
         if (!open_stream(path, is_gz, &raw, &input).empty()) return {};
         LineReader lr(input);
@@ -840,7 +840,7 @@ class DelimitedSource : public TabularSource {
     // write.csv writes `""` there, which Arrow reads fine — never reaches here.)
     static bool detect_rstyle_index_header(const std::string& path, bool is_gz,
                                            char delim) {
-        std::shared_ptr<arrow::io::ReadableFile> raw;
+        std::shared_ptr<arrow::io::RandomAccessFile> raw;
         std::shared_ptr<arrow::io::InputStream>  input;
         if (!open_stream(path, is_gz, &raw, &input).empty()) return false;
         LineReader lr(input);
@@ -871,7 +871,7 @@ public:
     // for .gz / .zst); "" when there is none or the file cannot be read.
     static std::string first_line_after_meta(const std::string& path) {
         const bool is_gz = has_compression_suffix(path);
-        std::shared_ptr<arrow::io::ReadableFile> raw;
+        std::shared_ptr<arrow::io::RandomAccessFile> raw;
         std::shared_ptr<arrow::io::InputStream>  input;
         if (!open_stream(path, is_gz, &raw, &input).empty()) return "";
         LineReader lr(input);
@@ -888,7 +888,7 @@ public:
                                            const std::vector<std::string>& tags) {
         std::vector<char> types(tags.size(), 0);
         const bool is_gz = has_compression_suffix(path);
-        std::shared_ptr<arrow::io::ReadableFile> raw;
+        std::shared_ptr<arrow::io::RandomAccessFile> raw;
         std::shared_ptr<arrow::io::InputStream>  input;
         if (open_stream(path, is_gz, &raw, &input).empty()) {
             LineReader lr(input);
@@ -914,7 +914,7 @@ public:
     // The first line of `path` (decompressed for .gz / .zst); "" if unreadable.
     static std::string first_line_after_meta_raw(const std::string& path) {
         const bool is_gz = has_compression_suffix(path);
-        std::shared_ptr<arrow::io::ReadableFile> raw;
+        std::shared_ptr<arrow::io::RandomAccessFile> raw;
         std::shared_ptr<arrow::io::InputStream>  input;
         if (!open_stream(path, is_gz, &raw, &input).empty()) return "";
         LineReader lr(input);
@@ -998,7 +998,7 @@ public:
         // selects the matching codec.
         bool is_gz = has_compression_suffix(path);
 
-        std::shared_ptr<arrow::io::ReadableFile>  raw;
+        std::shared_ptr<arrow::io::RandomAccessFile>  raw;
         std::shared_ptr<arrow::io::InputStream>   input;
         {
             std::string err = open_stream(path, is_gz, &raw, &input);
@@ -1136,7 +1136,7 @@ private:
     static std::string continue_open(
         std::unique_ptr<DelimitedSource> self,
         std::shared_ptr<arrow::io::InputStream> input,
-        std::shared_ptr<arrow::io::ReadableFile> /*raw*/,
+        std::shared_ptr<arrow::io::RandomAccessFile> /*raw*/,
         bool is_gz, DelimKind kind, const std::string& region,
         std::unique_ptr<DelimitedSource>* out) {
         const std::string& path = self->path_;
@@ -1398,7 +1398,7 @@ private:
                 headerless = (informative > 0) && (broken == 0);
             }
             if (headerless) {
-                std::shared_ptr<arrow::io::ReadableFile>  raw2;
+                std::shared_ptr<arrow::io::RandomAccessFile>  raw2;
                 std::shared_ptr<arrow::io::InputStream>   input2;
                 if (open_stream(path, is_gz, &raw2, &input2).empty()) {
                     // The first reader keyed force_string to the header-as-data

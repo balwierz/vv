@@ -27,7 +27,7 @@ StreamCodec sniff_codec(const uint8_t* m, size_t n) {
     return StreamCodec::None;
 }
 
-StreamCodec sniff_file_codec(const std::shared_ptr<arrow::io::ReadableFile>& rf) {
+StreamCodec sniff_file_codec(const std::shared_ptr<arrow::io::RandomAccessFile>& rf) {
     uint8_t m[10];
     auto got = rf->ReadAt(0, sizeof(m), m);
     const size_t n = got.ok() ? (size_t)*got : 0;
@@ -229,7 +229,7 @@ std::string decode_stream(StreamCodec c, std::shared_ptr<arrow::io::InputStream>
 
 std::string open_decoded_file(const std::string& path, std::shared_ptr<arrow::io::InputStream>* out,
                               StreamCodec* codec) {
-    auto rf = arrow::io::ReadableFile::Open(path);
+    auto rf = open_input_file(path);
     if (!rf.ok()) return "Cannot open '" + path + "': " + rf.status().ToString();
     const StreamCodec c = sniff_file_codec(*rf);
     if (codec) *codec = c;

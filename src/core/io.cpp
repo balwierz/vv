@@ -42,8 +42,15 @@ static bool fends(const std::string& s, const std::string& sfx) {
 }
 // Case-insensitive variant. Used for filename extensions so that
 // `.bigwig` (ENCODE convention), `.bigWig` (UCSC docs), `.BIGWIG`
-// (Windows habit) all resolve to the same matcher.
-bool fends_ci(const std::string& s, const std::string& sfx) {
+// (Windows habit) all resolve to the same matcher. A URL is matched without
+// its ?query / #fragment, so a pre-signed https://.../x.parquet?X-Amz-...
+// dispatches as .parquet.
+bool fends_ci(const std::string& s_in, const std::string& sfx) {
+    if (s_in.find("://") != std::string::npos && s_in.find_first_of("?#") != std::string::npos) {
+        const std::string s = strip_url_query(s_in);
+        if (s.size() != s_in.size()) return fends_ci(s, sfx);
+    }
+    const std::string& s = s_in;
     if (s.size() < sfx.size()) return false;
     for (size_t i = 0; i < sfx.size(); ++i) {
         char a = s[s.size() - sfx.size() + i];

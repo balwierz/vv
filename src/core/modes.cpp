@@ -232,6 +232,8 @@ int emit_text_stream(TabularSource& src, const Config& cfg) {
 // path is a readable regular file (further errors will come from the reader).
 std::string preflight_path(const std::string& path) {
     if (path == "-") return "";
+    // A URL is checked when it is opened (remote.cpp, open_source_dispatch).
+    if (is_remote_url(path)) return "";
     struct stat st;
     if (::stat(path.c_str(), &st) != 0) {
         switch (errno) {

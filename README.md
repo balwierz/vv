@@ -19,7 +19,7 @@ More screenshots, one per format: **[docs/formats.md](docs/formats.md)**.
 
 ## Highlights
 
-- **Any format, one command** — dispatched by extension or content; gzip, bgzip, zstd, bzip2 and xz on the fly; stdin and pipes.
+- **Any format, one command** — dispatched by extension or content; gzip, bgzip, zstd, bzip2 and xz on the fly; stdin and pipes; `https://`, `s3://` and `gs://` URLs ([remote files](docs/USAGE.md#remote-files-https-s3-gs)).
 - **Terminal viewer** — scroll, search (`/`), filter (`&`), sort (`s`), column stats (`S`), record detail (`Enter`), tabs; a folding tree for JSON.
 - **Desktop viewer** — [vvg](docs/vvg.md): the same views in a Qt6 window, Dolphin thumbnails on KDE.
 - **Region queries** — `-r chr1:1000-2000` on indexed BAM / CRAM / VCF / BCF / BED / GFF / bigWig / FASTA (`.fai`), and Parquet with chrom / start / end columns.

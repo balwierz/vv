@@ -402,6 +402,20 @@ jobs:
           # Several files: the first file's first tab.
           VVG_WINTEST=1 VVG_COPYCMD=1 ./build-gui/gui/vvg tests/data/tiny.parquet tests/data/tiny.h5ad \
             | grep -qx 'cmd=vv /[^ ]*/tiny.parquet'
+          # A URL opens through htslib's hFILE layer when the build's htslib
+          # has libcurl (the distribution's does); the copied command keeps
+          # the URL as given rather than making it a local path.
+          ./build-gui/vv --formats | grep '^remote:'
+          if ./build-gui/vv --formats | grep -q '^remote: .* http'; then
+            python3 tests/http_range_server.py tests/data --ranges > "$RUNNER_TEMP/http.port" &
+            srv=$!
+            for i in $(seq 100); do [ -s "$RUNNER_TEMP/http.port" ] && break; sleep 0.1; done
+            url="http://127.0.0.1:$(cat "$RUNNER_TEMP/http.port")/tiny.parquet"
+            out=$(XDG_CONFIG_HOME="$RUNNER_TEMP/xdg-url" VVG_WINTEST=1 VVG_COPYCMD=1 ./build-gui/gui/vvg "$url"); echo "$out"
+            kill $srv
+            grep -qx 'win_tabs=1' <<<"$out"
+            grep -qxF "cmd=vv $url" <<<"$out"
+          fi
           if ./build-gui/gui/vvg --no-such-option 2>/dev/null; then exit 1; fi
           # --samples / --matrix (also the toolbar's samples / matrix combos):
           # the layouts reopen the file and are carried into the copied command.

@@ -465,7 +465,7 @@ public:
             if (self->fmt_name_ == "SAM")
                 return "'" + path + "': -r needs an indexed BAM/CRAM; plain "
                        "SAM has no index (convert with `samtools view -b`)";
-            self->idx_ = sam_index_load(self->hts_, path.c_str());
+            self->idx_ = vv_sam_index_load(self->hts_, path.c_str());
             if (!self->idx_)
                 return "'" + path + "': -r needs an index (.bai/.csi/.crai); "
                        "build one with `samtools index`";
@@ -904,7 +904,7 @@ public:
         // index (.bai / .csi / .crai). We accept comma-separated regions
         // via the same `chrom:start-end[,…]` syntax tabix uses.
         if (!cfg.region.empty()) {
-            self->idx_ = sam_index_load(self->fp_, path.c_str());
+            self->idx_ = vv_sam_index_load(self->fp_, path.c_str());
             if (!self->idx_)
                 return "'" + path + "': --pileup -r needs an index (.bai/.csi/.crai)";
             // cfg.region is canonical 0-based half-open; both sam_itr_regarray
@@ -1245,7 +1245,7 @@ public:
 
         // ── Range mode: load .csi/.tbi index and build per-window iterators ─
         if (!cfg.region.empty()) {
-            self->idx_ = bcf_index_load(path.c_str());
+            self->idx_ = vv_bcf_index_load(path.c_str());
             if (!self->idx_)
                 return "No BCF index for '" + path + "' (try: "
                        "`bcftools index '" + path + "'`)";
@@ -1364,6 +1364,14 @@ static int fastx_read(FastxIn* f, void* buf, int len) {
     return r.ok() ? (int)*r : -1;
 }
 static std::string open_fastx_input(const std::string& path, const Config& cfg, FastxIn* in) {
+    // A URL goes straight to htslib (bgzf_open reads through hFILE): plain
+    // or gzip / bgzip only; zstd / bzip2 / xz FASTA is read from local files.
+    if (is_remote_url(path)) {
+        in->bg = bgzf_open(path.c_str(), "r");
+        if (!in->bg) return "Cannot open '" + path + "'";
+        if (int n = effective_threads(cfg); n > 1) bgzf_mt(in->bg, n, 256);
+        return "";
+    }
     auto rf = arrow::io::ReadableFile::Open(path);
     if (!rf.ok()) return "Cannot open '" + path + "'";
     const StreamCodec c = sniff_file_codec(*rf);
@@ -2050,7 +2058,8 @@ genomic_header_fields(const GenomicHeader& h) {
 
 bool read_index_stats(const std::string& path, IndexStats* out) {
     struct stat st;
-    if (path == "-" || ::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
+    if (path == "-") return false;
+    if (!is_remote_url(path) && (::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode))) return false;
     const int level = hts_get_log_level();
     hts_set_log_level(HTS_LOG_OFF);      // a missing index is expected here
     bool ok = false;
@@ -2073,7 +2082,7 @@ bool read_index_stats(const std::string& path, IndexStats* out) {
         };
         if (f->format == bam) {
             if (sam_hdr_t* h = sam_hdr_read(fp)) {
-                if (hts_idx_t* idx = sam_index_load(fp, path.c_str())) {
+                if (hts_idx_t* idx = vv_sam_index_load(fp, path.c_str())) {
                     ok = collect(idx, sam_hdr_nref(h), [&](int i) { return sam_hdr_tid2name(h, i); });
                     hts_idx_destroy(idx);
                 }
@@ -2082,7 +2091,7 @@ bool read_index_stats(const std::string& path, IndexStats* out) {
         } else if (f->format == bcf) {
             s.variant = true;
             if (bcf_hdr_t* h = bcf_hdr_read(fp)) {
-                if (hts_idx_t* idx = bcf_index_load(path.c_str())) {
+                if (hts_idx_t* idx = vv_bcf_index_load(path.c_str())) {
                     ok = collect(idx, h->n[BCF_DT_CTG], [&](int i) { return bcf_hdr_id2name(h, i); });
                     hts_idx_destroy(idx);
                 }
@@ -2090,7 +2099,7 @@ bool read_index_stats(const std::string& path, IndexStats* out) {
             }
         } else if (f->format == vcf && f->compression == bgzf) {
             s.variant = true;
-            if (tbx_t* tbx = tbx_index_load(path.c_str())) {
+            if (tbx_t* tbx = vv_tbx_index_load(path.c_str())) {
                 int n = 0;
                 const char** seqs = tbx_seqnames(tbx, &n);
                 ok = collect(tbx->idx, n, [&](int i) { return seqs[i]; });

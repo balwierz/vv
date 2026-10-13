@@ -1273,6 +1273,15 @@ preserve any other lines you've added by hand.
 .RE
 .SH ENVIRONMENT
 .TP
+.B AWS_ACCESS_KEY_ID\fR, \fBAWS_SECRET_ACCESS_KEY\fR, \fBAWS_SESSION_TOKEN\fR, \fBAWS_PROFILE\fR, \fBGCS_OAUTH_TOKEN
+Credentials for \fBs3://\fR and \fBgs://\fR input, read by htslib's plugins
+(see \fBhtslib-s3-plugin\fR(7)). A file argument may be a URL \(en
+\fBhttps://\fR, \fBhttp://\fR, \fBftp://\fR, \fBs3://\fR, \fBgs://\fR \(en when
+vv's htslib has libcurl; \fBvv \-\-formats\fR lists the schemes this build
+reads. HDF5, SQLite, DuckDB, spreadsheet, NumPy, \fB.zarr.zip\fR, bigWig /
+bigBed and 2bit files are copied to a temporary file first (in
+\fBTMPDIR\fR, removed at exit); the other formats read byte ranges or stream.
+.TP
 .B NO_COLOR
 When set to any non-empty value, disables coloured output (see
 \fIhttps://no-color.org\fR). An explicit \fB\-\-color=always\fR or

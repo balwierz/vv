@@ -4432,8 +4432,7 @@ private:
         ensure_visible();
         // Title.
         const JNode& r = doc_.root();
-        const size_t slash = label_.find_last_of('/');
-        std::string title = " " + (slash == std::string::npos ? label_ : label_.substr(slash + 1)) +
+        std::string title = " " + display_basename(label_) +
                             "  " + human_bytes((int64_t)doc_.size());
         if (r.virt) title += doc_.root_mode() == vvjson::JsonDoc::Root::Lines ? "  JSON Lines" : "  JSON sequence";
         attron(A_BOLD | COLOR_PAIR(NCP_HEADER));
@@ -4975,8 +4974,8 @@ bool run_table_viewer(std::vector<std::unique_ptr<TabularSource>> srcs, const Co
                 std::unique_ptr<JsonTreeView>& view = trees[jp];
                 if (!view) {
                     std::string file = jp, e;
-                    auto raw = arrow::io::ReadableFile::Open(jp);
-                    if (raw.ok() && sniff_file_codec(*raw) != StreamCodec::None) {
+                    auto raw = open_input_file(jp);
+                    if (raw.ok() && (is_remote_url(jp) || sniff_file_codec(*raw) != StreamCodec::None)) {
                         std::shared_ptr<arrow::io::InputStream> in;
                         int64_t bytes = 0;
                         e = open_json_file(jp, &in);

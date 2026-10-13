@@ -35,6 +35,12 @@
 #include <htslib/bgzf.h>
 #include <htslib/faidx.h>
 
+// htslib's sam_/bcf_/tbx_index_load save a copy of a remote file's index in
+// the working directory (HTS_IDX_SAVE_REMOTE). vv reads the index in place.
+inline hts_idx_t* vv_sam_index_load(samFile* fp, const char* fn) { return sam_index_load3(fp, fn, nullptr, 0); }
+inline hts_idx_t* vv_bcf_index_load(const char* fn) { return bcf_index_load3(fn, nullptr, 0); }
+inline tbx_t* vv_tbx_index_load(const char* fn) { return tbx_index_load3(fn, nullptr, 0); }
+
 // libBigWig (vendored under vendored/libBigWig/, compiled with -DNOCURL).
 // Wrapped in an extern "C" because it's a C library; ARROW headers above
 // already bring in C++ machinery.
@@ -998,7 +1004,7 @@ std::string text_binary_error(const std::string& what,
 enum class StreamCodec { None, Gzip, Zstd, Bz2, Xz };
 StreamCodec sniff_codec(const uint8_t* m, size_t n);
 // The codec a file starts with; rewinds `rf`.
-StreamCodec sniff_file_codec(const std::shared_ptr<arrow::io::ReadableFile>& rf);
+StreamCodec sniff_file_codec(const std::shared_ptr<arrow::io::RandomAccessFile>& rf);
 const char* codec_label(StreamCodec c);           // "gzip", "zstd", "bzip2", "xz", ""
 bool has_compression_suffix(const std::string& path);    // .gz .bgz .zst .zstd .xz .bz2
 std::string strip_compression_suffix(const std::string& path);
@@ -1055,9 +1061,11 @@ void remove_spooled_files();
 
 std::string human_bytes(int64_t sz);
 
+// `verb` and `expected` (the total size, when known) word the progress line.
 std::string spool_stream(const std::shared_ptr<arrow::io::InputStream>& in,
                          const std::string& ext, std::string* path_out,
-                         int64_t* bytes_out, const std::string& progress = "");
+                         int64_t* bytes_out, const std::string& progress = "",
+                         const char* verb = "decompressing", int64_t expected = -1);
 
 
 // ── In-memory adapter: wrap an Arrow Table as a TabularSource ────────────────
@@ -1420,6 +1428,29 @@ bool path_is_pipe(const std::string& path);
 // Windows: UTF-8 console output, ANSI escape processing and binary stdin /
 // stdout (no line-ending translation). Nothing elsewhere.
 void init_console();
+// Point stderr at the null device; returns the saved descriptor (or -1) for
+// stderr_unmute, which restores it.
+int stderr_mute();
+void stderr_unmute(int saved);
+
+// ── Remote input (src/core/remote.cpp) ───────────────────────────────────────
+// A URL (https://, s3://, gs://, ...; not file://) names remote input, read
+// through htslib's hFILE layer when its htslib has libcurl.
+bool is_remote_url(const std::string& path);
+// The URL without its ?query / #fragment (a pre-signed URL's signature), for
+// matching extensions; other paths unchanged.
+std::string strip_url_query(const std::string& url);
+// The last path component of a URL, query removed and %XX decoded: its label.
+std::string url_display_name(const std::string& url);
+// The remote schemes this build opens ("https http s3 gs ftp ..."), or "none".
+std::string remote_schemes();
+bool remote_supported(const std::string& url);
+std::string remote_unsupported_message(const std::string& url);
+// A local file (arrow::io::ReadableFile) or a URL (over an hFILE), for reading
+// at offsets.
+arrow::Result<std::shared_ptr<arrow::io::RandomAccessFile>> open_input_file(const std::string& path);
+// The first up-to-n bytes of a file or URL; false when it cannot be opened.
+bool read_head(const std::string& path, void* buf, size_t n, size_t* got);
 
 int detect_terminal_width();
 

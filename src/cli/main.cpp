@@ -276,8 +276,9 @@ int main(int argc, char** argv) {
             // temporary copy first (removed at exit).
             std::string file = cfg.path;
             {
-                auto raw = arrow::io::ReadableFile::Open(cfg.path);
-                if (raw.ok() && sniff_file_codec(*raw) != StreamCodec::None) {
+                // A URL is copied too: the viewer maps a local file.
+                auto raw = open_input_file(cfg.path);
+                if (raw.ok() && (is_remote_url(cfg.path) || sniff_file_codec(*raw) != StreamCodec::None)) {
                     std::shared_ptr<arrow::io::InputStream> in;
                     if (auto e = open_json_file(cfg.path, &in); !e.empty()) { report(cfg.path, e); return 1; }
                     int64_t bytes = 0;

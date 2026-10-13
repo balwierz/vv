@@ -16,6 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `--slop` and `--regions-file` apply. A FASTA without an index is an error
   that names `samtools faidx`; vv does not write the index. Before, `-r` on a
   FASTA warned and showed every record.
+- Remote input: a file argument may be an `https://`, `http://`, `ftp://`,
+  `s3://` or `gs://` URL, in `vv` and `vvg`, read through htslib's hFILE
+  layer when vv's htslib has libcurl (`vv --formats` lists the schemes). BAM /
+  CRAM, VCF / BCF, tabix-indexed text and FASTA go through htslib, so `-r`
+  fetches the remote index and only the overlapping blocks; Parquet, Arrow,
+  ORC and POD5 read byte ranges; text formats stream; HDF5, SQLite, DuckDB,
+  spreadsheets, NumPy, `.zarr.zip`, bigWig and 2bit are copied to a temporary
+  file first. A server without range support is read through a copy. A
+  URL's `?query` is ignored for format detection and left out of the `File:`
+  footer. The static Linux binary has no libcurl and says so. CMake option
+  `VV_PREFER_STATIC=OFF` links the system's shared libraries even next to
+  `../static-libs` / `../arrow-install`.
 
 ### Changed
 - Building vv no longer needs git or network access: the configure step

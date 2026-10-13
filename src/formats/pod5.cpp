@@ -378,7 +378,7 @@ std::string open_pod5(const std::string& path, std::shared_ptr<arrow::io::Random
 }  // namespace
 
 std::string open_pod5_source(const std::string& path, std::unique_ptr<TabularSource>* out) {
-    auto rf = arrow::io::ReadableFile::Open(path);
+    auto rf = open_input_file(path);
     if (!rf.ok()) return "Cannot open '" + path + "': " + rf.status().ToString();
     return open_pod5(path, *rf, out);
 }

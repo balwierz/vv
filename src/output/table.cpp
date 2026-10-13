@@ -541,7 +541,7 @@ void print_schema_block(TabularSource& src) {
     print_schema_columns(*src.schema());
 
     // File info footer
-    std::printf("\n%sFile:%s %s\n", g_color.meta_key, g_color.reset, src.path().c_str());
+    std::printf("\n%sFile:%s %s\n", g_color.meta_key, g_color.reset, display_path(src.path()).c_str());
     std::printf("%s%s%s\n", g_color.meta_key, src.footer().c_str(), g_color.reset);
     if (!src.created_by().empty())
         std::printf("%sCreated by:%s %s\n", g_color.meta_key, g_color.reset,
@@ -584,7 +584,7 @@ void render_multitab_schema(
         print_schema_columns(*t->schema(), nc > kWideTab ? 24 : 0);
         std::printf("%s%s%s\n", g_color.meta_key, t->footer().c_str(), g_color.reset);
     }
-    std::printf("\n%sFile:%s %s\n", g_color.meta_key, g_color.reset, path.c_str());
+    std::printf("\n%sFile:%s %s\n", g_color.meta_key, g_color.reset, display_path(path).c_str());
     std::printf("%s%s%s\n", g_color.meta_key, tab_list_line(tabs).c_str(), g_color.reset);
 }
 
@@ -609,7 +609,7 @@ std::string render_multitab_table(
         std::printf("%s%s%s\n", g_color.meta_key, t->footer().c_str(), g_color.reset);
     }
     std::printf("\n%sFile:%s %s\n", g_color.meta_key, g_color.reset,
-                tabs.empty() ? "" : tabs.front()->path().c_str());
+                tabs.empty() ? "" : display_path(tabs.front()->path()).c_str());
     std::printf("%s%s%s\n", g_color.meta_key, tab_list_line(tabs).c_str(), g_color.reset);
     return "";
 }

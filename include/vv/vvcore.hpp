@@ -330,6 +330,12 @@ struct PreviewLimit {
 // paging, read_first(rows, cols, &out) for fast previews (thumbnails),
 // change_slice() for NPZ 3-D+ arrays, and tab_label()/footer()/schema() for
 // chrome. Concrete subclasses live inside libvvcore.
+// The name to show for `path`: for a temporary local copy of a remote file,
+// the URL it was fetched from; otherwise `path` itself.
+std::string display_path(const std::string& path);
+// The last component of display_path(path), without a URL's ?query.
+std::string display_basename(const std::string& path);
+
 class TabularSource {
 public:
     virtual ~TabularSource() = default;
@@ -412,11 +418,7 @@ public:
     // Short label shown on the multi-tab TUI tab bar. Defaults to the
     // basename of path(); sub-tab sources (xlsx sheets, sqlite tables,
     // HDF5 datasets) override to return the sheet/table/dataset name.
-    virtual std::string tab_label() const {
-        const std::string& p = path();
-        auto s = p.rfind('/');
-        return (s == std::string::npos) ? p : p.substr(s + 1);
-    }
+    virtual std::string tab_label() const { return display_basename(path()); }
     // One-line footer shown after the table / in the TUI status bar.
     virtual std::string footer() const = 0;
     virtual std::string created_by() const { return ""; }

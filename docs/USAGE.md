@@ -696,6 +696,56 @@ Browser source tree in 2000.
 `--regions-file` entries are always parsed as BED (UCSC) regardless
 of `--coords`, per the BED spec.
 
+# Remote files (`https://`, `s3://`, `gs://`)
+
+A URL works wherever a file name does — in `vv`, in `vvg`, with `-r`:
+
+```sh
+$ vv -r 20:10000000-10000200 https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/phase3/data/NA12878/alignment/NA12878.chrom20.ILLUMINA.bwa.CEU.low_coverage.20121211.bam
+$ vv --count -r 22:16050000-16060000 https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr22.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz
+$ vv s3://my-bucket/cells.h5ad --tab obs
+```
+
+vv reads URLs through htslib, so what a build supports depends on its
+htslib: one built with libcurl (the distributions', Homebrew's,
+Bioconda's) reads `https://`, `http://`, `ftp://`, `s3://` and `gs://`.
+`vv --formats` ends with the list. The static Linux binary and the
+`.deb` built from it have no libcurl and say so when given a URL; fetch
+the file first there (`curl -sL URL | vv -`).
+
+How each format is read:
+
+* **BAM / CRAM, VCF / BCF, tabix-indexed text, FASTA** — by htslib
+  itself, as `samtools` and `tabix` do: `-r` fetches the index
+  (`URL.bai`, `URL.tbi`, `URL.csi`, `URL.fai`) and then only the
+  blocks that overlap the windows. Nothing is written to the working
+  directory (vv reads the index in place rather than keeping htslib's
+  local copy).
+* **Parquet, Arrow / Feather, ORC, POD5, LociSSD** — byte ranges, as a
+  local file: a preview reads the footer and the first row group.
+* **TSV / CSV, BED, GFF, JSON, Markdown, plain text** (compressed too)
+  — streamed: `-n 5` reads the first block only.
+* **HDF5 / AnnData / Loom / Cooler, SQLite, DuckDB, xlsx / ods,
+  `.npz` / `.npy`, `.zarr.zip`, bigWig / bigBed, 2bit** — their
+  libraries open a local path, so the file is copied to a temporary
+  file first (progress on stderr; removed when vv exits; `TMPDIR`
+  picks the directory). A Zarr *directory* store cannot be read from
+  a URL — zip it.
+
+A server that does not accept range requests is read front to back:
+formats that need to seek are then copied first as well, and `-r` on
+such a server is an error. A pre-signed URL works as given; its
+`?query` is ignored for format detection and is not printed in the
+`File:` footer.
+
+S3 and Google Cloud Storage credentials are read by htslib's plugins,
+from the variables its manual pages (`htslib-s3-plugin(7)`) list:
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`,
+`AWS_DEFAULT_REGION`, `AWS_PROFILE` and `AWS_SHARED_CREDENTIALS_FILE`
+(default `~/.aws/credentials`), `HTS_S3_HOST` and `HTS_S3_ADDRESS_STYLE`
+for S3-compatible stores; `GCS_OAUTH_TOKEN` and
+`GCS_REQUESTER_PAYS_PROJECT` for `gs://`.
+
 # Data exploration
 
 ## `--schema`

@@ -187,7 +187,11 @@ void print_formats(bool as_json) {
     std::printf(
         "\ngz: reads compressed input — gzip / bgzip, zstandard, bzip2 and xz\n"
         "(.gz .bgz .zst .bz2 .xz), detected by content. On compressed text, range\n"
-        "queries (-r) need bgzip and an index (tabix; .fai + .gzi for FASTA).\n");
+        "queries (-r) need bgzip and an index (tabix; .fai + .gzi for FASTA).\n"
+        "\nremote: URL schemes this build reads: %s\n"
+        "(through htslib; HDF5, SQLite, DuckDB, spreadsheets, NumPy, .zarr.zip,\n"
+        "bigWig / bigBed and 2bit files are copied to a temporary file first)\n",
+        remote_schemes().c_str());
 }
 
 static void print_usage(const char* prog) {

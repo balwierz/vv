@@ -6012,4 +6012,81 @@ if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
         "1000 rows"
 fi
 
+
+# ── Remote URLs: https:// / s3:// / gs:// through htslib's hFILE layer ───────
+# A build whose htslib has libcurl reads a URL like a local file: htslib's own
+# readers (BAM, VCF.gz + tabix, FASTA) take it as it is, the Arrow readers read
+# byte ranges, and formats whose libraries need a local path (HDF5, xlsx,
+# SQLite) are copied to a temporary file first. Every output is compared with
+# the same command on the local file, from a server on 127.0.0.1 that serves
+# tests/data with and without range support. A build without libcurl (the
+# static binary) says so instead.
+REMOTE=$("$VV" --formats | sed -n 's/^remote: URL schemes this build reads: //p')
+assert_contains "remote_schemes_listed" "$("$VV" --formats)" "remote: URL schemes this build reads:"
+R_ERR=$(run_with_timeout 60 "$VV" --count "https://127.0.0.1:9/x.parquet" 2>&1)
+assert_exit_code "remote_unreachable_exits_1" 1 run_with_timeout 60 "$VV" --count "https://127.0.0.1:9/x.parquet"
+case "$R_ERR" in
+    *"cannot open https:// URLs"*|*"cannot open the URL"*|*"Cannot open"*)
+        PASS=$((PASS+1)); echo "  ok    remote_unreachable_message" ;;
+    *)  FAIL=$((FAIL+1)); echo "  FAIL  remote_unreachable_message: $R_ERR" ;;
+esac
+case " $REMOTE " in
+    *" http "*) HAVE_HTTP=1 ;;
+    *)          HAVE_HTTP=0; SKIP=$((SKIP+1)); echo "  skip  remote URLs (this build reads no http:// URLs)" ;;
+esac
+if [ "$HAVE_HTTP" = 1 ] && require "remote URLs" python3; then
+    python3 "$HERE/http_range_server.py" "$DATA" --ranges > "$TMP/srv_ranges.port" 2>/dev/null &
+    SRV_R=$!
+    python3 "$HERE/http_range_server.py" "$DATA" > "$TMP/srv_plain.port" 2>/dev/null &
+    SRV_P=$!
+    trap 'kill $SRV_R $SRV_P 2>/dev/null; rm -rf "$TMP"' EXIT
+    for _ in $(seq 100); do
+        [ -s "$TMP/srv_ranges.port" ] && [ -s "$TMP/srv_plain.port" ] && break
+        sleep 0.1
+    done
+    U="http://127.0.0.1:$(cat "$TMP/srv_ranges.port")"
+    UP="http://127.0.0.1:$(cat "$TMP/srv_plain.port")"
+    remote_same() {   # name, base URL, file, vv args...
+        local name="$1" base="$2" f="$3"; shift 3
+        "$VV" --color=never "$@" "$DATA/$f" > "$TMP/remote.local" 2>&1
+        run_with_timeout 60 "$VV" --color=never "$@" "$base/$f" > "$TMP/remote.url" 2>&1
+        assert_eq_file "$name" "$TMP/remote.url" "$TMP/remote.local"
+    }
+    remote_same remote_parquet_tsv   "$U" tiny.parquet --tsv
+    remote_same remote_arrow_tsv     "$U" tiny.arrow --tsv
+    remote_same remote_tsv_head      "$U" tiny.tsv --tsv -n 3
+    remote_same remote_gtf_tsv       "$U" tiny.gtf --tsv
+    remote_same remote_fastq_tsv     "$U" tiny.fq --tsv
+    remote_same remote_bam_region    "$U" tiny.bam --tsv -r chr1:1-1000
+    remote_same remote_vcf_tabix     "$U" tiny.vcf.gz --tsv -r chr1:1-1000
+    remote_same remote_bed_tabix     "$U" tiny.bed.gz --tsv -r chr1:5000-15000
+    remote_same remote_fasta_region  "$U" tiny.fa --tsv -r seq1:5-12
+    remote_same remote_bam_count     "$U" tiny.bam --count
+    remote_same remote_h5ad_obs      "$U" tiny.h5ad --tsv --tab obs
+    remote_same remote_xlsx_tsv      "$U" tiny.xlsx --tsv
+    remote_same remote_sqlite_tsv    "$U" tiny.sqlite --tsv
+    # A server without range support: the seeking readers read a local copy.
+    remote_same remote_noranges_parquet "$UP" tiny.parquet --tsv
+    remote_same remote_noranges_arrow   "$UP" tiny.arrow --tsv
+    # A pre-signed URL's query is ignored for dispatch and never echoed.
+    assert_eq_file_inline "remote_query_dispatch" \
+        "$(run_with_timeout 60 "$VV" --count "$U/tiny.parquet?X-Amz-Signature=abc" 2>&1)" "20"
+    R_TAB=$(run_with_timeout 60 "$VV" --color=never -n 1 -t "$U/tiny.parquet?X-Amz-Signature=abc" 2>&1)
+    assert_contains "remote_footer_names_url" "$R_TAB" "File: $U/tiny.parquet"
+    refute_contains "remote_footer_hides_query" "$R_TAB" "X-Amz-Signature"
+    assert_exit_code "remote_404_exits_1" 1 run_with_timeout 60 "$VV" --count "$U/nope.parquet"
+    assert_contains "remote_404_message" "$(run_with_timeout 60 "$VV" --count "$U/nope.parquet" 2>&1)" \
+        "cannot open the URL"
+    assert_contains "remote_zarr_dir_refused" \
+        "$(run_with_timeout 60 "$VV" --count "$U/tiny.zarr" 2>&1)" "Zarr directory store"
+    # Neither the copies nor htslib's index downloads stay behind.
+    mkdir -p "$TMP/rtmp" "$TMP/rcwd"
+    (cd "$TMP/rcwd" && TMPDIR="$TMP/rtmp" run_with_timeout 60 "$VV" --count "$U/tiny.h5ad" >/dev/null 2>&1 &&
+        run_with_timeout 60 "$VV" --count -r chr1:1-1000 "$U/tiny.bam" >/dev/null 2>&1)
+    assert_eq_file_inline "remote_copies_removed" "$(ls -A "$TMP/rtmp")" ""
+    assert_eq_file_inline "remote_index_not_saved_in_cwd" "$(ls -A "$TMP/rcwd")" ""
+    kill $SRV_R $SRV_P 2>/dev/null
+    trap 'rm -rf "$TMP"' EXIT
+fi
+
 summarize

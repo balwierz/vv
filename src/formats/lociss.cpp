@@ -585,7 +585,7 @@ filter_array(const std::shared_ptr<arrow::Array>& a, const std::vector<bool>& ke
 // the index and mask rows per the §5 overlap test.
 class LocissV4Source : public TabularSource {
     std::string                               path_;
-    std::shared_ptr<arrow::io::ReadableFile>  data_;
+    std::shared_ptr<arrow::io::RandomAccessFile> data_;
     std::shared_ptr<arrow::Schema>            schema_;
     int       n_blocks_ = 0, n_cols_ = 0, cw_ = 4;
     int64_t   row_count_ = 0;
@@ -783,7 +783,7 @@ std::string LocissV4Source::open(const std::string& path, const Config& cfg,
     // Open the data file first — the LSI1 index may live inline (V4.1) or in a
     // sidecar (legacy V4); the column-chunk pointers are absolute into this file
     // either way.
-    auto df = arrow::io::ReadableFile::Open(path);
+    auto df = open_input_file(path);
     if (!df.ok()) return "LociSSD v4: cannot open '" + path + "': " + df.status().ToString();
     self->data_ = df.ValueOrDie();
     int64_t fsize = 0;

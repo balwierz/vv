@@ -94,7 +94,8 @@ src/core/            common (colours, themes, formatting), source (TabularSource
                      modes (markdown / text / JSON document modes),
                      summary (summarize_columns: --describe / --value-counts /
                      vvg statistics), format_fast (cell text appended per
-                     column type, for the exporters), platform (the calls whose POSIX and
+                     column type, for the exporters), remote (URLs through
+                     htslib's hFILE: open_input_file), platform (the calls whose POSIX and
                      Windows forms differ: terminal size, globbing, temp files,
                      file mapping, console modes)
 src/formats/         one file per reader family: parquet, lociss, delimited,

@@ -148,6 +148,36 @@ bool path_is_pipe(const std::string& path) {
 #endif
 }
 
+int stderr_mute() {
+    std::fflush(stderr);
+#ifdef _WIN32
+    const int saved = _dup(_fileno(stderr));
+    const int null = _open("NUL", _O_WRONLY);
+    if (saved < 0 || null < 0) { if (saved >= 0) _close(saved); if (null >= 0) _close(null); return -1; }
+    _dup2(null, _fileno(stderr));
+    _close(null);
+#else
+    const int saved = ::dup(STDERR_FILENO);
+    const int null = ::open("/dev/null", O_WRONLY);
+    if (saved < 0 || null < 0) { if (saved >= 0) ::close(saved); if (null >= 0) ::close(null); return -1; }
+    ::dup2(null, STDERR_FILENO);
+    ::close(null);
+#endif
+    return saved;
+}
+
+void stderr_unmute(int saved) {
+    if (saved < 0) return;
+    std::fflush(stderr);
+#ifdef _WIN32
+    _dup2(saved, _fileno(stderr));
+    _close(saved);
+#else
+    ::dup2(saved, STDERR_FILENO);
+    ::close(saved);
+#endif
+}
+
 void init_console() {
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);

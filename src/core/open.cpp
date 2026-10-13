@@ -37,7 +37,7 @@ static std::string sniff_fd(int fd, size_t n, std::string* out_buf) {
 // temporary file, named with the format's extension so the normal dispatch
 // opens it, and the file is removed when vv exits — normally, or on SIGINT /
 // SIGTERM / SIGHUP (the TUI's handler calls remove_spooled_files too).
-static char                  g_spooled[8][4096];
+static char                  g_spooled[64][4096];
 static volatile sig_atomic_t g_n_spooled = 0;
 
 void remove_spooled_files() {             // async-signal-safe: unlink only
@@ -60,10 +60,32 @@ static void spool_register(const std::string& path) {
             if (prev != SIG_DFL) signal(sig, prev);   // someone else handles it
         }
     }
-    if (g_n_spooled < 8 && path.size() < sizeof g_spooled[0]) {
+    if (g_n_spooled < 64 && path.size() < sizeof g_spooled[0]) {
         std::memcpy(g_spooled[g_n_spooled], path.c_str(), path.size() + 1);
         g_n_spooled = g_n_spooled + 1;
     }
+}
+
+// Temporary local copies of remote files, and the URL each came from.
+static std::mutex                         g_remote_copies_mu;
+static std::map<std::string, std::string> g_remote_copies;
+
+std::string display_path(const std::string& path) {
+    std::string p = path;
+    {
+        std::lock_guard<std::mutex> g(g_remote_copies_mu);
+        auto it = g_remote_copies.find(path);
+        if (it != g_remote_copies.end()) p = it->second;
+    }
+    // Never echo a URL's query: a pre-signed URL carries its credentials there.
+    return strip_url_query(p);
+}
+
+std::string display_basename(const std::string& path) {
+    const std::string p = display_path(path);
+    if (is_remote_url(p)) return url_display_name(p);
+    const size_t s = p.find_last_of('/');
+    return s == std::string::npos ? p : p.substr(s + 1);
 }
 
 // The extension of the binary format `head` (the first bytes of the input)
@@ -178,7 +200,8 @@ std::string human_bytes(int64_t sz) {
 // cleared at the end.
 std::string spool_stream(const std::shared_ptr<arrow::io::InputStream>& in,
                          const std::string& ext, std::string* path_out,
-                         int64_t* bytes_out, const std::string& progress) {
+                         int64_t* bytes_out, const std::string& progress,
+                         const char* verb, int64_t expected) {
     std::string path = temp_dir() + "/vv-pipe-XXXXXX";
     int out = make_temp_file(&path);
     if (out < 0) return "cannot create a temporary file: " + std::string(std::strerror(errno)) +
@@ -186,7 +209,7 @@ std::string spool_stream(const std::shared_ptr<arrow::io::InputStream>& in,
     spool_register(path);
     int64_t total = 0, shown_at = 0;
     const bool show = !progress.empty() && isatty(STDERR_FILENO);
-    const std::string shown_name = progress.substr(progress.find_last_of('/') + 1);
+    const std::string shown_name = display_basename(progress);
     std::string err;
     for (;;) {
         auto buf = in->Read(1 << 20);
@@ -202,7 +225,11 @@ std::string spool_stream(const std::shared_ptr<arrow::io::InputStream>& in,
         if (!err.empty()) break;
         if (show && total - shown_at >= (32 << 20)) {
             shown_at = total;
-            std::fprintf(stderr, "\rvv: decompressing %s: %s ", shown_name.c_str(), human_bytes(total).c_str());
+            if (expected > 0)
+                std::fprintf(stderr, "\rvv: %s %s: %s of %s ", verb, shown_name.c_str(),
+                             human_bytes(total).c_str(), human_bytes(expected).c_str());
+            else
+                std::fprintf(stderr, "\rvv: %s %s: %s ", verb, shown_name.c_str(), human_bytes(total).c_str());
             std::fflush(stderr);
         }
     }
@@ -238,11 +265,11 @@ static std::string sniff_text_format(const std::string& head) {
     return "";
 }
 
-// True when the regular file at `path` begins like an Arrow IPC stream.
+// True when the file (or URL) at `path` begins like an Arrow IPC stream.
 static bool file_is_ipc_stream(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
     uint8_t m[8] = {0};
-    return f.read(reinterpret_cast<char*>(m), 8) && looks_like_ipc_stream(m, 8);
+    size_t got = 0;
+    return read_head(path, m, 8, &got) && got == 8 && looks_like_ipc_stream(m, 8);
 }
 
 // ── Directory / partitioned-dataset source ────────────────────────────────────
@@ -817,9 +844,9 @@ static TsvDialect tsv_dialect_of(const std::string& det) {
 // variant-major, or 0x00, sample-major). A text BED cannot start with it:
 // 0x1b is ESC.
 static bool is_plink_bed(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
     unsigned char m[2] = {0, 0};
-    return f.read(reinterpret_cast<char*>(m), 2) && m[0] == 0x6c && m[1] == 0x1b;
+    size_t got = 0;
+    return read_head(path, m, 2, &got) && got == 2 && m[0] == 0x6c && m[1] == 0x1b;
 }
 
 // The refusal for a PLINK genotype file, with the plink2 command that
@@ -940,8 +967,50 @@ int64_t anndata_df_row_cap(const Config& cfg) {
         : ((cfg.head_rows_set && !whole_frame) ? (int64_t)cfg.head_rows : -1);
 }
 
+// A remote file whose reader needs a local path: copied to a temporary file
+// named after it (removed at exit), opened from there, shown by its URL.
+static std::string open_remote_copy(const std::string& url, const Config& cfg,
+                                    std::unique_ptr<TabularSource>* out) {
+    auto f = open_input_file(url);
+    if (!f.ok()) return f.status().message();
+    int64_t size = -1;
+    if (auto sz = (*f)->GetSize(); sz.ok()) size = *sz;
+    std::string tmp;
+    int64_t bytes = 0;
+    if (auto e = spool_stream(*f, "-" + url_display_name(url), &tmp, &bytes, url, "fetching", size);
+        !e.empty())
+        return e;
+    (void)(*f)->Close();
+    {
+        std::lock_guard<std::mutex> g(g_remote_copies_mu);
+        g_remote_copies[tmp] = url;
+    }
+    return open_source_dispatch(tmp, cfg, out);
+}
+
+static std::string dispatch_by_kind(const std::string& path, const Config& cfg,
+                                    std::unique_ptr<TabularSource>* out);
+
 std::string open_source_dispatch(const std::string& path, const Config& cfg,
                          std::unique_ptr<TabularSource>* out) {
+    std::string err = dispatch_by_kind(path, cfg, out);
+    // A server that does not accept range requests serves a URL front to
+    // back only: a reader that seeks fails. Read it from a local copy instead
+    // — unless -r needs the file's index, which stays on the server.
+    if (!err.empty() && is_remote_url(path) &&
+        (err.find("Illegal seek") != std::string::npos ||
+         err.find("range requests") != std::string::npos)) {
+        if (!cfg.region.empty())
+            return "the server does not accept range requests, which -r on a "
+                   "remote file needs; download the file and its index first";
+        out->reset();
+        return open_remote_copy(path, cfg, out);
+    }
+    return err;
+}
+
+static std::string dispatch_by_kind(const std::string& path, const Config& cfg,
+                                    std::unique_ptr<TabularSource>* out) {
     // ── Determine file kind ──────────────────────────────────────────────────
     bool        is_parquet = false;
     DelimKind   dk         = DelimKind::TSV;
@@ -969,6 +1038,28 @@ std::string open_source_dispatch(const std::string& path, const Config& cfg,
         if (cfg.pileup)
             return "--tags cannot be combined with --pileup — pileup rows are "
                    "per-base counts, not alignment records";
+    }
+
+    // ── A URL (https://, s3://, gs://, ...) ─────────────────────────────────
+    // Read through htslib's hFILE layer (remote.cpp). Formats whose libraries
+    // open a local path (HDF5, SQLite, DuckDB, the zip containers, bigWig,
+    // 2bit) are copied to a temporary file first; everything else streams or
+    // reads ranges from the URL through the ladder below.
+    if (is_remote_url(path)) {
+        if (!remote_supported(path)) return remote_unsupported_message(path);
+        const std::string u = strip_url_query(det);
+        std::string tail = u;
+        while (tail.size() > 1 && tail.back() == '/') tail.pop_back();
+        if (fends_ci(tail, ".zarr"))
+            return "a Zarr directory store cannot be read from a URL; zip it "
+                   "(.zarr.zip) or copy it locally";
+        static const char* const kLocalOnly[] = {
+            ".h5ad", ".h5", ".hdf5", ".he5", ".loom", ".h5mu", ".h5seurat", ".fast5", ".nc", ".nc4",
+            ".cool", ".mcool", ".scool", ".sqlite", ".sqlite3", ".db", ".duckdb", ".ddb",
+            ".xlsx", ".xlsm", ".ods", ".fods", ".npz", ".npy", ".zarr.zip",
+            ".2bit", ".bw", ".bigwig", ".bb", ".bigbed"};
+        for (const char* ext : kLocalOnly)
+            if (fends_ci(u, ext)) return open_remote_copy(path, cfg, out);
     }
 
     // A directory is a dataset: concatenate the data files under it. Checked
@@ -1413,7 +1504,7 @@ std::string open_source_dispatch(const std::string& path, const Config& cfg,
         // errors on binary files (`Expected 1 columns, got 2: …<garbage>`)
         // when the user's file was e.g. `.bigwig` (case mismatch) or a
         // format we just don't know.
-        auto rf = arrow::io::ReadableFile::Open(path);
+        auto rf = open_input_file(path);
         if (!rf.ok()) return "Cannot open '" + path + "': " + rf.status().ToString();
         auto buf = rf.ValueOrDie()->Read(8);
         (void)rf.ValueOrDie()->Close();
