@@ -911,12 +911,17 @@ accession or locus).
 \fB.cool\fR / \fB.mcool\fR (Cooler) \(en the pixels tabs keep the region
 \(mu region submatrix (both bins in a window), found through the bin1 index;
 the bins tabs keep the bins overlapping a window.
+.IP \(bu 2
+FASTA with a \fB.fai\fR index (\fBsamtools faidx\fR; a bgzipped FASTA also
+needs its \fB.gzi\fR) \(en one row per window: \fBname\fR, \fBstart\fR,
+\fBend\fR (0-based half-open), \fBlength\fR and \fBseq\fR, the bases
+\fBsamtools faidx\fR prints. vv never writes the index.
 .RE
 .IP
 Plain \fB.parquet\fR with chrom/start/end columns works without a
 LociSSD manifest (see \fB\-\-region\-cols\fR for column-name overrides).
 .IP
-A format with no region index (Arrow IPC, ORC, FASTA, SQLite, spreadsheets,
+A format with no region index (Arrow IPC, ORC, FASTQ, SQLite, spreadsheets,
 \&...) prints a warning to standard error and shows the whole file, rather
 than silently presenting an unfiltered result as a region query.
 .TP

@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `--cite` prints how to cite vv: a line of text and a BibTeX entry with the
   version, the release year and, once the release has one, the DOI. The
   year and DOI are checked against `CITATION.cff` by the test suite.
+- `-r` on a FASTA file with a `.fai` index (and `.gzi` when bgzipped): one row
+  per window with `name`, `start`, `end` (0-based half-open), `length` and
+  `seq`, the bases `samtools faidx` prints for the same window. `--coords`,
+  `--slop` and `--regions-file` apply. A FASTA without an index is an error
+  that names `samtools faidx`; vv does not write the index. Before, `-r` on a
+  FASTA warned and showed every record.
 
 ### Changed
 - Building vv no longer needs git or network access: the configure step

@@ -1315,7 +1315,9 @@ std::string open_source_dispatch(const std::string& path, const Config& cfg,
         return "";
     } else if (fastx_ext(path, det, {".fa", ".fasta", ".fna", ".faa", ".ffn", ".frn"})) {
         std::unique_ptr<TabularSource> src;
-        std::string err = open_fastx_source(path, /*is_fastq=*/false, cfg, &src);
+        std::string err = cfg.region.empty()
+            ? open_fastx_source(path, /*is_fastq=*/false, cfg, &src)
+            : open_faidx_source(path, cfg, &src);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";

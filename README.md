@@ -22,7 +22,7 @@ More screenshots, one per format: **[docs/formats.md](docs/formats.md)**.
 - **Any format, one command** — dispatched by extension or content; gzip, bgzip, zstd, bzip2 and xz on the fly; stdin and pipes.
 - **Terminal viewer** — scroll, search (`/`), filter (`&`), sort (`s`), column stats (`S`), record detail (`Enter`), tabs; a folding tree for JSON.
 - **Desktop viewer** — [vvg](docs/vvg.md): the same views in a Qt6 window, Dolphin thumbnails on KDE.
-- **Region queries** — `-r chr1:1000-2000` on indexed BAM / CRAM / VCF / BCF / BED / GFF / bigWig, and Parquet with chrom / start / end columns.
+- **Region queries** — `-r chr1:1000-2000` on indexed BAM / CRAM / VCF / BCF / BED / GFF / bigWig / FASTA (`.fai`), and Parquet with chrom / start / end columns.
 - **Filter, select, sort** — `--filter 'QUAL > 30 and FILTER == "PASS"'`, `--select 'chr*,@numeric'`, `--sort POS:desc`.
 - **Convert** — `--tsv`, `--csv`, `--json`, `--ndjson`, `--md`, `--parquet out.parquet`, `--arrow out.arrow`.
 - **Large files** — reads only what the screen needs, so big Parquet, BAM and JSON files open without a full scan.

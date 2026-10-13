@@ -1550,6 +1550,94 @@ std::string open_fastx_source(const std::string& path, bool is_fastq, const Conf
     return e;
 }
 
+// ── FASTA -r: sequences of windows, through a .fai index ─────────────────────
+//
+// `vv -r chr1:100-200 ref.fa` returns one row per window — name, start, end
+// (0-based half-open, as -r is canonicalised), length, seq — fetched with
+// faidx, like `samtools faidx ref.fa chr1:101-200`. The index (.fai, and .gzi
+// for a bgzipped FASTA) must exist; vv never writes one next to the input.
+static int64_t fai_seq_length(const faidx_t* fai, const char* name) {
+#if HTS_VERSION >= 101800
+    return (int64_t)faidx_seq_len64(fai, name);
+#else
+    return (int64_t)faidx_seq_len(fai, name);
+#endif
+}
+
+std::string open_faidx_source(const std::string& path, const Config& cfg,
+                              std::unique_ptr<TabularSource>* out) {
+    // A plain-gzip FASTA cannot be indexed; say that rather than "no index".
+    if (htsFile* f = hts_open(path.c_str(), "r")) {
+        const bool gz = hts_get_format(f)->compression == gzip;
+        hts_close(f);
+        if (gz)
+            return "gzip-compressed, not bgzip-compressed: -r on a FASTA needs "
+                   "`bgzip` and `samtools faidx` (or a plain FASTA and its .fai)";
+    }
+    const int level = hts_get_log_level();
+    hts_set_log_level(HTS_LOG_OFF);
+    faidx_t* fai = fai_load3(path.c_str(), nullptr, nullptr, 0);
+    hts_set_log_level((htsLogLevel)level);
+    if (!fai)
+        return "-r on a FASTA needs its .fai index (run `samtools faidx " + path + "`)";
+    std::unique_ptr<faidx_t, void (*)(faidx_t*)> guard(fai, fai_destroy);
+
+    std::vector<Region> windows = parse_region_list(cfg.region, cfg.coords_one_based);
+    resolve_region_chroms(windows, [&](const std::string& n) {
+        return faidx_has_seq(fai, n.c_str()) != 0;
+    }, path);
+
+    arrow::StringBuilder name_b, seq_b;
+    arrow::Int64Builder  start_b, end_b, len_b;
+    for (const Region& w : windows) {
+        if (!faidx_has_seq(fai, w.chrom.c_str()))
+            return "no sequence named '" + w.chrom + "' in the .fai index";
+        const int64_t n = fai_seq_length(fai, w.chrom.c_str());
+        const int64_t beg = std::clamp<int64_t>(w.start == INT64_MIN ? 0 : w.start, 0, n);
+        int64_t end = w.end == INT64_MAX ? n : w.end;
+        if (end > n) {
+            std::fprintf(stderr, "vv: %s: %s ends past the end of the sequence (%lld bp); "
+                         "truncated\n", path.c_str(), w.chrom.c_str(), (long long)n);
+            end = n;
+        }
+        end = std::max(end, beg);
+        std::string seq;
+        if (end > beg) {
+            hts_pos_t got = 0;
+            char* buf = faidx_fetch_seq64(fai, w.chrom.c_str(), beg, end - 1, &got);
+            if (!buf || got < 0) {
+                std::free(buf);
+                return "Cannot read " + w.chrom + " from '" + path + "'";
+            }
+            seq.assign(buf, (size_t)got);
+            std::free(buf);
+        }
+        ARROW_UNUSED(name_b.Append(w.chrom));
+        ARROW_UNUSED(start_b.Append(beg));
+        ARROW_UNUSED(end_b.Append(end));
+        ARROW_UNUSED(len_b.Append((int64_t)seq.size()));
+        ARROW_UNUSED(seq_b.Append(seq));
+    }
+    std::shared_ptr<arrow::Array> a_name, a_start, a_end, a_len, a_seq;
+    if (!name_b.Finish(&a_name).ok() || !start_b.Finish(&a_start).ok() ||
+        !end_b.Finish(&a_end).ok() || !len_b.Finish(&a_len).ok() || !seq_b.Finish(&a_seq).ok())
+        return "Cannot build the region table for '" + path + "'";
+    auto schema = arrow::schema({
+        arrow::field("name", arrow::utf8()), arrow::field("start", arrow::int64()),
+        arrow::field("end", arrow::int64()), arrow::field("length", arrow::int64()),
+        arrow::field("seq", arrow::utf8())});
+    auto tbl = arrow::Table::Make(schema, {a_name, a_start, a_end, a_len, a_seq});
+    class FaidxSource : public MemoryTableSource {
+    public:
+        using MemoryTableSource::MemoryTableSource;
+        bool region_applied() const override { return true; }
+    };
+    *out = std::make_unique<FaidxSource>(
+        tbl, path, "Format: FASTA (faidx; " + std::to_string(windows.size()) +
+                   (windows.size() == 1 ? " region)" : " regions)"));
+    return "";
+}
+
 // ── mpileup --decode-pileup helpers ──────────────────────────────────────────
 //
 // Explodes the packed `bases` cell of an mpileup row into per-allele

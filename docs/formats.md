@@ -104,14 +104,16 @@ Try: `vv --expand attributes --filter 'feature == "gene"' --select seqname,start
 ## FASTA / FASTQ
 
 `.fa` `.fasta` `.fna` `.faa` `.fq` `.fastq` (plain or gzip / bgzf) — one row per
-record; `--seq-stats` summarises a file (N50, GC, Q20).
+record; `--seq-stats` summarises a file (N50, GC, Q20). With a `.fai` index,
+`-r chr1:100-200` on a FASTA returns the bases of each window, as
+`samtools faidx` does.
 
 ![vv: FASTQ reads](img/vv/fastq.svg)
 ![vv: FASTA records](img/vv/fasta.svg)
 ![vv --seq-stats](img/vv/seq-stats.svg)
 
 Try: `vv reads.fq.gz` · `vv --seq-stats reads.fq.gz` ·
-`vv --filter 'name ~ "^chr17"' genome.fa`.
+`vv --filter 'name ~ "^chr17"' genome.fa` · `vv -r chr17:7668401-7687550 genome.fa`.
 More: [`--seq-stats`](USAGE.md#--seq-stats-fasta--fastq-summary).
 
 ## bigWig / bigBed / 2bit / WIG

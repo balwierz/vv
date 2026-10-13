@@ -93,6 +93,9 @@ run_case vcf_tsv      --tsv --no-header "$DATA/tiny.vcf"
 run_case vcf_gz_tsv   --tsv --no-header "$DATA/tiny.vcf.gz"
 run_case fasta_tsv    --tsv --no-header "$DATA/tiny.fa"
 run_case fasta_gz_tsv --tsv --no-header "$DATA/tiny.fa.gz"
+run_case fasta_region_tsv       --tsv -r seq1:5-12 "$DATA/tiny.fa"
+run_case fasta_region_multi_tsv --tsv -r 'seq1:0-4,seq2,seq3:10-19' "$DATA/tiny.fa"
+run_case fasta_region_bgzf_tsv  --tsv -r 'seq2:2-6,seq3' "$DATA/tiny.faidx.fa.gz"
 run_case fastq_tsv    --tsv --no-header "$DATA/tiny.fq"
 run_case fastq_gz_tsv --tsv --no-header "$DATA/tiny.fq.gz"
 run_case tsv_tsv      --tsv --no-header "$DATA/tiny.tsv"
@@ -4747,6 +4750,29 @@ assert_exit_code "region_unsupported_still_succeeds" 0 \
 # ...but a format that DOES support it must not emit the warning.
 REGOK=$("$VV" --color=never --count -r chr1:1-2 "$DATA/tiny.bed.gz" 2>&1 >/dev/null || true)
 refute_contains "region_supported_no_warn" "$REGOK" "no region index"
+
+# -r on a FASTA: one row per window from the .fai index. Same windows under
+# --coords NCBI (1-based inclusive) and the UCSC default; --slop widens; an
+# end past the sequence is truncated with a note; a missing index, a plain
+# gzip file and an unknown sequence are errors naming the fix.
+FA_REG() { "$VV" --tsv --no-header --select seq "$@" 2>&1; }
+assert_eq_file_inline "fasta_region_ncbi_coords" "$(FA_REG --coords NCBI -r seq1:6-12 "$DATA/tiny.fa")" \
+    "$(FA_REG -r seq1:5-12 "$DATA/tiny.fa")"
+assert_eq_file_inline "fasta_region_slop" "$(FA_REG -r seq1:5-12 --slop 2 "$DATA/tiny.fa")" "TACGTACGTAC"
+assert_eq_file_inline "fasta_region_whole_contig_length" \
+    "$("$VV" --tsv --no-header --select length -r seq1 "$DATA/tiny.fa")" "32"
+FA_PAST=$("$VV" --tsv --no-header -r seq1:30-100 "$DATA/tiny.fa" 2>&1)
+assert_contains "fasta_region_past_end_truncated" "$FA_PAST" "seq1	30	32	2	GT"
+assert_contains "fasta_region_past_end_noted" "$FA_PAST" "ends past the end of the sequence (32 bp)"
+cp "$DATA/tiny.fa" "$TMP/noidx.fa"
+assert_exit_code "fasta_region_no_fai_exits_1" 1 "$VV" -r seq1:1-4 "$TMP/noidx.fa"
+assert_contains "fasta_region_no_fai_message" "$("$VV" -r seq1:1-4 "$TMP/noidx.fa" 2>&1)" "samtools faidx"
+assert_exit_code "fasta_region_writes_no_index" 0 test ! -e "$TMP/noidx.fa.fai"
+assert_contains "fasta_region_plain_gzip_message" "$("$VV" -r seq1:1-4 "$DATA/tiny.fa.gz" 2>&1)" "bgzip"
+assert_contains "fasta_region_unknown_seq" "$("$VV" -r nosuch:1-4 "$DATA/tiny.fa" 2>&1)" "no sequence named 'nosuch'"
+refute_contains "fasta_region_no_warning" "$("$VV" --count -r seq1:1-4 "$DATA/tiny.fa" 2>&1)" "no region index"
+assert_eq_file_inline "fasta_formats_region" "$("$VV" --formats --json | python3 -c \
+    'import json, sys; print([f["region"] for f in json.load(sys.stdin) if f["name"] == "FASTA"])')" "[True]"
 
 # Reads with SEQ='*' (no query bases) but a full CIGAR: legal SAM that reaches
 # the pileup. The base is read at a CIGAR-derived query offset, which with no

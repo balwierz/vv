@@ -569,6 +569,19 @@ Supported sources:
 * **bigBed / bigWig** (`.bb`, `.bigBed`, `.bw`, `.bigWig`): native
   block-level overlap queries via the vendored libBigWig — no
   external index needed.
+* **FASTA** with a `.fai` index (`samtools faidx ref.fa`; a bgzipped
+  `.fa.gz` also needs its `.gzi`): one row per window — `name`,
+  `start`, `end` (0-based half-open), `length`, `seq` — the bases
+  `samtools faidx` prints for the same window. `-r chr1` is the whole
+  sequence; a window past the end is truncated with a note on stderr.
+  vv never writes the index itself; a plain-gzip FASTA cannot be
+  indexed (use `bgzip`).
+
+  ```sh
+  $ vv -r chr17:7687490-7687540 --tsv hg38.fa
+  name	start	end	length	seq
+  chr17	7687490	7687540	50	AAGCTCAAAACTTTTAGCGCCAGTCTTGAGCACATGGGAGGGGAAAACCC
+  ```
 
 Plain `.parquet` with chrom/start/end columns works without a LociSSD
 manifest; see `--region-cols` below if the auto-detection misses

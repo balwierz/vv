@@ -981,6 +981,9 @@ std::string open_bcf_source(const std::string& path, const Config& cfg, std::uni
 std::string open_big_source(const std::string& path, const Config& cfg, std::unique_ptr<TabularSource>* out);
 
 std::string open_fastx_source(const std::string& path, bool is_fastq, const Config& cfg, std::unique_ptr<TabularSource>* out);
+// FASTA with -r: one row per window (name, start, end, length, seq) via the
+// file's .fai index.
+std::string open_faidx_source(const std::string& path, const Config& cfg, std::unique_ptr<TabularSource>* out);
 
 // Result of the binary heuristic.
 enum class TextSniffResult { Text, Binary, Utf16, Utf32 };

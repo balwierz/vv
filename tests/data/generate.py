@@ -411,6 +411,34 @@ TTTAAAACCCCGGGGAAAA
 with open(HERE / "tiny.fa", "rb") as src, gzip.open(HERE / "tiny.fa.gz", "wb") as dst:
     shutil.copyfileobj(src, dst)
 
+
+def fai_lines(text):
+    """The .fai of a FASTA (samtools faidx's five columns: name, length,
+    offset of the first base, bases per line, bytes per line)."""
+    out, off, name, length, first, lb, lw = [], 0, None, 0, 0, 0, 0
+    for line in text.splitlines(keepends=True):
+        if line.startswith(">"):
+            if name is not None:
+                out.append(f"{name}\t{length}\t{first}\t{lb}\t{lw}\n")
+            name, length, first, lb, lw = line[1:].split()[0], 0, off + len(line), 0, 0
+        else:
+            if lb == 0:
+                lb, lw = len(line.rstrip("\n")), len(line)
+            length += len(line.rstrip("\n"))
+        off += len(line)
+    out.append(f"{name}\t{length}\t{first}\t{lb}\t{lw}\n")
+    return "".join(out)
+
+# -r on FASTA: the .fai next to tiny.fa, and a bgzipped copy with its .gzi
+# (bgzip -i) and the same .fai (offsets are in uncompressed bytes).
+(HERE / "tiny.fa.fai").write_text(fai_lines(fa))
+if have("bgzip"):
+    bgz_fa = HERE / "tiny.faidx.fa.gz"
+    with open(HERE / "tiny.fa", "rb") as fin, open(bgz_fa, "wb") as fout:
+        subprocess.run(["bgzip", "-c", "-i", "-I", str(bgz_fa) + ".gzi"],
+                       stdin=fin, stdout=fout, check=True)
+    (HERE / "tiny.faidx.fa.gz.fai").write_text(fai_lines(fa))
+
 # ── 2bit (UCSC sequence container, hand-rolled) ─────────────────────────────
 # Minimal 32-bit little-endian 2bit file with three short sequences.
 # Format reference: https://genome.ucsc.edu/FAQ/FAQformat.html#format7

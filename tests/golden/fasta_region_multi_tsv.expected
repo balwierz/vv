@@ -1,0 +1,4 @@
+name	start	end	length	seq
+seq1	0	4	4	ACGT
+seq2	0	12	12	GGGCCCAAATTT
+seq3	10	19	9	CGGGGAAAA

@@ -79,7 +79,7 @@ static const FormatInfo kFormats[] = {
   {"Genomics TSV layouts", ".bedpe .pairs .gct .maf", "DelimitedSource",
    true,  false, false, true,  false, ""},
   {"FASTA", ".fa .fasta .fna .faa .ffn .frn", "FastxSource",
-   true,  false, false, true,  false, ""},
+   true,  true,  false, true,  false, "needs a .fai (bgzip + .gzi for .fa.gz); one row per window"},
   {"FASTQ", ".fq .fastq", "FastxSource",
    true,  false, false, true,  false, ""},
   {"UCSC bigBed / bigWig", ".bb .bigBed .bw .bigWig", "BigSource",
@@ -186,8 +186,8 @@ void print_formats(bool as_json) {
     }
     std::printf(
         "\ngz: reads compressed input — gzip / bgzip, zstandard, bzip2 and xz\n"
-        "(.gz .bgz .zst .bz2 .xz), detected by content. Range queries (-r) need\n"
-        "bgzip + a tabix index and so require gzip.\n");
+        "(.gz .bgz .zst .bz2 .xz), detected by content. On compressed text, range\n"
+        "queries (-r) need bgzip and an index (tabix; .fai + .gzi for FASTA).\n");
 }
 
 static void print_usage(const char* prog) {
@@ -503,7 +503,8 @@ static void print_usage(const char* prog) {
         "  VCF/BED/GFF/TSV, indexed BCF (.csi/.tbi), LociSSD (.lociss),\n"
         "  plain sorted Parquet with chrom/start/end columns,\n"
         "  bigBed/bigWig, Cooler (.cool / .mcool: the region x region\n"
-        "  submatrix) and GenBank / EMBL features (read in full).\n"
+        "  submatrix), GenBank / EMBL features (read in full) and FASTA\n"
+        "  with a .fai index (one row per window: its sequence).\n"
         "  Unindexed BED/VCF/GFF/SAM/PAF/mpileup text is\n"
         "  read in full and filtered, with a note on stderr; other formats\n"
         "  with no region index warn on stderr and show the whole file.\n"
