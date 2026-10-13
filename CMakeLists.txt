@@ -621,6 +621,13 @@ target_link_libraries(vv PRIVATE ${_vv_link_common} ${_vv_curses})
 # The core objects: vv's include directories and definitions, plus VV_CORE_LIB
 # (no ncurses); linking the reader deps carries their usage requirements
 # (Arrow's interface definitions such as -DNOCURL) to the compile.
+# remote.cpp uses htslib's inline hFILE accessors, which read struct hFILE's
+# off_t fields. htslib is built with large-file support; MinGW's off_t is 32
+# bits unless _FILE_OFFSET_BITS=64, which would give remote.cpp a different
+# struct layout (and hseek a different signature) from the library's.
+if(WIN32)
+  set_source_files_properties(src/core/remote.cpp PROPERTIES COMPILE_DEFINITIONS _FILE_OFFSET_BITS=64)
+endif()
 add_library(vvcore_obj OBJECT ${VV_CORE_SOURCES})
 target_compile_definitions(vvcore_obj PRIVATE
     VV_CORE_LIB=1 $<TARGET_PROPERTY:vv,COMPILE_DEFINITIONS>)
