@@ -105,6 +105,7 @@ the script plus a reference from `docs/formats.md`.
    | `README.md`, `INSTALL.md` | the hard-coded version in every install command |
    | `packaging/arch/PKGBUILD` | `pkgver` (the `sha256sums` follow **after** the tag) |
    | `packaging/homebrew/vv.rb` | `url` (its `sha256` follows **after** the tag too) |
+   | `packaging/bioconda/meta.yaml` | `version` (its first `sha256` follows **after** the tag too) |
    | `packaging/rpm/vv.spec` | `Version:`, plus a `%changelog` entry |
 
    `packaging/debian/build-deb.sh` derives its version from `vv --version`,
@@ -122,23 +123,26 @@ the script plus a reference from `docs/formats.md`.
    and Debian 13 flavors, amd64 + arm64 each), the Fedora RPMs (`vv` +
    `vv-gui`, x86_64 + aarch64) and the macOS tarball, attaches everything
    plus `SHA256SUMS` to the GitHub Release, and publishes the page.
-7. **After the tag exists**, pin the two source-tarball checksums — neither
-   can be computed before, because both hash the tarball GitHub generates
-   *from* the tag:
+7. **After the tag exists**, pin the source-tarball checksums — none can be
+   computed before, because they hash the tarball GitHub generates *from*
+   the tag:
 
    ```sh
    cd packaging/arch && updpkgsums     # pacman-contrib; rewrites sha256sums=
    curl -sL https://github.com/balwierz/vv/archive/refs/tags/vX.Y.Z.tar.gz \
-     | sha256sum                       # paste into packaging/homebrew/vv.rb
+     | sha256sum   # paste into packaging/homebrew/vv.rb and packaging/bioconda/meta.yaml
    ```
 
-   Both are the same hash. `makepkg --verifysource` confirms the first.
+   All are the same hash. `makepkg --verifysource` confirms the first. Once
+   vv is on Bioconda, its bot usually opens the version bump in
+   bioconda-recipes by itself; otherwise copy `packaging/bioconda/` to
+   `recipes/vv/` there with the new `version` and `sha256`, `number: 0`.
 8. Check `vv --version` in a downloaded artifact matches the tag.
 
-`packaging/bioconda/meta.yaml` and `packaging/homebrew/vv.rb` are **unpublished
-drafts** — vv is not on Bioconda and there is no Homebrew tap, so there is
-nothing to update there. Do not treat their stale version fields as a release
-step; if you publish those channels, add the steps back.
+`packaging/bioconda/` is the recipe submitted to bioconda-recipes (built and
+tested in a conda environment: conda-forge's Arrow, Bioconda's htslib, xlsxio
+built statically from its second source). `packaging/homebrew/vv.rb` is an
+unpublished draft — there is no Homebrew tap.
 
 ## Code of conduct
 

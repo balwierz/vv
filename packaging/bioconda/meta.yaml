@@ -1,54 +1,94 @@
 {% set name = "vv" %}
-{% set version = "1.4.0" %}
+{% set version = "1.31.0" %}
+{% set xlsxio_version = "0.2.36" %}
 
 package:
-  name: {{ name|lower }}
+  name: {{ name }}
   version: {{ version }}
 
 source:
-  url: https://github.com/balwierz/{{ name }}/archive/refs/tags/v{{ version }}.tar.gz
-  # Replace with the sha256 of the release tarball:
-  sha256: 0000000000000000000000000000000000000000000000000000000000000000
+  - url: https://github.com/balwierz/vv/archive/refs/tags/v{{ version }}.tar.gz
+    # Pinned after the tag (CONTRIBUTING.md, release step 7).
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+  # xlsxio (.xlsx reading) is on no conda channel: built here as a static
+  # library and linked into vv, as the Fedora RPM does.
+  - url: https://github.com/brechtsanders/xlsxio/archive/refs/tags/{{ xlsxio_version }}.tar.gz
+    sha256: 80d3df95a7a108a41f83f0ce4c6706873fd2afafd92424fcccea475a8acbd044
+    folder: xlsxio
 
 build:
   number: 0
-  skip: True  # [win]
+  skip: true  # [win]
+  run_exports:
+    - {{ pin_subpackage(name, max_pin="x") }}
 
 requirements:
   build:
+    - {{ compiler('c') }}
     - {{ compiler('cxx') }}
-    - cmake >=3.16
-    - make
+    - {{ stdlib('c') }}
+    - cmake
+    - ninja
     - pkg-config
   host:
-    - libarrow >=14
-    - libparquet >=14
-    - htslib >=1.17
+    - libarrow
+    - libparquet
+    - libarrow-compute
+    - htslib
     - ncurses
+    - hdf5
+    - sqlite
+    - expat
+    - minizip
+    - zlib
+    - xz
+    - bzip2
+    - blosc
   run:
-    - libarrow >=14
-    - libparquet >=14
-    - htslib >=1.17
     - ncurses
 
 test:
+  source_files:
+    - tests/data
   commands:
-    - vv --version
-    - vv --help
+    - vv --version | grep -q "vv {{ version }}"
+    - vh --version | grep -q "vv {{ version }}"
+    - vv --help > /dev/null
+    - vv --cite | grep -q "Version {{ version }}"
+    - vv --formats | grep -q "^remote: URL schemes this build reads: https"
+    - test "$(vv --count tests/data/tiny.parquet)" = 20
+    - test -n "$(vv -n 2 --tsv tests/data/tiny.vcf.gz)"
+    - test -n "$(vv -n 2 --tsv tests/data/tiny.bam)"
+    - test -n "$(vv --tsv --no-header -r chr1:5000-15000 tests/data/tiny.bed.gz)"
+    - test -n "$(vv --tsv -r seq1:5-12 tests/data/tiny.fa)"
+    - vv --count --tab obs tests/data/tiny.h5ad
+    - vv --count tests/data/tiny.xlsx
+    - vv --count tests/data/tiny.ods
+    - vv --count tests/data/tiny.sqlite
+    - printf 'chrom\tstart\tend\nchr1\t100\t200\nchr1\t300\t400\n' > t.tsv && test "$(vv --count t.tsv)" = 2
 
 about:
   home: https://github.com/balwierz/vv
-  summary: "Universal genomic file viewer (Parquet, BAM, VCF, BED, GFF, FASTA, FASTQ, ...)"
-  description: |
-    vv is a fast command-line viewer for tabular and bioinformatics file
-    formats. It prints the first N rows as an ASCII table, supports
-    tabix-indexed range queries, and provides an interactive ncurses
-    row browser. Reads Parquet, Arrow IPC, Feather, BAM, CRAM, SAM, VCF,
-    BED, GFF, GTF, FASTA, FASTQ, TSV, and CSV (plus .gz variants).
+  dev_url: https://github.com/balwierz/vv
+  doc_url: https://github.com/balwierz/vv/blob/main/docs/USAGE.md
   license: MIT
-  license_file: LICENSE
-  doc_url: https://github.com/balwierz/vv
+  license_family: MIT
+  license_file:
+    - LICENSE
+    - xlsxio/LICENSE.txt
+  summary: Terminal viewer for genomic and tabular files (Parquet, AnnData, BAM, VCF, BED, FASTA, ...)
+  description: |
+    vv opens Parquet, Arrow, AnnData / HDF5 / Zarr, R data, BAM / CRAM, VCF /
+    BCF, BED, GFF, FASTA / FASTQ, bigWig, spreadsheets, SQLite and 30 more
+    formats in an interactive terminal table viewer, prints or converts them
+    (TSV, CSV, JSON, Parquet, Arrow), and answers region queries on indexed
+    files, local or by URL (https://, s3://, gs://). xlsxio is linked
+    statically; the optional DuckDB reader and the Qt desktop viewer are not
+    built in this package.
 
 extra:
+  additional-platforms:
+    - linux-aarch64
+    - osx-arm64
   recipe-maintainers:
     - balwierz

@@ -37,6 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   pandas, anndata and pyBigWig on public files (1000 Genomes VCF and BAM,
   GENCODE, hg38, ENCODE, CELLxGENE). `scripts/bench/fetch.sh` downloads the
   inputs with pinned checksums, `scripts/bench/run.sh` re-runs the table.
+- `packaging/bioconda/`: a current Bioconda recipe — the conda-forge / Bioconda
+  dependencies (Arrow, htslib, HDF5, SQLite, expat, minizip, ncurses, the
+  compression libraries), xlsxio built statically from a pinned second
+  source, DuckDB and the GUI off, and a test section that opens Parquet, VCF,
+  BAM, tabix, FASTA `-r`, h5ad, xlsx, ods and SQLite fixtures.
 
 ### Changed
 - Building vv no longer needs git or network access: the configure step
