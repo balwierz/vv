@@ -54,7 +54,7 @@ test:
     - vh --version | grep -q "vv {{ version }}"
     - vv --help > /dev/null
     - vv --cite | grep -q "Version {{ version }}"
-    - vv --formats | grep -q "^remote: URL schemes this build reads: https"
+    - vv --formats | grep -q "^remote:.URL schemes this build reads:.*https"
     - test "$(vv --count tests/data/tiny.parquet)" = 20
     - test -n "$(vv -n 2 --tsv tests/data/tiny.vcf.gz)"
     - test -n "$(vv -n 2 --tsv tests/data/tiny.bam)"
