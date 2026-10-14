@@ -3,6 +3,7 @@
 [![CI](https://github.com/balwierz/vv/actions/workflows/ci.yml/badge.svg)](https://github.com/balwierz/vv/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Latest release](https://img.shields.io/github/v/release/balwierz/vv)](https://github.com/balwierz/vv/releases)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23365944.svg)](https://doi.org/10.5281/zenodo.23365944)
 
 **One command that opens every genomic and tabular file you have, and shows you the data.**
 

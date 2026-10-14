@@ -356,11 +356,11 @@ inline uint64_t splitmix64(uint64_t& x) {
 // One row of eight-level block glyphs (U+2581..U+2588), each bin scaled to
 // the largest; an empty bin is a space.
 std::string sparkline(const std::vector<int64_t>& bins);
-// --cite: the year of this release and the DOI to cite (empty until one is
-// minted). Both must match CITATION.cff (the year of `date-released`, and
-// `doi`, absent while kDoi is empty); the suite checks it.
+// --cite: the year of this release and the DOI to cite: Zenodo's concept DOI,
+// which resolves to the latest release. Both must match CITATION.cff (the
+// year of `date-released`, and `doi`); the suite checks it.
 inline constexpr const char* kReleaseYear = "2026";
-inline constexpr const char* kDoi = "";
+inline constexpr const char* kDoi = "10.5281/zenodo.23365944";
 
 void json_emit_string(const std::string& v);
 

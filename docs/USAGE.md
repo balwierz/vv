@@ -1635,18 +1635,21 @@ text and as a BibTeX entry:
 $ vv --cite
 Balwierz P. vv: universal genomic file viewer. Version <version>, <year>.
 https://github.com/balwierz/vv
+DOI: 10.5281/zenodo.23365944
 
 @software{vv,
   author  = {Balwierz, Piotr},
   title   = {vv: universal genomic file viewer},
   version = {<version>},
   year    = {<year>},
-  url     = {https://github.com/balwierz/vv}
+  url     = {https://github.com/balwierz/vv},
+  doi     = {10.5281/zenodo.23365944}
 }
 ```
 
-A `DOI:` line and a `doi` field are added once the release has one. The
-same record is in [`CITATION.cff`](../CITATION.cff), which GitHub offers as
+The DOI is Zenodo's concept DOI for vv: it resolves to the latest release,
+and each release also has a DOI of its own on the Zenodo page. The same
+record is in [`CITATION.cff`](../CITATION.cff), which GitHub offers as
 "Cite this repository".
 
 # Reporting bugs
