@@ -19,6 +19,10 @@ cmake --build xlsxio-build -j"${CPU_COUNT}"
 cmake --install xlsxio-build
 XLSXIO_A=$(echo "${SRC_DIR}"/xlsxio-local/lib*/libxlsxio_read.a)
 
+# glibc 2.17 keeps pthread_create in libpthread; vv 1.31.0's CMakeLists does
+# not link Threads::Threads in the shared-deps build (later releases do).
+export LDFLAGS="${LDFLAGS:-} -pthread"
+
 cmake ${CMAKE_ARGS:-} -G Ninja -S . -B build \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="${PREFIX}" \

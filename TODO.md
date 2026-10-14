@@ -211,6 +211,11 @@ user-facing summary).
 ## Performance / build
 
 ### Open
+- **Bioconda recipe workarounds** — at the next version bump of
+  `packaging/bioconda/`, drop the `LDFLAGS=-pthread` line from `build.sh`
+  (CMakeLists links Threads::Threads since 1.31.0's release). Revisit
+  `conda_build_config.yaml` (libarrow 22 only) when Bioconda's global
+  pinning drops libarrow 19 / 20, the versions without `libarrow-compute`.
 - **Wide VCF text** — the 1000 Genomes chr22 VCF (2,504 samples, 11 GB of
   text decompressed): `--select CHROM,POS,REF,ALT --tsv` takes 36 s / 3.4 GB
   against `bcftools query`'s 2 s, and `-n 20 -t` 2.0 s / 1.1 GB, because

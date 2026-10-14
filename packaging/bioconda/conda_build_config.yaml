@@ -1,0 +1,6 @@
+# libarrow-compute, a host dependency, exists from Arrow 21 on, so the global
+# libarrow 19 / 20 variants have no solution; build against one Arrow.
+libarrow:
+  - '22.0'
+libarrow_all:
+  - '22.0'
