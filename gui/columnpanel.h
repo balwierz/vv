@@ -26,8 +26,10 @@ public:
                      const std::shared_ptr<arrow::DataType>& type, const QString& scope);
     // A scan in progress: rows read so far, of `total` (< 0: unknown).
     void showBusy(const QString& title, const QString& text, qint64 rows, qint64 total);
-    // Nothing to summarise, or an error; `offerCompute` shows the Compute button.
-    void showNote(const QString& title, const QString& text, bool offerCompute = false);
+    // Nothing to summarise, or an error; `offerCompute` shows the Compute
+    // button, labelled `computeLabel` (default "Compute").
+    void showNote(const QString& title, const QString& text, bool offerCompute = false,
+                  const QString& computeLabel = {});
     // Where the column is in the table: display column `col` (0-based) of
     // `count`, and whether it is out of view (scrolled away or hidden).
     // col < 0: no column. While set, the column name in the title is a link

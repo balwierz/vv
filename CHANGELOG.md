@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   shows as many rows as fit in that range (93,368,853 at 23 px rows) and the
   status bar says so; exports and the Column tab still read every row.
 
+### Changed
+- vvg's Column tab no longer summarises a large table by itself: above
+  10,000,000 rows (or, while a stream's rows are not counted, a file over
+  1 GiB, or a remote file) it shows the row count and a *Compute Column
+  Statistics* button, which summarises the cursor column alone in the
+  background. Before, opening such a table started a scan of every column
+  of the file (all 15 columns of a 3.4 G-row file, on five cores).
+
 ## [1.31.0] - 2026-10-14
 
 ### Added

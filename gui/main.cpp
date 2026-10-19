@@ -361,6 +361,15 @@ public:
                                              QItemSelectionModel::ClearAndSelect);
         return waitColumnStatsForTest();
     }
+    // As columnStatsForTest, then a click on the Compute button when the
+    // Column tab offers it.
+    QString computeColumnStatsForTest(int col) {
+        const QString first = columnStatsForTest(col);
+        if (!first.endsWith(QLatin1Char(']'))) return first;
+        computeColumnStatsRequested();
+        return waitColumnStatsForTest();
+    }
+    void setStatsAutoRowsForTest(int64_t n) { statsAutoRows_ = n; }
     QString waitColumnStatsForTest() {
         refreshColumnStats(true);
         QElapsedTimer t;
@@ -1055,7 +1064,7 @@ private:
             cancelColumnStats();
             colPanel_->showNote(tr("Column"), tr("Canceled."));
         });
-        connect(colPanel_, &ColumnPanel::computeRequested, this, [this] { computeColumnStatsHere(); });
+        connect(colPanel_, &ColumnPanel::computeRequested, this, [this] { computeColumnStatsRequested(); });
         connect(colPanel_, &ColumnPanel::filterToValueRequested, this,
                 [this](int i) { filterToValue(i); });
         connect(colPanel_, &ColumnPanel::copyCommandRequested, this, [this] { copyColumnCommand(); });
@@ -1073,7 +1082,9 @@ private:
     // stays usable while a large file is scanned. One scan covers every
     // column (up to kStatsAllColumns): on a row-oriented file one column
     // costs the whole read anyway, and moving the cursor is then instant.
-    // Results are cached per tab and filter.
+    // A large table (statsOnRequest) is summarised only when the Compute
+    // button is clicked, and only the cursor column. Results are cached per
+    // tab and filter.
     struct StatsResult {
         std::string                error;
         std::vector<int>           cols;        // source columns, parallel to sums
@@ -1088,6 +1099,22 @@ private:
         PreviewLimit               limit;
     };
     static constexpr int kStatsAllColumns = 256;
+    // A larger table is summarised only on request, one column at a time:
+    // a scan reads every row of the file (all of it, on a row-oriented
+    // format), which on a 3.4 G-row table takes hours. "Larger": more rows
+    // than this, or, while a stream's count is unknown, a file of more bytes
+    // than kStatsAutoBytes, or a remote file (a scan downloads it).
+    static constexpr int64_t kStatsAutoRows  = 10'000'000;
+    static constexpr int64_t kStatsAutoBytes = 1LL << 30;
+    int64_t statsAutoRows_ = kStatsAutoRows;   // VVG_STATS_AUTO_ROWS (self-test)
+    bool statsOnRequest(ArrowTableModel* m) const {
+        const int64_t rows = m->source()->total_rows();
+        if (rows >= 0) return rows > statsAutoRows_;
+        const QString path = tabOrigin_.value(m).path;
+        if (path.contains(QLatin1String("://"))) return true;
+        const QFileInfo fi(path);
+        return fi.isFile() && fi.size() > kStatsAutoBytes;
+    }
 
     // The cursor column; while a job has the model blank, the column the
     // cursor will come back in.
@@ -1181,18 +1208,47 @@ private:
             showColumnStatsProgress();
             return;
         }
-        cancelColumnStats();
         if (!tabOrigin_.value(m).reopen) {
+            cancelColumnStats();
             colPanel_->showNote(title,
                 tr("This tab was read from a pipe or from a node of a JSON document, so it "
                    "cannot be read again in the background. Compute summarises it here; "
                    "the window waits until it is done."), true);
             return;
         }
+        if (statsOnRequest(m)) {
+            // A scan of another column, if one runs, goes on and fills the cache.
+            const int64_t rows = m->source()->total_rows();
+            const QString size = rows >= 0
+                ? tr("This table has %L1 rows.").arg(rows)
+                : tr("This file is %1.").arg(QLocale().formattedDataSize(
+                      QFileInfo(tabOrigin_.value(m).path).size()));
+            colPanel_->showNote(title,
+                size + QLatin1Char(' ') +
+                tr("Statistics read every row of the column, so on a table this large "
+                   "they are computed only when asked, one column at a time."),
+                true, tr("Compute Column Statistics"));
+            return;
+        }
+        cancelColumnStats();
         startColumnStats(m, col, filter);
     }
 
-    void startColumnStats(ArrowTableModel* m, int col, const QString& filter) {
+    // The Column tab's Compute button: a tab that can be read again is
+    // summarised in the background, the cursor column only; any other tab
+    // here, with the window waiting.
+    void computeColumnStatsRequested() {
+        auto* m = activeModel();
+        auto* v = activeView();
+        if (!m || !v || m->isComputing() || m->displayColumnCount() == 0) return;
+        if (!tabOrigin_.value(m).reopen) { computeColumnStatsHere(); return; }
+        const int col = std::min(currentColumn(v), m->displayColumnCount() - 1);
+        cancelColumnStats();
+        startColumnStats(m, col, activeFilterText(m), /*cursorOnly=*/true);
+    }
+
+    void startColumnStats(ArrowTableModel* m, int col, const QString& filter,
+                          bool cursorOnly = false) {
         VvCommandSpec spec;
         if (!specForModel(m, viewOf(m), &spec)) return;
         Config cfg = vvCommandConfig(spec);
@@ -1201,7 +1257,7 @@ private:
         cfg.sort_col.clear();
         cfg.filter_expr.clear();      // applied while summarising
         std::vector<int> cols;
-        if (m->displayColumnCount() <= kStatsAllColumns)
+        if (!cursorOnly && m->displayColumnCount() <= kStatsAllColumns)
             for (int c = 0; c < m->displayColumnCount(); ++c) cols.push_back(m->sourceColumn(c));
         else
             cols.push_back(m->sourceColumn(col));
@@ -2749,8 +2805,16 @@ int main(int argc, char** argv) {
             }
         // Optional Column tab: VVG_COLSTATS=<display column> prints
         // "colstats <statistic=value …> top=… scope=…".
+        // VVG_STATS_AUTO_ROWS=N: summarise only on request above N rows
+        // (default 10,000,000); VVG_COLSTATS_COMPUTE=<display column> then
+        // clicks the Compute button and prints "colstats-compute …".
+        if (const char* ar = std::getenv("VVG_STATS_AUTO_ROWS"); ar && *ar)
+            win.setStatsAutoRowsForTest(std::atoll(ar));
         if (const char* cs = std::getenv("VVG_COLSTATS"); cs && *cs)
             std::printf("colstats %s\n", win.columnStatsForTest(std::atoi(cs)).toUtf8().constData());
+        if (const char* cc = std::getenv("VVG_COLSTATS_COMPUTE"); cc && *cc)
+            std::printf("colstats-compute %s\n",
+                        win.computeColumnStatsForTest(std::atoi(cc)).toUtf8().constData());
         // Optional header click: VVG_HEADERCLICK=<display column> clicks
         // that column's header and prints "headerclick sort=… cursor=r,c
         // title=… where=… <Column tab>".

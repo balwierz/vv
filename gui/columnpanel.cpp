@@ -369,7 +369,8 @@ void ColumnPanel::showBusy(const QString& title, const QString& text, qint64 row
     compute_->setVisible(false);
 }
 
-void ColumnPanel::showNote(const QString& title, const QString& text, bool offerCompute) {
+void ColumnPanel::showNote(const QString& title, const QString& text, bool offerCompute,
+                           const QString& computeLabel) {
     has_ = false;
     setTitle(title);
     scope_->clear();
@@ -377,6 +378,7 @@ void ColumnPanel::showNote(const QString& title, const QString& text, bool offer
     showTables(false);
     busy_->setVisible(false);
     note_->setVisible(!text.isEmpty());
+    compute_->setText(computeLabel.isEmpty() ? tr("Compute") : computeLabel);
     compute_->setVisible(offerCompute);
 }
 
@@ -396,8 +398,12 @@ QString ColumnPanel::allAsTsv() const {
 }
 
 QString ColumnPanel::describeForTest() const {
-    if (!has_) return note_->isVisible() ? QStringLiteral("note: ") + note_->text()
-                                         : QStringLiteral("busy");
+    // isVisibleTo: the self-test runs with the window never shown.
+    if (!has_) return note_->isVisibleTo(this)
+        ? QStringLiteral("note: ") + note_->text() +
+              (compute_->isVisibleTo(this)
+                   ? QStringLiteral(" [") + compute_->text() + QLatin1Char(']') : QString())
+        : QStringLiteral("busy");
     QStringList parts;
     for (int r = 0; r < stats_->rowCount(); ++r)
         parts << stats_->item(r, 0)->text().toLower() + QLatin1Char('=') + stats_->item(r, 1)->text();

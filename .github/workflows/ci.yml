@@ -346,6 +346,12 @@ jobs:
           grep -qF 'the window shows the first' <<<"$dims"
           [ "$rows" -gt 1000000 ]
           [ "$rows" -lt 120000000 ]
+          # Above VVG_STATS_AUTO_ROWS rows (default 10,000,000) the Column tab
+          # summarises only on request, the cursor column only.
+          VVG_WINTEST=1 VVG_STATS_AUTO_ROWS=10 VVG_COLSTATS=3 ./build-gui/gui/vvg tests/data/tiny.parquet \
+            | grep -qF 'colstats note: This table has 20 rows. Statistics read every row of the column, so on a table this large they are computed only when asked, one column at a time. [Compute Column Statistics]'
+          VVG_WINTEST=1 VVG_STATS_AUTO_ROWS=10 VVG_COLSTATS_COMPUTE=3 ./build-gui/gui/vvg tests/data/tiny.parquet \
+            | grep -qF 'colstats-compute count=20 nulls=0 sum=9.5 mean=0.475'
           # ...and a string column has no histogram.
           if VVG_WINTEST=1 VVG_COLSTATS=0 ./build-gui/gui/vvg tests/data/tiny.parquet | grep -q ' hist='; then exit 1; fi
           # An AnnData obs is summarised in full (1500 rows) though the table
@@ -708,6 +714,12 @@ jobs:
           grep -qF 'the window shows the first' <<<"$dims"
           [ "$rows" -gt 1000000 ]
           [ "$rows" -lt 120000000 ]
+          # Above VVG_STATS_AUTO_ROWS rows (default 10,000,000) the Column tab
+          # summarises only on request, the cursor column only.
+          VVG_WINTEST=1 VVG_STATS_AUTO_ROWS=10 VVG_COLSTATS=3 ./build/gui/vvg tests/data/tiny.parquet \
+            | grep -qF 'colstats note: This table has 20 rows. Statistics read every row of the column, so on a table this large they are computed only when asked, one column at a time. [Compute Column Statistics]'
+          VVG_WINTEST=1 VVG_STATS_AUTO_ROWS=10 VVG_COLSTATS_COMPUTE=3 ./build/gui/vvg tests/data/tiny.parquet \
+            | grep -qF 'colstats-compute count=20 nulls=0 sum=9.5 mean=0.475'
           # An AnnData obs is summarised in full (1500 rows) though the table
           # holds its first 1000; a matrix tab says it is a preview; a tab
           # read from stdin is summarised from the table's own source.

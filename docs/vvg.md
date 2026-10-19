@@ -73,7 +73,11 @@ Command* goes the other way.
   the preview it is. It is computed in the background on a second copy of
   the tab, so the table stays usable while a large file is read (*Cancel*
   stops it); one pass covers every column, so moving the cursor afterwards
-  is instant. A tab read from a pipe is summarised on request (*Compute*).
+  is instant. A table of more than 10,000,000 rows (or, while a text
+  file's rows are not yet counted, a file over 1 GiB, or a remote file) is
+  summarised only on request, one column at a time: the tab shows the row
+  count and *Compute Column Statistics*, which reads the cursor column
+  alone. A tab read from a pipe is summarised on request (*Compute*).
   The values are plain numbers in ordinary cells: *Ctrl+C* copies the
   selected ones as TSV; right-click for *Copy All as TSV* and *Copy as vv
   Command* (`vv … --describe --select col`). Double-click a value to filter
