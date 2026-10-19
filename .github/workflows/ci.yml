@@ -338,6 +338,14 @@ jobs:
             | grep -qF 'colstats count=9 nulls=0 sum=6.75 mean=0.75'
           VVG_WINTEST=1 VVG_COLSTATS=0 ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -qF 'colstats count=20 nulls=0 min=chr1 max=chr2 distinct=2 top=chr1:12,chr2:8'
+          # A table taller than Qt's int pixel range (rows x row height) is
+          # capped below it; at 2e9 rows the vertical header repainted forever.
+          /tmp/vvpy/bin/python -c 'import pyarrow as pa, pyarrow.parquet as pq; t = pa.table({"x": pa.repeat(pa.scalar(0, pa.int8()), 10_000_000)}); w = pq.ParquetWriter("/tmp/rows120M.parquet", t.schema); [w.write_table(t) for _ in range(12)]; w.close()'
+          dims=$(VVG_WINTEST=1 VVG_TABDIMS=1 ./build-gui/gui/vvg /tmp/rows120M.parquet | grep '^tab ')
+          rows=$(sed -n 's/.* rows=\([0-9]*\) .*/\1/p' <<<"$dims")
+          grep -qF 'the window shows the first' <<<"$dims"
+          [ "$rows" -gt 1000000 ]
+          [ "$rows" -lt 120000000 ]
           # ...and a string column has no histogram.
           if VVG_WINTEST=1 VVG_COLSTATS=0 ./build-gui/gui/vvg tests/data/tiny.parquet | grep -q ' hist='; then exit 1; fi
           # An AnnData obs is summarised in full (1500 rows) though the table
@@ -692,6 +700,14 @@ jobs:
             | grep -qF 'colstats count=9 nulls=0 sum=6.75 mean=0.75'
           VVG_WINTEST=1 VVG_COLSTATS=0 ./build/gui/vvg tests/data/tiny.parquet \
             | grep -qF 'colstats count=20 nulls=0 min=chr1 max=chr2 distinct=2 top=chr1:12,chr2:8'
+          # A table taller than Qt's int pixel range (rows x row height) is
+          # capped below it; at 2e9 rows the vertical header repainted forever.
+          /tmp/vvpy/bin/python -c 'import pyarrow as pa, pyarrow.parquet as pq; t = pa.table({"x": pa.repeat(pa.scalar(0, pa.int8()), 10_000_000)}); w = pq.ParquetWriter("/tmp/rows120M.parquet", t.schema); [w.write_table(t) for _ in range(12)]; w.close()'
+          dims=$(VVG_WINTEST=1 VVG_TABDIMS=1 ./build/gui/vvg /tmp/rows120M.parquet | grep '^tab ')
+          rows=$(sed -n 's/.* rows=\([0-9]*\) .*/\1/p' <<<"$dims")
+          grep -qF 'the window shows the first' <<<"$dims"
+          [ "$rows" -gt 1000000 ]
+          [ "$rows" -lt 120000000 ]
           # An AnnData obs is summarised in full (1500 rows) though the table
           # holds its first 1000; a matrix tab says it is a preview; a tab
           # read from stdin is summarised from the table's own source.

@@ -224,15 +224,15 @@ const QString& ArrowTableModel::displayText(int viewRow, int dispCol) const {
     return lastCellText_;
 }
 
-// Qt's views count rows in int: a larger table shows its first
-// kMaxViewRows rows, and footer() says so.
-static constexpr int64_t kMaxViewRows = 2'000'000'000LL;
+void ArrowTableModel::setMaxViewRows(int64_t n) {
+    maxViewRows_ = std::clamp<int64_t>(n, 1, kMaxViewRows);
+}
 
 int ArrowTableModel::rowCount(const QModelIndex& parent) const {
     if (parent.isValid()) return 0;
     if (computing_) return 0;   // blanked while a worker recomputes order_
     int64_t n = viewRows();
-    return (int)std::min(n, kMaxViewRows);
+    return (int)std::min(n, maxViewRows_);
 }
 
 int ArrowTableModel::columnCount(const QModelIndex& parent) const {
@@ -487,7 +487,7 @@ QModelIndex ArrowTableModel::findNext(const QModelIndex& from, bool forward) con
         p = (it != findPos_.begin()) ? *std::prev(it) : findPos_.back();  // wrap
     }
     int64_t r = p / cols, c = p % cols;
-    if (r > 2'000'000'000LL) return {};   // past Qt's int row cap (documented)
+    if (r >= maxViewRows_) return {};   // past the rows the view can show
     return index((int)r, (int)c);
 }
 
@@ -608,9 +608,9 @@ QString ArrowTableModel::footer() const {
     if (const arrow::Status st = src_->read_status(); !st.ok())
         f += QStringLiteral("  |  read error (rows after it are missing): %1")
                  .arg(QString::fromStdString(st.message()));
-    if (const int64_t n = viewRows(); n > kMaxViewRows)
+    if (const int64_t n = viewRows(); n > maxViewRows_)
         f += QStringLiteral("  |  the window shows the first %1 of %2 rows; an export writes all")
-                 .arg(QLocale().toString((qlonglong)kMaxViewRows))
+                 .arg(QLocale().toString((qlonglong)maxViewRows_))
                  .arg(QLocale().toString((qlonglong)n));
     return f;
 }

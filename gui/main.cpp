@@ -73,6 +73,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <set>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -553,6 +554,8 @@ private:
             (ofi.isFile() || ofi.isDir() || origin.contains(QLatin1String("://")));
         tabOrigin_[model] = TabOrigin{origin, primary, expand, reopenable};
         auto* view  = new QTableView(tabs_);
+        const int rowPx = view->fontMetrics().height() + 6;
+        model->setMaxViewRows(std::numeric_limits<int>::max() / rowPx - 1);
         view->setModel(model);
         view->setAlternatingRowColors(true);
         applyScrollMode(view);
@@ -566,8 +569,7 @@ private:
         connect(view, &QWidget::customContextMenuRequested, this,
                 [this, view](const QPoint& p){ showTableContextMenu(view, p); });
         view->horizontalHeader()->setSectionsClickable(true);
-        view->verticalHeader()->setDefaultSectionSize(
-            view->fontMetrics().height() + 6);
+        view->verticalHeader()->setDefaultSectionSize(rowPx);
 
         // Click a column header to sort (toggle asc/desc), typed via Arrow,
         // off the UI thread. The cursor moves to that column, so the Column

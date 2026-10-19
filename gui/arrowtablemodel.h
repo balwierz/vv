@@ -41,6 +41,14 @@ public:
     int summableDigits(int displayCol) const;
 
     int      rowCount(const QModelIndex& parent = {}) const override;
+    // Qt's views count rows, and the header's pixel length, in int: a view
+    // whose rows are h pixels high can show INT_MAX / h rows (93 M at 23 px);
+    // beyond that QHeaderView's geometry overflows and it repaints without
+    // end. A larger table shows its first maxViewRows() rows, and footer()
+    // says so. Set before a view is attached.
+    static constexpr int64_t kMaxViewRows = 2'000'000'000LL;
+    void     setMaxViewRows(int64_t n);
+    int64_t  maxViewRows() const { return maxViewRows_; }
     int      columnCount(const QModelIndex& parent = {}) const override;
     QVariant data(const QModelIndex& index, int role) const override;
     QVariant headerData(int section, Qt::Orientation o, int role) const override;
@@ -201,6 +209,7 @@ private:
     QFutureWatcher<std::vector<int64_t>>* watcher_ = nullptr;
     std::shared_ptr<std::atomic<bool>>    cancel_;   // worker holds a copy
     bool                                  computing_ = false;
+    int64_t                               maxViewRows_ = kMaxViewRows;
     Job                                   pendingJob_ = Job::None;
     bool                                  pendingHasFilter_ = false;  // for Job::Order
     QRegularExpression                    pendingRe_;     // for Job::Find

@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- vvg opening a table of more than about 93 million rows (at the default
+  font) showed nothing and kept a core busy: the model reported up to
+  2,000,000,000 rows, and rows × row height overflowed the int pixel length
+  of Qt's row header, which then repainted without end. The window now
+  shows as many rows as fit in that range (93,368,853 at 23 px rows) and the
+  status bar says so; exports and the Column tab still read every row.
+
 ## [1.31.0] - 2026-10-14
 
 ### Added
