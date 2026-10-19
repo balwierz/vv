@@ -701,6 +701,13 @@ struct OpenSpec {
     bool          long_form = false;  // --matrix long: shown as entry rows
 };
 
+// A summary line starting with kSummaryDefer is a placeholder,
+// "<kSummaryDefer>profile|storage\t<path>\t<label>", for rows read from the
+// matrices only when the summary tab is built; expand_summary_rows replaces
+// each with the rows it stands for.
+static constexpr const char* kSummaryDefer = "\x01";
+static std::string expand_summary_rows(const Store& store, const std::string& text);
+
 // The AnnData a dataset belongs to: "/mod/<name>" for a modality of a MuData
 // (.h5mu) file, "" for a plain AnnData. Its obs / var label the dataset.
 static std::string anndata_root(const std::string& h5_path) {
@@ -748,6 +755,9 @@ class Hdf5Source : public WorkbookSource {
     // Set when the lazy build fails: the tab then shows a one-cell error table,
     // and read_status() reports the failure so a scripted export exits non-zero.
     mutable arrow::Status build_status_;
+    // Appended to the footer a lazy build produces ("  |  +N more tab(s)" on
+    // a lazily built first tab).
+    std::string footer_suffix_;
     // Row cap for DataFrame (obs/var) tabs: the preview cap for the TUI/table
     // view, or -1 (all) / an explicit -n for a delimited dump — set from cfg in
     // open_source and inherited by sibling tabs. Matrix / sparse X ignore it.
@@ -808,7 +818,7 @@ class Hdf5Source : public WorkbookSource {
             footer = "Format: " + file_->format_name() + " " + spec_.display + "  |  error: " + msg;
             self->build_status_ = arrow::Status::IOError(msg);
         }
-        self->replace_table(std::move(tbl), std::move(footer));
+        self->replace_table(std::move(tbl), std::move(footer + footer_suffix_));
     }
 
     // Resolve an OpenSpec to a populated arrow::Table. A dataset read that
@@ -852,7 +862,7 @@ class Hdf5Source : public WorkbookSource {
                 // and stuffed into spec.footer_hint as JSON-ish text;
                 // we just turn it back into rows here.
                 arrow::StringBuilder kb, vb;
-                std::stringstream ss(spec.footer_hint);
+                std::stringstream ss(expand_summary_rows(file_id, spec.footer_hint));
                 std::string line;
                 while (std::getline(ss, line)) {
                     auto eq = line.find('\t');
@@ -1008,6 +1018,18 @@ class Hdf5Source : public WorkbookSource {
                                   std::vector<OpenSpec> siblings,
                                   std::unique_ptr<Hdf5Source>* out,
                                   int64_t df_row_cap = kDataFrameRowCap) {
+        // A summary tab is built when it is first read, like a sibling tab:
+        // its profile and storage rows read the matrices (expand_summary_rows),
+        // which --list-tabs, --tab X or a export of obs never shows.
+        if (spec.kind == OpenSpec::Kind::Summary) {
+            std::unique_ptr<Hdf5Source> src(new Hdf5Source(path, std::move(file), std::move(spec),
+                                                           std::move(all), df_row_cap));
+            if (!siblings.empty())
+                src->footer_suffix_ = "  |  +" + std::to_string(siblings.size()) + " more tab(s)";
+            src->siblings_ = std::move(siblings);
+            *out = std::move(src);
+            return "";
+        }
         std::shared_ptr<arrow::Table> tbl;
         std::string footer;
         PreviewLimit limit;
@@ -1049,6 +1071,13 @@ public:
     // Data accessors force the lazy build first; for an eagerly-built source
     // (built_ == true) ensure_built() is a no-op.
     std::shared_ptr<arrow::Schema> schema() const override {
+        // A summary is always key / value text: answered without building it,
+        // since open_source looks at every source's schema (VCF samples).
+        if (!built_ && spec_.kind == OpenSpec::Kind::Summary) {
+            static const auto kv = arrow::schema({arrow::field("key", arrow::utf8()),
+                                                  arrow::field("value", arrow::utf8())});
+            return kv;
+        }
         ensure_built(); return MemoryTableSource::schema();
     }
     int64_t total_rows() const override {
@@ -2717,6 +2746,35 @@ static void matrix_storage_rows(const Store& store, const std::string& path, con
     if (auto si = store.storage(path)) add(label + " storage", "dense " + h5_layout_label(*si));
 }
 
+static std::string expand_summary_rows(const Store& store, const std::string& text) {
+    if (text.find(kSummaryDefer) == std::string::npos) return text;
+    std::string out;
+    auto add = [&](const std::string& k, const std::string& v) {
+        out += k; out += '\t'; out += v; out += '\n';
+    };
+    std::stringstream ss(text);
+    std::string line;
+    while (std::getline(ss, line)) {
+        if (line.rfind(kSummaryDefer, 0) != 0) { out += line; out += '\n'; continue; }
+        const size_t t1 = line.find('\t'), t2 = line.find('\t', t1 + 1);
+        if (t1 == std::string::npos || t2 == std::string::npos) continue;
+        const std::string op = line.substr(1, t1 - 1);
+        const std::string path = line.substr(t1 + 1, t2 - t1 - 1);
+        const std::string label = line.substr(t2 + 1);
+        // A matrix that cannot be read shows that in its profile row; it must
+        // not fail the summary tab (build_table fails a tab on any read error).
+        std::string pending;
+        pending.swap(t_h5_read_error);
+        if (op == "profile") {
+            if (std::string pr = matrix_profile(store, path); !pr.empty()) add(label, pr);
+        } else if (op == "storage") {
+            matrix_storage_rows(store, path, label, add);
+        }
+        t_h5_read_error.swap(pending);
+    }
+    return out;
+}
+
 static std::vector<OpenSpec> scan_anndata(const Store& store, const std::string& root) {
     // `root`: the AnnData's group ("/mod/rna" inside a MuData file; "" for the
     // file itself). Stored paths are absolute.
@@ -2736,6 +2794,18 @@ static std::vector<OpenSpec> scan_anndata(const Store& store, const std::string&
     auto add_storage = [&](const std::string& k, const std::string& v) {
         storage += k; storage += '\t'; storage += v; storage += '\n';
     };
+    // Rows that read the matrices (a profile samples values; storage sizes
+    // walk compressed datasets' chunk indexes) are placeholders here, filled
+    // in when the summary tab is read (expand_summary_rows), so listing or
+    // opening another tab does not pay for them.
+    auto defer_profile = [&](const std::string& path, const std::string& key) {
+        summary += kSummaryDefer; summary += "profile\t"; summary += path;
+        summary += '\t'; summary += key; summary += '\n';
+    };
+    auto defer_storage = [&](const std::string& path, const std::string& label) {
+        storage += kSummaryDefer; storage += "storage\t"; storage += path;
+        storage += '\t'; storage += label; storage += '\n';
+    };
     add("format", "AnnData");
     std::string enc = store.attr_string(base, "encoding-type");
     if (!enc.empty()) add("root-encoding", enc);
@@ -2754,8 +2824,8 @@ static std::vector<OpenSpec> scan_anndata(const Store& store, const std::string&
                 x_rows = shape[0]; x_cols = shape[1];
                 add("X", xenc + "  (" + std::to_string(x_rows) +
                           " \xc3\x97 " + std::to_string(x_cols) + ")");
-                add("X profile", matrix_profile(store, at("X")));
-                matrix_storage_rows(store, at("X"), "X", add_storage);
+                defer_profile(at("X"), "X profile");
+                defer_storage(at("X"), "X");
                 // Both CSR and CSC densify to the same rows × columns preview.
                 specs.push_back({OpenSpec::Kind::Sparse, at("X"),
                                   "X (preview)",
@@ -2767,8 +2837,8 @@ static std::vector<OpenSpec> scan_anndata(const Store& store, const std::string&
             x_rows = ai->shape[0]; x_cols = ai->shape[1];
             add("X", "dense  (" + std::to_string(x_rows) +
                       " \xc3\x97 " + std::to_string(x_cols) + ")");
-            add("X profile", matrix_profile(store, at("X")));
-            matrix_storage_rows(store, at("X"), "X", add_storage);
+            defer_profile(at("X"), "X profile");
+            defer_storage(at("X"), "X");
             specs.push_back({OpenSpec::Kind::Matrix2D, at("X"), "X", "dense"});
         }
     }
@@ -2819,10 +2889,8 @@ static std::vector<OpenSpec> scan_anndata(const Store& store, const std::string&
         // layers mirror X: profile each, so raw counts stored as a layer show.
         if (axes == AnnMatrixAxes::ObsByVar)
             for (const auto& nm : names) {
-                if (auto pr = matrix_profile(store, g + "/" + nm); !pr.empty())
-                    add(std::string(parent_name) + "[" + nm + "] profile", pr);
-                matrix_storage_rows(store, g + "/" + nm,
-                                    std::string(parent_name) + "[" + nm + "]", add_storage);
+                defer_profile(g + "/" + nm, std::string(parent_name) + "[" + nm + "] profile");
+                defer_storage(g + "/" + nm, std::string(parent_name) + "[" + nm + "]");
             }
     };
     // layers/* mirror X's shape, so they keep gene columns; obsm/varm do not.
@@ -2879,8 +2947,8 @@ static std::vector<OpenSpec> scan_anndata(const Store& store, const std::string&
                     const std::string dims = std::to_string(shape[0]) + " \xc3\x97 " +
                                              std::to_string(shape[1]);
                     add("raw.X", xenc + "  (" + dims + ")");
-                    add("raw.X profile", matrix_profile(store, at("raw/X")));
-                    matrix_storage_rows(store, at("raw/X"), "raw.X", add_storage);
+                    defer_profile(at("raw/X"), "raw.X profile");
+                    defer_storage(at("raw/X"), "raw.X");
                     specs.push_back({OpenSpec::Kind::Sparse, at("raw/X"), "raw.X (preview)",
                                      xenc + "  shape: " + dims,
                                      AnnMatrixAxes::ObsByRawVar, ""});
@@ -2889,8 +2957,8 @@ static std::vector<OpenSpec> scan_anndata(const Store& store, const std::string&
                 raw_cols = ai->shape[1];
                 add("raw.X", "dense  (" + std::to_string(ai->shape[0]) + " \xc3\x97 " +
                              std::to_string(ai->shape[1]) + ")");
-                add("raw.X profile", matrix_profile(store, at("raw/X")));
-                matrix_storage_rows(store, at("raw/X"), "raw.X", add_storage);
+                defer_profile(at("raw/X"), "raw.X profile");
+                defer_storage(at("raw/X"), "raw.X");
                 specs.push_back({OpenSpec::Kind::Matrix2D, at("raw/X"), "raw.X", "dense",
                                  AnnMatrixAxes::ObsByRawVar, ""});
             }

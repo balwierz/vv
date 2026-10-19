@@ -20,7 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   stored without compression the size now follows from the shape. On a
   6 GB `.h5ad` with 2 × 16,384 uncompressed chunks, `--list-tabs` makes 59
   reads instead of 644 (0.6 s instead of 6.4 s on an NFS share read cold
-  from disk); the summary is unchanged.
+  from disk); the summary is unchanged. The summary tab is also built only
+  when it is shown: its matrix profiles (which sample values) and storage
+  rows are no longer read for `--list-tabs`, `--tab obs` or an export of
+  another tab. `--list-tabs` on that file now makes 44 reads of 19.6 KB
+  (was 644 of 2.2 MB).
 
 ### Changed
 - vvg's Column tab no longer summarises a large table by itself: above
