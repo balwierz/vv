@@ -5940,6 +5940,11 @@ if [ -f "$CK" ]; then
         "$(printf 'X/indptr\tint32  |  contiguous  |  no compression  |  ')"
     assert_contains "h5ad_storage_row_slice" "$CKS" \
         "$(printf 'X row slice\tone data chunk \xe2\x89\x88 8 rows; a slice decompresses at least 240 B of data and 120 B of indices')"
+    # Unfiltered chunks: the size from the shape (2 chunks of 30 float64,
+    # the last partial; h5py's get_storage_size gives the same 480 B), with
+    # no read of the chunk index.
+    assert_contains "h5ad_storage_unfiltered_chunks" "$CKS" \
+        "$(printf 'layers[counts]/data\tfloat64  |  chunks of 30 (240 B)  |  no compression  |  480 B on disk')"
 fi
 
 # ── AnnData column types: bool vs categorical of bool vs of strings ─────────

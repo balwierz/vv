@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   shows as many rows as fit in that range (93,368,853 at 23 px rows) and the
   status bar says so; exports and the Column tab still read every row.
 
+- Opening an AnnData / HDF5 file with large chunked matrices read the whole
+  chunk index of each one to show its size on disk in the summary tab: one
+  B-tree node per 64 chunks, scattered through the file. For a matrix
+  stored without compression the size now follows from the shape. On a
+  6 GB `.h5ad` with 2 × 16,384 uncompressed chunks, `--list-tabs` makes 59
+  reads instead of 644 (0.6 s instead of 6.4 s on an NFS share read cold
+  from disk); the summary is unchanged.
+
 ### Changed
 - vvg's Column tab no longer summarises a large table by itself: above
   10,000,000 rows (or, while a stream's rows are not counted, a file over

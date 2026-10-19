@@ -2598,7 +2598,25 @@ std::optional<StorageInfo> Hdf5Store::storage(const std::string& path) const {
         for (auto c : ch) { out.chunk.push_back((int64_t)c); out.chunk_elems *= (int64_t)c; }
     }
     out.filters = h5_filters_label(dcpl);
-    out.stored = H5Dget_storage_size(d);
+    // H5Dget_storage_size on a chunked dataset reads its whole chunk index:
+    // one B-tree node per 64 chunks, scattered through the file (512 reads
+    // for an AnnData X of 2 × 16,384 chunks; 6 s on an NFS share whose
+    // server reads them from disk). An unfiltered chunk occupies exactly
+    // chunk_elems × itemsize bytes, edge chunks included, so without filters
+    // the size follows from the shape: every chunk written, as the AnnData
+    // writers do. Compressed chunks vary in size and are summed.
+    if (out.chunked && H5Pget_nfilters(dcpl) == 0) {
+        std::vector<hsize_t> dims((size_t)rank, 0);
+        H5Sget_simple_extent_dims(sp, dims.data(), nullptr);
+        uint64_t nchunks = 1;
+        for (int i = 0; i < rank; ++i)
+            nchunks *= out.chunk[(size_t)i] > 0
+                ? (dims[(size_t)i] + (uint64_t)out.chunk[(size_t)i] - 1) / (uint64_t)out.chunk[(size_t)i]
+                : 0;
+        out.stored = nchunks * (uint64_t)out.chunk_elems * (uint64_t)out.itemsize;
+    } else {
+        out.stored = H5Dget_storage_size(d);
+    }
     H5Pclose(dcpl); H5Sclose(sp); H5Tclose(t); H5Dclose(d);
     return out;
 }

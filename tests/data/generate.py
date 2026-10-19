@@ -1715,6 +1715,17 @@ else:
         g.create_dataset("indices", data=_ckX.indices, chunks=(30,), compression="gzip",
                          compression_opts=5)
         g.create_dataset("indptr", data=_ckX.indptr)
+        # layers/counts: the same matrix in unfiltered chunks of 30 (the
+        # last one partial) — 2 chunks × 30 × 8 bytes = 480 B on disk, which
+        # vv computes from the shape, without reading the chunk index.
+        lc = h.create_group("layers").create_group("counts")
+        lc.attrs["encoding-type"] = "csr_matrix"
+        lc.attrs["encoding-version"] = "0.1.0"
+        lc.attrs["shape"] = np.array(_ckX.shape)
+        lc.create_dataset("data", data=_ckX.data, chunks=(30,))
+        lc.create_dataset("indices", data=_ckX.indices, chunks=(30,))
+        lc.create_dataset("indptr", data=_ckX.indptr)
+        assert lc["data"].id.get_storage_size() == 480
         for grp, n in (("obs", 10), ("var", 8)):
             gg = h.create_group(grp)
             gg.attrs["encoding-type"] = "dataframe"
