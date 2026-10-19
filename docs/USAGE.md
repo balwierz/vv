@@ -224,6 +224,12 @@ $ vv tests/data/tiny.lociss        # default when stdout is a terminal
 
 All visible matches are highlighted; the n/N target gets reverse video.
 
+When the columns do not all fit, the first one that does not is drawn cut
+at the right edge, its header and cells ending in `…`; moving the cursor
+onto it scrolls it into view. With fewer than three cells left, a `›` at
+the end of the header row marks the columns further right. The status
+bar's `Col 1-5/15` counts the columns shown whole.
+
 **`S` (stats popup).** Computes count, null count, min, max, mean (numeric
 columns), and distinct-value count (strings, capped at 16) for the active
 column. A numeric column also gets a histogram row: 32 equal-width bins

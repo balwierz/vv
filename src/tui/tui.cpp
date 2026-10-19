@@ -1284,7 +1284,12 @@ class TableTUI {
 
     // ── Layout ───────────────────────────────────────────────────────────────
 
-    struct ColVis { int col, x, w; };
+    // full_w > 0: the column is clipped at the screen edge — shown `w` wide of
+    // its full `full_w`, so the reader sees there is more to the right.
+    struct ColVis { int col, x, w; int full_w = 0; };
+    // The narrowest clipped column worth drawing; below it the header shows a
+    // "›" in the space left instead.
+    static constexpr int kMinClipW = 3;
 
     bool col_is_visible(int c) const {
         return c >= 0 && c < (int)col_visible_.size() ? col_visible_[c] : true;
@@ -1314,9 +1319,15 @@ class TableTUI {
             if (x + w + 2 > scr_c_) {
                 // A full-cell tab's last column (the summary's values) shows
                 // clipped at the screen edge rather than not at all; Enter
-                // opens the whole row.
-                if (cell_cap() > tui_cap_ && !v.empty() && scr_c_ - x - 2 >= 8)
-                    v.push_back({c, x, scr_c_ - x - 2});
+                // opens the whole row. Any other table shows the first
+                // column that does not fit cut at the edge, its cells ending
+                // in "…", so it does not look as if the table ended there;
+                // the cursor scrolls it fully into view.
+                const int cw = scr_c_ - x - 2;
+                if (cell_cap() > tui_cap_ && !v.empty() && cw >= 8)
+                    v.push_back({c, x, cw});
+                else if (!v.empty() && cw >= kMinClipW)
+                    v.push_back({c, x, cw, w});
                 break;
             }
             v.push_back({c, x, w});
@@ -1386,7 +1397,7 @@ class TableTUI {
         for (int guard = 0; guard <= num_cols_; ++guard) {
             bool on_screen = false;
             for (const auto& cv : visible_cols())
-                if (cv.col == cur_col_) { on_screen = true; break; }
+                if (cv.col == cur_col_ && cv.full_w == 0) { on_screen = true; break; }
             if (on_screen || left_col_ >= cur_col_) break;
             ++left_col_;
         }
@@ -1405,6 +1416,28 @@ class TableTUI {
             return base + g_box->ell;
         }
         return val + std::string(w - dw, ' ');
+    }
+
+    // A cell of `col`: fitted to its width, or, for a clipped column, laid out
+    // at its full width and cut at the screen edge with "…" — its true left
+    // part (a right-aligned number is not shown by its last digits).
+    static std::string cell_fit(const std::string& val, const ColVis& col, bool ra) {
+        if (col.full_w <= 0) return fit(val, col.w, ra);
+        const int ew = display_width(g_box->ell);
+        return sub_display(fit(val, col.full_w, ra), 0, std::max(0, col.w - ew)) + g_box->ell;
+    }
+    // Whether a column the user has not hidden lies right of the last one
+    // drawn whole or clipped (a "›" marks it when no part of it fits).
+    bool more_cols_right(const std::vector<ColVis>& vc) const {
+        if (vc.empty() || vc.back().full_w > 0) return false;
+        for (int c = vc.back().col + 1; c < num_cols_; ++c)
+            if (col_is_visible(c) && !(freeze_first_col_ && c == 0)) return true;
+        return false;
+    }
+    // The right edge of the drawn table: where a row's background ends.
+    int table_right(const std::vector<ColVis>& vc) const {
+        if (vc.empty()) return scr_c_;
+        return std::min(scr_c_, vc.back().x + vc.back().w + 2);
     }
 
     // ── Drawing ──────────────────────────────────────────────────────────────
@@ -1546,17 +1579,22 @@ class TableTUI {
             nc_str(y_rule,  0, " " + repeat_utf8(BOX_HLINE, idx_w_) + " ", A_NORMAL, NCP_SEP);
         }
         for (auto& col : vc) {
-            std::string nm = truncate(col_names_[col.col], col.w);
-            nc_str(y_names, col.x, " " + fit(nm, col.w, right_align_[col.col]) + " ",
+            const int fw = col.full_w > 0 ? col.full_w : col.w;
+            std::string nm = truncate(col_names_[col.col], fw);
+            nc_str(y_names, col.x, " " + cell_fit(nm, col, right_align_[col.col]) + " ",
                    A_BOLD, NCP_HEADER);
             std::string ty = (col.col < (int)col_types_str_.size())
                              ? col_types_str_[col.col] : std::string();
-            ty = truncate(ty, col.w);
-            nc_str(y_types, col.x, " " + fit(ty, col.w, right_align_[col.col]) + " ",
+            ty = truncate(ty, fw);
+            nc_str(y_types, col.x, " " + cell_fit(ty, col, right_align_[col.col]) + " ",
                    A_DIM, NCP_HEADER);
             nc_str(y_rule, col.x, " " + repeat_utf8(BOX_HLINE, col.w) + " ",
                    A_NORMAL, NCP_SEP);
         }
+        // Too little room left for even a clipped column: a "›" at the edge
+        // says the table goes on.
+        if (more_cols_right(vc) && table_right(vc) < scr_c_)
+            nc_str(y_names, scr_c_ - 1, "\xe2\x80\xba", A_BOLD, NCP_HEADER);
     }
 
     // Paint one line of a text tab. `hscroll_` is a horizontal offset in
@@ -1630,7 +1668,7 @@ class TableTUI {
         if (zo) {
             int p = NCP_PLAIN + zo;
             attron(COLOR_PAIR(p));
-            mvhline(sy, 0, ' ', scr_c_);
+            mvhline(sy, 0, ' ', text_view_ ? scr_c_ : table_right(vc));
             attroff(COLOR_PAIR(p));
         }
 
@@ -1692,7 +1730,7 @@ class TableTUI {
                 // Whole row rendered with NCP_SEARCH highlight; the n/N
                 // focused row gets reverse video so it stands out among the
                 // other visible matches.
-                nc_str(sy, col.x, " " + fit(val, col.w, right_align_[col.col]) + " ",
+                nc_str(sy, col.x, " " + cell_fit(val, col, right_align_[col.col]) + " ",
                        is_focused ? (attr_t)(A_BOLD | A_REVERSE)
                                   : (attr_t)(A_BOLD | cur_attr),
                        NCP_SEARCH);
@@ -1706,7 +1744,7 @@ class TableTUI {
                 if (pair > 0)
                     nc_str(sy, col.x, " " + std::string(col.w, ' ') + " ", cur_attr, pair);
                 else
-                    nc_str(sy, col.x, " " + fit(val, col.w, false) + " ",
+                    nc_str(sy, col.x, " " + cell_fit(val, col, false) + " ",
                            (attr_t)((val == NULL_SYMBOL ? A_DIM : A_NORMAL) | cur_attr),
                            zpair(val == NULL_SYMBOL ? NCP_NULL : 0));
                 continue;
@@ -1716,7 +1754,7 @@ class TableTUI {
             if (val == NULL_SYMBOL)         { extra = A_DIM; cp = NCP_NULL; }
             else if (is_bool_[col.col])     { cp = (val=="true")?NCP_BOOL_T:NCP_BOOL_F; }
             else if (right_align_[col.col]) { cp = NCP_NUMBER; }
-            nc_str(sy, col.x, " " + fit(val, col.w, right_align_[col.col]) + " ",
+            nc_str(sy, col.x, " " + cell_fit(val, col, right_align_[col.col]) + " ",
                    (attr_t)(extra | cur_attr), zpair(cp));
         }
     }
@@ -1786,8 +1824,11 @@ class TableTUI {
             if (hscroll_ > 0) s += "  +" + std::to_string(hscroll_) + "c";
         } else if (!vc.empty()) {
             s += "  Col ";
+            // The range counts columns shown whole, not a clipped last one.
+            const int last = (vc.back().full_w > 0 && vc.size() > 1)
+                ? vc[vc.size() - 2].col : vc.back().col;
             s += std::to_string(vc.front().col+1) + "-";
-            s += std::to_string(vc.back().col+1)  + "/";
+            s += std::to_string(last+1)  + "/";
             s += std::to_string(num_cols_);
         }
         // Tab indicator: just the numeric position. The browser-style

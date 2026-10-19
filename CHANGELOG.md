@@ -26,6 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   another tab. `--list-tabs` on that file now makes 44 reads of 19.6 KB
   (was 644 of 2.2 MB).
 
+- The TUI left blank space at the right edge when the next column did not
+  fit whole, with nothing to say the table went on; it now draws that
+  column cut at the edge, its header and cells ending in `…` (a `›` in the
+  header when fewer than three cells are left). The alternating row stripe
+  stopped at the screen edge rather than at the table's, so it ran on past
+  the last column; it now ends with the table.
+
 ### Changed
 - vvg's Column tab no longer summarises a large table by itself: above
   10,000,000 rows (or, while a stream's rows are not counted, a file over

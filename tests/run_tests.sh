@@ -5210,6 +5210,17 @@ if [ -n "$TUI_PTY" ]; then
     } > "$TMP/first_paint.vcf"
     assert_eq_file_inline "tui_vcf_first_paint_right_edge" \
         "$(first_paint 0.667 110 "$TMP/first_paint.vcf")" "True"
+    # A column that does not fit at the right edge is drawn cut, ending in
+    # "…", instead of leaving blank space that reads as the end of the table;
+    # with less than 3 cells left, a "›" in the header marks the rest. Five
+    # 17-cell columns after a 5-cell index end at 90.
+    { for i in $(seq -w 0 14); do printf 'column_%s\t' "$i"; done; echo
+      for r in 0 1 2; do for i in $(seq 0 14); do printf 'value_%s_%s_xxxx\t' "$i" "$r"; done; echo; done
+    } | sed 's/\t$//' > "$TMP/wide_edge.tsv"
+    assert_eq_file_inline "tui_right_edge_clipped_column" \
+        "$(first_paint "column_0$(printf '\xe2\x80\xa6')" 100 "$TMP/wide_edge.tsv")" "True"
+    assert_eq_file_inline "tui_right_edge_more_marker" \
+        "$(first_paint "$(printf '\xe2\x80\xba')" 92 "$TMP/wide_edge.tsv")" "True"
 fi
 
 # Search in a sorted view whose order cycles through every row group lands on
