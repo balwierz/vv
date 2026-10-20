@@ -1,7 +1,7 @@
 class Vv < Formula
   desc "Universal genomic file viewer (Parquet, BAM, VCF, BED, GFF, FASTA, FASTQ, ...)"
   homepage "https://github.com/balwierz/vv"
-  url "https://github.com/balwierz/vv/archive/refs/tags/v1.31.0.tar.gz"
+  url "https://github.com/balwierz/vv/archive/refs/tags/v1.31.1.tar.gz"
   sha256 "e94c472c0b474321d92106838b9c6632568739bf05b87873142296816ec3ad20"
   license "MIT"
   head "https://github.com/balwierz/vv.git", branch: "main"

@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.31.1] - 2026-10-20
+
 ### Fixed
 - vvg opening a table of more than about 93 million rows (at the default
   font) showed nothing and kept a core busy: the model reported up to
@@ -13,7 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   of Qt's row header, which then repainted without end. The window now
   shows as many rows as fit in that range (93,368,853 at 23 px rows) and the
   status bar says so; exports and the Column tab still read every row.
-
 - Opening an AnnData / HDF5 file with large chunked matrices read the whole
   chunk index of each one to show its size on disk in the summary tab: one
   B-tree node per 64 chunks, scattered through the file. For a matrix
@@ -25,13 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   rows are no longer read for `--list-tabs`, `--tab obs` or an export of
   another tab. `--list-tabs` on that file now makes 44 reads of 19.6 KB
   (was 644 of 2.2 MB).
-
 - The TUI left blank space at the right edge when the next column did not
   fit whole, with nothing to say the table went on; it now draws that
   column cut at the edge, its header and cells ending in `…` (a `›` in the
   header when fewer than three cells are left). The alternating row stripe
   stopped at the screen edge rather than at the table's, so it ran on past
   the last column; it now ends with the table.
+- Building against shared libraries on glibc older than 2.34 (Bioconda's
+  2.17 sysroot) failed to link `vv` with an undefined `pthread_create`:
+  `Threads::Threads` is now linked in every configuration.
 
 ### Changed
 - vvg's Column tab no longer summarises a large table by itself: above
