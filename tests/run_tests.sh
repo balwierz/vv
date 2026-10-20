@@ -1125,6 +1125,18 @@ if require "feather interop" python3 && python3 -c "import pyarrow.feather" 2>/d
     assert_eq_file_inline "arrow_pyarrow_reads" "$PA" "$("$VV" --count "$DATA/tiny.tsv")"
 fi
 
+# Feather: V2 is an Arrow IPC file read lazily, batch by batch; V1 ("FEA1")
+# goes through Arrow's feather::Reader. Both hold tiny.parquet's rows (V1
+# without the list column), and the footer names the version.
+if [ -f "$DATA/tiny.feather" ] && [ -f "$DATA/tiny.v1.feather" ]; then
+    assert_eq_file_inline "feather_v2_matches_parquet" "$("$VV" --tsv --no-header "$DATA/tiny.feather")" \
+        "$("$VV" --tsv --no-header "$DATA/tiny.parquet")"
+    assert_eq_file_inline "feather_v1_matches_parquet" "$("$VV" --tsv --no-header "$DATA/tiny.v1.feather")" \
+        "$("$VV" --tsv --no-header --select Chr,Start,End,Score "$DATA/tiny.parquet")"
+    assert_contains "feather_v2_footer" "$("$VV" -n 1 --no-interactive "$DATA/tiny.feather")" "Format: Feather v2"
+    assert_contains "feather_v1_footer" "$("$VV" -n 1 --no-interactive "$DATA/tiny.v1.feather")" "Format: Feather v1"
+fi
+
 # The Arrow IPC stream format (.arrows: no footer, read front to back) was
 # refused as a binary file. It streams like the text readers — also from stdin
 # or a pipe, with no temporary copy — and a stream saved as .arrow is

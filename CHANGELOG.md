@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Building against Arrow 26 warned that `arrow::ipc::feather::Reader` is
+  deprecated, and GCC warned about an unchecked `fread`. A Feather V2 file
+  (an Arrow IPC file) is now read as one, lazily, batch by batch, instead of
+  whole through the Feather reader; only Feather V1 still uses it. The
+  footer of a V1 file said "Feather v2"; it now says "Feather v1".
+
 ## [1.31.1] - 2026-10-20
 
 ### Fixed

@@ -123,11 +123,12 @@ int main(int argc, char** argv) {
         }
         {
             unsigned char magic[4] = {0, 0, 0, 0};
+            size_t got = 0;
             if (std::FILE* f = std::fopen(cfg.path.c_str(), "rb")) {
-                (void)std::fread(magic, 1, 4, f);
+                got = std::fread(magic, 1, 4, f);
                 std::fclose(f);
             }
-            if (magic[0] == 'L' && magic[1] == 'S' &&
+            if (got == 4 && magic[0] == 'L' && magic[1] == 'S' &&
                 magic[2] == 'B' && magic[3] == '1') {
                 report(cfg.path, "--validate supports LociSSD v3 (Parquet) "
                                  "only; this is a v4 \"colblock\" file");

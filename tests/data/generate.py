@@ -153,6 +153,13 @@ with pa.OSFile(str(HERE / "tiny.arrows"), "wb") as f:
     with ipc.new_stream(f, schema) as w:
         w.write_table(table, max_chunksize=7)
 
+# tiny.feather: Feather V2 (an Arrow IPC file, read lazily like .arrow), in
+# three record batches; tiny.v1.feather: Feather V1 ("FEA1", read whole by
+# Arrow's deprecated feather::Reader), without the list column V1 cannot hold.
+import pyarrow.feather as feather  # noqa: E402
+feather.write_feather(table, str(HERE / "tiny.feather"), chunksize=7, compression="uncompressed")
+feather.write_feather(table.drop_columns(["Tags"]), str(HERE / "tiny.v1.feather"), version=1)
+
 # tiny.dict.arrow: an Arrow IPC file that carries dictionary (categorical)
 # encoding through to the reader. The filter / stats accessors handled only
 # plain String / Int / Double arrays, so a predicate on a dictionary column

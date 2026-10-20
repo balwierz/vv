@@ -10,6 +10,7 @@
 class IpcSource : public TabularSource {
     std::string                                       path_;
     bool                                              is_feather_ = false;
+    bool                                              feather_v1_ = false;  // read whole
     std::shared_ptr<arrow::Schema>                    schema_;
     std::shared_ptr<arrow::ipc::RecordBatchFileReader> rdr_;       // Arrow IPC only
     int                                               num_record_batches_ = 0; // Arrow IPC only
@@ -71,8 +72,17 @@ public:
             return "Cannot open '" + path + "': " + maybe_file.status().ToString();
         auto file = maybe_file.ValueOrDie();
 
-        if (is_feather) {
+        // Feather V2 is an Arrow IPC file ("ARROW1"), read lazily below like
+        // any .arrow. Only Feather V1 ("FEA1") needs feather::Reader, which
+        // reads the whole table and is deprecated as of Arrow 26.
+        if (is_feather)
+            if (auto head = file->ReadAt(0, 4); head.ok() && (*head)->size() == 4)
+                self->feather_v1_ = std::memcmp((*head)->data(), "FEA1", 4) == 0;
+        if (self->feather_v1_) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
             auto maybe_rdr = arrow::ipc::feather::Reader::Open(file);
+#pragma GCC diagnostic pop
             if (!maybe_rdr.ok())
                 return "Not a valid Feather file: " + maybe_rdr.status().ToString();
             auto rdr = maybe_rdr.ValueOrDie();
@@ -113,7 +123,7 @@ public:
         return all_read_ ? total_rows_ : -1;
     }
     int     num_chunks()                        const override {
-        if (is_feather_) return (int)batches_.size();
+        if (feather_v1_) return (int)batches_.size();
         // A 0-batch Arrow IPC seeds one zero-row batch (see open) so its schema
         // still renders; surface that instead of the raw 0, which would make
         // the seeded batch unreachable and the table view draw nothing.
@@ -122,7 +132,7 @@ public:
     }
     arrow::Status read_status()                 const override { return read_status_; }
     ChunkMeta chunk_meta(int i)                 const override {
-        if (!is_feather_ && i >= (int)batches_.size())
+        if (!feather_v1_ && i >= (int)batches_.size())
             const_cast<IpcSource*>(this)->ensure(i);
         // num_chunks() reports the declared record-batch count, but a batch
         // that fails to decode leaves batches_ short (load_next_ipc records the
@@ -138,13 +148,14 @@ public:
         return {batch_first_row_[i], batches_[i]->num_rows()};
     }
     void ensure(int i) override {
-        if (is_feather_) return;
+        if (feather_v1_) return;
         while (!all_read_ && (int)batches_.size() <= i)
             (void)load_next_ipc();
     }
     const std::string& path()                   const override { return path_; }
     std::string footer()                        const override {
-        return std::string("Format: ") + (is_feather_ ? "Feather v2" : "Arrow IPC");
+        return std::string("Format: ") +
+               (feather_v1_ ? "Feather v1" : is_feather_ ? "Feather v2" : "Arrow IPC");
     }
 
     arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
