@@ -4,6 +4,7 @@
 // Arrow IPC / Feather, IPC streams and Apache ORC.
 
 #include "internal.hpp"
+#include <arrow/util/byte_size.h>
 
 // ── Arrow IPC / Feather source ────────────────────────────────────────────────
 
@@ -16,6 +17,9 @@ class IpcSource : public TabularSource {
     int                                               num_record_batches_ = 0; // Arrow IPC only
     mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
     mutable std::vector<int64_t>                      batch_first_row_;
+    mutable std::vector<int64_t>                             batch_num_rows_;
+    mutable std::list<int>                                   lru_;
+    mutable int64_t                                          cached_bytes_ = 0;
     mutable int64_t                                   total_rows_ = 0;
     mutable bool                                      all_read_   = false;
     mutable arrow::Status                             read_status_;  // sticky error
@@ -32,11 +36,27 @@ class IpcSource : public TabularSource {
             ARROW_RETURN_NOT_OK(rdr.ReadNext(&batch));
             if (!batch) break;
             batch_first_row_.push_back(total_rows_);
+            batch_num_rows_.push_back(batch->num_rows());
             total_rows_ += batch->num_rows();
             batches_.push_back(std::move(batch));
         }
         all_read_ = true;
         return arrow::Status::OK();
+    }
+
+    void cache_batch(int i, std::shared_ptr<arrow::RecordBatch> batch) const {
+        lru_.remove(i);
+        if (batches_[(size_t)i])
+            cached_bytes_ -= arrow::util::TotalBufferSize(*batches_[(size_t)i]);
+        cached_bytes_ += arrow::util::TotalBufferSize(*batch);
+        batches_[(size_t)i] = std::move(batch);
+        lru_.push_front(i);
+        while (cached_bytes_ > (64 << 20) && lru_.size() > 1) {
+            int victim = lru_.back();
+            lru_.pop_back();
+            cached_bytes_ -= arrow::util::TotalBufferSize(*batches_[(size_t)victim]);
+            batches_[(size_t)victim].reset();
+        }
     }
 
     // Decode the next not-yet-loaded record batch (Arrow IPC only).
@@ -54,8 +74,10 @@ class IpcSource : public TabularSource {
         }
         auto b = maybe_b.ValueOrDie();
         batch_first_row_.push_back(total_rows_);
+        batch_num_rows_.push_back(b->num_rows());
         total_rows_ += b->num_rows();
-        batches_.push_back(std::move(b));
+        batches_.push_back(nullptr);
+        cache_batch(i, std::move(b));
         if ((int)batches_.size() >= num_record_batches_) all_read_ = true;
         return arrow::Status::OK();
     }
@@ -107,6 +129,7 @@ public:
             // Empty file (Feather with 0 rows, or 0-batch IPC): seed a zero-row
             // batch so the schema can still render.
             self->batch_first_row_.push_back(0);
+            self->batch_num_rows_.push_back(0);
             self->batches_.push_back(arrow::RecordBatch::Make(
                 self->schema_, 0, std::vector<std::shared_ptr<arrow::Array>>(
                     self->schema_->num_fields(),
@@ -123,17 +146,13 @@ public:
         return all_read_ ? total_rows_ : -1;
     }
     int     num_chunks()                        const override {
-        if (feather_v1_) return (int)batches_.size();
-        // A 0-batch Arrow IPC seeds one zero-row batch (see open) so its schema
-        // still renders; surface that instead of the raw 0, which would make
-        // the seeded batch unreachable and the table view draw nothing.
-        return num_record_batches_ > 0 ? num_record_batches_
-                                       : (int)batches_.size();
+        // Arrow's public file reader does not expose individual metadata row
+        // counts. Expose the discovered frontier, never decode a hidden prefix
+        // from chunk_meta() just because the frontend binary-searches offsets.
+        return (int)batches_.size();
     }
     arrow::Status read_status()                 const override { return read_status_; }
     ChunkMeta chunk_meta(int i)                 const override {
-        if (!feather_v1_ && i >= (int)batches_.size())
-            const_cast<IpcSource*>(this)->ensure(i);
         // num_chunks() reports the declared record-batch count, but a batch
         // that fails to decode leaves batches_ short (load_next_ipc records the
         // sticky read_status_ and stops). Indexing batches_[i]/batch_first_row_
@@ -141,11 +160,11 @@ public:
         // Report an empty chunk instead, keeping the caller's row math
         // monotonic; the rows render blank and read_status() surfaces the error.
         if (i < 0 || i >= (int)batches_.size()) {
-            int64_t end = batch_first_row_.empty()
-                ? 0 : batch_first_row_.back() + batches_.back()->num_rows();
+            int64_t end =
+                batch_first_row_.empty() ? 0 : batch_first_row_.back() + batch_num_rows_.back();
             return {end, 0};
         }
-        return {batch_first_row_[i], batches_[i]->num_rows()};
+        return {batch_first_row_[i], batch_num_rows_[i]};
     }
     void ensure(int i) override {
         if (feather_v1_) return;
@@ -161,8 +180,18 @@ public:
     arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
                               std::shared_ptr<arrow::Table>* out) override {
         ensure(i);
-        if (i >= (int)batches_.size())
+        if (i < 0 || i >= (int)batches_.size())
             return arrow::Status::IndexError("chunk ", i, " out of range");
+        if (!feather_v1_) {
+            if (!batches_[(size_t)i]) {
+                auto b = rdr_->ReadRecordBatch(i);
+                if (!b.ok()) return read_status_ = b.status();
+                cache_batch(i, *b);
+            } else {
+                lru_.remove(i);
+                lru_.push_front(i);
+            }
+        }
         *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
         return arrow::Status::OK();
     }

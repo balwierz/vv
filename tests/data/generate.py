@@ -1996,6 +1996,31 @@ else:
              mat=np.arange(12, dtype=np.float64).reshape(3, 4),
              cube=np.arange(24, dtype=np.float32).reshape(2, 3, 4))
 
+    # Leading-axis slices keep the other axes in logical order, even when
+    # Fortran storage interleaves the slices. Include empty axes with an
+    # explicit F-order header (NumPy otherwise writes empty arrays as C-order).
+    import io
+    cube = np.fromfunction(lambda i, j, k: 100*i + 10*j + k,
+                           (2, 2, 3), dtype=int).astype(np.int32)
+    tensor = np.fromfunction(lambda i, j, k, l: 1000*i + 100*j + 10*k + l,
+                             (2, 2, 2, 3), dtype=int).astype(np.int32)
+    with zipfile.ZipFile(HERE / "tiny.slices.npz", "w") as z:
+        for name, array in (
+            ("cube_c", cube), ("cube_f", cube),
+            ("tensor_c", tensor), ("tensor_f", tensor),
+            ("empty_leading_f", np.zeros((0, 2, 3), dtype=np.int32)),
+            ("empty_rows_f", np.zeros((2, 0, 3), dtype=np.int32)),
+            ("empty_cols_f", np.zeros((2, 2, 0), dtype=np.int32)),
+        ):
+            order = "F" if name.endswith("_f") else "C"
+            buf = io.BytesIO()
+            np.lib.format.write_array_header_1_0(buf, {
+                "descr": np.lib.format.dtype_to_descr(array.dtype),
+                "fortran_order": order == "F", "shape": array.shape,
+            })
+            buf.write(array.tobytes(order=order))
+            z.writestr(name + ".npy", buf.getvalue())
+
     # tiny.dtypes.npz: one 1-D array per NumPy dtype vv's slab_to_arrow()
     # can build. arrow_type_for_id() used to map only INT64/DOUBLE/BINARY and
     # fall through to utf8() for the rest, so the declared schema said `string`

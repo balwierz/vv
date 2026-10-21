@@ -4,6 +4,7 @@
 // In-memory tables and spreadsheets (xlsx, ods).
 
 #include "internal.hpp"
+#include <functional>
 
 // ── Workbook source (xlsx, future ods) ───────────────────────────────────────
 //
@@ -150,6 +151,59 @@ xlsx_sheet_to_table(xlsxioreader rdr, const std::string& sheet_name) {
     return csv_buffer_to_table(assemble_ragged_csv(rows, widths));
 }
 
+class DeferredSheetSource final : public WorkbookSource {
+    using Load = std::function<arrow::Result<std::shared_ptr<arrow::Table>>()>;
+    std::string           sheet_;
+    mutable Load          load_;
+    mutable arrow::Status status_;
+    void                  build() const {
+        if (!load_) return;
+        auto result = load_();
+        load_       = {};
+        auto* self  = const_cast<DeferredSheetSource*>(this);
+        if (result.ok())
+            self->replace_table(*result, MemoryTableSource::footer());
+        else
+            status_ = result.status();
+    }
+
+public:
+    DeferredSheetSource(std::string path, std::string sheet, std::string format, Load load)
+        : WorkbookSource(arrow::Table::Make(arrow::schema({}),
+                                            std::vector<std::shared_ptr<arrow::ChunkedArray>>{}, 0),
+                         std::move(path), "Format: " + format + "  |  Sheet: " + sheet),
+          sheet_(std::move(sheet)),
+          load_(std::move(load)) {}
+    std::string                    tab_label() const override { return sheet_; }
+    std::shared_ptr<arrow::Schema> schema() const override {
+        build();
+        return MemoryTableSource::schema();
+    }
+    int64_t total_rows() const override {
+        build();
+        return MemoryTableSource::total_rows();
+    }
+    int num_chunks() const override {
+        build();
+        return MemoryTableSource::num_chunks();
+    }
+    ChunkMeta chunk_meta(int i) const override {
+        build();
+        return MemoryTableSource::chunk_meta(i);
+    }
+    arrow::Status read_status() const override {
+        build();
+        return status_;
+    }
+    arrow::Status read_chunk(int i, const std::vector<int>& cols,
+                             std::shared_ptr<arrow::Table>* out) override {
+        build();
+        ARROW_RETURN_NOT_OK(status_);
+        return MemoryTableSource::read_chunk(i, cols, out);
+    }
+    std::vector<std::unique_ptr<TabularSource>> open_sibling_sheets() const override { return {}; }
+};
+
 class XlsxSource : public WorkbookSource {
     std::shared_ptr<void>     workbook_;        // xlsxioreader (handle)
     std::string               sheet_;
@@ -221,14 +275,10 @@ public:
     open_sibling_sheets() const override {
         std::vector<std::unique_ptr<TabularSource>> out;
         for (const auto& s : sibling_sheets_) {
-            std::unique_ptr<XlsxSource> src;
-            std::string err = build_one(path(), workbook_, s, {}, &src);
-            if (!err.empty()) {
-                std::fprintf(stderr, "vv: Excel sheet '%s': %s\n",
-                             s.c_str(), err.c_str());
-                continue;
-            }
-            out.push_back(std::move(src));
+            out.push_back(std::make_unique<DeferredSheetSource>(
+                path(), s, "Excel", [wb = workbook_, sheet = s] {
+                    return xlsx_sheet_to_table(static_cast<xlsxioreader>(wb.get()), sheet);
+                }));
         }
         return out;
     }
@@ -599,14 +649,13 @@ public:
     open_sibling_sheets() const override {
         std::vector<std::unique_ptr<TabularSource>> out;
         for (const auto& s : sibling_sheets_) {
-            std::unique_ptr<OdsSource> src;
-            std::string err = build_one(path(), all_sheets_, s, {}, &src);
-            if (!err.empty()) {
-                std::fprintf(stderr, "vv: ODS sheet '%s': %s\n",
-                             s.c_str(), err.c_str());
-                continue;
-            }
-            out.push_back(std::move(src));
+            out.push_back(std::make_unique<DeferredSheetSource>(
+                path(), s, "ODS",
+                [all = all_sheets_, sheet = s]() -> arrow::Result<std::shared_ptr<arrow::Table>> {
+                    for (const auto& entry : *all)
+                        if (entry.first == sheet) return csv_buffer_to_table(entry.second);
+                    return arrow::Status::Invalid("ODS: missing sheet '", sheet, "'");
+                }));
         }
         return out;
     }

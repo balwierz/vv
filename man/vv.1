@@ -85,8 +85,11 @@ streamed edge list (\fBi\fR, \fBj\fR, \fBobs_i\fR, \fBobs_j\fR, \fBweight\fR,
 labelled by obs / var names; never densified), and a \fBuns\fR key/value tab (scalars, strings and short
 arrays; nested dicts flattened to dotted keys). \fBX\fR and each
 \fBobsm\fR / \fBvarm\fR / \fBlayers\fR entry may be dense or sparse (CSR
-or CSC); matrices are previewed densified, first 1000 rows by 200
-columns, with cell / gene labels. Categoricals (\fBcodes\fR /
+or CSC); dense and CSR matrices read projected row blocks on demand and
+allow navigation to every row, with cell / gene labels. The matrix view
+keeps the first 200 data columns; CSC also keeps the first 1000 rows.
+The TUI status identifies capped rows and columns. Frames and 1-D arrays
+likewise page through every row. Categoricals (\fBcodes\fR /
 \fBcategories\fR groups) decode back to string columns, and both the
 plain and the \fBnullable-string-array\fR (anndata \(>= 0.13) string
 encodings are read. Datasets compressed with gzip or with LZF (h5py's
@@ -107,7 +110,9 @@ ID attributes (\fBCellID\fR / \fBGene\fR or the other writers' names) \(em plus
 \fBcells\fR and \fBgenes\fR attribute tables. Generic
 HDF5 files surface a \fBhierarchy\fR tab listing every group / dataset
 with path / kind / shape / dtype, plus one tab per 1-D or 2-D dataset
-(up to 32 datasets; each previewed at 1000 rows \(mu 200 columns).
+(up to 32 datasets; all rows on demand, at most 200 columns for 2-D arrays).
+Specialized Loom and Cell Ranger previews retain their existing row limits;
+whole-matrix exports remain separate from the displayed preview.
 .IP \(bu 2
 \fB.ods\fR, \fB.fods\fR \(en OpenDocument Spreadsheet, zipped or flat
 XML. Each sheet becomes a TUI tab. Hand-rolled parser: minizip inflates

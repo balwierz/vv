@@ -242,35 +242,45 @@ user-facing summary).
   BGZF decompression (`bgzf_mt`, as FASTX uses) buys nothing: measured on a
   50 M-line bgzipped VCF, 5.7 s either way, and previews got slower because
   Arrow's read-ahead fills sooner.
-- **Arrow IPC / Feather random access.** `.arrow` decodes batches 0..i in
-  order on the way to batch i and never frees one; `.feather` (v2 is the IPC
-  file format) is read whole at open (`src/formats/arrow.cpp`). A
-  `RecordBatchFileReader` reads any batch directly, with `included_fields`
-  for projection; a small LRU like the Parquet region cache would bound it.
-- **Parquet directories** (`DatasetSource`, `src/core/open.cpp`) read each
-  child chunk with every column and count rows by reading; children's
-  footers would give the counts and their own projection.
+- **Arrow IPC / Feather random access.** File sources now expose a discovered
+  frontier without decoding in `chunk_meta()` and use a 64 MiB decoded-batch
+  cache. Feather v2 uses this path; only v1 is eager. First discovery of batch
+  row counts still decodes a prefix. A portable public metadata-only batch
+  index and projected reads remain follow-on work.
+- **Parquet directories:** raw `.parquet` children now supply row-group counts
+  from footers and preserve projection. Other dataset formats and compressed
+  children retain the streaming fallback.
 - **Parquet row-group read-ahead** for exports and the TUI: decode is under
   10 % of an export after the threaded formatter (12.2 M rows, `--tsv`
   1.7 s); worth it on cold network storage only.
-- **HDF5 dataset handles and chunk cache.** `Hdf5Store::read_slab` opens and
-  closes the dataset per block, which drops HDF5's chunk cache: a chunked,
-  compressed dense `X` re-inflates chunks a block straddles. No effect on
-  contiguous `X` (the benchmark files); align blocks to the chunk rows and
-  keep one handle per dataset with `H5Pset_chunk_cache`.
+- **HDF5 viewport reads:** metadata-backed projected blocks and a bounded
+  dataset-handle/raw-chunk cache are implemented. Frames, 1-D arrays, dense
+  and CSR expose all rows. CSC remains row-capped and matrices column-capped;
+  full exports stay separate. Measure physical-chunk-aware cache tuning on
+  compressed workloads before changing the fixed logical block size.
 - **vvg lazy sibling tabs.** Every tab of an AnnData file is built at open
   (`addSourceTab` builds the model, which reads the component); building a
-  tab when first shown would defer the reads.
-- **TUI: Ctrl-C during a long pass.** Signals are blocked outside `getch()`,
-  so a drain, sort, filter or search cannot be stopped and vv exits after it
-  finishes; poll a pending SIGINT once per chunk and cancel the pass.
-- **Decorator `read_first`.** `ExpandedSource`, `FlattenSource`,
-  `GenotypeStatsSource` and `VcfSamplesSource` (`src/core/derived.cpp`) derive
+  tab when first shown would defer the reads. The shared reader now avoids
+  whole-preview construction; in vvg, lazy model creation on first
+  activation and viewport reads on a worker remain to do.
+- **TUI long passes:** signal polling, visible read errors and partial/capped
+  scope are implemented. Cancellation is between bounded reads, not inside
+  a blocking HDF5 call.
+- **Decorator `read_first`.** Expanded attributes, flattened fields and
+  genotype statistics now delegate bounded head reads before transforming.
+  `VcfSamplesSource` (`src/core/derived.cpp`) still derives
   the whole first chunk for a head read; delegating to the inner source's
   `read_first` would derive only the rows shown.
 - **CSV column projection.** `ConvertOptions::include_columns` is never set,
   so `--select`, `--count` and `--describe --select` convert every column
   (parsing stays serial, see above).
+- **Remaining reader stages:** XLSX now defers sibling sheet parsing; ODS
+  defers Arrow conversion, but still buffers the whole XML/all-sheet CSV.
+  Follow with selected-sheet streaming only if schema inference stays stable.
+  NPY memory mapping and lazy NPZ member inflation, projected Cooler bin extras,
+  bounded bigWig/bigBed iterators and progressive SQLite counts need their own
+  measured changes. Arbitrary compressed NPZ paging and out-of-core R object
+  parsing are separate designs, not consequences of the HDF5 paging changes.
 - **Export quirks kept for byte-identical output:** a string cell equal to
   `∅` exports as an empty field, and an unquoted TSV / CSV field ends at its
   first NUL byte (`finish_csv_field`, `src/core/format_fast.cpp`).

@@ -1758,10 +1758,8 @@ static PileupCounts decode_pileup_cell(const std::string_view bases,
 // in memory; range queries on bgzipped mpileup files (-r chr:start-end)
 // still go through the underlying source first, so only the queried rows
 // hit the decoder.
-std::string decode_mpileup_to_memory(
- TabularSource& src,
- const std::string& path,
- std::unique_ptr<TabularSource>* out) {
+static std::string decode_mpileup_to_memory(TabularSource& src, const std::string& path,
+                                            std::unique_ptr<TabularSource>* out) {
     auto schema = src.schema();
     int nf = schema->num_fields();
     if (nf < 6 || (nf - 3) % 3 != 0)
@@ -1804,11 +1802,14 @@ std::string decode_mpileup_to_memory(
     };
     std::vector<SampleBuilders> sb(samples);
 
-    int nc = src.num_chunks();
     std::vector<int> all_cols(nf);
     std::iota(all_cols.begin(), all_cols.end(), 0);
 
-    for (int ci = 0; ci < nc; ++ci) {
+    for (int ci = 0;; ++ci) {
+        src.ensure(ci);
+        auto stream_status = src.read_status();
+        if (!stream_status.ok()) return "decode-pileup: " + stream_status.ToString();
+        if (ci >= src.num_chunks()) break;
         std::shared_ptr<arrow::Table> chunk;
         auto st = src.read_chunk(ci, all_cols, &chunk);
         if (!st.ok()) return "decode-pileup: " + st.ToString();
@@ -1912,6 +1913,80 @@ std::string decode_mpileup_to_memory(
         footer += "  |  Samples: " + std::to_string(samples);
     *out = std::make_unique<MemoryTableSource>(table, path, std::move(footer));
     return "";
+}
+
+class DecodedPileupSource final : public TabularSource {
+    std::unique_ptr<TabularSource> inner_;
+    std::shared_ptr<arrow::Schema> schema_;
+    std::string                    footer_;
+    arrow::Status                  status_;
+
+    arrow::Status transform(std::shared_ptr<arrow::Table> table, const std::vector<int>& cols,
+                            std::shared_ptr<arrow::Table>* out) {
+        MemoryTableSource              block(std::move(table), inner_->path(), "");
+        std::unique_ptr<TabularSource> decoded;
+        auto err = decode_mpileup_to_memory(block, inner_->path(), &decoded);
+        if (!err.empty()) return status_ = arrow::Status::Invalid(err);
+        return decoded->read_chunk(0, cols, out);
+    }
+    arrow::Status read(int i, int64_t rows, const std::vector<int>& cols,
+                       std::shared_ptr<arrow::Table>* out) {
+        ARROW_RETURN_NOT_OK(read_status());
+        std::vector<int> all(inner_->schema()->num_fields());
+        std::iota(all.begin(), all.end(), 0);
+        std::shared_ptr<arrow::Table> table;
+        auto                          st =
+            rows >= 0 ? inner_->read_first(rows, all, &table) : inner_->read_chunk(i, all, &table);
+        if (!st.ok()) return status_ = arrow::Status::IOError("decode-pileup: ", st.ToString());
+        if (!table) return status_ = arrow::Status::IOError("decode-pileup: no input table");
+        return transform(std::move(table), cols, out);
+    }
+
+public:
+    static std::string open(std::unique_ptr<TabularSource>  inner,
+                            std::unique_ptr<TabularSource>* out) {
+        auto empty = arrow::Table::MakeEmpty(inner->schema());
+        if (!empty.ok()) return empty.status().ToString();
+        MemoryTableSource              block(*empty, inner->path(), "");
+        std::unique_ptr<TabularSource> decoded;
+        auto err = decode_mpileup_to_memory(block, inner->path(), &decoded);
+        if (!err.empty()) return err;
+        auto self     = std::make_unique<DecodedPileupSource>();
+        self->schema_ = decoded->schema();
+        self->footer_ = decoded->footer();
+        self->inner_  = std::move(inner);
+        *out          = std::move(self);
+        return "";
+    }
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    int64_t                        total_rows() const override { return inner_->total_rows(); }
+    int                            num_chunks() const override { return inner_->num_chunks(); }
+    ChunkMeta     chunk_meta(int i) const override { return inner_->chunk_meta(i); }
+    void          ensure(int i) override { inner_->ensure(i); }
+    void          set_retain_all(bool retain) override { inner_->set_retain_all(retain); }
+    bool          evicted_any() const override { return inner_->evicted_any(); }
+    bool          random_access() const override { return inner_->random_access(); }
+    bool          region_applied() const override { return inner_->region_applied(); }
+    arrow::Status read_status() const override {
+        if (!status_.ok()) return status_;
+        auto st = inner_->read_status();
+        return st.ok() ? st : arrow::Status::IOError("decode-pileup: ", st.ToString());
+    }
+    const std::string& path() const override { return inner_->path(); }
+    std::string        footer() const override { return footer_; }
+    arrow::Status      read_chunk(int i, const std::vector<int>& cols,
+                                  std::shared_ptr<arrow::Table>* out) override {
+        return read(i, -1, cols, out);
+    }
+    arrow::Status read_first(int64_t rows, const std::vector<int>& cols,
+                             std::shared_ptr<arrow::Table>* out) override {
+        return read(0, rows, cols, out);
+    }
+};
+
+std::string open_decoded_pileup_source(std::unique_ptr<TabularSource>  src,
+                                       std::unique_ptr<TabularSource>* out) {
+    return DecodedPileupSource::open(std::move(src), out);
 }
 
 // ── --contigs: reference-sequence dictionary + assembly detection ─────────────

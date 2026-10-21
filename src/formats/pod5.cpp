@@ -180,6 +180,8 @@ class Pod5Tab : public TabularSource {
     std::shared_ptr<arrow::ipc::RecordBatchFileReader> reader_;
     std::shared_ptr<arrow::Schema> schema_;
     std::vector<int64_t> rows_;            // per batch read so far
+    std::shared_ptr<arrow::RecordBatch>                last_batch_;
+    int                                                last_batch_index_ = -1;
     mutable arrow::Status status_;
     std::unique_ptr<arrow::util::Codec> zstd_;
     bool signal_tab_;
@@ -267,6 +269,8 @@ public:
         while ((int)rows_.size() <= i && (int)rows_.size() < reader_->num_record_batches() && status_.ok()) {
             auto b = reader_->ReadRecordBatch((int)rows_.size());
             if (!b.ok()) { status_ = b.status(); return; }
+            last_batch_index_ = (int)rows_.size();
+            last_batch_       = *b;
             rows_.push_back((*b)->num_rows());
         }
     }
@@ -283,7 +287,13 @@ public:
         ensure(i);
         ARROW_RETURN_NOT_OK(status_);
         if (i < 0 || i >= (int)rows_.size()) return arrow::Status::IndexError("batch ", i);
-        ARROW_ASSIGN_OR_RAISE(auto b, reader_->ReadRecordBatch(i));
+        if (last_batch_index_ != i) {
+            auto next = reader_->ReadRecordBatch(i);
+            if (!next.ok()) return status_ = next.status();
+            last_batch_       = *next;
+            last_batch_index_ = i;
+        }
+        const auto& b = last_batch_;
         // Arrow validates a batch's structure on read but not its values.
         ARROW_RETURN_NOT_OK(b->ValidateFull());
         const int samples_col = b->schema()->GetFieldIndex("samples");

@@ -354,11 +354,11 @@ jobs:
             | grep -qF 'colstats-compute count=20 nulls=0 sum=9.5 mean=0.475'
           # ...and a string column has no histogram.
           if VVG_WINTEST=1 VVG_COLSTATS=0 ./build-gui/gui/vvg tests/data/tiny.parquet | grep -q ' hist='; then exit 1; fi
-          # An AnnData obs is summarised in full (1500 rows) though the table
-          # holds its first 1000; a matrix tab says it is a preview; a tab
+          # An AnnData obs is summarised in full (1500 rows), as the table pages
+          # through every row; a matrix tab says it is a preview; a tab
           # read from stdin is summarised from the table's own source.
           VVG_WINTEST=1 VVG_TAB=2 VVG_COLSTATS=2 ./build-gui/gui/vvg tests/data/tiny.bigobs.h5ad \
-            | grep -qE '^colstats count=1500 nulls=0 sum=1124250 .*\(the table shows the first 1,?000\)'
+            | grep -qE '^colstats count=1500 nulls=0 sum=1124250 .*scope=All 1,?500 rows$'
           VVG_WINTEST=1 VVG_TAB=1 VVG_COLSTATS=1 ./build-gui/gui/vvg tests/data/tiny.dense.h5ad 2>/dev/null \
             | grep -qF 'A preview: the first 3 rows'
           printf 'a\tb\n1\tx\n2\ty\n2\tz\n' | VVG_WINTEST=1 VVG_COLSTATS=0 ./build-gui/gui/vvg - \
@@ -720,11 +720,11 @@ jobs:
             | grep -qF 'colstats note: This table has 20 rows. Statistics read every row of the column, so on a table this large they are computed only when asked, one column at a time. [Compute Column Statistics]'
           VVG_WINTEST=1 VVG_STATS_AUTO_ROWS=10 VVG_COLSTATS_COMPUTE=3 ./build/gui/vvg tests/data/tiny.parquet \
             | grep -qF 'colstats-compute count=20 nulls=0 sum=9.5 mean=0.475'
-          # An AnnData obs is summarised in full (1500 rows) though the table
-          # holds its first 1000; a matrix tab says it is a preview; a tab
+          # An AnnData obs is summarised in full (1500 rows), as the table pages
+          # through every row; a matrix tab says it is a preview; a tab
           # read from stdin is summarised from the table's own source.
           VVG_WINTEST=1 VVG_TAB=2 VVG_COLSTATS=2 ./build/gui/vvg tests/data/tiny.bigobs.h5ad \
-            | grep -qE '^colstats count=1500 nulls=0 sum=1124250 .*\(the table shows the first 1,?000\)'
+            | grep -qE '^colstats count=1500 nulls=0 sum=1124250 .*scope=All 1,?500 rows$'
           VVG_WINTEST=1 VVG_TAB=1 VVG_COLSTATS=1 ./build/gui/vvg tests/data/tiny.dense.h5ad 2>/dev/null \
             | grep -qF 'A preview: the first 3 rows'
           printf 'a\tb\n1\tx\n2\ty\n2\tz\n' | VVG_WINTEST=1 VVG_COLSTATS=0 ./build/gui/vvg - \

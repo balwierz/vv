@@ -287,6 +287,14 @@ public:
 
     arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
                               std::shared_ptr<arrow::Table>* out) override {
+        return read(i, -1, col_indices, out);
+    }
+    arrow::Status read_first(int64_t rows, const std::vector<int>& cols,
+                             std::shared_ptr<arrow::Table>* out) override {
+        return read(0, rows, cols, out);
+    }
+    arrow::Status read(int i, int64_t rows, const std::vector<int>& col_indices,
+                       std::shared_ptr<arrow::Table>* out) {
         // Split the request. Any expanded column also needs the packed source
         // column read, even when the caller did not ask for it.
         std::vector<int> inner_req;
@@ -300,7 +308,8 @@ public:
             inner_req.push_back(src_col_);
 
         std::shared_ptr<arrow::Table> in_tbl;
-        ARROW_RETURN_NOT_OK(inner_->read_chunk(i, inner_req, &in_tbl));
+        ARROW_RETURN_NOT_OK(rows >= 0 ? inner_->read_first(rows, inner_req, &in_tbl)
+                                      : inner_->read_chunk(i, inner_req, &in_tbl));
         if (!in_tbl) { *out = nullptr; return arrow::Status::OK(); }
 
         auto pos_of = [&](int inner_idx) {
@@ -425,12 +434,21 @@ public:
     std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
     arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
                              std::shared_ptr<arrow::Table>* out) override {
+        return read(i, -1, col_indices, out);
+    }
+    arrow::Status read_first(int64_t rows, const std::vector<int>& cols,
+                             std::shared_ptr<arrow::Table>* out) override {
+        return read(0, rows, cols, out);
+    }
+    arrow::Status read(int i, int64_t rows, const std::vector<int>& col_indices,
+                       std::shared_ptr<arrow::Table>* out) {
         std::vector<int> need;                       // inner columns, first use order
         for (int c : col_indices)
             if (std::find(need.begin(), need.end(), flat_[(size_t)c].inner) == need.end())
                 need.push_back(flat_[(size_t)c].inner);
         std::shared_ptr<arrow::Table> in;
-        ARROW_RETURN_NOT_OK(inner_->read_chunk(i, need, &in));
+        ARROW_RETURN_NOT_OK(rows >= 0 ? inner_->read_first(rows, need, &in)
+                                      : inner_->read_chunk(i, need, &in));
         if (!in) { *out = nullptr; return arrow::Status::OK(); }
         arrow::FieldVector fields;
         std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
@@ -731,6 +749,14 @@ public:
 
     arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
                               std::shared_ptr<arrow::Table>* out) override {
+        return read(i, -1, col_indices, out);
+    }
+    arrow::Status read_first(int64_t rows, const std::vector<int>& cols,
+                             std::shared_ptr<arrow::Table>* out) override {
+        return read(0, rows, cols, out);
+    }
+    arrow::Status read(int i, int64_t rows, const std::vector<int>& col_indices,
+                       std::shared_ptr<arrow::Table>* out) {
         // Any stat column needs every genotype source column read.
         std::vector<int> inner_req;
         bool want_stat = false;
@@ -744,7 +770,8 @@ public:
                     inner_req.push_back(sc);
 
         std::shared_ptr<arrow::Table> in_tbl;
-        ARROW_RETURN_NOT_OK(inner_->read_chunk(i, inner_req, &in_tbl));
+        ARROW_RETURN_NOT_OK(rows >= 0 ? inner_->read_first(rows, inner_req, &in_tbl)
+                                      : inner_->read_chunk(i, inner_req, &in_tbl));
         if (!in_tbl) { *out = nullptr; return arrow::Status::OK(); }
 
         auto pos_of = [&](int inner_idx) {

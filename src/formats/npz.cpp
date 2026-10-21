@@ -453,31 +453,34 @@ build_1d_table(const std::string& name, const NpyHeader& h,
     return arrow::Table::Make(schema, {col}, n);
 }
 
-// Convert a 2-D slab (rows × cols) C-contiguous to an Arrow table.
+// Convert a 2-D slab (rows × cols) to an Arrow table.
 // Cap on the number of columns rendered from a 2-D array: one Arrow Array +
 // Field is built per column, so a genuinely-wide array (or a hostile one that
 // passes the shape/buffer bounds check) would otherwise allocate unboundedly.
 // The full width is reported to the caller so the footer can flag truncation.
 static constexpr int64_t kNpzMaxCols = 4096;
 
-// fortran_order arrays would have transposed memory layout — we handle
-// the common (False) case; F-order falls back to column-major read.
+// row_axis is 1 for a leading-axis slice, otherwise 0. Flatten the remaining
+// axes in logical C order, regardless of the array's physical storage order.
 // Only the first kNpzMaxCols columns are materialised; `full_cols_out` (when
 // non-null) receives the declared width so callers can note any truncation.
-static std::shared_ptr<arrow::Table>
-build_2d_table(const NpyHeader& h, const uint8_t* data,
-                int64_t rows, int64_t cols, size_t item_size,
-                bool fortran_order, int64_t* full_cols_out = nullptr) {
+static std::shared_ptr<arrow::Table> build_2d_table(const NpyHeader& h, const uint8_t* data,
+                                                    int64_t rows, int64_t cols, size_t item_size,
+                                                    bool     fortran_order,
+                                                    int64_t* full_cols_out = nullptr,
+                                                    size_t   row_axis      = 0) {
     if (full_cols_out) *full_cols_out = cols;
     const int64_t full_cols = cols;        // row stride in the C-order buffer
     if (cols > kNpzMaxCols) cols = kNpzMaxCols;
-    arrow::FieldVector fields;
+    arrow::FieldVector                         fields;
     std::vector<std::shared_ptr<arrow::Array>> cols_out;
-    std::vector<uint8_t> tmp;
+    std::vector<uint8_t>                       tmp;
+    std::vector<int64_t>                       strides;
+    if (fortran_order) {
+        strides.resize(h.shape.size(), 1);
+        for (size_t i = 1; i < h.shape.size(); ++i) strides[i] = strides[i - 1] * h.shape[i - 1];
+    }
     for (int64_t c = 0; c < cols; ++c) {
-        // Gather column c. C-order: stride = full_cols * item_size between rows
-        // (the declared width, even when capped). F-order: column is contiguous
-        // (stride = item_size).
         tmp.assign(rows * item_size, 0);
         // rows == 0 leaves tmp empty, so tmp.data() is null and the F-order
         // gather would call memcpy(nullptr, …, 0) — a zero length does not
@@ -485,14 +488,23 @@ build_2d_table(const NpyHeader& h, const uint8_t* data,
         // non-null), and UBSan traps it. The C-order loop below is already a
         // no-op at rows == 0; guard both so the intent is explicit.
         if (rows > 0) {
+            int64_t row_stride = full_cols;
+            int64_t col_offset = c;
             if (fortran_order) {
-                std::memcpy(tmp.data(), data + c * rows * item_size,
-                            rows * item_size);
+                row_stride        = strides[row_axis];
+                col_offset        = 0;
+                int64_t remaining = c;
+                for (size_t axis = h.shape.size(); axis-- > row_axis + 1;) {
+                    col_offset += (remaining % h.shape[axis]) * strides[axis];
+                    remaining /= h.shape[axis];
+                }
+            }
+            if (row_stride == 1) {
+                std::memcpy(tmp.data(), data + col_offset * item_size, rows * item_size);
             } else {
                 for (int64_t r = 0; r < rows; ++r) {
                     std::memcpy(tmp.data() + r * item_size,
-                                data + (r * full_cols + c) * item_size,
-                                item_size);
+                                data + (r * row_stride + col_offset) * item_size, item_size);
                 }
             }
         }
@@ -785,12 +797,15 @@ class NpzSource : public WorkbookSource {
         int64_t inner_cols = 1;
         for (size_t i = 2; i < h.shape.size(); ++i) inner_cols *= h.shape[i];
         size_t slice_bytes = (size_t)inner_rows * inner_cols * h.item_size;
-        const uint8_t* slice_data = data + (size_t)idx * slice_bytes;
+        size_t slice_offset = (size_t)idx * slice_bytes;
+        if (h.fortran_order && inner_rows > 0 && inner_cols > 0)
+            slice_offset = (size_t)idx * h.item_size;
+        const uint8_t* slice_data = data + slice_offset;
 
         int64_t full_c = 0;
-        *tbl = build_2d_table(h, slice_data,
-                               inner_rows, inner_cols,
-                               h.item_size, h.fortran_order, &full_c);
+        *tbl = build_2d_table(h, slice_data, inner_rows, inner_cols, h.item_size, h.fortran_order,
+                              &full_c,
+                              /*row_axis=*/1);
         if (!*tbl) return "NPZ: dtype not supported for '" + e->name + "'";
 
         std::string slice_desc = "[" + std::to_string(idx) + ", :, :";

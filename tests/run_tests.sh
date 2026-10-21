@@ -1863,6 +1863,15 @@ if [ -f "$DP/g=a/p.parquet" ]; then
 fi
 
 # Streaming: eviction to a one-batch window must not change the row count.
+if python3 -c 'import pyarrow' 2>/dev/null; then
+    LAZY_TUI=()
+    [ -n "$TUI_PTY" ] && LAZY_TUI=(--tui)
+    if python3 "$HERE/lazy_reader_check.py" "$VV" "$DATA" "$TMP" "${LAZY_TUI[@]}"; then
+        PASS=$((PASS+1)); echo "  ok    lazy_reader_paging"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  lazy_reader_paging"
+    fi
+fi
 assert_eq_file_inline "dataset_eviction_count" \
     "$(VV_STREAM_BATCH_CAP=1 "$VV" --count "$DH")" "3"
 
@@ -3804,13 +3813,12 @@ if [ -f "$DATA/tiny.badsparse.h5ad" ]; then
         "$(printf '%s\n' "$BADOBS" | grep -c .)" "3"
 fi
 
-# AnnData obs/var: the TUI / table view shows a bounded 1000-row preview (so a
-# multi-million-row component can't stall the reader), but a delimited export
-# (--tsv/--csv) dumps the FULL component; -n still bounds the export.
+# AnnData obs/var use metadata-backed row blocks; viewing and exporting can
+# reach every row without materialising a fixed preview at tab activation.
 if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
-    # Table view (non-export): capped preview, with the "first 1000 of 1500" note.
+    # The source reports its full row count even for a short table view.
     BIG_OBS=$("$VV" --tab obs --no-interactive --color=never "$DATA/tiny.bigobs.h5ad" 2>&1)
-    assert_contains "h5ad_obs_preview_note" "$BIG_OBS" "first 1000 of 1500 rows"
+    assert_contains "h5ad_obs_full_row_count" "$BIG_OBS" "Rows: 1500"
     # Delimited export: all 1500 rows (the preview cap no longer truncates the dump).
     BIG_ROWS=$("$VV" --tab obs --tsv --no-header "$DATA/tiny.bigobs.h5ad" | wc -l | tr -d ' ')
     assert_eq_file_inline "h5ad_obs_export_full_rows" "$(echo $BIG_ROWS)" "1500"
@@ -3964,6 +3972,12 @@ if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
     # the first. Every HDF5-backed source holds one lock around its calls;
     # without it this check crashes (H5FL_fac_free assertion, SIGSEGV).
     H5TC="$(dirname "$VV")/h5_threads_check"
+    H5VC="$(dirname "$VV")/h5_viewport_check"
+    if [ -x "$H5VC" ]; then
+        assert_exit_zero "hdf5_viewport_read_budget" "$H5VC"
+    else
+        echo "  skip  hdf5_viewport_read_budget (no $H5VC)"
+    fi
     if [ -x "$H5TC" ]; then
         H5TF=()
         for f in tiny.h5ad tiny.csc.h5ad tiny.h5mu tiny.loom tiny.10x.h5 tiny.h5 \
@@ -4037,13 +4051,11 @@ if [ -f "$DATA/tiny.malformed.h5ad" ]; then
         "$VV" --no-interactive --color=never "$DATA/tiny.malformed.h5ad"
 fi
 
-# Generic HDF5 1-D dataset preview cap: the table view of a 1500-element 1-D
-# dataset shows the first 1000 rows (so a multi-million-element array can't
-# OOM/stall the viewer), with the real length in the footer. Like an obs / var
-# column, a mode that needs every row reads it in full.
+# Generic HDF5 1-D paging: the table view of a 1500-element 1-D
+# dataset reads bounded blocks on demand and reports its full row count.
 if [ -f "$DATA/tiny.big1d.h5" ]; then
     BIG1D=$("$VV" --no-interactive --color=never --tab /big "$DATA/tiny.big1d.h5" 2>&1)
-    assert_contains "hdf5_1d_preview_cap_note" "$BIG1D" "first 1000 of 1500 rows"
+    assert_contains "hdf5_1d_full_row_count" "$BIG1D" "Rows: 1500"
     BIG1D_ROWS=$("$VV" --tsv --no-header --tab /big "$DATA/tiny.big1d.h5" 2>/dev/null | wc -l | tr -d ' ')
     assert_eq_file_inline "hdf5_1d_export_full_rows" "$(echo $BIG1D_ROWS)" "1500"
     assert_eq_file_inline "hdf5_1d_count_full" "$("$VV" --count --tab /big "$DATA/tiny.big1d.h5")" "1500"
@@ -4072,6 +4084,16 @@ if [ -f "$DATA/tiny.npz" ]; then
     assert_contains "npz_summary_vec"    "$NPZ_OUT" "vec"
     assert_contains "npz_summary_mat"    "$NPZ_OUT" "mat"
     assert_contains "npz_summary_cube"   "$NPZ_OUT" "cube"
+fi
+if [ -f "$DATA/tiny.slices.npz" ] && command -v python3 >/dev/null 2>&1; then
+    NPY_TUI=()
+    [ -n "$TUI_PTY" ] && NPY_TUI=(--tui)
+    if python3 "$HERE/numpy_slice_check.py" "$VV" "$DATA/tiny.slices.npz" \
+        "$TMP" "${NPY_TUI[@]}"; then
+        PASS=$((PASS+1)); echo "  ok    numpy_leading_axis_slices"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  numpy_leading_axis_slices"
+    fi
 fi
 # Duplicate member names: a ZIP can carry two members with the same name.
 # numpy's np.load keeps the last (its central-directory dict overwrites earlier
@@ -4233,6 +4255,42 @@ if [ -f "$DATA/tiny.mpileup" ]; then
     DEC_C=$("$VV" --tsv --no-header --decode-pileup --filter 'C >= 2' \
         --select 'chrom,pos' "$DATA/tiny.mpileup" | wc -l | tr -d ' ')
     assert_eq_file_inline "decode_filter_C_2plus"   "$DEC_C" "2"
+fi
+# The delimited source discovers additional chunks only when ensure() advances
+# it. Decoding must reach the last row and report parse errors after good chunks.
+if command -v python3 >/dev/null 2>&1; then
+    python3 - "$TMP" <<'PY'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+with (root / "multibatch.mpileup").open("w") as output:
+    for i in range(80000):
+        output.write(f"chr1\t{i + 1}\tA\t1\t.\tI\n")
+with (root / "late-error.mpileup").open("w") as output:
+    output.write((root / "multibatch.mpileup").read_text())
+    output.write("chr1\t80001\tA\tbad-depth\t.\tI\n")
+PY
+    assert_eq_file_inline "decode_multibatch_count" \
+        "$(VV_CSV_BLOCK_MB=1 "$VV" --count --decode-pileup "$TMP/multibatch.mpileup")" "80000"
+    assert_eq_file_inline "decode_multibatch_export" \
+        "$(VV_CSV_BLOCK_MB=1 "$VV" --tsv --no-header --decode-pileup \
+            --select pos "$TMP/multibatch.mpileup" | wc -l | tr -d ' ')" "80000"
+    assert_eq_file_inline "decode_multibatch_last_row" \
+        "$(VV_CSV_BLOCK_MB=1 "$VV" --tsv --no-header --decode-pileup \
+            --filter 'pos == 80000' --select 'pos,A,mean_qual' "$TMP/multibatch.mpileup")" \
+        "80000	1	40"
+    assert_eq_file_inline "decode_multibatch_head" \
+        "$(VV_CSV_BLOCK_MB=1 "$VV" -n 2 --tsv --no-header --decode-pileup \
+            --select pos "$TMP/multibatch.mpileup" | paste -sd, -)" "1,2"
+    assert_eq_file_inline "decode_head_does_not_read_late_error" \
+        "$(VV_CSV_BLOCK_MB=1 "$VV" -n 2 --tsv --no-header --decode-pileup \
+            --select pos "$TMP/late-error.mpileup" | paste -sd, -)" "1,2"
+    assert_exit_code "decode_late_error_count" 1 env VV_CSV_BLOCK_MB=1 \
+        "$VV" --count --decode-pileup "$TMP/late-error.mpileup"
+    assert_exit_code "decode_late_error_export" 1 env VV_CSV_BLOCK_MB=1 \
+        "$VV" --tsv --decode-pileup "$TMP/late-error.mpileup"
+    assert_contains "decode_late_error_message" \
+        "$(VV_CSV_BLOCK_MB=1 "$VV" --count --decode-pileup \
+            "$TMP/late-error.mpileup" 2>&1)" "decode-pileup:"
 fi
 # mean_qual alignment: every pileup element — a real base, a '*' deletion
 # placeholder, or a '>'/'<' reference skip — carries exactly one quality char.
@@ -5102,6 +5160,18 @@ if [ -n "$TUI_PTY" ]; then
     fi
 else
     echo "  skip  tui_start_view (python3 not found)"
+fi
+
+# Empty mapped views stay empty, and known-count streams are still read through
+# their final batch by navigation, search, sorting, filtering and statistics.
+if [ -n "$TUI_PTY" ]; then
+    if run_with_timeout 120 python3 "$HERE/tui_stream_pass_check.py" "$VV" "$TMP"; then
+        PASS=$((PASS+1)); echo "  ok    tui_stream_pass"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_stream_pass"
+    fi
+else
+    echo "  skip  tui_stream_pass (python3 not found)"
 fi
 
 # F: value counts of the cursor's column over the filtered rows; Enter
@@ -6027,11 +6097,7 @@ if [ -f "$DATA/tiny.legacy_cat.h5ad" ]; then
         "4 columns"
 fi
 
-# ── The obs/var preview cap must bound the PREVIEW, not every mode ──────────
-# kDataFrameRowCap (1000) keeps opening a 10 GB .h5ad cheap. Only --tsv/--csv
-# escaped it, so `--count` answered 1000 for a 310,385-row obs, `--unique`
-# reported "of 1000", and `--parquet out.parquet` wrote 1000 of 8563 rows —
-# data loss during a format conversion.
+# ── Paged obs/var retain their full count in reports, exports and previews ──
 if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
     BIGF="$DATA/tiny.bigobs.h5ad"
     assert_eq_file_inline "h5ad_count_not_capped" \
@@ -6044,11 +6110,10 @@ if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
         "$("$VV" --count "$TMP/bigobs.arrow" 2>/dev/null)" "1500"
     assert_contains "h5ad_unique_not_capped" \
         "$("$VV" --tab obs --unique grp "$BIGF" 2>/dev/null)" "of 1500"
-    # ...but the human-facing preview stays capped, which is the whole point:
-    # a 310k-row obs must not be read to draw ten lines.
-    assert_contains "h5ad_table_preview_still_capped" \
+    # A three-row preview reads a bounded head, but reports the full shape.
+    assert_contains "h5ad_table_preview_full_count" \
         "$("$VV" --tab obs -n 3 --no-interactive --color=never "$BIGF" 2>/dev/null)" \
-        "1000 rows"
+        "1500 rows"
 fi
 
 

@@ -382,9 +382,41 @@ static std::shared_ptr<arrow::Table> build_hierarchy_table(const Store& store) {
 
 class Hdf5Store : public Store {
     hid_t fid_;
+    struct Dataset {
+        std::string path;
+        hid_t       id;
+    };
+    mutable std::list<Dataset> datasets_;
+    // At most 16 raw chunk caches of 2 MiB each, shared by sibling sources.
+    hid_t dataset(const std::string& path) const {
+        for (auto it = datasets_.begin(); it != datasets_.end(); ++it) {
+            if (it->path != path) continue;
+            datasets_.splice(datasets_.begin(), datasets_, it);
+            return datasets_.front().id;
+        }
+        hid_t dapl = H5Pcreate(H5P_DATASET_ACCESS);
+        if (dapl < 0) return -1;
+        if (H5Pset_chunk_cache(dapl, 521, 2 << 20, 0.75) < 0) {
+            H5Pclose(dapl);
+            return -1;
+        }
+        hid_t id = H5Dopen2(fid_, path.c_str(), dapl);
+        H5Pclose(dapl);
+        if (id < 0) return id;
+        datasets_.push_front({path, id});
+        if (datasets_.size() > 16) {
+            H5Dclose(datasets_.back().id);
+            datasets_.pop_back();
+        }
+        return id;
+    }
+
 public:
     explicit Hdf5Store(hid_t fid) : fid_(fid) {}
-    ~Hdf5Store() override { if (fid_ >= 0) H5Fclose(fid_); }
+    ~Hdf5Store() override {
+        for (const auto& d : datasets_) H5Dclose(d.id);
+        if (fid_ >= 0) H5Fclose(fid_);
+    }
     Hdf5Store(const Hdf5Store&) = delete;
     Hdf5Store& operator=(const Hdf5Store&) = delete;
     hid_t fid() const { return fid_; }
@@ -453,7 +485,7 @@ public:
         }, false);
     }
     std::optional<ArrayInfo> info(const std::string& path) const override {
-        hid_t d = H5Dopen2(fid_, path.c_str(), H5P_DEFAULT);
+        hid_t d = dataset(path);
         if (d < 0) return std::nullopt;
         ArrayInfo ai;
         hid_t s = H5Dget_space(d);
@@ -473,7 +505,6 @@ public:
         ai.dtype = dtype_to_string(t);
         ai.itemsize = H5Tget_size(t);
         H5Tclose(t);
-        H5Dclose(d);
         return ai;
     }
     arrow::Result<std::shared_ptr<arrow::Array>> read_column(const std::string& path, int64_t off,
@@ -509,10 +540,9 @@ public:
     }
     std::string format_name() const override { return "HDF5"; }
     std::string read_why(const std::string& path) const override {
-        hid_t d = H5Dopen2(fid_, path.c_str(), H5P_DEFAULT);
+        hid_t d = dataset(path);
         if (d < 0) return "cannot open";
         std::string w = h5_read_why(d);
-        H5Dclose(d);
         return w;
     }
 
@@ -521,7 +551,7 @@ private:
     arrow::Status read_slab(const std::string& path, int64_t a, int64_t na, int64_t b, int64_t nb,
                             hid_t memtype, void* out, bool two_d) const {
         if (na <= 0 || (two_d && nb <= 0)) return arrow::Status::OK();
-        hid_t d = H5Dopen2(fid_, path.c_str(), H5P_DEFAULT);
+        hid_t d = dataset(path);
         if (d < 0) return arrow::Status::IOError("cannot open dataset ", path);
         hid_t fs = H5Dget_space(d);
         hsize_t start[2] = {(hsize_t)a, (hsize_t)b}, count[2] = {(hsize_t)na, (hsize_t)nb};
@@ -529,7 +559,8 @@ private:
         hid_t ms = H5Screate_simple(two_d ? 2 : 1, count, nullptr);
         const herr_t st = H5Dread(d, memtype, ms, fs, H5P_DEFAULT, out);
         std::string err = st < 0 ? h5_read_failure(d) : std::string();
-        H5Sclose(ms); H5Sclose(fs); H5Dclose(d);
+        H5Sclose(ms);
+        H5Sclose(fs);
         return st < 0 ? arrow::Status::IOError(err) : arrow::Status::OK();
     }
 };
@@ -737,6 +768,14 @@ static std::unique_ptr<TabularSource> make_h5_matrix_stream(const StorePtr& file
 static std::unique_ptr<TabularSource> make_h5_long_matrix(const StorePtr& file,
                                                          const std::string& path,
                                                          const OpenSpec& spec);
+static bool                           has_viewport_reader(const OpenSpec& spec) {
+    using K = OpenSpec::Kind;
+    return spec.kind == K::DataFrame || spec.kind == K::Dataset1D || spec.kind == K::Matrix2D ||
+           spec.kind == K::Dataset2D || spec.kind == K::Sparse;
+}
+static arrow::Result<std::unique_ptr<TabularSource>> make_h5_viewport(const StorePtr&    file,
+                                                                      const std::string& path,
+                                                                      const OpenSpec&    spec);
 class Hdf5Source : public WorkbookSource {
     StorePtr    file_;
     std::string h5_path_;
@@ -764,6 +803,7 @@ class Hdf5Source : public WorkbookSource {
     int64_t df_row_cap_ = kDataFrameRowCap;
     // The shown / full shape when this tab is a capped preview (preview_limit).
     mutable PreviewLimit limit_;
+    mutable std::unique_ptr<TabularSource> viewport_;
 
     Hdf5Source(std::shared_ptr<arrow::Table> tbl,
                 std::string path,
@@ -804,8 +844,17 @@ class Hdf5Source : public WorkbookSource {
         auto* self = const_cast<Hdf5Source*>(this);
         std::shared_ptr<arrow::Table> tbl;
         std::string footer;
-        std::string err = build_table(*file_, spec_, &tbl, &footer, df_row_cap_,
-                                      &self->limit_);
+        std::string                   err;
+        if (has_viewport_reader(spec_)) {
+            auto v = make_h5_viewport(file_, path(), spec_);
+            if (v.ok()) {
+                viewport_ = std::move(*v);
+                return;
+            }
+            err = v.status().ToString();
+        } else {
+            err = build_table(*file_, spec_, &tbl, &footer, df_row_cap_, &self->limit_);
+        }
         if (!err.empty() || !tbl) {
             // Surface the failure as a one-cell table instead of crashing a
             // null-table access (matches the eager path's graceful skip).
@@ -1021,7 +1070,7 @@ class Hdf5Source : public WorkbookSource {
         // A summary tab is built when it is first read, like a sibling tab:
         // its profile and storage rows read the matrices (expand_summary_rows),
         // which --list-tabs, --tab X or a export of obs never shows.
-        if (spec.kind == OpenSpec::Kind::Summary) {
+        if (spec.kind == OpenSpec::Kind::Summary || has_viewport_reader(spec)) {
             std::unique_ptr<Hdf5Source> src(new Hdf5Source(path, std::move(file), std::move(spec),
                                                            std::move(all), df_row_cap));
             if (!siblings.empty())
@@ -1065,7 +1114,8 @@ public:
     std::string tab_label() const override { return spec_.display; }
 
     arrow::Status read_status() const override {
-        ensure_built(); return build_status_;
+        ensure_built();
+        return viewport_ ? viewport_->read_status() : build_status_;
     }
 
     // Data accessors force the lazy build first; for an eagerly-built source
@@ -1078,23 +1128,40 @@ public:
                                                   arrow::field("value", arrow::utf8())});
             return kv;
         }
-        ensure_built(); return MemoryTableSource::schema();
+        ensure_built();
+        return viewport_ ? viewport_->schema() : MemoryTableSource::schema();
     }
     int64_t total_rows() const override {
-        ensure_built(); return MemoryTableSource::total_rows();
+        ensure_built();
+        return viewport_ ? viewport_->total_rows() : MemoryTableSource::total_rows();
     }
     int num_chunks() const override {
-        ensure_built(); return MemoryTableSource::num_chunks();
+        ensure_built();
+        return viewport_ ? viewport_->num_chunks() : MemoryTableSource::num_chunks();
     }
     ChunkMeta chunk_meta(int i) const override {
-        ensure_built(); return MemoryTableSource::chunk_meta(i);
+        ensure_built();
+        return viewport_ ? viewport_->chunk_meta(i) : MemoryTableSource::chunk_meta(i);
     }
     arrow::Status read_chunk(int i, const std::vector<int>& cols,
                              std::shared_ptr<arrow::Table>* out) override {
-        ensure_built(); return MemoryTableSource::read_chunk(i, cols, out);
+        ensure_built();
+        return viewport_ ? viewport_->read_chunk(i, cols, out)
+                         : MemoryTableSource::read_chunk(i, cols, out);
+    }
+    arrow::Status read_first(int64_t rows, const std::vector<int>& cols,
+                             std::shared_ptr<arrow::Table>* out) override {
+        ensure_built();
+        return viewport_ ? viewport_->read_first(rows, cols, out)
+                         : MemoryTableSource::read_first(rows, cols, out);
+    }
+    bool random_access() const override {
+        ensure_built();
+        return viewport_ ? viewport_->random_access() : MemoryTableSource::random_access();
     }
     std::string footer() const override {
-        ensure_built(); return MemoryTableSource::footer();
+        ensure_built();
+        return viewport_ ? viewport_->footer() + footer_suffix_ : MemoryTableSource::footer();
     }
     std::vector<std::string> hidden_for_display() const override {
         ensure_built(); return MemoryTableSource::hidden_for_display();
@@ -1102,12 +1169,13 @@ public:
     // The summary's key / value rows are short and read whole.
     bool show_cells_in_full() const override { return spec_.kind == OpenSpec::Kind::Summary; }
     PreviewLimit preview_limit() const override {
-        ensure_built(); return limit_;
+        ensure_built();
+        return viewport_ ? viewport_->preview_limit() : limit_;
     }
     // A capped dense matrix or CSR preview streams in full for an export.
     std::unique_ptr<TabularSource> full_matrix() const override {
         ensure_built();
-        if (!limit_.capped()) return nullptr;
+        if (!preview_limit().capped()) return nullptr;
         return make_h5_matrix_stream(file_, path(), spec_);
     }
 
@@ -1246,15 +1314,16 @@ static int64_t h5_len_1d(const Store& store, const std::string& path) {
 // enum member names (h5py's {FALSE, TRUE} as booleans), "?" otherwise.
 arrow::Result<std::shared_ptr<arrow::Array>> Hdf5Store::read_column(const std::string& path,
                                                                     int64_t off, int64_t len) const {
-    hid_t dset = H5Dopen2(fid_, path.c_str(), H5P_DEFAULT);
+    hid_t dset = dataset(path);
     if (dset < 0) return arrow::Status::IOError("cannot open dataset ", path);
-    struct CloseD { hid_t d; ~CloseD() { H5Dclose(d); } } close_d{dset};
     hid_t space = H5Dget_space(dset);
     const int nd = H5Sget_simple_extent_ndims(space);
     H5Sclose(space);
     if (nd > 1) return arrow::Status::Invalid("expected 1-D dataset");
     const bool scalar = nd == 0;
     const hsize_t n = scalar ? 1 : (hsize_t)std::max<int64_t>(len, 0);
+    if (n == 0 && h5_read_why(dset) != "read failed")
+        return arrow::Status::IOError(h5_read_failure(dset));
 
     // Read elements [off, off + n) of `dset` into `buf` via a hyperslab; `ms`
     // (the matching memory dataspace) is returned so vlen strings can be
@@ -1933,6 +2002,416 @@ static void apply_anndata_matrix_labels(const Store& file_id, const std::string&
         }
     }
     *tbl = t;
+}
+
+// Metadata-backed views share the Store API with Zarr. Logical blocks stay
+// fixed even when a dense sparse row needs several bounded physical reads.
+class H5ViewportSource final : public TabularSource {
+    struct Column {
+        std::string                      name, values, mask, categories;
+        int64_t                          length = 0, category_count = 0;
+        bool                             ordered = false;
+        std::shared_ptr<arrow::DataType> type;
+    };
+    StorePtr                                             file_;
+    std::string                                          path_;
+    OpenSpec                                             spec_;
+    std::shared_ptr<arrow::Schema>                       schema_;
+    std::vector<Column>                                  columns_;
+    std::optional<Column>                                row_label_;
+    std::map<std::string, std::shared_ptr<arrow::Array>> dictionaries_;
+    int64_t                                              dictionary_bytes_ = 0;
+    int64_t       rows_ = 0, full_rows_ = 0, full_cols_ = 0, data_cols_ = 0;
+    bool          frame_ = false, sparse_ = false, csr_ = false, ints_ = false, f32_ = false;
+    arrow::Status status_;
+    static constexpr int64_t kBlock           = 128;
+    static constexpr int64_t kSparseStep      = 65536;
+    static constexpr int64_t kDictionaryBytes = 8 << 20;
+
+    arrow::Result<Column> describe_column(const std::string& name, const std::string& path) const {
+        Column c;
+        c.name   = name;
+        c.values = path;
+        if (file_->kind(path) == NodeKind::Group) {
+            const auto enc = file_->attr_string(path, "encoding-type");
+            if (enc == "categorical") {
+                c.values     = path + "/codes";
+                c.categories = path + "/categories";
+                c.ordered    = file_->attr_bool(path, "ordered");
+            } else if (enc == "nullable-string-array") {
+                c.values = path + "/values";
+                if (file_->kind(path + "/mask") == NodeKind::Array) c.mask = path + "/mask";
+            } else {
+                return arrow::Status::Invalid(path, ": unsupported column encoding ", enc);
+            }
+        } else {
+            const auto        slash = path.find_last_of('/');
+            const std::string legacy =
+                path.substr(0, slash) + "/__categories/" + path.substr(slash + 1);
+            if (file_->has_attr(path, "categories") && file_->kind(legacy) == NodeKind::Array)
+                c.categories = legacy;
+        }
+        auto ai = file_->info(c.values);
+        if (!ai || ai->shape.size() != 1 || ai->shape[0] < 0)
+            return arrow::Status::Invalid(c.values, ": expected 1-D column");
+        c.length = ai->shape[0];
+        // A zero-length read obtains the converted type, including HDF5 enum
+        // metadata, without reading values or inferring from a sample.
+        ARROW_ASSIGN_OR_RAISE(auto empty, file_->read_column(c.values, 0, 0));
+        c.type = empty->type();
+        if (!c.categories.empty()) {
+            auto cats = file_->info(c.categories);
+            if (!cats || cats->shape.size() != 1 || cats->shape[0] < 0)
+                return arrow::Status::Invalid(c.categories, ": expected 1-D categories");
+            c.category_count = cats->shape[0];
+            if (c.category_count > category_dict_cap()) {
+                c.name += " (codes)";
+                c.categories.clear();
+            } else {
+                ARROW_ASSIGN_OR_RAISE(auto ce, file_->read_column(c.categories, 0, 0));
+                c.type = arrow::dictionary(arrow::int32(), ce->type(), c.ordered);
+            }
+        }
+        return c;
+    }
+
+    arrow::Result<std::shared_ptr<arrow::Array>> read_column(const Column& c, int64_t off,
+                                                             int64_t n) {
+        const int64_t take = std::min(n, std::max<int64_t>(0, c.length - off));
+        ARROW_ASSIGN_OR_RAISE(auto a, file_->read_column(c.values, std::min(off, c.length), take));
+        if (!c.mask.empty()) {
+            auto mi = file_->info(c.mask);
+            if (!mi || mi->shape.size() != 1)
+                return arrow::Status::Invalid(c.mask, ": expected 1-D mask");
+            const int64_t mn = std::min(take, std::max<int64_t>(0, mi->shape[0] - off));
+            ARROW_ASSIGN_OR_RAISE(auto mask,
+                                  file_->read_column(c.mask, std::min(off, mi->shape[0]), mn));
+            a = anndata_apply_null_mask(a, mask);
+        }
+        if (!c.categories.empty()) {
+            auto                          it = dictionaries_.find(c.categories);
+            std::shared_ptr<arrow::Array> cats;
+            if (it != dictionaries_.end())
+                cats = it->second;
+            else {
+                ARROW_ASSIGN_OR_RAISE(cats, file_->read_column(c.categories, 0, c.category_count));
+                int64_t bytes = 0;
+                for (const auto& b : cats->data()->buffers)
+                    if (b) bytes += b->size();
+                if (bytes <= kDictionaryBytes - dictionary_bytes_) {
+                    dictionaries_.emplace(c.categories, cats);
+                    dictionary_bytes_ += bytes;
+                }
+            }
+            a = anndata_decode_codes(a, cats, c.ordered);
+            if (!a) return arrow::Status::Invalid(c.values, ": cannot decode categorical codes");
+        }
+        if (take < n) {
+            ARROW_ASSIGN_OR_RAISE(auto nulls, arrow::MakeArrayOfNull(a->type(), n - take));
+            ARROW_ASSIGN_OR_RAISE(a, arrow::Concatenate({a, nulls}));
+        }
+        return a;
+    }
+
+    arrow::Status init() {
+        using K = OpenSpec::Kind;
+        frame_  = spec_.kind == K::DataFrame || spec_.kind == K::Dataset1D;
+        arrow::FieldVector fields;
+        if (frame_) {
+            std::vector<std::string> names;
+            if (spec_.kind == K::Dataset1D)
+                names.push_back("value");
+            else {
+                names          = file_->children(spec_.h5_path);
+                const auto idx = file_->attr_string(spec_.h5_path, "_index");
+                auto       it  = std::find(names.begin(), names.end(), idx);
+                if (it != names.end()) std::rotate(names.begin(), it, it + 1);
+            }
+            for (const auto& name : names) {
+                if (anndata_reserved_child(name)) continue;
+                const auto p =
+                    spec_.kind == K::Dataset1D ? spec_.h5_path : spec_.h5_path + "/" + name;
+                // Other groups in older frames are not data columns.
+                if (file_->kind(p) == NodeKind::Group) {
+                    const auto enc = file_->attr_string(p, "encoding-type");
+                    if (enc != "categorical" && enc != "nullable-string-array") continue;
+                }
+                ARROW_ASSIGN_OR_RAISE(auto c, describe_column(name, p));
+                rows_ = std::max(rows_, c.length);
+                fields.push_back(arrow::field(c.name, c.type));
+                columns_.push_back(std::move(c));
+            }
+            full_rows_ = rows_;
+            full_cols_ = data_cols_ = fields.size();
+        } else {
+            sparse_ = spec_.kind == K::Sparse;
+            if (sparse_) {
+                const auto enc = file_->attr_string(spec_.h5_path, "encoding-type");
+                csr_           = enc == "csr_matrix";
+                if (!csr_ && enc != "csc_matrix")
+                    return arrow::Status::Invalid(spec_.h5_path, ": expected CSR/CSC");
+                int64_t shape[2] = {0, 0};
+                read_shape2(*file_, spec_.h5_path, shape);
+                full_rows_ = shape[0];
+                full_cols_ = shape[1];
+                auto ptr   = file_->info(spec_.h5_path + "/indptr");
+                auto idx   = file_->info(spec_.h5_path + "/indices");
+                auto data  = file_->info(spec_.h5_path + "/data");
+                if (!ptr || ptr->shape.size() != 1 || ptr->shape[0] < 1 || !idx ||
+                    idx->shape.size() != 1 || !data || data->shape.size() != 1)
+                    return arrow::Status::Invalid(spec_.h5_path,
+                                                  ": missing 1-D indptr/indices/data");
+                auto& major = csr_ ? full_rows_ : full_cols_;
+                major       = std::min(major, ptr->shape[0] - 1);
+                f32_        = is_float32(*data);
+            } else {
+                auto ai = file_->info(spec_.h5_path);
+                if (!ai || ai->shape.size() != 2)
+                    return arrow::Status::Invalid(spec_.h5_path, ": expected 2-D array");
+                if (ai->cls != VClass::Int && ai->cls != VClass::Float)
+                    return arrow::Status::NotImplemented(spec_.h5_path, ": nonnumeric 2-D array");
+                full_rows_ = ai->shape[0];
+                full_cols_ = ai->shape[1];
+                ints_      = ai->cls == VClass::Int;
+                f32_       = is_float32(*ai);
+            }
+            if (full_rows_ < 0 || full_cols_ < 0)
+                return arrow::Status::Invalid(spec_.h5_path, ": negative matrix shape");
+            rows_      = sparse_ && !csr_ ? std::min(full_rows_, kDense2DRowCap) : full_rows_;
+            data_cols_ = std::min(full_cols_, kDense2DColCap);
+            std::vector<std::string> names;
+            if (spec_.kind != K::Dataset2D) {
+                const auto root   = anndata_root(spec_.h5_path);
+                const bool by_var = spec_.axes == AnnMatrixAxes::VarByDim;
+                const auto group  = root + (by_var ? "/var" : "/obs");
+                auto       idx    = file_->attr_string(group, "_index");
+                if (idx.empty()) idx = "_index";
+                if (file_->kind(group + "/" + idx) != NodeKind::Missing) {
+                    ARROW_ASSIGN_OR_RAISE(
+                        auto c, describe_column(idx == "_index" ? (by_var ? "var" : "obs") : idx,
+                                                group + "/" + idx));
+                    row_label_ = std::move(c);
+                    fields.push_back(arrow::field(row_label_->name, arrow::utf8()));
+                }
+                if (spec_.axes == AnnMatrixAxes::ObsByVar ||
+                    spec_.axes == AnnMatrixAxes::ObsByRawVar) {
+                    const auto vg =
+                        root + (spec_.axes == AnnMatrixAxes::ObsByRawVar ? "/raw/var" : "/var");
+                    auto vi = file_->attr_string(vg, "_index");
+                    if (vi.empty()) vi = "_index";
+                    if (file_->kind(vg + "/" + vi) != NodeKind::Missing) {
+                        ARROW_ASSIGN_OR_RAISE(auto c, describe_column(vi, vg + "/" + vi));
+                        ARROW_ASSIGN_OR_RAISE(auto a,
+                                              read_column(c, 0, std::min(data_cols_, c.length)));
+                        for (int64_t i = 0; i < a->length(); ++i)
+                            names.push_back(cell_to_string(*a, i));
+                    }
+                } else if (!spec_.key.empty()) {
+                    for (int64_t i = 0; i < data_cols_; ++i)
+                        names.push_back(spec_.key + std::to_string(i + 1));
+                }
+            }
+            for (int64_t i = 0; i < data_cols_; ++i)
+                fields.push_back(arrow::field(
+                    i < (int64_t)names.size() ? names[(size_t)i] : "col" + std::to_string(i),
+                    ints_ ? arrow::int64() : float_type(f32_)));
+        }
+        if (rows_ / kBlock >= INT_MAX)
+            return arrow::Status::CapacityError(spec_.h5_path, ": too many row blocks");
+        schema_ = arrow::schema(fields);
+        return arrow::Status::OK();
+    }
+
+    arrow::Status read_matrix(int64_t off, int64_t n, const std::vector<int>& cols,
+                              std::vector<std::shared_ptr<arrow::Array>>* arrays) {
+        const int        shift = row_label_ ? 1 : 0;
+        std::vector<int> selected;
+        for (int c : cols)
+            if (c >= shift) selected.push_back(c - shift);
+        std::sort(selected.begin(), selected.end());
+        selected.erase(std::unique(selected.begin(), selected.end()), selected.end());
+        std::map<int, std::shared_ptr<arrow::Array>> values;
+        if (sparse_ && !selected.empty()) {
+            std::vector<std::vector<double>> dense(selected.size(),
+                                                   std::vector<double>((size_t)n, 0));
+            const auto                       base = spec_.h5_path;
+            const int64_t                    available =
+                std::min(h5_len_1d(*file_, base + "/indices"), h5_len_1d(*file_, base + "/data"));
+            const int64_t        majors = csr_ ? 1 : (int64_t)selected.size();
+            std::vector<int64_t> ptr;
+            if (csr_) {
+                ptr.resize((size_t)n + 1);
+                ARROW_RETURN_NOT_OK(file_->read_i64(base + "/indptr", off, n + 1, ptr.data()));
+                for (int64_t r = 0; r < n; ++r)
+                    if (ptr[(size_t)r] < 0 || ptr[(size_t)r + 1] < ptr[(size_t)r] ||
+                        ptr[(size_t)r + 1] > available)
+                        return arrow::Status::Invalid(base, ": invalid sparse pointers");
+            }
+            std::vector<int64_t> idx;
+            std::vector<double>  data;
+            for (int64_t m = 0; m < majors; ++m) {
+                int64_t p[2];
+                if (csr_) {
+                    p[0] = ptr.front();
+                    p[1] = ptr.back();
+                } else
+                    ARROW_RETURN_NOT_OK(
+                        file_->read_i64(base + "/indptr", selected[(size_t)m], 2, p));
+                if (p[0] < 0 || p[1] < p[0] || p[1] > available)
+                    return arrow::Status::Invalid(base, ": invalid sparse pointers");
+                int64_t row = 0;
+                for (int64_t k = p[0]; k < p[1];) {
+                    const int64_t take = std::min(kSparseStep, p[1] - k);
+                    idx.resize((size_t)take);
+                    data.resize((size_t)take);
+                    ARROW_RETURN_NOT_OK(file_->read_i64(base + "/indices", k, take, idx.data()));
+                    ARROW_RETURN_NOT_OK(file_->read_f64(base + "/data", k, take, data.data()));
+                    for (int64_t j = 0; j < take; ++j) {
+                        const int64_t v = idx[(size_t)j];
+                        if (v < 0 || v >= (csr_ ? full_cols_ : full_rows_))
+                            return arrow::Status::Invalid(base, ": sparse index out of range");
+                        if (csr_) {
+                            while (row + 1 < n && k + j >= ptr[(size_t)row + 1]) ++row;
+                            auto it = std::lower_bound(selected.begin(), selected.end(), v);
+                            if (it != selected.end() && *it == v)
+                                dense[(size_t)(it - selected.begin())][(size_t)row] =
+                                    data[(size_t)j];
+                        } else if (v >= off && v - off < n) {
+                            dense[(size_t)m][(size_t)(v - off)] = data[(size_t)j];
+                        }
+                    }
+                    k += take;
+                }
+            }
+            for (size_t j = 0; j < selected.size(); ++j)
+                values[selected[j]] =
+                    float_column(n, f32_, [&](int64_t i) { return dense[j][(size_t)i]; });
+        } else if (!sparse_) {
+            for (size_t i = 0; i < selected.size();) {
+                size_t end = i + 1;
+                while (end < selected.size() && selected[end] == selected[end - 1] + 1) ++end;
+                const int64_t nc = end - i;
+                if (ints_) {
+                    std::vector<int64_t> buf((size_t)(n * nc));
+                    ARROW_RETURN_NOT_OK(
+                        file_->read_block_i64(spec_.h5_path, off, n, selected[i], nc, buf.data()));
+                    for (size_t j = i; j < end; ++j) {
+                        arrow::Int64Builder b;
+                        ARROW_RETURN_NOT_OK(b.Reserve(n));
+                        for (int64_t r = 0; r < n; ++r)
+                            b.UnsafeAppend(buf[(size_t)(r * nc) + j - i]);
+                        ARROW_RETURN_NOT_OK(b.Finish(&values[selected[j]]));
+                    }
+                } else {
+                    std::vector<double> buf((size_t)(n * nc));
+                    ARROW_RETURN_NOT_OK(
+                        file_->read_block_f64(spec_.h5_path, off, n, selected[i], nc, buf.data()));
+                    for (size_t j = i; j < end; ++j)
+                        values[selected[j]] = float_column(
+                            n, f32_, [&](int64_t r) { return buf[(size_t)(r * nc) + j - i]; });
+                }
+                i = end;
+            }
+        }
+        std::shared_ptr<arrow::Array> labels;
+        if (row_label_ && std::find(cols.begin(), cols.end(), 0) != cols.end()) {
+            ARROW_ASSIGN_OR_RAISE(auto a, read_column(*row_label_, off, n));
+            arrow::StringBuilder b;
+            for (int64_t r = 0; r < n; ++r) {
+                if (a->IsNull(r))
+                    ARROW_RETURN_NOT_OK(b.AppendNull());
+                else
+                    ARROW_RETURN_NOT_OK(b.Append(cell_to_string(*a, r)));
+            }
+            ARROW_RETURN_NOT_OK(b.Finish(&labels));
+        }
+        for (int c : cols) arrays->push_back(c < shift ? labels : values.at(c - shift));
+        return arrow::Status::OK();
+    }
+
+    arrow::Status read_range(int64_t off, int64_t n, const std::vector<int>& cols,
+                             std::shared_ptr<arrow::Table>* out) {
+        if (!status_.ok()) return status_;
+        arrow::FieldVector                         fields;
+        std::vector<std::shared_ptr<arrow::Array>> arrays;
+        for (int c : cols) {
+            if (c < 0 || c >= schema_->num_fields())
+                return status_ = arrow::Status::IndexError("column ", c);
+            fields.push_back(schema_->field(c));
+        }
+        if (frame_) {
+            for (int c : cols) {
+                auto a = read_column(columns_[(size_t)c], off, n);
+                if (!a.ok()) return status_ = a.status();
+                arrays.push_back(*a);
+            }
+        } else {
+            auto st = read_matrix(off, n, cols, &arrays);
+            if (!st.ok()) return status_ = st;
+        }
+        *out = arrow::Table::Make(arrow::schema(fields), arrays, n);
+        return arrow::Status::OK();
+    }
+
+public:
+    static arrow::Result<std::unique_ptr<TabularSource>> make(StorePtr           file,
+                                                              const std::string& path,
+                                                              const OpenSpec&    spec) {
+        auto s   = std::make_unique<H5ViewportSource>();
+        s->file_ = std::move(file);
+        s->path_ = path;
+        s->spec_ = spec;
+        ARROW_RETURN_NOT_OK(s->init());
+        return std::unique_ptr<TabularSource>(std::move(s));
+    }
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    int64_t                        total_rows() const override { return rows_; }
+    int       num_chunks() const override { return (int)(rows_ / kBlock + (rows_ % kBlock != 0)); }
+    ChunkMeta chunk_meta(int i) const override {
+        if (i < 0 || i >= num_chunks()) return {rows_, 0};
+        return {(int64_t)i * kBlock, std::min(kBlock, rows_ - (int64_t)i * kBlock)};
+    }
+    bool               random_access() const override { return true; }
+    arrow::Status      read_status() const override { return status_; }
+    const std::string& path() const override { return path_; }
+    std::string        tab_label() const override { return spec_.display; }
+    PreviewLimit       preview_limit() const override {
+        return {rows_, full_rows_, data_cols_, full_cols_};
+    }
+    std::string footer() const override {
+        const bool anndata = spec_.kind == OpenSpec::Kind::DataFrame ||
+                             spec_.kind == OpenSpec::Kind::Sparse ||
+                             spec_.kind == OpenSpec::Kind::Matrix2D;
+        std::string s = "Format: " + (anndata ? std::string("AnnData") : file_->format_name()) +
+                        " " + spec_.display + "  |  Rows: " + std::to_string(rows_) +
+                        "  |  Cols: " + std::to_string(data_cols_);
+        auto lim = preview_limit();
+        if (lim.rows_capped())
+            s += "  |  preview: first " + std::to_string(rows_) + " of " +
+                 std::to_string(full_rows_) + " rows";
+        if (lim.cols_capped())
+            s += "  |  preview: first " + std::to_string(data_cols_) + " of " +
+                 std::to_string(full_cols_) + " cols";
+        if (!spec_.footer_hint.empty()) s += "  |  " + spec_.footer_hint;
+        return s;
+    }
+    arrow::Status read_chunk(int i, const std::vector<int>& cols,
+                             std::shared_ptr<arrow::Table>* out) override {
+        if (i < 0 || i >= num_chunks()) return arrow::Status::IndexError("chunk ", i);
+        auto m = chunk_meta(i);
+        return read_range(m.first_row, m.num_rows, cols, out);
+    }
+    arrow::Status read_first(int64_t n, const std::vector<int>& cols,
+                             std::shared_ptr<arrow::Table>* out) override {
+        n = std::clamp<int64_t>(n, 0, rows_);
+        return n <= kBlock ? read_range(0, n, cols, out) : TabularSource::read_first(n, cols, out);
+    }
+};
+
+static arrow::Result<std::unique_ptr<TabularSource>> make_h5_viewport(const StorePtr&    file,
+                                                                      const std::string& path,
+                                                                      const OpenSpec&    spec) {
+    return H5ViewportSource::make(file, path, spec);
 }
 
 // ── A whole AnnData / HDF5 matrix, streamed in row blocks ───────────────────

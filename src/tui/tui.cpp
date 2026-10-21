@@ -155,6 +155,21 @@ static void tui_signal_restore(int sig) {
     raise(sig);
 }
 
+// Signals stay blocked inside reader/allocator calls. At a chunk boundary
+// terminal cleanup is safe, and a pending interrupt need not wait for getch().
+static void tui_poll_signals() {
+    sigset_t pending;
+    if (sigpending(&pending) != 0) return;
+    for (int sig : {SIGINT, SIGTERM, SIGHUP}) {
+        if (!sigismember(&pending, sig)) continue;
+        tui_signal_restore(sig);
+        sigset_t unblock;
+        sigemptyset(&unblock);
+        sigaddset(&unblock, sig);
+        sigprocmask(SIG_UNBLOCK, &unblock, nullptr);
+    }
+}
+
 // ncurses color-pair IDs  (0 = terminal default)
 enum : int {
     NCP_HEADER = 1,   // column header row
@@ -612,6 +627,7 @@ class TableTUI {
         int                             sort_col = -1;
         bool                            sort_desc = false;
         std::vector<int64_t>            sort_order;
+        bool                            order_materialized = false;
         bool                            filter_active = false;
         std::string                     filter_expr_str;
         FilterExpr                      filter_fx;
@@ -620,17 +636,19 @@ class TableTUI {
         // the streaming source had already released batches, so its answer
         // covers only part of the file.
         bool                            partial_pass = false;
+        std::string                     read_error;
     };
     std::vector<TabState>      tabs_;
 
     // ── Sort by column (`s`) + Live filter (`&`) ─────────────────────────────
     //
     // Both features funnel through the same display→source indirection.
-    // `sort_order_[display_row] = source_row` when non-empty; empty means
-    // identity (no sort, no filter). The presence of sort_order_ also flips
+    // `sort_order_[display_row] = source_row` when materialized, including
+    // an empty result. An unmaterialized order means identity. This also flips
     // total_rows() over to the filtered/sorted count so the status bar,
     // scroll clamping, and search loops all see the user's view-of-the-data.
     std::vector<int64_t>       sort_order_;
+    bool                       order_materialized_ = false;
     int                        sort_col_    = -1;   // virtual column, -1 = no sort
     bool                       sort_desc_   = false;
 
@@ -647,6 +665,7 @@ class TableTUI {
     // See TabState::partial_pass. Set by note_full_pass(), shown in the status
     // bar and the stats overlay until the tab is closed.
     bool                       partial_pass_   = false;
+    std::string                read_error_;
 
     // Copy-cell (`y`): transient status shown on the bottom bar after a copy.
     // Cleared automatically on the next non-`y` keypress.
@@ -668,8 +687,8 @@ class TableTUI {
     // load_full_row calls go through this helper so the rest of the TUI
     // can stay row-indexing-agnostic.
     int64_t source_row(int64_t display) const {
-        if (sort_order_.empty()) return display;
-        if (display < 0 || display >= (int64_t)sort_order_.size()) return display;
+        if (!order_materialized_) return display;
+        if (display < 0 || display >= (int64_t)sort_order_.size()) return -1;
         return sort_order_[display];
     }
 
@@ -750,10 +769,62 @@ class TableTUI {
     // sort_order_, not the underlying source size. Search wrap-around, the
     // status bar's row range, and scroll clamping all depend on this.
     int64_t total_rows() const {
-        if (!sort_order_.empty()) return (int64_t)sort_order_.size();
+        if (order_materialized_) return (int64_t)sort_order_.size();
         return src_->total_rows();
     }
     int     num_chunks()  const { return src_->num_chunks(); }
+
+    void note_read_status(const arrow::Status& status) {
+        if (status.ok()) return;
+        if (read_error_.empty()) read_error_ = status.ToString();
+        partial_pass_ = true;
+    }
+
+    // A known row count is not EOF: SQLite can count before reading any rows.
+    // Stop only when ensure(next) makes no progress, or all random-access
+    // chunks have been visited.
+    bool ensure_source_chunk(int c) {
+        tui_poll_signals();
+        if (c < 0) return false;
+        while (c >= src_->num_chunks()) {
+            if (src_->random_access()) return false;
+            int n = src_->num_chunks();
+            src_->ensure(n);
+            note_read_status(src_->read_status());
+            tui_poll_signals();
+            if (src_->num_chunks() <= n) return false;
+        }
+        return true;
+    }
+
+    void ensure_source_row(int64_t row) {
+        if (row < 0 || src_->random_access()) return;
+        for (;;) {
+            int n = src_->num_chunks();
+            if (n > 0) {
+                auto last = src_->chunk_meta(n - 1);
+                if (last.first_row + last.num_rows > row) return;
+            }
+            if (!ensure_source_chunk(n)) return;
+        }
+    }
+
+    bool read_pass_chunk(int c, const std::vector<int>& cols, std::shared_ptr<arrow::Table>* out) {
+        auto status = src_->read_chunk(c, cols, out);
+        note_read_status(status);
+        note_read_status(src_->read_status());
+        tui_poll_signals();
+        return status.ok() && *out;
+    }
+
+    struct PassRetention {
+        TableTUI& view;
+        explicit PassRetention(TableTUI& v) : view(v) {
+            view.src_->set_retain_all(true);
+            view.note_full_pass();
+        }
+        ~PassRetention() { view.src_->set_retain_all(view.order_materialized_); }
+    };
 
     // ── Search ───────────────────────────────────────────────────────────────
 
@@ -763,15 +834,11 @@ class TableTUI {
     // Shows "Searching…" in the status line while scanning large files.
     int64_t find_next(int64_t from_row, bool forward) {
         if (search_query_.empty()) return -1;
-        src_->set_retain_all(true);  // search re-reads every chunk: keep them
-        drain_to_eof();   // search must cover the whole streaming file
-        note_full_pass();
+        if (total_rows() == 0) return -1;
         const std::string& q = search_query_lc_;
 
         std::vector<int> all_cols;
         for (int i = 0; i < src_num_cols_; ++i) all_cols.push_back(i);
-
-        int nc = src_->num_chunks();
 
         // Check one row: returns true if any column matches the active search.
         auto row_matches = [&](const std::shared_ptr<arrow::Table>& tbl, int64_t local) -> bool {
@@ -795,7 +862,8 @@ class TableTUI {
         // that chunk is a bit lookup. Each chunk is decoded at most once per
         // search, however the sort interleaves them, and a match near the
         // cursor still stops the scan early.
-        if (!sort_order_.empty()) {
+        if (order_materialized_) {
+            int     nc       = src_->num_chunks();
             int64_t N = (int64_t)sort_order_.size();
             int64_t src_rows = 0;
             if (nc > 0) {
@@ -811,6 +879,7 @@ class TableTUI {
             for (; r != end; r += step) {
                 if (r < 0 || r >= N) break;
                 if ((scanned_rows++ & 8191) == 0) {
+                    tui_poll_signals();
                     mvprintw(scr_r_-1, 0, " Searching (sorted)… row %lld ",
                              (long long)r);
                     clrtoeol(); refresh();
@@ -823,7 +892,7 @@ class TableTUI {
                     scanned[(size_t)c] = 1;
                     auto meta = src_->chunk_meta(c);
                     std::shared_ptr<arrow::Table> tbl;
-                    if (src_->read_chunk(c, all_cols, &tbl).ok() && tbl)
+                    if (read_pass_chunk(c, all_cols, &tbl))
                         for (int64_t l = 0; l < tbl->num_rows(); ++l)
                             if (meta.first_row + l < src_rows && row_matches(tbl, l))
                                 hit[(size_t)(meta.first_row + l)] = true;
@@ -834,26 +903,28 @@ class TableTUI {
         }
 
         if (forward) {
-            for (int c = 0; c < nc; ++c) {
+            for (int c = 0; ensure_source_chunk(c); ++c) {
                 auto meta = src_->chunk_meta(c);
                 if (meta.first_row + meta.num_rows <= from_row) continue;
                 // Show progress for slow sources
-                mvprintw(scr_r_-1, 0, " Searching… chunk %d/%d ", c+1, nc);
+                mvprintw(scr_r_ - 1, 0, " Searching… chunk %d ", c + 1);
                 clrtoeol(); refresh();
                 std::shared_ptr<arrow::Table> tbl;
-                if (!src_->read_chunk(c, all_cols, &tbl).ok()) continue;
+                if (!read_pass_chunk(c, all_cols, &tbl)) continue;
                 int64_t start = std::max<int64_t>(0, from_row - meta.first_row);
                 for (int64_t r = start; r < tbl->num_rows(); ++r)
                     if (row_matches(tbl, r)) return meta.first_row + r;
             }
         } else {
-            for (int c = nc - 1; c >= 0; --c) {
+            ensure_source_row(from_row);
+            for (int c = src_->num_chunks() - 1; c >= 0; --c) {
+                tui_poll_signals();
                 auto meta = src_->chunk_meta(c);
                 if (meta.first_row > from_row) continue;
-                mvprintw(scr_r_-1, 0, " Searching… chunk %d/%d ", c+1, nc);
+                mvprintw(scr_r_ - 1, 0, " Searching… chunk %d ", c + 1);
                 clrtoeol(); refresh();
                 std::shared_ptr<arrow::Table> tbl;
-                if (!src_->read_chunk(c, all_cols, &tbl).ok()) continue;
+                if (!read_pass_chunk(c, all_cols, &tbl)) continue;
                 int64_t end = std::min(tbl->num_rows() - 1, from_row - meta.first_row);
                 for (int64_t r = end; r >= 0; --r)
                     if (row_matches(tbl, r)) return meta.first_row + r;
@@ -867,6 +938,7 @@ class TableTUI {
     // only the viewport did nothing: the next draw scrolled back to the cursor.
     void do_search(bool forward) {
         if (search_query_.empty()) return;
+        PassRetention retention(*this);
         // A fresh search includes the cursor's row; n / N step past it. The
         // cursor, not the last match, is the anchor, so moving it between
         // searches continues from where the user is.
@@ -875,7 +947,12 @@ class TableTUI {
         int64_t found = find_next(start, forward);
         // Wrap around if not found
         if (found < 0) {
-            int64_t wrap_start = forward ? 0 : (total_rows() >= 0 ? total_rows()-1 : src_->chunk_meta(num_chunks()-1).first_row + src_->chunk_meta(num_chunks()-1).num_rows - 1);
+            if (!forward && !order_materialized_) drain_to_eof();
+            int64_t wrap_start = forward ? 0 : total_rows() - 1;
+            if (!forward && total_rows() < 0 && num_chunks() > 0) {
+                auto last  = src_->chunk_meta(num_chunks() - 1);
+                wrap_start = last.first_row + last.num_rows - 1;
+            }
             found = find_next(wrap_start, forward);
             search_wrap_ = (found >= 0);
         } else {
@@ -958,6 +1035,7 @@ class TableTUI {
     // previously-loaded column at the full row-group size.
     void ensure_cols(int c, const std::vector<int>& src_cols,
                       int64_t need_rows = -1) {
+        if (c < 0 || c >= src_->num_chunks()) return;
         const int64_t chunk_total = src_->chunk_meta(c).num_rows;
         auto it = cache_.find(c);
         const int64_t have = it == cache_.end() ? 0 : it->second.num_rows;
@@ -1018,11 +1096,12 @@ class TableTUI {
         // Fast path: for chunk 0 we have a slice-read that decodes only the
         // first N rows of the row group. read_first falls back to read_chunk
         // for non-Parquet sources, so this is safe regardless of format.
-        if (c == 0 && target < chunk_total) {
-            if (!src_->read_first(target, need, &tbl).ok()) return;
-        } else {
-            if (!src_->read_chunk(c, need, &tbl).ok()) return;
-        }
+        auto status = (c == 0 && target < chunk_total) ? src_->read_first(target, need, &tbl)
+                                                       : src_->read_chunk(c, need, &tbl);
+        note_read_status(status);
+        note_read_status(src_->read_status());
+        tui_poll_signals();
+        if (!status.ok() || !tbl) return;
         cr.ok       = true;
         cr.num_rows = std::max<int64_t>(cr.num_rows,
                                           tbl ? tbl->num_rows() : 0);
@@ -1098,6 +1177,7 @@ class TableTUI {
     }
 
     int chunk_for_row(int64_t r) const {
+        if (r < 0 || src_->num_chunks() == 0) return -1;
         // Binary search in known chunks
         int lo = 0, hi = src_->num_chunks() - 1;
         while (lo < hi) {
@@ -1128,7 +1208,7 @@ class TableTUI {
     void fit_widths_to_visible(const std::vector<int>& visible_virt_cols) {
         if (src_->num_chunks() == 0) return;
         int64_t bot = top_row_ + (int64_t)data_lines() - 1;
-        if (total_rows() > 0) bot = std::min(bot, total_rows() - 1);
+        if (total_rows() >= 0) bot = std::min(bot, total_rows() - 1);
         if (bot < top_row_) return;
         for (int vc : visible_virt_cols) {
             if (vc < 0 || vc >= num_cols_) continue;
@@ -1189,15 +1269,17 @@ class TableTUI {
         if (!any) { autosized_ = true; return; }   // nothing to size
 
         const int64_t nrows = total_rows();
+        if (nrows == 0) return;
         const int64_t K = (nrows > 0) ? std::min<int64_t>(nrows, 2000) : 2000;
         std::vector<std::vector<int>> samples(num_cols_);
         bool got_data = false;
         for (int64_t r = 0; r < K; ++r) {
-            int c = chunk_for_row(r);
+            int64_t srow = source_row(r);
+            int     c    = chunk_for_row(srow);
             auto it = cache_.find(c);
             if (it == cache_.end() || !it->second.ok) continue;
             const CachedRG& cr = it->second;
-            int64_t local = r - cr.first_row;
+            int64_t         local = srow - cr.first_row;
             if (local < 0 || local >= cr.num_rows) continue;
             got_data = true;
             for (int vc = 0; vc < num_cols_; ++vc) {
@@ -1225,16 +1307,16 @@ class TableTUI {
     }
 
     void prefetch_visible(const std::vector<int>& visible_virt_cols) {
+        frame_pin_.clear();
+        cache_limit_ = MAX_CACHE;
+        if (total_rows() == 0) return;
         // A source that reads nothing until asked (JSON) has no chunk on the
         // first paint: read one, then load its columns like any other.
         if (src_->num_chunks() == 0) {
-            src_->ensure(0);
-            if (src_->num_chunks() == 0) return;
+            if (!ensure_source_chunk(0)) return;
         }
         std::vector<int> src_cols = src_cols_for_virt(visible_virt_cols);
-        frame_pin_.clear();
-        cache_limit_ = MAX_CACHE;
-        if (!sort_order_.empty()) {
+        if (order_materialized_) {
             // A sorted or filtered view draws source rows from anywhere in the
             // file (rebuild_display_order has read it to the end): load every
             // chunk the visible rows come from, whole, and keep them all for
@@ -1250,7 +1332,11 @@ class TableTUI {
             for (int c : frame_pin_) ensure_cols(c, src_cols);
             return;
         }
+        int64_t bot = top_row_ + (int64_t)data_lines() - 1;
+        if (total_rows() >= 0) bot = std::min(bot, total_rows() - 1);
+        ensure_source_row(top_row_);
         int top_chunk = chunk_for_row(top_row_);
+        if (top_chunk < 0) return;
         // First paint of a Parquet file: only need rows within (and just
         // past) the visible window. ensure_cols's read_first fast path
         // skips decoding the rest of the row group. The +256 gives the
@@ -1260,22 +1346,7 @@ class TableTUI {
             src_->chunk_meta(top_chunk).first_row;
         int64_t need = top_local + (int64_t)data_lines() + 256;
         ensure_cols(top_chunk, src_cols, need);
-        int64_t bot = top_row_ + (int64_t)data_lines() - 1;
-        if (total_rows() > 0) bot = std::min(bot, total_rows() - 1);
-        if (total_rows() < 0) {
-            // A stream not yet read to the end: read on until the loaded rows
-            // reach the bottom of the viewport (a batch can hold fewer rows
-            // than the screen — long FASTQ reads close one early), or it ends.
-            for (;;) {
-                const int n = src_->num_chunks();
-                const auto last = src_->chunk_meta(n - 1);
-                if (last.first_row + last.num_rows > bot) break;
-                src_->ensure(n);
-                if (src_->num_chunks() == n) break;          // end of stream
-            }
-        } else {
-            src_->ensure(chunk_for_row(std::max(bot, top_row_)));
-        }
+        ensure_source_row(std::max(bot, top_row_));
         if (bot > top_row_) {
             const int bot_chunk = chunk_for_row(bot);
             for (int c = top_chunk + 1; c <= bot_chunk; ++c) ensure_cols(c, src_cols);
@@ -1805,7 +1876,7 @@ class TableTUI {
         int64_t bot = top_row_ + (int64_t)data_lines();
         if (tr >= 0) {
             bot = std::min(bot, tr);
-        } else if (src_ && src_->num_chunks() > 0 && sort_order_.empty() && !filter_active_) {
+        } else if (src_ && src_->num_chunks() > 0 && !order_materialized_) {
             // Not fully read yet: end the range at the rows loaded so far, not
             // at the bottom of the viewport ("Row 1-40/?" over 30 rows).
             const auto last = src_->chunk_meta(src_->num_chunks() - 1);
@@ -1813,9 +1884,24 @@ class TableTUI {
         }
 
         std::string s = text_view_ ? " Line " : " Row ";
-        s += digits_with_sep(std::to_string(top_row_ + 1)) + "-"
-           + digits_with_sep(std::to_string(bot)) + "/";
+        s += digits_with_sep(std::to_string(tr == 0 ? 0 : top_row_ + 1)) + "-" +
+             digits_with_sep(std::to_string(bot)) + "/";
         s += (tr >= 0) ? digits_with_sep(std::to_string(tr)) : "?";
+
+        note_read_status(src_->read_status());
+        if (!read_error_.empty())
+            s += "  [READ ERROR: " + truncate(read_error_, 48) + "] [PARTIAL]";
+        const auto limit = src_->preview_limit();
+        if (limit.capped()) {
+            s += "  [CAPPED";
+            if (limit.rows_capped())
+                s += " rows " + digits_with_sep(std::to_string(limit.shown_rows)) + "/" +
+                     digits_with_sep(std::to_string(limit.full_rows));
+            if (limit.cols_capped())
+                s += " cols " + digits_with_sep(std::to_string(limit.shown_cols)) + "/" +
+                     digits_with_sep(std::to_string(limit.full_cols));
+            s += "]";
+        }
 
         if (text_view_) {
             // "Col 1-5/5" is meaningless over one column. Report the
@@ -1857,7 +1943,7 @@ class TableTUI {
             }
         }
         // Sort indicator
-        if (!sort_order_.empty() && sort_col_ >= 0 && sort_col_ < (int)col_names_.size()) {
+        if (order_materialized_ && sort_col_ >= 0 && sort_col_ < (int)col_names_.size()) {
             s += "  sort:";
             s += col_names_[sort_col_];
             s += sort_desc_ ? " ↓" : " ↑";
@@ -1874,7 +1960,7 @@ class TableTUI {
         // A search / sort / filter / stats pass ran over a stream that had
         // already released batches — say so rather than present a partial
         // answer as complete.
-        if (partial_pass_) s += "  [PARTIAL]";
+        if (partial_pass_ && read_error_.empty()) s += "  [PARTIAL]";
         // Show search state
         if (search_mode_ == SearchMode::Active && !search_query_.empty()) {
             s += search_dir_forward_ ? "  /" : "  ?";
@@ -1912,6 +1998,7 @@ class TableTUI {
     // of the detail pane on other rows in the same chunk are free).
     std::vector<std::string> load_full_row(int64_t row) {
         std::vector<std::string> out(num_cols_);
+        if (row < 0 || (total_rows() >= 0 && row >= total_rows())) return out;
         if (src_->num_chunks() == 0) return out;
         int64_t srow = source_row(row);
         int c = chunk_for_row(srow);
@@ -1988,21 +2075,18 @@ class TableTUI {
         int sc = (virt_col >= 0 && virt_col < (int)virt_src_col_.size())
                   ? virt_src_col_[virt_col] : -1;
         if (sc < 0) { stats_data_ = std::move(cs); return; }
-        src_->set_retain_all(true);  // stats re-read every chunk: keep them
-        drain_to_eof();   // stats must cover the whole streaming file
-        note_full_pass();
+        PassRetention retention(*this);
         auto field = src_->schema()->field(sc);
         cs.name = col_names_[virt_col];
         cs.type = type_label(*field->type());
         cs.is_num = is_numeric_type(field->type()->id());
         const std::string& info_key = virt_info_key_[virt_col];
         std::vector<int> need = {sc};
-        int nc = src_->num_chunks();
-        for (int c = 0; c < nc; ++c) {
-            mvprintw(scr_r_-1, 0, " Computing stats… chunk %d/%d ", c+1, nc);
+        for (int c = 0; ensure_source_chunk(c); ++c) {
+            mvprintw(scr_r_ - 1, 0, " Computing stats… chunk %d ", c + 1);
             clrtoeol(); refresh();
             std::shared_ptr<arrow::Table> tbl;
-            if (!src_->read_chunk(c, need, &tbl).ok()) continue;
+            if (!read_pass_chunk(c, need, &tbl)) continue;
             auto col = tbl->column(0);
             for (auto& ch : col->chunks()) {
                 int64_t n = ch->length();
@@ -2078,9 +2162,7 @@ class TableTUI {
         int sc = (virt_col >= 0 && virt_col < (int)virt_src_col_.size())
                   ? virt_src_col_[virt_col] : -1;
         if (sc < 0) return;
-        src_->set_retain_all(true);  // counting reads every chunk: keep them
-        drain_to_eof();
-        note_full_pass();
+        PassRetention      retention(*this);
         ExactFloats exact;
         const std::string& info_key = virt_info_key_[virt_col];
         std::vector<int> need = {sc};
@@ -2090,12 +2172,11 @@ class TableTUI {
                     need.push_back(fc);
         std::unordered_map<std::string, int64_t> counts;
         int64_t nulls = 0;
-        int nc = src_->num_chunks();
-        for (int c = 0; c < nc; ++c) {
-            mvprintw(scr_r_-1, 0, " Counting values… chunk %d/%d ", c+1, nc);
+        for (int c = 0; ensure_source_chunk(c); ++c) {
+            mvprintw(scr_r_ - 1, 0, " Counting values… chunk %d ", c + 1);
             clrtoeol(); refresh();
             std::shared_ptr<arrow::Table> tbl;
-            if (!src_->read_chunk(c, need, &tbl).ok()) continue;
+            if (!read_pass_chunk(c, need, &tbl)) continue;
             auto col = tbl->column(0);
             int64_t row = 0;
             for (auto& ch : col->chunks()) {
@@ -2151,7 +2232,8 @@ class TableTUI {
         if (freq_other_)
             summary += "; " + with_sep(freq_other_) + " rows hold values past the first " +
                        with_sep((int64_t)kFreqMaxDistinct);
-        if (partial_pass_) summary += "; PARTIAL (batches released)";
+        if (partial_pass_) summary += "; PARTIAL";
+        if (src_->preview_limit().capped()) summary += "; CAPPED";
         const std::string hint = freq_note_.empty()
             ? std::string("Enter: filter to value   Esc: close") : freq_note_;
         int w_n = 5;
@@ -2285,7 +2367,9 @@ class TableTUI {
         // These numbers were computed over a stream that had already released
         // batches — mark them rather than let them read as whole-file stats.
         if (partial_pass_)
-            rows.emplace_back("Scope", "PARTIAL (batches released)");
+            rows.emplace_back("Scope", read_error_.empty() ? "PARTIAL (batches released)"
+                                                           : "PARTIAL (read error)");
+        if (src_->preview_limit().capped()) rows.emplace_back("Scope", "CAPPED preview");
 
         int w_l = 8, w_r = 0;
         for (auto& [l, v] : rows) {
@@ -2519,6 +2603,7 @@ class TableTUI {
         t.sort_col       = sort_col_;
         t.sort_desc      = sort_desc_;
         t.sort_order     = std::move(sort_order_);
+        t.order_materialized = order_materialized_;
         t.filter_active  = filter_active_;
         t.filter_expr_str = filter_expr_str_;
         t.filter_fx      = filter_fx_;
@@ -2526,6 +2611,7 @@ class TableTUI {
         t.cur_row        = cur_row_;
         t.cur_col        = cur_col_;
         t.partial_pass   = partial_pass_;
+        t.read_error         = read_error_;
     }
 
     void load_snapshot_into_active() {
@@ -2560,6 +2646,7 @@ class TableTUI {
         sort_col_        = t.sort_col;
         sort_desc_       = t.sort_desc;
         sort_order_      = std::move(t.sort_order);
+        order_materialized_ = t.order_materialized;
         filter_active_   = t.filter_active;
         filter_expr_str_ = t.filter_expr_str;
         filter_fx_       = t.filter_fx;
@@ -2567,6 +2654,7 @@ class TableTUI {
         cur_row_         = t.cur_row;
         cur_col_         = t.cur_col;
         partial_pass_    = t.partial_pass;
+        read_error_         = t.read_error;
     }
 
 public:
@@ -2603,6 +2691,9 @@ private:
             cur_row_ = 0; cur_col_ = 0;
             cache_.clear(); lru_.clear();
             sort_col_ = -1; sort_desc_ = false; sort_order_.clear();
+            order_materialized_        = false;
+            partial_pass_              = false;
+            read_error_.clear();
             filter_active_ = false; filter_expr_str_.clear(); filter_total_ = 0;
             search_mode_ = SearchMode::None; search_query_.clear(); search_query_lc_.clear(); search_row_ = -1;
         } else {
@@ -2623,6 +2714,8 @@ private:
         // the new slice.
         cache_.clear(); lru_.clear();
         sort_order_.clear(); sort_col_ = -1; sort_desc_ = false;
+        order_materialized_                             = false;
+        src_->set_retain_all(false);
         filter_active_ = false; filter_expr_str_.clear(); filter_total_ = 0;
         top_row_ = 0; left_col_ = 0;
         cur_row_ = 0; cur_col_ = 0;
@@ -2693,23 +2786,20 @@ private:
         return false;
     }
 
-    // Full-file passes (sort / filter / stats / search) iterate
-    // src_->num_chunks(), which for a forward-only streaming source only
-    // exposes the chunks loaded so far (the scrolled-through prefix). Drain the
-    // stream to EOF first — mirroring the 'G' handler — so those passes see the
-    // whole file instead of silently operating on a prefix. A no-op for
-    // random-access sources (total_rows() already known).
+    // G and a backward search that wraps need the last source row. Other
+    // full-file operations consume chunks incrementally via ensure_source_chunk.
     void drain_to_eof() {
-        if (src_->total_rows() >= 0) return;
-        mvaddstr(scr_r_ - 1, 0, " Loading to end of file… ");
-        clrtoeol(); refresh();
-        while (src_->total_rows() < 0)
-            src_->ensure(src_->num_chunks());
+        if (src_->random_access()) return;
+        while (ensure_source_chunk(src_->num_chunks())) {
+            mvprintw(scr_r_ - 1, 0, " Loading to end of file… chunk %d ", src_->num_chunks());
+            clrtoeol();
+            refresh();
+        }
     }
 
     // Call at the head of every operation that re-reads the whole file
     // (search / sort / filter / column stats), right after retention has been
-    // pinned and the source drained. Forward-only streaming sources keep only
+    // pinned. Forward-only streaming sources keep only
     // a bounded trailing window of decoded batches, so if any batch was
     // released before we pinned, those rows are gone and the pass cannot see
     // them. That used to produce a confidently wrong answer with no marker —
@@ -2728,15 +2818,17 @@ private:
     //
     // The result is stored in sort_order_, whose presence flips
     // total_rows(), search wrap-around, and the source_row() indirection
-    // used by every read path. Empty sort_order_ means "identity"
-    // (display row N = source row N).
+    // used by every read path. order_materialized_ distinguishes no matches
+    // from identity (display row N = source row N).
     void rebuild_display_order() {
         sort_order_.clear();
         filter_total_ = 0;
-        if (sort_col_ < 0 && !filter_active_) return;
-        src_->set_retain_all(true);  // sort/filter re-read every row: keep them
-        drain_to_eof();   // sort/filter must cover the whole streaming file
-        note_full_pass();
+        order_materialized_ = sort_col_ >= 0 || filter_active_;
+        if (!order_materialized_) {
+            src_->set_retain_all(false);
+            return;
+        }
+        PassRetention retention(*this);
 
         // Resolve sort column (if any).
         bool num = false;
@@ -2781,15 +2873,14 @@ private:
         std::vector<StrK>     sk;
         std::vector<int64_t>  rows_only;  // filter-only path: source order
 
-        int nc = src_->num_chunks();
         const char* what = (sort_col_ >= 0 && filter_active_) ? "Filter+sort"
                          : (sort_col_ >= 0)                   ? "Sorting"
                                                               : "Filtering";
-        for (int c = 0; c < nc; ++c) {
-            mvprintw(scr_r_-1, 0, " %s… chunk %d/%d ", what, c+1, nc);
+        for (int c = 0; ensure_source_chunk(c); ++c) {
+            mvprintw(scr_r_ - 1, 0, " %s… chunk %d ", what, c + 1);
             clrtoeol(); refresh();
             std::shared_ptr<arrow::Table> tbl;
-            if (!src_->read_chunk(c, need, &tbl).ok()) continue;
+            if (!read_pass_chunk(c, need, &tbl)) continue;
             auto meta = src_->chunk_meta(c);
             // Locate the sort column within the projected table.
             int p_sort = -1;
@@ -2859,6 +2950,7 @@ private:
         if (sort_col_ < 0) {
             sort_order_ = std::move(rows_only);
         } else if (num) {
+            tui_poll_signals();
             std::sort(nk.begin(), nk.end(), [this](const NumK& a, const NumK& b) {
                 if (a.is_null != b.is_null) return !a.is_null;
                 if (a.is_null) return false;
@@ -2867,6 +2959,7 @@ private:
             sort_order_.reserve(nk.size());
             for (auto& e : nk) sort_order_.push_back(e.row);
         } else {
+            tui_poll_signals();
             std::sort(sk.begin(), sk.end(), [this](const StrK& a, const StrK& b) {
                 if (a.is_null != b.is_null) return !a.is_null;
                 if (a.is_null) return false;
@@ -2876,6 +2969,7 @@ private:
             for (auto& e : sk) sort_order_.push_back(e.row);
         }
         filter_total_ = (int64_t)sort_order_.size();
+        tui_poll_signals();
     }
 
     void draw_help_overlay() {
@@ -3544,7 +3638,7 @@ public:
                         } else if (in_header && hit_col >= 0) {
                             // Sort by the clicked column. Repeat-clicking
                             // the same header toggles ascending → descending.
-                            if (sort_col_ == hit_col && !sort_order_.empty())
+                            if (sort_col_ == hit_col && order_materialized_)
                                 sort_desc_ = !sort_desc_;
                             else { sort_col_ = hit_col; sort_desc_ = false; }
                             left_col_ = hit_col;  // also focus for S / y
@@ -3724,7 +3818,7 @@ public:
                 case 'G': case KEY_END:
                     // For streaming sources we must read to EOF before we know
                     // the last row.
-                    if (tr < 0) {
+                    if (!order_materialized_) {
                         drain_to_eof();
                         tr = total_rows();
                     }
@@ -3781,7 +3875,7 @@ public:
                     int sc = (cur_col_ >= 0 && cur_col_ < (int)virt_src_col_.size())
                               ? virt_src_col_[cur_col_] : -1;
                     if (sc < 0) break;
-                    if (sort_col_ == cur_col_ && !sort_order_.empty()) {
+                    if (sort_col_ == cur_col_ && order_materialized_) {
                         sort_desc_ = !sort_desc_;
                     } else {
                         sort_col_ = cur_col_;

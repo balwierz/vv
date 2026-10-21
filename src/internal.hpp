@@ -1220,10 +1220,8 @@ std::string open_npz_source(const std::string& path, std::unique_ptr<TabularSour
 std::string open_npy_source(const std::string& path, std::unique_ptr<TabularSource>* out);
 }  // namespace npz
 
-std::string decode_mpileup_to_memory(
- TabularSource& src,
- const std::string& path,
- std::unique_ptr<TabularSource>* out);
+std::string open_decoded_pileup_source(std::unique_ptr<TabularSource>  src,
+                                       std::unique_ptr<TabularSource>* out);
 namespace md {
 
 // Logical "colour role" for a run. Maps to a g_color field at render

@@ -646,6 +646,13 @@ target_include_directories(h5_threads_check PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include $<TARGET_PROPERTY:vv,INCLUDE_DIRECTORIES>)
 target_link_libraries(h5_threads_check PRIVATE ${_vv_link_common})
 
+add_executable(h5_viewport_check tests/h5_viewport_check.cpp $<TARGET_OBJECTS:vvcore_obj>)
+target_compile_definitions(h5_viewport_check PRIVATE
+    VV_CORE_LIB=1 $<TARGET_PROPERTY:vv,COMPILE_DEFINITIONS>)
+target_include_directories(h5_viewport_check PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include $<TARGET_PROPERTY:vv,INCLUDE_DIRECTORIES>)
+target_link_libraries(h5_viewport_check PRIVATE ${_vv_link_common})
+
 # `--gc-sections` is GNU ld; macOS ld64 strips unused sections by default
 # (via `-dead_strip`, which we don't need to pass explicitly).
 if(NOT APPLE)

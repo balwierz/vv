@@ -6,7 +6,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- AnnData / HDF5 and Zarr component tables read projected 128-row blocks
+  instead of constructing a 1,000-row preview at tab activation. Frames,
+  1-D arrays, dense matrices and CSR expose every row through existing
+  navigation. Matrices still show at most 200 data columns; CSC keeps its
+  1,000-row limit. Specialized Loom and Cell Ranger previews retain their
+  existing limits. The TUI identifies capped views.
+- HDF5 reuses up to 16 dataset handles with bounded raw chunk caches.
+  Sparse reads use temporary segments of at most 65,536 entries and load
+  row labels only for requested rows.
+- Arrow IPC / Feather v2 metadata navigation no longer decodes a hidden
+  batch prefix. Decoded file batches use a 64 MiB cache (one oversized
+  current batch is allowed). POD5 reuses the most recently decoded batch.
+- Parquet directories index row groups from child footers and preserve
+  column projection. Workbook siblings defer XLSX sheet parsing and ODS
+  Arrow conversion until activation; ODS XML parsing remains eager.
+- Expanded attributes, flattened fields and genotype statistics preserve
+  the inner reader's bounded head-read path. Decoded pileup now streams
+  per input chunk rather than materializing the whole input.
+
 ### Fixed
+- Empty TUI filters now show zero rows rather than the unfiltered source.
+  Known-count streams such as SQLite are scanned through EOF for filters,
+  sorts and statistics, and navigation/search reaches later batches.
+  Read errors and partial results are visible; long passes check signals
+  between chunks.
+- Fortran-order NumPy arrays with three or more dimensions now slice the
+  leading axis using the correct strides, including NPZ members.
+- Decoded multi-batch pileup no longer silently omits later batches and
+  reports read errors encountered after the first batch.
 - Building against Arrow 26 warned that `arrow::ipc::feather::Reader` is
   deprecated, and GCC warned about an unchecked `fread`. A Feather V2 file
   (an Arrow IPC file) is now read as one, lazily, batch by batch, instead of

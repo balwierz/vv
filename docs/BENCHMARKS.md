@@ -54,6 +54,34 @@ runs, warm cache, 2026-10-13.
 | h5ad: obs --describe | 0.14 s | 112 MB | pandas describe() | 0.70 s | 453 MB |
 | h5ad: X, first 5 rows | 0.03 s | 65 MB | anndata backed X[:5] | 0.67 s | 452 MB |
 
+## Interactive browsing and deterministic read budgets
+
+Install its optional terminal-emulation dependency with `python3 -m pip install
+pyte`. `scripts/bench/browse.py --binary build/vv FILE.h5ad` runs bounded,
+read-only PTY actions (open, tab switch, scroll, last/first row and revisit).
+It records action-to-status-frame time, terminal bytes, Linux process I/O
+counters, CPU time and peak RSS as JSONL, without cell contents. The terminal
+is 40 by 300 cells so the completion marker fits; a VT emulator reconstructs
+differential ncurses updates. A status must match the requested
+tab/navigation state, rather than merely arriving before an idle interval.
+These are approximate UI timings, not hard CI latency gates.
+Actions that require no repaint are marked `unchanged_frame` with zero time;
+they are not samples of storage latency.
+
+Record the binary revision/version and dependency/link configuration beside
+results. Run first-observed and repeat trials separately; never evict a shared
+machine's caches. Process `read_bytes` can be zero for cache/network-backed
+reads; it is not a universal measure of filesystem traffic.
+
+For a reproducible payload budget, `build/h5_viewport_check` uses a synthetic
+100,000 by 300 CSR Store with three entries per row. Schema/shape inspection
+reads no matrix entries; a projected 20-row head reads exactly 60 values and
+60 indices rather than the old 1,000-row preview's 3,000 of each. Reading the
+last logical block accesses only that block, and label-only projection reads
+no matrix entries. An additional 100,000-entry row verifies physical sparse
+reads never exceed 65,536 entries. These deterministic assertions are stronger
+regressions than noisy shared-filesystem timing comparisons.
+
 ## Reading the table
 
 - **AnnData, Parquet**: vv answers in tens of milliseconds what takes the

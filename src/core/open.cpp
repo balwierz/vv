@@ -361,6 +361,61 @@ class DatasetSource : public TabularSource {
     mutable bool                           retain_all_  = false;
     mutable bool                           evicted_any_ = false;
     mutable arrow::Status                  read_status_;
+    struct IndexedChunk {
+        size_t    file;
+        int       local;
+        ChunkMeta meta;
+    };
+    bool                      indexed_      = false;
+    int64_t                   indexed_rows_ = 0;
+    std::vector<IndexedChunk> index_;
+
+    arrow::Status select_child(size_t f) const {
+        if (child_ && cur_file_ == f) return arrow::Status::OK();
+        std::unique_ptr<TabularSource> child;
+        auto                           e = open_source_dispatch(files_[f].path, child_cfg_, &child);
+        if (!e.empty()) return read_status_ = arrow::Status::IOError(e);
+        if (!dataset::schemas_compatible(*child->schema(), *data_schema_))
+            return read_status_ = arrow::Status::Invalid("schema of '", files_[f].path,
+                                                         "' differs from '", files_[0].path, "'");
+        child_    = std::move(child);
+        cur_file_ = f;
+        return arrow::Status::OK();
+    }
+
+    arrow::Status read_indexed(int i, const std::vector<int>& cols,
+                               std::shared_ptr<arrow::Table>* out, int64_t head = -1) const {
+        if (i < 0 || i >= (int)index_.size()) return arrow::Status::IndexError("dataset chunk ", i);
+        const auto& entry = index_[(size_t)i];
+        ARROW_RETURN_NOT_OK(select_child(entry.file));
+        std::vector<int> data_cols;
+        for (int c : cols) {
+            if (c < 0 || c >= schema_->num_fields())
+                return arrow::Status::IndexError("dataset column ", c);
+            if (c < ndata_) data_cols.push_back(c);
+        }
+        std::shared_ptr<arrow::Table> t;
+        const auto                    st = head >= 0 && entry.local == 0
+                                               ? child_->read_first(head, data_cols, &t)
+                                               : child_->read_chunk(entry.local, data_cols, &t);
+        if (!st.ok()) return read_status_ = st;
+        if (!t) return read_status_ = arrow::Status::IOError("dataset child returned no table");
+        if (head >= 0 && t->num_rows() > head) t = t->Slice(0, head);
+        arrow::FieldVector                                fields;
+        std::vector<std::shared_ptr<arrow::ChunkedArray>> arrays;
+        int                                               data_pos = 0;
+        for (int c : cols) {
+            fields.push_back(schema_->field(c));
+            if (c < ndata_)
+                arrays.push_back(t->column(data_pos++));
+            else {
+                ARROW_ASSIGN_OR_RAISE(auto a, partition_array((size_t)(c - ndata_), t->num_rows()));
+                arrays.push_back(std::make_shared<arrow::ChunkedArray>(a));
+            }
+        }
+        *out = arrow::Table::Make(arrow::schema(fields), arrays, t->num_rows());
+        return arrow::Status::OK();
+    }
 
     // Build the constant partition-value array for the current file.
     arrow::Result<std::shared_ptr<arrow::Array>>
@@ -540,6 +595,27 @@ public:
                 self->part_is_int_[k] ? arrow::int64() : arrow::utf8()));
         self->schema_ = arrow::schema(fields);
 
+        // Parquet row-group offsets and shapes come from footers; opening a
+        // dataset must not decode the first group's unused columns.
+        if (self->group_ == "parquet" &&
+            std::all_of(self->files_.begin(), self->files_.end(),
+                        [](const dataset::DsFile& f) { return fends_ci(f.path, ".parquet"); })) {
+            self->indexed_ = true;
+            for (size_t f = 0; f < self->files_.size(); ++f) {
+                auto st = self->select_child(f);
+                if (!st.ok()) return st.ToString();
+                for (int c = 0; c < self->child_->num_chunks(); ++c) {
+                    auto m = self->child_->chunk_meta(c);
+                    if (m.num_rows < 0 || m.num_rows > INT64_MAX - self->indexed_rows_)
+                                    return "dataset row count overflow";
+                    if (self->index_.size() >= INT_MAX) return "too many dataset chunks";
+                    self->index_.push_back({f, c, {self->indexed_rows_, m.num_rows}});
+                    self->indexed_rows_ += m.num_rows;
+                }
+            }
+            *out = std::move(self);
+            return "";
+        }
         auto st = self->advance();
         if (!st.ok()) return st.ToString();
         *out = std::move(self);
@@ -555,14 +631,21 @@ public:
             val.erase(std::remove(val.begin(), val.end(), '_'), val.end());
         return val;
     }
-    int64_t total_rows() const override { return all_read_ ? rows_so_far_ : -1; }
-    int     num_chunks() const override { return (int)batches_.size(); }
+    int64_t total_rows() const override {
+        return indexed_ ? indexed_rows_ : all_read_ ? rows_so_far_ : -1;
+    }
+    int num_chunks() const override { return indexed_ ? (int)index_.size() : (int)batches_.size(); }
     ChunkMeta chunk_meta(int i) const override {
+        if (indexed_)
+            return i >= 0 && i < (int)index_.size() ? index_[(size_t)i].meta
+                                                    : ChunkMeta{indexed_rows_, 0};
         return {batch_first_row_[i], batch_num_rows_[i]};
     }
+    bool random_access() const override { return indexed_; }
     void set_retain_all(bool b) override { retain_all_ = b; }
     bool evicted_any() const override { return evicted_any_; }
     void ensure(int i) override {
+        if (indexed_) return;
         while (!all_read_ && (int)batches_.size() <= i) {
             auto st = advance();
             if (!st.ok()) { if (read_status_.ok()) read_status_ = st; break; }
@@ -570,6 +653,7 @@ public:
     }
     arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
                               std::shared_ptr<arrow::Table>* out) override {
+        if (indexed_) return read_indexed(i, col_indices, out);
         ensure(i);
         if (i >= (int)batches_.size())
             return arrow::Status::IndexError("chunk ", i, " out of range");
@@ -577,6 +661,26 @@ public:
             return arrow::Status::CapacityError(
                 "chunk ", i, " was released by the streaming window");
         *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
+        return arrow::Status::OK();
+    }
+    arrow::Status read_first(int64_t rows, const std::vector<int>& cols,
+                             std::shared_ptr<arrow::Table>* out) override {
+        if (!indexed_) return TabularSource::read_first(rows, cols, out);
+        std::vector<std::shared_ptr<arrow::Table>> parts;
+        for (int i = 0; i < (int)index_.size() && rows > 0; ++i) {
+            const int64_t                 take = std::min(rows, index_[(size_t)i].meta.num_rows);
+            std::shared_ptr<arrow::Table> t;
+            ARROW_RETURN_NOT_OK(read_indexed(i, cols, &t, take));
+            parts.push_back(std::move(t));
+            rows -= take;
+        }
+        if (parts.empty()) {
+            arrow::FieldVector fields;
+            for (int c : cols) fields.push_back(schema_->field(c));
+            ARROW_ASSIGN_OR_RAISE(*out, arrow::Table::MakeEmpty(arrow::schema(fields)));
+        } else {
+            ARROW_ASSIGN_OR_RAISE(*out, arrow::ConcatenateTables(parts));
+        }
         return arrow::Status::OK();
     }
     arrow::Status read_status() const override { return read_status_; }
@@ -1305,7 +1409,7 @@ static std::string dispatch_by_kind(const std::string& path, const Config& cfg,
             if (!err.empty()) return err;
             if (cfg.decode_pileup) {
                 std::unique_ptr<TabularSource> decoded;
-                std::string err2 = decode_mpileup_to_memory(*src, path, &decoded);
+                std::string err2 = open_decoded_pileup_source(std::move(src), &decoded);
                 if (!err2.empty()) return err2;
                 *out = std::move(decoded);
             } else {
@@ -1649,13 +1753,10 @@ static std::string dispatch_by_kind(const std::string& path, const Config& cfg,
         else if (fends_ci(path, ".tagAlign")   || fends_ci(path, ".tagAlign.gz"))   bv = BedVariant::TagAlign;
         if (bv != BedVariant::None) delimited_apply_bed_variant(*src, bv);
     }
-    // --decode-pileup: materialise the typed allele-count view from the
-    // underlying mpileup source. The original streaming source is consumed
-    // in full, decoded row by row, and replaced with a MemoryTableSource
-    // over the resulting Arrow table.
+    // Decode per input chunk, preserving the streaming frontier and head reads.
     if (dk == DelimKind::Mpileup && cfg.decode_pileup) {
         std::unique_ptr<TabularSource> decoded;
-        std::string err2 = decode_mpileup_to_memory(*src, path, &decoded);
+        std::string                    err2 = open_decoded_pileup_source(std::move(src), &decoded);
         if (!err2.empty()) return err2;
         *out = std::move(decoded);
         return "";
