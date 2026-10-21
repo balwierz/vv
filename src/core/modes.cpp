@@ -262,9 +262,9 @@ std::string preflight_path(const std::string& path) {
 // own "cannot open '...': " prefix.
 std::string shorten_reader_error(std::string msg) {
     if (msg.find("straddling object straddles two block boundaries") != std::string::npos)
-        return "a record is longer than the " + std::to_string(csv_block_bytes() >> 20) +
+        return "a record is longer than the " + std::to_string(csv_parse_block_bytes() >> 20) +
                " MiB read block; set VV_CSV_BLOCK_MB to a larger size (e.g. " +
-               std::to_string((csv_block_bytes() >> 20) * 8) + ") and run again";
+               std::to_string(std::max<int64_t>(csv_block_bytes() >> 20, 16) * 8) + ") and run again";
     auto erase = [&](const std::string& needle) {
         auto p = msg.find(needle);
         if (p != std::string::npos) msg.erase(p, needle.size());

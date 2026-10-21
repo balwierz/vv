@@ -1423,7 +1423,7 @@ $ vv -@ 4 -n 1000 alignments.bam            # multi-threaded BAM decode
 | Source         | Threading                                            |
 |----------------|------------------------------------------------------|
 | Parquet        | parallel column decode (`use_threads = true`); 4 MiB buffered stream |
-| CSV / TSV / VCF / GFF / SAM / BED | Arrow CSV `use_threads = true` + `block_size = 16 MiB` |
+| CSV / TSV / VCF / GFF / SAM / BED | Arrow's streaming CSV reader: one core parses; types from the first 16 MiB, then 2 MiB blocks (or 16 × the longest line seen); `VV_CSV_BLOCK_MB` sets one size for all |
 | BAM / CRAM     | `hts_set_threads(N)`                                 |
 | FASTA / FASTQ  | `bgzf_mt(fp, N, 256)`                                |
 | Arrow IPC      | lazy: footer only at open; batches decoded on demand |

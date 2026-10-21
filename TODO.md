@@ -214,21 +214,6 @@ user-facing summary).
 - **Bioconda Arrow pin** — revisit `packaging/bioconda/conda_build_config.yaml`
   (libarrow 22 only) when Bioconda's global pinning drops libarrow 19 / 20,
   the versions without `libarrow-compute`.
-- **Wide VCF text** — the 1000 Genomes chr22 VCF (2,504 samples, 11 GB of
-  text decompressed): `--select CHROM,POS,REF,ALT --tsv` takes 36 s / 3.4 GB
-  against `bcftools query`'s 2 s, and `-n 20 -t` 2.0 s / 1.1 GB, because
-  Arrow's CSV reader tokenises every sample field (docs/BENCHMARKS.md, same
-  with `--samples text`). Options: cut the lines after FORMAT
-  (TruncateFieldsStream, as for GFF) when no sample column is read; or read
-  VCF.gz through htslib (vcf_parse leaves the samples unparsed until asked).
-- **CSV block size and memory** — the delimited reader's 16 MiB blocks cost
-  memory without buying speed: `--count` on the 2.2 M-row GENCODE CSV.gz takes
-  1.41 s / 2.4 GB at 16 MiB, 1.24 s / 0.84 GB at 4 MiB, 1.30 s / 0.25 GB at
-  1 MiB (`VV_CSV_BLOCK_MB`); `-n 20` on the chr22 VCF 2.1 s / 1.1 GB vs
-  0.30 s / 0.14 GB at 1 MiB. Arrow infers column types from the first
-  block, so a smaller block risks a type conflict later in a file that loads
-  today; measure on the fixtures + real files (and consider a small first
-  block for previews only) before changing the default.
 - **Delimited input parses on one core.** Arrow's `csv::StreamingReader`
   parses its blocks one after another (`use_threads` overlaps I/O only):
   `vv --count` on a 3.5 GB uncompressed VCF takes 5.6 s with 5.4 s of CPU,
@@ -281,6 +266,15 @@ user-facing summary).
   first NUL byte (`finish_csv_field`, `src/core/format_fast.cpp`).
 
 ### Done
+- **Wide VCF text** (2026-10-21): a run that reads no sample column cuts each
+  line after INFO before parsing — the chr22 1000 Genomes sites to TSV
+  29.6 s / 3.2 GB → 6.1 s / 0.35 GB (bcftools query 2.0 s). A run that shows
+  samples still parses every field; reading VCF.gz through htslib
+  (vcf_parse leaves the samples unparsed until asked) would be the next step.
+- **CSV block size and memory** (2026-10-21): types from the first 16 MiB,
+  then 2 MiB blocks (16 × the longest line seen) with every column pinned —
+  GENCODE CSV.gz `--count` 1.59 s / 2.5 GB → 0.92 s / 0.46 GB, chr22 VCF
+  `-n 20` 1.74 s / 1.1 GB → 0.33 s / 0.23 GB.
 - **vvg lazy tabs and background reads** (2026-10-21): one owner thread
   per file runs every source call; a tab's model is built when first shown;
   its schema and the chunks the view asks for are read on the owner and

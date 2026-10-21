@@ -924,6 +924,9 @@ inline int64_t fastx_byte_budget() {
 }
 
 int64_t csv_block_bytes();
+// The block size the delimited reader parses in: csv_block_bytes(), or the
+// smaller block chosen after the first one at the default size (make_reader).
+int64_t csv_parse_block_bytes();
 
 // Append a freshly-decoded batch to a forward-only streaming source's storage:
 // record its (first_row, num_rows) metadata (kept forever, so chunk_meta() /

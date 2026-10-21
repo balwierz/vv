@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- Delimited text (CSV, TSV, VCF, GFF, BED, …) is parsed in 2 MiB blocks
+  (16 × the longest line seen) after the first 16 MiB, which still decide
+  the column types: GENCODE CSV.gz `--count` 1.59 s / 2.5 GB → 0.92 s /
+  0.46 GB, the first 20 rows 0.45 s → 0.06 s, the chr22 VCF's first 20
+  records 1.74 s / 1.1 GB → 0.33 s / 0.23 GB. `VV_CSV_BLOCK_MB` still
+  sets one block size for everything.
 - A VCF read for site columns only (`--select CHROM,POS,REF,ALT --tsv`,
   `--count`, a filter or sort on site columns) has its lines cut after INFO
   before parsing, instead of parsing every sample field: on the 1000

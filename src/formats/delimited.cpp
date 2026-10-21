@@ -498,6 +498,17 @@ std::shared_ptr<arrow::Table> batch_slice_to_table(
 // straddles two block boundaries"; opening retries with larger blocks
 // (csv_block_override), and a failure later in the stream names the setting.
 static thread_local int64_t csv_block_override = 0;
+static std::atomic<int64_t> g_csv_parse_block{0};   // the small block in use, 0 = none
+// VV_CSV_BLOCK_MB given, or the open retrying with larger blocks for a
+// record longer than the default one (csv_block_override above 16 MiB).
+static bool csv_block_set_by_user() {
+    const char* e = std::getenv("VV_CSV_BLOCK_MB");
+    return (e && std::atoll(e) > 0) || csv_block_override > ((int64_t)16 << 20);
+}
+int64_t csv_parse_block_bytes() {
+    const int64_t b = g_csv_parse_block.load();
+    return b > 0 ? b : csv_block_bytes();
+}
 int64_t csv_block_bytes() {
     if (csv_block_override > 0) return csv_block_override;
     static const int64_t env = [] {
@@ -740,9 +751,10 @@ class DelimitedSource : public TabularSource {
             input = std::make_shared<GatedInputStream>(std::move(input), *gate_out);
         }
         auto ropts = arrow::csv::ReadOptions::Defaults();
-        // 16 MiB blocks + per-block parsing on the CPU pool. The default
-        // (~1 MiB) is too small for multi-GB files; raising it amortises
-        // tokenizer overhead and lets parsing parallelise across threads.
+        // Arrow infers column types from the first block and parses blocks one
+        // after another (use_threads overlaps reading only). The first block is
+        // csv_block_bytes() (16 MiB): types come from that much data. Every
+        // later block of that size costs memory for no speed, so see below.
         ropts.block_size  = (int32_t)std::min<int64_t>(csv_block_bytes(), INT32_MAX);
         ropts.use_threads = true;
         if (!col_names.empty())
@@ -774,6 +786,59 @@ class DelimitedSource : public TabularSource {
         // Extra missing-value tokens (VCF's "."). They null numeric columns
         // only, unless strings_nullable: a string column keeps the literal.
         for (const auto& n : extra_nulls) copts.null_values.push_back(n);
+
+        // Types from 16 MiB, parsed in small blocks: the first csv_block_bytes()
+        // of the stream are read into memory; a reader over them (cut at their
+        // last newline) gives the types today's first block gives, and every
+        // column is pinned to its type. The stream (that buffer first) is then
+        // parsed in blocks of 16 x its longest line in the sample, at least
+        // 2 MiB and at most the sample: a record longer than the block later
+        // fails ("straddling object"), so the block keeps a margin over the
+        // lines seen. A column whose type is already fixed (VCF) needs no such
+        // parse. Only at the default size: VV_CSV_BLOCK_MB (and the retry for
+        // a long first record) mean one block size throughout, and
+        // VV_CSV_NO_SMALL_BLOCKS=1 keeps it.
+        const int64_t sample = ropts.block_size;
+        const char* nosmall = std::getenv("VV_CSV_NO_SMALL_BLOCKS");
+        if (sample > (2 << 20) && !csv_block_set_by_user() &&
+            !(nosmall && *nosmall && *nosmall != '0')) {
+            std::string buf;
+            while ((int64_t)buf.size() < sample) {
+                ARROW_ASSIGN_OR_RAISE(auto b, input->Read(std::min<int64_t>(4 << 20, sample - (int64_t)buf.size())));
+                if (b->size() == 0) break;
+                buf.append(reinterpret_cast<const char*>(b->data()), (size_t)b->size());
+            }
+            const bool eof = (int64_t)buf.size() < sample;
+            const size_t cut = eof ? buf.size() : buf.rfind('\n');
+            if (cut != std::string::npos && cut > 0) {
+                size_t longest = 0, prev = 0;
+                for (size_t pos = buf.find('\n'); pos != std::string::npos && pos <= cut;
+                     pos = buf.find('\n', pos + 1)) {
+                    longest = std::max(longest, pos - prev);
+                    prev = pos + 1;
+                }
+                const int64_t small = std::clamp<int64_t>(16 * (int64_t)longest + 1, 2 << 20, sample);
+                bool pinned = !col_names.empty();
+                for (const auto& n : col_names) pinned = pinned && copts.column_types.count(n);
+                if (small < sample && !pinned) {
+                    auto probe_in = std::make_shared<arrow::io::BufferReader>(
+                        arrow::Buffer::FromString(buf.substr(0, eof ? buf.size() : cut + 1)));
+                    auto probe = arrow::csv::StreamingReader::Make(arrow::io::default_io_context(),
+                                                                   probe_in, ropts, popts, copts);
+                    if (probe.ok()) {
+                        for (const auto& f : (*probe)->schema()->fields())
+                            if (!copts.column_types.count(f->name()))
+                                copts.column_types[f->name()] = f->type();
+                        ropts.block_size = (int32_t)small;
+                        g_csv_parse_block = small;
+                    }
+                } else if (small < sample) {
+                    ropts.block_size = (int32_t)small;
+                    g_csv_parse_block = small;
+                }
+            }
+            input = std::make_shared<PrependInputStream>(std::move(buf), std::move(input));
+        }
         return arrow::csv::StreamingReader::Make(
             arrow::io::default_io_context(), input, ropts, popts, copts);
     }

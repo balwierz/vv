@@ -175,8 +175,10 @@ The main pieces:
    Parquet *leaf* column indices, not Arrow field indices, so
    `arrow_to_leaf_indices()` walks the schema manifest.
 
-10. **`DelimitedSource`** — uses Arrow's streaming CSV reader with
-    `block_size = 16 MiB` and `use_threads = true`. `DelimKind` enum selects
+10. **`DelimitedSource`** — uses Arrow's streaming CSV reader, which parses
+    blocks serially: types are inferred from the first 16 MiB, then every
+    column is pinned and the rest is parsed in smaller blocks (`make_reader`).
+    A VCF read for site columns only is cut after INFO first. `DelimKind` enum selects
     behaviour: BED autogenerates then renames; VCF extracts names from
     `#CHROM`; GFF/SAM wrap the stream in `TruncateFieldsStream`.
 

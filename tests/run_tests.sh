@@ -2130,6 +2130,38 @@ for args in "--select CHROM,POS,REF,ALT --tsv" "--count --filter 'QUAL > 40'" "-
         "$(eval "\"\$VV\" $args \"\$TMP/sites.vcf\"" 2>&1)" \
         "$(eval "VV_NO_PROJECTION=1 \"\$VV\" $args \"\$TMP/sites.vcf\"" 2>&1)"
 done
+# Delimited text: types come from the first 16 MiB as before, the rest is
+# parsed in smaller blocks with every column pinned to those types (GENCODE
+# CSV.gz --count 1.59 s / 2.5 GB -> 0.92 s / 0.46 GB). Results equal the
+# single-block read (VV_CSV_NO_SMALL_BLOCKS=1): a type change inside the
+# first 16 MiB keeps the column text; one after them fails as before; a
+# 3 MB line after them still reads.
+if command -v python3 >/dev/null 2>&1; then
+    python3 - "$TMP" <<'PYBLK'
+import sys
+d = sys.argv[1]
+def w(name, rows, tail="", mid=None, text=False):
+    with open(f"{d}/{name}", "w") as f:
+        f.write("id\tval\n")
+        for i in range(rows):
+            if mid is not None and i == mid: f.write("9\tnotanumber\n")
+            f.write(f"{i}\tx{i}\n" if text else f"{i}\t{i}\n")
+        f.write(tail)
+w("blk_typeearly.tsv", 2_000_000, mid=200_000)
+w("blk_typelater.tsv", 2_000_000, tail="9\tnotanumber\n")
+w("blk_longlater.tsv", 2_000_000, tail="9\t" + "y" * 3_000_000 + "\n", text=True)
+PYBLK
+    for f in blk_typeearly blk_typelater blk_longlater; do
+        assert_eq_file_inline "csv_small_blocks_same_$f" \
+            "$("$VV" --count "$TMP/$f.tsv" 2>&1 | sed "s|$TMP/||")" \
+            "$(VV_CSV_NO_SMALL_BLOCKS=1 "$VV" --count "$TMP/$f.tsv" 2>&1 | sed "s|$TMP/||")"
+    done
+    assert_eq_file_inline "csv_small_blocks_type_inside_sample_is_text" \
+        "$("$VV" --schema "$TMP/blk_typeearly.tsv" | awk '$1 == "val" {print $2}')" "string"
+    assert_eq_file_inline "csv_small_blocks_long_line_reads" "$("$VV" --count "$TMP/blk_longlater.tsv")" "2000001"
+    assert_eq_file_inline "csv_small_blocks_tsv_same" \
+        "$("$VV" --tsv "$TMP/blk_typeearly.tsv" | md5sum)" "$(VV_CSV_NO_SMALL_BLOCKS=1 "$VV" --tsv "$TMP/blk_typeearly.tsv" | md5sum)"
+fi
 # The cut is taken: a record short of a sample field fails the full parse
 # ("Expected 11 columns, got 10") but not a sites-only read.
 printf '##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\nchr1\t10\t.\tA\tG\t50\tPASS\t.\tGT\t0/1\t1/1\nchr1\t20\t.\tA\tG\t50\tPASS\t.\tGT\t0/1\n' > "$TMP/short_sample.vcf"
