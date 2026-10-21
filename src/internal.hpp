@@ -1289,13 +1289,20 @@ enum class ImageProto { None, Kitty, ITerm2 };
 
 ImageProto detect_image_proto();
 
+// `plain_escapes`: no inline images and no OSC 8 hyperlinks (an image shows
+// its [alt] stub, a link its URL in brackets) — for the TUI, whose text view
+// draws SGR colours only.
 std::string parse_markdown_file(const std::string& path,
                                  int width,
-                                 MarkdownDoc* out);
+                                 MarkdownDoc* out,
+                                 bool plain_escapes = false);
 
 void emit_via_pager(const std::function<void()>& emit_fn);
 
 void emit_markdown_stdout(const MarkdownDoc& doc);
+// The rendered document, one ANSI-coloured screen line per entry (a blank
+// line between blocks), as emit_markdown_stdout writes it.
+std::vector<std::string> markdown_lines(const MarkdownDoc& doc);
 }  // namespace md
 
 std::vector<std::pair<std::string,std::string>>

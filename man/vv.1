@@ -187,7 +187,9 @@ column of integers stays an int64). Local PNG / JPEG / GIF images
 display inline on kitty, iTerm2, and WezTerm terminals via their
 graphics protocols; everything else (remote URLs, SVG, terminals
 without graphics support) falls back to a \fB[image: alt-text]\fR
-stub. Pipe to \fBless -R\fR to scroll.
+stub. On a terminal the document opens in the interactive viewer: the
+rendered prose as a text tab and each table as a further tab; a pipe,
+\fB\-n\fR, \fB\-\-tsv\fR / \fB\-\-md\fR or \fB\-\-no\-interactive\fR print it.
 .IP \(bu 2
 \fB.2bit\fR \(en UCSC 2bit sequence container; rendered as a per-
 sequence index (\fBname\fR, \fBlength\fR, \fBn_blocks\fR,

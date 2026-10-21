@@ -215,6 +215,33 @@ int main(int argc, char** argv) {
                           && !cfg.stats_only
                           && cfg.parquet_out.empty()
                           && cfg.arrow_out.empty();
+        // On a terminal the document opens in the TUI: its rendered lines as a
+        // text tab (scroll, `/` search, `h`/`l` across long lines) and each
+        // GFM table as a further tab. Images show their [alt] stub and links
+        // their URL, which the text view can draw. The pager is the fallback
+        // when the terminal cannot run the TUI.
+        if (want_pager && tui_wanted(cfg)) {
+            md::MarkdownDoc tdoc;
+            // Wrapped to leave room for the text view's line-number gutter.
+            if (md::parse_markdown_file(cfg.path, std::max(20, term_w - 8), &tdoc,
+                                        /*plain_escapes=*/true).empty()) {
+                arrow::StringBuilder lb;
+                for (const std::string& l : md::markdown_lines(tdoc)) (void)lb.Append(l);
+                std::shared_ptr<arrow::Array> la;
+                (void)lb.Finish(&la);
+                std::vector<std::unique_ptr<TabularSource>> srcs;
+                auto prose = std::make_unique<MemoryTableSource>(
+                    arrow::Table::Make(arrow::schema({arrow::field("text", arrow::utf8())}), {la}),
+                    cfg.path, "Format: Markdown  |  " + std::to_string(tdoc.tables.size()) + " table(s)");
+                prose->mark_text();
+                srcs.push_back(std::move(prose));
+                for (size_t i = 0; i < tdoc.tables.size(); ++i)
+                    srcs.push_back(std::make_unique<MemoryTableSource>(
+                        tdoc.tables[i], tdoc.table_captions[i], "Format: markdown table"));
+                std::unique_ptr<TabularSource> first;
+                if (run_table_viewer(std::move(srcs), cfg, TuiStart{}, &first)) return 0;
+            }
+        }
         if (want_pager) md::emit_via_pager(emit);
         else            emit();
         if (!table_err.empty()) { report(cfg.path, table_err); return 1; }

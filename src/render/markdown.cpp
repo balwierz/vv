@@ -1427,7 +1427,8 @@ static std::string slurp_file(const std::string& path, std::string* out) {
 // Public entry: parse a markdown file into a MarkdownDoc.
 std::string parse_markdown_file(const std::string& path,
                                  int width,
-                                 MarkdownDoc* out) {
+                                 MarkdownDoc* out,
+                                 bool plain_escapes) {
     std::string text;
     std::string err = slurp_file(path, &text);
     if (!err.empty()) return err;
@@ -1441,8 +1442,8 @@ std::string parse_markdown_file(const std::string& path,
     Renderer r;
     r.doc = out;
     r.width = width;
-    r.img_proto = detect_image_proto();
-    r.osc8      = detect_osc8_support();
+    r.img_proto = plain_escapes ? ImageProto::None : detect_image_proto();
+    r.osc8      = !plain_escapes && detect_osc8_support();
 
     MD_PARSER parser;
     std::memset(&parser, 0, sizeof(parser));
@@ -1545,6 +1546,20 @@ void emit_via_pager(const std::function<void()>& emit_fn) {
 // by their inline `▶ [Table N: ...]` placeholder and printed afterwards
 // using the existing print_table pipeline (caller's responsibility — we
 // just emit the prose here).
+std::vector<std::string> markdown_lines(const MarkdownDoc& doc) {
+    std::vector<std::string> lines;
+    for (const auto& b : doc.blocks) {
+        if (b.kind == MdBlockKind::Spacer) { lines.emplace_back(); continue; }
+        for (const auto& line : b.lines) {
+            std::string s;
+            emit_line_ansi(s, line);
+            if (!s.empty() && s.back() == '\n') s.pop_back();
+            lines.push_back(std::move(s));
+        }
+    }
+    return lines;
+}
+
 void emit_markdown_stdout(const MarkdownDoc& doc) {
     std::string out;
     out.reserve(64 * 1024);

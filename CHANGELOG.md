@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- A Markdown file on a terminal opens in the interactive viewer instead of
+  `less`: its rendered prose as a text tab (scroll, `/` search) and each GFM
+  table as a further tab. Images show their `[alt]` stub and links their
+  URL there; a pipe or a scripted flag prints the document as before.
 - TUI marks: `m` and a letter marks the cursor's row and column, `'` and
   the letter jumps back to it, `''` returns to where the last jump came
   from. Marks are per tab and stay on their row through a sort or filter;
