@@ -219,7 +219,12 @@ public:
         if (!isatty(STDOUT_FILENO)) return false;
         if (!in && !isatty(STDIN_FILENO)) return open_tty();   // keys from the terminal
         if (in && !isatty(fileno(in))) return false;
-        setlocale(LC_ALL, "");
+        // One category naming a locale that is not installed (LC_TIME set to
+        // a locale never generated) fails setlocale(LC_ALL, "") as a whole and
+        // leaves the C locale, in which ncurses writes the box lines and "…"
+        // byte by byte ("~T~@"). The screen needs the character set: set
+        // LC_CTYPE alone then.
+        if (!setlocale(LC_ALL, "")) setlocale(LC_CTYPE, "");
         static bool bg_detected = false;
         if (!bg_detected) { detect_term_bg(); bg_detected = true; }   // OSC 11 query, once
         in_ = in ? in : stdin;

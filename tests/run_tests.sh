@@ -5303,6 +5303,11 @@ if [ -n "$TUI_PTY" ]; then
         "$(first_paint "column_0$(printf '\xe2\x80\xa6')" 100 "$TMP/wide_edge.tsv")" "True"
     assert_eq_file_inline "tui_right_edge_more_marker" \
         "$(first_paint "$(printf '\xe2\x80\xba')" 92 "$TMP/wide_edge.tsv")" "True"
+    # A locale category naming a locale that is not installed fails
+    # setlocale(LC_ALL, ""); the TUI still draws its box lines (U+2500) in
+    # the character set LC_CTYPE / LANG names, not as C-locale bytes.
+    assert_eq_file_inline "tui_box_lines_with_missing_lc_time" \
+        "$(LC_TIME=xx_XX.UTF-8 first_paint "$(printf '\xe2\x94\x80\xe2\x94\x80')" 100 "$TMP/wide_edge.tsv")" "True"
 fi
 
 # Search in a sorted view whose order cycles through every row group lands on

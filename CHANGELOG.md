@@ -27,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   per input chunk rather than materializing the whole input.
 
 ### Fixed
+- The TUI drew its box lines and `…` as `~T~@` when one locale category
+  named a locale that is not installed (`LC_TIME=en_SE.UTF-8` without
+  `en_SE` generated): `setlocale(LC_ALL, "")` then fails as a whole and
+  left the C locale. The TUI now sets `LC_CTYPE` alone in that case.
 - Empty TUI filters now show zero rows rather than the unfiltered source.
   Known-count streams such as SQLite are scanned through EOF for filters,
   sorts and statistics, and navigation/search reaches later batches.
