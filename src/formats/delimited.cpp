@@ -6,6 +6,9 @@
 
 #include "internal.hpp"
 
+#include <deque>
+#include <future>
+
 class TabixInputStream : public arrow::io::InputStream {
     htsFile*               fp_     = nullptr;
     tbx_t*                 tbx_    = nullptr;
@@ -279,6 +282,135 @@ public:
 // `comment` set, lines starting with it are dropped wherever they are — GFF3
 // puts `###` and `#` lines between records — and `##FASTA` ends the records
 // (GFF3: sequences follow).
+// Parses delimited text on several threads. Arrow's StreamingReader parses
+// its blocks one after another; this reader cuts the (decoded) stream into
+// blocks at the last newline before `block` bytes — a record longer than
+// that extends its block to its end — and parses up to `threads` of them at
+// once, each by a single-threaded StreamingReader over the block's bytes
+// with the column names and every column's type given (no inference), so
+// each block reads exactly as the serial reader would read it. Batches come
+// out in file order. Like Arrow's own chunker with newlines_in_values off,
+// it takes a newline inside a quoted field for the end of a record.
+// `skip_first` drops the header row at the start of the first block.
+class ParallelCsvReader : public arrow::RecordBatchReader {
+public:
+    using Batches = std::vector<std::shared_ptr<arrow::RecordBatch>>;
+    ParallelCsvReader(std::shared_ptr<arrow::io::InputStream> input,
+                      std::shared_ptr<arrow::Schema> schema,
+                      arrow::csv::ReadOptions ropts, arrow::csv::ParseOptions popts,
+                      arrow::csv::ConvertOptions copts, int64_t block, int threads,
+                      bool skip_first)
+        : input_(std::move(input)), schema_(std::move(schema)), ropts_(std::move(ropts)),
+          popts_(std::move(popts)), copts_(std::move(copts)), block_(block),
+          threads_(std::max(1, threads)), skip_first_(skip_first) {
+        ropts_.column_names.clear();
+        for (const auto& f : schema_->fields()) ropts_.column_names.push_back(f->name());
+        ropts_.autogenerate_column_names = false;
+        ropts_.use_threads = false;
+        ropts_.skip_rows = 0;
+        ropts_.skip_rows_after_names = 0;
+        copts_.column_types.clear();
+        for (const auto& f : schema_->fields()) copts_.column_types[f->name()] = f->type();
+    }
+    ~ParallelCsvReader() override {
+        for (auto& f : inflight_) if (f.valid()) f.wait();
+    }
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+
+    arrow::Status ReadNext(std::shared_ptr<arrow::RecordBatch>* out) override {
+        *out = nullptr;
+        if (!status_.ok()) return status_;
+        while (ready_.empty()) {
+            ARROW_RETURN_NOT_OK(fill());
+            if (inflight_.empty()) return arrow::Status::OK();     // end of the stream
+            arrow::Result<Batches> r = inflight_.front().get();
+            inflight_.pop_front();
+            if (!r.ok()) {
+                // Arrow numbers rows within the block ("Row #26108: "), which
+                // means nothing to the reader; the serial reader's message
+                // has no row number, and this one matches it.
+                std::string m = r.status().message();
+                for (size_t p = m.find("Row #"); p != std::string::npos; p = m.find("Row #", p)) {
+                    size_t e = p + 5;
+                    while (e < m.size() && std::isdigit((unsigned char)m[e])) ++e;
+                    if (e + 1 < m.size() && m[e] == ':' && m[e + 1] == ' ') m.erase(p, e + 2 - p);
+                    else p = e;
+                }
+                status_ = arrow::Status(r.status().code(), m);
+                return status_;
+            }
+            for (auto& b : *r) if (b && b->num_rows() > 0) ready_.push_back(std::move(b));
+        }
+        *out = std::move(ready_.front());
+        ready_.pop_front();
+        return fill();
+    }
+
+private:
+    // Keep `threads_` blocks being parsed.
+    arrow::Status fill() {
+        while (!eof_ && (int)inflight_.size() < threads_) {
+            std::string chunk = std::move(carry_);
+            carry_.clear();
+            auto more = [&](int64_t want) -> arrow::Status {
+                ARROW_ASSIGN_OR_RAISE(auto b, input_->Read(want));
+                if (b->size() == 0) eof_ = true;
+                else chunk.append(reinterpret_cast<const char*>(b->data()), (size_t)b->size());
+                return arrow::Status::OK();
+            };
+            while (!eof_ && (int64_t)chunk.size() < block_)
+                ARROW_RETURN_NOT_OK(more(block_ - (int64_t)chunk.size()));
+            if (!eof_) {
+                size_t nl = chunk.rfind('\n');
+                while (nl == std::string::npos && !eof_) {      // a record longer than the block
+                    ARROW_RETURN_NOT_OK(more(block_));
+                    nl = chunk.rfind('\n');
+                }
+                if (nl != std::string::npos && !eof_) {
+                    carry_ = chunk.substr(nl + 1);
+                    chunk.resize(nl + 1);
+                }
+            }
+            if (chunk.empty()) continue;
+            arrow::csv::ReadOptions ro = ropts_;
+            if (skip_first_) { ro.skip_rows = 1; skip_first_ = false; }
+            ro.block_size = (int32_t)std::min<int64_t>((int64_t)chunk.size() + 1, INT32_MAX);
+            auto data = std::make_shared<std::string>(std::move(chunk));
+            inflight_.push_back(std::async(std::launch::async,
+                [data, ro, po = popts_, co = copts_]() -> arrow::Result<Batches> {
+                    auto in = std::make_shared<arrow::io::BufferReader>(
+                        std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(data->data()),
+                                                        (int64_t)data->size()));
+                    ARROW_ASSIGN_OR_RAISE(auto rd, arrow::csv::StreamingReader::Make(
+                        arrow::io::default_io_context(), in, ro, po, co));
+                    Batches out;
+                    for (;;) {
+                        std::shared_ptr<arrow::RecordBatch> b;
+                        ARROW_RETURN_NOT_OK(rd->ReadNext(&b));
+                        if (!b) break;
+                        out.push_back(std::move(b));
+                    }
+                    return out;
+                }));
+        }
+        return arrow::Status::OK();
+    }
+
+    std::shared_ptr<arrow::io::InputStream> input_;
+    std::shared_ptr<arrow::Schema>          schema_;
+    arrow::csv::ReadOptions                 ropts_;
+    arrow::csv::ParseOptions                popts_;
+    arrow::csv::ConvertOptions              copts_;
+    int64_t                                 block_;
+    int                                     threads_;
+    bool                                    skip_first_;
+    bool                                    eof_ = false;
+    std::string                             carry_;
+    std::deque<std::future<arrow::Result<Batches>>> inflight_;
+    std::deque<std::shared_ptr<arrow::RecordBatch>> ready_;
+    arrow::Status                           status_;
+};
+
 class TruncateFieldsStream : public arrow::io::InputStream {
     std::shared_ptr<arrow::io::InputStream> inner_;
     LineReader   lr_;          // buffered reader — avoids one-byte-at-a-time reads
@@ -642,6 +774,7 @@ class DelimitedSource : public TabularSource {
     // True when the data stream was replaced by a tabix iterator for -r.
     bool                                  region_applied_ = false;
     bool vcf_sites_only_ = false;  // VCF lines cut after INFO (no sample column read)
+    int  parse_threads_  = 1;      // > 1: a full scan, parsed in parallel
     mutable arrow::Status                 read_status_;   // sticky stream error
 
     // Append a freshly-decoded batch via the shared bounded-window helper.
@@ -650,7 +783,7 @@ class DelimitedSource : public TabularSource {
                       retain_all_, evicted_any_, std::move(batch));
     }
 
-    mutable std::shared_ptr<arrow::csv::StreamingReader> reader_;
+    mutable std::shared_ptr<arrow::RecordBatchReader> reader_;
     std::shared_ptr<ReadGate>             gate_;   // stops reader_'s read-ahead on close
 
     arrow::Status advance() const {
@@ -737,7 +870,7 @@ class DelimitedSource : public TabularSource {
     }
 
     // Create a StreamingReader from an already-open stream.
-    static arrow::Result<std::shared_ptr<arrow::csv::StreamingReader>>
+    static arrow::Result<std::shared_ptr<arrow::RecordBatchReader>>
     make_reader(std::shared_ptr<arrow::io::InputStream> input, char delim,
                 bool autogen_names, const std::vector<std::string>& col_names,
                 const std::vector<std::string>& force_string_cols = {},
@@ -745,7 +878,8 @@ class DelimitedSource : public TabularSource {
                 const std::vector<std::pair<std::string, std::shared_ptr<arrow::DataType>>>&
                     column_types = {},
                 std::shared_ptr<ReadGate>* gate_out = nullptr,
-                const std::vector<std::string>& extra_nulls = {}) {
+                const std::vector<std::string>& extra_nulls = {},
+                int parse_threads = 1) {
         if (gate_out) {
             *gate_out = std::make_shared<ReadGate>();
             input = std::make_shared<GatedInputStream>(std::move(input), *gate_out);
@@ -820,6 +954,7 @@ class DelimitedSource : public TabularSource {
                 const int64_t small = std::clamp<int64_t>(16 * (int64_t)longest + 1, 2 << 20, sample);
                 bool pinned = !col_names.empty();
                 for (const auto& n : col_names) pinned = pinned && copts.column_types.count(n);
+                std::shared_ptr<arrow::Schema> typed;     // every column's name and type
                 if (small < sample && !pinned) {
                     auto probe_in = std::make_shared<arrow::io::BufferReader>(
                         arrow::Buffer::FromString(buf.substr(0, eof ? buf.size() : cut + 1)));
@@ -831,16 +966,32 @@ class DelimitedSource : public TabularSource {
                                 copts.column_types[f->name()] = f->type();
                         ropts.block_size = (int32_t)small;
                         g_csv_parse_block = small;
+                        typed = (*probe)->schema();
                     }
                 } else if (small < sample) {
                     ropts.block_size = (int32_t)small;
                     g_csv_parse_block = small;
+                    if (pinned) {
+                        arrow::FieldVector fv;
+                        for (const auto& n : col_names) fv.push_back(arrow::field(n, copts.column_types[n]));
+                        typed = arrow::schema(fv);
+                    }
+                }
+                // A full scan with several threads: parse blocks in parallel,
+                // every type known. The header row (CSV / TSV: names not given
+                // nor generated) is in the first block.
+                if (typed && parse_threads > 1 && !eof) {
+                    input = std::make_shared<PrependInputStream>(std::move(buf), std::move(input));
+                    const bool header = col_names.empty() && !autogen_names;
+                    return std::shared_ptr<arrow::RecordBatchReader>(std::make_shared<ParallelCsvReader>(
+                        std::move(input), typed, ropts, popts, copts, small, parse_threads, header));
                 }
             }
             input = std::make_shared<PrependInputStream>(std::move(buf), std::move(input));
         }
-        return arrow::csv::StreamingReader::Make(
-            arrow::io::default_io_context(), input, ropts, popts, copts);
+        ARROW_ASSIGN_OR_RAISE(auto rd, arrow::csv::StreamingReader::Make(
+            arrow::io::default_io_context(), input, ropts, popts, copts));
+        return std::shared_ptr<arrow::RecordBatchReader>(std::move(rd));
     }
 
     // Re-read a small sample of the file and return the names of columns that
@@ -1034,13 +1185,13 @@ public:
                              HeaderMode header_mode = HeaderMode::Auto,
                              TsvDialect dialect = TsvDialect::None,
                              const std::vector<std::string>& paf_tags = {},
-                             bool vcf_sites_only = false) {
+                             DelimitedHints hints = {}) {
         std::string err;
         for (int64_t block = csv_block_bytes();; block *= 4) {
             const int64_t saved = csv_block_override;
             csv_block_override = block;
             err = open_once(path, kind, region, out, delim_override, header_mode, dialect,
-                            paf_tags, vcf_sites_only);
+                            paf_tags, hints);
             csv_block_override = saved;
             if (err.find("straddling object") == std::string::npos || block >= ((int64_t)1 << 30))
                 break;
@@ -1054,11 +1205,12 @@ public:
                              char delim_override, HeaderMode header_mode,
                              TsvDialect dialect,
                              const std::vector<std::string>& paf_tags,
-                             bool vcf_sites_only = false) {
+                             DelimitedHints hints = {}) {
         auto self = std::make_unique<DelimitedSource>();
         self->path_      = path;
         self->kind_      = kind;
-        self->vcf_sites_only_ = vcf_sites_only && kind == DelimKind::VCF;
+        self->vcf_sites_only_ = hints.vcf_sites_only && kind == DelimKind::VCF;
+        self->parse_threads_  = std::max(1, hints.parse_threads);
         self->dialect_   = dialect;
         self->paf_tags_  = paf_tags;
         if (!paf_tags.empty()) self->paf_tag_types_ = paf_tag_types(path, paf_tags);
@@ -1430,7 +1582,7 @@ private:
         }
         auto r = make_reader(input, self->delimiter_, autogen, col_names,
                              force_string, strings_nullable, col_types, &self->gate_,
-                             extra_nulls);
+                             extra_nulls, self->parse_threads_);
         if (!r.ok()) {
             // A region query whose window overlaps no records leaves the tabix
             // stream empty, and Arrow's CSV reader rejects empty input with
@@ -1823,10 +1975,10 @@ std::string open_delimited_source(const std::string& path, DelimKind kind, const
                                   HeaderMode header_mode,
                                   TsvDialect dialect,
                                   const std::vector<std::string>& paf_tags,
-                                  bool vcf_sites_only) {
+                                  DelimitedHints hints) {
     std::unique_ptr<DelimitedSource> s;
     std::string e = DelimitedSource::open(path, kind, region, &s, delim_override, header_mode,
-                                            dialect, paf_tags, vcf_sites_only);
+                                            dialect, paf_tags, hints);
     if (e.empty()) *out = std::move(s);
     return e;
 }

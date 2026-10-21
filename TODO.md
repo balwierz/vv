@@ -214,19 +214,13 @@ user-facing summary).
 - **Bioconda Arrow pin** — revisit `packaging/bioconda/conda_build_config.yaml`
   (libarrow 22 only) when Bioconda's global pinning drops libarrow 19 / 20,
   the versions without `libarrow-compute`.
-- **Delimited input parses on one core.** Arrow's `csv::StreamingReader`
-  parses its blocks one after another (`use_threads` overlaps I/O only):
-  `vv --count` on a 3.5 GB uncompressed VCF takes 5.6 s with 5.4 s of CPU,
-  whatever `-@` says; pyarrow's streaming reader on 1.2 GB: 1.77 s, its
-  whole-file `read_csv`: 0.43 s on 10 cores. A parallel path would cut the
-  decompressed input at newlines (Arrow's chunker does too, with
-  `newlines_in_values` off), parse each block with the schema the first block
-  inferred (`ConvertOptions::column_types` for every column, same null
-  options) on the CPU pool, and hand the batches out in order; parse-error
-  messages and their row numbers would need care. Until then, multi-threaded
-  BGZF decompression (`bgzf_mt`, as FASTX uses) buys nothing: measured on a
-  50 M-line bgzipped VCF, 5.7 s either way, and previews got slower because
-  Arrow's read-ahead fills sooner.
+- **gzip-compressed text decodes on one thread.** Delimited text now parses
+  in parallel (ParallelCsvReader), but a `.gz` input is still decoded by one
+  thread (Arrow's CompressedInputStream), which bounds a full scan of
+  `vcf.gz` / `csv.gz`: GENCODE CSV.gz `--count` 0.82 s vs 0.31 s for the same
+  file uncompressed. A BGZF input (bgzip, tabix-indexable) could be decoded
+  on several threads (htslib bgzf_mt); the line cutting for a sites-only VCF
+  (TruncateFieldsStream) is serial too and could move into the parse tasks.
 - **Arrow IPC / Feather random access.** File sources now expose a discovered
   frontier without decoding in `chunk_meta()` and use a 64 MiB decoded-batch
   cache. Feather v2 uses this path; only v1 is eager. First discovery of batch

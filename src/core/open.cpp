@@ -1153,6 +1153,25 @@ static bool vcf_sites_only_run(const Config& cfg) {
     return true;
 }
 
+// A run that reads every row of a delimited file (an export, --count,
+// --describe, a sort or filter, …) rather than its first rows: parsed on
+// the run's threads. A preview (-n) and the TUI keep the serial reader.
+static bool delimited_full_scan_run(const Config& cfg) {
+    if (cfg.interactive || cfg.head_rows_set || cfg.schema_only || cfg.list_columns) return false;
+    return cfg.delimiter || cfg.json_array || cfg.json_lines || cfg.md ||
+           !cfg.parquet_out.empty() || !cfg.arrow_out.empty() || cfg.count || cfg.describe ||
+           !cfg.unique_cols.empty() || cfg.distinct || cfg.sample_n > 0 || cfg.tail_rows_set;
+}
+
+static DelimitedHints delimited_hints(const Config& cfg, DelimKind dk) {
+    DelimitedHints h;
+    h.vcf_sites_only = dk == DelimKind::VCF && vcf_sites_only_run(cfg);
+    const char* ser = std::getenv("VV_CSV_SERIAL");
+    if (delimited_full_scan_run(cfg) && !(ser && *ser && *ser != '0'))
+        h.parse_threads = effective_threads(cfg);
+    return h;
+}
+
 std::string open_source_dispatch(const std::string& path, const Config& cfg,
                          std::unique_ptr<TabularSource>* out) {
     std::string err = dispatch_by_kind(path, cfg, out);
@@ -1786,8 +1805,7 @@ static std::string dispatch_by_kind(const std::string& path, const Config& cfg,
     std::unique_ptr<TabularSource> src;
     std::string err = open_delimited_source(path, dk, cfg.region, &src, delim_override,
                                             headerless ? HeaderMode::Off : cfg.header, dialect,
-                                            paf_tags,
-                                            dk == DelimKind::VCF && vcf_sites_only_run(cfg));
+                                            paf_tags, delimited_hints(cfg, dk));
     if (!err.empty()) return err;
     // BEDPE has no header row unless it starts with a "#chrom1 …" line (read
     // as the header); without one, name the bedtools columns.

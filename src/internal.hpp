@@ -962,14 +962,20 @@ std::vector<std::string>
 leading_zero_columns(const std::vector<std::string>& sample_lines, char delim,
               const std::vector<std::string>& col_names);
 
+// What the run will read, decided before the open (open_source_dispatch).
 // `vcf_sites_only`: a VCF's lines are cut after INFO before Arrow parses
-// them — the run reads no FORMAT / sample column (vcf_needs_sites_only).
+// them — the run reads no FORMAT / sample column. `parse_threads` > 1: a
+// full scan, parsed on that many threads (ParallelCsvReader).
+struct DelimitedHints {
+    bool vcf_sites_only = false;
+    int  parse_threads  = 1;
+};
 std::string open_delimited_source(const std::string& path, DelimKind kind, const std::string& region,
                                   std::unique_ptr<TabularSource>* out, char delim_override = 0,
                                   HeaderMode header_mode = HeaderMode::Auto,
                                   TsvDialect dialect = TsvDialect::None,
                                   const std::vector<std::string>& paf_tags = {},
-                                  bool vcf_sites_only = false);
+                                  DelimitedHints hints = {});
 
 std::string open_delimited_stream(std::shared_ptr<arrow::io::InputStream> input,
                                   const std::string& path_label, DelimKind kind, bool is_gz,

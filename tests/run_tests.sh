@@ -2161,6 +2161,31 @@ PYBLK
     assert_eq_file_inline "csv_small_blocks_long_line_reads" "$("$VV" --count "$TMP/blk_longlater.tsv")" "2000001"
     assert_eq_file_inline "csv_small_blocks_tsv_same" \
         "$("$VV" --tsv "$TMP/blk_typeearly.tsv" | md5sum)" "$(VV_CSV_NO_SMALL_BLOCKS=1 "$VV" --tsv "$TMP/blk_typeearly.tsv" | md5sum)"
+    # A full scan parses the blocks after the first 16 MiB on -@ threads
+    # (ParallelCsvReader); its output equals the serial reader's
+    # (VV_CSV_SERIAL=1): a TSV, a CSV with a header and quoted fields holding
+    # the delimiter, a VCF with samples, and an export, a count and a filter.
+    python3 - "$TMP" <<'PYPAR'
+import sys
+d = sys.argv[1]
+with open(f"{d}/par.csv", "w") as f:
+    f.write('id,name,score,note\n')
+    for i in range(700_000):
+        f.write(f'{i},"n{i % 997}, x",{i * 0.25},"q ""{i % 13}"""\n')
+with open(f"{d}/par.vcf", "w") as f:
+    f.write("##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\n")
+    for i in range(400_000):
+        f.write(f"chr{1 + i % 3}\t{i}\trs{i}\tA\tG\t{i % 50}\tPASS\tDP={i % 31}\tGT\t0/1\t1/1\n")
+PYPAR
+    for spec in "--tsv blk_typeearly.tsv" "--tsv par.csv" "--count --filter 'score > 1000' par.csv" \
+                "--describe --select score par.csv" "--samples text --tsv par.vcf" "--select POS,QUAL --tsv par.vcf"; do
+        name=$(printf '%s' "$spec" | tr -c 'A-Za-z0-9' '_' | tr -s '_')
+        assert_eq_file_inline "csv_parallel_same_$name" \
+            "$(cd "$TMP" && eval "\"\$VV\" -@ 4 $spec" 2>&1 | md5sum)" \
+            "$(cd "$TMP" && eval "VV_CSV_SERIAL=1 \"\$VV\" $spec" 2>&1 | md5sum)"
+    done
+    assert_eq_file_inline "csv_parallel_files_exceed_sample" \
+        "$(for f in par.csv par.vcf blk_typeearly.tsv; do [ "$(wc -c < "$TMP/$f")" -gt 16777216 ] && printf y; done)" "yyy"
 fi
 # The cut is taken: a record short of a sample field fails the full parse
 # ("Expected 11 columns, got 10") but not a sites-only read.

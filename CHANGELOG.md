@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- A full scan of delimited text (an export, `--count`, `--describe`, a sort,
+  filter or sample) parses on the `-@` threads after the first 16 MiB:
+  on the 1.6 GB GENCODE CSV, `--count` 0.90 s → 0.31 s and `--describe`
+  1.34 s → 0.65 s; previews and the TUI keep the serial reader.
 - Delimited text (CSV, TSV, VCF, GFF, BED, …) is parsed in 2 MiB blocks
   (16 × the longest line seen) after the first 16 MiB, which still decide
   the column types: GENCODE CSV.gz `--count` 1.59 s / 2.5 GB → 0.92 s /
