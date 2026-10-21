@@ -26,7 +26,10 @@ Command* goes the other way.
 - **Tabs** — files, workbook sheets, SQLite and DuckDB tables, HDF5 / Zarr /
   AnnData components, Cooler resolutions, GenBank sections, POD5 tables, R
   objects and NumPy arrays each get a tab. Open with *File ▸ Open*, drag-and-drop or the
-  recent-files list.
+  recent-files list. A tab reads its file only when first shown, and reads
+  in the background: it says *Loading…* until its columns are known, and a
+  block of rows not read yet shows `…` until it arrives, so the window stays
+  responsive on slow or network storage.
 - **Sort, filter, find** — click a header to sort (by type, not text) and
   put the cursor in that column; the
   filter bar uses vv's `--filter` grammar (`score > 5 and chrom == "chr1"`);

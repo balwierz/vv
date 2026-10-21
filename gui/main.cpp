@@ -308,6 +308,7 @@ public:
                     jt->model->index(at.row(), JsonTreeModel::Value, at.parent()).data().toString().left(60).toLocal8Bit().constData());
         if (table) {
             openRecordsTable(jt, at);
+            waitIdleForTest();
             std::printf("json-tree table: tabs=%d rows=%d cols=%d label=%s\n", tabs_->count(),
                         activeModel() ? activeModel()->rowCount() : -1,
                         activeModel() ? activeModel()->columnCount() : -1,
@@ -319,6 +320,7 @@ public:
     // fully densified.
     void dumpTabDims() {
         materializeAllTabs();
+        waitIdleForTest();
         for (auto* m : models_)
             if (m) std::printf("tab '%s' rows=%d cols=%d footer=%s\n",
                         m->tabLabel().c_str(),
@@ -355,8 +357,12 @@ public:
         m->sortAsyncByDisplayColumn(0, Qt::DescendingOrder);
         for (int guard = 0; m->isComputing() && guard < 2000000; ++guard)
             QCoreApplication::processEvents();
-        const QString out = QStringLiteral("rows=%1 first=%2")
-            .arg(m->viewRows()).arg(m->data(m->index(0, 0), Qt::DisplayRole).toString());
+        QString out;
+        {
+            ArrowTableModel::SyncReads now(m);
+            out = QStringLiteral("rows=%1 first=%2")
+                .arg(m->viewRows()).arg(m->data(m->index(0, 0), Qt::DisplayRole).toString());
+        }
         m->setFilterAsync(fx);
         m->sortAsyncByDisplayColumn(0, Qt::AscendingOrder);
         m->findAsync(QRegularExpression(QStringLiteral(".")));
@@ -375,6 +381,7 @@ public:
         QTableWidgetItem* before = detail_->item(0, 1);
         v->selectionModel()->setCurrentIndex(v->model()->index(row, col),
                                              QItemSelectionModel::ClearAndSelect);
+        waitIdleForTest();            // the row's chunk arrives, the dock refills
         QTableWidgetItem* first = detail_->item(0, 1);
         QStringList vals;
         for (int r = 0; r < std::min(2, detail_->rowCount()); ++r)
@@ -388,6 +395,7 @@ public:
     // summary (scanning on the worker, or Compute for a tab that cannot be
     // re-read) and return what the panel shows.
     QString columnStatsForTest(int col) {
+        waitIdleForTest();
         auto* v = activeView();
         if (!v) return QStringLiteral("no view");
         colDock_->show();
@@ -426,12 +434,19 @@ public:
         for (int c = 0; c < v->model()->columnCount(); ++c)
             v->horizontalHeader()->resizeSection(c, 100);
         v->resize(200, 300);
+        // A view never shown lays out its header only when asked: its columns
+        // arrived (async model) after it was created with none, and a hidden
+        // widget gets no resize event, so the header's viewport stays empty.
+        QMetaObject::invokeMethod(v, "updateGeometries", Qt::DirectConnection);
+        QResizeEvent re(v->horizontalHeader()->size(), QSize());
+        QCoreApplication::sendEvent(v->horizontalHeader(), &re);
         QCoreApplication::processEvents();
     }
     // Window self-test: cursor in column 0, then a mouse click on the header
     // of column `col` (scrolled into view first, as a user sees it). Prints
     // the sort column, the cursor column after the sort and the Column tab.
     QString headerClickForTest(int col) {
+        waitIdleForTest();
         auto* v = activeView();
         auto* m = activeModel();
         if (!v || !m || col < 0 || col >= m->displayColumnCount()) return QStringLiteral("no column");
@@ -458,6 +473,7 @@ public:
     // its left edge, then the Column tab's "show in table". Prints the
     // location before and after, and the column's position in the view.
     QString showColumnForTest(int col) {
+        waitIdleForTest();
         auto* v = activeView();
         auto* m = activeModel();
         if (!v || !m || col < 0 || col >= m->displayColumnCount()) return QStringLiteral("no column");
@@ -475,6 +491,7 @@ public:
     // Window self-test: select the block (r0, c0)-(r1, c1) and return the
     // status bar's selection summary.
     QString selectionSummaryForTest(int r0, int c0, int r1, int c1) {
+        waitIdleForTest();
         auto* v = activeView();
         if (!v) return QStringLiteral("no view");
         QItemSelection sel(v->model()->index(r0, c0), v->model()->index(r1, c1));
@@ -542,9 +559,11 @@ private:
         if (ncols <= 0) return {};
         const int ch  = std::max(1, fm.horizontalAdvance(QLatin1Char('0')));
         const int pad = 2 * ch;                 // cell text margins, both sides
-        // About 40,000 cells, 64 to 2,000 rows: every cell sampled is decoded
-        // and measured on the UI thread, at open, for every tab.
-        const int64_t sample = std::min<int64_t>(nrows, std::clamp(40000 / ncols, 64, 2000));
+        // About 40,000 cells, 64 to 2,000 rows, of the rows already loaded:
+        // every cell sampled is measured on the UI thread, and a row not yet
+        // read would only show "…".
+        const int64_t sample = std::min<int64_t>({nrows, (int64_t)std::clamp(40000 / ncols, 64, 2000),
+                                                  model->loadedPrefixRows()});
 
         std::vector<std::vector<int>> samples((size_t)ncols);
         std::vector<int> floors((size_t)ncols);
@@ -637,7 +656,7 @@ private:
     ArrowTableModel* buildTab(std::unique_ptr<TabularSource> src, const QString& origin,
                               bool primary, const QString& expand,
                               std::shared_ptr<SourceOwner> owner, int at) {
-        auto* model = new ArrowTableModel(std::move(src), this, std::move(owner));
+        auto* model = new ArrowTableModel(std::move(src), this, std::move(owner), /*async=*/true);
         const QFileInfo ofi(origin);
         // A URL can be opened again too (a region query re-opens the files).
         const bool reopenable = origin != QLatin1String("-") &&
@@ -649,9 +668,29 @@ private:
         view->setModel(model);
         view->setAlternatingRowColors(true);
         applyScrollMode(view);
-        // Size columns to their content once, now. Nothing resizes them again,
-        // so a later manual drag is preserved for the life of the tab.
-        autosizeColumns(view, model);
+        // Size columns to their content once, from the first rows read (the
+        // first chunk the view asks for). Nothing resizes them again, so a
+        // later manual drag is preserved for the life of the tab.
+        auto sized = std::make_shared<QMetaObject::Connection>();
+        *sized = connect(model, &ArrowTableModel::chunksLoaded, view, [view, model, sized] {
+            if (model->loadedPrefixRows() <= 0) return;
+            QObject::disconnect(*sized);
+            autosizeColumns(view, model);
+        });
+        // The schema and the first rows arrive from the owner thread.
+        connect(model, &ArrowTableModel::ready, this, [this, model] {
+            if (model != activeModel()) return;
+            refreshStatus();
+            refreshColumnsMenu();
+            if (colTimer_) colTimer_->start();
+        });
+        connect(model, &ArrowTableModel::chunksLoaded, this, [this, view, model] {
+            if (model != activeModel()) return;
+            detailRow_ = -1;              // its "…" values may have arrived
+            updateDetail(view->selectionModel()->currentIndex());
+            if (selTimer_) selTimer_->start();
+            refreshStatus();
+        });
         view->setEditTriggers(QAbstractItemView::NoEditTriggers);
         view->setSelectionBehavior(QAbstractItemView::SelectItems);
         view->setItemDelegate(new CursorColumnDelegate(view));
@@ -1765,6 +1804,9 @@ private:
         if (!v) return;
         auto sel = v->selectionModel()->selectedIndexes();
         if (sel.isEmpty()) return;
+        auto* sm = qobject_cast<ArrowTableModel*>(v->model());
+        if (!sm) return;
+        ArrowTableModel::SyncReads now(sm);   // rows not on screen are read here
         std::sort(sel.begin(), sel.end(), [](const QModelIndex& a, const QModelIndex& b){
             return a.row() != b.row() ? a.row() < b.row() : a.column() < b.column();
         });
@@ -1796,6 +1838,7 @@ private:
         if (rows.empty() && v->currentIndex().isValid())
             rows.insert(v->currentIndex().row());
         if (rows.empty()) return;
+        ArrowTableModel::SyncReads now(m);    // rows not on screen are read here
         const int ncols = m->columnCount();
         QString out;
         bool firstRow = true;
@@ -1913,7 +1956,59 @@ public:
             if (m->columnName(c) == column) { v->setColumnHidden(c, true); return true; }
         return false;
     }
-    void selectTabForTest(int i) { tabs_->setCurrentIndex(i); }
+    void selectTabForTest(int i) { tabs_->setCurrentIndex(i); waitIdleForTest(); }
+    // Window self-test of the asynchronous reads: for each "row:col" of `spec`,
+    // ask the active tab for the cell (a chunk not loaded shows "…" and is
+    // requested), wait, and print what it shows then. ticks= counts a 50-ms
+    // UI timer meanwhile: the UI keeps running while chunks are read.
+    QString cellsForTest(const QString& spec) {
+        waitIdleForTest();
+        auto* m = activeModel();
+        if (!m) return QStringLiteral("no model");
+        int ticks = 0;
+        QTimer tick;
+        connect(&tick, &QTimer::timeout, this, [&ticks] { ++ticks; });
+        tick.start(50);
+        QStringList out;
+        for (const QString& rc : spec.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+            const QStringList p = rc.split(QLatin1Char(':'));
+            if (p.size() != 2) continue;
+            const QModelIndex idx = m->index(p[0].toInt(), p[1].toInt());
+            const QString before = m->data(idx, Qt::DisplayRole).toString();
+            waitIdleForTest();
+            out << QStringLiteral("%1=%2%3").arg(rc, m->data(idx, Qt::DisplayRole).toString(),
+                                                  before == QStringLiteral("\u2026") ? QString()
+                                                                                       : QStringLiteral("(cached)"));
+        }
+        return out.join(QLatin1Char(' ')) + QStringLiteral(" ticks=%1").arg(ticks);
+    }
+    // Window self-test: show tab `i` and close it at once, while its schema
+    // is still being read (with VVG_TEST_READ_DELAY_MS); the read finishes on
+    // the owner thread and is not delivered.
+    QString closeLoadingForTest(int i) {
+        tabs_->setCurrentIndex(i);
+        auto* m = activeModel();
+        const bool loading = m && !m->isReady();
+        closeTab(tabs_->currentIndex());
+        QElapsedTimer t;
+        t.start();
+        while (t.elapsed() < 800) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        return QStringLiteral("loading=%1 tabs=%2").arg(loading ? 1 : 0).arg(tabs_->count());
+    }
+    // The self-test reads values right after an action; with reads on the
+    // owner thread, pump events until every built tab has its schema, no job
+    // and no chunk in flight (the view's requests included), up to 30 s.
+    void waitIdleForTest() {
+        QElapsedTimer t;
+        t.start();
+        auto busy = [this] {
+            for (auto* m : models_)
+                if (m && (!m->isReady() || m->isComputing() || m->hasPendingReads())) return true;
+            return false;
+        };
+        do QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        while (busy() && t.elapsed() < 30000);
+    }
     int  builtTabsForTest() const {
         int n = 0;
         for (auto* m : models_) n += m != nullptr;
@@ -1937,7 +2032,7 @@ public:
     QStringList applyViewOptions(const ViewOptions& o) {
         QStringList errs;
         auto settle = [&](ArrowTableModel* m) {
-            for (int g = 0; m && m->isComputing() && g < 2000000; ++g)
+            for (int g = 0; m && (m->isComputing() || !m->isReady()) && g < 2000000; ++g)
                 QCoreApplication::processEvents();
         };
         if (o.session())
@@ -1955,6 +2050,7 @@ public:
         }
         auto* m = activeModel();
         auto* v = activeView();
+        settle(m);                    // the tab's schema is read on its owner thread
         if (m && v && !o.select.isEmpty()) {
             std::vector<std::string> unknown;
             const auto sel = m->selectColumns(o.select.toStdString(), &unknown);
@@ -2404,6 +2500,7 @@ private:
             selSum_->setVisible(true);
             return;
         }
+        ArrowTableModel::SyncReads now(m);   // the selection's rows, loaded or not (capped above)
         long double sum = 0;
         double mn = 0, mx = 0;
         qint64 n = 0;
@@ -2842,6 +2939,7 @@ int main(int argc, char** argv) {
         win.openPaths(paths, /*quiet=*/true);
         for (const QString& e : win.applyViewOptions(view))
             std::fprintf(stderr, "vvg: %s\n", e.toLocal8Bit().constData());
+        win.waitIdleForTest();
         std::printf("win_tabs=%d\n", win.tabCount());
         if (const char* sm = std::getenv("VVG_SCROLLMODE"); sm && *sm && *sm != '0')
             std::printf("scroll=%s\n", win.scrollModeForTest());
@@ -2869,6 +2967,7 @@ int main(int argc, char** argv) {
             win.applyRegionQuery(QString::fromLocal8Bit(rg ? rg : ""),
                                  std::getenv("VVG_NCBI") != nullptr, 0, pileup,
                                  QString::fromLocal8Bit(tg ? tg : ""), gtStats, contigs);
+            win.waitIdleForTest();
             std::printf("region '%s' pileup=%d tags='%s' gtstats=%d contigs=%d "
                         "-> tabs=%d rows=%d cols=%d\n",
                         rg ? rg : "", pileup ? 1 : 0, tg ? tg : "", gtStats ? 1 : 0,
@@ -2894,6 +2993,12 @@ int main(int argc, char** argv) {
         // whose model exists (has read the source) of all tabs.
         if (const char* bt = std::getenv("VVG_BUILT"); bt && *bt && *bt != '0')
             std::printf("built=%d/%d\n", win.builtTabsForTest(), win.tabCountForTest());
+        // Optional asynchronous-read checks: VVG_CELLS="row:col,…" (cellsForTest),
+        // VVG_CLOSE_LOADING=<tab> (closeLoadingForTest).
+        if (const char* ce = std::getenv("VVG_CELLS"); ce && *ce)
+            std::printf("cells %s\n", win.cellsForTest(QString::fromLocal8Bit(ce)).toUtf8().constData());
+        if (const char* cl = std::getenv("VVG_CLOSE_LOADING"); cl && *cl)
+            std::printf("close-loading %s\n", win.closeLoadingForTest(std::atoi(cl)).toUtf8().constData());
         // Optional superseded-jobs check: VVG_RACE="<filter>" (raceForTest).
         if (const char* rc = std::getenv("VVG_RACE"); rc && *rc)
             std::printf("race %s\n", win.raceForTest(QString::fromLocal8Bit(rc)).toUtf8().constData());
@@ -2984,6 +3089,7 @@ int main(int argc, char** argv) {
                 QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
                 QThread::msleep(5);
             }
+            win.waitIdleForTest();
             if (win.grab().save(QString::fromLocal8Bit(sh)))
                 std::printf("screenshot -> %s\n", sh);
             else {

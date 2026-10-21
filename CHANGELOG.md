@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- vvg reads a tab's file only when the tab is first shown, and in the
+  background: the window opens at once, a tab shows *Loading…* until its
+  columns are known, and rows not read yet show `…` until they arrive. A
+  6 GB AnnData file with four tabs opens with 59 reads (1.0 MB) instead of
+  276 (16 MB).
 - AnnData / HDF5 and Zarr component tables read projected 128-row blocks
   instead of constructing a 1,000-row preview at tab activation. Frames,
   1-D arrays, dense matrices and CSR expose every row through existing
@@ -27,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   per input chunk rather than materializing the whole input.
 
 ### Fixed
+- vvg: starting a filter, sort or find while another ran left both reading
+  the tab's source at once, and closing the tab could free it under the
+  older job. Each file's tabs are now read on one owner thread, a new job
+  cancels and queues behind the running one, and a closed tab's results
+  are dropped.
 - The TUI drew its box lines and `…` as `~T~@` when one locale category
   named a locale that is not installed (`LC_TIME=en_SE.UTF-8` without
   `en_SE` generated): `setlocale(LC_ALL, "")` then fails as a whole and

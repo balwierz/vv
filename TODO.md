@@ -258,11 +258,6 @@ user-facing summary).
   and CSR expose all rows. CSC remains row-capped and matrices column-capped;
   full exports stay separate. Measure physical-chunk-aware cache tuning on
   compressed workloads before changing the fixed logical block size.
-- **vvg lazy sibling tabs.** Every tab of an AnnData file is built at open
-  (`addSourceTab` builds the model, which reads the component); building a
-  tab when first shown would defer the reads. The shared reader now avoids
-  whole-preview construction; in vvg, lazy model creation on first
-  activation and viewport reads on a worker remain to do.
 - **TUI long passes:** signal polling, visible read errors and partial/capped
   scope are implemented. Cancellation is between bounded reads, not inside
   a blocking HDF5 call.
@@ -286,6 +281,10 @@ user-facing summary).
   first NUL byte (`finish_csv_field`, `src/core/format_fast.cpp`).
 
 ### Done
+- **vvg lazy tabs and background reads** (2026-10-21): one owner thread
+  per file runs every source call; a tab's model is built when first shown;
+  its schema and the chunks the view asks for are read on the owner and
+  delivered to the UI thread ("Loading…" / "…" meanwhile).
 - ARM64 static binary in the release workflow — the release CI
   matrices over `ubuntu-latest` (x86_64) and `ubuntu-22.04-arm`
   (aarch64); both arches are published with every tag as

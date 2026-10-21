@@ -19,6 +19,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <vector>
 
 #include "sourceowner.h"
@@ -29,9 +30,14 @@ class ArrowTableModel : public QAbstractTableModel {
 public:
     // `owner` runs every call into `src`; the tabs of one file share one
     // (their sources share handles). Without one the model makes its own.
+    // `async`: the model reads its schema on the owner thread (until then it
+    // has no rows or columns and isReady() is false) and loads the chunks the
+    // view asks for there, showing "…" until they arrive. Otherwise every
+    // read waits for the owner (the self-test's synchronous model).
     explicit ArrowTableModel(std::unique_ptr<TabularSource> src,
                              QObject* parent = nullptr,
-                             std::shared_ptr<SourceOwner> owner = {});
+                             std::shared_ptr<SourceOwner> owner = {},
+                             bool async = false);
     ~ArrowTableModel() override;
 
     // Cell value without display formatting (no digit grouping), for the
@@ -96,7 +102,28 @@ public:
     bool    findResultsValid(const QRegularExpression& re) const;
     qint64  findMatchCount() const { return (qint64)findPos_.size(); }
 
+    // The schema has arrived (always true for a synchronous model).
+    bool    isReady() const { return !loading_; }
+    // Chunks requested for the view and not yet delivered.
+    bool    hasPendingReads() const { return !wantRows_.empty() || !inflight_.empty(); }
+    // Rows 0..n-1 of the source, all in the chunk cache (identity view only):
+    // what column autosizing may sample without asking for more.
+    int64_t loadedPrefixRows() const;
+    // While one exists, a cache miss reads the chunk on the owner and waits
+    // for it, as before: for copying a selection, the selection sum, the
+    // self-test — callers that need the values now.
+    class SyncReads {
+    public:
+        explicit SyncReads(const ArrowTableModel* m) : m_(m), prev_(m->syncReads_) { m_->syncReads_ = true; }
+        ~SyncReads() { m_->syncReads_ = prev_; }
+    private:
+        const ArrowTableModel* m_;
+        bool prev_;
+    };
+
 signals:
+    void    ready();                       // the schema arrived (async model)
+    void    chunksLoaded();                // requested chunks arrived
     void    recomputeStarted();
     void    recomputeFinished(qint64 viewRows);
     void    recomputeCanceled();
@@ -145,7 +172,13 @@ private:
     // posted to the owner, which keep it alive until they have run; it is
     // only ever touched on the owner thread (or by the UI thread while it
     // waits in runSync).
-    struct Core { std::unique_ptr<TabularSource> src; };
+    struct Core {
+        std::unique_ptr<TabularSource> src;
+        // chunkFirstRow[c] == chunk_meta(c).first_row, ascending: source rows
+        // → chunks, built on demand and extended forward for streams;
+        // invariant under sort/filter, cleared when the source rebuilds.
+        std::vector<int64_t>           chunkFirstRow;
+    };
     std::shared_ptr<SourceOwner> owner_;
     std::shared_ptr<Core>        core_;
     // Results reach the model through the mailbox: the destructor clears
@@ -175,14 +208,31 @@ private:
     struct LoadedChunk {
         int                            idx = -1;
         int64_t                        first_row = 0;
+        int64_t                        num_rows = 0;
         std::shared_ptr<arrow::Table>  table;     // columns == displayCols_ order
     };
 
+    // The cached chunk holding source row `srcRow`; on a miss, nullptr and the
+    // row is requested (or, under SyncReads, read now).
     const LoadedChunk* chunkForRow(int64_t srcRow) const;
-    // Map a source row to its chunk index in O(log chunks) via a cumulative
-    // first-row offset table (chunkFirstRow_), built lazily and extended
-    // forward for streaming sources. Returns -1 if the row is out of range.
-    int                chunkIndexForRow(int64_t srcRow) const;
+    const LoadedChunk* cachedChunk(int64_t srcRow) const;
+    const LoadedChunk* insertChunk(LoadedChunk lc) const;
+    // On the owner thread: the chunk index of source row `row` (O(log chunks)
+    // via core.chunkFirstRow), -1 if out of range; and that chunk read.
+    static int  coreChunkIndex(Core& core, int64_t row);
+    static bool coreLoadChunk(Core& core, int64_t row, const std::vector<int>& cols,
+                              LoadedChunk* out);
+    // Asynchronous reads: rows asked for (wantRows_) go to the owner in one
+    // task per event-loop turn (flushRequests); a result for an older
+    // generation (the cache was cleared since) is dropped.
+    void requestRow(int64_t srcRow) const;
+    void flushRequests();
+    void onChunksLoaded(uint64_t gen, std::vector<LoadedChunk> chunks,
+                        std::vector<int64_t> asked, std::vector<int64_t> failed, Meta meta);
+    void onInitDone(std::shared_ptr<arrow::Schema> schema, std::vector<std::string> hidden,
+                    Meta meta, int64_t loadedRows, bool fullyLoaded);
+    void setColumns(const std::vector<std::string>& hidden);
+    void onFetched(int64_t newrows, bool fullyLoaded, Meta meta);
     int64_t   sourceRow(int viewRow) const {
         return identity_ ? (int64_t)viewRow : (*order_)[(size_t)viewRow];
     }
@@ -226,11 +276,17 @@ private:
     // which the eviction there never removes.
     mutable const LoadedChunk*         lastChunk_ = nullptr;
     mutable int64_t                    lastChunkEnd_ = 0;
-    void clearChunkCache() const;
-    // chunkFirstRow_[c] == chunk_meta(c).first_row, ascending. Indexes source
-    // rows → chunks; invariant under sort/filter (those only permute order_),
-    // so it is cleared only when the source rebuilds (stepSlice / re-open).
-    mutable std::vector<int64_t>       chunkFirstRow_;
+    void clearChunkCache() const;       // also starts a new read generation
+
+    bool                               async_ = false;
+    bool                               loading_ = false;    // async: schema not read yet
+    mutable bool                       syncReads_ = false;  // SyncReads in effect
+    mutable std::set<int64_t>          wantRows_;           // asked for, not yet sent
+    mutable std::set<int64_t>          inflight_;           // sent, not yet delivered
+    mutable std::set<int64_t>          failedRows_;         // read failed: no retry
+    mutable bool                       flushPending_ = false;
+    mutable uint64_t                   gen_ = 0;
+    bool                               fetching_ = false;   // async fetchMore in flight
     // The last cell decoded by data(): a view asks for DisplayRole and then
     // BackgroundRole (search highlight) of the same cell. Cleared on every
     // reset / layout / data change.

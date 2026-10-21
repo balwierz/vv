@@ -357,6 +357,19 @@ jobs:
           VVG_WINTEST=1 VVG_BUILT=1 ./build-gui/gui/vvg tests/data/tiny.h5ad | grep -qxF 'built=1/7'
           VVG_WINTEST=1 VVG_BUILT=1 ./build-gui/gui/vvg tests/data/tiny.xlsx tests/data/tiny.sqlite | grep -qxF 'built=1/4'
           VVG_WINTEST=1 VVG_TAB=2 VVG_BUILT=1 ./build-gui/gui/vvg tests/data/tiny.h5ad | grep -qxF 'built=2/7'
+          # Cells are read on the tab's owner thread: an unloaded row shows "…",
+          # then its value; with every read slowed to 300 ms the UI timer keeps
+          # ticking. First / deep / last rows equal vv's; a filter during the
+          # reads shows the filtered rows; a tab closed while loading is dropped.
+          VVG_WINTEST=1 VVG_TEST_READ_DELAY_MS=300 VVG_CELLS='0:0,19:3,7:1' ./build-gui/gui/vvg tests/data/tiny.parquet \
+            | grep -qE '^cells 0:0=chr1\(cached\) 19:3=0\.95 7:1=7_100 ticks=([4-9]|[1-9][0-9]+)$'
+          VVG_WINTEST=1 VVG_TAB=2 VVG_CELLS='0:0,1499:0,1499:2' ./build-gui/gui/vvg tests/data/tiny.bigobs.h5ad \
+            | grep -qE '^cells 0:0=cell0\(cached\) 1499:0=cell1499 1499:2=1499\(cached\) ticks='
+          VVG_WINTEST=1 VVG_CELLS='60000000:0' ./build-gui/gui/vvg /tmp/rows120M.parquet | grep -qE '^cells 60000000:0=0 ticks='
+          VVG_WINTEST=1 VVG_TEST_READ_DELAY_MS=200 VVG_AFILTER='Score > 0.5' VVG_CELLS='0:3,8:3' ./build-gui/gui/vvg tests/data/tiny.parquet \
+            | grep -qE '^cells 0:3=0\.55 8:3=0\.95 ticks='
+          VVG_WINTEST=1 VVG_TEST_READ_DELAY_MS=300 VVG_CLOSE_LOADING=2 ./build-gui/gui/vvg tests/data/tiny.h5ad \
+            | grep -qxF 'close-loading loading=1 tabs=6'
           # Above VVG_STATS_AUTO_ROWS rows (default 10,000,000) the Column tab
           # summarises only on request, the cursor column only.
           VVG_WINTEST=1 VVG_STATS_AUTO_ROWS=10 VVG_COLSTATS=3 ./build-gui/gui/vvg tests/data/tiny.parquet \
@@ -736,6 +749,19 @@ jobs:
           VVG_WINTEST=1 VVG_BUILT=1 ./build/gui/vvg tests/data/tiny.h5ad | grep -qxF 'built=1/7'
           VVG_WINTEST=1 VVG_BUILT=1 ./build/gui/vvg tests/data/tiny.xlsx tests/data/tiny.sqlite | grep -qxF 'built=1/4'
           VVG_WINTEST=1 VVG_TAB=2 VVG_BUILT=1 ./build/gui/vvg tests/data/tiny.h5ad | grep -qxF 'built=2/7'
+          # Cells are read on the tab's owner thread: an unloaded row shows "…",
+          # then its value; with every read slowed to 300 ms the UI timer keeps
+          # ticking. First / deep / last rows equal vv's; a filter during the
+          # reads shows the filtered rows; a tab closed while loading is dropped.
+          VVG_WINTEST=1 VVG_TEST_READ_DELAY_MS=300 VVG_CELLS='0:0,19:3,7:1' ./build/gui/vvg tests/data/tiny.parquet \
+            | grep -qE '^cells 0:0=chr1\(cached\) 19:3=0\.95 7:1=7_100 ticks=([4-9]|[1-9][0-9]+)$'
+          VVG_WINTEST=1 VVG_TAB=2 VVG_CELLS='0:0,1499:0,1499:2' ./build/gui/vvg tests/data/tiny.bigobs.h5ad \
+            | grep -qE '^cells 0:0=cell0\(cached\) 1499:0=cell1499 1499:2=1499\(cached\) ticks='
+          VVG_WINTEST=1 VVG_CELLS='60000000:0' ./build/gui/vvg /tmp/rows120M.parquet | grep -qE '^cells 60000000:0=0 ticks='
+          VVG_WINTEST=1 VVG_TEST_READ_DELAY_MS=200 VVG_AFILTER='Score > 0.5' VVG_CELLS='0:3,8:3' ./build/gui/vvg tests/data/tiny.parquet \
+            | grep -qE '^cells 0:3=0\.55 8:3=0\.95 ticks='
+          VVG_WINTEST=1 VVG_TEST_READ_DELAY_MS=300 VVG_CLOSE_LOADING=2 ./build/gui/vvg tests/data/tiny.h5ad \
+            | grep -qxF 'close-loading loading=1 tabs=6'
           # Above VVG_STATS_AUTO_ROWS rows (default 10,000,000) the Column tab
           # summarises only on request, the cursor column only.
           VVG_WINTEST=1 VVG_STATS_AUTO_ROWS=10 VVG_COLSTATS=3 ./build/gui/vvg tests/data/tiny.parquet \
