@@ -188,7 +188,8 @@ public:
 
         connect(tabs_, &QTabWidget::tabCloseRequested, this,
                 [this](int i){ closeTab(i); });
-        connect(tabs_, &QTabWidget::currentChanged, this, [this](int) {
+        connect(tabs_, &QTabWidget::currentChanged, this, [this](int i) {
+            materializeTab(i);   // a tab not shown before: build its model now
             if (selTimer_) selTimer_->start();
             if (colTimer_) colTimer_->start();
             refreshStatus();
@@ -316,7 +317,8 @@ public:
     // Print every open tab's materialised dimensions — used by the self-test to
     // confirm dense 2-D matrices are previewed (row/col capped) rather than
     // fully densified.
-    void dumpTabDims() const {
+    void dumpTabDims() {
+        materializeAllTabs();
         for (auto* m : models_)
             if (m) std::printf("tab '%s' rows=%d cols=%d footer=%s\n",
                         m->tabLabel().c_str(),
@@ -586,10 +588,55 @@ private:
         view->setVerticalScrollMode(mode);
     }
 
-    // Build one model+view tab from a source and wire sort + detail-pane.
-    void addSourceTab(std::unique_ptr<TabularSource> src, const QString& origin,
-                      bool primary, const QString& expand = QString(),
-                      std::shared_ptr<SourceOwner> owner = {}) {
+    // A tab for `src`. Unless `now`, it is a placeholder that keeps the source
+    // unread: its model and view are built when the tab is first shown
+    // (materializeTab), so opening a file of many tabs reads only the one
+    // displayed, and closing a tab never shown reads nothing. Returns the
+    // model when built now.
+    ArrowTableModel* addSourceTab(std::unique_ptr<TabularSource> src, const QString& origin,
+                                  bool primary, const QString& expand = QString(),
+                                  std::shared_ptr<SourceOwner> owner = {}, bool now = false) {
+        if (!owner) owner = std::make_shared<SourceOwner>();
+        if (now) return buildTab(std::move(src), origin, primary, expand, std::move(owner), -1);
+        auto* ph = new QWidget(tabs_);
+        const QString label = QString::fromStdString(src->tab_label());   // reads no data
+        pending_[ph] = PendingTab{std::move(src), origin, primary, expand, std::move(owner)};
+        views_.push_back(nullptr);
+        models_.push_back(nullptr);
+        tabs_->addTab(ph, label);   // the first tab added becomes current → built
+        return nullptr;
+    }
+
+    // Build the model and view of placeholder tab `i` in its place.
+    void materializeTab(int i, bool makeCurrent = true) {
+        QWidget* ph = tabs_->widget(i);
+        auto it = pending_.find(ph);
+        if (it == pending_.end()) return;
+        PendingTab p = std::move(it->second);
+        pending_.erase(it);
+        {
+            QSignalBlocker b(tabs_);
+            tabs_->removeTab(i);
+            views_.erase(views_.begin() + i);
+            models_.erase(models_.begin() + i);
+            buildTab(std::move(p.src), p.origin, p.primary, p.expand, std::move(p.owner), i);
+            if (makeCurrent) tabs_->setCurrentIndex(i);
+        }
+        ph->deleteLater();
+    }
+    // Build every placeholder tab (the self-test's tab dump reports them all).
+    void materializeAllTabs() {
+        const int cur = tabs_->currentIndex();
+        for (int i = 0; i < tabs_->count(); ++i) materializeTab(i, false);
+        QSignalBlocker b(tabs_);
+        tabs_->setCurrentIndex(cur);
+    }
+
+    // Build one model+view tab from a source and wire sort + detail-pane;
+    // appended, or inserted at tab index `at`.
+    ArrowTableModel* buildTab(std::unique_ptr<TabularSource> src, const QString& origin,
+                              bool primary, const QString& expand,
+                              std::shared_ptr<SourceOwner> owner, int at) {
         auto* model = new ArrowTableModel(std::move(src), this, std::move(owner));
         const QFileInfo ofi(origin);
         // A URL can be opened again too (a region query re-opens the files).
@@ -675,12 +722,17 @@ private:
         connect(model, &ArrowTableModel::findReady, this,
                 [this, model](qint64 n){ onFindReady(model, n); });
 
-        views_.push_back(view);
-        models_.push_back(model);
-        int idx = tabs_->addTab(view, QString::fromStdString(src_label(model)));
-        // A file opens on its first tab (an AnnData summary, a workbook's
-        // first sheet), as in vv; sibling tabs open behind it.
-        if (primary) tabs_->setCurrentIndex(idx);
+        const QString label = QString::fromStdString(src_label(model));
+        if (at < 0) {
+            views_.push_back(view);
+            models_.push_back(model);
+            tabs_->addTab(view, label);
+        } else {
+            views_.insert(views_.begin() + at, view);
+            models_.insert(models_.begin() + at, model);
+            tabs_->insertTab(at, view, label);
+        }
+        return model;
     }
 
     void closeTab(int i) {
@@ -688,11 +740,22 @@ private:
         // views_/models_ are kept index-aligned with the tab order.
         ArrowTableModel* m = (i < (int)models_.size()) ? models_[i] : nullptr;
         QWidget* w = tabs_->widget(i);
-        tabs_->removeTab(i);
+        // A tab never shown: its source is destroyed on its file's owner
+        // thread, where its sibling tabs (sharing its handles) are read.
+        if (auto pit = pending_.find(w); pit != pending_.end()) {
+            auto owner = pit->second.owner;
+            std::shared_ptr<TabularSource> dead = std::move(pit->second.src);
+            owner->post([dead]() mutable { dead.reset(); });
+            pending_.erase(pit);
+        }
+        // Erase this tab's entries first: removing the current tab makes
+        // another current, and showing a placeholder for the first time
+        // (materializeTab) inserts its model at that tab's index.
         if (i < (int)views_.size()) {
             views_.erase(views_.begin() + i);
             models_.erase(models_.begin() + i);
         }
+        tabs_->removeTab(i);
         if (m) { sortOrder_.remove(m); tabOrigin_.remove(m); filterText_.remove(m); statsCache_.remove(m); keepCol_.remove(m); }
         if (m && m == statsModel_) cancelColumnStats();
         jsonTabs_.erase(w);   // a JSON tree tab: its model, document and temporary copy
@@ -1034,7 +1097,10 @@ private:
                        "needs a BAM/CRAM file.)").arg(why));
             return;
         }
-        while (tabs_->count() > 0) closeTab(0);
+        {
+            QSignalBlocker quiet(tabs_);   // don't build each next tab as the current one closes
+            while (tabs_->count() > 0) closeTab(0);
+        }
         for (size_t i = 0; i < r.sources.size(); ++i)
             addSourceTab(std::move(r.sources[i]), r.origins[i], r.primary[i], r.expands[i],
                          r.owners[i]);
@@ -1848,6 +1914,12 @@ public:
         return false;
     }
     void selectTabForTest(int i) { tabs_->setCurrentIndex(i); }
+    int  builtTabsForTest() const {
+        int n = 0;
+        for (auto* m : models_) n += m != nullptr;
+        return n;
+    }
+    int  tabCountForTest() const { return tabs_->count(); }
 
     // vv's view flags on vvg's command line (vvg --filter … --sort … file).
     struct ViewOptions {
@@ -2123,6 +2195,15 @@ private:
         }
     };
     std::map<QWidget*, std::unique_ptr<JsonTab>> jsonTabs_;
+    // Tabs not shown yet: placeholder widget -> the source and how it opened.
+    struct PendingTab {
+        std::unique_ptr<TabularSource> src;
+        QString                        origin;
+        bool                           primary = true;
+        QString                        expand;
+        std::shared_ptr<SourceOwner>   owner;
+    };
+    std::map<QWidget*, PendingTab>               pending_;
     bool jsonAsTable_ = false;
 
     JsonTab* activeJsonTab() const {
@@ -2259,8 +2340,9 @@ private:
             else QMessageBox::information(this, tr("vvg — JSON"), msg);
             return;
         }
-        addSourceTab(std::move(src), jt->path, true);
-        if (rec.isValid() && !models_.empty()) tabOrigin_[models_.back()].reopen = false;
+        ArrowTableModel* tm = addSourceTab(std::move(src), jt->path, true, QString(), {}, /*now=*/true);
+        if (rec.isValid()) tabOrigin_[tm].reopen = false;
+        tabs_->setCurrentIndex(tabs_->count() - 1);
     }
     void showJsonContextMenu(JsonTab* jt, const QPoint& pos) {
         const QModelIndex at = jt->view->indexAt(pos);
@@ -2808,6 +2890,10 @@ int main(int argc, char** argv) {
         // VVG_COPYCMD=1 prints "cmd=<command line>".
         if (const char* ti = std::getenv("VVG_TAB"); ti && *ti)
             win.selectTabForTest(std::atoi(ti));
+        // Optional lazy-tab check: VVG_BUILT=1 prints "built=N/M", the tabs
+        // whose model exists (has read the source) of all tabs.
+        if (const char* bt = std::getenv("VVG_BUILT"); bt && *bt && *bt != '0')
+            std::printf("built=%d/%d\n", win.builtTabsForTest(), win.tabCountForTest());
         // Optional superseded-jobs check: VVG_RACE="<filter>" (raceForTest).
         if (const char* rc = std::getenv("VVG_RACE"); rc && *rc)
             std::printf("race %s\n", win.raceForTest(QString::fromLocal8Bit(rc)).toUtf8().constData());

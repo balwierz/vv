@@ -352,6 +352,11 @@ jobs:
             | grep -qxF 'race rows=9 first=chr2 closed tabs=0'
           VVG_WINTEST=1 VVG_TAB=2 VVG_RACE='val > 100' ./build-gui/gui/vvg tests/data/tiny.bigobs.h5ad \
             | grep -qxF 'race rows=1399 first=cell999 closed tabs=3'
+          # A tab's model is built (its source read) when the tab is first shown:
+          # opening builds only the first tab; showing another builds that one.
+          VVG_WINTEST=1 VVG_BUILT=1 ./build-gui/gui/vvg tests/data/tiny.h5ad | grep -qxF 'built=1/7'
+          VVG_WINTEST=1 VVG_BUILT=1 ./build-gui/gui/vvg tests/data/tiny.xlsx tests/data/tiny.sqlite | grep -qxF 'built=1/4'
+          VVG_WINTEST=1 VVG_TAB=2 VVG_BUILT=1 ./build-gui/gui/vvg tests/data/tiny.h5ad | grep -qxF 'built=2/7'
           # Above VVG_STATS_AUTO_ROWS rows (default 10,000,000) the Column tab
           # summarises only on request, the cursor column only.
           VVG_WINTEST=1 VVG_STATS_AUTO_ROWS=10 VVG_COLSTATS=3 ./build-gui/gui/vvg tests/data/tiny.parquet \
@@ -726,6 +731,11 @@ jobs:
             | grep -qxF 'race rows=9 first=chr2 closed tabs=0'
           VVG_WINTEST=1 VVG_TAB=2 VVG_RACE='val > 100' ./build/gui/vvg tests/data/tiny.bigobs.h5ad \
             | grep -qxF 'race rows=1399 first=cell999 closed tabs=3'
+          # A tab's model is built (its source read) when the tab is first shown:
+          # opening builds only the first tab; showing another builds that one.
+          VVG_WINTEST=1 VVG_BUILT=1 ./build/gui/vvg tests/data/tiny.h5ad | grep -qxF 'built=1/7'
+          VVG_WINTEST=1 VVG_BUILT=1 ./build/gui/vvg tests/data/tiny.xlsx tests/data/tiny.sqlite | grep -qxF 'built=1/4'
+          VVG_WINTEST=1 VVG_TAB=2 VVG_BUILT=1 ./build/gui/vvg tests/data/tiny.h5ad | grep -qxF 'built=2/7'
           # Above VVG_STATS_AUTO_ROWS rows (default 10,000,000) the Column tab
           # summarises only on request, the cursor column only.
           VVG_WINTEST=1 VVG_STATS_AUTO_ROWS=10 VVG_COLSTATS=3 ./build/gui/vvg tests/data/tiny.parquet \
