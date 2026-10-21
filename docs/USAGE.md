@@ -222,6 +222,7 @@ $ vv tests/data/tiny.lociss        # default when stdout is a terminal
 | mouse 2-click  | data row → open detail pane (same as `Enter`)           |
 | Shift + drag   | select text for the OS clipboard (terminal-side)        |
 | `:`            | command line — `:N` (jump to row), `:q` (quit), `:theme NAME` |
+| `m` *letter* / `'` *letter* | mark the cursor's row and column / jump back to it, per tab (marks follow their row through a sort or filter); `''` returns to where the last jump came from |
 | Tab / Shift+Tab| next / previous file tab (when multiple files are opened) |
 | `t`            | on a JSON file's tab: its tree view (`t` there on the document comes back) |
 | `q`            | quit (Esc clears search / filter / closes overlays)     |

@@ -1082,6 +1082,12 @@ basename. Single-file invocations don't show a tab indicator.
 On a JSON file's tab (several files open): the file's tree view (see
 \fBJSON VIEWER\fR); \fBt\fR there on the whole document returns to the tabs.
 .TP
+.BI m " letter" ", \(aq" " letter"
+Mark the cursor's row and column (\fBm\fR\fIa\fR..\fBm\fR\fIz\fR), or jump
+back to a mark (\fB\(aq\fR\fIa\fR..); \fB\(aq\(aq\fR returns to where the last
+jump came from. Marks are per tab and stay on their row through a sort or
+filter; a row the filter hides is reported, not jumped to.
+.TP
 .B :
 Vim-style typed-command prompt at the bottom of the screen.
 Recognised verbs:

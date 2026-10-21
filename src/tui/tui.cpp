@@ -642,8 +642,55 @@ class TableTUI {
         // covers only part of the file.
         bool                            partial_pass = false;
         std::string                     read_error;
+        // Marks (`m{a-z}`): source row and column, so a sort or filter keeps
+        // them on their row; and where the last mark jump came from (`''`).
+        std::map<char, std::pair<int64_t, int>> marks;
+        std::pair<int64_t, int>         before_jump{-1, 0};
     };
     std::vector<TabState>      tabs_;
+    int                        mark_pending_ = 0;   // 'm' or '\'' awaiting its letter
+
+    // `m{a-z}`: mark the cursor's row and column in this tab.
+    void set_mark(char c) {
+        const int64_t sr = source_row(cur_row_);
+        if (sr < 0) return;
+        tabs_[active_tab_].marks[c] = {sr, cur_col_};
+        copy_status_ = std::string("mark ") + c + ": row " + digits_with_sep(std::to_string(sr));
+    }
+    // `'{a-z}`: back to mark c; `''`: back to where the last jump started.
+    void jump_mark(char c) {
+        TabState& t = tabs_[active_tab_];
+        std::pair<int64_t, int> to;
+        if (c == '\'') {
+            if (t.before_jump.first < 0) { copy_status_ = "no jump to return from"; return; }
+            to = t.before_jump;
+        } else {
+            auto it = t.marks.find(c);
+            if (it == t.marks.end()) { copy_status_ = std::string("mark ") + c + " is not set"; return; }
+            to = it->second;
+        }
+        // The display row of that source row (the same one unless sorted or
+        // filtered).
+        int64_t row = to.first;
+        if (order_materialized_) {
+            auto f = std::find(sort_order_.begin(), sort_order_.end(), to.first);
+            if (f == sort_order_.end()) {
+                copy_status_ = c == '\'' ? std::string("that row is hidden by the filter")
+                                         : std::string("mark ") + c + ": row hidden by the filter";
+                return;
+            }
+            row = (int64_t)(f - sort_order_.begin());
+        }
+        t.before_jump = {source_row(cur_row_), cur_col_};
+        const int64_t tr = total_rows();
+        const int dl = data_lines();
+        const int64_t mt = (tr >= 0) ? std::max<int64_t>(0, tr - dl) : row;
+        top_row_ = std::min(row, mt);
+        cur_row_ = row;
+        if (!text_view_ && num_cols_ > 0) cur_col_ = std::clamp(to.second, 0, num_cols_ - 1);
+        search_row_ = -1;
+        if (c != '\'') copy_status_ = std::string("mark ") + c;
+    }
 
     // ── Sort by column (`s`) + Live filter (`&`) ─────────────────────────────
     //
@@ -2998,6 +3045,7 @@ private:
             {"T",             "pick a color theme (saved to ~/.config/vv/config)"},
             {"t",             "JSON: the tree view of the file (t there comes back)"},
             {":",             "command line: :N (jump), :q, :theme NAME, :slice N"},
+            {"m{a-z}  '{a-z}","mark the cursor's row / jump to a mark ('' jumps back)"},
             {"in / & : bars", "←→ ^B ^F  Home End ^A ^E  Del ^D  ^U ^K ^W (word); UTF-8"},
             {"Tab  Shift-Tab","next / previous tab (with multiple files)"},
             {"[  ]",          "step slice axis (NPZ 3-D+ arrays only)"},
@@ -3774,6 +3822,21 @@ public:
                 continue;
             }
 
+            // ── Marks: the letter after `m` or `'` ───────────────────────────
+            if (mark_pending_) {
+                const int kind = mark_pending_;
+                mark_pending_ = 0;
+                if (ch >= 'a' && ch <= 'z') {
+                    if (kind == 'm') set_mark((char)ch);
+                    else jump_mark((char)ch);
+                } else if (kind == '\'' && ch == '\'') {
+                    jump_mark('\'');
+                } else {
+                    copy_status_.clear();      // any other key cancels
+                }
+                continue;
+            }
+
             // ── Navigation ───────────────────────────────────────────────────
             int64_t tr = total_rows();
             int64_t max_top = (tr >= 0) ? std::max<int64_t>(0, tr - dl) : top_row_ + dl;
@@ -3784,6 +3847,10 @@ public:
 
             switch (ch) {
                 case 'q': case 'Q': quit = true; break;
+                case 'm': case '\'':                // a mark: set (m) or jump (') — the letter follows
+                    mark_pending_ = ch;
+                    copy_status_ = ch == 'm' ? "mark: a-z" : "go to mark: a-z or '";
+                    break;
                 case '\n': case '\r': case KEY_ENTER:  // Open detail pane for the cursor's row
                     detail_row_    = cur_row_;
                     detail_scroll_ = 0;

@@ -5458,6 +5458,11 @@ if [ -n "$TUI_PTY" ]; then
     else
         FAIL=$((FAIL+1)); echo "  FAIL  tui_search_goto_cursor"
     fi
+    if run_with_timeout 120 python3 "$HERE/tui_marks_check.py" "$VV" "$TMP"; then
+        PASS=$((PASS+1)); echo "  ok    tui_marks"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_marks"
+    fi
 else
     echo "  skip  tui_search_goto_cursor (python3 not found)"
 fi

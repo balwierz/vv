@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- TUI marks: `m` and a letter marks the cursor's row and column, `'` and
+  the letter jumps back to it, `''` returns to where the last jump came
+  from. Marks are per tab and stay on their row through a sort or filter;
+  a row the filter hides is reported instead.
+
 ### Changed
 - A full scan of a bgzip (BGZF) text file is decoded on the `-@` threads
   too, and a sites-only VCF has its lines cut in the parallel parse: the
