@@ -27,6 +27,6 @@ keywords:
   - cli
   - viewer
 license: MIT
-version: "1.31.1"
-date-released: "2026-10-20"
+version: "1.32.0"
+date-released: "2026-10-21"
 doi: "10.5281/zenodo.23365944"

@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.32.0] - 2026-10-21
+
 ### Added
 - A Markdown file on a terminal opens in the interactive viewer instead of
   `less`: its rendered prose as a text tab (scroll, `/` search) and each GFM

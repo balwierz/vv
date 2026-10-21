@@ -22,7 +22,7 @@
 %global xlsxio_version 0.2.36
 
 Name:           vv
-Version:        1.31.1
+Version:        1.32.0
 Release:        1%{?dist}
 Summary:        Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)
 License:        MIT
@@ -130,6 +130,12 @@ XLSXIO_A="$(echo $PWD/xlsxio-local/lib*/libxlsxio_read.a)"
 %{_datadir}/icons/hicolor/scalable/apps/vv.svg
 
 %changelog
+* Wed Oct 21 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.32.0-1
+- Update to 1.32.0: delimited text parsed in small blocks on the -@ threads
+  (sites-only VCF reads skip sample fields; VCF QUAL / sample types pinned);
+  vvg reads tabs lazily and in the background; TUI marks and Markdown in the
+  TUI; HDF5 / IPC / Parquet-directory reader fixes.
+
 * Tue Oct 20 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.31.1-1
 - Update to 1.31.1: vvg shows tables of more than ~93 M rows (row-header
   overflow) and summarises large tables' columns only on request; AnnData
