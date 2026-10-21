@@ -4,7 +4,6 @@
 #include <QColor>
 #include <QLocale>
 #include <QString>
-#include <QtConcurrent>
 #include <algorithm>
 
 namespace {
@@ -27,12 +26,20 @@ std::string chunked_cell_raw(const arrow::ChunkedArray& ca, int64_t i) {
 }  // namespace
 
 ArrowTableModel::ArrowTableModel(std::unique_ptr<TabularSource> src,
-                                 QObject* parent)
-    : QAbstractTableModel(parent), src_(std::move(src)) {
-    schema_ = src_->schema();
-
-    auto hidden = src_->hidden_for_display();
-    std::vector<std::string> hide(hidden.begin(), hidden.end());
+                                 QObject* parent, std::shared_ptr<SourceOwner> owner)
+    : QAbstractTableModel(parent),
+      owner_(owner ? std::move(owner) : std::make_shared<SourceOwner>()),
+      core_(std::make_shared<Core>()),
+      mail_(std::make_shared<Mailbox>()) {
+    core_->src = std::move(src);
+    mail_->model = this;
+    std::vector<std::string> hide;
+    withSource([&](TabularSource& s) {
+        schema_ = s.schema();
+        hide = s.hidden_for_display();
+        meta_ = readMeta(s);
+        return 0;
+    });
     for (int i = 0; i < schema_->num_fields(); ++i) {
         const auto& f = schema_->field(i);
         bool is_hidden = false;
@@ -42,9 +49,6 @@ ArrowTableModel::ArrowTableModel(std::unique_ptr<TabularSource> src,
         colNames_.push_back(QString::fromStdString(f->name()));
         colTypes_.push_back(QString::fromStdString(type_label(*f->type())));
     }
-    watcher_ = new QFutureWatcher<std::vector<int64_t>>(this);
-    connect(watcher_, &QFutureWatcher<std::vector<int64_t>>::finished,
-            this, &ArrowTableModel::onRecomputeDone);
     reseedRowCount();
     auto forget = [this] { lastCellRow_ = lastCellCol_ = -1; lastCellText_.clear(); };
     connect(this, &QAbstractItemModel::modelAboutToBeReset, this, forget);
@@ -53,54 +57,89 @@ ArrowTableModel::ArrowTableModel(std::unique_ptr<TabularSource> src,
 }
 
 ArrowTableModel::~ArrowTableModel() {
-    // The worker drives src_ (a member); make sure it has stopped before the
-    // source is destroyed. cancel_ makes it bail at the next phase boundary.
+    // A job still queued or running checks its flag and stops at its next
+    // chunk; its result is not delivered (the mailbox is closed). The source
+    // is destroyed on its owner thread, after the tasks posted before. If
+    // this was the file's last tab, dropping owner_ joins the thread.
     if (cancel_) cancel_->store(true);
-    if (watcher_ && watcher_->isRunning()) watcher_->waitForFinished();
+    {
+        std::lock_guard<std::mutex> l(mail_->m);
+        mail_->model = nullptr;
+    }
+    owner_->post([core = std::move(core_)]() mutable { core.reset(); });
+}
+
+ArrowTableModel::Meta ArrowTableModel::readMeta(TabularSource& s) {
+    Meta m;
+    m.tabLabel   = s.tab_label();
+    m.totalRows  = s.total_rows();
+    m.limit      = s.preview_limit();
+    m.footer     = s.footer();
+    m.readStatus = s.read_status();
+    return m;
+}
+
+void ArrowTableModel::refreshMeta() {
+    meta_ = withSource([](TabularSource& s) { return readMeta(s); });
 }
 
 void ArrowTableModel::reseedRowCount() {
-    loaded_rows_ = 0;
-    fully_loaded_ = false;
-    int64_t tr = src_->total_rows();
-    if (tr >= 0) { loaded_rows_ = tr; fully_loaded_ = true; return; }
-    src_->ensure(0);
-    for (int c = 0; c < src_->num_chunks(); ++c) {
-        ChunkMeta m = src_->chunk_meta(c);
-        loaded_rows_ = std::max(loaded_rows_, m.first_row + m.num_rows);
+    withSource([this](TabularSource& s) {
+        loaded_rows_ = 0;
+        fully_loaded_ = false;
+        int64_t tr = s.total_rows();
+        if (tr >= 0) { loaded_rows_ = tr; fully_loaded_ = true; return 0; }
+        s.ensure(0);
+        for (int c = 0; c < s.num_chunks(); ++c) {
+            ChunkMeta m = s.chunk_meta(c);
+            loaded_rows_ = std::max(loaded_rows_, m.first_row + m.num_rows);
+        }
+        if (s.total_rows() >= 0) { loaded_rows_ = s.total_rows(); fully_loaded_ = true; }
+        return 0;
+    });
+    refreshMeta();
+}
+
+static void drain(TabularSource& s) {
+    if (s.total_rows() >= 0) return;
+    while (true) {
+        int n = s.num_chunks();
+        s.ensure(n);
+        if (s.num_chunks() == n) break;
     }
-    if (src_->total_rows() >= 0) { loaded_rows_ = src_->total_rows(); fully_loaded_ = true; }
 }
 
 void ArrowTableModel::drainStreaming() const {
-    if (src_->total_rows() >= 0) return;
-    while (true) {
-        int n = src_->num_chunks();
-        src_->ensure(n);
-        if (src_->num_chunks() == n) break;
-    }
+    withSource([](TabularSource& s) { drain(s); return 0; });
 }
 
 int64_t ArrowTableModel::sourceTotal() const {
-    if (computing_) return loaded_rows_;   // don't touch src_ while a worker owns it
-    drainStreaming();
-    int64_t tr = src_->total_rows();
-    if (tr >= 0) return tr;
-    int64_t n = 0;
-    for (int c = 0; c < src_->num_chunks(); ++c) {
-        ChunkMeta m = src_->chunk_meta(c);
-        n = std::max(n, m.first_row + m.num_rows);
-    }
+    if (computing_) return loaded_rows_;   // a job owns the source
+    const int64_t n = withSource([](TabularSource& s) {
+        drain(s);
+        int64_t tr = s.total_rows();
+        if (tr >= 0) return tr;
+        int64_t rows = 0;
+        for (int c = 0; c < s.num_chunks(); ++c) {
+            ChunkMeta m = s.chunk_meta(c);
+            rows = std::max(rows, m.first_row + m.num_rows);
+        }
+        return rows;
+    });
+    const_cast<ArrowTableModel*>(this)->refreshMeta();
     return n;
 }
 
 int64_t ArrowTableModel::viewRows() const {
-    if (!identity_) return (int64_t)order_.size();
-    return src_->total_rows() >= 0 ? src_->total_rows() : loaded_rows_;
+    if (!identity_) return (int64_t)order_->size();
+    return meta_.totalRows >= 0 ? meta_.totalRows : loaded_rows_;
 }
 
+// Called on the owner thread (inside chunkForRow's runSync, with the UI
+// thread waiting), so it may use the source and the model's caches.
 int ArrowTableModel::chunkIndexForRow(int64_t row) const {
     if (row < 0) return -1;
+    TabularSource* src_ = core_->src.get();
     // Extend the offset table to cover every currently-known chunk.
     auto syncIndex = [&] {
         int n = src_->num_chunks();
@@ -135,14 +174,21 @@ const ArrowTableModel::LoadedChunk* ArrowTableModel::chunkForRow(int64_t row) co
     // lookup answers without asking the source (whose calls take the HDF5
     // lock on an HDF5 tab) or touching the LRU list.
     if (lastChunk_ && row >= lastChunk_->first_row && row < lastChunkEnd_) return lastChunk_;
-    int c = chunkIndexForRow(row);
+    int c = -1;
+    ChunkMeta m;
+    std::shared_ptr<arrow::Table> tbl;
+    const bool cached = withSource([&](TabularSource& s) {
+        c = chunkIndexForRow(row);
+        if (c < 0) return false;
+        m = s.chunk_meta(c);
+        if (cache_.count(c)) return true;
+        if (!s.read_chunk(c, displayCols_, &tbl).ok()) tbl.reset();
+        return false;
+    });
     if (c < 0) return nullptr;
-    ChunkMeta m = src_->chunk_meta(c);
     auto it = cache_.find(c);
-    if (it == cache_.end()) {
-        std::shared_ptr<arrow::Table> tbl;
-        if (!src_->read_chunk(c, displayCols_, &tbl).ok() || !tbl)
-            return nullptr;
+    if (!cached) {
+        if (!tbl) return nullptr;
         it = cache_.emplace(c, LoadedChunk{c, m.first_row, std::move(tbl)}).first;
         lru_.push_front(c);
         while ((int)lru_.size() > kMaxCache) {
@@ -171,7 +217,9 @@ QString ArrowTableModel::cellText(int viewRow, int dispCol) const {
     if (dispCol < 0 || dispCol >= lc->table->num_columns()) return {};
     int64_t local = sourceRow(viewRow) - lc->first_row;
     std::string raw = chunked_cell(*lc->table->column(dispCol), local);
-    raw = src_->format_cell(displayCols_[dispCol], std::move(raw));
+    // format_cell reads only what the source fixed at open (column roles,
+    // digit grouping), so the UI thread calls it directly.
+    raw = core_->src->format_cell(displayCols_[dispCol], std::move(raw));
     return QString::fromStdString(raw);
 }
 
@@ -194,7 +242,7 @@ QVariant ArrowTableModel::cellNumber(int viewRow, int dispCol) const {
 
 int ArrowTableModel::summableDigits(int displayCol) const {
     if (displayCol < 0 || displayCol >= (int)displayCols_.size()) return 0;
-    const arrow::DataType* t = src_->schema()->field(displayCols_[displayCol])->type().get();
+    const arrow::DataType* t = schema_->field(displayCols_[displayCol])->type().get();
     if (t->id() == arrow::Type::DICTIONARY)
         t = static_cast<const arrow::DictionaryType&>(*t).value_type().get();
     const auto id = t->id();
@@ -212,7 +260,7 @@ QString ArrowTableModel::rawCellText(int viewRow, int dispCol) const {
     if (dispCol < 0 || dispCol >= lc->table->num_columns()) return {};
     int64_t local = sourceRow(viewRow) - lc->first_row;
     std::string raw = chunked_cell_raw(*lc->table->column(dispCol), local);
-    raw = src_->format_cell(displayCols_[dispCol], std::move(raw));
+    raw = core_->src->format_cell(displayCols_[dispCol], std::move(raw));
     return QString::fromStdString(raw);
 }
 
@@ -280,17 +328,22 @@ bool ArrowTableModel::canFetchMore(const QModelIndex& parent) const {
 
 void ArrowTableModel::fetchMore(const QModelIndex& parent) {
     if (parent.isValid() || computing_ || fully_loaded_ || !identity_) return;
-    int known = src_->num_chunks();
-    src_->ensure(known);
-    int now = src_->num_chunks();
-    int64_t newrows = 0;
-    for (int c = 0; c < now; ++c) {
-        ChunkMeta m = src_->chunk_meta(c);
-        newrows = std::max(newrows, m.first_row + m.num_rows);
-    }
-    int64_t tr = src_->total_rows();
+    int known = 0, now = 0;
+    int64_t newrows = 0, tr = -1;
+    withSource([&](TabularSource& s) {
+        known = s.num_chunks();
+        s.ensure(known);
+        now = s.num_chunks();
+        for (int c = 0; c < now; ++c) {
+            ChunkMeta m = s.chunk_meta(c);
+            newrows = std::max(newrows, m.first_row + m.num_rows);
+        }
+        tr = s.total_rows();
+        return 0;
+    });
     if (tr >= 0) { fully_loaded_ = true; newrows = tr; }
     else if (now == known) fully_loaded_ = true;
+    refreshMeta();
 
     if (newrows > loaded_rows_) {
         beginInsertRows({}, (int)loaded_rows_, (int)newrows - 1);
@@ -302,22 +355,23 @@ void ArrowTableModel::fetchMore(const QModelIndex& parent) {
 // Pure computation: order_ = filter (kept rows, source order) then sort within
 // them. Polls `cancel` between the (coarse) phases; returns {} if aborted.
 std::vector<int64_t> ArrowTableModel::computeOrderVec(
+        TabularSource& src, std::vector<int> displayCols,
         FilterExpr filter, bool hasFilter, int sortCol, Qt::SortOrder order,
-        std::atomic<bool>* cancel) const {
+        std::atomic<bool>* cancel) {
     auto aborted = [&]{ return cancel && cancel->load(); };
 
     std::vector<int64_t> base;
-    if (hasFilter) base = filter_rows(*src_, filter);     // source order
+    if (hasFilter) base = filter_rows(src, filter, cancel);   // source order
     if (aborted()) return {};
 
-    if (sortCol >= 0 && sortCol < (int)displayCols_.size()) {
+    if (sortCol >= 0 && sortCol < (int)displayCols.size()) {
         // The reader core's hand-rolled sort — the same one --sort uses —
         // because arrow::compute's sort_indices kernel is GC'd from the static
         // build and is not reliably registered in every Arrow linkage (using it
         // here made the click-to-sort a silent no-op). It reads only the sort
         // column, and pins a stream's batches so every row stays readable.
         std::vector<int64_t> out;
-        if (!sort_rows_by_column(*src_, displayCols_[sortCol], order == Qt::DescendingOrder,
+        if (!sort_rows_by_column(src, displayCols[sortCol], order == Qt::DescendingOrder,
                                  hasFilter ? &base : nullptr, cancel, &out))
             return {};
         return out;
@@ -327,8 +381,12 @@ std::vector<int64_t> ArrowTableModel::computeOrderVec(
 }
 
 void ArrowTableModel::rebuildOrder() {
-    order_ = computeOrderVec(filter_, hasFilter_, sortCol_, sortOrder_, nullptr);
-    identity_ = !hasFilter_ && order_.empty();
+    auto v = withSource([&](TabularSource& s) {
+        return computeOrderVec(s, displayCols_, filter_, hasFilter_, sortCol_, sortOrder_, nullptr);
+    });
+    identity_ = !hasFilter_ && v.empty();
+    order_ = std::make_shared<std::vector<int64_t>>(std::move(v));
+    refreshMeta();
 }
 
 void ArrowTableModel::sortByDisplayColumn(int displayCol, Qt::SortOrder order) {
@@ -375,36 +433,41 @@ void ArrowTableModel::sortAsyncByDisplayColumn(int displayCol, Qt::SortOrder ord
 }
 
 void ArrowTableModel::startRecompute() {
-    // Supersede any in-flight job: flag its (shared) cancel so it bails; the
-    // watcher is repointed at the new future below, so the orphan's result is
-    // ignored. order_ is left intact (restored if this one is canceled).
+    // Supersede any job in flight: its flag makes it stop at its next chunk
+    // and jobId_ moves on, so its result is dropped. The new job queues behind
+    // it on the owner thread. order_ is left intact (restored if this one is
+    // canceled).
     if (cancel_) cancel_->store(true);
-    beginResetModel();        // blank: rowCount()==0, data()=={} → UI leaves src_ alone
+    beginResetModel();        // blank: rowCount()==0, data()=={}
     computing_ = true;
     endResetModel();
     emit recomputeStarted();
 
     auto cf = std::make_shared<std::atomic<bool>>(false);
     cancel_ = cf;
+    const uint64_t id = ++jobId_;
     pendingJob_ = Job::Order;
     pendingHasFilter_ = hasFilter_;
-    FilterExpr  fsnap = filter_;
-    bool        hf    = hasFilter_;
-    int         sc    = sortCol_;
-    Qt::SortOrder so  = sortOrder_;
-    watcher_->setFuture(QtConcurrent::run(
-        [this, fsnap, hf, sc, so, cf] {
-            return computeOrderVec(fsnap, hf, sc, so, cf.get());
-        }));
+    owner_->post([this, core = core_, mail = mail_, cols = displayCols_, f = filter_,
+                  hf = hasFilter_, sc = sortCol_, so = sortOrder_, cf, id] {
+        if (cf->load()) return;
+        auto r = computeOrderVec(*core->src, cols, f, hf, sc, so, cf.get());
+        if (cf->load()) return;
+        Meta meta = readMeta(*core->src);
+        deliver(mail, [this, id, r = std::move(r), meta]() mutable {
+            onRecomputeDone(id, std::move(r), std::move(meta));
+        });
+    });
 }
 
-void ArrowTableModel::onRecomputeDone() {
-    if (!computing_) return;                 // already finalized or canceled
-    if (cancel_ && cancel_->load()) return;  // superseded/canceled — ignore
+void ArrowTableModel::onRecomputeDone(uint64_t id, std::vector<int64_t> result, Meta meta) {
+    if (!computing_ || id != jobId_) return;     // finalized, canceled or superseded
+    if (cancel_ && cancel_->load()) return;
+    meta_ = std::move(meta);
     if (pendingJob_ == Job::Find) {
         // Install the match list without disturbing the view (order_ unchanged):
         // unblank so rowCount()/data() serve the same rows as before the scan.
-        findPos_     = watcher_->result();
+        findPos_     = std::move(result);
         findPattern_ = pendingRe_.pattern();
         findValid_   = true;
         beginResetModel();
@@ -415,8 +478,8 @@ void ArrowTableModel::onRecomputeDone() {
         return;
     }
     beginResetModel();
-    order_ = watcher_->result();
-    identity_ = !pendingHasFilter_ && order_.empty();
+    identity_ = !pendingHasFilter_ && result.empty();
+    order_ = std::make_shared<std::vector<int64_t>>(std::move(result));
     clearChunkCache();
     invalidateFind();                        // match positions are view-relative
     computing_ = false;
@@ -427,7 +490,8 @@ void ArrowTableModel::onRecomputeDone() {
 
 void ArrowTableModel::cancelRecompute() {
     if (!computing_) return;
-    if (cancel_) cancel_->store(true);       // worker bails at next phase
+    if (cancel_) cancel_->store(true);       // the job stops at its next chunk
+    ++jobId_;                                // and its result is dropped
     beginResetModel();                       // restore the prior view (order_ unchanged)
     computing_ = false;
     pendingJob_ = Job::None;
@@ -468,8 +532,9 @@ QModelIndex ArrowTableModel::findNext(const QModelIndex& from, bool forward) con
     // The synchronous fallback (self-test, or a stale list) computes the match
     // positions inline; the GUI normally primes them via findAsync first.
     if (!findResultsValid(searchRe_)) {
-        const_cast<ArrowTableModel*>(this)->findPos_ =
-            computeFindPos(searchRe_, nullptr);
+        const_cast<ArrowTableModel*>(this)->findPos_ = withSource([&](TabularSource& s) {
+            return computeFindPos(s, displayCols_, order_, identity_, searchRe_, nullptr);
+        });
         const_cast<ArrowTableModel*>(this)->findPattern_ = searchRe_.pattern();
         const_cast<ArrowTableModel*>(this)->findValid_ = true;
     }
@@ -499,30 +564,31 @@ QModelIndex ArrowTableModel::findNext(const QModelIndex& from, bool forward) con
 // is not registered in this Arrow linkage — the same reason the sort is
 // hand-rolled — so it never skipped anything; the per-cell regex is the matcher.)
 std::vector<int64_t>
-ArrowTableModel::computeFindPos(QRegularExpression re,
-                               std::atomic<bool>* cancel) const {
+ArrowTableModel::computeFindPos(TabularSource& src, std::vector<int> displayCols,
+                               std::shared_ptr<const std::vector<int64_t>> order,
+                               bool identity, QRegularExpression re,
+                               std::atomic<bool>* cancel) {
     auto aborted = [&] { return cancel && cancel->load(); };
-    const int cols = (int)displayCols_.size();
+    const int cols = (int)displayCols.size();
     std::vector<int64_t> pos;
     if (cols == 0 || re.pattern().isEmpty()) return pos;
 
-    // Map source row -> view row (identity_: view == source).
-    const bool identity = identity_;
+    // Map source row -> view row (identity: view == source).
     std::unordered_map<int64_t, int64_t> inv;
     if (!identity) {
-        inv.reserve(order_.size());
-        for (int64_t v = 0; v < (int64_t)order_.size(); ++v)
-            inv.emplace(order_[v], v);
+        inv.reserve(order->size());
+        for (int64_t v = 0; v < (int64_t)order->size(); ++v)
+            inv.emplace((*order)[(size_t)v], v);
     }
 
-    src_->set_retain_all(true);   // a stream's batches: keep every one read
-    drainStreaming();
-    const int nch = src_->num_chunks();
+    src.set_retain_all(true);   // a stream's batches: keep every one read
+    drain(src);
+    const int nch = src.num_chunks();
     for (int c = 0; c < nch; ++c) {
         if (aborted()) return {};
         std::shared_ptr<arrow::Table> tbl;
-        if (!src_->read_chunk(c, displayCols_, &tbl).ok() || !tbl) continue;
-        const int64_t first = src_->chunk_meta(c).first_row;
+        if (!src.read_chunk(c, displayCols, &tbl).ok() || !tbl) continue;
+        const int64_t first = src.chunk_meta(c).first_row;
         const int64_t nrows = tbl->num_rows();
 
         for (int64_t i = 0; i < nrows; ++i) {
@@ -538,7 +604,7 @@ ArrowTableModel::computeFindPos(QRegularExpression re,
             }
             for (int j = 0; j < cols; ++j) {
                 std::string raw = chunked_cell(*tbl->column(j), i);
-                raw = src_->format_cell(displayCols_[j], std::move(raw));
+                raw = src.format_cell(displayCols[j], std::move(raw));
                 if (re.match(QString::fromStdString(raw)).hasMatch())
                     pos.push_back(viewRow * (int64_t)cols + j);
             }
@@ -554,19 +620,27 @@ void ArrowTableModel::findAsync(const QRegularExpression& re) {
     hasSearch_ = re.isValid() && !re.pattern().isEmpty();
     if (!hasSearch_) { invalidateFind(); return; }
 
-    if (cancel_) cancel_->store(true);   // supersede any in-flight worker
-    beginResetModel();                   // blank → UI leaves src_ to the worker
+    if (cancel_) cancel_->store(true);   // supersede any job in flight
+    beginResetModel();                   // blank while the owner scans
     computing_ = true;
     endResetModel();
     emit recomputeStarted();
 
     auto cf = std::make_shared<std::atomic<bool>>(false);
     cancel_     = cf;
+    const uint64_t id = ++jobId_;
     pendingJob_ = Job::Find;
     pendingRe_  = re;
-    QRegularExpression resnap = re;
-    watcher_->setFuture(QtConcurrent::run(
-        [this, resnap, cf] { return computeFindPos(resnap, cf.get()); }));
+    owner_->post([this, core = core_, mail = mail_, cols = displayCols_, order = order_,
+                  identity = identity_, re, cf, id] {
+        if (cf->load()) return;
+        auto r = computeFindPos(*core->src, cols, order, identity, re, cf.get());
+        if (cf->load()) return;
+        Meta meta = readMeta(*core->src);
+        deliver(mail, [this, id, r = std::move(r), meta]() mutable {
+            onRecomputeDone(id, std::move(r), std::move(meta));
+        });
+    });
 }
 
 bool ArrowTableModel::summarize(const std::vector<int>& displayCols,
@@ -580,21 +654,24 @@ bool ArrowTableModel::summarize(const std::vector<int>& displayCols,
     opt.filter       = hasFilter_ ? &filter_ : nullptr;
     opt.distinct_cap = 10000;
     opt.value_counts = true;
-    src_->set_retain_all(true);     // the viewer re-reads every chunk afterwards
-    const std::string e = summarize_columns(*src_, opt, out);
+    const std::string e = withSource([&](TabularSource& s) {
+        s.set_retain_all(true);     // the viewer re-reads every chunk afterwards
+        return summarize_columns(s, opt, out);
+    });
     if (!e.empty()) { *err = QString::fromStdString(e); return false; }
     return true;
 }
 
 bool ArrowTableModel::stepSlice(int delta) {
     if (computing_) return false;   // don't rebuild the source mid-recompute
-    if (!src_->change_slice(delta, /*absolute=*/false, 0)) return false;
+    if (!withSource([&](TabularSource& s) { return s.change_slice(delta, /*absolute=*/false, 0); }))
+        return false;
     beginResetModel();
     clearChunkCache(); chunkFirstRow_.clear();   // source rebuilt
-    order_.clear(); identity_ = true; sortCol_ = -1;
+    order_ = std::make_shared<std::vector<int64_t>>(); identity_ = true; sortCol_ = -1;
     hasFilter_ = false; filter_ = FilterExpr{};
     invalidateFind();
-    schema_ = src_->schema();
+    schema_ = withSource([](TabularSource& s) { return s.schema(); });
     reseedRowCount();
     endResetModel();
     return true;
@@ -602,10 +679,10 @@ bool ArrowTableModel::stepSlice(int delta) {
 
 QString ArrowTableModel::footer() const {
     if (computing_) return QStringLiteral("Working…");
-    QString f = QString::fromStdString(src_->footer());
+    QString f = QString::fromStdString(meta_.footer);
     // A stream that failed (a malformed record, a truncated file) holds only
     // the rows before the failure; say so rather than show them as the file.
-    if (const arrow::Status st = src_->read_status(); !st.ok())
+    if (const arrow::Status& st = meta_.readStatus; !st.ok())
         f += QStringLiteral("  |  read error (rows after it are missing): %1")
                  .arg(QString::fromStdString(st.message()));
     if (const int64_t n = viewRows(); n > maxViewRows_)
@@ -619,4 +696,9 @@ QString ArrowTableModel::columnName(int c) const {
 }
 QString ArrowTableModel::columnType(int c) const {
     return (c >= 0 && c < (int)colTypes_.size()) ? colTypes_[c] : QString();
+}
+
+std::vector<int> ArrowTableModel::selectColumns(const std::string& spec,
+                                               std::vector<std::string>* unknown) const {
+    return withSource([&](TabularSource& s) { return select_columns(s, spec, unknown); });
 }

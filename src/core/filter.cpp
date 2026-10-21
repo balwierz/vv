@@ -1057,18 +1057,22 @@ std::vector<int> union_with_filter(
 // every chunk with all columns so any referenced column is present. The GUI
 // uses this to build a filtered view; CLI export paths use apply_filter on
 // the already-projected table instead.
-std::vector<int64_t> filter_rows(TabularSource& src, const FilterExpr& expr) {
+std::vector<int64_t> filter_rows(TabularSource& src, const FilterExpr& expr,
+                                 const std::atomic<bool>* cancel) {
+    auto cancelled = [&] { return cancel && cancel->load(); };
     std::vector<int64_t> keep;
     int nf = src.schema()->num_fields();
     std::vector<int> all((size_t)nf);
     for (int i = 0; i < nf; ++i) all[(size_t)i] = i;
     src.set_retain_all(true);            // re-reads every chunk after draining
     while (true) {                       // drain streaming sources
+        if (cancelled()) return {};
         int n = src.num_chunks();
         src.ensure(n);
         if (src.num_chunks() == n) break;
     }
     for (int c = 0; c < src.num_chunks(); ++c) {
+        if (cancelled()) return {};
         ChunkMeta m = src.chunk_meta(c);
         std::shared_ptr<arrow::Table> tbl;
         if (!src.read_chunk(c, all, &tbl).ok() || !tbl) continue;

@@ -94,6 +94,8 @@ struct LoadResult {
     std::vector<QString>                        origins;   // per source: the path it came from
     std::vector<QString>                        expands;   // per source: its --expand column
     std::vector<bool>                           primary;   // per source: first tab of its file
+    // per source: the thread its file's tabs are read on (shared by siblings)
+    std::vector<std::shared_ptr<SourceOwner>>   owners;
     QStringList                                 opened;
     QStringList                                 errors;
 };
@@ -115,16 +117,19 @@ static LoadResult loadSources(const Config& base, const QStringList& paths,
             continue;
         }
         auto siblings = src->expand_tabs();
+        auto owner = std::make_shared<SourceOwner>();
         r.sources.push_back(std::move(src));
         const QString ex = QString::fromStdString(cfg.expand_col);
         r.origins.push_back(p);
         r.expands.push_back(ex);
         r.primary.push_back(true);
+        r.owners.push_back(owner);
         for (auto& s : siblings) {
             r.sources.push_back(std::move(s));
             r.origins.push_back(p);
             r.expands.push_back(ex);
             r.primary.push_back(false);
+            r.owners.push_back(owner);
         }
         r.opened << p;
     }
@@ -248,7 +253,8 @@ public:
         for (size_t i = 0; i < r.sources.size(); ++i) {
             if (firstFileTab < 0 && r.primary[i] && r.origins[i] == paths_in.first())
                 firstFileTab = tabs_->count();
-            addSourceTab(std::move(r.sources[i]), r.origins[i], r.primary[i], r.expands[i]);
+            addSourceTab(std::move(r.sources[i]), r.origins[i], r.primary[i], r.expands[i],
+                         r.owners[i]);
         }
         showFirst();
         for (const QString& p : r.opened) { addRecent(p); openedPaths_ << p; }
@@ -304,7 +310,7 @@ public:
             std::printf("json-tree table: tabs=%d rows=%d cols=%d label=%s\n", tabs_->count(),
                         activeModel() ? activeModel()->rowCount() : -1,
                         activeModel() ? activeModel()->columnCount() : -1,
-                        activeModel() ? activeModel()->source()->tab_label().c_str() : "");
+                        activeModel() ? activeModel()->tabLabel().c_str() : "");
         }
     }
     // Print every open tab's materialised dimensions — used by the self-test to
@@ -313,7 +319,7 @@ public:
     void dumpTabDims() const {
         for (auto* m : models_)
             if (m) std::printf("tab '%s' rows=%d cols=%d footer=%s\n",
-                        m->source()->tab_label().c_str(),
+                        m->tabLabel().c_str(),
                         m->rowCount(), m->displayColumnCount(),
                         m->footer().toStdString().c_str());
     }
@@ -323,13 +329,40 @@ public:
         auto* m = activeModel();
         if (!m) return -1;
         FilterExpr fx; std::string e;
-        if (!parse_filter_expr(expr.toStdString(), *m->source()->schema(), &fx, &e))
+        if (!parse_filter_expr(expr.toStdString(), *m->schema(), &fx, &e))
             return -2;
         filterText_[m] = expr;
         m->setFilterAsync(fx);
         for (int guard = 0; m->isComputing() && guard < 2000000; ++guard)
             QCoreApplication::processEvents();
         return (int)m->viewRows();
+    }
+    // Window self-test of superseded jobs: a filter, then a sort started
+    // before the filter finished (the filter job is cancelled; the sort queues
+    // behind it on the source's owner thread, filtered or not as the model
+    // holds it). Prints the rows and the first cell. Then a filter, a sort and
+    // a find started back to back, and the tab closed while they run: the
+    // jobs stop at their next chunk and nothing is delivered to the closed tab.
+    QString raceForTest(const QString& expr) {
+        auto* m = activeModel();
+        if (!m) return QStringLiteral("no model");
+        FilterExpr fx; std::string e;
+        if (!parse_filter_expr(expr.toStdString(), *m->schema(), &fx, &e))
+            return QStringLiteral("bad filter: ") + QString::fromStdString(e);
+        m->setFilterAsync(fx);
+        m->sortAsyncByDisplayColumn(0, Qt::DescendingOrder);
+        for (int guard = 0; m->isComputing() && guard < 2000000; ++guard)
+            QCoreApplication::processEvents();
+        const QString out = QStringLiteral("rows=%1 first=%2")
+            .arg(m->viewRows()).arg(m->data(m->index(0, 0), Qt::DisplayRole).toString());
+        m->setFilterAsync(fx);
+        m->sortAsyncByDisplayColumn(0, Qt::AscendingOrder);
+        m->findAsync(QRegularExpression(QStringLiteral(".")));
+        closeTab(tabs_->currentIndex());
+        QElapsedTimer t;
+        t.start();
+        while (t.elapsed() < 300) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        return out + QStringLiteral(" closed tabs=%1").arg(tabs_->count());
     }
     // Window self-test: put the cursor on (row, col) and report the detail
     // dock (row shown, its first two values, whether the value items were
@@ -490,7 +523,7 @@ public:
 private:
     struct JsonTab;                       // a JSON tree tab (defined below)
     static std::string src_label(ArrowTableModel* m) {
-        return m->source()->tab_label();
+        return m->tabLabel();
     }
 
     // Auto-size columns to their content at open. Each column is sized to the
@@ -555,8 +588,9 @@ private:
 
     // Build one model+view tab from a source and wire sort + detail-pane.
     void addSourceTab(std::unique_ptr<TabularSource> src, const QString& origin,
-                      bool primary, const QString& expand = QString()) {
-        auto* model = new ArrowTableModel(std::move(src), this);
+                      bool primary, const QString& expand = QString(),
+                      std::shared_ptr<SourceOwner> owner = {}) {
+        auto* model = new ArrowTableModel(std::move(src), this, std::move(owner));
         const QFileInfo ofi(origin);
         // A URL can be opened again too (a region query re-opens the files).
         const bool reopenable = origin != QLatin1String("-") &&
@@ -1002,7 +1036,8 @@ private:
         }
         while (tabs_->count() > 0) closeTab(0);
         for (size_t i = 0; i < r.sources.size(); ++i)
-            addSourceTab(std::move(r.sources[i]), r.origins[i], r.primary[i], r.expands[i]);
+            addSourceTab(std::move(r.sources[i]), r.origins[i], r.primary[i], r.expands[i],
+                         r.owners[i]);
         if (tabs_->count() > 0) tabs_->setCurrentIndex(0);
         reportLoadErrors(r, /*quiet=*/false, tr("vvg — region"));
         refreshStatus();
@@ -1108,7 +1143,7 @@ private:
     static constexpr int64_t kStatsAutoBytes = 1LL << 30;
     int64_t statsAutoRows_ = kStatsAutoRows;   // VVG_STATS_AUTO_ROWS (self-test)
     bool statsOnRequest(ArrowTableModel* m) const {
-        const int64_t rows = m->source()->total_rows();
+        const int64_t rows = m->totalRows();
         if (rows >= 0) return rows > statsAutoRows_;
         const QString path = tabOrigin_.value(m).path;
         if (path.contains(QLatin1String("://"))) return true;
@@ -1198,7 +1233,7 @@ private:
             auto s = it->bySrcCol.find(sc);
             if (s != it->bySrcCol.end()) {
                 colPanel_->showSummary(s->second, m->summableDigits(col),
-                                       m->source()->schema()->field(sc)->type(),
+                                       m->schema()->field(sc)->type(),
                                        statsScope(m, *it, s->second));
                 return;
             }
@@ -1218,7 +1253,7 @@ private:
         }
         if (statsOnRequest(m)) {
             // A scan of another column, if one runs, goes on and fills the cache.
-            const int64_t rows = m->source()->total_rows();
+            const int64_t rows = m->totalRows();
             const QString size = rows >= 0
                 ? tr("This table has %L1 rows.").arg(rows)
                 : tr("This file is %1.").arg(QLocale().formattedDataSize(
@@ -1269,7 +1304,7 @@ private:
         statsModel_  = m;
         statsFilter_ = filter;
         statsCols_   = cols;
-        auto schema = m->source()->schema();
+        auto schema = m->schema();
         const std::string ftext = filter.toStdString();
         QFuture<StatsResult> f = QtConcurrent::run([cfg, cols, schema, ftext, prog] {
             StatsResult r;
@@ -1306,8 +1341,8 @@ private:
     void showColumnStatsProgress() {
         auto* m = activeModel();
         if (!statsProg_ || !m || statsModel_ != m) return;
-        const PreviewLimit lim = m->source()->preview_limit();
-        const qint64 total = lim.rows_capped() ? lim.full_rows : m->source()->total_rows();
+        const PreviewLimit lim = m->previewLimit();
+        const qint64 total = lim.rows_capped() ? lim.full_rows : m->totalRows();
         auto* v = activeView();
         const int col = v ? std::min(currentColumn(v), m->displayColumnCount() - 1) : 0;
         colPanel_->showBusy(m->columnName(col),
@@ -1360,8 +1395,8 @@ private:
         StatsCache& c = statsCache_[m];
         c = StatsCache{};
         c.filter    = activeFilterText(m);
-        c.totalRows = m->source()->total_rows();
-        c.limit     = m->source()->preview_limit();
+        c.totalRows = m->totalRows();
+        c.limit     = m->previewLimit();
         for (size_t i = 0; i < sums.size(); ++i) c.bySrcCol[m->sourceColumn(cols[i])] = std::move(sums[i]);
         refreshColumnStats(true);
     }
@@ -1376,8 +1411,8 @@ private:
             scope += tr(". A preview: the first %L1 rows × %L2 columns of %L3 × %L4.")
                          .arg(c.limit.shown_rows).arg(c.limit.shown_cols)
                          .arg(c.limit.full_rows).arg(c.limit.full_cols);
-        else if (m->source()->preview_limit().rows_capped())
-            scope += tr(" (the table shows the first %L1).").arg(m->source()->preview_limit().shown_rows);
+        else if (m->previewLimit().rows_capped())
+            scope += tr(" (the table shows the first %L1).").arg(m->previewLimit().shown_rows);
         return scope;
     }
 
@@ -1390,7 +1425,7 @@ private:
         for (int c = 0; c < m->displayColumnCount(); ++c)
             if (m->columnName(c).toStdString() == s->name) { sc = m->sourceColumn(c); break; }
         std::string expr, why;
-        if (sc < 0 || !narrow_filter_to_value(activeFilterText(m).toStdString(), *m->source()->schema(),
+        if (sc < 0 || !narrow_filter_to_value(activeFilterText(m).toStdString(), *m->schema(),
                                               sc, s->values[i], &expr, &why)) {
             statusBar()->showMessage(tr("filter: %1").arg(QString::fromStdString(why)), 4000);
             return;
@@ -1486,7 +1521,7 @@ private:
         }
         FilterExpr fx;
         std::string err;
-        if (!parse_filter_expr(text.toStdString(), *m->source()->schema(),
+        if (!parse_filter_expr(text.toStdString(), *m->schema(),
                                &fx, &err)) {
             filterEdit_->setStyleSheet("background:#ffd6d6;");
             statusBar()->showMessage(tr("filter: %1").arg(QString::fromStdString(err)));
@@ -1728,7 +1763,7 @@ public:
         s = VvCommandSpec{};
         const TabOrigin o = tabOrigin_.value(m);
         s.path = o.path.contains(QLatin1String("://")) ? o.path : QFileInfo(o.path).absoluteFilePath();
-        if (!o.primary) s.tab = QString::fromStdString(m->source()->tab_label());
+        if (!o.primary) s.tab = QString::fromStdString(m->tabLabel());
         s.region  = QString::fromStdString(sessionCfg_.region);
         s.ncbi    = sessionCfg_.coords_one_based;
         s.slop    = (int)sessionCfg_.slop;
@@ -1850,12 +1885,12 @@ public:
         auto* v = activeView();
         if (m && v && !o.select.isEmpty()) {
             std::vector<std::string> unknown;
-            const auto sel = select_columns(*m->source(), o.select.toStdString(), &unknown);
+            const auto sel = m->selectColumns(o.select.toStdString(), &unknown);
             for (const auto& u : unknown)
                 errs << tr("--select: no column matches '%1'").arg(QString::fromStdString(u));
             std::vector<int> disp;          // selected display columns, in spec order
             for (int fi : sel) {
-                const QString name = QString::fromStdString(m->source()->schema()->field(fi)->name());
+                const QString name = QString::fromStdString(m->schema()->field(fi)->name());
                 for (int c = 0; c < m->displayColumnCount(); ++c)
                     if (m->columnName(c) == name) { disp.push_back(c); break; }
             }
@@ -2674,7 +2709,7 @@ int main(int argc, char** argv) {
         // Optional filter check: VVG_FILTER="<expr>".
         if (const char* fe = std::getenv("VVG_FILTER"); fe && *fe) {
             FilterExpr fx; std::string err;
-            if (parse_filter_expr(fe, *m.source()->schema(), &fx, &err)) {
+            if (parse_filter_expr(fe, *m.schema(), &fx, &err)) {
                 m.setFilter(fx);
                 std::printf("filter '%s' -> %lld/%lld rows\n", fe,
                             (long long)m.viewRows(), (long long)m.sourceTotal());
@@ -2773,6 +2808,9 @@ int main(int argc, char** argv) {
         // VVG_COPYCMD=1 prints "cmd=<command line>".
         if (const char* ti = std::getenv("VVG_TAB"); ti && *ti)
             win.selectTabForTest(std::atoi(ti));
+        // Optional superseded-jobs check: VVG_RACE="<filter>" (raceForTest).
+        if (const char* rc = std::getenv("VVG_RACE"); rc && *rc)
+            std::printf("race %s\n", win.raceForTest(QString::fromLocal8Bit(rc)).toUtf8().constData());
         if (const char* so = std::getenv("VVG_SORT"); so && *so) {
             QString spec = QString::fromLocal8Bit(so);
             bool desc = spec.endsWith(QStringLiteral(":desc"));

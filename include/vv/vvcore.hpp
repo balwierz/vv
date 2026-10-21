@@ -242,9 +242,11 @@ bool parse_filter_expr(const std::string& expr,
                        FilterExpr* out, std::string* err);
 
 // Evaluate a parsed filter over the whole source; returns matching source
-// row indices in source order. Drives the GUI's live filter.
+// row indices in source order. Drives the GUI's live filter. `cancel`, when
+// set, is checked between chunks; a cancelled call returns {}.
 class TabularSource;
-std::vector<int64_t> filter_rows(TabularSource& src, const FilterExpr& expr);
+std::vector<int64_t> filter_rows(TabularSource& src, const FilterExpr& expr,
+                                 const std::atomic<bool>* cancel = nullptr);
 
 // ── Per-column summary ───────────────────────────────────────────────────────
 // What --describe, --value-counts and vvg's Column tab compute, in one pass
