@@ -17,32 +17,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   a row the filter hides is reported instead.
 
 ### Changed
-- A full scan of a bgzip (BGZF) text file is decoded on the `-@` threads
-  too, and a sites-only VCF has its lines cut in the parallel parse: the
-  1000 Genomes chr22 VCF's sites to TSV 5.85 s → 1.08 s (bcftools query
-  2.07 s; 36 s in vv 1.31).
-- A full scan of delimited text (an export, `--count`, `--describe`, a sort,
-  filter or sample) parses on the `-@` threads after the first 16 MiB:
-  on the 1.6 GB GENCODE CSV, `--count` 0.90 s → 0.31 s and `--describe`
-  1.34 s → 0.65 s; previews and the TUI keep the serial reader.
-- Delimited text (CSV, TSV, VCF, GFF, BED, …) is parsed in 2 MiB blocks
-  (16 × the longest line seen) after the first 16 MiB, which still decide
-  the column types: GENCODE CSV.gz `--count` 1.59 s / 2.5 GB → 0.92 s /
-  0.46 GB, the first 20 rows 0.45 s → 0.06 s, the chr22 VCF's first 20
-  records 1.74 s / 1.1 GB → 0.33 s / 0.23 GB. `VV_CSV_BLOCK_MB` still
-  sets one block size for everything.
-- A VCF read for site columns only (`--select CHROM,POS,REF,ALT --tsv`,
-  `--count`, a filter or sort on site columns) has its lines cut after INFO
-  before parsing, instead of parsing every sample field: on the 1000
-  Genomes chr22 VCF (2,504 samples) sites to TSV takes 6.1 s / 0.35 GB
-  instead of 29.6 s / 3.2 GB, with the same output.
+- Delimited text (CSV, TSV, VCF, GFF, BED, …) reads faster and in far less
+  memory. Column types still come from the first 16 MiB; the rest is parsed
+  in small blocks, a full scan (an export, `--count`, `--describe`, a sort
+  or filter) parses on the `-@` threads and decodes a bgzip file on them
+  too, and a VCF read for its site columns only skips the sample fields.
+  On the 1000 Genomes chr22 VCF (2,504 samples) sites to TSV takes 1.1 s /
+  65 MB instead of 36 s / 3.4 GB (bcftools query: 2.0 s) and the first 20
+  records 0.29 s / 0.22 GB instead of 2.0 s / 1.1 GB; the GENCODE CSV.gz
+  `--count` 0.79 s / 0.45 GB instead of 1.40 s / 2.4 GB. `VV_CSV_BLOCK_MB`
+  sets one block size for everything, `VV_CSV_SERIAL=1` the serial reader.
 - vvg reads a tab's file only when the tab is first shown, and in the
   background: the window opens at once, a tab shows *Loading…* until its
   columns are known, and rows not read yet show `…` until they arrive. A
   6 GB AnnData file with four tabs opens with 59 reads (1.0 MB) instead of
   276 (16 MB).
-- AnnData / HDF5 and Zarr component tables read projected 128-row blocks
-  instead of constructing a 1,000-row preview at tab activation. Frames,
+- AnnData / HDF5 and Zarr component tables read projected blocks (8,192
+  rows of a frame or 1-D array, 128 rows of a CSR matrix) instead of
+  constructing a 1,000-row preview at tab activation. Frames,
   1-D arrays, dense matrices and CSR expose every row through existing
   navigation. Matrices still show at most 200 data columns; CSC keeps its
   1,000-row limit. Specialized Loom and Cell Ranger previews retain their

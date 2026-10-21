@@ -79,9 +79,9 @@ user-facing summary).
 ## TUI
 
 ### Open
-- Marks & recall — vim-style `m{a-z}` / `'{a-z}`.
 
 ### Done
+- Marks & recall — `m{a-z}` / `'{a-z}` / `''`, per tab, on source rows (b7c8ee5).
 - Cell cursor (`feat/tui-cursor`) — `hjkl`/arrows move a highlighted cell and
   the viewport follows, with a vim-style `scrolloff` (config key). Every
   per-cell action (`S`, `s`, `y`, `Enter`, `,`/`.`) now acts on the cursor
@@ -106,12 +106,6 @@ user-facing summary).
 ## Format gaps
 
 ### Open
-- Markdown TUI mode — current `vv README.md` emits ANSI to stdout
-  (great for `vv README.md | less -R`). A proper scrollable
-  ncurses-based TUI integrated into `TableTUI` as a new `TabKind`
-  would let prose + GFM tables share a single multi-tab session and
-  pick up the existing `/`-search infrastructure. ~200 LOC of glue
-  on top of the renderer + TabState already in place.
 - Sixel image protocol (xterm / mlterm / WezTerm-no-iterm) for the
   markdown viewer. Needs PNG → RGB decode + palette quantisation;
   ~500 LOC vendored (stb_image.h + sixel encoder).
@@ -134,6 +128,8 @@ user-facing summary).
 - Galaxy `.dat` / Galaxy archive — niche but visible.
 
 ### Done
+- Markdown TUI mode — on a terminal a `.md` opens in the TUI: rendered prose
+  as a text tab, each GFM table as a tab (d4d8a6d).
 - Compressed text: `.xz` and `.bz2` alongside `.gz` / `.zst`, by content.
 - BLAST / DIAMOND tabular (`.m8`, `.blast6`, `.outfmt6`), UCSC wiggle
   (`.wig`), HDF5 aliases (`.h5mu` MuData, `.h5seurat`, `.fast5`,
