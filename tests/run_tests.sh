@@ -1797,13 +1797,19 @@ with open(sys.argv[1], 'w') as f:
     assert_eq_file_inline "json_paths_big_array" "$("$VV" --json-paths "$TMP/jbig.json" | tail -1)" \
         ".[299999].s = \"$(printf 'x%.0s' $(seq 1 40))\""
     # GNU time only (BSD / macOS time has no -f).
+    # Measured against a two-element array, so a sanitizer build's fixed
+    # overhead (~180 MB under ASan) does not count: the 18 MB input may add
+    # at most 100 MB (a tree of it would add several hundred).
     if /usr/bin/time -f '%M' true >/dev/null 2>&1; then
+        printf '[{"i":0},{"i":1}]' > "$TMP/jsmall.json"
+        JSMALL_KB=$( { /usr/bin/time -f '%M' "$VV" "$TMP/jsmall.json" > /dev/null; } 2>&1 | tail -1)
         JBIG_KB=$( { /usr/bin/time -f '%M' "$VV" "$TMP/jbig.json" > /dev/null; } 2>&1 | tail -1)
-        if [ "${JBIG_KB:-0}" -lt 200000 ]; then
+        if [ $(( ${JBIG_KB:-0} - ${JSMALL_KB:-0} )) -lt 100000 ]; then
             PASS=$((PASS+1)); echo "  ok    json_pretty_big_array_memory"
         else
-            FAIL=$((FAIL+1)); echo "  FAIL  json_pretty_big_array_memory (${JBIG_KB} KB)"
+            FAIL=$((FAIL+1)); echo "  FAIL  json_pretty_big_array_memory (${JBIG_KB} KB, ${JSMALL_KB} KB for 2 elements)"
         fi
+        rm -f "$TMP/jsmall.json"
     fi
     rm -f "$TMP/jbig.json"
 fi
