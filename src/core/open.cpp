@@ -1095,6 +1095,64 @@ static std::string open_remote_copy(const std::string& url, const Config& cfg,
 static std::string dispatch_by_kind(const std::string& path, const Config& cfg,
                                     std::unique_ptr<TabularSource>* out);
 
+// True when the run reads no FORMAT / sample column of a VCF, so its lines
+// can be cut after INFO before they are parsed: a scripted output (no TUI)
+// whose every named column is one of the eight site columns. Any option it
+// cannot judge here keeps the samples: patterns or ranges in --select, a
+// --filter that names another column, --samples long (one row per sample),
+// --gt-stats, --flatten, --schema, --expand of anything but INFO.
+// VV_NO_PROJECTION=1 turns it off (the tests compare both paths).
+static bool vcf_sites_only_run(const Config& cfg) {
+    if (const char* e = std::getenv("VV_NO_PROJECTION"); e && *e && *e != '0') return false;
+    const bool scripted = cfg.delimiter || cfg.json_array || cfg.json_lines || cfg.md ||
+                          !cfg.parquet_out.empty() || !cfg.arrow_out.empty() || cfg.count ||
+                          cfg.describe || !cfg.unique_cols.empty() || cfg.no_interactive ||
+                          cfg.head_rows_set || cfg.tail_rows_set;
+    if (!scripted || cfg.interactive) return false;
+    if (cfg.schema_only || cfg.list_columns || cfg.list_tabs || cfg.gt_stats || cfg.flatten ||
+        cfg.contigs || cfg.heatmap || cfg.validate || cfg.stats_only || cfg.samples == "long")
+        return false;
+    if (!cfg.expand_col.empty() && cfg.expand_col != "INFO") return false;
+    static const char* const kSite[] = {"CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO"};
+    auto is_site = [](std::string n) {
+        while (!n.empty() && (n.front() == ' ' || n.front() == '\t')) n.erase(n.begin());
+        while (!n.empty() && (n.back() == ' ' || n.back() == '\t')) n.pop_back();
+        for (const char* k : kSite) if (n == k) return true;
+        return false;
+    };
+    auto all_site = [&](const std::string& list) {
+        if (list.empty()) return false;
+        size_t b = 0;
+        for (;;) {
+            const size_t e = list.find(',', b);
+            if (!is_site(list.substr(b, e == std::string::npos ? std::string::npos : e - b)))
+                return false;
+            if (e == std::string::npos) return true;
+            b = e + 1;
+        }
+    };
+    if (cfg.select_cols.empty() ? !cfg.count : !all_site(cfg.select_cols)) return false;
+    if (!cfg.unique_cols.empty() && !all_site(cfg.unique_cols)) return false;
+    if (!cfg.sort_col.empty()) {
+        std::string c = cfg.sort_col;
+        for (const char* suf : {":desc", ":asc"})
+            if (c.size() > std::strlen(suf) && c.compare(c.size() - std::strlen(suf), std::string::npos, suf) == 0)
+                c.resize(c.size() - std::strlen(suf));
+        if (!is_site(c)) return false;
+    }
+    if (!cfg.filter_expr.empty()) {
+        // It names only site columns if it parses against them alone.
+        auto site = arrow::schema({arrow::field("CHROM", arrow::utf8()), arrow::field("POS", arrow::int64()),
+                                   arrow::field("ID", arrow::utf8()), arrow::field("REF", arrow::utf8()),
+                                   arrow::field("ALT", arrow::utf8()), arrow::field("QUAL", arrow::float64()),
+                                   arrow::field("FILTER", arrow::utf8()), arrow::field("INFO", arrow::utf8())});
+        FilterExpr fx;
+        std::string err;
+        if (!parse_filter_expr(cfg.filter_expr, *site, &fx, &err)) return false;
+    }
+    return true;
+}
+
 std::string open_source_dispatch(const std::string& path, const Config& cfg,
                          std::unique_ptr<TabularSource>* out) {
     std::string err = dispatch_by_kind(path, cfg, out);
@@ -1728,7 +1786,8 @@ static std::string dispatch_by_kind(const std::string& path, const Config& cfg,
     std::unique_ptr<TabularSource> src;
     std::string err = open_delimited_source(path, dk, cfg.region, &src, delim_override,
                                             headerless ? HeaderMode::Off : cfg.header, dialect,
-                                            paf_tags);
+                                            paf_tags,
+                                            dk == DelimKind::VCF && vcf_sites_only_run(cfg));
     if (!err.empty()) return err;
     // BEDPE has no header row unless it starts with a "#chrom1 …" line (read
     // as the header); without one, name the bedtools columns.

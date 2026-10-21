@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- A VCF read for site columns only (`--select CHROM,POS,REF,ALT --tsv`,
+  `--count`, a filter or sort on site columns) has its lines cut after INFO
+  before parsing, instead of parsing every sample field: on the 1000
+  Genomes chr22 VCF (2,504 samples) sites to TSV takes 6.1 s / 0.35 GB
+  instead of 29.6 s / 3.2 GB, with the same output.
 - vvg reads a tab's file only when the tab is first shown, and in the
   background: the window opens at once, a tab shows *Loading…* until its
   columns are known, and rows not read yet show `…` until they arrive. A

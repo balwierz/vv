@@ -2114,6 +2114,34 @@ assert_eq_file_inline "vcf_qual_numeric_filter" \
 printf '##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\nchr1\t10\t.\tA\tC\t.\tPASS\t.\nchr1\t20\t.\tA\tC\t50.5\tPASS\t.\nchr1\t30\t.\tA\tC\t9\tPASS\t.\n' > "$TMP/qualdot.vcf"
 assert_eq_file_inline "vcf_qual_dot_first_sorts_as_number" \
     "$("$VV" --sort QUAL:desc --select POS,QUAL --tsv --no-header "$TMP/qualdot.vcf" | tr '\n\t' ' :')" "20:50.5 30:9 10: "
+# A run that reads no sample column cuts each VCF line after INFO before it
+# is parsed (on the 2,504-sample 1000 Genomes chr22 VCF, sites to TSV 29.6 s
+# / 3.2 GB -> 6.1 s / 0.35 GB); the output equals the full parse's
+# (VV_NO_PROJECTION=1). A run that names a sample column, or a filter on
+# one, keeps the samples.
+{ printf '##fileformat=VCFv4.2\n##FORMAT=<ID=GT,Number=1,Type=String,Description="g">\n##FORMAT=<ID=DP,Number=1,Type=Integer,Description="d">\n'
+  printf '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\tS3\n'
+  awk 'BEGIN { for (i = 1; i <= 200; i++) printf "chr1\t%d\trs%d\tA\tG\t%d\tPASS\tDP=%d\tGT:DP\t0/1:%d\t1/1:%d\t./.:.\n", i * 10, i, 20 + i % 40, i, i % 7, i % 9 }'
+} > "$TMP/sites.vcf"
+for args in "--select CHROM,POS,REF,ALT --tsv" "--count --filter 'QUAL > 40'" "--select POS,QUAL --sort QUAL:desc -n 5 --tsv" \
+            "--select POS,S2 --samples text --tsv" "--select POS --filter 'S1 == \"0/1:3\"' --samples text --tsv"; do
+    name=$(printf '%s' "$args" | tr -c 'A-Za-z0-9' '_' | tr -s '_')
+    assert_eq_file_inline "vcf_sites_projection_same_$name" \
+        "$(eval "\"\$VV\" $args \"\$TMP/sites.vcf\"" 2>&1)" \
+        "$(eval "VV_NO_PROJECTION=1 \"\$VV\" $args \"\$TMP/sites.vcf\"" 2>&1)"
+done
+# The cut is taken: a record short of a sample field fails the full parse
+# ("Expected 11 columns, got 10") but not a sites-only read.
+printf '##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\nchr1\t10\t.\tA\tG\t50\tPASS\t.\tGT\t0/1\t1/1\nchr1\t20\t.\tA\tG\t50\tPASS\t.\tGT\t0/1\n' > "$TMP/short_sample.vcf"
+assert_eq_file_inline "vcf_sites_projection_skips_samples" \
+    "$("$VV" --select CHROM,POS --tsv --no-header "$TMP/short_sample.vcf" 2>&1 | tr '\n\t' ' :')" "chr1:10 chr1:20 "
+assert_exit_code "vcf_full_parse_short_sample_exit1" 1 env VV_NO_PROJECTION=1 "$VV" --select CHROM,POS --tsv "$TMP/short_sample.vcf"
+if command -v bgzip >/dev/null 2>&1 && command -v tabix >/dev/null 2>&1; then
+    bgzip -c "$TMP/sites.vcf" > "$TMP/sites.vcf.gz" && tabix -f -p vcf "$TMP/sites.vcf.gz"
+    assert_eq_file_inline "vcf_sites_projection_same_region" \
+        "$("$VV" -r chr1:500-900 --select CHROM,POS,ALT --tsv "$TMP/sites.vcf.gz" 2>&1)" \
+        "$(VV_NO_PROJECTION=1 "$VV" -r chr1:500-900 --select CHROM,POS,ALT --tsv "$TMP/sites.vcf.gz" 2>&1)"
+fi
 awk 'BEGIN { print "##gff-version 3"
              for (i = 0; i < 60000; i++) { printf "%d\tens\tCDS\t%d\t%d\t.\t+\t0\tID=c%d\n", 1 + int(i * 22 / 60000), i * 10 + 1, i * 10 + 5, i
                                            if (i % 1000 == 999) print "###" }

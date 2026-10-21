@@ -630,6 +630,7 @@ class DelimitedSource : public TabularSource {
     mutable bool                          evicted_any_ = false; // any batch freed?
     // True when the data stream was replaced by a tabix iterator for -r.
     bool                                  region_applied_ = false;
+    bool vcf_sites_only_ = false;  // VCF lines cut after INFO (no sample column read)
     mutable arrow::Status                 read_status_;   // sticky stream error
 
     // Append a freshly-decoded batch via the shared bounded-window helper.
@@ -967,13 +968,14 @@ public:
                              char delim_override = 0,
                              HeaderMode header_mode = HeaderMode::Auto,
                              TsvDialect dialect = TsvDialect::None,
-                             const std::vector<std::string>& paf_tags = {}) {
+                             const std::vector<std::string>& paf_tags = {},
+                             bool vcf_sites_only = false) {
         std::string err;
         for (int64_t block = csv_block_bytes();; block *= 4) {
             const int64_t saved = csv_block_override;
             csv_block_override = block;
             err = open_once(path, kind, region, out, delim_override, header_mode, dialect,
-                            paf_tags);
+                            paf_tags, vcf_sites_only);
             csv_block_override = saved;
             if (err.find("straddling object") == std::string::npos || block >= ((int64_t)1 << 30))
                 break;
@@ -986,10 +988,12 @@ public:
                              std::unique_ptr<DelimitedSource>* out,
                              char delim_override, HeaderMode header_mode,
                              TsvDialect dialect,
-                             const std::vector<std::string>& paf_tags) {
+                             const std::vector<std::string>& paf_tags,
+                             bool vcf_sites_only = false) {
         auto self = std::make_unique<DelimitedSource>();
         self->path_      = path;
         self->kind_      = kind;
+        self->vcf_sites_only_ = vcf_sites_only && kind == DelimKind::VCF;
         self->dialect_   = dialect;
         self->paf_tags_  = paf_tags;
         if (!paf_tags.empty()) self->paf_tag_types_ = paf_tag_types(path, paf_tags);
@@ -1155,6 +1159,18 @@ private:
                 break;
             case DelimKind::VCF:
                 self->preamble_lines_ = strip_vcf_preamble(input, &col_names, &put_back);
+                // No FORMAT / sample column is read: cut each line after INFO,
+                // so Arrow never tokenises the samples (on a 2,504-sample VCF
+                // they are all but a few bytes of every line).
+                if (self->vcf_sites_only_ && col_names.size() > 8) {
+                    col_names.resize(8);
+                    std::shared_ptr<arrow::io::InputStream> base =
+                        put_back.empty() ? input
+                        : std::shared_ptr<arrow::io::InputStream>(
+                            std::make_shared<PrependInputStream>(std::move(put_back), input));
+                    input = std::make_shared<TruncateFieldsStream>(base, 8);
+                    put_back.clear();
+                }
                 break;
             case DelimKind::GFF: {
                 self->preamble_lines_ = strip_prefix_preamble(input, '#', &put_back);
@@ -1273,6 +1289,8 @@ private:
             std::shared_ptr<arrow::io::InputStream> ti = tabix;
             if (kind == DelimKind::GFF) ti = std::make_shared<TruncateFieldsStream>(ti, 9, '#');
             if (kind == DelimKind::SAM) ti = std::make_shared<TruncateFieldsStream>(ti, 11);
+            if (kind == DelimKind::VCF && self->vcf_sites_only_ && col_names.size() == 8)
+                ti = std::make_shared<TruncateFieldsStream>(ti, 8);
             input = ti;
             self->region_applied_ = true;
         }
@@ -1739,10 +1757,11 @@ std::string open_delimited_source(const std::string& path, DelimKind kind, const
                                   std::unique_ptr<TabularSource>* out, char delim_override,
                                   HeaderMode header_mode,
                                   TsvDialect dialect,
-                                  const std::vector<std::string>& paf_tags) {
+                                  const std::vector<std::string>& paf_tags,
+                                  bool vcf_sites_only) {
     std::unique_ptr<DelimitedSource> s;
     std::string e = DelimitedSource::open(path, kind, region, &s, delim_override, header_mode,
-                                            dialect, paf_tags);
+                                            dialect, paf_tags, vcf_sites_only);
     if (e.empty()) *out = std::move(s);
     return e;
 }
