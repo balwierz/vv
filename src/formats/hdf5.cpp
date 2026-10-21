@@ -2026,6 +2026,11 @@ class H5ViewportSource final : public TabularSource {
     arrow::Status status_;
     static constexpr int64_t kBlock           = 128;
     static constexpr int64_t kSparseStep      = 65536;
+    // Rows per chunk: kBlock for a CSR matrix (a row's width varies); a frame
+    // or 1-D array takes 8,192 (a full export or --describe of a 100,000-row
+    // obs read 782 blocks per column at 128); a dense matrix about 256 Ki
+    // cells, 128 to 8,192 rows.
+    int64_t block_ = kBlock;
     static constexpr int64_t kDictionaryBytes = 8 << 20;
 
     arrow::Result<Column> describe_column(const std::string& name, const std::string& path) const {
@@ -2216,7 +2221,11 @@ class H5ViewportSource final : public TabularSource {
                     i < (int64_t)names.size() ? names[(size_t)i] : "col" + std::to_string(i),
                     ints_ ? arrow::int64() : float_type(f32_)));
         }
-        if (rows_ / kBlock >= INT_MAX)
+        if (frame_ || data_cols_ <= 1)
+            block_ = 8192;
+        else if (!sparse_)
+            block_ = std::clamp<int64_t>((256 << 10) / std::max<int64_t>(1, data_cols_), kBlock, 8192);
+        if (rows_ / block_ >= INT_MAX)
             return arrow::Status::CapacityError(spec_.h5_path, ": too many row blocks");
         schema_ = arrow::schema(fields);
         return arrow::Status::OK();
@@ -2366,10 +2375,10 @@ public:
     }
     std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
     int64_t                        total_rows() const override { return rows_; }
-    int       num_chunks() const override { return (int)(rows_ / kBlock + (rows_ % kBlock != 0)); }
+    int       num_chunks() const override { return (int)(rows_ / block_ + (rows_ % block_ != 0)); }
     ChunkMeta chunk_meta(int i) const override {
         if (i < 0 || i >= num_chunks()) return {rows_, 0};
-        return {(int64_t)i * kBlock, std::min(kBlock, rows_ - (int64_t)i * kBlock)};
+        return {(int64_t)i * block_, std::min(block_, rows_ - (int64_t)i * block_)};
     }
     bool               random_access() const override { return true; }
     arrow::Status      read_status() const override { return status_; }
@@ -2404,7 +2413,7 @@ public:
     arrow::Status read_first(int64_t n, const std::vector<int>& cols,
                              std::shared_ptr<arrow::Table>* out) override {
         n = std::clamp<int64_t>(n, 0, rows_);
-        return n <= kBlock ? read_range(0, n, cols, out) : TabularSource::read_first(n, cols, out);
+        return n <= block_ ? read_range(0, n, cols, out) : TabularSource::read_first(n, cols, out);
     }
 };
 
