@@ -2096,6 +2096,24 @@ awk 'BEGIN { print "##fileformat=VCFv4.2"; print "#CHROM\tPOS\tID\tREF\tALT\tQUA
              print "X\t5\t.\tA\tG\t50\tPASS\tDP=10" }' > "$TMP/ens.vcf"
 assert_eq_file_inline "vcf_numeric_then_text_chrom" \
     "$(VV_CSV_BLOCK_MB=1 "$VV" --tsv --no-header "$TMP/ens.vcf" 2>&1 | tail -1 | cut -f1,2)" "$(printf 'X\t5')"
+# QUAL is a number with "." for missing, and the sample columns are text,
+# whatever the first block holds: whole-number QUALs and a haploid GT of
+# 0 / 1 were inferred int64, and the later "." / "30.5" / "./." failed the
+# read ("CSV conversion error to int64"). A "." QUAL in the first block made
+# the column text, so `QUAL > 48` matched nothing and sorted as text.
+{ printf '##fileformat=VCFv4.2\n##FORMAT=<ID=GT,Number=1,Type=String,Description="g">\n'
+  printf '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n'
+  awk 'BEGIN { for (i = 1; i <= 60000; i++) printf "chr1\t%d\t.\tA\tC\t%d\tPASS\t.\tGT\t%d\n", i, 30 + i % 20, i % 2
+               printf "chr1\t60001\t.\tA\tC\t.\tPASS\t.\tGT\t./.\nchr1\t60002\t.\tA\tC\t30.5\tPASS\t.\tGT\t1\n" }'
+} > "$TMP/qualtypes.vcf"
+assert_eq_file_inline "vcf_qual_and_samples_typed_later_values" \
+    "$(VV_CSV_BLOCK_MB=1 "$VV" --samples text --tail 2 --select POS,QUAL,S1 --tsv --no-header "$TMP/qualtypes.vcf" 2>&1)" \
+    "$(printf '60001\t\t./.\n60002\t30.5\t1')"
+assert_eq_file_inline "vcf_qual_numeric_filter" \
+    "$(VV_CSV_BLOCK_MB=1 "$VV" --count --filter 'QUAL > 48' "$TMP/qualtypes.vcf" 2>&1)" "3000"
+printf '##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\nchr1\t10\t.\tA\tC\t.\tPASS\t.\nchr1\t20\t.\tA\tC\t50.5\tPASS\t.\nchr1\t30\t.\tA\tC\t9\tPASS\t.\n' > "$TMP/qualdot.vcf"
+assert_eq_file_inline "vcf_qual_dot_first_sorts_as_number" \
+    "$("$VV" --sort QUAL:desc --select POS,QUAL --tsv --no-header "$TMP/qualdot.vcf" | tr '\n\t' ' :')" "20:50.5 30:9 10: "
 awk 'BEGIN { print "##gff-version 3"
              for (i = 0; i < 60000; i++) { printf "%d\tens\tCDS\t%d\t%d\t.\t+\t0\tID=c%d\n", 1 + int(i * 22 / 60000), i * 10 + 1, i * 10 + 5, i
                                            if (i % 1000 == 999) print "###" }

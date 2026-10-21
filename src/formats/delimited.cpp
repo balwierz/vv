@@ -732,7 +732,8 @@ class DelimitedSource : public TabularSource {
                 bool strings_nullable = false,
                 const std::vector<std::pair<std::string, std::shared_ptr<arrow::DataType>>>&
                     column_types = {},
-                std::shared_ptr<ReadGate>* gate_out = nullptr) {
+                std::shared_ptr<ReadGate>* gate_out = nullptr,
+                const std::vector<std::string>& extra_nulls = {}) {
         if (gate_out) {
             *gate_out = std::make_shared<ReadGate>();
             input = std::make_shared<GatedInputStream>(std::move(input), *gate_out);
@@ -769,6 +770,9 @@ class DelimitedSource : public TabularSource {
         for (const auto& ct : column_types) copts.column_types[ct.first] = ct.second;
         for (const auto& name : force_string_cols)
             copts.column_types[name] = arrow::utf8();
+        // Extra missing-value tokens (VCF's "."). They null numeric columns
+        // only, unless strings_nullable: a string column keeps the literal.
+        for (const auto& n : extra_nulls) copts.null_values.push_back(n);
         return arrow::csv::StreamingReader::Make(
             arrow::io::default_io_context(), input, ropts, popts, copts);
     }
@@ -1309,7 +1313,24 @@ private:
         // Chromosome names are text even when the first block holds only
         // numeric ones (Ensembl: 1 … 22, then X, GL000008.2), and a GFF phase
         // is 0 / 1 / 2 or "." (a block of CDS rows alone would make it int64).
-        if (kind == DelimKind::VCF) col_types.push_back({"CHROM", arrow::utf8()});
+        // VCF: every column has a fixed type, so none depends on what the first
+        // block holds. QUAL is a number whose missing value is "." (it was
+        // inferred int64 from whole-number QUALs, and a later "." or "30.5"
+        // failed the read; a "." in the first block made it text, compared and
+        // sorted as text). FORMAT and the sample columns are text: a haploid
+        // GT 0/1 column was inferred int64 and failed at "./.". "." nulls only
+        // the numeric POS / QUAL: VCF strings are not nullable, so ID, FILTER,
+        // INFO and the samples keep it.
+        std::vector<std::string> extra_nulls;
+        if (kind == DelimKind::VCF) {
+            for (size_t c = 0; c < col_names.size(); ++c) {
+                const std::string& n = col_names[c];
+                col_types.push_back({n, c == 1 ? arrow::int64()
+                                        : c == 5 ? arrow::float64() : arrow::utf8()});
+            }
+            if (col_names.empty()) col_types.push_back({"CHROM", arrow::utf8()});
+            extra_nulls.push_back(".");
+        }
         if (kind == DelimKind::GFF) {
             col_types.push_back({"seqname", arrow::utf8()});
             col_types.push_back({"frame", arrow::utf8()});
@@ -1325,7 +1346,8 @@ private:
             if (self->mtx_field_ == "real")    col_types.push_back({"value", arrow::float64()});
         }
         auto r = make_reader(input, self->delimiter_, autogen, col_names,
-                             force_string, strings_nullable, col_types, &self->gate_);
+                             force_string, strings_nullable, col_types, &self->gate_,
+                             extra_nulls);
         if (!r.ok()) {
             // A region query whose window overlaps no records leaves the tabix
             // stream empty, and Arrow's CSV reader rejects empty input with

@@ -32,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   per input chunk rather than materializing the whole input.
 
 ### Fixed
+- A text VCF's QUAL and sample columns took their type from the first
+  16 MiB: whole-number QUALs or a haploid `GT` of `0` / `1` made them
+  integers, and a later `.`, `30.5` or `./.` failed the read ("CSV
+  conversion error to int64"); a `.` QUAL early on made QUAL text, so
+  `--filter 'QUAL > 30'` matched nothing and `--sort QUAL` sorted as text.
+  Every VCF column now has a fixed type: POS integer, QUAL a number with
+  `.` as missing (shown empty, as for BCF), the rest text.
 - vvg: starting a filter, sort or find while another ran left both reading
   the tab's source at once, and closing the tab could free it under the
   older job. Each file's tabs are now read on one owner thread, a new job
