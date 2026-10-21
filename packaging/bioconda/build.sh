@@ -3,6 +3,14 @@ set -euxo pipefail
 
 export PKG_CONFIG_PATH="${PREFIX}/lib/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
 
+# macOS: libc++ marks floating-point std::to_chars unavailable below macOS
+# 13.3, above the deployment target conda builds for. The package runs
+# against conda's own libc++, which provides it, so the availability
+# annotations are turned off.
+if [[ "${target_platform}" == osx-* ]]; then
+    export CXXFLAGS="${CXXFLAGS:-} -D_LIBCPP_DISABLE_AVAILABILITY"
+fi
+
 # xlsxio: a static, position-independent library in a scratch prefix
 # (packaging/rpm/vv.spec builds it the same way). It declares an old CMake
 # minimum, hence CMAKE_POLICY_VERSION_MINIMUM.

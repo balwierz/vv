@@ -4,3 +4,9 @@ libarrow:
   - '22.0'
 libarrow_all:
   - '22.0'
+# Bioconda builds osx-64 for macOS 10.13, below std::filesystem's 10.15 and
+# conda-forge's Arrow (11.0 and up): target 11.0, as osx-arm64 does.
+c_stdlib_version:          # [osx and x86_64]
+  - '11.0'                 # [osx and x86_64]
+MACOSX_DEPLOYMENT_TARGET:  # [osx and x86_64]
+  - '11.0'                 # [osx and x86_64]
