@@ -21,7 +21,9 @@ from tui_cursor_check import run  # noqa: E402
 
 
 def keys(s):
-    return [c.encode() for c in s]
+    # One write per command: the harness waits 0.3 s between writes, and a
+    # slow runner (macOS CI) ran out of its budget key by key.
+    return [s.encode()]
 
 
 def main():
@@ -43,24 +45,24 @@ def main():
         return base64.b64decode(mm[-1]).decode("utf8", "replace").strip() if mm else None
 
     # 1. Mark, move away, jump back.
-    _txt, raw, hung = run(vv, [path], keys(":120\r") + keys("ma") + keys(":10\r") + keys("'a") + [b"y"])
+    _txt, raw, hung = run(vv, [path], budget=20.0, keys=keys(":120\r") + keys("ma") + keys(":10\r") + keys("'a") + [b"y"])
     if hung or yanked(raw) != "r120":
         fail("'a after ma on row 120 copied %r, expected r120" % yanked(raw))
 
     # 2. '' returns to where that jump came from.
-    _txt, raw, hung = run(vv, [path], keys(":120\r") + keys("ma") + keys(":10\r") + keys("'a")
+    _txt, raw, hung = run(vv, [path], budget=20.0, keys=keys(":120\r") + keys("ma") + keys(":10\r") + keys("'a")
                                       + keys("''") + [b"y"])
     if hung or yanked(raw) != "r10":
         fail("'' after the jump copied %r, expected r10" % yanked(raw))
 
     # 3. The mark follows its row through a sort (descending by score).
-    _txt, raw, hung = run(vv, [path], keys(":120\r") + keys("ma") + keys("ll") + keys("ss")
+    _txt, raw, hung = run(vv, [path], budget=20.0, keys=keys(":120\r") + keys("ma") + keys("ll") + keys("ss")
                                       + keys("'a") + [b"y"])
     if hung or yanked(raw) != "r120":
         fail("'a after a descending sort copied %r, expected r120" % yanked(raw))
 
     # 4. A row the filter hides is reported.
-    txt, _raw, hung = run(vv, [path], keys(":120\r") + keys("ma") + keys("&score < 50\r") + keys("'a"))
+    txt, _raw, hung = run(vv, [path], budget=20.0, keys=keys(":120\r") + keys("ma") + keys("&score < 50\r") + keys("'a"))
     if hung or "hidden by the filter" not in txt:
         fail("'a to a filtered-out row did not report it (screen tail: %r)" % txt[-200:])
 

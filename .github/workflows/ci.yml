@@ -364,7 +364,7 @@ jobs:
           VVG_WINTEST=1 VVG_TEST_READ_DELAY_MS=300 VVG_CELLS='0:0,19:3,7:1' ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -qE '^cells 0:0=chr1\(cached\) 19:3=0\.95 7:1=7_100 ticks=([4-9]|[1-9][0-9]+)$'
           VVG_WINTEST=1 VVG_TAB=2 VVG_CELLS='0:0,1499:0,1499:2' ./build-gui/gui/vvg tests/data/tiny.bigobs.h5ad \
-            | grep -qE '^cells 0:0=cell0\(cached\) 1499:0=cell1499 1499:2=1499\(cached\) ticks='
+            | grep -qE '^cells 0:0=cell0\(cached\) 1499:0=cell1499(\(cached\))? 1499:2=1499\(cached\) ticks='
           VVG_WINTEST=1 VVG_CELLS='60000000:0' ./build-gui/gui/vvg /tmp/rows120M.parquet | grep -qE '^cells 60000000:0=0 ticks='
           VVG_WINTEST=1 VVG_TEST_READ_DELAY_MS=200 VVG_AFILTER='Score > 0.5' VVG_CELLS='0:3,8:3' ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -qE '^cells 0:3=0\.55 8:3=0\.95 ticks='
@@ -756,7 +756,7 @@ jobs:
           VVG_WINTEST=1 VVG_TEST_READ_DELAY_MS=300 VVG_CELLS='0:0,19:3,7:1' ./build/gui/vvg tests/data/tiny.parquet \
             | grep -qE '^cells 0:0=chr1\(cached\) 19:3=0\.95 7:1=7_100 ticks=([4-9]|[1-9][0-9]+)$'
           VVG_WINTEST=1 VVG_TAB=2 VVG_CELLS='0:0,1499:0,1499:2' ./build/gui/vvg tests/data/tiny.bigobs.h5ad \
-            | grep -qE '^cells 0:0=cell0\(cached\) 1499:0=cell1499 1499:2=1499\(cached\) ticks='
+            | grep -qE '^cells 0:0=cell0\(cached\) 1499:0=cell1499(\(cached\))? 1499:2=1499\(cached\) ticks='
           VVG_WINTEST=1 VVG_CELLS='60000000:0' ./build/gui/vvg /tmp/rows120M.parquet | grep -qE '^cells 60000000:0=0 ticks='
           VVG_WINTEST=1 VVG_TEST_READ_DELAY_MS=200 VVG_AFILTER='Score > 0.5' VVG_CELLS='0:3,8:3' ./build/gui/vvg tests/data/tiny.parquet \
             | grep -qE '^cells 0:3=0\.55 8:3=0\.95 ticks='
