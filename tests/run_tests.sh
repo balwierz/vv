@@ -2184,6 +2184,19 @@ PYPAR
             "$(cd "$TMP" && eval "\"\$VV\" -@ 4 $spec" 2>&1 | md5sum)" \
             "$(cd "$TMP" && eval "VV_CSV_SERIAL=1 \"\$VV\" $spec" 2>&1 | md5sum)"
     done
+    # A bgzip file in a full scan is decoded on the parse threads (htslib
+    # bgzf_mt); a sites-only VCF has its lines cut in the parse tasks.
+    if command -v bgzip >/dev/null 2>&1; then
+        bgzip -c "$TMP/par.vcf" > "$TMP/par.vcf.gz"
+        bgzip -c "$TMP/par.csv" > "$TMP/par.csv.gz"
+        for spec in "--select POS,QUAL --tsv par.vcf.gz" "--samples text --tsv par.vcf.gz" \
+                    "--count --filter 'QUAL > 25' par.vcf.gz" "--tsv par.csv.gz"; do
+            name=$(printf '%s' "$spec" | tr -c 'A-Za-z0-9' '_' | tr -s '_')
+            assert_eq_file_inline "csv_parallel_bgzf_same_$name" \
+                "$(cd "$TMP" && eval "\"\$VV\" -@ 4 $spec" 2>&1 | md5sum)" \
+                "$(cd "$TMP" && eval "VV_CSV_SERIAL=1 \"\$VV\" $spec" 2>&1 | md5sum)"
+        done
+    fi
     assert_eq_file_inline "csv_parallel_files_exceed_sample" \
         "$(for f in par.csv par.vcf blk_typeearly.tsv; do [ "$(wc -c < "$TMP/$f")" -gt 16777216 ] && printf y; done)" "yyy"
 fi

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- A full scan of a bgzip (BGZF) text file is decoded on the `-@` threads
+  too, and a sites-only VCF has its lines cut in the parallel parse: the
+  1000 Genomes chr22 VCF's sites to TSV 5.85 s → 1.08 s (bcftools query
+  2.07 s; 36 s in vv 1.31).
 - A full scan of delimited text (an export, `--count`, `--describe`, a sort,
   filter or sample) parses on the `-@` threads after the first 16 MiB:
   on the 1.6 GB GENCODE CSV, `--count` 0.90 s → 0.31 s and `--describe`

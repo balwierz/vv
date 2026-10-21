@@ -214,13 +214,12 @@ user-facing summary).
 - **Bioconda Arrow pin** — revisit `packaging/bioconda/conda_build_config.yaml`
   (libarrow 22 only) when Bioconda's global pinning drops libarrow 19 / 20,
   the versions without `libarrow-compute`.
-- **gzip-compressed text decodes on one thread.** Delimited text now parses
-  in parallel (ParallelCsvReader), but a `.gz` input is still decoded by one
-  thread (Arrow's CompressedInputStream), which bounds a full scan of
-  `vcf.gz` / `csv.gz`: GENCODE CSV.gz `--count` 0.82 s vs 0.31 s for the same
-  file uncompressed. A BGZF input (bgzip, tabix-indexable) could be decoded
-  on several threads (htslib bgzf_mt); the line cutting for a sites-only VCF
-  (TruncateFieldsStream) is serial too and could move into the parse tasks.
+- **Plain gzip text decodes on one thread.** A bgzip (BGZF) input in a full
+  scan is decoded on the parse threads (BgzfInputStream, htslib bgzf_mt), but
+  a plain `.gz` (gzip, as GENCODE ships) can only be decoded serially:
+  GENCODE CSV.gz `--count` 0.82 s vs 0.31 s for the same file uncompressed.
+  Nothing to do short of a parallel inflate with an index (pigz-style
+  checkpoints) built on first read.
 - **Arrow IPC / Feather random access.** File sources now expose a discovered
   frontier without decoding in `chunk_meta()` and use a 64 MiB decoded-batch
   cache. Feather v2 uses this path; only v1 is eager. First discovery of batch

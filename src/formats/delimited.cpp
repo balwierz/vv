@@ -282,6 +282,88 @@ public:
 // `comment` set, lines starting with it are dropped wherever they are — GFF3
 // puts `###` and `#` lines between records — and `##FASTA` ends the records
 // (GFF3: sequences follow).
+// A BGZF file (bgzip: what tabix indexes) decoded by htslib on `threads`
+// threads; Arrow's gzip stream decodes on one. For full scans only: a
+// preview would make the decoders read ahead for nothing.
+class BgzfInputStream : public arrow::io::InputStream {
+    BGZF*   fp_  = nullptr;
+    int64_t pos_ = 0;
+public:
+    static arrow::Result<std::shared_ptr<BgzfInputStream>> Open(const std::string& path, int threads) {
+        BGZF* fp = bgzf_open(path.c_str(), "r");
+        if (!fp) return arrow::Status::IOError("cannot open '", path, "' as BGZF");
+        if (threads > 1 && bgzf_mt(fp, threads, 256) < 0) {
+            bgzf_close(fp);
+            return arrow::Status::IOError("cannot start BGZF threads for '", path, "'");
+        }
+        auto s = std::make_shared<BgzfInputStream>();
+        s->fp_ = fp;
+        return s;
+    }
+    ~BgzfInputStream() override { if (fp_) bgzf_close(fp_); }
+    arrow::Status Close() override {
+        if (fp_) { bgzf_close(fp_); fp_ = nullptr; }
+        return arrow::Status::OK();
+    }
+    bool closed() const override { return fp_ == nullptr; }
+    arrow::Result<int64_t> Tell() const override { return pos_; }
+    arrow::Result<int64_t> Read(int64_t nbytes, void* out) override {
+        if (!fp_) return arrow::Status::Invalid("BGZF stream is closed");
+        int64_t done = 0;
+        while (done < nbytes) {
+            const ssize_t n = bgzf_read(fp_, static_cast<char*>(out) + done,
+                                        (size_t)std::min<int64_t>(nbytes - done, 1 << 30));
+            if (n < 0) return arrow::Status::IOError("BGZF read error");
+            if (n == 0) break;
+            done += n;
+        }
+        pos_ += done;
+        return done;
+    }
+    arrow::Result<std::shared_ptr<arrow::Buffer>> Read(int64_t nbytes) override {
+        ARROW_ASSIGN_OR_RAISE(auto buf, arrow::AllocateResizableBuffer(nbytes));
+        ARROW_ASSIGN_OR_RAISE(int64_t n, Read(nbytes, buf->mutable_data()));
+        ARROW_RETURN_NOT_OK(buf->Resize(n, /*shrink_to_fit=*/false));
+        return std::shared_ptr<arrow::Buffer>(std::move(buf));
+    }
+};
+
+// True when the file starts with a BGZF block (gzip with the "BC" extra
+// field), so htslib can decode it on several threads.
+static bool file_is_bgzf(const std::string& path) {
+    unsigned char m[18] = {0};
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    const size_t n = std::fread(m, 1, sizeof m, f);
+    std::fclose(f);
+    return n == sizeof m && m[0] == 0x1f && m[1] == 0x8b && (m[3] & 4) && m[12] == 'B' && m[13] == 'C';
+}
+
+// Each line of `in` cut to its first `n` tab-separated fields (the parse
+// tasks' form of TruncateFieldsStream).
+static std::string cut_fields(const std::string& in, int n) {
+    std::string out;
+    out.reserve(in.size() / 8);
+    size_t b = 0;
+    while (b < in.size()) {
+        size_t e = in.find('\n', b);
+        if (e == std::string::npos) e = in.size();
+        size_t cut = b;
+        int seen = 0;
+        while (cut < e) {
+            const void* t = std::memchr(in.data() + cut, '\t', e - cut);
+            if (!t) { cut = e; break; }
+            cut = (size_t)(static_cast<const char*>(t) - in.data());
+            if (++seen == n) break;
+            ++cut;
+        }
+        out.append(in, b, cut - b);
+        out.push_back('\n');
+        b = e + 1;
+    }
+    return out;
+}
+
 // Parses delimited text on several threads. Arrow's StreamingReader parses
 // its blocks one after another; this reader cuts the (decoded) stream into
 // blocks at the last newline before `block` bytes — a record longer than
@@ -299,10 +381,10 @@ public:
                       std::shared_ptr<arrow::Schema> schema,
                       arrow::csv::ReadOptions ropts, arrow::csv::ParseOptions popts,
                       arrow::csv::ConvertOptions copts, int64_t block, int threads,
-                      bool skip_first)
+                      bool skip_first, int cut = 0)
         : input_(std::move(input)), schema_(std::move(schema)), ropts_(std::move(ropts)),
           popts_(std::move(popts)), copts_(std::move(copts)), block_(block),
-          threads_(std::max(1, threads)), skip_first_(skip_first) {
+          threads_(std::max(1, threads)), skip_first_(skip_first), cut_(cut) {
         ropts_.column_names.clear();
         for (const auto& f : schema_->fields()) ropts_.column_names.push_back(f->name());
         ropts_.autogenerate_column_names = false;
@@ -377,7 +459,11 @@ private:
             ro.block_size = (int32_t)std::min<int64_t>((int64_t)chunk.size() + 1, INT32_MAX);
             auto data = std::make_shared<std::string>(std::move(chunk));
             inflight_.push_back(std::async(std::launch::async,
-                [data, ro, po = popts_, co = copts_]() -> arrow::Result<Batches> {
+                [data, ro, po = popts_, co = copts_, cut = cut_]() mutable -> arrow::Result<Batches> {
+                    if (cut > 0) {
+                        *data = cut_fields(*data, cut);
+                        ro.block_size = (int32_t)std::min<int64_t>((int64_t)data->size() + 1, INT32_MAX);
+                    }
                     auto in = std::make_shared<arrow::io::BufferReader>(
                         std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(data->data()),
                                                         (int64_t)data->size()));
@@ -404,6 +490,7 @@ private:
     int64_t                                 block_;
     int                                     threads_;
     bool                                    skip_first_;
+    int                                     cut_;      // > 0: lines cut to that many fields
     bool                                    eof_ = false;
     std::string                             carry_;
     std::deque<std::future<arrow::Result<Batches>>> inflight_;
@@ -775,6 +862,7 @@ class DelimitedSource : public TabularSource {
     bool                                  region_applied_ = false;
     bool vcf_sites_only_ = false;  // VCF lines cut after INFO (no sample column read)
     int  parse_threads_  = 1;      // > 1: a full scan, parsed in parallel
+    int  cut_fields_     = 0;      // > 0: make_reader cuts lines to that many fields
     mutable arrow::Status                 read_status_;   // sticky stream error
 
     // Append a freshly-decoded batch via the shared bounded-window helper.
@@ -879,7 +967,7 @@ class DelimitedSource : public TabularSource {
                     column_types = {},
                 std::shared_ptr<ReadGate>* gate_out = nullptr,
                 const std::vector<std::string>& extra_nulls = {},
-                int parse_threads = 1) {
+                int parse_threads = 1, int cut_to_fields = 0) {
         if (gate_out) {
             *gate_out = std::make_shared<ReadGate>();
             input = std::make_shared<GatedInputStream>(std::move(input), *gate_out);
@@ -984,11 +1072,15 @@ class DelimitedSource : public TabularSource {
                     input = std::make_shared<PrependInputStream>(std::move(buf), std::move(input));
                     const bool header = col_names.empty() && !autogen_names;
                     return std::shared_ptr<arrow::RecordBatchReader>(std::make_shared<ParallelCsvReader>(
-                        std::move(input), typed, ropts, popts, copts, small, parse_threads, header));
+                        std::move(input), typed, ropts, popts, copts, small, parse_threads, header,
+                        cut_to_fields));
                 }
             }
             input = std::make_shared<PrependInputStream>(std::move(buf), std::move(input));
         }
+        // Lines to cut and no parallel parse to do it: cut them in the stream.
+        if (cut_to_fields > 0)
+            input = std::make_shared<TruncateFieldsStream>(std::move(input), cut_to_fields);
         ARROW_ASSIGN_OR_RAISE(auto rd, arrow::csv::StreamingReader::Make(
             arrow::io::default_io_context(), input, ropts, popts, copts));
         return std::shared_ptr<arrow::RecordBatchReader>(std::move(rd));
@@ -1229,6 +1321,11 @@ public:
             std::string err = open_stream(path, is_gz, &raw, &input);
             if (!err.empty()) return err;
         }
+        // A full scan of a bgzip file: decode it on the parse threads too.
+        if (is_gz && self->parse_threads_ > 1 && !is_remote_url(path) && file_is_bgzf(path)) {
+            auto bg = BgzfInputStream::Open(path, self->parse_threads_);
+            if (bg.ok()) input = *bg;
+        }
         return continue_open(std::move(self), std::move(input),
                              std::move(raw), is_gz, kind, region, out);
     }
@@ -1379,7 +1476,12 @@ private:
                 // No FORMAT / sample column is read: cut each line after INFO,
                 // so Arrow never tokenises the samples (on a 2,504-sample VCF
                 // they are all but a few bytes of every line).
-                if (self->vcf_sites_only_ && col_names.size() > 8) {
+                if (self->vcf_sites_only_ && col_names.size() > 8 && region.empty() &&
+                    self->parse_threads_ > 1) {
+                    // A full scan: make_reader cuts them, in the parse tasks.
+                    col_names.resize(8);
+                    self->cut_fields_ = 8;
+                } else if (self->vcf_sites_only_ && col_names.size() > 8) {
                     col_names.resize(8);
                     std::shared_ptr<arrow::io::InputStream> base =
                         put_back.empty() ? input
@@ -1582,7 +1684,7 @@ private:
         }
         auto r = make_reader(input, self->delimiter_, autogen, col_names,
                              force_string, strings_nullable, col_types, &self->gate_,
-                             extra_nulls, self->parse_threads_);
+                             extra_nulls, self->parse_threads_, self->cut_fields_);
         if (!r.ok()) {
             // A region query whose window overlaps no records leaves the tabix
             // stream empty, and Arrow's CSV reader rejects empty input with
