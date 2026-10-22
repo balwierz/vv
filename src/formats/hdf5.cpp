@@ -2785,16 +2785,19 @@ public:
 // columns over the full label lists (one copy, any number of rows); a matrix
 // without labels gets integer indexes. A sparse matrix knows its entries per
 // block from indptr, so all chunks are addressable at once; a dense one is
-// read forward, a block at a time, until its zeros have been skipped.
+// read forward, a block at a time, until its zeros have been skipped. The
+// per-block counts are taken on the first read, not when the tab is listed:
+// for a CSC matrix they need the whole matrix transposed.
 class H5LongMatrixSource : public TabularSource {
     using Stream = H5MatrixStreamSource;
     std::unique_ptr<Stream>          wide_;
     std::string                      label_;
     std::shared_ptr<arrow::Schema>   schema_;
     std::shared_ptr<arrow::Array>    row_dict_, col_dict_;   // null: indexes
-    std::vector<int64_t>             first_;                  // per known block
-    std::vector<int64_t>             count_;
-    bool                             all_known_ = false;
+    mutable std::vector<int64_t>     first_;                  // per known block
+    mutable std::vector<int64_t>     count_;
+    mutable bool                     all_known_ = false;
+    mutable bool                     counted_ = false;        // count_blocks ran
     int                              cached_block_ = -1;
     Stream::Entries                  cached_;
     mutable arrow::Status            status_;
@@ -2805,6 +2808,17 @@ class H5LongMatrixSource : public TabularSource {
         std::shared_ptr<arrow::Array> a;
         (void)b.Finish(&a);
         return a;
+    }
+    // A sparse matrix: every block's entry count, from indptr (CSR) or the
+    // transposed matrix (CSC). A dense one stays unknown (ensure counts it).
+    void count_blocks() const {
+        if (counted_) return;
+        counted_ = true;
+        std::vector<int64_t> counts;
+        if (!wide_->block_counts(&counts)) return;
+        int64_t at = 0;
+        for (int64_t c : counts) { first_.push_back(at); count_.push_back(c); at += c; }
+        all_known_ = true;
     }
     arrow::Status load(int b) {
         if (b == cached_block_) return arrow::Status::OK();
@@ -2840,27 +2854,24 @@ public:
             arrow::field(rname, rl ? label_type : arrow::int64()),
             arrow::field(cname, cl ? label_type : arrow::int64()),
             arrow::field(vname, p.ints ? arrow::int64() : float_type(p.f32))});
-        std::vector<int64_t> counts;
-        if (self->wide_->block_counts(&counts)) {
-            int64_t at = 0;
-            for (int64_t c : counts) { self->first_.push_back(at); self->count_.push_back(c); at += c; }
-            self->all_known_ = true;
-        }
         return self;
     }
 
     std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
     int64_t total_rows() const override {
+        count_blocks();
         if (!all_known_) return -1;
         return first_.empty() ? 0 : first_.back() + count_.back();
     }
-    int  num_chunks() const override { return (int)count_.size(); }
+    int  num_chunks() const override { count_blocks(); return (int)count_.size(); }
     ChunkMeta chunk_meta(int i) const override {
+        count_blocks();
         if (i < 0 || i >= (int)count_.size()) return {total_rows() < 0 ? 0 : total_rows(), 0};
         return {first_[(size_t)i], count_[(size_t)i]};
     }
     // A dense matrix: read blocks forward until block i's size is known.
     void ensure(int i) override {
+        count_blocks();
         while (!all_known_ && (int)count_.size() <= i) {
             const int b = (int)count_.size();
             if (b >= wide_->num_chunks()) { all_known_ = true; break; }
@@ -2925,6 +2936,7 @@ public:
                         " \xc3\x97 " + std::to_string(p.cols) + " matrix, one row per " +
                         (p.layout == Stream::Layout::Csr || p.layout == Stream::Layout::Csc
                              ? "stored entry" : "non-zero cell");
+        count_blocks();
         if (all_known_) f += "  |  Rows: " + std::to_string(total_rows());
         return f;
     }
