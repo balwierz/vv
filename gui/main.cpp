@@ -92,6 +92,7 @@
 #include "contextbar.h"
 #include "fileoptions.h"
 #include "tabpane.h"
+#include "typedheader.h"
 #include "vv/vvcore.hpp"
 
 // Open every path through libvvcore (using a shared base Config so a later
@@ -232,6 +233,8 @@ static QIcon glyphIcon(Glyph g, const QColor& color) {
     return icon;
 }
 
+static_assert(TypedHeaderView::TypeRole == ArrowTableModel::TypeRole);
+
 class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(std::vector<std::unique_ptr<TabularSource>> sources = {}) {
@@ -251,6 +254,8 @@ public:
                 [this](int i){ closeTab(i); });
         connect(tabs_, &TabPane::currentChanged, this, [this](int i) { onCurrentTab(i); });
 
+        showTypes_ = QSettings(QStringLiteral("vv"), QStringLiteral("vvg"))
+                         .value(QStringLiteral("ui/showColumnTypes"), true).toBool();
         smoothScroll_ = QSettings(QStringLiteral("vv"), QStringLiteral("vvg"))
                             .value(QStringLiteral("smoothScroll"), true).toBool();
         buildDetailDock();
@@ -620,7 +625,8 @@ private:
     // once at open; nothing resizes the columns afterwards, so a manual drag is
     // preserved.
     static std::vector<int> planColumnWidths(ArrowTableModel* model,
-                                             const QFontMetrics& fm) {
+                                             const QFontMetrics& fm,
+                                             const QFontMetrics* typeFm = nullptr) {
         const int ncols = model->columnCount();
         const int64_t nrows = model->rowCount();
         if (ncols <= 0) return {};
@@ -637,8 +643,12 @@ private:
         for (int c = 0; c < ncols; ++c) {
             // Floor: the header label must stay readable, plus room for the
             // sort-indicator arrow.
-            QString head = model->headerData(c, Qt::Horizontal, Qt::DisplayRole).toString();
-            floors[(size_t)c] = fm.horizontalAdvance(head) + pad + 3 * ch;
+            const QString head = model->headerData(c, Qt::Horizontal, Qt::DisplayRole).toString();
+            int headW = fm.horizontalAdvance(head);
+            if (typeFm)
+                headW = std::max(headW, typeFm->horizontalAdvance(
+                    model->headerData(c, Qt::Horizontal, ArrowTableModel::TypeRole).toString()));
+            floors[(size_t)c] = headW + pad + 3 * ch;
             samples[(size_t)c].reserve((size_t)sample);
             for (int64_t r = 0; r < sample; ++r) {
                 QString t = model->data(model->index((int)r, c), Qt::DisplayRole).toString();
@@ -659,7 +669,10 @@ private:
     }
 
     static void autosizeColumns(QTableView* view, ArrowTableModel* model) {
-        std::vector<int> w = planColumnWidths(model, view->fontMetrics());
+        auto* th = dynamic_cast<TypedHeaderView*>(view->horizontalHeader());
+        const QFontMetrics typeFm(th ? th->typeFont() : view->font());
+        std::vector<int> w = planColumnWidths(model, view->fontMetrics(),
+                                              th && th->showTypes() ? &typeFm : nullptr);
         QHeaderView* hh = view->horizontalHeader();
         for (int c = 0; c < model->columnCount() && c < (int)w.size(); ++c)
             hh->resizeSection(c, w[(size_t)c]);
@@ -736,6 +749,11 @@ private:
             (ofi.isFile() || ofi.isDir() || origin.contains(QLatin1String("://")));
         tabOrigin_[model] = TabOrigin{origin, primary, expand, reopenable};
         auto* view  = new QTableView(tabs_);
+        auto* header = new TypedHeaderView(view);
+        header->setSectionsClickable(true);
+        header->setHighlightSections(true);
+        header->setShowTypes(showTypes_);
+        view->setHorizontalHeader(header);
         // VVG_MIN_ROW_PX: the self-test's stand-in for a style whose header
         // sections have a larger minimum height (Breeze: 30 px).
         static const int testMinRowPx = [] {
@@ -1020,6 +1038,17 @@ private:
                 .setValue(QStringLiteral("smoothScroll"), on);
             for (auto* v : views_) if (v) applyScrollMode(v);
         });
+        QAction* types = makeAction(tr("Column &Types"), {},
+            tr("Each column's type under its name, in a smaller, dimmer font"));
+        types->setCheckable(true);
+        types->setChecked(showTypes_);
+        connect(types, &QAction::toggled, this, [this](bool on) {
+            showTypes_ = on;
+            QSettings(QStringLiteral("vv"), QStringLiteral("vvg")).setValue(QStringLiteral("ui/showColumnTypes"), on);
+            for (auto* v : views_)
+                if (auto* th = v ? dynamic_cast<TypedHeaderView*>(v->horizontalHeader()) : nullptr)
+                    th->setShowTypes(on);
+        });
         showMenuBarAct_ = makeAction(tr("&Menu Bar"), {},
             tr("The classic File / Edit / View / Help bar; the ≡ button holds the same"));
         showMenuBarAct_->setCheckable(true);
@@ -1095,6 +1124,7 @@ private:
         view->addAction(clearSort);
         view->addSeparator();
         view->addAction(detailsAct_);
+        view->addAction(types);
         view->addAction(smooth);
         view->addSeparator();
         view->addAction(showMenuBarAct_);
@@ -2301,6 +2331,19 @@ public:
         if (contextBar_->isVisible()) check(contextBar_);
         return QStringLiteral("width=%1 overlaps=%2").arg(width()).arg(overlaps);
     }
+    // Window self-test: the active tab's first column header — its lines,
+    // height, name and type line.
+    QString headerForTest() {
+        waitIdleForTest();
+        auto* v = activeView();
+        auto* m = activeModel();
+        auto* th = v ? dynamic_cast<TypedHeaderView*>(v->horizontalHeader()) : nullptr;
+        if (!m || !th || m->columnCount() == 0) return QStringLiteral("no header");
+        const QString type = m->headerData(0, Qt::Horizontal, ArrowTableModel::TypeRole).toString();
+        return QStringLiteral("lines=%1 height=%2 name='%3' type='%4'")
+            .arg(th->showTypes() && !type.isEmpty() ? 2 : 1).arg(th->sizeHint().height())
+            .arg(m->headerData(0, Qt::Horizontal, Qt::DisplayRole).toString(), type);
+    }
     QString contextForTest() { waitIdleForTest(); syncFileControls(); return contextBar_->describeForTest(); }
 
     // vv's view flags on vvg's command line (vvg --filter … --sort … file).
@@ -2895,6 +2938,7 @@ private:
     QLineEdit*                     filterEdit_ = nullptr;
     QLineEdit*                     findEdit_   = nullptr;
     bool                           smoothScroll_  = true;   // per-pixel scrolling
+    bool                           showTypes_     = true;   // the header's type line
     QMenu*                         recentMenu_  = nullptr;
     QMenu*                         columnsMenu_ = nullptr;
     static constexpr qint64        kSelectionSumMaxCells = 1'000'000;
@@ -3333,6 +3377,9 @@ int main(int argc, char** argv) {
         // format options, e.g. "context: region pileup tags contigs".
         if (const char* cx = std::getenv("VVG_CONTEXT"); cx && *cx && *cx != '0')
             std::printf("context: %s\n", win.contextForTest().toUtf8().constData());
+        // Optional header check: VVG_HEADER=1 (the first column's header).
+        if (const char* hd = std::getenv("VVG_HEADER"); hd && *hd && *hd != '0')
+            std::printf("header %s\n", win.headerForTest().toUtf8().constData());
         // Optional layout check: VVG_WIDTH=<px> shows the window that wide and
         // prints "width=<actual> overlaps=<n>" for the toolbar and the strip.
         if (const char* wd = std::getenv("VVG_WIDTH"); wd && *wd)

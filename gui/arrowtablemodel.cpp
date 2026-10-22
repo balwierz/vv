@@ -473,12 +473,13 @@ QVariant ArrowTableModel::data(const QModelIndex& index, int role) const {
 QVariant ArrowTableModel::headerData(int section, Qt::Orientation o, int role) const {
     if (o == Qt::Horizontal) {
         if (section < 0 || section >= (int)colNames_.size()) return {};
-        if (role == Qt::DisplayRole) {
-            // A nested type (struct<GT: string, AD: list<…>, …>) would size
-            // the column to its full text: elide it; the tooltip has it all.
+        if (role == Qt::DisplayRole) return colNames_[section];
+        if (role == TypeRole) {
+            // The header's type line (TypedHeaderView). A nested type
+            // (struct<GT: string, AD: list<…>, …>) would size the column to
+            // its full text: elide it; the tooltip has it all.
             const QString& t = colTypes_[section];
-            return colNames_[section] + "\n"
-                 + (t.size() > 32 ? t.left(31) + QChar(0x2026) : t);
+            return t.size() > 32 ? t.left(31) + QChar(0x2026) : t;
         }
         if (role == Qt::ToolTipRole)
             return colNames_[section] + " : " + colTypes_[section];

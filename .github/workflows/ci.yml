@@ -486,6 +486,13 @@ jobs:
           printf '[ui]\nshowMenuBar=true\n' > "$RUNNER_TEMP/vvgcfg-menus/vv/vvg.conf"
           XDG_CONFIG_HOME="$RUNNER_TEMP/vvgcfg-menus" VVG_WINTEST=1 VVG_MENU_DUMP=1 ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -qx 'menubar_visible=1'
+          # A column's type is a second header line (TypedHeaderView), not part
+          # of its name; View ▸ Column Types (ui/showColumnTypes) turns it off.
+          VVG_WINTEST=1 VVG_HEADER=1 ./build-gui/gui/vvg tests/data/tiny.parquet \
+            | grep -q "^header lines=2 height=[0-9]* name='Chr' type='string'$"
+          printf '[ui]\nshowColumnTypes=false\n' > "$RUNNER_TEMP/vvgcfg-menus/vv/vvg.conf"
+          XDG_CONFIG_HOME="$RUNNER_TEMP/vvgcfg-menus" VVG_WINTEST=1 VVG_HEADER=1 ./build-gui/gui/vvg tests/data/tiny.parquet \
+            | grep -q "^header lines=1 height=[0-9]* name='Chr' "
           # vvg takes vv's view flags (--filter / --sort / --select / --tab …);
           # the copied command reproduces them, --select order included.
           out=$(VVG_WINTEST=1 VVG_COPYCMD=1 ./build-gui/gui/vvg --filter 'Score > 0.5' --sort Score:desc \

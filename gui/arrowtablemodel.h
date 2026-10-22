@@ -61,6 +61,9 @@ public:
     int64_t  maxViewRows() const { return maxViewRows_; }
     int      columnCount(const QModelIndex& parent = {}) const override;
     QVariant data(const QModelIndex& index, int role) const override;
+    // Horizontal header: DisplayRole the column name, TypeRole its type
+    // (the second line TypedHeaderView draws), ToolTipRole both.
+    static constexpr int TypeRole = Qt::UserRole + 1;
     QVariant headerData(int section, Qt::Orientation o, int role) const override;
 
     bool canFetchMore(const QModelIndex& parent) const override;

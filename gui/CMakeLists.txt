@@ -15,6 +15,7 @@ add_executable(vvg
     columnpanel.cpp
     contextbar.cpp
     tabpane.cpp
+    typedheader.cpp
     vvg.qrc
 )
 target_include_directories(vvg PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
