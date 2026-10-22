@@ -385,6 +385,13 @@ jobs:
           grep -qF 'the window shows the first' <<<"$dims"
           [ "$rows" -gt 1000000 ]
           [ "$rows" -le 71582788 ]
+          # A sorted view shows rows of many chunks at once (60 row groups of
+          # 50); with a cache of 8 chunks each delivery evicted chunks still
+          # on screen, which were asked for again: reads and repaints without
+          # end, rows left at "…". The view must settle with every row read.
+          /tmp/vvpy/bin/python -c 'import pyarrow as pa, pyarrow.parquet as pq, random; random.seed(1); w = pq.ParquetWriter("/tmp/groups60.parquet", pa.schema([("id", pa.int64()), ("x", pa.float64())])); [w.write_table(pa.table({"id": list(range(g*50, g*50+50)), "x": [random.random() for _ in range(50)]})) for g in range(60)]; w.close()'
+          VVG_WINTEST=1 VVG_SORT=x VVG_SETTLE=3000 ./build-gui/gui/vvg /tmp/groups60.parquet \
+            | grep -qE '^settle idle=1 late_batches=0 rows=[0-9]+ unread=0$'
           # A filter superseded by a sort, then three jobs and the tab closed while
           # they run: each source has one reader thread; the closed tab gets nothing.
           VVG_WINTEST=1 VVG_RACE='Score > 0.5' ./build-gui/gui/vvg tests/data/tiny.parquet \
@@ -836,6 +843,13 @@ jobs:
           grep -qF 'the window shows the first' <<<"$dims"
           [ "$rows" -gt 1000000 ]
           [ "$rows" -le 71582788 ]
+          # A sorted view shows rows of many chunks at once (60 row groups of
+          # 50); with a cache of 8 chunks each delivery evicted chunks still
+          # on screen, which were asked for again: reads and repaints without
+          # end, rows left at "…". The view must settle with every row read.
+          /tmp/vvpy/bin/python -c 'import pyarrow as pa, pyarrow.parquet as pq, random; random.seed(1); w = pq.ParquetWriter("/tmp/groups60.parquet", pa.schema([("id", pa.int64()), ("x", pa.float64())])); [w.write_table(pa.table({"id": list(range(g*50, g*50+50)), "x": [random.random() for _ in range(50)]})) for g in range(60)]; w.close()'
+          VVG_WINTEST=1 VVG_SORT=x VVG_SETTLE=3000 ./build/gui/vvg /tmp/groups60.parquet \
+            | grep -qE '^settle idle=1 late_batches=0 rows=[0-9]+ unread=0$'
           # A filter superseded by a sort, then three jobs and the tab closed while
           # they run: each source has one reader thread; the closed tab gets nothing.
           VVG_WINTEST=1 VVG_RACE='Score > 0.5' ./build/gui/vvg tests/data/tiny.parquet \

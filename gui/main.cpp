@@ -2344,6 +2344,30 @@ public:
             .arg(th->showTypes() && !type.isEmpty() ? 2 : 1).arg(th->sizeHint().height())
             .arg(m->headerData(0, Qt::Horizontal, Qt::DisplayRole).toString(), type);
     }
+    // Window self-test: shown with ~60 rows on screen, let the view read and
+    // repaint for `ms`; then whether reads stopped, how many batches were
+    // read in the last half of that time, and the visible rows still unread.
+    QString settleForTest(int ms) {
+        show();
+        resize(1100, 1600);
+        auto* m = activeModel();
+        auto* v = activeView();
+        if (!m || !v) return QStringLiteral("no table");
+        QElapsedTimer t;
+        t.start();
+        int64_t half = -1;
+        while (t.elapsed() < ms) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            if (half < 0 && t.elapsed() >= ms / 2) half = m->readBatches();
+        }
+        int unread = 0;
+        const int first = v->rowAt(0), last = v->rowAt(v->viewport()->height() - 1);
+        for (int r = std::max(0, first); r <= (last < 0 ? m->rowCount() - 1 : last); ++r)
+            unread += m->data(m->index(r, 0), Qt::DisplayRole).toString() == QStringLiteral("\u2026");
+        return QStringLiteral("idle=%1 late_batches=%2 rows=%3 unread=%4")
+            .arg(m->hasPendingReads() ? 0 : 1).arg(m->readBatches() - std::max<int64_t>(0, half))
+            .arg((last < 0 ? m->rowCount() - 1 : last) - std::max(0, first) + 1).arg(unread);
+    }
     QString contextForTest() { waitIdleForTest(); syncFileControls(); return contextBar_->describeForTest(); }
 
     // vv's view flags on vvg's command line (vvg --filter … --sort … file).
@@ -3404,6 +3428,10 @@ int main(int argc, char** argv) {
             if (!win.sortActiveByName(spec, desc))
                 std::fprintf(stderr, "vvg: no column '%s' to sort\n", so);
         }
+        // Optional paint check: VVG_SETTLE=<ms> (after VVG_SORT): the shown
+        // view must stop reading with every visible row loaded.
+        if (const char* st = std::getenv("VVG_SETTLE"); st && *st)
+            std::printf("settle %s\n", win.settleForTest(std::atoi(st)).toUtf8().constData());
         if (const char* hd = std::getenv("VVG_HIDE"); hd && *hd)
             for (const QString& c : QString::fromLocal8Bit(hd).split(QLatin1Char(',')))
                 if (!win.hideActiveColumnForTest(c))

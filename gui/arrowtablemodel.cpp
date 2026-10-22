@@ -252,11 +252,15 @@ bool ArrowTableModel::coreLoadChunk(Core& core, int64_t row, const std::vector<i
 const ArrowTableModel::LoadedChunk* ArrowTableModel::cachedChunk(int64_t row) const {
     // A view paints cell after cell of the same rows: the chunk of the last
     // lookup answers without searching the cache or touching the LRU list.
-    if (lastChunk_ && row >= lastChunk_->first_row && row < lastChunkEnd_) return lastChunk_;
+    if (lastChunk_ && row >= lastChunk_->first_row && row < lastChunkEnd_) {
+        if (lastChunk_->idx != lastHit_) hitSinceDelivery_.insert(lastHit_ = lastChunk_->idx);
+        return lastChunk_;
+    }
     for (auto& [idx, lc] : cache_) {
         if (row < lc.first_row || row >= lc.first_row + lc.num_rows) continue;
         lru_.remove(idx);
         lru_.push_front(idx);
+        hitSinceDelivery_.insert(lastHit_ = idx);
         lastChunk_ = &lc;   // std::map nodes stay put until erased
         lastChunkEnd_ = lc.first_row + lc.num_rows;
         return lastChunk_;
@@ -270,7 +274,7 @@ const ArrowTableModel::LoadedChunk* ArrowTableModel::insertChunk(LoadedChunk lc)
     if (it == cache_.end()) {
         it = cache_.emplace(c, std::move(lc)).first;
         lru_.push_front(c);
-        while ((int)lru_.size() > kMaxCache) {
+        while ((int)lru_.size() > cacheCap_) {
             int victim = lru_.back();
             lru_.pop_back();
             if (victim == c) continue;
@@ -309,6 +313,7 @@ void ArrowTableModel::flushRequests() {
     std::vector<int64_t> rows(wantRows_.begin(), wantRows_.end());
     wantRows_.clear();
     inflight_.insert(rows.begin(), rows.end());
+    ++readBatches_;
     owner_->post([this, core = core_, mail = mail_, cols = displayCols_, rows, gen = gen_] {
         test_read_delay();
         std::vector<LoadedChunk> got;
@@ -336,6 +341,14 @@ void ArrowTableModel::onChunksLoaded(uint64_t gen, std::vector<LoadedChunk> chun
     if (gen != gen_) return;                 // the cache was cleared since: stale
     meta_ = std::move(meta);
     for (int64_t r : failed) failedRows_.insert(r);
+    // Room for every chunk the view read since the last delivery and the
+    // ones arriving, so none it shows is evicted by this delivery. Nothing
+    // read since (two deliveries between paints): keep the room there is.
+    const int need = (int)(hitSinceDelivery_.size() + chunks.size()) + kMaxCache;
+    cacheCap_ = std::clamp(hitSinceDelivery_.empty() ? std::max(cacheCap_, need) : need,
+                           kMaxCache, kMaxCacheCeiling);
+    hitSinceDelivery_.clear();
+    lastHit_ = -1;
     for (LoadedChunk& lc : chunks) insertChunk(std::move(lc));
     if (rowCount() > 0 && columnCount() > 0)
         emit dataChanged(index(0, 0), index(rowCount() - 1, columnCount() - 1));
@@ -360,6 +373,9 @@ void ArrowTableModel::clearChunkCache() const {
     cache_.clear();
     lru_.clear();
     lastChunk_ = nullptr;
+    cacheCap_ = kMaxCache;
+    hitSinceDelivery_.clear();
+    lastHit_ = -1;
     wantRows_.clear();
     failedRows_.clear();
     ++gen_;              // chunks still in flight are dropped on arrival

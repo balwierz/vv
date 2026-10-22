@@ -109,6 +109,9 @@ public:
     bool    isReady() const { return !loading_; }
     // Chunks requested for the view and not yet delivered.
     bool    hasPendingReads() const { return !wantRows_.empty() || !inflight_.empty(); }
+    // Batches of rows sent to the owner thread so far (the self-test's
+    // measure of a view that keeps re-reading).
+    int64_t readBatches() const { return readBatches_; }
     // Rows 0..n-1 of the source, all in the chunk cache (identity view only):
     // what column autosizing may sample without asking for more.
     int64_t loadedPrefixRows() const;
@@ -277,7 +280,16 @@ private:
 
     mutable std::map<int, LoadedChunk> cache_;
     mutable std::list<int>             lru_;
+    // The cache keeps at least kMaxCache chunks, and as many as the view
+    // used since the last delivery plus the chunks delivered (up to
+    // kMaxCacheCeiling): a sorted or filtered view shows rows of many chunks
+    // at once, and evicting one it still shows makes the next paint ask for
+    // it again — reads and repaints without end.
     static constexpr int               kMaxCache = 8;
+    static constexpr int               kMaxCacheCeiling = 1024;
+    mutable int                        cacheCap_ = kMaxCache;
+    mutable std::set<int>              hitSinceDelivery_;   // chunk indexes the view read
+    mutable int                        lastHit_ = -1;
     // The chunk of the last chunkForRow and the end of its rows; reset with
     // the cache (clearChunkCache), and set to the entry chunkForRow returns,
     // which the eviction there never removes.
@@ -292,6 +304,7 @@ private:
     mutable std::set<int64_t>          inflight_;           // sent, not yet delivered
     mutable std::set<int64_t>          failedRows_;         // read failed: no retry
     mutable bool                       flushPending_ = false;
+    int64_t                            readBatches_ = 0;
     mutable uint64_t                   gen_ = 0;
     bool                               fetching_ = false;   // async fetchMore in flight
     // The last cell decoded by data(): a view asks for DisplayRole and then
