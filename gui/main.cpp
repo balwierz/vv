@@ -64,10 +64,17 @@
 #include <QTableWidget>
 #include <QTemporaryFile>
 #include <QToolBar>
+#include <QToolButton>
+#include <QHBoxLayout>
+#include <QResizeEvent>
+#include <QCloseEvent>
+#include <QDesktopServices>
+#include <QPolygonF>
 #include <QTreeView>
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include <functional>
 #include <map>
 
 #include <cstdio>
@@ -208,6 +215,51 @@ static void flashRect(QWidget* host, const QRect& r) {
     anim->start();
 }
 
+// Toolbar icons where the icon theme has none: monochrome strokes in the
+// window text colour, drawn on a 16-unit grid with gg's line weight (its
+// bundled SVGs), so vvg needs no SVG module.
+enum class Glyph { Menu, Details, Export, Filter, Find };
+static QIcon glyphIcon(Glyph g, const QColor& color) {
+    QIcon icon;
+    for (int px : {16, 20, 22, 24, 32, 48}) {
+        QPixmap pm(px, px);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.scale(px / 16.0, px / 16.0);
+        p.setPen(QPen(color, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        switch (g) {
+        case Glyph::Menu:                     // three bars
+            for (double y : {4.0, 8.0, 12.0}) p.drawLine(QPointF(2.5, y), QPointF(13.5, y));
+            break;
+        case Glyph::Details:                  // a window with a panel on the right
+            p.drawRoundedRect(QRectF(1.75, 2.75, 12.5, 10.5), 1.5, 1.5);
+            p.drawLine(QPointF(10, 2.75), QPointF(10, 13.25));
+            p.drawLine(QPointF(11.3, 5.5), QPointF(12.7, 5.5));
+            p.drawLine(QPointF(11.3, 8), QPointF(12.7, 8));
+            break;
+        case Glyph::Export:                   // an arrow out of a tray
+            p.drawPolyline(QPolygonF({QPointF(2.75, 9.5), QPointF(2.75, 13.25),
+                                      QPointF(13.25, 13.25), QPointF(13.25, 9.5)}));
+            p.drawLine(QPointF(8, 10.5), QPointF(8, 2.75));
+            p.drawPolyline(QPolygonF({QPointF(5, 5.75), QPointF(8, 2.75), QPointF(11, 5.75)}));
+            break;
+        case Glyph::Filter:                   // a funnel
+            p.drawPolygon(QPolygonF({QPointF(2.25, 3), QPointF(13.75, 3), QPointF(9.5, 8.25),
+                                     QPointF(9.5, 13), QPointF(6.5, 11.5), QPointF(6.5, 8.25)}));
+            break;
+        case Glyph::Find:                     // a magnifier
+            p.drawEllipse(QPointF(6.75, 6.75), 4.25, 4.25);
+            p.drawLine(QPointF(9.9, 9.9), QPointF(13.5, 13.5));
+            break;
+        }
+        p.end();
+        icon.addPixmap(pm);
+    }
+    return icon;
+}
+
 class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(std::vector<std::unique_ptr<TabularSource>> sources = {}) {
@@ -223,10 +275,9 @@ public:
 
         smoothScroll_ = QSettings(QStringLiteral("vv"), QStringLiteral("vvg"))
                             .value(QStringLiteral("smoothScroll"), true).toBool();
-        buildMenus();
         buildDetailDock();
+        buildMenus();
         buildToolbar();
-        buildSearchBar();
         buildRegionBar();
         buildProgressUI();
 
@@ -236,6 +287,11 @@ public:
         }
 
         resize(1100, 760);
+        // The window's size and its dock / toolbar layout from the last run.
+        const QSettings st(QStringLiteral("vv"), QStringLiteral("vvg"));
+        restoreGeometry(st.value(QStringLiteral("geometry")).toByteArray());
+        restoreState(st.value(QStringLiteral("windowState")).toByteArray());
+        compactToolbar(true);
         refreshStatus();
     }
 
@@ -749,20 +805,38 @@ private:
                 [this, view](const QPoint& p){ showTableContextMenu(view, p); });
         view->horizontalHeader()->setSectionsClickable(true);
 
-        // Click a column header to sort (toggle asc/desc), typed via Arrow,
-        // off the UI thread. The cursor moves to that column, so the Column
-        // tab summarises the column clicked.
+        // Click a column header to sort: ascending, descending, then the
+        // file's order again; typed via Arrow, off the UI thread. The cursor
+        // moves to that column, so the Column tab summarises the column clicked.
         connect(view->horizontalHeader(), &QHeaderView::sectionClicked,
                 this, [this, view, model](int section) {
                     keepCol_[model] = section;
-                    Qt::SortOrder ord = Qt::AscendingOrder;
-                    if (model->sortColumn() == section &&
-                        sortOrder_.value(model, Qt::AscendingOrder) == Qt::AscendingOrder)
-                        ord = Qt::DescendingOrder;
-                    sortOrder_[model] = ord;
-                    model->sortAsyncByDisplayColumn(section, ord);
-                    view->horizontalHeader()->setSortIndicatorShown(true);
-                    view->horizontalHeader()->setSortIndicator(section, ord);
+                    const bool sorted = model->sortColumn() == section;
+                    const Qt::SortOrder was = sortOrder_.value(model, Qt::AscendingOrder);
+                    if (sorted && was == Qt::DescendingOrder) { clearSortOf(model, view); return; }
+                    sortByColumn(model, view, section,
+                                 sorted ? Qt::DescendingOrder : Qt::AscendingOrder);
+                });
+        view->horizontalHeader()->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(view->horizontalHeader(), &QWidget::customContextMenuRequested, this,
+                [this, view, model](const QPoint& p) {
+                    const int section = view->horizontalHeader()->logicalIndexAt(p);
+                    QMenu menu(this);
+                    if (section >= 0) {
+                        connect(menu.addAction(tr("Sort &Ascending")), &QAction::triggered, this,
+                                [=, this] { sortByColumn(model, view, section, Qt::AscendingOrder); });
+                        connect(menu.addAction(tr("Sort &Descending")), &QAction::triggered, this,
+                                [=, this] { sortByColumn(model, view, section, Qt::DescendingOrder); });
+                    }
+                    QAction* clr = menu.addAction(tr("Clear &Sort"));
+                    clr->setEnabled(model->sortColumn() >= 0);
+                    connect(clr, &QAction::triggered, this, [=, this] { clearSortOf(model, view); });
+                    if (section >= 0) {
+                        menu.addSeparator();
+                        connect(menu.addAction(tr("&Hide Column")), &QAction::triggered, this,
+                                [=, this] { view->setColumnHidden(section, true); refreshColumnsMenu(); });
+                    }
+                    menu.exec(view->horizontalHeader()->mapToGlobal(p));
                 });
 
         // A filter, sort or find resets the model twice (blank, then the new
@@ -867,77 +941,94 @@ private:
         refreshStatus();
     }
 
-    void buildMenus() {
-        auto* file = menuBar()->addMenu(tr("&File"));
-        QAction* open = new QAction(tr("&Open…"), this);
-        open->setShortcut(QKeySequence::Open);
-        connect(open, &QAction::triggered, this, [this]{ openFilesDialog(); });
-        file->addAction(open);
-        QAction* openDir = new QAction(tr("Open &Folder…"), this);
-        openDir->setToolTip(tr("Open a directory as one dataset (Parquet / CSV / "
-                               "JSON parts; Hive key=value/ partitions)"));
-        connect(openDir, &QAction::triggered, this, [this]{ openFolderDialog(); });
-        file->addAction(openDir);
-        recentMenu_ = file->addMenu(tr("Open &Recent"));
-        rebuildRecentMenu();
-        file->addSeparator();
-        exportAction_ = new QAction(tr("&Export View As…"), this);
-        exportAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+E")));
-        exportAction_->setToolTip(tr("Write this tab's rows — with its filter, sort and "
-                                     "visible columns — to Parquet, Arrow, TSV, CSV or JSON"));
-        connect(exportAction_, &QAction::triggered, this, [this]{ exportViewDialog(); });
-        file->addAction(exportAction_);
-        file->addSeparator();
-        QAction* close = new QAction(tr("&Close Tab"), this);
-        close->setShortcut(QKeySequence::Close);
-        connect(close, &QAction::triggered, this, [this]{ closeTab(tabs_->currentIndex()); });
-        file->addAction(close);
-        file->addSeparator();
-        QAction* quit = new QAction(tr("&Quit"), this);
-        quit->setShortcut(QKeySequence::Quit);
-        connect(quit, &QAction::triggered, qApp, &QApplication::quit);
-        file->addAction(quit);
+    // ── Actions, menus, toolbar (the layout of gg, the genome browser) ──────
+    // Every command is one QAction, added to the window so its shortcut works
+    // with the menu bar hidden; the menu bar and the ≡ menu hold the same
+    // actions and submenus. Tooltips read "Name (Shortcut)\nexplanation".
+    QAction* makeAction(const QString& text, const QKeySequence& key, const QString& explanation,
+                        std::function<void()> fn = {}) {
+        auto* a = new QAction(text, this);
+        if (!key.isEmpty()) a->setShortcut(key);
+        if (fn) connect(a, &QAction::triggered, this, [fn = std::move(fn)] { fn(); });
+        return reg(a, explanation);
+    }
+    QAction* reg(QAction* a, const QString& explanation) {
+        addAction(a);
+        QString name = a->text();
+        name.remove(QLatin1Char('&'));
+        if (name.endsWith(QChar(0x2026))) name.chop(1);
+        QString tip = name;
+        if (!a->shortcut().isEmpty())
+            tip += QStringLiteral(" (%1)").arg(a->shortcut().toString(QKeySequence::NativeText));
+        if (!explanation.isEmpty()) tip += QLatin1Char('\n') + explanation;
+        a->setToolTip(tip);
+        return a;
+    }
+    // The theme's icon, else the drawn glyph; redrawn when the palette changes.
+    QIcon themedIcon(const char* themeName, Glyph g) const {
+        if (QIcon::hasThemeIcon(QLatin1String(themeName))) return QIcon::fromTheme(QLatin1String(themeName));
+        return glyphIcon(g, palette().color(QPalette::WindowText));
+    }
+    void setActionIcon(QAction* a, const char* themeName, Glyph g) {
+        iconActions_.push_back({a, themeName, g});
+        a->setIcon(themedIcon(themeName, g));
+    }
+    void refreshIcons() {
+        for (const auto& ia : iconActions_) ia.action->setIcon(themedIcon(ia.themeName, ia.glyph));
+    }
 
-        auto* edit = menuBar()->addMenu(tr("&Edit"));
-        QAction* cp = new QAction(tr("&Copy"), this);
-        cp->setShortcut(QKeySequence::Copy);
-        connect(cp, &QAction::triggered, this, [this]{ copySelection(); });
-        edit->addAction(cp);
-        QAction* cpRow = new QAction(tr("Copy &Row"), this);
-        cpRow->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+C")));
-        connect(cpRow, &QAction::triggered, this, [this]{ copyRows(); });
-        edit->addAction(cpRow);
-        edit->addSeparator();
-        QAction* cpCmd = new QAction(tr("Copy as &vv Command"), this);
-        cpCmd->setShortcut(QKeySequence(QStringLiteral("Ctrl+Alt+C")));
-        cpCmd->setToolTip(tr("Copy the vv command line that reproduces this tab: "
-                             "file, tab, region options, filter, sort and the "
-                             "visible columns"));
-        connect(cpCmd, &QAction::triggered, this, [this]{ copyCommand(); });
-        edit->addAction(cpCmd);
-        edit->addSeparator();
+    void buildMenus() {
+        QAction* open = makeAction(tr("&Open…"), QKeySequence::Open, tr("Open one or more data files"),
+                                   [this] { openFilesDialog(); });
+        QAction* openDir = makeAction(tr("Open &Folder…"), {},
+            tr("Open a directory as one dataset (Parquet / CSV / JSON parts; Hive key=value/ partitions)"),
+            [this] { openFolderDialog(); });
+        exportAction_ = makeAction(tr("&Export View As…"), QKeySequence(QStringLiteral("Ctrl+E")),
+            tr("Write this tab's rows — with its filter, sort and visible columns — to Parquet, "
+               "Arrow, TSV, CSV or JSON"),
+            [this] { exportViewDialog(); });
+        exportAction_->setIconText(tr("Export…"));
+        setActionIcon(exportAction_, "document-export", Glyph::Export);
+        openExportDirAct_ = makeAction(tr("Open Export &Folder"), {},
+            tr("Show the folder of the last export"), [this] {
+                if (!exportPath_.isEmpty())
+                    QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(exportPath_).absolutePath()));
+            });
+        openExportDirAct_->setEnabled(false);
+        QAction* close = makeAction(tr("&Close Tab"), QKeySequence::Close, {},
+                                    [this] { closeTab(tabs_->currentIndex()); });
+        QAction* quit = makeAction(tr("&Quit"), QKeySequence::Quit, {}, [] { QApplication::quit(); });
+
+        QAction* cp = makeAction(tr("&Copy"), QKeySequence::Copy, tr("Copy the selected cells"),
+                                 [this] { copySelection(); });
+        QAction* cpRow = makeAction(tr("Copy &Row"), QKeySequence(QStringLiteral("Ctrl+Shift+C")),
+                                    tr("Copy the selected rows, every column"), [this] { copyRows(); });
+        copyCmdAct_ = makeAction(tr("Copy as &vv Command"), QKeySequence(QStringLiteral("Ctrl+Alt+C")),
+            tr("Copy the vv command line that reproduces this tab: file, tab, format options, "
+               "filter, sort and the visible columns"),
+            [this] { copyCommand(); });
         // F3 alone: QKeySequence::FindNext also carries Ctrl+G on GNOME /
         // generic themes, which would collide with Go to Row. Two window
         // shortcuts on one key are ambiguous and Qt runs neither.
-        QAction* findNext = new QAction(tr("Find &Next"), this);
-        findNext->setShortcut(QKeySequence(Qt::Key_F3));
-        connect(findNext, &QAction::triggered, this, [this]{ doFind(true); });
-        edit->addAction(findNext);
+        QAction* findNext = makeAction(tr("Find &Next"), QKeySequence(Qt::Key_F3), tr("The next match of Find"),
+                                       [this] { doFind(true); });
+        QAction* focusFilter = makeAction(tr("&Filter…"), QKeySequence(QStringLiteral("Ctrl+Shift+F")),
+            tr("Type a row filter, e.g. score > 5 and chrom == \"chr1\""),
+            [this] { filterEdit_->setFocus(); filterEdit_->selectAll(); });
+        QAction* focusFind = makeAction(tr("F&ind…"), QKeySequence(QStringLiteral("Ctrl+F")),
+            tr("Type a regular expression to find in the cells"),
+            [this] { findEdit_->setFocus(); findEdit_->selectAll(); });
 
-        auto* view = menuBar()->addMenu(tr("&View"));
-        viewMenu_ = view;
-        QAction* go = new QAction(tr("&Go to Row…"), this);
-        go->setShortcut(QKeySequence(QStringLiteral("Ctrl+G")));
-        connect(go, &QAction::triggered, this, [this]{ gotoRow(); });
-        view->addAction(go);
-        view->addSeparator();
-        columnsMenu_ = view->addMenu(tr("&Columns"));
-        refreshColumnsMenu();
-        view->addSeparator();
+        QAction* go = makeAction(tr("&Go to Row…"), QKeySequence(QStringLiteral("Ctrl+G")), {},
+                                 [this] { gotoRow(); });
+        QAction* clearSort = makeAction(tr("Clear &Sort"), {},
+            tr("Back to the file's row order (a third click on the sorted header does the same)"),
+            [this] { if (auto* m = activeModel()) clearSortOf(m, activeView()); });
         // Smooth (per-pixel) scrolling in both directions; off = Qt's default
         // per-item stepping, which keeps the leftmost column / top row aligned
         // to the edge. Saved in vvg's settings (key smoothScroll).
-        QAction* smooth = view->addAction(tr("&Smooth Scrolling"));
+        QAction* smooth = makeAction(tr("&Smooth Scrolling"), {},
+            tr("Scroll by pixels; off steps whole columns and rows"));
         smooth->setCheckable(true);
         smooth->setChecked(smoothScroll_);
         connect(smooth, &QAction::toggled, this, [this](bool on) {
@@ -946,29 +1037,118 @@ private:
                 .setValue(QStringLiteral("smoothScroll"), on);
             for (auto* v : views_) if (v) applyScrollMode(v);
         });
-
-        auto* help = menuBar()->addMenu(tr("&Help"));
-        connect(help->addAction(tr("&Shortcuts && Syntax")), &QAction::triggered, this, [this]{
+        showMenuBarAct_ = makeAction(tr("&Menu Bar"), {},
+            tr("The classic File / Edit / View / Help bar; the ≡ button holds the same"));
+        showMenuBarAct_->setCheckable(true);
+        connect(showMenuBarAct_, &QAction::toggled, this, [this](bool on) {
+            if (menuBar()->isNativeMenuBar()) return;
+            menuBar()->setVisible(on);
+            QSettings(QStringLiteral("vv"), QStringLiteral("vvg")).setValue(QStringLiteral("ui/showMenuBar"), on);
+        });
+        showAppMenuAct_ = makeAction(tr("Me&nu"), QKeySequence(Qt::Key_F10),
+                                     tr("Files, export, edit, view and help"), [this] {
+            if (appButton_ && appButton_->isVisible()) appButton_->showMenu();
+            else if (appMenu_) appMenu_->popup(mainBar_->mapToGlobal(QPoint(mainBar_->width() - 1, mainBar_->height())));
+        });
+        setActionIcon(showAppMenuAct_, "open-menu", Glyph::Menu);
+        QAction* helpAct = makeAction(tr("&Shortcuts && Syntax"), QKeySequence(Qt::Key_F1), {}, [this] {
             QMessageBox::information(this, tr("vvg — help"),
-                tr("Sort:    click a column header (toggles ascending/descending)\n"
-                   "Filter:  the Filter bar — e.g.  score > 5 and chrom == \"chr1\"\n"
-                   "Find:    the Find bar (regex); F3 for the next match\n"
+                tr("Sort:    click a column header (ascending, descending, then off)\n"
+                   "Filter:  the Filter box (Ctrl+Shift+F) — e.g.  score > 5 and chrom == \"chr1\"\n"
+                   "Find:    the Find box (Ctrl+F, regex); F3 for the next match\n"
                    "Region:  the Region bar — chr1:1000-2000 (UCSC) / NCBI; Pileup for BAM\n"
-                   "Expand:  GFF/GTF attributes and VCF INFO open as one column per key (toolbar toggle)\n"
+                   "Expand:  GFF/GTF attributes and VCF INFO open as one column per key (Region bar toggle)\n"
+                   "Options: a file's format options apply to that file's tabs only\n"
                    "Copy:    Ctrl+C the selection, Ctrl+Shift+C a whole row; right-click for both\n"
                    "Command: Ctrl+Alt+C copies the vv command line for this tab\n"
                    "Export:  Ctrl+E writes this tab's view (filter, sort, visible columns) to a file\n"
+                   "Details: Ctrl+B shows the cursor row and the cursor column's statistics\n"
                    "Slice:   ◀ / ▶ steps the leading axis of NPZ 3-D+ arrays\n"
                    "Go to:   Ctrl+G jumps to a row; View ▸ Columns shows/hides columns\n"
+                   "Menu:    F10 or the ≡ button; View ▸ Menu Bar shows the classic menus\n"
                    "Scroll:  smooth (per-pixel) by default; View ▸ Smooth Scrolling off\n"
                    "         steps whole columns / rows"));
         });
-        connect(help->addAction(tr("&About vvg")), &QAction::triggered, this, [this]{
+        QAction* about = makeAction(tr("&About vvg"), {}, {}, [this] {
             QMessageBox::about(this, tr("vvg"),
                 tr("vv — graphical viewer.\n\nOpens every format the vv CLI supports "
                    "(Parquet, Arrow, BAM/VCF/BCF, BED/GFF, HDF5/AnnData, NPZ, xlsx/ods, "
                    "SQLite, …) through the shared libvvcore reader core."));
         });
+
+        auto* file = menuBar()->addMenu(tr("&File"));
+        file->setToolTipsVisible(true);
+        file->addAction(open);
+        file->addAction(openDir);
+        recentMenu_ = file->addMenu(tr("Open &Recent"));
+        rebuildRecentMenu();
+        file->addSeparator();
+        file->addAction(exportAction_);
+        file->addSeparator();
+        file->addAction(close);
+        file->addSeparator();
+        file->addAction(quit);
+
+        auto* edit = menuBar()->addMenu(tr("&Edit"));
+        edit->setToolTipsVisible(true);
+        edit->addAction(cp);
+        edit->addAction(cpRow);
+        edit->addSeparator();
+        edit->addAction(copyCmdAct_);
+        edit->addSeparator();
+        edit->addAction(focusFilter);
+        edit->addAction(focusFind);
+        edit->addAction(findNext);
+
+        auto* view = menuBar()->addMenu(tr("&View"));
+        view->setToolTipsVisible(true);
+        viewMenu_ = view;
+        view->addAction(go);
+        view->addSeparator();
+        columnsMenu_ = view->addMenu(tr("&Columns"));
+        refreshColumnsMenu();
+        view->addAction(clearSort);
+        view->addSeparator();
+        view->addAction(detailsAct_);
+        view->addAction(smooth);
+        view->addSeparator();
+        view->addAction(showMenuBarAct_);
+
+        auto* help = menuBar()->addMenu(tr("&Help"));
+        help->setToolTipsVisible(true);
+        help->addAction(helpAct);
+        help->addAction(about);
+
+        // The menu bar is hidden unless asked for; a native one (macOS) always shows.
+        const bool native = menuBar()->isNativeMenuBar();
+        showMenuBarAct_->setEnabled(!native);
+        showMenuBarAct_->setChecked(native || QSettings(QStringLiteral("vv"), QStringLiteral("vvg"))
+                                                  .value(QStringLiteral("ui/showMenuBar"), false).toBool());
+        menuBar()->setVisible(showMenuBarAct_->isChecked());
+
+        // The ≡ menu: the same actions and submenus.
+        appMenu_ = new QMenu(tr("vvg"), this);
+        appMenu_->setToolTipsVisible(true);
+        appMenu_->addAction(open);
+        appMenu_->addAction(openDir);
+        appMenu_->addMenu(recentMenu_);
+        appMenu_->addSeparator();
+        appMenu_->addAction(exportAction_);
+        appMenu_->addAction(close);
+        appMenu_->addSeparator();
+        appMenu_->addMenu(edit);
+        appMenu_->addMenu(view);
+        appMenu_->addSeparator();
+        appMenu_->addMenu(help);
+        appMenu_->addSeparator();
+        appMenu_->addAction(quit);
+
+        exportMenu_ = new QMenu(this);
+        exportMenu_->setToolTipsVisible(true);
+        exportMenu_->addAction(exportAction_);
+        exportMenu_->addAction(copyCmdAct_);
+        exportMenu_->addSeparator();
+        exportMenu_->addAction(openExportDirAct_);
     }
 
     // Rebuild the View ▸ Columns checkable list for the active table.
@@ -1062,8 +1242,14 @@ private:
     }
 
     void buildRegionBar() {
+        addToolBarBreak();
         auto* tb = addToolBar(tr("Region"));
         regionBar_ = tb;
+        tb->setObjectName(QStringLiteral("regionToolbar"));
+        // NPZ 3-D+ arrays: step the leading axis.
+        connect(tb->addAction(tr("◀ Slice")), &QAction::triggered, this, [this]{ stepSlice(-1); });
+        connect(tb->addAction(tr("Slice ▶")), &QAction::triggered, this, [this]{ stepSlice(+1); });
+        tb->addSeparator();
         tb->addWidget(new QLabel(tr("  Region: ")));
         regionEdit_ = new QLineEdit(tb);
         regionEdit_->setPlaceholderText(tr("chr1:1000-2000[,chr2:…]"));
@@ -1271,6 +1457,25 @@ protected:
             if (u.isLocalFile()) paths << u.toLocalFile();
         openPaths(paths);
     }
+    void resizeEvent(QResizeEvent* e) override {
+        QMainWindow::resizeEvent(e);
+        compactToolbar();
+    }
+    void closeEvent(QCloseEvent* e) override {
+        QSettings st(QStringLiteral("vv"), QStringLiteral("vvg"));
+        st.setValue(QStringLiteral("geometry"), saveGeometry());
+        st.setValue(QStringLiteral("windowState"), saveState());
+        QMainWindow::closeEvent(e);
+    }
+    void changeEvent(QEvent* e) override {
+        if (e->type() == QEvent::PaletteChange || e->type() == QEvent::ApplicationPaletteChange ||
+            e->type() == QEvent::FontChange || e->type() == QEvent::ApplicationFontChange ||
+            e->type() == QEvent::StyleChange) {
+            refreshIcons();
+            QTimer::singleShot(0, this, [this] { sizeToolbarButtons(); });   // once the size hints follow
+        }
+        QMainWindow::changeEvent(e);
+    }
 
 private:
     QTableView*     activeView()  const {
@@ -1322,7 +1527,8 @@ private:
         details->setShortcut(QKeySequence(QStringLiteral("Ctrl+B")));
         details->setToolTip(tr("Show or hide the Details panel: the cursor row and the "
                                "cursor column's statistics (Ctrl+B)"));
-        addAction(details);   // the shortcut works with the menu bar hidden
+        detailsAct_ = details;
+        setActionIcon(details, "view-right-new", Glyph::Details);
         connect(colPanel_, &ColumnPanel::cancelRequested, this, [this] {
             cancelColumnStats();
             colPanel_->showNote(tr("Column"), tr("Canceled."));
@@ -1332,10 +1538,6 @@ private:
                 [this](int i) { filterToValue(i); });
         connect(colPanel_, &ColumnPanel::copyCommandRequested, this, [this] { copyColumnCommand(); });
         connect(colPanel_, &ColumnPanel::showColumnRequested, this, [this] { showCursorColumn(); });
-        if (viewMenu_) {
-            viewMenu_->addSeparator();
-            viewMenu_->addAction(details);
-        }
     }
 
     // ── Column tab ──────────────────────────────────────────────────────────
@@ -1673,59 +1875,59 @@ private:
         statusBar()->showMessage(tr("Copied the vv command"), 2000);
     }
 
+    void sortByColumn(ArrowTableModel* m, QTableView* v, int section, Qt::SortOrder ord) {
+        sortOrder_[m] = ord;
+        m->sortAsyncByDisplayColumn(section, ord);
+        v->horizontalHeader()->setSortIndicatorShown(true);
+        v->horizontalHeader()->setSortIndicator(section, ord);
+    }
+    void clearSortOf(ArrowTableModel* m, QTableView* v) {
+        if (m->sortColumn() < 0) return;
+        sortOrder_.remove(m);
+        m->sortAsyncByDisplayColumn(-1, Qt::AscendingOrder);
+        if (v) v->horizontalHeader()->setSortIndicatorShown(false);
+    }
     QTableView* viewOf(ArrowTableModel* m) const {
         for (size_t i = 0; i < models_.size(); ++i)
             if (models_[i] == m) return views_[i];
         return nullptr;
     }
 
+    // One toolbar row, as in gg: the Filter and Find boxes, then on the right
+    // the Details panel toggle, Export… and the ≡ menu (also on a right-click
+    // anywhere on the toolbar). Format options live in the Region bar below.
     void buildToolbar() {
-        auto* tb = addToolBar(tr("View"));
-        QAction* prev = tb->addAction(tr("◀ Slice"));
-        connect(prev, &QAction::triggered, this, [this]{ stepSlice(-1); });
-        QAction* next = tb->addAction(tr("Slice ▶"));
-        connect(next, &QAction::triggered, this, [this]{ stepSlice(+1); });
-        tb->addSeparator();
-        QAction* clr = tb->addAction(tr("Clear sort"));
-        connect(clr, &QAction::triggered, this, [this]{
-            if (auto* m = activeModel()) {
-                m->sortAsyncByDisplayColumn(-1, Qt::AscendingOrder);
-                if (auto* v = activeView())
-                    v->horizontalHeader()->setSortIndicatorShown(false);
-            }
-        });
-        QAction* st = tb->addAction(tr("Σ Stats"));
-        connect(st, &QAction::triggered, this, [this]{ showStats(); });
-    }
+        mainBar_ = addToolBar(tr("Main"));
+        mainBar_->setObjectName(QStringLiteral("mainToolbar"));
+        mainBar_->setMovable(false);
+        mainBar_->setIconSize(QSize(22, 22));
+        mainBar_->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        mainBar_->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(mainBar_, &QToolBar::customContextMenuRequested, this,
+                [this](const QPoint& p) { appMenu_->popup(mainBar_->mapToGlobal(p)); });
 
-    // Σ Stats: the Column tab of the right dock.
-    void showStats() {
-        showColumnTab();
-        colTimer_->start();
-    }
-    // The Details dock, on its Column tab.
-    void showColumnTab() {
-        detailsDock_->show();
-        detailsDock_->raise();
-        detailTabs_->setCurrentWidget(colPanel_);
-    }
-
-    void buildSearchBar() {
-        auto* tb = addToolBar(tr("Find / Filter"));
-        tb->addWidget(new QLabel(tr("  Filter: ")));
-        filterEdit_ = new QLineEdit(tb);
-        filterEdit_->setPlaceholderText(tr("e.g.  score > 5 and chrom == \"chr1\""));
+        // The boxes in one widget, so the toolbar never squeezes them into
+        // the buttons; capped so a wide window leaves the buttons at the right.
+        searchGroup_ = new QWidget(mainBar_);
+        auto* lay = new QHBoxLayout(searchGroup_);
+        lay->setContentsMargins(0, 0, 0, 0);
+        lay->setSpacing(6);
+        filterEdit_ = new QLineEdit(searchGroup_);
+        filterEdit_->setPlaceholderText(tr("Filter   e.g.  score > 5 and chrom == \"chr1\""));
         filterEdit_->setClearButtonEnabled(true);
-        filterEdit_->setMinimumWidth(280);
-        tb->addWidget(filterEdit_);
+        filterEdit_->setMinimumWidth(160);
+        filterEdit_->setToolTip(tr("Keep the rows matching an expression (Enter applies; Ctrl+Shift+F)"));
+        auto* filterIcon = filterEdit_->addAction(QIcon(), QLineEdit::LeadingPosition);
+        setActionIcon(filterIcon, "view-filter", Glyph::Filter);
         connect(filterEdit_, &QLineEdit::returnPressed, this, [this]{ applyFilter(); });
-
-        tb->addWidget(new QLabel(tr("   Find: ")));
-        findEdit_ = new QLineEdit(tb);
-        findEdit_->setPlaceholderText(tr("regex (Enter = next)"));
+        findEdit_ = new QLineEdit(searchGroup_);
+        findEdit_->setPlaceholderText(tr("Find (regex) — Enter: next match"));
         findEdit_->setClearButtonEnabled(true);
-        findEdit_->setMinimumWidth(200);
-        tb->addWidget(findEdit_);
+        findEdit_->setMinimumWidth(120);
+        findEdit_->setToolTip(tr("Highlight the cells matching a regular expression (Enter: next "
+                                 "match, F3; Ctrl+F)"));
+        auto* findIcon = findEdit_->addAction(QIcon(), QLineEdit::LeadingPosition);
+        setActionIcon(findIcon, "edit-find", Glyph::Find);
         connect(findEdit_, &QLineEdit::returnPressed, this, [this]{ doFind(true); });
         connect(findEdit_, &QLineEdit::textChanged, this, [this](const QString& t){
             if (JsonTab* jt = activeJsonTab()) {
@@ -1739,6 +1941,74 @@ private:
                          t, QRegularExpression::CaseInsensitiveOption));
             }
         });
+        lay->addWidget(filterEdit_, 3);
+        lay->addWidget(findEdit_, 2);
+        searchGroup_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        searchGroup_->setMaximumWidth(900);
+        mainBar_->addWidget(searchGroup_);
+
+        auto* spacer = new QWidget(mainBar_);
+        spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        mainBar_->addWidget(spacer);
+
+        detailsButton_ = new QToolButton(mainBar_);
+        detailsButton_->setDefaultAction(detailsAct_);
+        detailsButton_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        detailsButton_->setAutoRaise(true);
+        mainBar_->addWidget(detailsButton_);
+
+        exportButton_ = new QToolButton(mainBar_);
+        exportButton_->setDefaultAction(exportAction_);
+        exportButton_->setPopupMode(QToolButton::MenuButtonPopup);
+        exportButton_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        exportButton_->setAutoRaise(true);
+        exportButton_->setMenu(exportMenu_);
+        mainBar_->addWidget(exportButton_);
+        mainBar_->addSeparator();
+
+        appButton_ = new QToolButton(mainBar_);
+        appButton_->setDefaultAction(showAppMenuAct_);
+        appButton_->setPopupMode(QToolButton::InstantPopup);
+        appButton_->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        appButton_->setAutoRaise(true);
+        appButton_->setMenu(appMenu_);
+        mainBar_->addWidget(appButton_);
+        if (menuBar()->isNativeMenuBar()) appButton_->hide();
+        sizeToolbarButtons();
+    }
+
+    // One height for every toolbar button (the tallest one's), so labelled
+    // and icon-only buttons line up; re-run when fonts or the style change.
+    void sizeToolbarButtons() {
+        if (!mainBar_) return;
+        QList<QToolButton*> buttons;
+        for (QToolButton* b : mainBar_->findChildren<QToolButton*>())
+            if (b->objectName() != QLatin1String("qt_toolbar_ext_button") && !searchGroup_->isAncestorOf(b))
+                buttons << b;
+        int h = 0;
+        for (QToolButton* b : buttons) { b->setMinimumSize(0, 0); h = std::max(h, b->sizeHint().height()); }
+        for (QToolButton* b : buttons) b->setMinimumHeight(h);
+    }
+
+    // The toolbar by window width: below 1150 px the Details and Export
+    // buttons drop their labels (50 px of hysteresis, so a resize does not
+    // flicker); the boxes shrink to their minimum widths before anything else.
+    void compactToolbar(bool force = false) {
+        const int w = width();
+        int level = compactLevel_;
+        if (level == 0 && w < 1150) level = 1;
+        if (level == 1 && w >= 1200) level = 0;
+        if (level == compactLevel_ && !force) return;
+        compactLevel_ = level;
+        const auto style = level >= 1 ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon;
+        for (QToolButton* b : {detailsButton_, exportButton_}) if (b) b->setToolButtonStyle(style);
+    }
+
+    // The Details dock, on its Column tab.
+    void showColumnTab() {
+        detailsDock_->show();
+        detailsDock_->raise();
+        detailTabs_->setCurrentWidget(colPanel_);
     }
 
     void applyFilter() {
@@ -2253,6 +2523,27 @@ public:
     // Every window-level shortcut key with the actions bound to it, and the
     // number of keys bound more than once (Qt treats those as ambiguous and
     // triggers none of the actions).
+    // Window self-test: every leaf of the menu bar and of the ≡ menu, one
+    // line each ("menubar File/Open…", "appmenu Open…"), and whether the
+    // menu bar shows. Open Recent's entries and View ▸ Columns change with
+    // the files, so only the submenus themselves are listed.
+    void dumpMenusForTest() const {
+        std::function<void(const char*, const QString&, const QList<QAction*>&)> walk =
+            [&](const char* tree, const QString& at, const QList<QAction*>& actions) {
+                for (QAction* a : actions) {
+                    if (a->isSeparator()) continue;
+                    QString name = a->text();
+                    name.remove(QLatin1Char('&'));
+                    const QString path = at.isEmpty() ? name : at + QLatin1Char('/') + name;
+                    QMenu* sub = a->menu();
+                    if (sub && sub != recentMenu_ && sub != columnsMenu_) walk(tree, path, sub->actions());
+                    else std::printf("%s %s\n", tree, path.toUtf8().constData());
+                }
+            };
+        walk("menubar", QString(), menuBar()->actions());
+        walk("appmenu", QString(), appMenu_->actions());
+        std::printf("menubar_visible=%d\n", menuBar()->isVisibleTo(this) ? 1 : 0);
+    }
     int dumpShortcutsForTest() const {
         QMap<QString, QStringList> byKey;
         for (auto* a : findChildren<QAction*>()) {
@@ -2364,6 +2655,7 @@ private:
             cancelBtn_->setVisible(false);
         }
         if (lastExportError_.isEmpty()) {
+            if (openExportDirAct_) openExportDirAct_->setEnabled(true);
             statusBar()->showMessage(tr("Exported %L1 rows to %2")
                                      .arg(lastExportRows_).arg(exportPath_), 8000);
         } else if (lastExportError_ == QLatin1String("canceled")) {
@@ -2749,6 +3041,22 @@ private:
     int                            nextFileId_ = 1;
     FileOptions                    newFileOptions_;   // a file's options when it opens
     QToolBar*                      regionBar_ = nullptr;
+    // The toolbar row and the menus (buildMenus / buildToolbar).
+    QToolBar*    mainBar_        = nullptr;
+    QWidget*     searchGroup_    = nullptr;   // the Filter and Find boxes
+    QToolButton* detailsButton_  = nullptr;
+    QToolButton* exportButton_   = nullptr;
+    QToolButton* appButton_      = nullptr;   // ≡
+    QMenu*       appMenu_        = nullptr;
+    QMenu*       exportMenu_     = nullptr;
+    QAction*     detailsAct_     = nullptr;
+    QAction*     copyCmdAct_     = nullptr;
+    QAction*     openExportDirAct_ = nullptr;
+    QAction*     showMenuBarAct_ = nullptr;
+    QAction*     showAppMenuAct_ = nullptr;
+    int          compactLevel_   = 0;
+    struct IconAction { QAction* action; const char* themeName; Glyph glyph; };
+    std::vector<IconAction> iconActions_;
     std::vector<QTableView*>       views_;
     std::vector<ArrowTableModel*>  models_;
     QMap<ArrowTableModel*, Qt::SortOrder> sortOrder_;
@@ -3095,6 +3403,9 @@ int main(int argc, char** argv) {
         // action(s), then shortcut_conflicts=N.
         if (const char* sk = std::getenv("VVG_SHORTCUTS"); sk && *sk && *sk != '0')
             win.dumpShortcutsForTest();
+        // Optional menu dump: VVG_MENU_DUMP=1 (the menu bar and ≡ trees).
+        if (const char* md = std::getenv("VVG_MENU_DUMP"); md && *md && *md != '0')
+            win.dumpMenusForTest();
         if (const char* hs = std::getenv("VVG_HSCROLL"); hs && *hs)
             {
                 auto [val, max] = win.hscrollForTest(std::atoi(hs));

@@ -454,6 +454,19 @@ jobs:
           grep -q '^shortcut Ctrl+C -> Copy$' <<<"$out"
           grep -q '^shortcut Ctrl+G -> Go to Row…$' <<<"$out"
           grep -q '^shortcut F3 -> Find Next$' <<<"$out"
+          grep -q '^shortcut F10 -> Menu$' <<<"$out"
+          grep -q '^shortcut Ctrl+B -> Details$' <<<"$out"
+          # The ≡ menu holds every command of the menu bar, which is hidden
+          # unless ui/showMenuBar is set.
+          out=$(XDG_CONFIG_HOME="$RUNNER_TEMP/vvgcfg-menus" VVG_WINTEST=1 VVG_MENU_DUMP=1 ./build-gui/gui/vvg tests/data/tiny.parquet)
+          echo "$out"
+          grep -qx 'menubar_visible=0' <<<"$out"
+          diff <(sed -n 's|^menubar .*/||p; s|^menubar ||p' <<<"$out" | sort -u) \
+               <(sed -n 's|^appmenu .*/||p; s|^appmenu ||p' <<<"$out" | sort -u)
+          mkdir -p "$RUNNER_TEMP/vvgcfg-menus/vv"
+          printf '[ui]\nshowMenuBar=true\n' > "$RUNNER_TEMP/vvgcfg-menus/vv/vvg.conf"
+          XDG_CONFIG_HOME="$RUNNER_TEMP/vvgcfg-menus" VVG_WINTEST=1 VVG_MENU_DUMP=1 ./build-gui/gui/vvg tests/data/tiny.parquet \
+            | grep -qx 'menubar_visible=1'
           # vvg takes vv's view flags (--filter / --sort / --select / --tab …);
           # the copied command reproduces them, --select order included.
           out=$(VVG_WINTEST=1 VVG_COPYCMD=1 ./build-gui/gui/vvg --filter 'Score > 0.5' --sort Score:desc \
