@@ -1967,6 +1967,8 @@ public:
     bool          evicted_any() const override { return inner_->evicted_any(); }
     bool          random_access() const override { return inner_->random_access(); }
     bool          region_applied() const override { return inner_->region_applied(); }
+    bool          has_slices() const override { return inner_->has_slices(); }
+    bool          is_matrix_tab() const override { return inner_->is_matrix_tab(); }
     arrow::Status read_status() const override {
         if (!status_.ok()) return status_;
         auto st = inner_->read_status();

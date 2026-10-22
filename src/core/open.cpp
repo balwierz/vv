@@ -947,7 +947,7 @@ static TsvDialect tsv_dialect_of(const std::string& det) {
 // True when `path` starts with PLINK 1's .bed magic 0x6c 0x1b (then 0x01,
 // variant-major, or 0x00, sample-major). A text BED cannot start with it:
 // 0x1b is ESC.
-static bool is_plink_bed(const std::string& path) {
+bool is_plink_bed(const std::string& path) {
     unsigned char m[2] = {0, 0};
     size_t got = 0;
     return read_head(path, m, 2, &got) && got == 2 && m[0] == 0x6c && m[1] == 0x1b;

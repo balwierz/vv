@@ -935,6 +935,11 @@ public:
         return result;
     }
 
+    bool has_slices() const override {
+        if (spec_.is_summary) return false;
+        const Entry* e = find_entry(*archive_, spec_.entry_name);
+        return e && e->header.shape.size() >= 3;
+    }
     // Slice-axis navigation. Returns true if the slice changed.
     bool change_slice(int delta, bool absolute, int64_t target) override {
         if (spec_.is_summary) return false;

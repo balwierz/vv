@@ -737,6 +737,12 @@ static void resolve_region_chroms(std::vector<Region>& ws, HavePred have,
 }
 
 bool tabix_index_exists(const std::string& path);
+// True when `schema` has the chromosome / start / end columns a Parquet
+// region query (-r) finds by name (parquet.cpp).
+bool has_genomic_coord_columns(const arrow::Schema& schema);
+// True when `path` is a PLINK .bed (binary genotypes), not a BED text file
+// (open.cpp: its magic bytes).
+bool is_plink_bed(const std::string& path);
 
 std::string filter_quote_name(const std::string& name);
 

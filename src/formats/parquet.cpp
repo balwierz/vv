@@ -66,6 +66,11 @@ static GenomicCoordCols detect_coord_columns(const arrow::Schema& schema,
     return r;
 }
 
+bool has_genomic_coord_columns(const arrow::Schema& schema) {
+    const GenomicCoordCols c = detect_coord_columns(schema, "");
+    return c.chrom >= 0 && c.start >= 0 && c.end >= 0;
+}
+
 
 
 

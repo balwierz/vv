@@ -354,6 +354,8 @@ public:
     bool    evicted_any()     const override { return inner_->evicted_any(); }
     arrow::Status read_status() const override { return inner_->read_status(); }
     bool    region_applied()  const override { return inner_->region_applied(); }
+    bool    has_slices()      const override { return inner_->has_slices(); }
+    bool    is_matrix_tab()   const override { return inner_->is_matrix_tab(); }
     bool    change_slice(int d, bool abs, int64_t t) override {
         return inner_->change_slice(d, abs, t);
     }
@@ -479,6 +481,8 @@ public:
     bool    evicted_any()     const override { return inner_->evicted_any(); }
     arrow::Status read_status() const override { return inner_->read_status(); }
     bool    region_applied()  const override { return inner_->region_applied(); }
+    bool    has_slices()      const override { return inner_->has_slices(); }
+    bool    is_matrix_tab()   const override { return inner_->is_matrix_tab(); }
     const std::string& path() const override { return inner_->path(); }
     std::string tab_label()   const override { return inner_->tab_label(); }
     std::string created_by()  const override { return inner_->created_by(); }
@@ -813,6 +817,8 @@ public:
     bool    evicted_any()     const override { return inner_->evicted_any(); }
     arrow::Status read_status() const override { return inner_->read_status(); }
     bool    region_applied()  const override { return inner_->region_applied(); }
+    bool    has_slices()      const override { return inner_->has_slices(); }
+    bool    is_matrix_tab()   const override { return inner_->is_matrix_tab(); }
     const std::string& path() const override { return inner_->path(); }
     std::vector<std::string> preamble_above() const override {
         return inner_->preamble_above();
@@ -1255,6 +1261,8 @@ public:
     bool    evicted_any()     const override { return inner_->evicted_any(); }
     arrow::Status read_status() const override { return inner_->read_status(); }
     bool    region_applied()  const override { return inner_->region_applied(); }
+    bool    has_slices()      const override { return inner_->has_slices(); }
+    bool    is_matrix_tab()   const override { return inner_->is_matrix_tab(); }
     const std::string& path() const override { return inner_->path(); }
     std::string tab_label()   const override { return inner_->tab_label(); }
     std::string created_by()  const override { return inner_->created_by(); }

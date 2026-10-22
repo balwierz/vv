@@ -967,6 +967,8 @@ public:
     arrow::Status read_status() const override { ensure(); return status_; }
     PreviewLimit preview_limit() const override { ensure(); return limit_; }
     bool show_cells_in_full() const override { return st_->tabs[idx_].kind == Tab::Structure; }
+    // --matrix long applies to a sparse matrix (make_tab).
+    bool is_matrix_tab() const override { return st_->tabs[idx_].kind == Tab::Sparse; }
     std::vector<std::unique_ptr<TabularSource>> open_sibling_sheets() const override;
     // An export of a capped matrix preview streams the whole matrix.
     std::unique_ptr<TabularSource> full_matrix() const override;
@@ -1015,6 +1017,7 @@ private:
 // streamed in chunks of stored entries.
 class RSparseLongSource : public TabularSource {
 public:
+    bool is_matrix_tab() const override { return true; }
     RSparseLongSource(std::shared_ptr<State> st, size_t idx) : st_(std::move(st)), idx_(idx) {
         const Tab& t = st_->tabs[idx_];
         ok_ = Sparse::make(t.v, &s_);

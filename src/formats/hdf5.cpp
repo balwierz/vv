@@ -1168,6 +1168,12 @@ public:
     }
     // The summary's key / value rows are short and read whole.
     bool show_cells_in_full() const override { return spec_.kind == OpenSpec::Kind::Summary; }
+    // The tabs --matrix long turns into entry rows (open_store).
+    bool is_matrix_tab() const override {
+        using K = OpenSpec::Kind;
+        return spec_.kind == K::Matrix2D || spec_.kind == K::Dataset2D || spec_.kind == K::Sparse ||
+               spec_.kind == K::TenxMatrix || spec_.kind == K::LoomMatrix;
+    }
     PreviewLimit preview_limit() const override {
         ensure_built();
         return viewport_ ? viewport_->preview_limit() : limit_;
@@ -1245,6 +1251,8 @@ public:
     bool change_slice(int delta, bool absolute, int64_t target) override {
         Lock l(hdf5_mutex()); return in_->change_slice(delta, absolute, target);
     }
+    bool has_slices() const override { Lock l(hdf5_mutex()); return in_->has_slices(); }
+    bool is_matrix_tab() const override { Lock l(hdf5_mutex()); return in_->is_matrix_tab(); }
     const std::string& path() const override { Lock l(hdf5_mutex()); return in_->path(); }
     std::string tab_label() const override { Lock l(hdf5_mutex()); return in_->tab_label(); }
     std::string footer() const override { Lock l(hdf5_mutex()); return in_->footer(); }
@@ -2930,6 +2938,7 @@ public:
     }
     const std::string& path() const override { return wide_->path(); }
     std::string tab_label() const override { return label_; }
+    bool is_matrix_tab() const override { return true; }
     std::string footer() const override {
         const auto& p = wide_->plan();
         std::string f = "Format: " + p.format + " " + label_ + "  |  " + std::to_string(p.rows) +

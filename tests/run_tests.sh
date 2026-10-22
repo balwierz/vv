@@ -5361,6 +5361,34 @@ fi
 assert_exit_code "samples_bad_value" 2 "$VV" --samples wide "$DATA/tiny.samples.bcf"
 assert_exit_code "matrix_bad_value" 2 "$VV" --matrix tall "$DATA/tiny.h5ad"
 
+# file_features / tab_traits (libvvcore): which format options a file and its
+# tabs offer — what vvg shows under the tab bar.
+FC="$(dirname "$VV")/features_check"
+if [ -x "$FC" ]; then
+    FOUT=$("$FC" "$DATA/tiny.bam" "$DATA/tiny.noseq.bam" "$DATA/tiny.samples.bcf" "$DATA/tiny.vcf" \
+                 "$DATA/tiny.gtf" "$DATA/tiny.bed.gz" "$DATA/tiny.csv" "$DATA/tiny.parquet" \
+                 "$DATA/tiny.h5ad" "$DATA/tiny.slices.npz" "$DATA/tiny.sparse.RData" \
+                 --matrix-long "$DATA/tiny.h5ad" 2>&1)
+    assert_contains "features_bam"         "$FOUT" "file tiny.bam region=ready pileup=1 tags=1 contigs=1 variants=0 samples=0 expand=- hint=-"
+    assert_contains "features_bam_noindex" "$FOUT" "file tiny.noseq.bam region=needs-index pileup=1 tags=1 contigs=1 variants=0 samples=0 expand=- hint=a region needs an index: samtools index"
+    assert_contains "features_bcf_samples" "$FOUT" "file tiny.samples.bcf region=ready pileup=0 tags=0 contigs=1 variants=1 samples=1 expand=INFO hint=-"
+    assert_contains "features_vcf_scan"    "$FOUT" "file tiny.vcf region=ready pileup=0 tags=0 contigs=0 variants=1 samples=0 expand=INFO hint=no tabix index: a region reads the whole file"
+    assert_contains "features_gtf"         "$FOUT" "file tiny.gtf region=ready pileup=0 tags=0 contigs=0 variants=0 samples=0 expand=attributes"
+    assert_contains "features_bed_tabix"   "$FOUT" "file tiny.bed.gz region=ready pileup=0 tags=0 contigs=0 variants=0 samples=0 expand=- hint=-"
+    assert_contains "features_csv"         "$FOUT" "file tiny.csv region=none pileup=0"
+    assert_contains "features_parquet"     "$FOUT" "file tiny.parquet region=none by-columns"
+    assert_contains "features_parquet_tab" "$FOUT" "tab tiny.parquet matrix=0 slices=0 coords=1"
+    assert_contains "features_h5ad_x"      "$FOUT" "tab X (preview) matrix=1 slices=0 coords=0"
+    assert_contains "features_h5ad_x_long" "$FOUT" "tab X (long) matrix=1 slices=0 coords=0"
+    assert_contains "features_h5ad_obs"    "$FOUT" "tab obs matrix=0 slices=0 coords=0"
+    assert_contains "features_npz_slices"  "$FOUT" "tab cube_c matrix=0 slices=1 coords=0"
+    assert_contains "features_rds_sparse"  "$FOUT" "tab dgc matrix=1 slices=0 coords=0"
+    assert_contains "features_rds_frame"   "$FOUT" "tab lst\$df matrix=0 slices=0 coords=0"
+    refute_contains "features_quiet"       "$FOUT" "[W::"
+else
+    echo "  skip  features (no $FC)"
+fi
+
 # The JSON tree viewer: navigation, folding, search, copy (OSC 52), the
 # table view and back, index pages, a truncated file, stdin via /dev/tty.
 if [ -n "$TUI_PTY" ]; then

@@ -393,6 +393,7 @@ endif()
 # and the ncurses viewers.
 set(VV_CORE_SOURCES
     src/core/common.cpp   src/core/compress.cpp src/core/derived.cpp
+    src/core/features.cpp
     src/core/filter.cpp   src/core/format_fast.cpp
     src/core/io.cpp       src/core/modes.cpp    src/core/open.cpp
     src/core/platform.cpp src/core/remote.cpp
@@ -645,6 +646,14 @@ target_compile_definitions(h5_threads_check PRIVATE
 target_include_directories(h5_threads_check PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include $<TARGET_PROPERTY:vv,INCLUDE_DIRECTORIES>)
 target_link_libraries(h5_threads_check PRIVATE ${_vv_link_common})
+
+# tests/run_tests.sh: which format options a file and its tabs offer.
+add_executable(features_check tests/features_check.cpp $<TARGET_OBJECTS:vvcore_obj>)
+target_compile_definitions(features_check PRIVATE
+    VV_CORE_LIB=1 $<TARGET_PROPERTY:vv,COMPILE_DEFINITIONS>)
+target_include_directories(features_check PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include $<TARGET_PROPERTY:vv,INCLUDE_DIRECTORIES>)
+target_link_libraries(features_check PRIVATE ${_vv_link_common})
 
 add_executable(h5_viewport_check tests/h5_viewport_check.cpp $<TARGET_OBJECTS:vvcore_obj>)
 target_compile_definitions(h5_viewport_check PRIVATE

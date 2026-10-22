@@ -422,6 +422,12 @@ public:
                                 int64_t /*target*/) {
         return false;
     }
+    // True when change_slice() steps this tab (an NPZ array of 3+ axes).
+    virtual bool has_slices() const { return false; }
+    // True for a matrix tab that --matrix long can show as entry rows (an
+    // HDF5 / AnnData / Loom / 10x / Zarr matrix, an R sparse matrix), in
+    // either layout; false for its obs / var / summary tabs.
+    virtual bool is_matrix_tab() const { return false; }
     virtual const std::string& path() const = 0;
     // Short label shown on the multi-tab TUI tab bar. Defaults to the
     // basename of path(); sub-tab sources (xlsx sheets, sqlite tables,
@@ -499,6 +505,40 @@ std::string apply_region_modifiers(Config& cfg);
 // Decided from the extension (a .gz / .zst wrapper is looked through), the
 // same way open_source() picks the reader, so no file is opened.
 std::string packed_column_for(const std::string& path);
+
+// What a viewer can offer for a file: which of vv's format options apply
+// (--region, --pileup, --tags, --contigs, --gt-stats, --samples, --expand),
+// decided as open_source() dispatches — by extension, a .gz / .bgz / .zst
+// wrapper looked through — plus the index files beside it and, for
+// alignments and variants, the header (no records are read).
+struct FileFeatures {
+    enum class Region {
+        None,         // the format has no region query
+        Ready,        // -r works (region_hint may say it reads the whole file)
+        NeedsIndex    // -r needs an index file first; region_hint says how
+    };
+    Region      region = Region::None;
+    std::string region_hint;
+    // -r works on a tab with chromosome / start / end columns (Parquet):
+    // see TabTraits::coord_columns.
+    bool        region_by_columns = false;
+    bool        pileup = false;        // BAM / CRAM
+    bool        tags = false;          // BAM / CRAM / SAM / PAF
+    bool        contigs = false;       // the header names reference sequences
+    bool        variants = false;      // VCF / BCF
+    bool        has_samples = false;   // VCF / BCF with sample columns (--samples, --gt-stats)
+    std::string expand_column;         // packed_column_for(path)
+};
+FileFeatures file_features(const std::string& path);
+
+// What one tab of a file offers beyond its file's features. Reads the tab's
+// schema, so call it where `src` is read (vvg: the tab's reader thread).
+struct TabTraits {
+    bool matrix_tab = false;      // is_matrix_tab(): --matrix wide | long
+    bool slices = false;          // has_slices(): the slice stepper
+    bool coord_columns = false;   // chromosome / start / end columns (-r on Parquet)
+};
+TabTraits tab_traits(const TabularSource& src);
 
 // Resolve a --select spec (names, globs, 1-based ranges, @type classes,
 // !exclusions — see --help) against `src`'s schema: the selected field
