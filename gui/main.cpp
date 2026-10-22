@@ -425,8 +425,7 @@ public:
         waitIdleForTest();
         auto* v = activeView();
         if (!v) return QStringLiteral("no view");
-        colDock_->show();
-        colDock_->raise();
+        showColumnTab();
         v->selectionModel()->setCurrentIndex(v->model()->index(0, col),
                                              QItemSelectionModel::ClearAndSelect);
         return waitColumnStatsForTest();
@@ -477,8 +476,7 @@ public:
         auto* v = activeView();
         auto* m = activeModel();
         if (!v || !m || col < 0 || col >= m->displayColumnCount()) return QStringLiteral("no column");
-        colDock_->show();
-        colDock_->raise();
+        showColumnTab();
         fixGeometryForTest(v);
         v->selectionModel()->setCurrentIndex(m->index(0, 0), QItemSelectionModel::ClearAndSelect);
         v->scrollTo(m->index(0, col));
@@ -1295,26 +1293,36 @@ private:
         statsWatcher_ = new QFutureWatcher<StatsResult>(this);
         connect(statsWatcher_, &QFutureWatcher<StatsResult>::finished, this,
                 [this] { onColumnStatsDone(); });
-        rowDock_ = new QDockWidget(tr("Row"), this);
-        rowDock_->setObjectName(QStringLiteral("rowDock"));
-        detail_ = new QTableWidget(0, 2, rowDock_);
+        // The Details dock: the cursor row (Row tab) and the cursor column's
+        // summary, computed on demand (Column tab).
+        detailsDock_ = new QDockWidget(tr("Details"), this);
+        detailsDock_->setObjectName(QStringLiteral("detailsDock"));
+        detailsDock_->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable);
+        detailTabs_ = new QTabWidget(detailsDock_);
+        detailTabs_->setDocumentMode(true);
+        detail_ = new QTableWidget(0, 2, detailTabs_);
         detail_->setHorizontalHeaderLabels({tr("Column"), tr("Value")});
         detail_->horizontalHeader()->setStretchLastSection(true);
         detail_->verticalHeader()->setVisible(false);
         detail_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-        rowDock_->setWidget(detail_);
-        addDockWidget(Qt::RightDockWidgetArea, rowDock_);
-
-        // The Column tab: the cursor column's summary, computed on demand.
-        colDock_ = new QDockWidget(tr("Column"), this);
-        colDock_->setObjectName(QStringLiteral("columnDock"));
-        colPanel_ = new ColumnPanel(colDock_);
-        colDock_->setWidget(colPanel_);
-        addDockWidget(Qt::RightDockWidgetArea, colDock_);
-        tabifyDockWidget(rowDock_, colDock_);
-        rowDock_->raise();
-        connect(colDock_, &QDockWidget::visibilityChanged, this,
-                [this](bool on) { if (on) colTimer_->start(); else cancelColumnStats(); });
+        colPanel_ = new ColumnPanel(detailTabs_);
+        detailTabs_->addTab(detail_, tr("Row"));
+        detailTabs_->addTab(colPanel_, tr("Column"));
+        detailsDock_->setWidget(detailTabs_);
+        addDockWidget(Qt::RightDockWidgetArea, detailsDock_);
+        // Column statistics run while the Column tab is on screen.
+        auto columnTabShown = [this] {
+            if (detailsDock_->isVisible() && detailTabs_->currentWidget() == colPanel_) colTimer_->start();
+            else cancelColumnStats();
+        };
+        connect(detailsDock_, &QDockWidget::visibilityChanged, this, columnTabShown);
+        connect(detailTabs_, &QTabWidget::currentChanged, this, columnTabShown);
+        QAction* details = detailsDock_->toggleViewAction();
+        details->setText(tr("&Details"));
+        details->setShortcut(QKeySequence(QStringLiteral("Ctrl+B")));
+        details->setToolTip(tr("Show or hide the Details panel: the cursor row and the "
+                               "cursor column's statistics (Ctrl+B)"));
+        addAction(details);   // the shortcut works with the menu bar hidden
         connect(colPanel_, &ColumnPanel::cancelRequested, this, [this] {
             cancelColumnStats();
             colPanel_->showNote(tr("Column"), tr("Canceled."));
@@ -1326,8 +1334,7 @@ private:
         connect(colPanel_, &ColumnPanel::showColumnRequested, this, [this] { showCursorColumn(); });
         if (viewMenu_) {
             viewMenu_->addSeparator();
-            viewMenu_->addAction(rowDock_->toggleViewAction());
-            viewMenu_->addAction(colDock_->toggleViewAction());
+            viewMenu_->addAction(details);
         }
     }
 
@@ -1693,9 +1700,14 @@ private:
 
     // Σ Stats: the Column tab of the right dock.
     void showStats() {
-        colDock_->show();
-        colDock_->raise();
+        showColumnTab();
         colTimer_->start();
+    }
+    // The Details dock, on its Column tab.
+    void showColumnTab() {
+        detailsDock_->show();
+        detailsDock_->raise();
+        detailTabs_->setCurrentWidget(colPanel_);
     }
 
     void buildSearchBar() {
@@ -2743,8 +2755,8 @@ private:
     // reopen: the tab can be opened again from `path` (not stdin / a FIFO, not
     // a table made from a JSON-tree node).
     QMenu*                                viewMenu_  = nullptr;
-    QDockWidget*                          rowDock_   = nullptr;
-    QDockWidget*                          colDock_   = nullptr;
+    QDockWidget*                          detailsDock_ = nullptr;
+    QTabWidget*                           detailTabs_  = nullptr;   // Row | Column
     ColumnPanel*                          colPanel_  = nullptr;
     QTimer*                               colTimer_  = nullptr;   // debounces cursor moves
     QHash<ArrowTableModel*, int>          keepCol_;   // cursor column across a model reset
