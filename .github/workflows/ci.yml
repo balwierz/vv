@@ -500,6 +500,13 @@ jobs:
           printf '[ui]\nshowColumnTypes=false\n' > "$RUNNER_TEMP/vvgcfg-menus/vv/vvg.conf"
           XDG_CONFIG_HOME="$RUNNER_TEMP/vvgcfg-menus" VVG_WINTEST=1 VVG_HEADER=1 ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -q "^header lines=1 height=[0-9]* name='Chr' "
+          # Toggling Column Types does not wait for the settings file: the
+          # write runs on vvg's settings thread and is in the file on exit.
+          out=$(XDG_CONFIG_HOME="$RUNNER_TEMP/vvgcfg-menus" VVG_WINTEST=1 VVG_TOGGLE_TYPES=1 ./build-gui/gui/vvg tests/data/tiny.parquet)
+          echo "$out"
+          ms=$(sed -n 's/^toggle_ms=\([0-9]*\) header lines=2 .*/\1/p' <<<"$out")
+          test -n "$ms" && test "$ms" -lt 50
+          grep -qx 'showColumnTypes=true' "$RUNNER_TEMP/vvgcfg-menus/vv/vvg.conf"
           # vvg takes vv's view flags (--filter / --sort / --select / --tab …);
           # the copied command reproduces them, --select order included.
           out=$(VVG_WINTEST=1 VVG_COPYCMD=1 ./build-gui/gui/vvg --filter 'Score > 0.5' --sort Score:desc \

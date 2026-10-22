@@ -254,10 +254,20 @@ public:
                 [this](int i){ closeTab(i); });
         connect(tabs_, &TabPane::currentChanged, this, [this](int i) { onCurrentTab(i); });
 
-        showTypes_ = QSettings(QStringLiteral("vv"), QStringLiteral("vvg"))
-                         .value(QStringLiteral("ui/showColumnTypes"), true).toBool();
-        smoothScroll_ = QSettings(QStringLiteral("vv"), QStringLiteral("vvg"))
-                            .value(QStringLiteral("smoothScroll"), true).toBool();
+        // Settings are read here, once; writes go to a thread of their own
+        // (saveSetting), because QSettings syncs the file with fdatasync()
+        // and a rename, which took from 15 ms to seconds on a busy disk.
+        settingsThread_ = new QThread(this);
+        settingsCtx_ = new QObject;
+        settingsCtx_->moveToThread(settingsThread_);
+        connect(settingsThread_, &QThread::finished, settingsCtx_, &QObject::deleteLater);
+        settingsThread_->start();
+        {
+            const QSettings st(QStringLiteral("vv"), QStringLiteral("vvg"));
+            showTypes_ = st.value(QStringLiteral("ui/showColumnTypes"), true).toBool();
+            smoothScroll_ = st.value(QStringLiteral("smoothScroll"), true).toBool();
+            recent_ = st.value(QStringLiteral("recentFiles")).toStringList();
+        }
         buildDetailDock();
         buildMenus();
         buildToolbar();
@@ -603,6 +613,7 @@ private:
 
     void onCurrentTab(int i) {
         materializeTab(i);   // a tab not shown before: build its model now
+        syncHeaderTypes(activeView());
         if (selTimer_) selTimer_->start();
         if (colTimer_) colTimer_->start();
         syncFileControls();
@@ -1034,20 +1045,17 @@ private:
         smooth->setChecked(smoothScroll_);
         connect(smooth, &QAction::toggled, this, [this](bool on) {
             smoothScroll_ = on;
-            QSettings(QStringLiteral("vv"), QStringLiteral("vvg"))
-                .setValue(QStringLiteral("smoothScroll"), on);
+            saveSetting(QStringLiteral("smoothScroll"), on);
             for (auto* v : views_) if (v) applyScrollMode(v);
         });
-        QAction* types = makeAction(tr("Column &Types"), {},
+        typesAct_ = makeAction(tr("Column &Types"), {},
             tr("Each column's type under its name, in a smaller, dimmer font"));
-        types->setCheckable(true);
-        types->setChecked(showTypes_);
-        connect(types, &QAction::toggled, this, [this](bool on) {
+        typesAct_->setCheckable(true);
+        typesAct_->setChecked(showTypes_);
+        connect(typesAct_, &QAction::toggled, this, [this](bool on) {
             showTypes_ = on;
-            QSettings(QStringLiteral("vv"), QStringLiteral("vvg")).setValue(QStringLiteral("ui/showColumnTypes"), on);
-            for (auto* v : views_)
-                if (auto* th = v ? dynamic_cast<TypedHeaderView*>(v->horizontalHeader()) : nullptr)
-                    th->setShowTypes(on);
+            saveSetting(QStringLiteral("ui/showColumnTypes"), on);
+            syncHeaderTypes(activeView());   // the other tabs when they are shown
         });
         showMenuBarAct_ = makeAction(tr("&Menu Bar"), {},
             tr("The classic File / Edit / View / Help bar; the ≡ button holds the same"));
@@ -1055,7 +1063,7 @@ private:
         connect(showMenuBarAct_, &QAction::toggled, this, [this](bool on) {
             if (menuBar()->isNativeMenuBar()) return;
             menuBar()->setVisible(on);
-            QSettings(QStringLiteral("vv"), QStringLiteral("vvg")).setValue(QStringLiteral("ui/showMenuBar"), on);
+            saveSetting(QStringLiteral("ui/showMenuBar"), on);
         });
         showAppMenuAct_ = makeAction(tr("Me&nu"), QKeySequence(Qt::Key_F10),
                                      tr("Files, export, edit, view and help"), [this] {
@@ -1124,7 +1132,7 @@ private:
         view->addAction(clearSort);
         view->addSeparator();
         view->addAction(detailsAct_);
-        view->addAction(types);
+        view->addAction(typesAct_);
         view->addAction(smooth);
         view->addSeparator();
         view->addAction(showMenuBarAct_);
@@ -1215,21 +1223,18 @@ private:
     }
 
     void addRecent(const QString& path) {
-        QSettings s(QStringLiteral("vv"), QStringLiteral("vvg"));
-        QStringList recent = s.value(QStringLiteral("recentFiles")).toStringList();
         const QString abs = path.contains(QLatin1String("://")) ? path
                                                                 : QFileInfo(path).absoluteFilePath();
-        recent.removeAll(abs);
-        recent.prepend(abs);
-        while (recent.size() > 10) recent.removeLast();
-        s.setValue(QStringLiteral("recentFiles"), recent);
+        recent_.removeAll(abs);
+        recent_.prepend(abs);
+        while (recent_.size() > 10) recent_.removeLast();
+        saveSetting(QStringLiteral("recentFiles"), recent_);
         rebuildRecentMenu();
     }
     void rebuildRecentMenu() {
         if (!recentMenu_) return;
         recentMenu_->clear();
-        QStringList recent = QSettings(QStringLiteral("vv"), QStringLiteral("vvg"))
-                                 .value(QStringLiteral("recentFiles")).toStringList();
+        const QStringList recent = recent_;
         if (recent.isEmpty()) {
             recentMenu_->addAction(tr("(none)"))->setEnabled(false);
             return;
@@ -1239,8 +1244,8 @@ private:
                     [this, p]{ openPaths({p}); });
         recentMenu_->addSeparator();
         connect(recentMenu_->addAction(tr("Clear Recent")), &QAction::triggered, this, [this]{
-            QSettings(QStringLiteral("vv"), QStringLiteral("vvg"))
-                .remove(QStringLiteral("recentFiles"));
+            recent_.clear();
+            saveSetting(QStringLiteral("recentFiles"), {});
             rebuildRecentMenu();
         });
     }
@@ -1353,10 +1358,23 @@ protected:
         compactToolbar();
     }
     void closeEvent(QCloseEvent* e) override {
-        QSettings st(QStringLiteral("vv"), QStringLiteral("vvg"));
-        st.setValue(QStringLiteral("geometry"), saveGeometry());
-        st.setValue(QStringLiteral("windowState"), saveState());
+        saveSetting(QStringLiteral("geometry"), saveGeometry());
+        saveSetting(QStringLiteral("windowState"), saveState());
         QMainWindow::closeEvent(e);
+    }
+    // Write one setting on the settings thread, in call order; an invalid
+    // value removes the key.
+    void saveSetting(const QString& key, const QVariant& value) {
+        QMetaObject::invokeMethod(settingsCtx_, [key, value] {
+            QSettings st(QStringLiteral("vv"), QStringLiteral("vvg"));
+            if (value.isValid()) st.setValue(key, value);
+            else st.remove(key);
+        }, Qt::QueuedConnection);
+    }
+    // The header of `v` shows the type line as View ▸ Column Types says.
+    void syncHeaderTypes(QTableView* v) {
+        if (auto* th = v ? dynamic_cast<TypedHeaderView*>(v->horizontalHeader()) : nullptr)
+            th->setShowTypes(showTypes_);
     }
     void changeEvent(QEvent* e) override {
         if (e->type() == QEvent::PaletteChange || e->type() == QEvent::ApplicationPaletteChange ||
@@ -2963,6 +2981,10 @@ private:
     QLineEdit*                     findEdit_   = nullptr;
     bool                           smoothScroll_  = true;   // per-pixel scrolling
     bool                           showTypes_     = true;   // the header's type line
+    QAction*                       typesAct_      = nullptr;   // View ▸ Column Types
+    QStringList                    recent_;                 // Open Recent, newest first
+    QThread*                       settingsThread_ = nullptr;   // writes vvg.conf (saveSetting)
+    QObject*                       settingsCtx_    = nullptr;   // lives on settingsThread_
     QMenu*                         recentMenu_  = nullptr;
     QMenu*                         columnsMenu_ = nullptr;
     static constexpr qint64        kSelectionSumMaxCells = 1'000'000;
@@ -3039,6 +3061,18 @@ public:
         }
         cancelColumnStats();
         for (auto& f : statsFutures_) f.waitForFinished();
+        // The writes queued so far run first, then the thread stops.
+        QMetaObject::invokeMethod(settingsCtx_, [] { QThread::currentThread()->quit(); },
+                                  Qt::QueuedConnection);
+        settingsThread_->wait();
+    }
+    // Self-test: toggle View ▸ Column Types and time the slot.
+    qint64 toggleTypesForTest() {
+        waitIdleForTest();
+        QElapsedTimer t;
+        t.start();
+        typesAct_->toggle();
+        return t.elapsed();
     }
 };
 
@@ -3404,6 +3438,13 @@ int main(int argc, char** argv) {
         // Optional header check: VVG_HEADER=1 (the first column's header).
         if (const char* hd = std::getenv("VVG_HEADER"); hd && *hd && *hd != '0')
             std::printf("header %s\n", win.headerForTest().toUtf8().constData());
+        // Optional settings check: VVG_TOGGLE_TYPES=1 toggles View ▸ Column
+        // Types, prints how long the action took and the header after it.
+        if (const char* tt = std::getenv("VVG_TOGGLE_TYPES"); tt && *tt && *tt != '0') {
+            const qint64 ms = win.toggleTypesForTest();
+            std::printf("toggle_ms=%lld header %s\n", (long long)ms,
+                        win.headerForTest().toUtf8().constData());
+        }
         // Optional layout check: VVG_WIDTH=<px> shows the window that wide and
         // prints "width=<actual> overlaps=<n>" for the toolbar and the strip.
         if (const char* wd = std::getenv("VVG_WIDTH"); wd && *wd)
