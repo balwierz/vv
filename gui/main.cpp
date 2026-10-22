@@ -663,7 +663,19 @@ private:
             (ofi.isFile() || ofi.isDir() || origin.contains(QLatin1String("://")));
         tabOrigin_[model] = TabOrigin{origin, primary, expand, reopenable};
         auto* view  = new QTableView(tabs_);
-        const int rowPx = view->fontMetrics().height() + 6;
+        // VVG_MIN_ROW_PX: the self-test's stand-in for a style whose header
+        // sections have a larger minimum height (Breeze: 30 px).
+        static const int testMinRowPx = [] {
+            const char* e = std::getenv("VVG_MIN_ROW_PX");
+            return e ? std::max(0, std::atoi(e)) : 0;
+        }();
+        if (testMinRowPx > 0) view->verticalHeader()->setMinimumSectionSize(testMinRowPx);
+        // Rows are the font's height plus a margin, unless the style sets a
+        // taller minimum (Breeze: 30 px), which setDefaultSectionSize does not
+        // go below. The cap keeps rows × that height under Qt's int pixel range.
+        view->verticalHeader()->setDefaultSectionSize(view->fontMetrics().height() + 6);
+        const int rowPx = std::max(view->verticalHeader()->defaultSectionSize(),
+                                   view->verticalHeader()->minimumSectionSize());
         model->setMaxViewRows(std::numeric_limits<int>::max() / rowPx - 1);
         view->setModel(model);
         view->setAlternatingRowColors(true);
@@ -698,7 +710,6 @@ private:
         connect(view, &QWidget::customContextMenuRequested, this,
                 [this, view](const QPoint& p){ showTableContextMenu(view, p); });
         view->horizontalHeader()->setSectionsClickable(true);
-        view->verticalHeader()->setDefaultSectionSize(rowPx);
 
         // Click a column header to sort (toggle asc/desc), typed via Arrow,
         // off the UI thread. The cursor moves to that column, so the Column

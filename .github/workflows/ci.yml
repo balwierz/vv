@@ -346,6 +346,13 @@ jobs:
           grep -qF 'the window shows the first' <<<"$dims"
           [ "$rows" -gt 1000000 ]
           [ "$rows" -lt 120000000 ]
+          # The cap follows the rows' real height: a style with a taller minimum
+          # section (Breeze: 30 px) ignores the font-based default size.
+          dims=$(VVG_WINTEST=1 VVG_TABDIMS=1 VVG_MIN_ROW_PX=30 ./build-gui/gui/vvg /tmp/rows120M.parquet | grep '^tab ')
+          rows=$(sed -n 's/.* rows=\([0-9]*\) .*/\1/p' <<<"$dims")
+          grep -qF 'the window shows the first' <<<"$dims"
+          [ "$rows" -gt 1000000 ]
+          [ "$rows" -le 71582788 ]
           # A filter superseded by a sort, then three jobs and the tab closed while
           # they run: each source has one reader thread; the closed tab gets nothing.
           VVG_WINTEST=1 VVG_RACE='Score > 0.5' ./build-gui/gui/vvg tests/data/tiny.parquet \
@@ -738,6 +745,13 @@ jobs:
           grep -qF 'the window shows the first' <<<"$dims"
           [ "$rows" -gt 1000000 ]
           [ "$rows" -lt 120000000 ]
+          # The cap follows the rows' real height: a style with a taller minimum
+          # section (Breeze: 30 px) ignores the font-based default size.
+          dims=$(VVG_WINTEST=1 VVG_TABDIMS=1 VVG_MIN_ROW_PX=30 ./build/gui/vvg /tmp/rows120M.parquet | grep '^tab ')
+          rows=$(sed -n 's/.* rows=\([0-9]*\) .*/\1/p' <<<"$dims")
+          grep -qF 'the window shows the first' <<<"$dims"
+          [ "$rows" -gt 1000000 ]
+          [ "$rows" -le 71582788 ]
           # A filter superseded by a sort, then three jobs and the tab closed while
           # they run: each source has one reader thread; the closed tab gets nothing.
           VVG_WINTEST=1 VVG_RACE='Score > 0.5' ./build/gui/vvg tests/data/tiny.parquet \
