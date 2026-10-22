@@ -3,7 +3,7 @@
 `vvg` is a Qt6 window over the same reader as `vv`: it opens every format vv
 does ([gallery](formats.md)), one tab per file, sheet, table or component.
 
-![vvg: an AnnData obs table with the Row tab of the dock](img/vvg/anndata.png)
+![vvg: an AnnData obs table with the Row tab of the Details panel](img/vvg/anndata.png)
 
 ## Start
 
@@ -21,6 +21,45 @@ Command* goes the other way.
 
 ![vvg: a Parquet file filtered and sorted](img/vvg/parquet.png)
 
+## The window
+
+- **Toolbar** — one row: the *Filter* and *Find* boxes, then on the right
+  *Details* (*Ctrl+B*, the Row / Column panel), *Export…* (*Ctrl+E*; its ▾ has
+  *Copy as vv Command* and *Open Export Folder*) and **≡**, the menu (*F10*, or
+  right-click the toolbar): open, recent files, close, *Edit ▸*, *View ▸*,
+  *Help ▸*, quit. The classic File / Edit / View / Help menu bar holds the
+  same and is off unless *View ▸ Menu Bar* is checked (always on with a
+  native macOS menu bar). Below 1150 px the buttons drop their labels.
+- **Format options** — under the tab bar, a strip with the options the
+  current tab's file offers, and nothing else; a tab with none (a CSV, an
+  AnnData `obs`) has no strip. Each file keeps its own options: a change
+  re-opens that file's tabs only, in place, and the other files keep their
+  filters, sorts and columns.
+
+  | File / tab | Options |
+  |---|---|
+  | BAM / CRAM | Region, *Pileup* (mpileup rows), *Tags* (`NM,AS,RG` → typed columns), *Contigs* |
+  | SAM / PAF | Region, *Tags* (SAM also *Contigs*) |
+  | VCF / BCF | Region, *Samples* struct / long / text and *GT stats* (with samples), *Expand INFO*, *Contigs* |
+  | GFF / GTF | Region, *Expand attributes* |
+  | BED, bedGraph, bigWig / bigBed, 2bit, FASTA, Cooler, GenBank | Region |
+  | Parquet with chromosome / start / end columns | Region |
+  | HDF5 / AnnData / Loom / 10x / Zarr / R sparse matrix tabs | *Matrix* wide / long |
+  | NumPy arrays of 3+ axes | *Slice* ◀ ▶ |
+
+  *Region* takes `chr1:1000-2000` (several, comma-separated; *Enter* or *Go*;
+  *Ctrl+L* focuses it), 0- or 1-based coordinates and ± slop. A BAM / CRAM /
+  BCF / FASTA without the index a region needs shows the box disabled with the
+  command that builds the index; a text file without a tabix index notes that a
+  region reads the whole file. Options that do not combine are greyed out
+  instead of failing (*Contigs* turns off the record options, *Pileup* turns
+  off *Tags*); an option the file cannot take (a malformed region) leaves the
+  tabs as they were and says why in the strip. The strip wraps onto more lines
+  in a narrow window.
+- **Column types** — each header shows the column's type under its name, in
+  a smaller, dimmer italic; *View ▸ Column Types* turns the line off.
+- The window's size and its docks are restored at the next start.
+
 ## What it does
 
 - **Tabs** — files, workbook sheets, SQLite and DuckDB tables, HDF5 / Zarr /
@@ -31,13 +70,12 @@ Command* goes the other way.
   block of rows not read yet shows `…` until it arrives, so the window stays
   responsive on slow or network storage.
 - **Sort, filter, find** — click a header to sort (by type, not text) and
-  put the cursor in that column; the
-  filter bar uses vv's `--filter` grammar (`score > 5 and chrom == "chr1"`);
-  the find bar takes a regex. All three run off the UI thread with a progress
-  bar and *Cancel*, so multi-GB files stay responsive.
-- **Region bar** — `chr1:1000-2000` (UCSC or NCBI coordinates, optional slop)
-  re-opens indexed files over that range; *Pileup* shows BAM / CRAM as mpileup
-  rows.
+  put the cursor in that column; a second click sorts descending, a third
+  restores the file's order (also *Clear Sort* in the header's right-click
+  menu and *View ▸*). The Filter box (*Ctrl+Shift+F*) uses vv's `--filter`
+  grammar (`score > 5 and chrom == "chr1"`); the Find box (*Ctrl+F*) takes a
+  regex. All three run off the UI thread with a progress bar and *Cancel*, so
+  multi-GB files stay responsive.
 - **JSON tree** — a JSON document (`.json`, `.geojson`, `.ipynb`, `.har`, also
   compressed) opens as a tree: keys, values and types, children loaded as you
   expand, the jq path and validation in the status bar, the value in the detail
@@ -48,21 +86,23 @@ Command* goes the other way.
   flags (`--filter`, `--select`, …), open as a table directly.
 - **Expand** (on by default) — VCF `INFO` and GFF / GTF `attributes` are split
   into one column per key, sortable and filterable.
-- **samples / matrix** — the toolbar's layouts for VCF / BCF sample columns
-  (struct, long: one row per record × sample, text) and HDF5 / AnnData matrix
-  tabs (wide, long: one row per stored value), as vv's `--samples` /
-  `--matrix`.
-- **Row and Column** — the right dock's *Row* tab lists every field of the
+- **Samples / Matrix** — the layouts of VCF / BCF sample columns (struct,
+  long: one row per record × sample, text) and of HDF5 / AnnData matrix tabs
+  (wide, long: one row per stored value, the whole matrix), as vv's
+  `--samples` / `--matrix`. A long matrix of more rows than the window can
+  scroll (about 70–90 million, by row height) shows the first ones and says
+  so; filter and export see them all.
+- **Details** (*Ctrl+B*) — the right panel's *Row* tab lists every field of the
   current row; its *Column* tab summarises the cursor's column (below).
-  *View ▸ Columns* shows / hides columns; go to row, ◀ / ▶ slices for 3-D
-  arrays; *Ctrl+C* copies the selection as TSV. *View ▸ Smooth Scrolling* (on by
-  default) scrolls by pixels; off, by whole rows and columns.
+  *View ▸ Columns* shows / hides columns; go to row (*Ctrl+G*); *Ctrl+C* copies
+  the selection as TSV. *View ▸ Smooth Scrolling* (on by default) scrolls by
+  pixels; off, by whole rows and columns.
 - **Selection summary** — select two or more cells and the status bar shows
   `Σ 13200.3 · mean 1100.025 · min 0 · max 3200 · 12 numbers` over the
   numeric cells among them (text, dates and hidden columns are skipped; up to
   1,000,000 cells). The numbers are plain, without digit grouping, and the
   text can be selected and copied.
-- **Column tab** (*Σ Stats* raises it) — the cursor column, tinted in the
+- **Column tab** (*Details ▸ Column*) — the cursor column, tinted in the
   table, by name and position (*Column 7 of 120*); click the name, or
   *→ show in table* when the column is scrolled out of view, to bring it
   back into view. Its count, nulls,
@@ -85,8 +125,9 @@ Command* goes the other way.
   selected ones as TSV; right-click for *Copy All as TSV* and *Copy as vv
   Command* (`vv … --describe --select col`). Double-click a value to filter
   the table to it.
-- **Copy as vv command** (*Ctrl+Alt+C*) — the `vv` command line that reproduces
-  the tab: file, `--tab`, region options, `--filter`, `--sort`, `--select`.
+- **Copy as vv command** (*Ctrl+Alt+C*, or *Export… ▾*) — the `vv` command
+  line that reproduces the tab: file, `--tab`, the file's format options,
+  `--filter`, `--sort`, `--select`.
 - **Export view** (*Ctrl+E*) — the tab's rows after filter / sort / column
   choice, to Parquet, Arrow, TSV, CSV, JSON or NDJSON, written by vv's own
   writers (every row, not only the visible ones), in the background with
