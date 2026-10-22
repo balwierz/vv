@@ -13,6 +13,8 @@ add_executable(vvg
     jsontreemodel.cpp
     vvcommand.cpp
     columnpanel.cpp
+    contextbar.cpp
+    tabpane.cpp
     vvg.qrc
 )
 target_include_directories(vvg PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

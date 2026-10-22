@@ -144,6 +144,7 @@ ArrowTableModel::Meta ArrowTableModel::readMeta(TabularSource& s) {
     m.limit      = s.preview_limit();
     m.footer     = s.footer();
     m.readStatus = s.read_status();
+    m.traits     = tab_traits(s);
     return m;
 }
 

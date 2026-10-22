@@ -89,6 +89,9 @@
 #include "jsontreemodel.h"
 #include "vvcommand.h"
 #include "columnpanel.h"
+#include "contextbar.h"
+#include "fileoptions.h"
+#include "tabpane.h"
 #include "vv/vvcore.hpp"
 
 // Open every path through libvvcore (using a shared base Config so a later
@@ -142,37 +145,6 @@ static LoadResult loadSources(const Config& base, const QStringList& paths,
     }
     return r;
 }
-
-// The format options of one open file — vv's --region / --coords / --slop /
-// --pileup / --tags / --gt-stats / --contigs / --expand / --samples /
-// --matrix. Each file has its own: a change re-opens only that file's tabs.
-struct FileOptions {
-    std::string region;
-    bool        ncbi = false;           // the region is NCBI 1-based
-    int64_t     slop = 0;
-    bool        pileup = false;
-    std::string tags;
-    bool        gtStats = false;
-    bool        contigs = false;
-    bool        expand = true;          // unpack GFF/GTF attributes, VCF/BCF INFO
-    std::string samples = "struct";
-    std::string matrix = "wide";
-    bool operator==(const FileOptions&) const = default;
-
-    Config config() const {
-        Config c;
-        c.region           = region;
-        c.coords_one_based = ncbi;
-        c.slop             = slop;
-        c.pileup           = pileup;
-        c.bam_tags         = tags;
-        c.gt_stats         = gtStats;
-        c.contigs          = contigs;
-        c.samples          = samples;
-        c.matrix           = matrix;
-        return c;
-    }
-};
 
 // Tints the cursor column, the one the Column tab summarises, so it stands
 // out from its neighbours; selection and search highlights paint over it.
@@ -263,22 +235,27 @@ static QIcon glyphIcon(Glyph g, const QColor& color) {
 class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(std::vector<std::unique_ptr<TabularSource>> sources = {}) {
-        tabs_ = new QTabWidget(this);
+        tabs_ = new TabPane(this);
+        contextBar_ = new ContextBar;
+        tabs_->setStrip(contextBar_);
+        connect(contextBar_, &ContextBar::optionsChanged, this, [this](const FileOptions& o) {
+            if (const OpenFile* f = activeFile()) reopenFile(f->id, o);
+        });
+        connect(contextBar_, &ContextBar::sliceStep, this, [this](int d) { stepSlice(d); });
         tabs_->setTabsClosable(true);
         tabs_->setDocumentMode(true);
         setCentralWidget(tabs_);
         setAcceptDrops(true);
 
-        connect(tabs_, &QTabWidget::tabCloseRequested, this,
+        connect(tabs_, &TabPane::tabCloseRequested, this,
                 [this](int i){ closeTab(i); });
-        connect(tabs_, &QTabWidget::currentChanged, this, [this](int i) { onCurrentTab(i); });
+        connect(tabs_, &TabPane::currentChanged, this, [this](int i) { onCurrentTab(i); });
 
         smoothScroll_ = QSettings(QStringLiteral("vv"), QStringLiteral("vvg"))
                             .value(QStringLiteral("smoothScroll"), true).toBool();
         buildDetailDock();
         buildMenus();
         buildToolbar();
-        buildRegionBar();
         buildProgressUI();
 
         for (auto& src : sources) {
@@ -322,7 +299,8 @@ public:
                 else QMessageBox::warning(this, tr("vvg — open"), e);
                 continue;
             }
-            const OpenFile f{nextFileId_++, p, newFileOptions_, false};
+            OpenFile f{nextFileId_++, p, newFileOptions_, false};
+            f.feat = file_features(p.toStdString());
             LoadResult r = loadFile(f.path, f.opts);
             errors << r.errors;
             if (r.sources.empty()) continue;
@@ -615,6 +593,7 @@ private:
         QString     path;
         FileOptions opts;
         bool        jsonTree = false;     // a JSON tree tab: nothing to re-open
+        FileFeatures feat;                // which format options it offers
     };
 
     void onCurrentTab(int i) {
@@ -786,6 +765,7 @@ private:
         // The schema and the first rows arrive from the owner thread.
         connect(model, &ArrowTableModel::ready, this, [this, model] {
             if (model != activeModel()) return;
+            syncFileControls();           // the tab's traits came with its schema
             refreshStatus();
             refreshColumnsMenu();
             if (colTimer_) colTimer_->start();
@@ -1010,6 +990,9 @@ private:
         // F3 alone: QKeySequence::FindNext also carries Ctrl+G on GNOME /
         // generic themes, which would collide with Go to Row. Two window
         // shortcuts on one key are ambiguous and Qt runs neither.
+        QAction* focusRegion = makeAction(tr("&Region…"), QKeySequence(QStringLiteral("Ctrl+L")),
+            tr("Type a region, e.g. chr1:1,000-2,000, on a tab whose file takes one"),
+            [this] { contextBar_->focusRegion(); });
         QAction* findNext = makeAction(tr("Find &Next"), QKeySequence(Qt::Key_F3), tr("The next match of Find"),
                                        [this] { doFind(true); });
         QAction* focusFilter = makeAction(tr("&Filter…"), QKeySequence(QStringLiteral("Ctrl+Shift+F")),
@@ -1056,14 +1039,15 @@ private:
                 tr("Sort:    click a column header (ascending, descending, then off)\n"
                    "Filter:  the Filter box (Ctrl+Shift+F) — e.g.  score > 5 and chrom == \"chr1\"\n"
                    "Find:    the Find box (Ctrl+F, regex); F3 for the next match\n"
-                   "Region:  the Region bar — chr1:1000-2000 (UCSC) / NCBI; Pileup for BAM\n"
-                   "Expand:  GFF/GTF attributes and VCF INFO open as one column per key (Region bar toggle)\n"
-                   "Options: a file's format options apply to that file's tabs only\n"
+                   "Options: under the tab bar, the ones the tab's file offers — Region (Ctrl+L,\n"
+                   "         chr1:1000-2000, 0- or 1-based, slop), Pileup and Tags (BAM/CRAM),\n"
+                   "         Samples and GT stats (VCF/BCF), Expand (GFF/GTF attributes, VCF INFO),\n"
+                   "         Contigs, Matrix wide / long; they apply to that file's tabs only\n"
                    "Copy:    Ctrl+C the selection, Ctrl+Shift+C a whole row; right-click for both\n"
                    "Command: Ctrl+Alt+C copies the vv command line for this tab\n"
                    "Export:  Ctrl+E writes this tab's view (filter, sort, visible columns) to a file\n"
                    "Details: Ctrl+B shows the cursor row and the cursor column's statistics\n"
-                   "Slice:   ◀ / ▶ steps the leading axis of NPZ 3-D+ arrays\n"
+                   "Slice:   ◀ / ▶ under the tab bar step the leading axis of NPZ 3-D+ arrays\n"
                    "Go to:   Ctrl+G jumps to a row; View ▸ Columns shows/hides columns\n"
                    "Menu:    F10 or the ≡ button; View ▸ Menu Bar shows the classic menus\n"
                    "Scroll:  smooth (per-pixel) by default; View ▸ Smooth Scrolling off\n"
@@ -1098,6 +1082,7 @@ private:
         edit->addSeparator();
         edit->addAction(focusFilter);
         edit->addAction(focusFind);
+        edit->addAction(focusRegion);
         edit->addAction(findNext);
 
         auto* view = menuBar()->addMenu(tr("&View"));
@@ -1241,125 +1226,6 @@ private:
         return loadSources(base, {path}, opts.expand);
     }
 
-    void buildRegionBar() {
-        addToolBarBreak();
-        auto* tb = addToolBar(tr("Region"));
-        regionBar_ = tb;
-        tb->setObjectName(QStringLiteral("regionToolbar"));
-        // NPZ 3-D+ arrays: step the leading axis.
-        connect(tb->addAction(tr("◀ Slice")), &QAction::triggered, this, [this]{ stepSlice(-1); });
-        connect(tb->addAction(tr("Slice ▶")), &QAction::triggered, this, [this]{ stepSlice(+1); });
-        tb->addSeparator();
-        tb->addWidget(new QLabel(tr("  Region: ")));
-        regionEdit_ = new QLineEdit(tb);
-        regionEdit_->setPlaceholderText(tr("chr1:1000-2000[,chr2:…]"));
-        regionEdit_->setClearButtonEnabled(true);
-        regionEdit_->setMinimumWidth(200);
-        tb->addWidget(regionEdit_);
-        connect(regionEdit_, &QLineEdit::returnPressed, this, [this]{ applyRegion(); });
-
-        coordsCombo_ = new QComboBox(tb);
-        coordsCombo_->addItem(tr("UCSC 0-based"));   // index 0
-        coordsCombo_->addItem(tr("NCBI 1-based"));   // index 1
-        coordsCombo_->setToolTip(tr("Coordinate convention for the region box"));
-        tb->addWidget(coordsCombo_);
-
-        tb->addWidget(new QLabel(tr(" slop ")));
-        slopSpin_ = new QSpinBox(tb);
-        slopSpin_->setRange(0, 1000000000);
-        slopSpin_->setSingleStep(100);
-        slopSpin_->setToolTip(tr("Pad each window by N bp on both sides"));
-        tb->addWidget(slopSpin_);
-
-        connect(tb->addAction(tr("Apply")), &QAction::triggered, this,
-                [this]{ applyRegion(); });
-        connect(tb->addAction(tr("Clear")), &QAction::triggered, this,
-                [this]{ regionEdit_->clear(); applyRegion(); });
-
-        pileupAction_ = tb->addAction(tr("Pileup"));
-        pileupAction_->setCheckable(true);
-        pileupAction_->setToolTip(
-            tr("BAM/CRAM: emit samtools mpileup-style per-base rows"));
-        connect(pileupAction_, &QAction::toggled, this, [this](bool){ applyRegion(); });
-
-        // BAM/CRAM/SAM aux tags → one typed column each, e.g. NM,AS,RG.
-        tb->addWidget(new QLabel(tr("  tags ")));
-        tagsEdit_ = new QLineEdit(tb);
-        tagsEdit_->setPlaceholderText(tr("NM,AS,RG"));
-        tagsEdit_->setClearButtonEnabled(true);
-        tagsEdit_->setMaximumWidth(120);
-        tagsEdit_->setToolTip(
-            tr("BAM/CRAM/SAM: add a typed column per aux tag (comma-separated)"));
-        tb->addWidget(tagsEdit_);
-        connect(tagsEdit_, &QLineEdit::returnPressed, this, [this]{ applyRegion(); });
-
-        // VCF/BCF per-variant genotype summary columns.
-        gtStatsAction_ = tb->addAction(tr("GT stats"));
-        gtStatsAction_->setCheckable(true);
-        gtStatsAction_->setToolTip(
-            tr("VCF/BCF: add per-variant genotype columns "
-               "(het/hom/missing counts, AC/AN/AF, call_rate)"));
-        connect(gtStatsAction_, &QAction::toggled, this, [this](bool){ applyRegion(); });
-
-        // BAM/CRAM/SAM, VCF/BCF: show the header's reference sequences instead of
-        // the records (name, length + detected assembly).
-        contigsAction_ = tb->addAction(tr("Contigs"));
-        contigsAction_->setCheckable(true);
-        contigsAction_->setToolTip(
-            tr("BAM/CRAM/SAM, VCF/BCF: list the reference sequences "
-               "(name, length) and detect the assembly"));
-        connect(contigsAction_, &QAction::toggled, this, [this](bool){ applyRegion(); });
-
-        // GFF/GTF attributes and VCF/BCF INFO pack every key=value field into
-        // one column; unpack them into real columns (the original is kept),
-        // as the CLI's --expand does. On by default: the packed column is hard
-        // to read.
-        expandAction_ = tb->addAction(tr("Expand"));
-        expandAction_->setCheckable(true);
-        expandAction_->setChecked(true);
-        expandAction_->setToolTip(
-            tr("GFF/GTF, VCF/BCF: unpack the key=value attributes / INFO column "
-               "into one column per key"));
-        connect(expandAction_, &QAction::toggled, this, [this](bool){ applyRegion(); });
-
-        // VCF/BCF sample columns (--samples) and HDF5 / AnnData / Loom / 10x
-        // matrix tabs (--matrix): the layouts the CLI offers.
-        tb->addWidget(new QLabel(tr("  samples ")));
-        samplesCombo_ = new QComboBox(tb);
-        samplesCombo_->addItems({QStringLiteral("struct"), QStringLiteral("long"), QStringLiteral("text")});
-        samplesCombo_->setToolTip(
-            tr("VCF/BCF sample columns: struct (one typed struct per sample), "
-               "long (one row per record × sample), text (the packed strings)"));
-        tb->addWidget(samplesCombo_);
-        connect(samplesCombo_, &QComboBox::currentIndexChanged, this, [this](int){ applyRegion(); });
-        tb->addWidget(new QLabel(tr("  matrix ")));
-        matrixCombo_ = new QComboBox(tb);
-        matrixCombo_->addItems({QStringLiteral("wide"), QStringLiteral("long")});
-        matrixCombo_->setToolTip(
-            tr("HDF5 / AnnData / Loom / 10x matrix tabs: wide (cells × genes) or "
-               "long (one row per stored value: obs, var, value)"));
-        tb->addWidget(matrixCombo_);
-        connect(matrixCombo_, &QComboBox::currentIndexChanged, this, [this](int){ applyRegion(); });
-    }
-
-    // The toolbar's format options, applied to the active tab's file.
-    void applyRegion() {
-        const OpenFile* f = activeFile();
-        if (!f || f->jsonTree) return;
-        FileOptions o = f->opts;
-        o.region  = regionEdit_->text().trimmed().toStdString();
-        o.ncbi    = coordsCombo_->currentIndex() == 1;
-        o.slop    = slopSpin_->value();
-        o.pileup  = pileupAction_->isChecked();
-        o.tags    = tagsEdit_->text().trimmed().toStdString();
-        o.gtStats = gtStatsAction_->isChecked();
-        o.contigs = contigsAction_->isChecked();
-        o.expand  = expandAction_->isChecked();
-        o.samples = samplesCombo_->currentText().toStdString();
-        o.matrix  = matrixCombo_->currentText().toStdString();
-        reopenFile(f->id, o);
-    }
-
     static FileOptions withQuery(FileOptions o, const QString& region, bool ncbi, int slop,
                                  bool pileup, const QString& tags, bool gtStats, bool contigs,
                                  const QString& samples, const QString& matrix) {
@@ -1389,12 +1255,18 @@ private:
             if (headless_) std::fprintf(stderr, "vvg region: %s\n", why.toStdString().c_str());
             statusBar()->showMessage(tr("Not applied: %1").arg(why), 15000);
             syncFileControls();           // back to the options the tabs show
+            if (contextBar_) contextBar_->showError(why, opts);
             return false;
         }
         f->opts = opts;
         QWidget* cur = tabs_->currentWidget();
         const bool curInFile = tabFile_.value(cur, 0) == id;
         const QString curLabel = curInFile ? tabs_->tabText(tabs_->currentIndex()) : QString();
+        // The current tab's place among its file's tabs: the tab shown again
+        // when no new tab has its label ("X (preview)" becomes "X (long)").
+        int curOffset = 0;
+        for (int i = 0; curInFile && i < tabs_->currentIndex(); ++i)
+            curOffset += tabFile_.value(tabs_->widget(i), 0) == id;
         int at = -1, target = -1;
         {
             QSignalBlocker quiet(tabs_);   // don't build each next tab as the current one closes
@@ -1407,7 +1279,7 @@ private:
                              r.owners[i], id, /*now=*/false, idx);
                 if (curInFile && target < 0 && tabs_->tabText(idx) == curLabel) target = idx;
             }
-            if (curInFile && target < 0) target = at;
+            if (curInFile && target < 0) target = at + std::min(curOffset, (int)r.sources.size() - 1);
             if (!curInFile) target = tabs_->indexOf(cur);
             tabs_->setCurrentIndex(target);
         }
@@ -1425,26 +1297,15 @@ private:
     }
     const OpenFile* activeFile() const { return fileById(tabFile_.value(tabs_->currentWidget(), 0)); }
 
-    // Show the active tab's file options in the toolbar; off for a tab with
-    // no file to re-open (a JSON tree, a table made from one).
+    // Show the active tab's format options under the tab bar: the ones its
+    // file and tab offer, as the file was opened; none for a tab with no file
+    // to re-open (a JSON tree, a table made from one).
     void syncFileControls() {
-        if (!regionBar_) return;
+        if (!contextBar_) return;
         const OpenFile* f = activeFile();
-        regionBar_->setEnabled(f && !f->jsonTree);
-        const FileOptions o = f ? f->opts : newFileOptions_;
-        const QSignalBlocker b1(regionEdit_), b2(coordsCombo_), b3(slopSpin_), b4(pileupAction_),
-                             b5(tagsEdit_), b6(gtStatsAction_), b7(contigsAction_),
-                             b8(expandAction_), b9(samplesCombo_), b10(matrixCombo_);
-        regionEdit_->setText(QString::fromStdString(o.region));
-        coordsCombo_->setCurrentIndex(o.ncbi ? 1 : 0);
-        slopSpin_->setValue((int)o.slop);
-        pileupAction_->setChecked(o.pileup);
-        tagsEdit_->setText(QString::fromStdString(o.tags));
-        gtStatsAction_->setChecked(o.gtStats);
-        contigsAction_->setChecked(o.contigs);
-        expandAction_->setChecked(o.expand);
-        samplesCombo_->setCurrentText(QString::fromStdString(o.samples));
-        matrixCombo_->setCurrentText(QString::fromStdString(o.matrix));
+        if (!f || f->jsonTree) { contextBar_->clearState(); return; }
+        auto* m = activeModel();
+        contextBar_->setState(f->feat, m ? m->tabTraits() : TabTraits{}, f->opts);
     }
 
 protected:
@@ -2417,6 +2278,30 @@ public:
     }
     int  tabCountForTest() const { return tabs_->count(); }
     void closeTabForTest(int i) { closeTab(i); waitIdleForTest(); }
+    // Window self-test: shown at `w` px wide, do any two controls of the
+    // toolbar or of the strip under the tab bar overlap, or leave the window?
+    QString overlapsForTest(int w) {
+        show();
+        resize(w, 600);
+        for (int i = 0; i < 20; ++i) QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        int overlaps = 0;
+        auto check = [&](QWidget* host) {
+            QList<QRect> boxes;
+            for (QWidget* c : host->findChildren<QWidget*>(Qt::FindDirectChildrenOnly)) {
+                if (!c->isVisible() || c->objectName() == QLatin1String("qt_toolbar_ext_button")) continue;
+                if (qobject_cast<QMenu*>(c)) continue;
+                const QRect g = c->geometry();
+                if (g.isEmpty()) continue;
+                for (const QRect& b : boxes) overlaps += b.intersects(g);
+                if (!host->rect().contains(g)) ++overlaps;
+                boxes << g;
+            }
+        };
+        check(mainBar_);
+        if (contextBar_->isVisible()) check(contextBar_);
+        return QStringLiteral("width=%1 overlaps=%2").arg(width()).arg(overlaps);
+    }
+    QString contextForTest() { waitIdleForTest(); syncFileControls(); return contextBar_->describeForTest(); }
 
     // vv's view flags on vvg's command line (vvg --filter … --sort … file).
     struct ViewOptions {
@@ -2518,7 +2403,6 @@ public:
     }
     void setExpandForTest(bool on) {
         newFileOptions_.expand = on;
-        if (expandAction_) { const QSignalBlocker b(expandAction_); expandAction_->setChecked(on); }
     }
     // Every window-level shortcut key with the actions bound to it, and the
     // number of keys bound more than once (Qt treats those as ambiguous and
@@ -3003,22 +2887,13 @@ private:
         statusBar()->showMessage(tr("canceled"), 2000);
     }
 
-    QTabWidget*                    tabs_   = nullptr;
+    TabPane*                       tabs_   = nullptr;
+    ContextBar*                    contextBar_ = nullptr;   // the current tab's format options
     QTableWidget*                  detail_ = nullptr;
     QPointer<ArrowTableModel>      detailModel_;      // model / row the dock shows
     int                            detailRow_ = -1;
     QLineEdit*                     filterEdit_ = nullptr;
     QLineEdit*                     findEdit_   = nullptr;
-    QLineEdit*                     regionEdit_ = nullptr;
-    QComboBox*                     coordsCombo_ = nullptr;
-    QSpinBox*                      slopSpin_   = nullptr;
-    QAction*                       pileupAction_ = nullptr;
-    QLineEdit*                     tagsEdit_   = nullptr;
-    QAction*                       gtStatsAction_ = nullptr;
-    QAction*                       contigsAction_ = nullptr;
-    QAction*                       expandAction_  = nullptr;
-    QComboBox*                     samplesCombo_  = nullptr;
-    QComboBox*                     matrixCombo_   = nullptr;
     bool                           smoothScroll_  = true;   // per-pixel scrolling
     QMenu*                         recentMenu_  = nullptr;
     QMenu*                         columnsMenu_ = nullptr;
@@ -3040,7 +2915,6 @@ private:
     QHash<QWidget*, int>           tabFile_;
     int                            nextFileId_ = 1;
     FileOptions                    newFileOptions_;   // a file's options when it opens
-    QToolBar*                      regionBar_ = nullptr;
     // The toolbar row and the menus (buildMenus / buildToolbar).
     QToolBar*    mainBar_        = nullptr;
     QWidget*     searchGroup_    = nullptr;   // the Filter and Find boxes
@@ -3455,6 +3329,14 @@ int main(int argc, char** argv) {
         // VVG_COPYCMD=1 prints "cmd=<command line>".
         if (const char* ti = std::getenv("VVG_TAB"); ti && *ti)
             win.selectTabForTest(std::atoi(ti));
+        // Optional context-bar dump: VVG_CONTEXT=1 prints the active tab's
+        // format options, e.g. "context: region pileup tags contigs".
+        if (const char* cx = std::getenv("VVG_CONTEXT"); cx && *cx && *cx != '0')
+            std::printf("context: %s\n", win.contextForTest().toUtf8().constData());
+        // Optional layout check: VVG_WIDTH=<px> shows the window that wide and
+        // prints "width=<actual> overlaps=<n>" for the toolbar and the strip.
+        if (const char* wd = std::getenv("VVG_WIDTH"); wd && *wd)
+            std::printf("%s\n", win.overlapsForTest(std::atoi(wd)).toUtf8().constData());
         // Optional lazy-tab check: VVG_BUILT=1 prints "built=N/M", the tabs
         // whose model exists (has read the source) of all tabs.
         if (const char* bt = std::getenv("VVG_BUILT"); bt && *bt && *bt != '0')

@@ -163,6 +163,9 @@ public:
     const std::string&  tabLabel() const     { return meta_.tabLabel; }
     int64_t             totalRows() const    { return meta_.totalRows; }
     const PreviewLimit& previewLimit() const { return meta_.limit; }
+    // What this tab offers beyond its file's format options (read with the
+    // schema, on the owner thread).
+    const TabTraits& tabTraits() const { return meta_.traits; }
     // --select resolved against the source (select_columns), on its owner.
     std::vector<int> selectColumns(const std::string& spec,
                                    std::vector<std::string>* unknown) const;
@@ -200,6 +203,7 @@ private:
         PreviewLimit limit;
         std::string  footer;
         arrow::Status readStatus;
+        TabTraits    traits;          // matrix tab / slices / coordinate columns
     };
     Meta meta_;
     static Meta readMeta(TabularSource& s);
