@@ -267,6 +267,7 @@ public:
             showTypes_ = st.value(QStringLiteral("ui/showColumnTypes"), true).toBool();
             smoothScroll_ = st.value(QStringLiteral("smoothScroll"), true).toBool();
             recent_ = st.value(QStringLiteral("recentFiles")).toStringList();
+            openFilter_ = st.value(QStringLiteral("ui/openFilter")).toString();
         }
         buildDetailDock();
         buildMenus();
@@ -989,17 +990,17 @@ private:
     void buildMenus() {
         QAction* open = makeAction(tr("&Open…"), QKeySequence::Open, tr("Open one or more data files"),
                                    [this] { openFilesDialog(); });
-        QAction* openDir = makeAction(tr("Open &Folder…"), {},
+        QAction* openDir = makeAction(tr("Open &Directory…"), {},
             tr("Open a directory as one dataset (Parquet / CSV / JSON parts; Hive key=value/ partitions)"),
-            [this] { openFolderDialog(); });
+            [this] { openDirectoryDialog(); });
         exportAction_ = makeAction(tr("&Export View As…"), QKeySequence(QStringLiteral("Ctrl+E")),
             tr("Write this tab's rows — with its filter, sort and visible columns — to Parquet, "
                "Arrow, TSV, CSV or JSON"),
             [this] { exportViewDialog(); });
         exportAction_->setIconText(tr("Export…"));
         setActionIcon(exportAction_, "document-export", Glyph::Export);
-        openExportDirAct_ = makeAction(tr("Open Export &Folder"), {},
-            tr("Show the folder of the last export"), [this] {
+        openExportDirAct_ = makeAction(tr("Open Export &Directory"), {},
+            tr("Show the directory of the last export"), [this] {
                 if (!exportPath_.isEmpty())
                     QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(exportPath_).absolutePath()));
             });
@@ -1208,17 +1209,46 @@ private:
         }
     }
 
+    // The Open dialog's types, from libvvcore's format table: every
+    // supported pattern, then one entry per family (the underlying format:
+    // Parquet / Arrow / ORC, HDF5, …) in alphabetical order, then all files.
+    static QStringList openNameFilters() {
+        QStringList families;
+        QHash<QString, QStringList> globs;
+        for (const FormatInfo& f : format_table()) {
+            const QString fam = QString::fromUtf8(f.family);
+            if (!globs.contains(fam)) families << fam;
+            for (const std::string& g : format_globs(f)) globs[fam] << QString::fromStdString(g);
+        }
+        std::sort(families.begin(), families.end(), [](const QString& a, const QString& b) {
+            return a.compare(b, Qt::CaseInsensitive) < 0;
+        });
+        QStringList all, out;
+        for (const QString& fam : families) all << globs[fam];
+        out << tr("All supported files (%1)").arg(all.join(QLatin1Char(' ')));
+        for (const QString& fam : families)
+            out << QStringLiteral("%1 (%2)").arg(fam, globs[fam].join(QLatin1Char(' ')));
+        out << tr("All files (*)");
+        return out;
+    }
     void openFilesDialog() {
+        const QStringList filters = openNameFilters();
+        QString chosen = filters.contains(openFilter_) ? openFilter_ : filters.first();
         QStringList files = QFileDialog::getOpenFileNames(
-            this, tr("Open data file(s)"), lastDir_, tr("All files (*)"));
+            this, tr("Open data file(s)"), lastDir_, filters.join(QStringLiteral(";;")), &chosen,
+            QFileDialog::HideNameFilterDetails);
+        if (!files.isEmpty() && chosen != openFilter_) {
+            openFilter_ = chosen;
+            saveSetting(QStringLiteral("ui/openFilter"), chosen);
+        }
         openPaths(files);
     }
 
     // A directory opens as one dataset (libvvcore concatenates its part files
     // and turns Hive key=value/ path components into columns).
-    void openFolderDialog() {
+    void openDirectoryDialog() {
         QString dir = QFileDialog::getExistingDirectory(
-            this, tr("Open folder as dataset"), lastDir_);
+            this, tr("Open directory as dataset"), lastDir_);
         if (!dir.isEmpty()) openPaths(QStringList{dir});
     }
 
@@ -2983,6 +3013,7 @@ private:
     bool                           showTypes_     = true;   // the header's type line
     QAction*                       typesAct_      = nullptr;   // View ▸ Column Types
     QStringList                    recent_;                 // Open Recent, newest first
+    QString                        openFilter_;             // the Open dialog's last type
     QThread*                       settingsThread_ = nullptr;   // writes vvg.conf (saveSetting)
     QObject*                       settingsCtx_    = nullptr;   // lives on settingsThread_
     QMenu*                         recentMenu_  = nullptr;
@@ -3065,6 +3096,12 @@ public:
         QMetaObject::invokeMethod(settingsCtx_, [] { QThread::currentThread()->quit(); },
                                   Qt::QueuedConnection);
         settingsThread_->wait();
+    }
+    // Self-test: the Open dialog's types, one per line.
+    static void dumpOpenFiltersForTest() {
+        const QStringList filters = openNameFilters();
+        std::printf("filters=%d\n", (int)filters.size());
+        for (const QString& f : filters) std::printf("filter %s\n", f.toUtf8().constData());
     }
     // Self-test: toggle View ▸ Column Types and time the slot.
     qint64 toggleTypesForTest() {
@@ -3438,6 +3475,9 @@ int main(int argc, char** argv) {
         // Optional header check: VVG_HEADER=1 (the first column's header).
         if (const char* hd = std::getenv("VVG_HEADER"); hd && *hd && *hd != '0')
             std::printf("header %s\n", win.headerForTest().toUtf8().constData());
+        // Optional Open-dialog check: VVG_FILTERS=1 prints its file types.
+        if (const char* fl = std::getenv("VVG_FILTERS"); fl && *fl && *fl != '0')
+            MainWindow::dumpOpenFiltersForTest();
         // Optional settings check: VVG_TOGGLE_TYPES=1 toggles View ▸ Column
         // Types, prints how long the action took and the header after it.
         if (const char* tt = std::getenv("VVG_TOGGLE_TYPES"); tt && *tt && *tt != '0') {

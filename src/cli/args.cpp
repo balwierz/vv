@@ -6,136 +6,7 @@
 #include "internal.hpp"
 
 // ── Format registry ──────────────────────────────────────────────────────────
-//
-// One authoritative list of what vv reads. Before this table the same
-// information was restated in seven places — print_usage(), README.md,
-// docs/USAGE.md, man/vv.1, three shell completions and four KDE manifests —
-// and they had already drifted apart: `.npz` was missing from all three
-// completions, `.arrow`/`.feather` from --help entirely, `.fods` and
-// `.ffn`/`.frn` from most of them, while README documented `.npy` and the
-// KDE .desktop claimed `.xls` — neither of which vv can open.
-//
-// `--formats [--json]` prints this table, and tests/run_tests.sh diffs the
-// completions against it so the next drift fails CI instead of shipping.
-//
-// exts: canonical spelling, space-separated. Matching is case-insensitive
-// (fends_ci), so `.bigBed` also matches `.bigbed` — but shell globs are
-// case-sensitive, which is why the completion generator emits both.
-struct FormatInfo {
-    const char* name;      // human label
-    const char* exts;      // space-separated, leading dot, canonical case
-    const char* reader;    // the source class it dispatches to
-    bool gz;               // .gz variants dispatched too
-    bool region;           // -r honoured (see `region_note` for the condition)
-    bool tabs;             // expands into component tabs (--tab / TUI tabs)
-    bool streaming;        // forward-only reader (vs random access)
-    bool magic;            // also detected by magic bytes on an unknown ext
-    const char* region_note;
-};
-
-static const FormatInfo kFormats[] = {
-  {"Apache Parquet", ".parquet", "ParquetSource",
-   false, true,  false, false, true,  "needs chrom/start/end columns (--region-cols)"},
-  {"LociSSD", ".lociss", "LocissV4Source / ParquetSource",
-   false, true,  false, false, true,  "v3 via row-group stats, v4 via the zone map"},
-  {"Arrow IPC", ".arrow", "IpcSource",
-   false, false, false, false, true,  ""},
-  {"Feather", ".feather", "IpcSource",
-   false, false, false, false, true,  ""},
-  {"Apache ORC", ".orc", "OrcSource",
-   false, false, false, false, false, ""},
-  {"BAM / CRAM alignments", ".bam .cram", "BamSource / BamPileupSource",
-   false, true,  false, true,  false, "needs a .bai/.csi/.crai index"},
-  {"SAM alignments (text)", ".sam", "DelimitedSource",
-   false, false, false, true,  false, "no index; convert with `samtools view -b`"},
-  {"BCF", ".bcf", "BcfSource",
-   false, true,  false, true,  false, "needs a .csi/.tbi index"},
-  {"VCF", ".vcf", "DelimitedSource",
-   true,  true,  false, true,  false, "bgzip + tabix"},
-  {"GFF / GFF3 / GTF", ".gff .gff3 .gtf", "DelimitedSource",
-   true,  true,  false, true,  false, "bgzip + tabix"},
-  {"BED", ".bed", "DelimitedSource",
-   true,  true,  false, true,  false, "bgzip + tabix"},
-  {"ENCODE peak / signal", ".narrowPeak .broadPeak .gappedPeak .bedGraph .bg .tagAlign",
-   "DelimitedSource", true, true, false, true, false, "bgzip + tabix"},
-  {"Delimited text", ".tsv .csv", "DelimitedSource",
-   true,  true,  false, true,  false, "bgzip + tabix"},
-  {"samtools mpileup", ".pileup .mpileup .pile", "DelimitedSource",
-   true,  true,  false, true,  false, "bgzip + tabix"},
-  {"PAF (minimap2)", ".paf", "DelimitedSource",
-   true,  false, false, true,  false, ""},
-  {"Arrow IPC stream", ".arrows", "IpcStreamSource",
-   false, false, false, true,  true,  ""},
-  {"MatrixMarket (sparse matrix)", ".mtx", "DelimitedSource",
-   true,  false, false, true,  false, ""},
-  {"PLINK variant / sample tables", ".bim .fam .pvar .psam", "DelimitedSource",
-   true,  false, false, true,  false, ""},
-  {"R data", ".rds .RData .rda", "RdataSource",
-   false, false, true,  false, false, ""},
-  {"UCSC wiggle", ".wig", "DelimitedSource",
-   true,  false, false, true,  false, ""},
-  {"BLAST / DIAMOND tabular", ".m8 .blast6 .outfmt6", "DelimitedSource",
-   true,  false, false, true,  false, ""},
-  {"Genomics TSV layouts", ".bedpe .pairs .gct .maf", "DelimitedSource",
-   true,  false, false, true,  false, ""},
-  {"FASTA", ".fa .fasta .fna .faa .ffn .frn", "FastxSource",
-   true,  true,  false, true,  false, "needs a .fai (bgzip + .gzi for .fa.gz); one row per window"},
-  {"FASTQ", ".fq .fastq", "FastxSource",
-   true,  false, false, true,  false, ""},
-  {"UCSC bigBed / bigWig", ".bb .bigBed .bw .bigWig", "BigSource",
-   false, true,  false, true,  false, "native block-level overlap; no sidecar index"},
-  {"UCSC 2bit", ".2bit", "TwoBitSource",
-   false, false, false, false, false, ""},
-  {"DuckDB", ".duckdb .ddb", "DuckSource",
-   false, false, true,  false, true,  ""},
-  {"SQLite", ".sqlite .sqlite3 .db", "SqliteSource",
-   false, false, true,  true,  false, ""},
-  {"Excel workbook", ".xlsx .xlsm", "XlsxSource",
-   false, false, true,  false, false, ""},
-  {"OpenDocument spreadsheet", ".ods .fods", "OdsSource",
-   false, false, true,  false, false, ""},
-  {"HDF5 / AnnData / Loom", ".h5ad .h5 .hdf5 .loom .h5mu .h5seurat .fast5 .nc .nc4", "Hdf5Source",
-   false, false, true,  false, false, ""},
-  {"GenBank / EMBL", ".gb .gbk .gbff .genbank .embl", "FlatFileSource",
-   true,  true,  true,  false, false, ""},
-  {"Nanopore POD5", ".pod5", "Pod5Tab",
-   false, false, true,  true,  true,  ""},
-  {"Zarr store", ".zarr .zarr.zip", "ZarrStore",
-   false, false, true,  false, false, ""},
-  {"Cooler Hi-C matrix", ".cool .mcool .scool", "PixelsSource",
-   false, true,  true,  true,  false, ""},
-  {"NumPy archive", ".npz", "NpzSource",
-   false, false, true,  false, false, ""},
-  {"NumPy array", ".npy", "NpzSource",
-   false, false, false, false, false, ""},
-  {"Markdown", ".md .markdown .mdown .mkd", "md4c renderer",
-   false, false, false, false, false, ""},
-  {"JSON / NDJSON", ".json .ndjson .jsonl .geojson .ipynb .har", "JsonSource",
-   true,  false, false, true,  false, ""},
-  // Plain text is last on purpose: it is the fallback, and any file no other
-  // row claims is content-sniffed into it. The extension list is short by
-  // design — .py / .c / .conf / .toml reach the same reader through the
-  // sniff, and claiming them here would advertise vv as a code viewer.
-  {"Plain text", ".txt .text .log", "TextSource",
-   true,  false, false, true,  true,  ""},
-};
-static constexpr size_t kNumFormats = sizeof(kFormats) / sizeof(kFormats[0]);
-
-// Split a FormatInfo::exts blob into individual extensions.
-static std::vector<std::string> format_ext_list(const FormatInfo& f) {
-    std::vector<std::string> out;
-    std::string cur;
-    for (const char* p = f.exts; ; ++p) {
-        if (*p == ' ' || *p == '\0') {
-            if (!cur.empty()) out.push_back(cur);
-            cur.clear();
-            if (*p == '\0') break;
-        } else {
-            cur += *p;
-        }
-    }
-    return out;
-}
+// format_table() (src/core/formats.cpp) is the one list of what vv reads.
 
 // Defined with the other JSON helpers further down.
 
@@ -144,15 +15,18 @@ static std::vector<std::string> format_ext_list(const FormatInfo& f) {
 void print_formats(bool as_json) {
     if (as_json) {
         std::printf("[");
-        for (size_t i = 0; i < kNumFormats; ++i) {
-            const FormatInfo& f = kFormats[i];
+        const auto& formats = format_table();
+        for (size_t i = 0; i < formats.size(); ++i) {
+            const FormatInfo& f = formats[i];
             if (i) std::printf(", ");
             std::printf("{\"name\": ");
             json_emit_string(f.name);
+            std::printf(", \"family\": ");
+            json_emit_string(f.family);
             std::printf(", \"reader\": ");
             json_emit_string(f.reader);
             std::printf(", \"extensions\": [");
-            auto exts = format_ext_list(f);
+            auto exts = format_extensions(f);
             for (size_t k = 0; k < exts.size(); ++k) {
                 if (k) std::printf(", ");
                 json_emit_string(exts[k]);
@@ -172,10 +46,10 @@ void print_formats(bool as_json) {
         return;
     }
     size_t w = 4;
-    for (const auto& f : kFormats) w = std::max(w, std::strlen(f.name));
+    for (const auto& f : format_table()) w = std::max(w, std::strlen(f.name));
     std::printf("%-*s  %-8s %-6s %-4s %-9s %s\n",
                 (int)w, "Format", "gz", "region", "tabs", "streaming", "extensions");
-    for (const auto& f : kFormats) {
+    for (const auto& f : format_table()) {
         std::printf("%-*s  %-8s %-6s %-4s %-9s %s\n",
                     (int)w, f.name,
                     f.gz     ? "yes" : "-",

@@ -394,6 +394,7 @@ endif()
 set(VV_CORE_SOURCES
     src/core/common.cpp   src/core/compress.cpp src/core/derived.cpp
     src/core/features.cpp
+    src/core/formats.cpp
     src/core/filter.cpp   src/core/format_fast.cpp
     src/core/io.cpp       src/core/modes.cpp    src/core/open.cpp
     src/core/platform.cpp src/core/remote.cpp

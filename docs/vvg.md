@@ -25,7 +25,7 @@ Command* goes the other way.
 
 - **Toolbar** — one row: the *Filter* and *Find* boxes, then on the right
   *Details* (*Ctrl+B*, the Row / Column panel), *Export…* (*Ctrl+E*; its ▾ has
-  *Copy as vv Command* and *Open Export Folder*) and **≡**, the menu (*F10*, or
+  *Copy as vv Command* and *Open Export Directory*) and **≡**, the menu (*F10*, or
   right-click the toolbar): open, recent files, close, *Edit ▸*, *View ▸*,
   *Help ▸*, quit. The classic File / Edit / View / Help menu bar holds the
   same and is off unless *View ▸ Menu Bar* is checked (always on with a

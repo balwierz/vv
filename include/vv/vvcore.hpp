@@ -531,6 +531,27 @@ struct FileFeatures {
 };
 FileFeatures file_features(const std::string& path);
 
+// The formats vv reads, one row per format (what `vv --formats` prints).
+struct FormatInfo {
+    const char* name;      // human label
+    const char* exts;      // space-separated, leading dot, canonical case
+    const char* reader;    // the source class it dispatches to
+    bool gz;               // .gz variants dispatched too
+    bool region;           // -r honoured (see `region_note` for the condition)
+    bool tabs;             // expands into component tabs (--tab / TUI tabs)
+    bool streaming;        // forward-only reader (vs random access)
+    bool magic;            // also detected by magic bytes on an unknown ext
+    const char* region_note;
+    const char* family;    // the underlying format, grouping rows (vvg's Open dialog)
+};
+const std::vector<FormatInfo>& format_table();
+// `f.exts` split: ".vcf", ".bed", … in their canonical case.
+std::vector<std::string> format_extensions(const FormatInfo& f);
+// File-name patterns for `f`: "*.vcf", plus "*.vcf.gz" "*.vcf.bgz" "*.vcf.zst"
+// "*.vcf.bz2" "*.vcf.xz" where it reads compressed input, plus lower-case
+// spellings of mixed-case extensions (*.bigwig beside *.bigWig).
+std::vector<std::string> format_globs(const FormatInfo& f);
+
 // What one tab of a file offers beyond its file's features. Reads the tab's
 // schema, so call it where `src` is read (vvg: the tab's reader thread).
 struct TabTraits {

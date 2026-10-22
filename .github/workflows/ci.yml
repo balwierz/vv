@@ -500,6 +500,16 @@ jobs:
           printf '[ui]\nshowColumnTypes=false\n' > "$RUNNER_TEMP/vvgcfg-menus/vv/vvg.conf"
           XDG_CONFIG_HOME="$RUNNER_TEMP/vvgcfg-menus" VVG_WINTEST=1 VVG_HEADER=1 ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -q "^header lines=1 height=[0-9]* name='Chr' "
+          # The Open dialog lists vv's formats (libvvcore's format table): the
+          # first type holds every extension `vv --formats` names, with the
+          # compressed spellings of the formats that read them.
+          out=$(VVG_WINTEST=1 VVG_FILTERS=1 ./build-gui/gui/vvg tests/data/tiny.parquet)
+          first=$(sed -n 's/^filter All supported files (\(.*\))$/\1/p' <<<"$out")
+          for e in $(./build/vv --formats --json | python3 -c 'import json,sys; print(" ".join(x for f in json.load(sys.stdin) for x in f["extensions"]))'); do
+            grep -qF -- " *$e " <<<" $first " || { echo "Open dialog lacks *$e"; exit 1; }
+          done
+          for e in .vcf.gz .bed.bgz .tsv.zst .bigwig; do grep -qF -- " *$e " <<<" $first "; done
+          grep -qx 'filter All files (\*)' <<<"$out"
           # Toggling Column Types does not wait for the settings file: the
           # write runs on vvg's settings thread and is in the file on exit.
           out=$(XDG_CONFIG_HOME="$RUNNER_TEMP/vvgcfg-menus" VVG_WINTEST=1 VVG_TOGGLE_TYPES=1 ./build-gui/gui/vvg tests/data/tiny.parquet)

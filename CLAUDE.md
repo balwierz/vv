@@ -93,7 +93,9 @@ src/core/            common (colours, themes, formatting), source (TabularSource
                      open_source()), open (format dispatch, stdin, datasets),
                      modes (markdown / text / JSON document modes),
                      summary (summarize_columns: --describe / --value-counts /
-                     vvg statistics), format_fast (cell text appended per
+                     vvg statistics), formats (format_table: the format
+                     registry `--formats` and vvg's Open dialog read),
+                     format_fast (cell text appended per
                      column type, for the exporters), remote (URLs through
                      htslib's hFILE: open_input_file), platform (the calls whose POSIX and
                      Windows forms differ: terminal size, globbing, temp files,
@@ -120,7 +122,7 @@ it once as the `vvcore_obj` object library (with `VV_CORE_LIB`, so no ncurses)
 and links it into `vv`, `libvvcore` (the Qt GUI `gui/` and the KF6 plugins
 `gui/kde/`) and the fuzz harnesses. The public reader surface (`Config`,
 `TabularSource`, `FilterExpr`, the cell formatters, `open_source`,
-`filter_rows`, `compute_col_stats`) is declared in `include/vv/vvcore.hpp`;
+`filter_rows`, `compute_col_stats`, `format_table`) is declared in `include/vv/vvcore.hpp`;
 the JSON document index (`vvjson::JsonDoc`) in `include/vv/vvjson.hpp`.
 
 Reader classes stay private to their file. Other code reaches them through
