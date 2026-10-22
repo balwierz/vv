@@ -16,7 +16,8 @@
 #      except the third-party names in $thirdparty, defined by other packages
 #      (RKWard's application/rdata) and listed so vv stays in "Open with" where
 #      their definition wins a glob tie;
-#   3. the thumbnailer and extractor list only types the .desktop entry lists,
+#   3. the thumbnailer lists its types where KF6 reads them (KPlugin.MimeTypes),
+#      the thumbnailer and extractor list only types the .desktop entry lists,
 #      the extractor's .json and .cpp lists agree, and neither plugin handles
 #      CRAM (decoding may fetch the reference over the network) or FASTA (a
 #      first record can be a whole chromosome).
@@ -125,8 +126,15 @@ done
 
 # The MIME lists of the three consumers.
 desktop=$(sed -n 's/^MimeType=//p' "$here/org.vv.Viewer.desktop" | tr ';' '\n' | sed '/^$/d' | sort)
-thumb=$(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["MimeTypes"]))' \
-          "$here/vvthumbnail.json" | sort)
+# A KF6 thumbnailer's types are KPlugin.MimeTypes: KIO's PreviewJob reads
+# KPluginMetaData::mimeTypes(), which a top-level "MimeTypes" does not fill,
+# and a plugin with none is never asked for any file.
+thumb=$(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+if "MimeTypes" in d or not d.get("KPlugin", {}).get("MimeTypes"):
+    sys.exit("FAIL: vvthumbnail.json must list its types in KPlugin.MimeTypes")
+print("\n".join(d["KPlugin"]["MimeTypes"]))' "$here/vvthumbnail.json" | sort)
 extr_json=$(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["MimeTypes"]))' \
           "$here/vvextractor.json" | sort)
 extr_cpp=$(grep -o 'QStringLiteral("[^"]*/[^"]*")' "$here/vvextractor.cpp" \
