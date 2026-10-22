@@ -639,6 +639,9 @@ private:
     static std::vector<int> planColumnWidths(ArrowTableModel* model,
                                              const QFontMetrics& fm,
                                              const QFontMetrics* typeFm = nullptr) {
+        // A summary tab (an AnnData's key / value / about) shows its cells in
+        // full, as the CLI table does.
+        const bool full = model->tabTraits().cells_in_full;
         const int ncols = model->columnCount();
         const int64_t nrows = model->rowCount();
         if (ncols <= 0) return {};
@@ -671,7 +674,7 @@ private:
 
         WidthPlanOptions opt;
         opt.percentile = 95;
-        opt.c_max      = 50 * ch + pad;          // 50 characters, in pixels
+        opt.c_max      = full ? (1 << 20) : 50 * ch + pad;   // 50 characters, in pixels
         opt.slack      = 2 * ch;
         opt.min_floor  = 3 * ch;
         // viewport 0 = no shrink-to-fit: give each column its natural width and
@@ -3097,6 +3100,19 @@ public:
                                   Qt::QueuedConnection);
         settingsThread_->wait();
     }
+    // Self-test: the active tab's column widths, in multiples of the width
+    // of '0' (font-independent), e.g. "ch=8 widths=14.0,62.5".
+    QString colWidthsForTest() {
+        waitIdleForTest();
+        auto* v = activeView();
+        auto* m = activeModel();
+        if (!v || !m) return QStringLiteral("no table");
+        const double ch = std::max(1, v->fontMetrics().horizontalAdvance(QLatin1Char('0')));
+        QStringList w;
+        for (int c = 0; c < m->columnCount(); ++c)
+            w << QString::number(v->horizontalHeader()->sectionSize(c) / ch, 'f', 1);
+        return QStringLiteral("widths=") + w.join(QLatin1Char(','));
+    }
     // Self-test: the Open dialog's types, one per line.
     static void dumpOpenFiltersForTest() {
         const QStringList filters = openNameFilters();
@@ -3475,6 +3491,9 @@ int main(int argc, char** argv) {
         // Optional header check: VVG_HEADER=1 (the first column's header).
         if (const char* hd = std::getenv("VVG_HEADER"); hd && *hd && *hd != '0')
             std::printf("header %s\n", win.headerForTest().toUtf8().constData());
+        // Optional width check: VVG_COLWIDTHS=1 (the active tab's columns).
+        if (const char* cw = std::getenv("VVG_COLWIDTHS"); cw && *cw && *cw != '0')
+            std::printf("colwidths %s\n", win.colWidthsForTest().toUtf8().constData());
         // Optional Open-dialog check: VVG_FILTERS=1 prints its file types.
         if (const char* fl = std::getenv("VVG_FILTERS"); fl && *fl && *fl != '0')
             MainWindow::dumpOpenFiltersForTest();

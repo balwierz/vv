@@ -558,6 +558,7 @@ struct TabTraits {
     bool matrix_tab = false;      // is_matrix_tab(): --matrix wide | long
     bool slices = false;          // has_slices(): the slice stepper
     bool coord_columns = false;   // chromosome / start / end columns (-r on Parquet)
+    bool cells_in_full = false;   // show_cells_in_full(): a summary, no width cap
 };
 TabTraits tab_traits(const TabularSource& src);
 

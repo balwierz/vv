@@ -2964,6 +2964,7 @@ if [ -f "$DATA/tiny.loom" ]; then
     assert_contains "loom_summary_version" "$LMS" "$(printf 'spec version\t3.0.0')"
     assert_contains "loom_summary_shape"   "$LMS" "4 cells × 3 genes (stored genes × cells)"
     assert_contains "loom_summary_graphs"  "$LMS" "$(printf 'col_graphs\tknn')"
+    assert_contains "loom_summary_about"   "$LMS" "$(printf 'row_attrs\tAccession, Gene\tper-gene annotations')"
 fi
 
 # Cell Ranger HDF5 (filtered_feature_bc_matrix.h5): the features × barcodes CSC
@@ -4000,6 +4001,12 @@ if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
             "cell3,cell2;cell0,cell1;cell1,cell0;"
         assert_contains "h5ad_obsp_summary" "$("$VV" --tab summary --tsv "$OP")" \
             "$(printf 'obsp\tconnectivities, distances')"
+        # The summary keeps AnnData's own names as keys and says what each
+        # part is in a third column.
+        assert_eq_file_inline "h5ad_summary_columns" "$("$VV" --tab summary --tsv "$OP" | head -1)" \
+            "$(printf 'key\tvalue\tabout')"
+        assert_contains "h5ad_summary_about" "$("$VV" --tab summary --tsv "$OP")" \
+            "$(printf 'obsp\tconnectivities, distances\tcell × cell matrices: neighbour graph')"
     fi
     # obsm / varm entries stored as DataFrames open like obs (index first).
     if [ -f "$DATA/tiny.obsmdf.h5ad" ]; then

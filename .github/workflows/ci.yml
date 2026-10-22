@@ -500,6 +500,12 @@ jobs:
           printf '[ui]\nshowColumnTypes=false\n' > "$RUNNER_TEMP/vvgcfg-menus/vv/vvg.conf"
           XDG_CONFIG_HOME="$RUNNER_TEMP/vvgcfg-menus" VVG_WINTEST=1 VVG_HEADER=1 ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -q "^header lines=1 height=[0-9]* name='Chr' "
+          # An AnnData summary (key / value / about) is sized to its cells, as
+          # the CLI table does, not capped at 50 characters like other tabs.
+          out=$(VVG_WINTEST=1 VVG_COLWIDTHS=1 ./build-gui/gui/vvg tests/data/tiny.chunked.h5ad)
+          echo "$out"
+          vw=$(sed -n 's/^colwidths widths=[0-9.]*,\([0-9]*\)\..*/\1/p' <<<"$out")
+          test -n "$vw" && test "$vw" -gt 60
           # The Open dialog lists vv's formats (libvvcore's format table): the
           # first type holds every extension `vv --formats` names, with the
           # compressed spellings of the formats that read them.

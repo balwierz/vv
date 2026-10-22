@@ -117,6 +117,7 @@ TabTraits tab_traits(const TabularSource& src) {
     TabTraits t;
     t.matrix_tab = src.is_matrix_tab();
     t.slices = src.has_slices();
+    t.cells_in_full = src.show_cells_in_full();
     if (auto sch = src.schema()) t.coord_columns = has_genomic_coord_columns(*sch);
     return t;
 }

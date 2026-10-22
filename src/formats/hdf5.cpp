@@ -738,6 +738,16 @@ struct OpenSpec {
 // each with the rows it stands for.
 static constexpr const char* kSummaryDefer = "\x01";
 static std::string expand_summary_rows(const Store& store, const std::string& text);
+static std::string summary_about(const std::string& key, const std::string& format);
+
+// A summary tab's columns: the file's own name for a part, what it holds
+// (counts, shapes, layout) and, in plain words, what that part is.
+static std::shared_ptr<arrow::Schema> summary_schema() {
+    static const auto sch = arrow::schema({arrow::field("key", arrow::utf8()),
+                                           arrow::field("value", arrow::utf8()),
+                                           arrow::field("about", arrow::utf8())});
+    return sch;
+}
 
 // The AnnData a dataset belongs to: "/mod/<name>" for a modality of a MuData
 // (.h5mu) file, "" for a plain AnnData. Its obs / var label the dataset.
@@ -910,21 +920,21 @@ class Hdf5Source : public WorkbookSource {
                 // The summary table is built directly by scan_anndata
                 // and stuffed into spec.footer_hint as JSON-ish text;
                 // we just turn it back into rows here.
-                arrow::StringBuilder kb, vb;
+                arrow::StringBuilder kb, vb, ab;
                 std::stringstream ss(expand_summary_rows(file_id, spec.footer_hint));
-                std::string line;
+                std::string line, format;
                 while (std::getline(ss, line)) {
                     auto eq = line.find('\t');
                     if (eq == std::string::npos) continue;
-                    (void)kb.Append(line.substr(0, eq));
-                    (void)vb.Append(line.substr(eq + 1));
+                    const std::string key = line.substr(0, eq), value = line.substr(eq + 1);
+                    if (key == "format" && format.empty()) format = value;
+                    (void)kb.Append(key);
+                    (void)vb.Append(value);
+                    (void)ab.Append(summary_about(key, format));
                 }
-                std::shared_ptr<arrow::Array> ka, va;
-                (void)kb.Finish(&ka); (void)vb.Finish(&va);
-                auto sch = arrow::schema({
-                    arrow::field("key",   arrow::utf8()),
-                    arrow::field("value", arrow::utf8())});
-                *out = arrow::Table::Make(sch, {ka, va});
+                std::shared_ptr<arrow::Array> ka, va, aa;
+                (void)kb.Finish(&ka); (void)vb.Finish(&va); (void)ab.Finish(&aa);
+                *out = arrow::Table::Make(summary_schema(), {ka, va, aa});
                 *footer = spec.footer_hint.rfind("format\tMuData\n", 0) == 0
                               ? "Format: MuData (summary)" : "Format: AnnData (summary)";
                 return "";
@@ -1121,12 +1131,10 @@ public:
     // Data accessors force the lazy build first; for an eagerly-built source
     // (built_ == true) ensure_built() is a no-op.
     std::shared_ptr<arrow::Schema> schema() const override {
-        // A summary is always key / value text: answered without building it,
+        // A summary is always key / value / about text: answered without building it,
         // since open_source looks at every source's schema (VCF samples).
         if (!built_ && spec_.kind == OpenSpec::Kind::Summary) {
-            static const auto kv = arrow::schema({arrow::field("key", arrow::utf8()),
-                                                  arrow::field("value", arrow::utf8())});
-            return kv;
+            return summary_schema();
         }
         ensure_built();
         return viewport_ ? viewport_->schema() : MemoryTableSource::schema();
@@ -3282,6 +3290,70 @@ static std::string expand_summary_rows(const Store& store, const std::string& te
         t_h5_read_error.swap(pending);
     }
     return out;
+}
+
+// The summary tab's `about` column: what a row's key holds, in a few words.
+// The keys are the file's own names (AnnData's obsm / obsp / uns, Loom's
+// row_attrs, Cell Ranger's attributes), which users type in code, so they are
+// kept and explained here. `format` is the summary's first value (AnnData,
+// MuData, Loom or 10x Genomics …); an unknown key gets "".
+static std::string summary_about(const std::string& key, const std::string& format) {
+    auto ends = [&](const char* suffix) {
+        const size_t n = std::strlen(suffix);
+        return key.size() >= n && key.compare(key.size() - n, n, suffix) == 0;
+    };
+    // Rows about a matrix's values and storage first: "X profile" is not "X".
+    if (ends(" profile"))
+        return "value type, how many values are stored, their range; "
+               "whether they look like raw counts";
+    if (ends(" storage")) return "on-disk encoding, chunking, compression and size";
+    if (ends(" row slice")) return "the least a read of one row decompresses";
+    if (ends(" column slice")) return "the least a read of one column decompresses";
+    if (ends("/data")) return "the stored (non-zero) values";
+    if (ends("/indices")) return "the column (CSR) or row (CSC) of each stored value";
+    if (ends("/indptr")) return "where each row (CSR) or column (CSC) starts in data / indices";
+    if (key == "format") return "file format";
+    if (key == "file size") return "size of the file on disk";
+    if (key == "root-encoding") return "anndata's on-disk encoding of the root group";
+    if (format == "MuData") {
+        if (key == "modalities") return "the AnnData objects inside, one per assay (rna, atac, prot, …)";
+        if (key == "obs") return "cell annotations shared by the modalities";
+        if (key == "var") return "the features of every modality, with their annotations";
+        if (ends(":X")) return "that modality's main matrix: cells × features";
+        return "";
+    }
+    if (format == "Loom") {
+        if (key == "spec version") return "version of the Loom specification";
+        if (key == "matrix") return "main matrix, stored genes × cells";
+        if (key == "layers") return "other matrices of the main matrix's shape (spliced, unspliced, …)";
+        if (key == "row_attrs") return "per-gene annotations";
+        if (key == "col_attrs") return "per-cell annotations";
+        if (key == "row_graphs") return "gene × gene graphs";
+        if (key == "col_graphs") return "cell × cell graphs (e.g. kNN)";
+        return "";
+    }
+    if (format.rfind("10x Genomics", 0) == 0) {
+        if (key == "filetype") return "Cell Ranger file type";
+        if (key == "version") return "version of the Cell Ranger HDF5 layout";
+        if (key == "software_version") return "the Cell Ranger release that wrote the file";
+        if (key == "chemistry_description") return "library chemistry";
+        if (key.rfind("matrix", 0) == 0) return "count matrix: cells (barcodes) × features";
+        if (key.rfind("feature_type: ", 0) == 0) return "number of features of this type";
+        return "";
+    }
+    // AnnData
+    if (key == "X") return "main matrix: observations (cells) × variables (genes)";
+    if (key == "obs") return "per-observation (cell) annotations, one row per cell";
+    if (key == "var") return "per-variable (gene) annotations, one row per gene";
+    if (key == "obsm") return "per-cell arrays of several columns: embeddings (X_pca, X_umap)";
+    if (key == "varm") return "per-gene arrays of several columns: loadings (PCs)";
+    if (key == "obsp") return "cell × cell matrices: neighbour graph (connectivities, distances)";
+    if (key == "varp") return "gene × gene matrices";
+    if (key == "layers") return "matrices of X's shape: other versions of X (counts, normalised)";
+    if (key == "raw.X") return "the matrix before gene filtering (all genes), often raw counts";
+    if (key == "raw.var") return "per-gene annotations of raw.X";
+    if (key == "uns") return "unstructured metadata: parameters, colours, run settings";
+    return "";
 }
 
 static std::vector<OpenSpec> scan_anndata(const Store& store, const std::string& root) {
