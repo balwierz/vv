@@ -136,6 +136,37 @@ static LoadResult loadSources(const Config& base, const QStringList& paths,
     return r;
 }
 
+// The format options of one open file — vv's --region / --coords / --slop /
+// --pileup / --tags / --gt-stats / --contigs / --expand / --samples /
+// --matrix. Each file has its own: a change re-opens only that file's tabs.
+struct FileOptions {
+    std::string region;
+    bool        ncbi = false;           // the region is NCBI 1-based
+    int64_t     slop = 0;
+    bool        pileup = false;
+    std::string tags;
+    bool        gtStats = false;
+    bool        contigs = false;
+    bool        expand = true;          // unpack GFF/GTF attributes, VCF/BCF INFO
+    std::string samples = "struct";
+    std::string matrix = "wide";
+    bool operator==(const FileOptions&) const = default;
+
+    Config config() const {
+        Config c;
+        c.region           = region;
+        c.coords_one_based = ncbi;
+        c.slop             = slop;
+        c.pileup           = pileup;
+        c.bam_tags         = tags;
+        c.gt_stats         = gtStats;
+        c.contigs          = contigs;
+        c.samples          = samples;
+        c.matrix           = matrix;
+        return c;
+    }
+};
+
 // Tints the cursor column, the one the Column tab summarises, so it stands
 // out from its neighbours; selection and search highlights paint over it.
 class CursorColumnDelegate : public QStyledItemDelegate {
@@ -188,17 +219,7 @@ public:
 
         connect(tabs_, &QTabWidget::tabCloseRequested, this,
                 [this](int i){ closeTab(i); });
-        connect(tabs_, &QTabWidget::currentChanged, this, [this](int i) {
-            materializeTab(i);   // a tab not shown before: build its model now
-            if (selTimer_) selTimer_->start();
-            if (colTimer_) colTimer_->start();
-            refreshStatus();
-            refreshColumnsMenu();
-            if (activeJsonTab())
-                updateDetail({});
-            else if (auto* v = activeView())
-                updateDetail(v->selectionModel()->currentIndex());
-        });
+        connect(tabs_, &QTabWidget::currentChanged, this, [this](int i) { onCurrentTab(i); });
 
         smoothScroll_ = QSettings(QStringLiteral("vv"), QStringLiteral("vvg"))
                             .value(QStringLiteral("smoothScroll"), true).toBool();
@@ -230,38 +251,44 @@ public:
         int firstFileTab = -1;
         // JSON documents open as a tree (as in vv on a terminal); JSON Lines,
         // and any file when vv's table flags were given, as a table.
-        QStringList paths;
+        QStringList errors, opened;
         for (const QString& p : paths_in) {
             if (!jsonAsTable_ && jsonDocumentPath(p)) {
-                const QString e = openJsonTreeTab(p);
+                const int id = nextFileId_++;
+                const QString e = openJsonTreeTab(p, id);
                 if (e.isEmpty()) {
                     if (p == paths_in.first()) firstFileTab = tabs_->count() - 1;
-                    addRecent(p); openedPaths_ << p; setWindowTitle(p + QStringLiteral(" — vv"));
+                    files_.push_back(OpenFile{id, p, newFileOptions_, /*jsonTree=*/true});
+                    addRecent(p); setWindowTitle(p + QStringLiteral(" — vv"));
                     continue;
                 }
                 if (headless_ || quiet) std::fprintf(stderr, "vvg: %s\n", e.toLocal8Bit().constData());
                 else QMessageBox::warning(this, tr("vvg — open"), e);
                 continue;
             }
-            paths << p;
+            const OpenFile f{nextFileId_++, p, newFileOptions_, false};
+            LoadResult r = loadFile(f.path, f.opts);
+            errors << r.errors;
+            if (r.sources.empty()) continue;
+            files_.push_back(f);
+            for (size_t i = 0; i < r.sources.size(); ++i) {
+                if (firstFileTab < 0 && r.primary[i] && p == paths_in.first())
+                    firstFileTab = tabs_->count();
+                addSourceTab(std::move(r.sources[i]), r.origins[i], r.primary[i], r.expands[i],
+                             r.owners[i], f.id);
+            }
+            addRecent(p);
+            opened << p;
         }
-        auto showFirst = [&] {
-            if (firstFileTab < 0 && tabs_->count() > firstNew) firstFileTab = firstNew;
-            if (firstFileTab >= 0) tabs_->setCurrentIndex(firstFileTab);
-        };
-        if (paths.isEmpty()) { showFirst(); refreshStatus(); return; }
-        LoadResult r = loadWithSession(paths);
-        for (size_t i = 0; i < r.sources.size(); ++i) {
-            if (firstFileTab < 0 && r.primary[i] && r.origins[i] == paths_in.first())
-                firstFileTab = tabs_->count();
-            addSourceTab(std::move(r.sources[i]), r.origins[i], r.primary[i], r.expands[i],
-                         r.owners[i]);
+        if (firstFileTab < 0 && tabs_->count() > firstNew) firstFileTab = firstNew;
+        if (firstFileTab >= 0) tabs_->setCurrentIndex(firstFileTab);
+        if (!errors.isEmpty()) {
+            const QString joined = errors.join(QLatin1Char('\n'));
+            if (quiet || headless_) std::fprintf(stderr, "vvg: %s\n", joined.toStdString().c_str());
+            else QMessageBox::warning(this, tr("vvg — open"), joined);
         }
-        showFirst();
-        for (const QString& p : r.opened) { addRecent(p); openedPaths_ << p; }
-        reportLoadErrors(r, quiet, tr("vvg — open"));
-        if (!r.opened.isEmpty())
-            setWindowTitle(r.opened.last() + QStringLiteral(" — vv"));
+        if (!opened.isEmpty())
+            setWindowTitle(opened.last() + QStringLiteral(" — vv"));
         refreshStatus();
     }
     int tabCount() const { return tabs_->count(); }
@@ -514,33 +541,40 @@ public:
     // Headless mode (window self-test): route would-be modal dialogs to stderr
     // so an offscreen run never blocks on a QMessageBox::exec().
     void setHeadless(bool h) { headless_ = h; }
-    // Programmatic region query for the self-test / future scripting.
+    // Programmatic region query for the self-test / future scripting: sets
+    // the format options of the active tab's file and re-opens it.
     void applyRegionQuery(const QString& region, bool ncbi = false,
                           int slop = 0, bool pileup = false,
                           const QString& tags = QString(), bool gtStats = false,
                           bool contigs = false, const QString& samples = QString(),
                           const QString& matrix = QString()) {
-        if (regionEdit_)  regionEdit_->setText(region);
-        if (coordsCombo_) coordsCombo_->setCurrentIndex(ncbi ? 1 : 0);
-        if (slopSpin_)    slopSpin_->setValue(slop);
-        if (pileupAction_) pileupAction_->setChecked(pileup);
-        if (tagsEdit_)     tagsEdit_->setText(tags);
-        if (gtStatsAction_) gtStatsAction_->setChecked(gtStats);
-        if (contigsAction_) contigsAction_->setChecked(contigs);
-        // Set without a re-open per combo; applyRegion() below re-opens once.
-        if (samplesCombo_ && !samples.isEmpty()) {
-            QSignalBlocker b(samplesCombo_);
-            samplesCombo_->setCurrentText(samples);
-        }
-        if (matrixCombo_ && !matrix.isEmpty()) {
-            QSignalBlocker b(matrixCombo_);
-            matrixCombo_->setCurrentText(matrix);
-        }
-        applyRegion();
+        const OpenFile* f = activeFile();
+        if (!f) return;
+        reopenFile(f->id, withQuery(f->opts, region, ncbi, slop, pileup, tags, gtStats,
+                                    contigs, samples, matrix));
     }
 
 private:
     struct JsonTab;                       // a JSON tree tab (defined below)
+    struct OpenFile {                     // an open file and its format options
+        int         id = 0;
+        QString     path;
+        FileOptions opts;
+        bool        jsonTree = false;     // a JSON tree tab: nothing to re-open
+    };
+
+    void onCurrentTab(int i) {
+        materializeTab(i);   // a tab not shown before: build its model now
+        if (selTimer_) selTimer_->start();
+        if (colTimer_) colTimer_->start();
+        syncFileControls();
+        refreshStatus();
+        refreshColumnsMenu();
+        if (activeJsonTab())
+            updateDetail({});
+        else if (auto* v = activeView())
+            updateDetail(v->selectionModel()->currentIndex());
+    }
     static std::string src_label(ArrowTableModel* m) {
         return m->tabLabel();
     }
@@ -611,18 +645,22 @@ private:
     // unread: its model and view are built when the tab is first shown
     // (materializeTab), so opening a file of many tabs reads only the one
     // displayed, and closing a tab never shown reads nothing. Returns the
-    // model when built now.
+    // model when built now. `fileId`: the open file it belongs to (files_; 0
+    // for none); `at`: the tab index to insert at (-1 appends).
     ArrowTableModel* addSourceTab(std::unique_ptr<TabularSource> src, const QString& origin,
                                   bool primary, const QString& expand = QString(),
-                                  std::shared_ptr<SourceOwner> owner = {}, bool now = false) {
+                                  std::shared_ptr<SourceOwner> owner = {}, int fileId = 0,
+                                  bool now = false, int at = -1) {
         if (!owner) owner = std::make_shared<SourceOwner>();
-        if (now) return buildTab(std::move(src), origin, primary, expand, std::move(owner), -1);
+        if (now) return buildTab(std::move(src), origin, primary, expand, std::move(owner), at, fileId);
         auto* ph = new QWidget(tabs_);
         const QString label = QString::fromStdString(src->tab_label());   // reads no data
-        pending_[ph] = PendingTab{std::move(src), origin, primary, expand, std::move(owner)};
-        views_.push_back(nullptr);
-        models_.push_back(nullptr);
-        tabs_->addTab(ph, label);   // the first tab added becomes current → built
+        pending_[ph] = PendingTab{std::move(src), origin, primary, expand, std::move(owner), fileId};
+        tabFile_[ph] = fileId;
+        if (at < 0 || at > tabs_->count()) at = tabs_->count();
+        views_.insert(views_.begin() + at, nullptr);
+        models_.insert(models_.begin() + at, nullptr);
+        tabs_->insertTab(at, ph, label);   // the first tab added becomes current → built
         return nullptr;
     }
 
@@ -633,12 +671,14 @@ private:
         if (it == pending_.end()) return;
         PendingTab p = std::move(it->second);
         pending_.erase(it);
+        tabFile_.remove(ph);
         {
             QSignalBlocker b(tabs_);
             tabs_->removeTab(i);
             views_.erase(views_.begin() + i);
             models_.erase(models_.begin() + i);
-            buildTab(std::move(p.src), p.origin, p.primary, p.expand, std::move(p.owner), i);
+            buildTab(std::move(p.src), p.origin, p.primary, p.expand, std::move(p.owner), i,
+                     p.fileId);
             if (makeCurrent) tabs_->setCurrentIndex(i);
         }
         ph->deleteLater();
@@ -655,7 +695,7 @@ private:
     // appended, or inserted at tab index `at`.
     ArrowTableModel* buildTab(std::unique_ptr<TabularSource> src, const QString& origin,
                               bool primary, const QString& expand,
-                              std::shared_ptr<SourceOwner> owner, int at) {
+                              std::shared_ptr<SourceOwner> owner, int at, int fileId) {
         auto* model = new ArrowTableModel(std::move(src), this, std::move(owner), /*async=*/true);
         const QFileInfo ofi(origin);
         // A URL can be opened again too (a region query re-opens the files).
@@ -773,6 +813,7 @@ private:
                 [this, model](qint64 n){ onFindReady(model, n); });
 
         const QString label = QString::fromStdString(src_label(model));
+        tabFile_[view] = fileId;
         if (at < 0) {
             views_.push_back(view);
             models_.push_back(model);
@@ -785,11 +826,19 @@ private:
         return model;
     }
 
-    void closeTab(int i) {
+    // Close tab `i`. Its file is closed with its last tab, unless `keepFile`
+    // (reopenFile replaces the file's tabs).
+    void closeTab(int i, bool keepFile = false) {
         if (i < 0 || i >= tabs_->count()) return;
         // views_/models_ are kept index-aligned with the tab order.
         ArrowTableModel* m = (i < (int)models_.size()) ? models_[i] : nullptr;
         QWidget* w = tabs_->widget(i);
+        const int fileId = tabFile_.take(w);
+        if (fileId && !keepFile && std::none_of(tabFile_.cbegin(), tabFile_.cend(),
+                                                [fileId](int f) { return f == fileId; }))
+            files_.erase(std::remove_if(files_.begin(), files_.end(),
+                                        [fileId](const OpenFile& f) { return f.id == fileId; }),
+                         files_.end());
         // A tab never shown: its source is destroyed on its file's owner
         // thread, where its sibling tabs (sharing its handles) are read.
         if (auto pit = pending_.find(w); pit != pending_.end()) {
@@ -1003,27 +1052,20 @@ private:
         });
     }
 
-    // Open paths with the current session Config (region/coords/slop/pileup),
-    // canonicalising the region first. Errors are collected, not thrown.
-    LoadResult loadWithSession(const QStringList& paths) {
-        Config base = sessionCfg_;
+    // Open `path` with its format options, canonicalising the region first.
+    // Errors are collected, not thrown.
+    static LoadResult loadFile(const QString& path, const FileOptions& opts) {
+        Config base = opts.config();
         std::string err = apply_region_modifiers(base);
         if (!err.empty()) {
             LoadResult r; r.errors << QString::fromStdString(err); return r;
         }
-        return loadSources(base, paths, expandAction_ && expandAction_->isChecked());
-    }
-    void reportLoadErrors(const LoadResult& r, bool quiet, const QString& title) {
-        if (r.errors.isEmpty()) return;
-        QString joined = r.errors.join(QLatin1Char('\n'));
-        if (quiet || headless_)
-            std::fprintf(stderr, "vvg: %s\n", joined.toStdString().c_str());
-        else
-            QMessageBox::warning(this, title, joined);
+        return loadSources(base, {path}, opts.expand);
     }
 
     void buildRegionBar() {
         auto* tb = addToolBar(tr("Region"));
+        regionBar_ = tb;
         tb->addWidget(new QLabel(tr("  Region: ")));
         regionEdit_ = new QLineEdit(tb);
         regionEdit_->setPlaceholderText(tr("chr1:1000-2000[,chr2:…]"));
@@ -1094,7 +1136,7 @@ private:
         expandAction_->setToolTip(
             tr("GFF/GTF, VCF/BCF: unpack the key=value attributes / INFO column "
                "into one column per key"));
-        connect(expandAction_, &QAction::toggled, this, [this](bool){ reopenAll(); });
+        connect(expandAction_, &QAction::toggled, this, [this](bool){ applyRegion(); });
 
         // VCF/BCF sample columns (--samples) and HDF5 / AnnData / Loom / 10x
         // matrix tabs (--matrix): the layouts the CLI offers.
@@ -1116,47 +1158,109 @@ private:
         connect(matrixCombo_, &QComboBox::currentIndexChanged, this, [this](int){ applyRegion(); });
     }
 
+    // The toolbar's format options, applied to the active tab's file.
     void applyRegion() {
-        sessionCfg_.region           = regionEdit_->text().trimmed().toStdString();
-        sessionCfg_.coords_one_based = (coordsCombo_->currentIndex() == 1);
-        sessionCfg_.slop             = slopSpin_->value();
-        sessionCfg_.pileup           = pileupAction_->isChecked();
-        sessionCfg_.bam_tags         = tagsEdit_->text().trimmed().toStdString();
-        sessionCfg_.gt_stats         = gtStatsAction_->isChecked();
-        sessionCfg_.contigs          = contigsAction_->isChecked();
-        if (samplesCombo_) sessionCfg_.samples = samplesCombo_->currentText().toStdString();
-        if (matrixCombo_)  sessionCfg_.matrix  = matrixCombo_->currentText().toStdString();
-        reopenAll();
+        const OpenFile* f = activeFile();
+        if (!f || f->jsonTree) return;
+        FileOptions o = f->opts;
+        o.region  = regionEdit_->text().trimmed().toStdString();
+        o.ncbi    = coordsCombo_->currentIndex() == 1;
+        o.slop    = slopSpin_->value();
+        o.pileup  = pileupAction_->isChecked();
+        o.tags    = tagsEdit_->text().trimmed().toStdString();
+        o.gtStats = gtStatsAction_->isChecked();
+        o.contigs = contigsAction_->isChecked();
+        o.expand  = expandAction_->isChecked();
+        o.samples = samplesCombo_->currentText().toStdString();
+        o.matrix  = matrixCombo_->currentText().toStdString();
+        reopenFile(f->id, o);
     }
 
-    // Re-open every currently-loaded file under the session Config. Transactional:
-    // load the new sources first and only replace the tab set if at least one
-    // opened — a failed region query (e.g. un-indexed file) keeps the old view.
-    void reopenAll() {
-        if (openedPaths_.isEmpty()) return;
-        LoadResult r = loadWithSession(openedPaths_);
+    static FileOptions withQuery(FileOptions o, const QString& region, bool ncbi, int slop,
+                                 bool pileup, const QString& tags, bool gtStats, bool contigs,
+                                 const QString& samples, const QString& matrix) {
+        o.region  = region.trimmed().toStdString();
+        o.ncbi    = ncbi;
+        o.slop    = slop;
+        o.pileup  = pileup;
+        o.tags    = tags.trimmed().toStdString();
+        o.gtStats = gtStats;
+        o.contigs = contigs;
+        if (!samples.isEmpty()) o.samples = samples.toStdString();
+        if (!matrix.isEmpty())  o.matrix  = matrix.toStdString();
+        return o;
+    }
+
+    // Re-open file `id` with `opts`, its new tabs where its old ones were;
+    // the other files' tabs keep their filters, sorts and columns. When the
+    // file does not open with `opts` (a region on an un-indexed file, …) its
+    // tabs and options stay and the reason goes to the status bar.
+    bool reopenFile(int id, const FileOptions& opts) {
+        OpenFile* f = fileById(id);
+        if (!f || f->jsonTree) return false;
+        LoadResult r = loadFile(f->path, opts);
         if (r.sources.empty()) {
-            QString why = r.errors.isEmpty() ? tr("no data for this query")
-                                             : r.errors.join(QLatin1Char('\n'));
-            if (headless_)
-                std::fprintf(stderr, "vvg region: %s\n", why.toStdString().c_str());
-            else
-                QMessageBox::warning(this, tr("vvg — region"),
-                    tr("Nothing to show — keeping the current view.\n\n%1\n\n"
-                       "(Tabix/BCF region queries need a .tbi/.csi index; Pileup "
-                       "needs a BAM/CRAM file.)").arg(why));
-            return;
+            const QString why = r.errors.isEmpty() ? tr("no data for this query")
+                                                   : r.errors.join(QStringLiteral("; "));
+            if (headless_) std::fprintf(stderr, "vvg region: %s\n", why.toStdString().c_str());
+            statusBar()->showMessage(tr("Not applied: %1").arg(why), 15000);
+            syncFileControls();           // back to the options the tabs show
+            return false;
         }
+        f->opts = opts;
+        QWidget* cur = tabs_->currentWidget();
+        const bool curInFile = tabFile_.value(cur, 0) == id;
+        const QString curLabel = curInFile ? tabs_->tabText(tabs_->currentIndex()) : QString();
+        int at = -1, target = -1;
         {
             QSignalBlocker quiet(tabs_);   // don't build each next tab as the current one closes
-            while (tabs_->count() > 0) closeTab(0);
+            for (int i = tabs_->count() - 1; i >= 0; --i)
+                if (tabFile_.value(tabs_->widget(i), 0) == id) { closeTab(i, /*keepFile=*/true); at = i; }
+            if (at < 0) at = tabs_->count();
+            for (size_t i = 0; i < r.sources.size(); ++i) {
+                const int idx = at + (int)i;
+                addSourceTab(std::move(r.sources[i]), r.origins[i], r.primary[i], r.expands[i],
+                             r.owners[i], id, /*now=*/false, idx);
+                if (curInFile && target < 0 && tabs_->tabText(idx) == curLabel) target = idx;
+            }
+            if (curInFile && target < 0) target = at;
+            if (!curInFile) target = tabs_->indexOf(cur);
+            tabs_->setCurrentIndex(target);
         }
-        for (size_t i = 0; i < r.sources.size(); ++i)
-            addSourceTab(std::move(r.sources[i]), r.origins[i], r.primary[i], r.expands[i],
-                         r.owners[i]);
-        if (tabs_->count() > 0) tabs_->setCurrentIndex(0);
-        reportLoadErrors(r, /*quiet=*/false, tr("vvg — region"));
-        refreshStatus();
+        onCurrentTab(target);
+        return true;
+    }
+
+    OpenFile* fileById(int id) {
+        for (auto& f : files_) if (f.id == id) return &f;
+        return nullptr;
+    }
+    const OpenFile* fileById(int id) const {
+        for (const auto& f : files_) if (f.id == id) return &f;
+        return nullptr;
+    }
+    const OpenFile* activeFile() const { return fileById(tabFile_.value(tabs_->currentWidget(), 0)); }
+
+    // Show the active tab's file options in the toolbar; off for a tab with
+    // no file to re-open (a JSON tree, a table made from one).
+    void syncFileControls() {
+        if (!regionBar_) return;
+        const OpenFile* f = activeFile();
+        regionBar_->setEnabled(f && !f->jsonTree);
+        const FileOptions o = f ? f->opts : newFileOptions_;
+        const QSignalBlocker b1(regionEdit_), b2(coordsCombo_), b3(slopSpin_), b4(pileupAction_),
+                             b5(tagsEdit_), b6(gtStatsAction_), b7(contigsAction_),
+                             b8(expandAction_), b9(samplesCombo_), b10(matrixCombo_);
+        regionEdit_->setText(QString::fromStdString(o.region));
+        coordsCombo_->setCurrentIndex(o.ncbi ? 1 : 0);
+        slopSpin_->setValue((int)o.slop);
+        pileupAction_->setChecked(o.pileup);
+        tagsEdit_->setText(QString::fromStdString(o.tags));
+        gtStatsAction_->setChecked(o.gtStats);
+        contigsAction_->setChecked(o.contigs);
+        expandAction_->setChecked(o.expand);
+        samplesCombo_->setCurrentText(QString::fromStdString(o.samples));
+        matrixCombo_->setCurrentText(QString::fromStdString(o.matrix));
     }
 
 protected:
@@ -1884,16 +1988,20 @@ public:
         const TabOrigin o = tabOrigin_.value(m);
         s.path = o.path.contains(QLatin1String("://")) ? o.path : QFileInfo(o.path).absoluteFilePath();
         if (!o.primary) s.tab = QString::fromStdString(m->tabLabel());
-        s.region  = QString::fromStdString(sessionCfg_.region);
-        s.ncbi    = sessionCfg_.coords_one_based;
-        s.slop    = (int)sessionCfg_.slop;
-        s.pileup  = sessionCfg_.pileup;
-        s.tags    = QString::fromStdString(sessionCfg_.bam_tags);
-        s.gtStats = sessionCfg_.gt_stats;
-        s.contigs = sessionCfg_.contigs;
+        // The format options of the tab's file (none for a table made from a
+        // JSON tree node).
+        const OpenFile* f = fileById(tabFile_.value(v, 0));
+        const FileOptions fo = f ? f->opts : FileOptions{};
+        s.region  = QString::fromStdString(fo.region);
+        s.ncbi    = fo.ncbi;
+        s.slop    = (int)fo.slop;
+        s.pileup  = fo.pileup;
+        s.tags    = QString::fromStdString(fo.tags);
+        s.gtStats = fo.gtStats;
+        s.contigs = fo.contigs;
         s.expand  = o.expand;
-        s.samples = QString::fromStdString(sessionCfg_.samples);
-        s.matrix  = QString::fromStdString(sessionCfg_.matrix);
+        s.samples = QString::fromStdString(fo.samples);
+        s.matrix  = QString::fromStdString(fo.matrix);
         if (m->hasFilter()) s.filter = filterText_.value(m);
         if (m->sortColumn() >= 0) {
             s.sortColumn = m->columnName(m->sortColumn());
@@ -2026,6 +2134,7 @@ public:
         return n;
     }
     int  tabCountForTest() const { return tabs_->count(); }
+    void closeTabForTest(int i) { closeTab(i); waitIdleForTest(); }
 
     // vv's view flags on vvg's command line (vvg --filter … --sort … file).
     struct ViewOptions {
@@ -2046,9 +2155,15 @@ public:
             for (int g = 0; m && (m->isComputing() || !m->isReady()) && g < 2000000; ++g)
                 QCoreApplication::processEvents();
         };
-        if (o.session())
-            applyRegionQuery(o.region, o.ncbi, o.slop, o.pileup, o.tags, o.gtStats, o.contigs,
-                             o.samples, o.matrix);
+        if (o.session()) {
+            // As in vv: every file named on the command line takes the flags.
+            std::vector<int> ids;
+            for (const auto& f : files_) if (!f.jsonTree) ids.push_back(f.id);
+            for (int id : ids)
+                if (const OpenFile* f = fileById(id))
+                    reopenFile(id, withQuery(f->opts, o.region, o.ncbi, o.slop, o.pileup, o.tags,
+                                             o.gtStats, o.contigs, o.samples, o.matrix));
+        }
         if (!o.tab.isEmpty()) {
             int found = -1;
             for (int i = 0; i < tabs_->count() && found < 0; ++i)
@@ -2119,7 +2234,10 @@ public:
                         v->verticalScrollMode()   == QAbstractItemView::ScrollPerPixel;
         return px ? "pixel" : "item";
     }
-    void setExpandForTest(bool on) { if (expandAction_) expandAction_->setChecked(on); }
+    void setExpandForTest(bool on) {
+        newFileOptions_.expand = on;
+        if (expandAction_) { const QSignalBlocker b(expandAction_); expandAction_->setChecked(on); }
+    }
     // Every window-level shortcut key with the actions bound to it, and the
     // number of keys bound more than once (Qt treats those as ambiguous and
     // triggers none of the actions).
@@ -2309,6 +2427,7 @@ private:
         bool                           primary = true;
         QString                        expand;
         std::shared_ptr<SourceOwner>   owner;
+        int                            fileId = 0;
     };
     std::map<QWidget*, PendingTab>               pending_;
     bool jsonAsTable_ = false;
@@ -2355,7 +2474,7 @@ private:
         return {};
     }
     // Open `path` as a JSON tree tab; "" or an error.
-    QString openJsonTreeTab(const QString& path) {
+    QString openJsonTreeTab(const QString& path, int fileId) {
         auto jt = std::make_unique<JsonTab>();
         jt->path = path;
         QString file = path;
@@ -2400,6 +2519,7 @@ private:
         views_.push_back(nullptr);            // index-aligned with the tabs; not a table
         models_.push_back(nullptr);
         jsonTabs_[view] = std::move(jt);
+        tabFile_[view] = fileId;
         const int idx = tabs_->addTab(view, QFileInfo(path).fileName());
         tabs_->setTabToolTip(idx, path);
         tabs_->setCurrentIndex(idx);
@@ -2447,7 +2567,7 @@ private:
             else QMessageBox::information(this, tr("vvg — JSON"), msg);
             return;
         }
-        ArrowTableModel* tm = addSourceTab(std::move(src), jt->path, true, QString(), {}, /*now=*/true);
+        ArrowTableModel* tm = addSourceTab(std::move(src), jt->path, true, QString(), {}, 0, /*now=*/true);
         if (rec.isValid()) tabOrigin_[tm].reopen = false;
         tabs_->setCurrentIndex(tabs_->count() - 1);
     }
@@ -2610,8 +2730,13 @@ private:
     bool                           pendingFindForward_ = true;
     QString                        lastDir_;
     bool                           headless_ = false;   // suppress modal dialogs
-    QStringList                    openedPaths_;   // files currently loaded
-    Config                         sessionCfg_;    // region/coords/slop/pileup
+    // The open files and their format options; each tab maps to its file
+    // (tabFile_: tab widget -> OpenFile::id, 0 for a tab of no file).
+    std::vector<OpenFile>          files_;
+    QHash<QWidget*, int>           tabFile_;
+    int                            nextFileId_ = 1;
+    FileOptions                    newFileOptions_;   // a file's options when it opens
+    QToolBar*                      regionBar_ = nullptr;
     std::vector<QTableView*>       views_;
     std::vector<ArrowTableModel*>  models_;
     QMap<ArrowTableModel*, Qt::SortOrder> sortOrder_;
@@ -2967,8 +3092,13 @@ int main(int argc, char** argv) {
         // matrix previews are capped, not fully densified).
         if (const char* td = std::getenv("VVG_TABDIMS"); td && *td && *td != '0')
             win.dumpTabDims();
+        // Optional tab close before the re-open check: VVG_CLOSE=<tab index>
+        // (a closed file must stay closed when another file re-opens).
+        if (const char* cl = std::getenv("VVG_CLOSE"); cl && *cl)
+            win.closeTabForTest(std::atoi(cl));
         // Optional region/pileup re-open check: VVG_REGION="chr1:…" [VVG_NCBI=1]
-        // [VVG_PILEUP=1].
+        // [VVG_PILEUP=1]. It re-opens the active tab's file only;
+        // VVG_TABDIMS_AFTER=1 then prints every tab.
         const char* rg = std::getenv("VVG_REGION");
         bool pileup = std::getenv("VVG_PILEUP") != nullptr;
         const char* tg = std::getenv("VVG_TAGS");
@@ -2984,6 +3114,8 @@ int main(int argc, char** argv) {
                         rg ? rg : "", pileup ? 1 : 0, tg ? tg : "", gtStats ? 1 : 0,
                         contigs ? 1 : 0,
                         win.tabCount(), win.firstTabRows(), win.firstTabCols());
+            if (const char* ta = std::getenv("VVG_TABDIMS_AFTER"); ta && *ta && *ta != '0')
+                win.dumpTabDims();
         }
         // Optional async-filter check: VVG_AFILTER="<expr>" (off-thread + pump).
         if (const char* af = std::getenv("VVG_AFILTER"); af && *af) {
