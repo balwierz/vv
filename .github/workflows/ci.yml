@@ -578,8 +578,9 @@ jobs:
               d="$RUNNER_TEMP/ix-$ro-$f"; mkdir -p "$d"; cp "tests/data/$f" "$d/"
               [ $ro = 1 ] && chmod a-w "$d"
               where=beside; [ $ro = 1 ] && where=cache
-              XDG_CACHE_HOME="$RUNNER_TEMP/ixcache" VVG_WINTEST=1 VVG_BUILD_INDEX=chr1:0-1000 \
-                ./build-gui/gui/vvg "$d/$f" 2>/dev/null | grep -q "^index offered=1 built=1 where=$where rows=[23]$"
+              out=$(XDG_CACHE_HOME="$RUNNER_TEMP/ixcache" VVG_WINTEST=1 VVG_BUILD_INDEX=chr1:0-1000 \
+                ./build-gui/gui/vvg "$d/$f" 2>&1); echo "$f ro=$ro: $out"
+              grep -q "^index offered=1 built=1 where=$where rows=[23]$" <<<"$out"
             done
           done
           XDG_CACHE_HOME="$RUNNER_TEMP/ixcache" VVG_WINTEST=1 VVG_CONTEXT=1 ./build-gui/gui/vvg "$RUNNER_TEMP/ix-1-tiny.cram/tiny.cram" \

@@ -3649,6 +3649,8 @@ public:
     // Build the active file's index (buildIndex), wait for it, then query
     // `region`: where the index went and the rows the region shows.
     QString buildIndexForTest(const QString& region) {
+        waitIdleForTest();                // the tab's traits, then the strip
+        syncFileControls();
         const OpenFile* f = activeFile();
         if (!f) return QStringLiteral("none");
         const int id = f->id;
