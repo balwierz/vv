@@ -500,6 +500,20 @@ jobs:
           printf '[ui]\nshowColumnTypes=false\n' > "$RUNNER_TEMP/vvgcfg-menus/vv/vvg.conf"
           XDG_CONFIG_HOME="$RUNNER_TEMP/vvgcfg-menus" VVG_WINTEST=1 VVG_HEADER=1 ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -q "^header lines=1 height=[0-9]* name='Chr' "
+          # Tabs of several files: the first tab of a file of several tabs
+          # names the file, each file is a group (a colour), the title and the
+          # strip follow the current tab's file; one file keeps plain labels.
+          out=$(VVG_WINTEST=1 VVG_TABLABELS=1 VVG_TAB=2 ./build-gui/gui/vvg tests/data/tiny.bam tests/data/tiny.obsp.h5ad tests/data/tiny.parquet)
+          echo "$out"
+          grep -qx 'tab tiny.bam|1' <<<"$out"
+          grep -qx 'tab tiny.obsp.h5ad ▸ summary|2' <<<"$out"
+          grep -qx 'tab X|2' <<<"$out"
+          grep -qx 'tab tiny.parquet|3' <<<"$out"
+          grep -qx 'groups=3' <<<"$out"
+          grep -qx 'title=tests/data/tiny.obsp.h5ad — vv' <<<"$out"
+          grep -qx 'strip=tiny.obsp.h5ad' <<<"$out"
+          out=$(VVG_WINTEST=1 VVG_TABLABELS=1 ./build-gui/gui/vvg tests/data/tiny.obsp.h5ad)
+          grep -qx 'tab summary|1' <<<"$out" && grep -qx 'strip=' <<<"$out"
           # An AnnData summary (key / value / about) is sized to its cells, as
           # the CLI table does, not capped at 50 characters like other tabs.
           out=$(VVG_WINTEST=1 VVG_COLWIDTHS=1 ./build-gui/gui/vvg tests/data/tiny.chunked.h5ad)

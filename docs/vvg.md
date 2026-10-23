@@ -56,6 +56,12 @@ Command* goes the other way.
   off *Tags*); an option the file cannot take (a malformed region) leaves the
   tabs as they were and says why in the strip. The strip wraps onto more lines
   in a narrow window.
+- **Several files** — with two files or more open, each file's tabs are
+  underlined in a colour of their own, the first tab of a file of several
+  tabs names it (*adata.h5ad ▸ summary*, then *X*, *obs*, …), the strip starts
+  with the file's name and colour, and the window title is the current tab's
+  file. A tab's tooltip is its file's path. Right-click a tab for *Close File*
+  (*Ctrl+Shift+W*), *Close Other Files* and *Copy Path*.
 - **Column types** — each header shows the column's type under its name, in
   a smaller, dimmer italic; *View ▸ Column Types* turns the line off.
 - The window's size and its docks are restored at the next start.
@@ -64,7 +70,9 @@ Command* goes the other way.
 
 - **Tabs** — files, workbook sheets, SQLite and DuckDB tables, HDF5 / Zarr /
   AnnData components, Cooler resolutions, GenBank sections, POD5 tables, R
-  objects and NumPy arrays each get a tab. Open with *File ▸ Open*, drag-and-drop or the
+  objects and NumPy arrays each get a tab. Open with *File ▸ Open* (its type
+  list has every format vv reads, by family: alignments, variants, HDF5, …),
+  *Open Directory* (a directory of parts as one dataset), drag-and-drop or the
   recent-files list. A tab reads its file only when first shown, and reads
   in the background: it says *Loading…* until its columns are known, and a
   block of rows not read yet shows `…` until it arrives, so the window stays

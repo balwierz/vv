@@ -133,6 +133,21 @@ ContextBar::ContextBar(QWidget* parent) : QWidget(parent) {
     auto* lay = new FlowLayout(this, 14, 2);
     lay->setContentsMargins(6, 3, 6, 3);
 
+    // The file: a square in its tab-bar colour and its name.
+    QHBoxLayout* fl = nullptr;
+    fileGroup_ = group(&fl);
+    fileSwatch_ = new QLabel(fileGroup_);
+    fileSwatch_->setFixedSize(10, 10);
+    fileSwatch_->setAutoFillBackground(true);
+    fl->addWidget(fileSwatch_);
+    fileName_ = new QLabel(fileGroup_);
+    QFont bold = fileName_->font();
+    bold.setBold(true);
+    fileName_->setFont(bold);
+    fl->addWidget(fileName_);
+    lay->addWidget(fileGroup_);
+    fileGroup_->hide();
+
     // Region: the box, Go, the coordinate convention and the slop.
     QHBoxLayout* rl = nullptr;
     regionGroup_ = group(&rl);
@@ -347,20 +362,41 @@ void ContextBar::setState(const FileFeatures& file, const TabTraits& tab, const 
                           (regionReady_ && !opts.region.empty());
     hint_->setText(showHint ? QString::fromStdString(file.region_hint) : QString());
     hint_->setVisible(!hint_->text().isEmpty());
-
-    const bool any = regionGroup_->isVisibleTo(this) || alignGroup_->isVisibleTo(this) ||
-                     tagsGroup_->isVisibleTo(this) || samplesGroup_->isVisibleTo(this) ||
-                     gtStats_->isVisibleTo(this) || expand_->isVisibleTo(this) ||
-                     contigs_->isVisibleTo(this) || matrixGroup_->isVisibleTo(this) ||
-                     sliceGroup_->isVisibleTo(this);
-    setVisible(any);
+    updateVisibility();
 }
 
 void ContextBar::clearState() {
     opts_ = FileOptions{};
     error_->clear();
     error_->hide();
-    hide();
+    hint_->clear();
+    hint_->hide();
+    for (QWidget* w : std::initializer_list<QWidget*>{regionGroup_, alignGroup_, tagsGroup_,
+                                                      samplesGroup_, gtStats_, expand_, contigs_,
+                                                      matrixGroup_, sliceGroup_})
+        w->hide();
+    updateVisibility();
+}
+
+void ContextBar::setFile(const QString& name, const QString& tip, const QColor& color) {
+    fileName_->setText(fontMetrics().elidedText(name, Qt::ElideMiddle, 320));
+    fileGroup_->setToolTip(tip);
+    QPalette sp = fileSwatch_->palette();
+    sp.setColor(QPalette::Window, color);
+    fileSwatch_->setPalette(sp);
+    fileGroup_->setVisible(!name.isEmpty());
+    updateVisibility();
+}
+
+// Shown while it holds anything: the file's name or an option.
+void ContextBar::updateVisibility() {
+    const bool any = fileGroup_->isVisibleTo(this) ||
+                     regionGroup_->isVisibleTo(this) || alignGroup_->isVisibleTo(this) ||
+                     tagsGroup_->isVisibleTo(this) || samplesGroup_->isVisibleTo(this) ||
+                     gtStats_->isVisibleTo(this) || expand_->isVisibleTo(this) ||
+                     contigs_->isVisibleTo(this) || matrixGroup_->isVisibleTo(this) ||
+                     sliceGroup_->isVisibleTo(this);
+    setVisible(any);
 }
 
 void ContextBar::showError(const QString& why, const FileOptions& attempted) {
@@ -378,6 +414,10 @@ void ContextBar::focusRegion() {
     regionEdit_->selectAll();
 }
 
+QString ContextBar::fileForTest() const {
+    return fileGroup_->isVisibleTo(this) ? fileName_->text() : QString();
+}
+
 QString ContextBar::describeForTest() const {
     if (!isVisibleTo(parentWidget())) return QStringLiteral("none");
     QStringList parts;
@@ -391,5 +431,5 @@ QString ContextBar::describeForTest() const {
     if (contigs_->isVisibleTo(this)) parts << QStringLiteral("contigs");
     if (matrixGroup_->isVisibleTo(this)) parts << QStringLiteral("matrix");
     if (sliceGroup_->isVisibleTo(this)) parts << QStringLiteral("slices");
-    return parts.join(QLatin1Char(' '));
+    return parts.isEmpty() ? QStringLiteral("none") : parts.join(QLatin1Char(' '));
 }

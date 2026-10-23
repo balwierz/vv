@@ -253,6 +253,13 @@ public:
         connect(tabs_, &TabPane::tabCloseRequested, this,
                 [this](int i){ closeTab(i); });
         connect(tabs_, &TabPane::currentChanged, this, [this](int i) { onCurrentTab(i); });
+        // Tabs of one file share a colour: a line under them in the tab bar
+        // (with two files or more) and a square by the file's name in the strip.
+        tabs_->setGroups([this](int i) { return tabFile_.value(tabs_->widget(i), 0); },
+                         [this](int id) { return fileColor(id); });
+        tabs_->tabBar()->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(tabs_->tabBar(), &QWidget::customContextMenuRequested, this,
+                [this](const QPoint& p) { tabMenu(p); });
 
         // Settings are read here, once; writes go to a thread of their own
         // (saveSetting), because QSettings syncs the file with fdatasync()
@@ -308,7 +315,7 @@ public:
                 if (e.isEmpty()) {
                     if (p == paths_in.first()) firstFileTab = tabs_->count() - 1;
                     files_.push_back(OpenFile{id, p, newFileOptions_, /*jsonTree=*/true});
-                    addRecent(p); setWindowTitle(p + QStringLiteral(" — vv"));
+                    addRecent(p);
                     continue;
                 }
                 if (headless_ || quiet) std::fprintf(stderr, "vvg: %s\n", e.toLocal8Bit().constData());
@@ -337,8 +344,8 @@ public:
             if (quiet || headless_) std::fprintf(stderr, "vvg: %s\n", joined.toStdString().c_str());
             else QMessageBox::warning(this, tr("vvg — open"), joined);
         }
-        if (!opened.isEmpty())
-            setWindowTitle(opened.last() + QStringLiteral(" — vv"));
+        relabelTabs();
+        updateTitle();
         refreshStatus();
     }
     int tabCount() const { return tabs_->count(); }
@@ -615,6 +622,7 @@ private:
     void onCurrentTab(int i) {
         materializeTab(i);   // a tab not shown before: build its model now
         syncHeaderTypes(activeView());
+        updateTitle();
         if (selTimer_) selTimer_->start();
         if (colTimer_) colTimer_->start();
         syncFileControls();
@@ -742,6 +750,7 @@ private:
                      p.fileId);
             if (makeCurrent) tabs_->setCurrentIndex(i);
         }
+        relabelTabs();
         ph->deleteLater();
     }
     // Build every placeholder tab (the self-test's tab dump reports them all).
@@ -951,7 +960,95 @@ private:
         }
         delete w;   // QTableView (detaches from its model)
         delete m;   // model is parented to MainWindow; free it now
+        if (!keepFile) {
+            relabelTabs();
+            updateTitle();
+        }
         refreshStatus();
+    }
+
+    // Close every tab of file `id`.
+    void closeFile(int id) {
+        for (int i = tabs_->count() - 1; i >= 0; --i)
+            if (tabFile_.value(tabs_->widget(i), 0) == id) closeTab(i);
+    }
+    int tabsOfFile(int id) const {
+        int n = 0;
+        for (int i = 0; i < tabs_->count(); ++i) n += tabFile_.value(tabs_->widget(i), 0) == id;
+        return n;
+    }
+    int filesWithTabs() const {
+        QSet<int> ids;
+        for (int i = 0; i < tabs_->count(); ++i)
+            if (int id = tabFile_.value(tabs_->widget(i), 0)) ids.insert(id);
+        return ids.size();
+    }
+
+    // File `id`'s colour: one of eight hues, lighter on a dark palette.
+    QColor fileColor(int id) const {
+        static const int kHues[] = {210, 30, 130, 280, 0, 175, 55, 330};
+        const bool dark = palette().color(QPalette::Window).lightness() < 128;
+        return QColor::fromHsl(kHues[(id - 1 + 8) % 8], 160, dark ? 160 : 105);
+    }
+
+    // The tab texts: a tab's own label, and with two files or more open the
+    // first tab of a file of several tabs also names the file
+    // ("adata.h5ad ▸ summary"). Each tab's tooltip is its file's path.
+    void relabelTabs() {
+        const bool several = filesWithTabs() >= 2;
+        int prev = -1;
+        for (int i = 0; i < tabs_->count(); ++i) {
+            const int id = tabFile_.value(tabs_->widget(i), 0);
+            const QString label = tabs_->label(i);
+            const OpenFile* f = id ? fileById(id) : nullptr;
+            QString text = label;
+            if (f && several && id != prev && tabsOfFile(id) > 1)
+                text = QFileInfo(f->path).fileName() + QStringLiteral(" \u25B8 ") + label;
+            if (tabs_->tabText(i) != text) tabs_->setTabText(i, text);
+            if (f) tabs_->setTabToolTip(i, label == QFileInfo(f->path).fileName()
+                                               ? f->path : f->path + QLatin1Char('\n') + label);
+            prev = id;
+        }
+        tabs_->tabBar()->update();
+        syncFileControls();
+    }
+
+    // The window title: the current tab's file.
+    void updateTitle() {
+        const OpenFile* f = activeFile();
+        if (f) setWindowTitle(f->path + QStringLiteral(" — vv"));
+        else if (tabs_->count() > 0) setWindowTitle(tabs_->tabText(tabs_->currentIndex()) + QStringLiteral(" — vv"));
+        else setWindowTitle(QStringLiteral("vv"));
+    }
+
+    // Right-click on the tab bar: close the tab, its file or the other files;
+    // copy the file's path.
+    void tabMenu(const QPoint& pos) {
+        const int i = tabs_->tabBar()->tabAt(pos);
+        if (i < 0) return;
+        QWidget* w = tabs_->widget(i);
+        const int id = tabFile_.value(w, 0);
+        const OpenFile* f = id ? fileById(id) : nullptr;
+        QMenu menu(this);
+        connect(menu.addAction(tr("Close Tab")), &QAction::triggered, this,
+                [this, w] { closeTab(tabs_->indexOf(w)); });
+        if (f) {
+            const int n = tabsOfFile(id);
+            QAction* cf = menu.addAction(n > 1 ? tr("Close File (%1 tabs)").arg(n) : tr("Close File"));
+            connect(cf, &QAction::triggered, this, [this, id] { closeFile(id); });
+            QAction* co = menu.addAction(tr("Close Other Files"));
+            co->setEnabled(filesWithTabs() > 1);
+            connect(co, &QAction::triggered, this, [this, id] {
+                QList<int> others;
+                for (const auto& o : files_) if (o.id != id) others << o.id;
+                for (int o : others) closeFile(o);
+            });
+            menu.addSeparator();
+            const QString path = f->path;
+            connect(menu.addAction(tr("Copy Path")), &QAction::triggered, this,
+                    [path] { QGuiApplication::clipboard()->setText(path); });
+        }
+        menu.exec(tabs_->tabBar()->mapToGlobal(pos));
     }
 
     // ── Actions, menus, toolbar (the layout of gg, the genome browser) ──────
@@ -1010,6 +1107,11 @@ private:
         openExportDirAct_->setEnabled(false);
         QAction* close = makeAction(tr("&Close Tab"), QKeySequence::Close, {},
                                     [this] { closeTab(tabs_->currentIndex()); });
+        closeFileAct_ = makeAction(tr("Close &File"), QKeySequence(QStringLiteral("Ctrl+Shift+W")),
+            tr("Close every tab of the current tab's file"), [this] {
+                if (int id = tabFile_.value(tabs_->currentWidget(), 0)) closeFile(id);
+                else closeTab(tabs_->currentIndex());
+            });
         QAction* quit = makeAction(tr("&Quit"), QKeySequence::Quit, {}, [] { QApplication::quit(); });
 
         QAction* cp = makeAction(tr("&Copy"), QKeySequence::Copy, tr("Copy the selected cells"),
@@ -1111,6 +1213,7 @@ private:
         file->addAction(exportAction_);
         file->addSeparator();
         file->addAction(close);
+        file->addAction(closeFileAct_);
         file->addSeparator();
         file->addAction(quit);
 
@@ -1162,6 +1265,7 @@ private:
         appMenu_->addSeparator();
         appMenu_->addAction(exportAction_);
         appMenu_->addAction(close);
+        appMenu_->addAction(closeFileAct_);
         appMenu_->addSeparator();
         appMenu_->addMenu(edit);
         appMenu_->addMenu(view);
@@ -1329,7 +1433,7 @@ private:
         f->opts = opts;
         QWidget* cur = tabs_->currentWidget();
         const bool curInFile = tabFile_.value(cur, 0) == id;
-        const QString curLabel = curInFile ? tabs_->tabText(tabs_->currentIndex()) : QString();
+        const QString curLabel = curInFile ? tabs_->label(tabs_->currentIndex()) : QString();
         // The current tab's place among its file's tabs: the tab shown again
         // when no new tab has its label ("X (preview)" becomes "X (long)").
         int curOffset = 0;
@@ -1345,12 +1449,13 @@ private:
                 const int idx = at + (int)i;
                 addSourceTab(std::move(r.sources[i]), r.origins[i], r.primary[i], r.expands[i],
                              r.owners[i], id, /*now=*/false, idx);
-                if (curInFile && target < 0 && tabs_->tabText(idx) == curLabel) target = idx;
+                if (curInFile && target < 0 && tabs_->label(idx) == curLabel) target = idx;
             }
             if (curInFile && target < 0) target = at + std::min(curOffset, (int)r.sources.size() - 1);
             if (!curInFile) target = tabs_->indexOf(cur);
             tabs_->setCurrentIndex(target);
         }
+        relabelTabs();
         onCurrentTab(target);
         return true;
     }
@@ -1371,6 +1476,10 @@ private:
     void syncFileControls() {
         if (!contextBar_) return;
         const OpenFile* f = activeFile();
+        if (f && filesWithTabs() >= 2)
+            contextBar_->setFile(QFileInfo(f->path).fileName(), f->path, fileColor(f->id));
+        else
+            contextBar_->setFile({}, {}, {});
         if (!f || f->jsonTree) { contextBar_->clearState(); return; }
         auto* m = activeModel();
         contextBar_->setState(f->feat, m ? m->tabTraits() : TabTraits{}, f->opts);
@@ -2452,7 +2561,7 @@ public:
         if (!o.tab.isEmpty()) {
             int found = -1;
             for (int i = 0; i < tabs_->count() && found < 0; ++i)
-                if (tabs_->tabText(i) == o.tab) found = i;
+                if (tabs_->label(i) == o.tab) found = i;
             bool num = false;
             const int idx = o.tab.toInt(&num);
             if (found < 0 && num && idx >= 0 && idx < tabs_->count()) found = idx;
@@ -3015,6 +3124,7 @@ private:
     bool                           smoothScroll_  = true;   // per-pixel scrolling
     bool                           showTypes_     = true;   // the header's type line
     QAction*                       typesAct_      = nullptr;   // View ▸ Column Types
+    QAction*                       closeFileAct_  = nullptr;   // File ▸ Close File
     QStringList                    recent_;                 // Open Recent, newest first
     QString                        openFilter_;             // the Open dialog's last type
     QThread*                       settingsThread_ = nullptr;   // writes vvg.conf (saveSetting)
@@ -3112,6 +3222,21 @@ public:
         for (int c = 0; c < m->columnCount(); ++c)
             w << QString::number(v->horizontalHeader()->sectionSize(c) / ch, 'f', 1);
         return QStringLiteral("widths=") + w.join(QLatin1Char(','));
+    }
+    // Self-test: each tab's text and file group (files numbered in tab
+    // order), then "groups=N" and the window title.
+    void dumpTabLabelsForTest() {
+        waitIdleForTest();
+        QHash<int, int> order;
+        for (int i = 0; i < tabs_->count(); ++i) {
+            const int id = tabFile_.value(tabs_->widget(i), 0);
+            if (id && !order.contains(id)) order.insert(id, order.size() + 1);
+            std::printf("tab %s|%d\n", tabs_->tabText(i).toUtf8().constData(), order.value(id, 0));
+        }
+        std::printf("groups=%d\n", (int)order.size());
+        std::printf("title=%s\n", windowTitle().toUtf8().constData());
+        std::printf("strip=%s\n", contextBar_ && contextBar_->isVisibleTo(tabs_)
+                                       ? contextBar_->fileForTest().toUtf8().constData() : "");
     }
     // Self-test: the Open dialog's types, one per line.
     static void dumpOpenFiltersForTest() {
@@ -3491,6 +3616,9 @@ int main(int argc, char** argv) {
         // Optional header check: VVG_HEADER=1 (the first column's header).
         if (const char* hd = std::getenv("VVG_HEADER"); hd && *hd && *hd != '0')
             std::printf("header %s\n", win.headerForTest().toUtf8().constData());
+        // Optional tab-label check: VVG_TABLABELS=1 (dumpTabLabelsForTest).
+        if (const char* tl = std::getenv("VVG_TABLABELS"); tl && *tl && *tl != '0')
+            win.dumpTabLabelsForTest();
         // Optional width check: VVG_COLWIDTHS=1 (the active tab's columns).
         if (const char* cw = std::getenv("VVG_COLWIDTHS"); cw && *cw && *cw != '0')
             std::printf("colwidths %s\n", win.colWidthsForTest().toUtf8().constData());

@@ -23,12 +23,17 @@ public:
     // Show what `file` and `tab` offer, set to `opts`; hidden when nothing applies.
     void setState(const FileFeatures& file, const TabTraits& tab, const FileOptions& opts);
     void clearState();                      // a tab with no file options
+    // The file the tab belongs to, at the strip's left, with its tab-bar
+    // colour; an empty `name` hides it (one file open). Shown on every tab
+    // while set, with or without options.
+    void setFile(const QString& name, const QString& tip, const QColor& color);
     // A re-open with `attempted` failed: say why, until the next setState,
     // and keep the typed region and tags for editing.
     void showError(const QString& why, const FileOptions& attempted);
     void focusRegion();                     // when the region box shows
     // The visible controls, e.g. "region pileup tags contigs", or "none".
     QString describeForTest() const;
+    QString fileForTest() const;            // the file name shown, or ""
 
 signals:
     void optionsChanged(const FileOptions& opts);
@@ -38,9 +43,13 @@ private:
     FileOptions current() const;            // the options the controls show
     void        apply() { emit optionsChanged(current()); }
     QToolButton* toggle(const QString& text, const QString& tip);
+    void         updateVisibility();
     QWidget*     group(QHBoxLayout** lay);
 
     FileOptions   opts_;                    // what the file was opened with
+    QWidget*      fileGroup_;
+    QLabel*       fileSwatch_;
+    QLabel*       fileName_;
     bool          regionReady_ = false;
 
     QWidget*      regionGroup_;
