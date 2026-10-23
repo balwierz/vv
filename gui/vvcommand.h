@@ -22,8 +22,7 @@ struct VvCommandSpec {
     QString     samples;              // --samples layout; empty / "struct" = the default
     QString     matrix;               // --matrix layout; empty / "wide" = the default
     QString     filter;               // --filter expression, as applied
-    QString     sortColumn;           // empty = unsorted
-    bool        sortDesc = false;
+    QList<QPair<QString, bool>> sort; // (column, descending), first key first; empty = unsorted
     QStringList select;               // --select terms; empty = all columns
     bool        describe = false;     // --describe (the Column tab's command)
 };

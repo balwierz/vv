@@ -517,6 +517,13 @@ QVariant ArrowTableModel::headerData(int section, Qt::Orientation o, int role) c
         }
         if (role == Qt::ToolTipRole)
             return colNames_[section] + " : " + colTypes_[section];
+        if (role == SortMarkRole && sortKeys_.size() > 1) {
+            for (size_t k = 0; k < sortKeys_.size(); ++k)
+                if (sortKeys_[k].col == section)
+                    return QString(sortKeys_[k].order == Qt::DescendingOrder ? QChar(0x25BC) : QChar(0x25B2)) +
+                           QString::number((qlonglong)k + 1);
+            return {};
+        }
     } else if (o == Qt::Vertical && role == Qt::DisplayRole) {
         return QString::number((qlonglong)sourceRow(section));
     }
@@ -593,7 +600,7 @@ void ArrowTableModel::fetchMore(const QModelIndex& parent) {
 // them. Polls `cancel` between the (coarse) phases; returns {} if aborted.
 std::vector<int64_t> ArrowTableModel::computeOrderVec(
         TabularSource& src, std::vector<int> displayCols,
-        FilterExpr filter, bool hasFilter, int sortCol, Qt::SortOrder order,
+        FilterExpr filter, bool hasFilter, std::vector<SortKey> keys,
         std::atomic<bool>* cancel) {
     auto aborted = [&]{ return cancel && cancel->load(); };
 
@@ -601,15 +608,18 @@ std::vector<int64_t> ArrowTableModel::computeOrderVec(
     if (hasFilter) base = filter_rows(src, filter, cancel);   // source order
     if (aborted()) return {};
 
-    if (sortCol >= 0 && sortCol < (int)displayCols.size()) {
+    std::vector<std::pair<int, bool>> by;   // (source column, descending)
+    for (const SortKey& k : keys)
+        if (k.col >= 0 && k.col < (int)displayCols.size())
+            by.push_back({displayCols[(size_t)k.col], k.order == Qt::DescendingOrder});
+    if (!by.empty()) {
         // The reader core's hand-rolled sort — the same one --sort uses —
         // because arrow::compute's sort_indices kernel is GC'd from the static
         // build and is not reliably registered in every Arrow linkage (using it
         // here made the click-to-sort a silent no-op). It reads only the sort
         // column, and pins a stream's batches so every row stays readable.
         std::vector<int64_t> out;
-        if (!sort_rows_by_column(src, displayCols[sortCol], order == Qt::DescendingOrder,
-                                 hasFilter ? &base : nullptr, cancel, &out))
+        if (!sort_rows_by_columns(src, by, hasFilter ? &base : nullptr, cancel, &out))
             return {};
         return out;
     }
@@ -619,7 +629,7 @@ std::vector<int64_t> ArrowTableModel::computeOrderVec(
 
 void ArrowTableModel::rebuildOrder() {
     auto v = withSource([&](TabularSource& s) {
-        return computeOrderVec(s, displayCols_, filter_, hasFilter_, sortCol_, sortOrder_, nullptr);
+        return computeOrderVec(s, displayCols_, filter_, hasFilter_, sortKeys_, nullptr);
     });
     identity_ = !hasFilter_ && v.empty();
     order_ = std::make_shared<std::vector<int64_t>>(std::move(v));
@@ -628,8 +638,8 @@ void ArrowTableModel::rebuildOrder() {
 
 void ArrowTableModel::sortByDisplayColumn(int displayCol, Qt::SortOrder order) {
     beginResetModel();
-    if (displayCol < 0 || displayCol >= (int)displayCols_.size()) sortCol_ = -1;
-    else { sortCol_ = displayCol; sortOrder_ = order; }
+    sortKeys_.clear();
+    if (displayCol >= 0 && displayCol < (int)displayCols_.size()) sortKeys_.push_back({displayCol, order});
     rebuildOrder();
     clearChunkCache();
     invalidateFind();
@@ -664,8 +674,14 @@ void ArrowTableModel::clearFilterAsync() {
     hasFilter_ = false; filter_ = FilterExpr{}; startRecompute();
 }
 void ArrowTableModel::sortAsyncByDisplayColumn(int displayCol, Qt::SortOrder order) {
-    if (displayCol < 0 || displayCol >= (int)displayCols_.size()) sortCol_ = -1;
-    else { sortCol_ = displayCol; sortOrder_ = order; }
+    std::vector<SortKey> keys;
+    if (displayCol >= 0 && displayCol < (int)displayCols_.size()) keys.push_back({displayCol, order});
+    sortAsyncByKeys(std::move(keys));
+}
+void ArrowTableModel::sortAsyncByKeys(std::vector<SortKey> keys) {
+    sortKeys_.clear();
+    for (const SortKey& k : keys)
+        if (k.col >= 0 && k.col < (int)displayCols_.size()) sortKeys_.push_back(k);
     startRecompute();
 }
 
@@ -686,9 +702,9 @@ void ArrowTableModel::startRecompute() {
     pendingJob_ = Job::Order;
     pendingHasFilter_ = hasFilter_;
     owner_->post([this, core = core_, mail = mail_, cols = displayCols_, f = filter_,
-                  hf = hasFilter_, sc = sortCol_, so = sortOrder_, cf, id] {
+                  hf = hasFilter_, keys = sortKeys_, cf, id] {
         if (cf->load()) return;
-        auto r = computeOrderVec(*core->src, cols, f, hf, sc, so, cf.get());
+        auto r = computeOrderVec(*core->src, cols, f, hf, keys, cf.get());
         if (cf->load()) return;
         Meta meta = readMeta(*core->src);
         deliver(mail, [this, id, r = std::move(r), meta]() mutable {
@@ -906,7 +922,7 @@ bool ArrowTableModel::stepSlice(int delta) {
     beginResetModel();
     clearChunkCache();
     owner_->runSync([core = core_] { core->chunkFirstRow.clear(); });   // source rebuilt
-    order_ = std::make_shared<std::vector<int64_t>>(); identity_ = true; sortCol_ = -1;
+    order_ = std::make_shared<std::vector<int64_t>>(); identity_ = true; sortKeys_.clear();
     hasFilter_ = false; filter_ = FilterExpr{};
     invalidateFind();
     schema_ = withSource([](TabularSource& s) { return s.schema(); });

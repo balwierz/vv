@@ -90,7 +90,11 @@ Command* goes the other way.
 - **Sort, filter, find** — click a header to sort (by type, not text) and
   put the cursor in that column; a second click sorts descending, a third
   restores the file's order (also *Clear Sort* in the header's right-click
-  menu and *View ▸*). The Filter box (*Ctrl+Shift+F*) uses vv's `--filter`
+  menu and *View ▸*). *Shift*+click adds a column as a further key, ordering
+  the ties of the keys before it (again: descending, then removed; also
+  *Then Sort Ascending / Descending* in the header menu); each key shows its
+  rank and direction in the header (▲1, ▼2), and *Copy as vv Command* and
+  *Export* repeat `--sort` per key. The Filter box (*Ctrl+Shift+F*) uses vv's `--filter`
   grammar (`score > 5 and chrom == "chr1"`); the Find box (*Ctrl+F*) takes a
   regex. All three run off the UI thread with a progress bar and *Cancel*, so
   multi-GB files stay responsive. Right-click a cell for *Filter to “value”*,

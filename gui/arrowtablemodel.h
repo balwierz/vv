@@ -69,10 +69,18 @@ public:
     bool canFetchMore(const QModelIndex& parent) const override;
     void fetchMore(const QModelIndex& parent) override;
 
+    // A sort key: a display column and its order. The first key decides,
+    // each next one orders the ties of the ones before.
+    struct SortKey { int col; Qt::SortOrder order; };
+    // Header role: "▲1" / "▼2" for a column that is a key of a sort by
+    // several columns; empty otherwise.
+    static constexpr int SortMarkRole = Qt::UserRole + 3;
+
     // Sort by a display column (typed). displayCol < 0 clears the sort.
     // *Sync* variant: computes inline (used by the headless self-test).
     void    sortByDisplayColumn(int displayCol, Qt::SortOrder order);
-    int     sortColumn() const { return sortCol_; }
+    int     sortColumn() const { return sortKeys_.empty() ? -1 : sortKeys_.front().col; }
+    const std::vector<SortKey>& sortKeys() const { return sortKeys_; }
 
     // Live filter using vv's --filter DSL (already parsed). clearFilter()
     // restores the unfiltered view. *Sync* variants compute inline.
@@ -89,6 +97,7 @@ public:
     void    setFilterAsync(const FilterExpr& expr);
     void    clearFilterAsync();
     void    sortAsyncByDisplayColumn(int displayCol, Qt::SortOrder order);
+    void    sortAsyncByKeys(std::vector<SortKey> keys);   // empty clears
     void    cancelRecompute();
     bool    isComputing() const { return computing_; }
 
@@ -262,7 +271,7 @@ private:
     // the model is blanked, so no UI-thread source access races it.
     static std::vector<int64_t> computeOrderVec(TabularSource& src, std::vector<int> displayCols,
                                                 FilterExpr filter, bool hasFilter,
-                                                int sortCol, Qt::SortOrder order,
+                                                std::vector<SortKey> keys,
                                                 std::atomic<bool>* cancel);
     void      startRecompute();           // blank + post the job to the owner
     // Install a finished job's result, unless job `id` was superseded.
@@ -325,8 +334,7 @@ private:
     // Kept separately from order_.empty(): a filter that matches nothing also
     // leaves order_ empty, and that view has zero rows, not all of them.
     bool                 identity_  = true;
-    int                  sortCol_   = -1;
-    Qt::SortOrder        sortOrder_ = Qt::AscendingOrder;
+    std::vector<SortKey> sortKeys_;          // empty = file order
     FilterExpr           filter_;
     bool                 hasFilter_ = false;
 

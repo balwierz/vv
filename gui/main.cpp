@@ -853,16 +853,14 @@ private:
         view->horizontalHeader()->setSectionsClickable(true);
 
         // Click a column header to sort: ascending, descending, then the
-        // file's order again; typed via Arrow, off the UI thread. The cursor
+        // file's order again; typed via Arrow, off the UI thread. Shift+click
+        // adds the column as a further key (or cycles that key). The cursor
         // moves to that column, so the Column tab summarises the column clicked.
         connect(view->horizontalHeader(), &QHeaderView::sectionClicked,
                 this, [this, view, model](int section) {
                     keepCol_[model] = section;
-                    const bool sorted = model->sortColumn() == section;
-                    const Qt::SortOrder was = sortOrder_.value(model, Qt::AscendingOrder);
-                    if (sorted && was == Qt::DescendingOrder) { clearSortOf(model, view); return; }
-                    sortByColumn(model, view, section,
-                                 sorted ? Qt::DescendingOrder : Qt::AscendingOrder);
+                    headerSortClick(model, view, section,
+                                    QGuiApplication::keyboardModifiers() & Qt::ShiftModifier);
                 });
         view->horizontalHeader()->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(view->horizontalHeader(), &QWidget::customContextMenuRequested, this,
@@ -874,6 +872,12 @@ private:
                                 [=, this] { sortByColumn(model, view, section, Qt::AscendingOrder); });
                         connect(menu.addAction(tr("Sort &Descending")), &QAction::triggered, this,
                                 [=, this] { sortByColumn(model, view, section, Qt::DescendingOrder); });
+                    }
+                    if (section >= 0 && !model->sortKeys().empty() && model->sortColumn() != section) {
+                        connect(menu.addAction(tr("Then Sort Ascending")), &QAction::triggered, this,
+                                [=, this] { addSortKey(model, view, section, Qt::AscendingOrder); });
+                        connect(menu.addAction(tr("Then Sort Descending")), &QAction::triggered, this,
+                                [=, this] { addSortKey(model, view, section, Qt::DescendingOrder); });
                     }
                     QAction* clr = menu.addAction(tr("Clear &Sort"));
                     clr->setEnabled(model->sortColumn() >= 0);
@@ -979,7 +983,7 @@ private:
             models_.erase(models_.begin() + i);
         }
         tabs_->removeTab(i);
-        if (m) { sortOrder_.remove(m); tabOrigin_.remove(m); filterText_.remove(m); statsCache_.remove(m); keepCol_.remove(m); }
+        if (m) { tabOrigin_.remove(m); filterText_.remove(m); statsCache_.remove(m); keepCol_.remove(m); }
         if (m && m == statsModel_) cancelColumnStats();
         jsonTabs_.erase(w);   // a JSON tree tab: its model, document and temporary copy
         if (m == pendingFindModel_) pendingFindModel_ = nullptr;
@@ -1809,6 +1813,7 @@ private:
         cfg.describe = true;          // an AnnData frame is read in full
         cfg.select_cols.clear();
         cfg.sort_col.clear();
+        cfg.sort_then.clear();
         cfg.filter_expr.clear();      // applied while summarising
         std::vector<int> cols;
         if (!cursorOnly && m->displayColumnCount() <= kStatsAllColumns)
@@ -1959,23 +1964,59 @@ private:
         VvCommandSpec spec;
         if (!m || !v || !specForModel(m, v, &spec)) return;
         spec.select     = {m->columnName(std::min(currentColumn(v), m->displayColumnCount() - 1))};
-        spec.sortColumn.clear();
+        spec.sort.clear();
         spec.describe   = true;
         QApplication::clipboard()->setText(vvCommandLine(spec));
         statusBar()->showMessage(tr("Copied the vv command"), 2000);
     }
 
     void sortByColumn(ArrowTableModel* m, QTableView* v, int section, Qt::SortOrder ord) {
-        sortOrder_[m] = ord;
-        m->sortAsyncByDisplayColumn(section, ord);
-        v->horizontalHeader()->setSortIndicatorShown(true);
-        v->horizontalHeader()->setSortIndicator(section, ord);
+        setSortKeys(m, v, {{section, ord}});
     }
     void clearSortOf(ArrowTableModel* m, QTableView* v) {
-        if (m->sortColumn() < 0) return;
-        sortOrder_.remove(m);
-        m->sortAsyncByDisplayColumn(-1, Qt::AscendingOrder);
-        if (v) v->horizontalHeader()->setSortIndicatorShown(false);
+        if (m->sortKeys().empty()) return;
+        setSortKeys(m, v, {});
+    }
+    // Make `section` a further sort key with `ord` (moved to the end when it
+    // is one already).
+    void addSortKey(ArrowTableModel* m, QTableView* v, int section, Qt::SortOrder ord) {
+        std::vector<ArrowTableModel::SortKey> keys;
+        for (const auto& k : m->sortKeys()) if (k.col != section) keys.push_back(k);
+        keys.push_back({section, ord});
+        setSortKeys(m, v, std::move(keys));
+    }
+    // A header click: the column alone (ascending, descending, off), or with
+    // Shift that column as a further key (added ascending; a key cycles to
+    // descending, then is removed).
+    void headerSortClick(ArrowTableModel* m, QTableView* v, int section, bool add) {
+        std::vector<ArrowTableModel::SortKey> keys = m->sortKeys();
+        auto it = std::find_if(keys.begin(), keys.end(),
+                               [section](const auto& k) { return k.col == section; });
+        if (!add) {
+            if (keys.size() == 1 && it != keys.end()) {
+                if (it->order == Qt::DescendingOrder) keys.clear();
+                else it->order = Qt::DescendingOrder;
+            } else {
+                keys = {{section, Qt::AscendingOrder}};
+            }
+        } else if (it == keys.end()) {
+            keys.push_back({section, Qt::AscendingOrder});
+        } else if (it->order == Qt::AscendingOrder) {
+            it->order = Qt::DescendingOrder;
+        } else {
+            keys.erase(it);
+        }
+        setSortKeys(m, v, std::move(keys));
+    }
+    // Sort `m` by `keys`; the header shows Qt's arrow for one key, and each
+    // key's rank and direction (TypedHeaderView) for several.
+    void setSortKeys(ArrowTableModel* m, QTableView* v, std::vector<ArrowTableModel::SortKey> keys) {
+        m->sortAsyncByKeys(keys);
+        if (!v) return;
+        QHeaderView* h = v->horizontalHeader();
+        h->setSortIndicatorShown(keys.size() == 1);
+        if (keys.size() == 1) h->setSortIndicator(keys.front().col, keys.front().order);
+        h->viewport()->update();
     }
     QTableView* viewOf(ArrowTableModel* m) const {
         for (size_t i = 0; i < models_.size(); ++i)
@@ -2388,10 +2429,8 @@ public:
         s.samples = QString::fromStdString(fo.samples);
         s.matrix  = QString::fromStdString(fo.matrix);
         if (m->hasFilter()) s.filter = filterText_.value(m);
-        if (m->sortColumn() >= 0) {
-            s.sortColumn = m->columnName(m->sortColumn());
-            s.sortDesc   = sortOrder_.value(m, Qt::AscendingOrder) == Qt::DescendingOrder;
-        }
+        for (const auto& k : m->sortKeys())
+            s.sort.append({m->columnName(k.col), k.order == Qt::DescendingOrder});
         // Hidden columns: name the visible ones. --select takes an exact name
         // as-is, but splits on commas and trims spaces, so such a name is
         // given by its 1-based source position ("N-N") instead.
@@ -2439,18 +2478,28 @@ public:
     // Sort / hide on the active tab, as the header click and View > Columns
     // do (used by --sort and the VVG_WINTEST hooks).
     bool sortActiveByName(const QString& column, bool desc) {
+        return sortActiveByNames({column + (desc ? QStringLiteral(":desc") : QStringLiteral(":asc"))}).isEmpty();
+    }
+    // Sort the active tab by "COL[:asc|:desc]" keys, the first deciding.
+    // Returns the first unknown column, or "" when sorted.
+    QString sortActiveByNames(const QStringList& specs) {
         auto* m = activeModel();
-        if (!m) return false;
-        for (int c = 0; c < m->displayColumnCount(); ++c)
-            if (m->columnName(c) == column) {
-                const Qt::SortOrder ord = desc ? Qt::DescendingOrder : Qt::AscendingOrder;
-                sortOrder_[m] = ord;
-                m->sortAsyncByDisplayColumn(c, ord);
-                for (int g = 0; m->isComputing() && g < 2000000; ++g)
-                    QCoreApplication::processEvents();
-                return true;
-            }
-        return false;
+        if (!m) return specs.value(0);
+        std::vector<ArrowTableModel::SortKey> keys;
+        for (QString col : specs) {
+            Qt::SortOrder ord = Qt::AscendingOrder;
+            if (col.endsWith(QStringLiteral(":desc"))) { ord = Qt::DescendingOrder; col.chop(5); }
+            else if (col.endsWith(QStringLiteral(":asc"))) col.chop(4);
+            int found = -1;
+            for (int c = 0; c < m->displayColumnCount() && found < 0; ++c)
+                if (m->columnName(c) == col) found = c;
+            if (found < 0) return col;
+            keys.push_back({found, ord});
+        }
+        setSortKeys(m, viewOf(m), std::move(keys));
+        for (int g = 0; m->isComputing() && g < 2000000; ++g)
+            QCoreApplication::processEvents();
+        return {};
     }
     bool hideActiveColumnForTest(const QString& column) {
         auto* m = activeModel();
@@ -2584,7 +2633,8 @@ public:
 
     // vv's view flags on vvg's command line (vvg --filter … --sort … file).
     struct ViewOptions {
-        QString filter, select, sort, tab, region, tags, samples, matrix;
+        QString filter, select, tab, region, tags, samples, matrix;
+        QStringList sort;   // one --sort per key, "COL[:asc|:desc]"
         bool ncbi = false, pileup = false, gtStats = false, contigs = false;
         int  slop = 0;
         bool session() const {
@@ -2649,13 +2699,9 @@ public:
             if (!filterText_.contains(m))
                 errs << tr("--filter: %1").arg(statusBar()->currentMessage());
         }
-        if (m && !o.sort.isEmpty()) {
-            QString col = o.sort;
-            const bool desc = col.endsWith(QStringLiteral(":desc"));
-            if (desc) col.chop(5);
-            else if (col.endsWith(QStringLiteral(":asc"))) col.chop(4);
-            if (!sortActiveByName(col, desc)) errs << tr("--sort: no column '%1'").arg(col);
-        }
+        if (m && !o.sort.isEmpty())
+            if (const QString bad = sortActiveByNames(o.sort); !bad.isEmpty())
+                errs << tr("--sort: no column '%1'").arg(bad);
         return errs;
     }
     // Set the horizontal scroll bar and read it back, with its maximum:
@@ -3289,7 +3335,6 @@ private:
     std::vector<IconAction> iconActions_;
     std::vector<QTableView*>       views_;
     std::vector<ArrowTableModel*>  models_;
-    QMap<ArrowTableModel*, Qt::SortOrder> sortOrder_;
     // reopen: the tab can be opened again from `path` (not stdin / a FIFO, not
     // a table made from a JSON-tree node).
     QMenu*                                viewMenu_  = nullptr;
@@ -3391,6 +3436,34 @@ public:
         const QString expr = applyCellFilter(m, cells, exclude);
         waitIdleForTest();
         return QStringLiteral("%1 -> rows=%2").arg(expr).arg(m->rowCount());
+    }
+    // Self-test: header clicks "3,+0,+0" ('+' = with Shift) on the active
+    // tab; after each, the sort keys and the header marks.
+    void headerSortForTest(const QString& clicks) {
+        waitIdleForTest();
+        auto* v = activeView();
+        auto* m = activeModel();
+        if (!v || !m) return;
+        for (QString c : clicks.split(QLatin1Char(','))) {
+            const bool add = c.startsWith(QLatin1Char('+'));
+            if (add) c.remove(0, 1);
+            headerSortClick(m, v, c.toInt(), add);
+            waitIdleForTest();
+            QStringList keys, marks;
+            for (const auto& k : m->sortKeys())
+                keys << m->columnName(k.col) + (k.order == Qt::DescendingOrder ? QStringLiteral(":desc")
+                                                                               : QStringLiteral(":asc"));
+            for (int col = 0; col < m->columnCount(); ++col) {
+                const QString mk = m->headerData(col, Qt::Horizontal, ArrowTableModel::SortMarkRole).toString();
+                if (!mk.isEmpty()) marks << m->columnName(col) + QLatin1Char('=') + mk;
+            }
+            ArrowTableModel::SyncReads sync(m);
+            std::printf("headersort %s keys=%s marks=%s indicator=%d first=%s\n", c.toUtf8().constData(),
+                        keys.join(QLatin1Char(',')).toUtf8().constData(),
+                        marks.join(QLatin1Char(',')).toUtf8().constData(),
+                        v->horizontalHeader()->isSortIndicatorShown() ? 1 : 0,
+                        m->data(m->index(0, 3), Qt::DisplayRole).toString().toUtf8().constData());
+        }
     }
     // Self-test: the palette's rows for `query`, in order.
     void dumpPaletteForTest(const QString& query) {
@@ -3503,16 +3576,23 @@ static bool checkVvCommand() {
     s.region = QStringLiteral("chr1:100-200");
     s.ncbi = true; s.slop = 50; s.gtStats = true;
     s.filter = QStringLiteral("AF > 0.05 and FILTER == \"PASS\"");
-    s.sortColumn = QStringLiteral("POS"); s.sortDesc = true;
+    s.sort = {{QStringLiteral("POS"), true}};
     s.select = QStringList{QStringLiteral("CHROM"), QStringLiteral("POS"), QStringLiteral("AF")};
     eq(vvCommandLine(s), "vv -r chr1:100-200 --coords NCBI --slop 50 --gt-stats "
                          "--filter 'AF > 0.05 and FILTER == \"PASS\"' --sort POS:desc "
                          "--select CHROM,POS,AF '/d/my file.vcf.gz'");
     VvCommandSpec t;
     t.path = QStringLiteral("a.h5ad"); t.tab = QStringLiteral("obs");
-    t.sortColumn = QStringLiteral("t:0");
+    t.sort = {{QStringLiteral("t:0"), false}};
     eq(vvCommandLine(t), "vv --tab obs --sort t:0:asc a.h5ad");
-    t.contigs = true; t.region = QStringLiteral("chr1"); t.sortColumn.clear();
+    t.sort = {{QStringLiteral("cell_type"), false}, {QStringLiteral("n_genes"), true}};
+    eq(vvCommandLine(t), "vv --tab obs --sort cell_type --sort n_genes:desc a.h5ad");
+    {
+        const Config c = vvCommandConfig(t);
+        eq(QString::fromStdString(c.sort_col + "|" + c.sort_then.at(0).col) +
+               (c.sort_then.at(0).desc ? "|desc" : "|asc"), "cell_type|n_genes|desc");
+    }
+    t.contigs = true; t.region = QStringLiteral("chr1"); t.sort.clear();
     t.expand = QStringLiteral("INFO");      // --contigs takes no --expand
     eq(vvCommandLine(t), "vv --tab obs --contigs a.h5ad");
     VvCommandSpec g;
@@ -3557,7 +3637,7 @@ int main(int argc, char** argv) {
         QString tmp;
         if      (a == "--filter")                 value(&view.filter);
         else if (a == "--select")                 value(&view.select);
-        else if (a == "--sort")                   value(&view.sort);
+        else if (a == "--sort")                   { value(&tmp); view.sort << tmp; }
         else if (a == "--tab")                    value(&view.tab);
         else if (a == "-r" || a == "--region")    value(&view.region);
         else if (a == "--tags")                   value(&view.tags);
@@ -3809,6 +3889,9 @@ int main(int argc, char** argv) {
             std::printf("cellfilter %s\n", win.cellFilterForTest(QString::fromLocal8Bit(cf), false).toUtf8().constData());
         if (const char* ce = std::getenv("VVG_CELLEXCLUDE"); ce && *ce)
             std::printf("cellexclude %s\n", win.cellFilterForTest(QString::fromLocal8Bit(ce), true).toUtf8().constData());
+        // Optional sort-click check: VVG_HEADERSORT="3,+0,…" (headerSortForTest).
+        if (const char* hs = std::getenv("VVG_HEADERSORT"); hs && *hs)
+            win.headerSortForTest(QString::fromLocal8Bit(hs));
         // Optional palette check: VVG_PALETTE="<query>" (the commands it lists).
         if (const char* pq = std::getenv("VVG_PALETTE"); pq)
             win.dumpPaletteForTest(QString::fromLocal8Bit(pq));
@@ -3848,12 +3931,10 @@ int main(int argc, char** argv) {
         // Optional superseded-jobs check: VVG_RACE="<filter>" (raceForTest).
         if (const char* rc = std::getenv("VVG_RACE"); rc && *rc)
             std::printf("race %s\n", win.raceForTest(QString::fromLocal8Bit(rc)).toUtf8().constData());
+        // VVG_SORT="COL[:desc][,COL2[:desc]…]": sort keys, the first deciding.
         if (const char* so = std::getenv("VVG_SORT"); so && *so) {
-            QString spec = QString::fromLocal8Bit(so);
-            bool desc = spec.endsWith(QStringLiteral(":desc"));
-            if (desc) spec.chop(5);
-            if (!win.sortActiveByName(spec, desc))
-                std::fprintf(stderr, "vvg: no column '%s' to sort\n", so);
+            const QString bad = win.sortActiveByNames(QString::fromLocal8Bit(so).split(QLatin1Char(',')));
+            if (!bad.isEmpty()) std::fprintf(stderr, "vvg: no column '%s' to sort\n", bad.toLocal8Bit().constData());
         }
         // Optional paint check: VVG_SETTLE=<ms> (after VVG_SORT): the shown
         // view must stop reading with every visible row loaded.

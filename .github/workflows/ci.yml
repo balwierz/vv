@@ -485,6 +485,17 @@ jobs:
           grep -q '^shortcut F1 -> Field Reference…$' <<<"$out"
           grep -q '^shortcut Ctrl+/ -> Keyboard Shortcuts…$' <<<"$out"
           grep -q '^shortcut Ctrl+Shift+P -> Find Action…$' <<<"$out"
+          # Sort keys: a click sorts by one column (asc, desc, off); Shift+click
+          # adds a key, marked with its rank; the export equals vv's repeated --sort.
+          out=$(VVG_WINTEST=1 VVG_HEADERSORT='0,0,+3,+3,+3' ./build-gui/gui/vvg tests/data/tiny.parquet); echo "$out"
+          grep -qx 'headersort 0 keys=Chr:desc marks= indicator=1 first=0.6' <<<"$out"
+          grep -qx 'headersort 3 keys=Chr:desc,Score:asc marks=Chr=▼1,Score=▲2 indicator=0 first=0.6' <<<"$out"
+          grep -qx 'headersort 3 keys=Chr:desc,Score:desc marks=Chr=▼1,Score=▼2 indicator=0 first=0.95' <<<"$out"
+          grep -qx 'headersort 3 keys=Chr:desc marks= indicator=1 first=0.6' <<<"$out"
+          VVG_WINTEST=1 VVG_SORT='Chr:desc,Score' VVG_EXPORT="$RUNNER_TEMP/two.tsv" ./build-gui/gui/vvg tests/data/tiny.parquet >/dev/null
+          diff "$RUNNER_TEMP/two.tsv" <(./build/vv --tsv --sort Chr:desc --sort Score tests/data/tiny.parquet)
+          VVG_WINTEST=1 VVG_SORT='Chr:desc,Score' VVG_COPYCMD=1 ./build-gui/gui/vvg tests/data/tiny.parquet \
+            | grep -q '^cmd=vv --sort Chr:desc --sort Score '
           # Filter to / Exclude from cells: the expression, ANDed into the
           # current filter; several cells of a column give in (…).
           VVG_WINTEST=1 VVG_CELLFILTER=0,0 ./build-gui/gui/vvg tests/data/tiny.parquet | grep -qx 'cellfilter Chr == "chr1" -> rows=12'

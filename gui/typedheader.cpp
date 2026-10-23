@@ -31,6 +31,7 @@ void TypedHeaderView::paintSection(QPainter* p, const QRect& rect, int logicalIn
     const QString type = typeOf(logicalIndex);
     if (type.isEmpty() || !rect.isValid()) {
         QHeaderView::paintSection(p, rect, logicalIndex);
+        paintSortMark(p, rect, logicalIndex);
         return;
     }
     QStyleOptionHeader opt;
@@ -60,6 +61,21 @@ void TypedHeaderView::paintSection(QPainter* p, const QRect& rect, int logicalIn
     const Qt::Alignment h = opt.textAlignment & Qt::AlignHorizontal_Mask;
     p->drawText(typeRect, int(h | Qt::AlignVCenter),
                 tfm.elidedText(type, Qt::ElideRight, typeRect.width()));
+    p->restore();
+    paintSortMark(p, rect, logicalIndex);
+}
+
+void TypedHeaderView::paintSortMark(QPainter* p, const QRect& rect, int logicalIndex) const {
+    if (!model() || !rect.isValid()) return;
+    const QString mark = model()->headerData(logicalIndex, orientation(), SortMarkRole).toString();
+    if (mark.isEmpty()) return;
+    QFont f = typeFont();
+    f.setItalic(false);
+    f.setBold(true);
+    p->save();
+    p->setFont(f);
+    p->setPen(palette().color(QPalette::Highlight));
+    p->drawText(rect.adjusted(2, 1, -4, -1), Qt::AlignRight | Qt::AlignTop, mark);
     p->restore();
 }
 

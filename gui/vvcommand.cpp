@@ -39,11 +39,10 @@ QString vvCommandLine(const VvCommandSpec& s) {
     if (!s.matrix.isEmpty() && s.matrix != QLatin1String("wide"))     opt("--matrix", s.matrix);
     if (!s.filter.isEmpty())     opt("--filter", s.filter);
     // --sort reads a trailing :asc / :desc as the direction, so a name that
-    // contains a colon always gets an explicit one.
-    if (!s.sortColumn.isEmpty())
-        opt("--sort", s.sortColumn + (s.sortDesc ? QStringLiteral(":desc")
-                                      : s.sortColumn.contains(QLatin1Char(':'))
-                                            ? QStringLiteral(":asc") : QString()));
+    // contains a colon always gets an explicit one. One --sort per key.
+    for (const auto& [col, desc] : s.sort)
+        opt("--sort", col + (desc ? QStringLiteral(":desc")
+                             : col.contains(QLatin1Char(':')) ? QStringLiteral(":asc") : QString()));
     if (!s.select.isEmpty())     opt("--select", s.select.join(QLatin1Char(',')));
     if (s.describe)              w << QStringLiteral("--describe");
     w << shellQuote(s.path);
@@ -70,8 +69,10 @@ Config vvCommandConfig(const VvCommandSpec& s) {
     if (!s.samples.isEmpty()) cfg.samples = s.samples.toStdString();
     if (!s.matrix.isEmpty())  cfg.matrix  = s.matrix.toStdString();
     cfg.filter_expr = s.filter.toStdString();
-    cfg.sort_col    = s.sortColumn.toStdString();
-    cfg.sort_desc   = s.sortDesc;
+    for (const auto& [col, desc] : s.sort) {
+        if (cfg.sort_col.empty()) { cfg.sort_col = col.toStdString(); cfg.sort_desc = desc; }
+        else cfg.sort_then.push_back({col.toStdString(), desc});
+    }
     cfg.select_cols = s.select.join(QLatin1Char(',')).toStdString();
     cfg.describe    = s.describe;
     return cfg;
