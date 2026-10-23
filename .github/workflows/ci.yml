@@ -503,6 +503,18 @@ jobs:
             ./build-gui/gui/vvg "$RUNNER_TEMP/reload.csv" \
             | grep -qxF 'reload before rows=2 filter=count > 100 sort=count:desc hidden=ratio | bar=1 | after rows=3 filter=count > 100 sort=count:desc hidden=ratio bar=0'
           VVG_WINTEST=1 VVG_SHORTCUTS=1 ./build-gui/gui/vvg tests/data/tiny.parquet | grep -q '^shortcut F5 -> Reload$'
+          # Session: a run saves its files, options and each tab's view; a run
+          # with no files restores them. A closed tab reopens at its place.
+          ss="$RUNNER_TEMP/vvgcfg-session"; mkdir -p "$ss"
+          XDG_CONFIG_HOME="$ss" VVG_WINTEST=1 VVG_AFILTER='Score > 0.3' VVG_SORT='Chr:desc,Score' VVG_HIDE=Tags \
+            VVG_SESSION_SAVE=1 ./build-gui/gui/vvg tests/data/tiny.parquet tests/data/tiny.obsp.h5ad | grep -qx 'session saved'
+          out=$(XDG_CONFIG_HOME="$ss" VVG_WINTEST=1 VVG_RESTORE=1 VVG_VIEWSTATES=1 ./build-gui/gui/vvg); echo "$out"
+          grep -qx 'restored files=2' <<<"$out"
+          grep -qxF 'state *tiny.parquet filter=Score > 0.3 sort=Chr:desc,Score:asc hidden=Tags cursor=:-1' <<<"$out"
+          grep -q '^state varp\[corr\] ' <<<"$out"
+          out=$(VVG_WINTEST=1 VVG_TABLABELS=1 VVG_REOPEN_CLOSED=3 ./build-gui/gui/vvg tests/data/tiny.obsp.h5ad tests/data/tiny.parquet)
+          grep -qx 'reopen-closed 1' <<<"$out"
+          test "$(sed -n 's/^tab \(.*\)|1$/\1/p' <<<"$out" | tr '\n' ',')" = "tiny.obsp.h5ad ▸ summary,X,obs,var,obsp[connectivities],obsp[distances],varp[corr],"
           # Filter history: applied filters head their format family's recent
           # list, a saved one is named, both persist; another family has its own.
           fh="$RUNNER_TEMP/vvgcfg-filters"; mkdir -p "$fh"

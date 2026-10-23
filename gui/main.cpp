@@ -17,6 +17,9 @@
 #include <arrow/util/compression.h>
 
 #include <QApplication>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QSet>
 #include <QDateTime>
 #include <QFileSystemWatcher>
@@ -316,6 +319,7 @@ public:
             smoothScroll_ = st.value(QStringLiteral("smoothScroll"), true).toBool();
             recent_ = st.value(QStringLiteral("recentFiles")).toStringList();
             openFilter_ = st.value(QStringLiteral("ui/openFilter")).toString();
+            restoreSession_ = st.value(QStringLiteral("ui/restoreSession"), true).toBool();
             for (const char* kind : {"recent", "saved"}) {
                 QSettings& rs = st;
                 rs.beginGroup(QStringLiteral("filters/%1").arg(QLatin1String(kind)));
@@ -1000,6 +1004,7 @@ private:
     void closeTab(int i, bool keepFile = false) {
         if (i < 0 || i >= tabs_->count()) return;
         // views_/models_ are kept index-aligned with the tab order.
+        if (!keepFile) rememberClosedTab(i);
         ArrowTableModel* m = (i < (int)models_.size()) ? models_[i] : nullptr;
         QWidget* w = tabs_->widget(i);
         const int fileId = tabFile_.take(w);
@@ -1128,6 +1133,8 @@ private:
             connect(menu.addAction(tr("Copy Path")), &QAction::triggered, this,
                     [path] { QGuiApplication::clipboard()->setText(path); });
         }
+        menu.addSeparator();
+        menu.addAction(reopenClosedAct_);
         menu.exec(tabs_->tabBar()->mapToGlobal(pos));
     }
 
@@ -1262,6 +1269,18 @@ private:
             saveSetting(QStringLiteral("smoothScroll"), on);
             for (auto* v : views_) if (v) applyScrollMode(v);
         });
+        reopenClosedAct_ = makeAction(tr("Reopen Closed &Tab"), QKeySequence(QStringLiteral("Ctrl+Shift+T")),
+            tr("Open the last closed tab again, with its filter, sort and columns"),
+            [this] { reopenClosedTab(); });
+        reopenClosedAct_->setEnabled(false);
+        restoreSessionAct_ = makeAction(tr("Restore Session at &Start"), {},
+            tr("When vvg starts without files, reopen the files, tabs and views of the last window"));
+        restoreSessionAct_->setCheckable(true);
+        restoreSessionAct_->setChecked(restoreSession_);
+        connect(restoreSessionAct_, &QAction::toggled, this, [this](bool on) {
+            restoreSession_ = on;
+            saveSetting(QStringLiteral("ui/restoreSession"), on);
+        });
         reloadAct_ = makeAction(tr("&Reload"), QKeySequence(Qt::Key_F5),
             tr("Read the current tab's file again; each tab keeps its filter, sort and columns"),
             [this] {
@@ -1328,6 +1347,7 @@ private:
         file->addSeparator();
         file->addAction(close);
         file->addAction(closeFileAct_);
+        file->addAction(reopenClosedAct_);
         file->addSeparator();
         file->addAction(quit);
 
@@ -1357,6 +1377,7 @@ private:
         view->addAction(detailsAct_);
         view->addAction(typesAct_);
         view->addAction(smooth);
+        view->addAction(restoreSessionAct_);
         view->addSeparator();
         view->addAction(showMenuBarAct_);
 
@@ -1387,6 +1408,7 @@ private:
         appMenu_->addAction(exportSelAct_);
         appMenu_->addAction(close);
         appMenu_->addAction(closeFileAct_);
+        appMenu_->addAction(reopenClosedAct_);
         appMenu_->addSeparator();
         appMenu_->addMenu(edit);
         appMenu_->addMenu(view);
@@ -1722,6 +1744,175 @@ private:
         syncFileControls();
     }
 
+    // ── Session: the open files, their options and each tab's view ─────────
+    // Saved when the window closes; restored when vvg starts with no files
+    // (View ▸ Restore Session at Start).
+    QJsonObject sessionJson() const {
+        QJsonArray files;
+        QHash<int, int> index;   // file id -> position in `files`
+        QHash<int, QJsonArray> tabsOf;
+        for (int i = 0; i < tabs_->count(); ++i) {
+            const int id = tabFile_.value(tabs_->widget(i), 0);
+            const OpenFile* f = id ? fileById(id) : nullptr;
+            if (!f) continue;
+            if (!index.contains(id)) {
+                index.insert(id, files.size());
+                files.append(QJsonObject{{QStringLiteral("path"), f->path},
+                                         {QStringLiteral("json"), f->jsonTree},
+                                         {QStringLiteral("options"), f->opts.toJson()}});
+            }
+            const TabViewState st = captureViewState(i);
+            if (!st.isDefault()) tabsOf[id].append(st.toJson());
+        }
+        for (auto it = tabsOf.cbegin(); it != tabsOf.cend(); ++it) {
+            QJsonObject f = files[index.value(it.key())].toObject();
+            f[QStringLiteral("tabs")] = it.value();
+            files[index.value(it.key())] = f;
+        }
+        QJsonObject out{{QStringLiteral("files"), files}};
+        if (const OpenFile* f = activeFile()) {
+            out[QStringLiteral("currentFile")] = index.value(f->id, 0);
+            out[QStringLiteral("currentTab")] = tabs_->label(tabs_->currentIndex());
+        }
+        return out;
+    }
+    void saveSession() {
+        saveSetting(QStringLiteral("session"),
+                    QString::fromUtf8(QJsonDocument(sessionJson()).toJson(QJsonDocument::Compact)));
+    }
+public:
+    // Reopen the saved session; files no longer there are named in the
+    // status bar. Returns the number of files opened.
+    int restoreSession() {
+        const QJsonObject o = QJsonDocument::fromJson(
+            QSettings(QStringLiteral("vv"), QStringLiteral("vvg")).value(QStringLiteral("session")).toString().toUtf8()).object();
+        const QJsonArray files = o.value(QStringLiteral("files")).toArray();
+        QStringList missing;
+        QList<int> ids;   // per saved file, its id now (0: not reopened)
+        int opened = 0;
+        for (const QJsonValue& fv : files) {
+            const QJsonObject f = fv.toObject();
+            const QString path = f.value(QStringLiteral("path")).toString();
+            if (!is_remote_url(path.toStdString()) && !QFileInfo::exists(path)) {
+                missing << path;
+                ids << 0;
+                continue;
+            }
+            QHash<QString, TabViewState> states;
+            for (const QJsonValue& tv : f.value(QStringLiteral("tabs")).toArray()) {
+                const TabViewState st = TabViewState::fromJson(tv.toObject());
+                states.insert(st.label, st);
+            }
+            const int before = nextFileId_;
+            const FileOptions keep = newFileOptions_;
+            newFileOptions_ = FileOptions::fromJson(f.value(QStringLiteral("options")).toObject());
+            openPaths({path}, /*quiet=*/true);
+            newFileOptions_ = keep;
+            const int id = nextFileId_ > before && fileById(nextFileId_ - 1) ? nextFileId_ - 1 : 0;
+            ids << id;
+            if (!id) continue;
+            ++opened;
+            giveStates(id, states);
+        }
+        // The tab shown last.
+        const int cf = o.value(QStringLiteral("currentFile")).toInt(-1);
+        const QString ct = o.value(QStringLiteral("currentTab")).toString();
+        if (cf >= 0 && cf < ids.size() && ids[cf])
+            for (int i = 0; i < tabs_->count(); ++i)
+                if (tabFile_.value(tabs_->widget(i), 0) == ids[cf] && tabs_->label(i) == ct) {
+                    tabs_->setCurrentIndex(i);
+                    break;
+                }
+        if (!missing.isEmpty())
+            statusBar()->showMessage(tr("Not found, not reopened: %1").arg(missing.join(QStringLiteral(", "))), 15000);
+        return opened;
+    }
+private:
+    // Give file `id`'s tabs the view states of their labels: a built tab at
+    // once, a tab not shown yet when it is built.
+    void giveStates(int id, const QHash<QString, TabViewState>& states) {
+        for (int i = 0; i < tabs_->count(); ++i) {
+            QWidget* w = tabs_->widget(i);
+            if (tabFile_.value(w, 0) != id) continue;
+            auto st = states.find(tabs_->label(i));
+            if (st == states.end()) continue;
+            if (pending_.count(w)) pendingState_[w] = *st;
+            else if (i < (int)models_.size() && models_[(size_t)i])
+                applyViewState(models_[(size_t)i], views_[(size_t)i], *st);
+        }
+    }
+
+    // ── Reopen Closed Tab (Ctrl+Shift+T) ─────────────────────────────────────
+    struct ClosedTab {
+        QString path; FileOptions opts; bool jsonTree = false; TabViewState state;
+        int offset = 0;   // its place among its file's tabs
+    };
+    void rememberClosedTab(int i) {
+        const int id = tabFile_.value(tabs_->widget(i), 0);
+        const OpenFile* f = id ? fileById(id) : nullptr;
+        if (!f) return;
+        int offset = 0;
+        for (int j = 0; j < i; ++j) offset += tabFile_.value(tabs_->widget(j), 0) == id;
+        closedTabs_.append(ClosedTab{f->path, f->opts, f->jsonTree, captureViewState(i), offset});
+        while (closedTabs_.size() > 20) closedTabs_.removeFirst();
+        if (reopenClosedAct_) reopenClosedAct_->setEnabled(true);
+    }
+public:
+    // Open the last closed tab again: its file's tab of that label only, next
+    // to the file's other tabs when the file is still open, with its view.
+    bool reopenClosedTab() {
+        if (closedTabs_.isEmpty()) return false;
+        const ClosedTab c = closedTabs_.takeLast();
+        if (reopenClosedAct_) reopenClosedAct_->setEnabled(!closedTabs_.isEmpty());
+        if (c.jsonTree) { openPaths({c.path}); return true; }
+        LoadResult r = loadFile(c.path, c.opts);
+        int k = -1;
+        for (size_t i = 0; i < r.sources.size() && k < 0; ++i)
+            if (QString::fromStdString(r.sources[i]->tab_label()) == c.state.label) k = (int)i;
+        if (k < 0) {   // the file no longer has that tab: open it whole
+            const FileOptions keep = newFileOptions_;
+            newFileOptions_ = c.opts;
+            openPaths({c.path});
+            newFileOptions_ = keep;
+            return !r.sources.empty();
+        }
+        // The other tabs' sources go on their owner thread, as a closed
+        // placeholder's do.
+        for (size_t i = 0; i < r.sources.size(); ++i) {
+            if ((int)i == k) continue;
+            std::shared_ptr<TabularSource> dead = std::move(r.sources[i]);
+            r.owners[i]->post([dead]() mutable { dead.reset(); });
+        }
+        int id = 0;
+        for (const OpenFile& f : files_)
+            if (f.path == c.path && f.opts == c.opts && !f.jsonTree) { id = f.id; break; }
+        int at = tabs_->count();
+        if (id) {
+            // Back at its place among the file's tabs (after the last when
+            // fewer are open now).
+            int seen = 0;
+            for (int i = 0; i < tabs_->count(); ++i) {
+                if (tabFile_.value(tabs_->widget(i), 0) != id) continue;
+                if (seen++ == c.offset) { at = i; break; }
+                at = i + 1;
+            }
+        } else {
+            OpenFile f{nextFileId_++, c.path, c.opts, false};
+            f.feat = file_features(c.path.toStdString());
+            files_.push_back(f);
+            id = f.id;
+            stampFile(id);
+        }
+        addSourceTab(std::move(r.sources[(size_t)k]), r.origins[(size_t)k], r.primary[(size_t)k],
+                     r.expands[(size_t)k], r.owners[(size_t)k], id, /*now=*/false, at);
+        pendingState_[tabs_->widget(at)] = c.state;
+        tabs_->setCurrentIndex(at);
+        relabelTabs();
+        updateTitle();
+        return true;
+    }
+private:
+
     // `states`: view states to give the new tabs, by label (Reload).
     bool reopenFile(int id, const FileOptions& opts,
                     const QHash<QString, TabViewState>& states = {}) {
@@ -1813,6 +2004,7 @@ protected:
         compactToolbar();
     }
     void closeEvent(QCloseEvent* e) override {
+        saveSession();
         saveSetting(QStringLiteral("geometry"), saveGeometry());
         saveSetting(QStringLiteral("windowState"), saveState());
         QMainWindow::closeEvent(e);
@@ -3768,6 +3960,10 @@ private:
     QAction*                       typesAct_      = nullptr;   // View ▸ Column Types
     QAction*                       closeFileAct_  = nullptr;   // File ▸ Close File
     QAction*                       reloadAct_     = nullptr;   // View ▸ Reload (F5)
+    QAction*                       reopenClosedAct_ = nullptr; // File ▸ Reopen Closed Tab
+    QAction*                       restoreSessionAct_ = nullptr;
+    bool                           restoreSession_ = true;   // ui/restoreSession
+    QList<ClosedTab>               closedTabs_;             // newest last, 20 kept
     QAction*                       openAct_       = nullptr;   // toolbar + File
     QAction*                       openDirAct_    = nullptr;
     QAction*                       openUrlAct_    = nullptr;   // File ▸ Open URL
@@ -4050,6 +4246,26 @@ public:
                QStringLiteral(" bar=%1").arg(contextBar_->changedShownForTest() ? 1 : 0);
         return out;
     }
+    bool restoresSession() const { return restoreSession_; }
+    // Self-test: each tab's label and view state, one line each.
+    void dumpViewStatesForTest() {
+        waitIdleForTest();
+        for (int i = 0; i < tabs_->count(); ++i) materializeTab(i, false);
+        waitIdleForTest();
+        for (int i = 0; i < tabs_->count(); ++i) {
+            if (auto* m = i < (int)models_.size() ? models_[(size_t)i] : nullptr)
+                for (int g = 0; m->isComputing() && g < 2000000; ++g) QCoreApplication::processEvents();
+            const TabViewState st = captureViewState(i);
+            QStringList keys;
+            for (const auto& [c, d] : st.sort) keys << c + (d ? QStringLiteral(":desc") : QStringLiteral(":asc"));
+            std::printf("state %s%s filter=%s sort=%s hidden=%s cursor=%s:%lld\n",
+                        i == tabs_->currentIndex() ? "*" : "", st.label.toUtf8().constData(),
+                        st.filter.toUtf8().constData(), keys.join(QLatin1Char(',')).toUtf8().constData(),
+                        st.hidden.join(QLatin1Char(',')).toUtf8().constData(),
+                        st.curColumn.toUtf8().constData(), (long long)st.curRow);
+        }
+    }
+    void saveSessionForTest() { waitIdleForTest(); saveSession(); }
     // Self-test: the palette's rows for `query`, in order.
     void dumpPaletteForTest(const QString& query) {
         ActionPalette* p = openPalette(query);
@@ -4548,6 +4764,22 @@ int main(int argc, char** argv) {
             for (const QString& c : QString::fromLocal8Bit(hd).split(QLatin1Char(',')))
                 if (!win.hideActiveColumnForTest(c))
                     std::fprintf(stderr, "vvg: no column '%s' to hide\n", c.toLocal8Bit().constData());
+        // Optional session checks: VVG_REOPEN_CLOSED=<tab> closes that tab
+        // and reopens it; VVG_SESSION_SAVE=1 saves the session as closing the
+        // window does; VVG_RESTORE=1 (with no files) restores it;
+        // VVG_VIEWSTATES=1 prints each tab's view state.
+        if (const char* rc = std::getenv("VVG_REOPEN_CLOSED"); rc && *rc) {
+            win.closeTabForTest(std::atoi(rc));
+            std::printf("reopen-closed %d\n", win.reopenClosedTab() ? 1 : 0);
+        }
+        if (const char* sr = std::getenv("VVG_RESTORE"); sr && *sr && *sr != '0' && paths.isEmpty())
+            std::printf("restored files=%d\n", win.restoreSession());
+        if (const char* vs = std::getenv("VVG_VIEWSTATES"); vs && *vs && *vs != '0')
+            win.dumpViewStatesForTest();
+        if (const char* ss = std::getenv("VVG_SESSION_SAVE"); ss && *ss && *ss != '0') {
+            win.saveSessionForTest();
+            std::printf("session saved\n");
+        }
         // Optional copy / export-selection checks: VVG_SELECT="r0,c0,r1,c1"
         // selects a block (after VVG_SORT / VVG_HIDE), then VVG_COPYAS=<fmt>
         // prints the clipboard and VVG_EXPORT_SEL=<path> exports it.
@@ -4661,6 +4893,7 @@ int main(int argc, char** argv) {
         if (!errs.isEmpty()) win.statusBar()->showMessage(errs.join(QStringLiteral("; ")));
     } else {
         win.setWindowTitle(QStringLiteral("vv"));
+        if (win.restoresSession()) win.restoreSession();
     }
     return app.exec();
 }

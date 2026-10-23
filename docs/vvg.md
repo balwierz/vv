@@ -63,6 +63,13 @@ Command* goes the other way.
   with the file's name and colour, and the window title is the current tab's
   file. A tab's tooltip is its file's path. Right-click a tab for *Close File*
   (*Ctrl+Shift+W*), *Close Other Files* and *Copy Path*.
+- **Session** — vvg started without files reopens the last window's files
+  with their format options, and each tab's filter, sort, hidden and
+  reordered columns and cursor; files no longer there are named in the
+  status bar (*View ▸ Restore Session at Start* turns it off). *File ▸
+  Reopen Closed Tab* (*Ctrl+Shift+T*, also in a tab's right-click menu)
+  brings back the last closed tabs, one at a time, at their place and with
+  their view.
 - **Reload** — when an open file changes on disk, its strip says so with
   *Reload* and *Ignore*; *View ▸ Reload* (*F5*) reads it again at any time.
   The tabs keep their filter, sort, hidden and reordered columns and cursor.
