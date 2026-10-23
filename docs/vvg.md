@@ -63,6 +63,12 @@ Command* goes the other way.
   with the file's name and colour, and the window title is the current tab's
   file. A tab's tooltip is its file's path. Right-click a tab for *Close File*
   (*Ctrl+Shift+W*), *Close Other Files* and *Copy Path*.
+- **Reload** — when an open file changes on disk, its strip says so with
+  *Reload* and *Ignore*; *View ▸ Reload* (*F5*) reads it again at any time.
+  The tabs keep their filter, sort, hidden and reordered columns and cursor.
+  Changes are noticed by a file watcher and, for files on network storage
+  (where it sees no changes made elsewhere), whenever the window is
+  activated.
 - **Column types** — each header shows the column's type under its name, in
   a smaller, dimmer italic; *View ▸ Column Types* turns the line off.
 - **Help** — *Field Reference* (*F1*): how to use vvg, the syntax of the

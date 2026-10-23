@@ -496,6 +496,13 @@ jobs:
           diff "$RUNNER_TEMP/two.tsv" <(./build/vv --tsv --sort Chr:desc --sort Score tests/data/tiny.parquet)
           VVG_WINTEST=1 VVG_SORT='Chr:desc,Score' VVG_COPYCMD=1 ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -q '^cmd=vv --sort Chr:desc --sort Score '
+          # Reload: a file changed on disk shows the bar; reloading it keeps the
+          # tab's filter, sort and hidden column, with the new rows.
+          cp tests/data/tiny.csv "$RUNNER_TEMP/reload.csv"
+          VVG_WINTEST=1 VVG_RELOAD_TEST='count > 100;count:desc;ratio' VVG_RELOAD_APPEND='qux,500,0.9' \
+            ./build-gui/gui/vvg "$RUNNER_TEMP/reload.csv" \
+            | grep -qxF 'reload before rows=2 filter=count > 100 sort=count:desc hidden=ratio | bar=1 | after rows=3 filter=count > 100 sort=count:desc hidden=ratio bar=0'
+          VVG_WINTEST=1 VVG_SHORTCUTS=1 ./build-gui/gui/vvg tests/data/tiny.parquet | grep -q '^shortcut F5 -> Reload$'
           # Filter history: applied filters head their format family's recent
           # list, a saved one is named, both persist; another family has its own.
           fh="$RUNNER_TEMP/vvgcfg-filters"; mkdir -p "$fh"

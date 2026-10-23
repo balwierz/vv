@@ -148,6 +148,28 @@ ContextBar::ContextBar(QWidget* parent) : QWidget(parent) {
     lay->addWidget(fileGroup_);
     fileGroup_->hide();
 
+    // The file changed on disk: Reload / Ignore.
+    QHBoxLayout* chl = nullptr;
+    changedGroup_ = group(&chl);
+    changedText_ = new QLabel(changedGroup_);
+    QPalette cp = changedText_->palette();
+    cp.setColor(QPalette::WindowText, QColor(0xb3, 0x6b, 0x00));
+    changedText_->setPalette(cp);
+    chl->addWidget(changedText_);
+    auto* reload = new QToolButton(changedGroup_);
+    reload->setText(tr("Reload"));
+    reload->setToolTip(tr("Read the file again; the tabs keep their filter, sort and columns (F5)"));
+    connect(reload, &QToolButton::clicked, this, &ContextBar::reloadRequested);
+    chl->addWidget(reload);
+    auto* ignore = new QToolButton(changedGroup_);
+    ignore->setText(tr("Ignore"));
+    ignore->setAutoRaise(true);
+    ignore->setToolTip(tr("Keep showing what was read; ask again at the next change"));
+    connect(ignore, &QToolButton::clicked, this, &ContextBar::ignoreChangeRequested);
+    chl->addWidget(ignore);
+    lay->addWidget(changedGroup_);
+    changedGroup_->hide();
+
     // Region: the box, Go, the coordinate convention and the slop.
     QHBoxLayout* rl = nullptr;
     regionGroup_ = group(&rl);
@@ -388,9 +410,17 @@ void ContextBar::setFile(const QString& name, const QString& tip, const QColor& 
     updateVisibility();
 }
 
-// Shown while it holds anything: the file's name or an option.
+void ContextBar::setChanged(const QString& name) {
+    changedText_->setText(tr("%1 changed on disk").arg(fontMetrics().elidedText(name, Qt::ElideMiddle, 280)));
+    changedGroup_->setVisible(!name.isEmpty());
+    updateVisibility();
+}
+
+bool ContextBar::changedShownForTest() const { return changedGroup_->isVisibleTo(this); }
+
+// Shown while it holds anything: the file's name, a change on disk or an option.
 void ContextBar::updateVisibility() {
-    const bool any = fileGroup_->isVisibleTo(this) ||
+    const bool any = fileGroup_->isVisibleTo(this) || changedGroup_->isVisibleTo(this) ||
                      regionGroup_->isVisibleTo(this) || alignGroup_->isVisibleTo(this) ||
                      tagsGroup_->isVisibleTo(this) || samplesGroup_->isVisibleTo(this) ||
                      gtStats_->isVisibleTo(this) || expand_->isVisibleTo(this) ||

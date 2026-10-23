@@ -17,6 +17,9 @@
 #include <arrow/util/compression.h>
 
 #include <QApplication>
+#include <QSet>
+#include <QDateTime>
+#include <QFileSystemWatcher>
 #include <QDialogButtonBox>
 #include <QListWidget>
 #include <QStringListModel>
@@ -97,6 +100,7 @@
 #include "fileoptions.h"
 #include "tabpane.h"
 #include "typedheader.h"
+#include "viewstate.h"
 #include "helpdialog.h"
 #include "shortcutsdialog.h"
 #include "actionpalette.h"
@@ -276,6 +280,12 @@ public:
             if (const OpenFile* f = activeFile()) reopenFile(f->id, o);
         });
         connect(contextBar_, &ContextBar::sliceStep, this, [this](int d) { stepSlice(d); });
+        connect(contextBar_, &ContextBar::reloadRequested, this, [this] {
+            if (const OpenFile* f = activeFile()) reloadFile(f->id);
+        });
+        connect(contextBar_, &ContextBar::ignoreChangeRequested, this, [this] {
+            if (const OpenFile* f = activeFile()) ignoreChange(f->id);
+        });
         tabs_->setTabsClosable(true);
         tabs_->setDocumentMode(true);
         setCentralWidget(tabs_);
@@ -385,6 +395,7 @@ public:
             if (quiet || headless_) std::fprintf(stderr, "vvg: %s\n", joined.toStdString().c_str());
             else QMessageBox::warning(this, tr("vvg — open"), joined);
         }
+        for (const OpenFile& f : files_) if (!stamps_.contains(f.id)) stampFile(f.id);
         relabelTabs();
         updateTitle();
         refreshStatus();
@@ -665,6 +676,11 @@ private:
         syncHeaderTypes(activeView());
         updateTitle();
         syncFilterCompletions();
+        if (filterEdit_) {
+            auto* m = activeModel();
+            filterEdit_->setText(m ? activeFilterText(m) : QString());
+            filterEdit_->setStyleSheet({});
+        }
         // Copy and Copy Row act on a table; elsewhere Ctrl+C reaches the view.
         for (QAction* a : {copyAct_, copyRowAct_, exportSelAct_}) if (a) a->setEnabled(activeView() != nullptr);
         for (QAction* a : copyAsActs_) a->setEnabled(activeView() != nullptr);
@@ -791,8 +807,12 @@ private:
             tabs_->removeTab(i);
             views_.erase(views_.begin() + i);
             models_.erase(models_.begin() + i);
-            buildTab(std::move(p.src), p.origin, p.primary, p.expand, std::move(p.owner), i,
-                     p.fileId);
+            ArrowTableModel* m = buildTab(std::move(p.src), p.origin, p.primary, p.expand,
+                                          std::move(p.owner), i, p.fileId);
+            if (auto st = pendingState_.find(ph); st != pendingState_.end()) {
+                applyViewState(m, views_[(size_t)i], *st);
+                pendingState_.erase(st);
+            }
             if (makeCurrent) tabs_->setCurrentIndex(i);
         }
         relabelTabs();
@@ -923,6 +943,7 @@ private:
             if (cur.isValid() && !keepCol_.contains(model)) keepCol_[model] = cur.column();
         });
         connect(model, &QAbstractItemModel::modelReset, this, [this, view, model] {
+            if (!model->isComputing() && pendingCursor_.contains(model)) { placePendingCursor(model, view); return; }
             if (model->isComputing() || !keepCol_.contains(model)) return;
             const int col = keepCol_.take(model);
             if (col < model->columnCount() && model->rowCount() > 0)
@@ -983,12 +1004,17 @@ private:
         QWidget* w = tabs_->widget(i);
         const int fileId = tabFile_.take(w);
         if (fileId && !keepFile && std::none_of(tabFile_.cbegin(), tabFile_.cend(),
-                                                [fileId](int f) { return f == fileId; }))
+                                                [fileId](int f) { return f == fileId; })) {
+            if (const OpenFile* gone = fileById(fileId); gone && watcher_) watcher_->removePath(gone->path);
+            stamps_.remove(fileId);
+            changedFiles_.remove(fileId);
             files_.erase(std::remove_if(files_.begin(), files_.end(),
                                         [fileId](const OpenFile& f) { return f.id == fileId; }),
                          files_.end());
+        }
         // A tab never shown: its source is destroyed on its file's owner
         // thread, where its sibling tabs (sharing its handles) are read.
+        pendingState_.remove(w);
         if (auto pit = pending_.find(w); pit != pending_.end()) {
             auto owner = pit->second.owner;
             std::shared_ptr<TabularSource> dead = std::move(pit->second.src);
@@ -1236,6 +1262,12 @@ private:
             saveSetting(QStringLiteral("smoothScroll"), on);
             for (auto* v : views_) if (v) applyScrollMode(v);
         });
+        reloadAct_ = makeAction(tr("&Reload"), QKeySequence(Qt::Key_F5),
+            tr("Read the current tab's file again; each tab keeps its filter, sort and columns"),
+            [this] {
+                if (const OpenFile* f = activeFile(); f && !reloadFile(f->id) && f->jsonTree)
+                    statusBar()->showMessage(tr("A JSON tree is not reloaded; close and open it again"), 4000);
+            });
         typesAct_ = makeAction(tr("Column &Types"), {},
             tr("Each column's type under its name, in a smaller, dimmer font"));
         typesAct_->setCheckable(true);
@@ -1316,6 +1348,7 @@ private:
         view->setToolTipsVisible(true);
         viewMenu_ = view;
         view->addAction(go);
+        view->addAction(reloadAct_);
         view->addSeparator();
         columnsMenu_ = view->addMenu(tr("&Columns"));
         refreshColumnsMenu();
@@ -1526,7 +1559,172 @@ private:
     // the other files' tabs keep their filters, sorts and columns. When the
     // file does not open with `opts` (a region on an un-indexed file, …) its
     // tabs and options stay and the reason goes to the status bar.
-    bool reopenFile(int id, const FileOptions& opts) {
+    // Frozen leading columns of a view (set by §9's frozen-column overlay).
+    int frozenColumns(QTableView*) const { return 0; }
+    void setFrozenColumns(QTableView*, int) {}
+    // The view state of tab `i` (a tab never shown: the state it is waiting
+    // to be given, or none).
+    TabViewState captureViewState(int i) const {
+        QWidget* w = tabs_->widget(i);
+        if (auto st = pendingState_.find(w); st != pendingState_.end()) return *st;
+        TabViewState s;
+        s.label = tabs_->label(i);
+        ArrowTableModel* m = i < (int)models_.size() ? models_[(size_t)i] : nullptr;
+        QTableView* v = i < (int)views_.size() ? views_[(size_t)i] : nullptr;
+        if (!m || !v || !m->isReady()) return s;
+        if (m->hasFilter()) s.filter = filterText_.value(m);
+        for (const auto& k : m->sortKeys())
+            s.sort.append({m->columnName(k.col), k.order == Qt::DescendingOrder});
+        auto* h = v->horizontalHeader();
+        bool reordered = false;
+        QStringList order;
+        for (int vis = 0; vis < m->columnCount(); ++vis) {
+            const int c = h->logicalIndex(vis);
+            if (c != vis) reordered = true;
+            order << m->columnName(c);
+            if (v->isColumnHidden(c)) s.hidden << m->columnName(c);
+        }
+        if (reordered) s.order = order;
+        s.frozen = frozenColumns(v);
+        const QModelIndex cur = v->currentIndex();
+        if (cur.isValid()) {
+            s.curColumn = m->columnName(cur.column());
+            s.curRow = cur.row();
+        }
+        return s;
+    }
+    // Give tab (m, v) a view state: columns hidden and ordered at once, the
+    // filter and sort as one recompute, the cursor once its rows are there.
+    // A model still reading its schema gets it when ready.
+    void applyViewState(ArrowTableModel* m, QTableView* v, const TabViewState& st) {
+        if (!m || !v || st.isDefault()) return;
+        if (!m->isReady()) {
+            auto* once = new QMetaObject::Connection;
+            *once = connect(m, &ArrowTableModel::ready, this, [this, m, v, st, once] {
+                QObject::disconnect(*once);
+                delete once;
+                applyViewState(m, v, st);
+            });
+            return;
+        }
+        auto colOf = [m](const QString& name) {
+            for (int c = 0; c < m->columnCount(); ++c)
+                if (m->columnName(c) == name) return c;
+            return -1;
+        };
+        auto* h = v->horizontalHeader();
+        for (int i = 0; i < st.order.size(); ++i)
+            if (int c = colOf(st.order[i]); c >= 0 && i < m->columnCount()) h->moveSection(h->visualIndex(c), i);
+        for (const QString& name : st.hidden)
+            if (int c = colOf(name); c >= 0) v->setColumnHidden(c, true);
+        if (st.frozen > 0) setFrozenColumns(v, st.frozen);
+        bool recompute = false;
+        if (!st.filter.isEmpty()) {
+            FilterExpr fx;
+            std::string err;
+            if (parse_filter_expr(st.filter.toStdString(), *m->schema(), &fx, &err)) {
+                filterText_[m] = st.filter;
+                m->setFilterAsync(fx);
+                recompute = true;
+                if (m == activeModel()) filterEdit_->setText(st.filter);
+            }
+        }
+        std::vector<ArrowTableModel::SortKey> keys;
+        for (const auto& [name, desc] : st.sort)
+            if (int c = colOf(name); c >= 0) keys.push_back({c, desc ? Qt::DescendingOrder : Qt::AscendingOrder});
+        if (!keys.empty()) { setSortKeys(m, v, std::move(keys)); recompute = true; }
+        if (const int c = colOf(st.curColumn); c >= 0) {
+            pendingCursor_[m] = {st.curRow, c};
+            if (!recompute) placePendingCursor(m, v);
+        }
+        if (m == activeModel()) refreshColumnsMenu();
+    }
+    // The cursor a view state asked for, once the tab's rows are there.
+    void placePendingCursor(ArrowTableModel* m, QTableView* v) {
+        auto it = pendingCursor_.find(m);
+        if (it == pendingCursor_.end() || m->isComputing() || m->rowCount() == 0) return;
+        const auto [row, col] = *it;
+        pendingCursor_.erase(it);
+        keepCol_.remove(m);
+        const QModelIndex idx = m->index((int)std::clamp<qint64>(row, 0, m->rowCount() - 1), col);
+        v->selectionModel()->setCurrentIndex(idx, QItemSelectionModel::ClearAndSelect);
+        v->scrollTo(idx, QAbstractItemView::PositionAtCenter);
+    }
+
+    // View ▸ Reload (F5): re-read the active tab's file with its options;
+    // each tab keeps its filter, sort, columns and cursor.
+    bool reloadFile(int id) {
+        const OpenFile* f = fileById(id);
+        if (!f || f->jsonTree) return false;
+        QHash<QString, TabViewState> states;
+        for (int i = 0; i < tabs_->count(); ++i)
+            if (tabFile_.value(tabs_->widget(i), 0) == id) states.insert(tabs_->label(i), captureViewState(i));
+        const FileOptions opts = f->opts;
+        const bool ok = reopenFile(id, opts, states);
+        if (ok) {
+            stampFile(id);
+            changedFiles_.remove(id);
+            syncFileControls();
+            statusBar()->showMessage(tr("Reloaded %1").arg(QFileInfo(fileById(id)->path).fileName()), 3000);
+        }
+        return ok;
+    }
+
+    // ── Files changed on disk ────────────────────────────────────────────────
+    // Each local file's size and modification time when it was read; a file
+    // watcher (and, since inotify misses changes made on another machine of
+    // a network file system, a check whenever the window is activated)
+    // compares them and offers Reload in the file's strip.
+    struct FileStamp { qint64 size = -1; QDateTime mtime; };
+    static FileStamp statFile(const QString& path) {
+        const QFileInfo fi(path);
+        FileStamp s;
+        if (fi.exists()) { s.size = fi.isDir() ? 0 : fi.size(); s.mtime = fi.lastModified(); }
+        return s;
+    }
+    void stampFile(int id) {
+        const OpenFile* f = fileById(id);
+        if (!f || is_remote_url(f->path.toStdString())) return;
+        stamps_[id] = statFile(f->path);
+        if (!watcher_) {
+            watcher_ = new QFileSystemWatcher(this);
+            watchTimer_ = new QTimer(this);
+            watchTimer_->setSingleShot(true);
+            watchTimer_->setInterval(500);   // a writer appends in bursts
+            connect(watchTimer_, &QTimer::timeout, this, [this] { checkChangedFiles(); });
+            auto kick = [this] { watchTimer_->start(); };
+            connect(watcher_, &QFileSystemWatcher::fileChanged, this, kick);
+            connect(watcher_, &QFileSystemWatcher::directoryChanged, this, kick);
+        }
+        if (!watcher_->files().contains(f->path) && !watcher_->directories().contains(f->path))
+            watcher_->addPath(f->path);
+    }
+    // Compare every watched file with its stamp; a changed one gets the bar.
+    void checkChangedFiles() {
+        bool any = false;
+        for (const OpenFile& f : files_) {
+            auto it = stamps_.find(f.id);
+            if (it == stamps_.end()) continue;
+            const FileStamp now = statFile(f.path);
+            // A file replaced by rename (editors, atomic writers) drops off the watcher.
+            if (now.size >= 0 && watcher_ && !watcher_->files().contains(f.path) &&
+                !watcher_->directories().contains(f.path))
+                watcher_->addPath(f.path);
+            if (now.size == it->size && now.mtime == it->mtime) continue;
+            if (!changedFiles_.contains(f.id)) { changedFiles_.insert(f.id); any = true; }
+        }
+        if (any) syncFileControls();
+    }
+    // Ignore: no bar until the file changes again.
+    void ignoreChange(int id) {
+        if (const OpenFile* f = fileById(id)) stamps_[id] = statFile(f->path);
+        changedFiles_.remove(id);
+        syncFileControls();
+    }
+
+    // `states`: view states to give the new tabs, by label (Reload).
+    bool reopenFile(int id, const FileOptions& opts,
+                    const QHash<QString, TabViewState>& states = {}) {
         OpenFile* f = fileById(id);
         if (!f || f->jsonTree) return false;
         LoadResult r = loadFile(f->path, opts);
@@ -1558,6 +1756,8 @@ private:
                 const int idx = at + (int)i;
                 addSourceTab(std::move(r.sources[i]), r.origins[i], r.primary[i], r.expands[i],
                              r.owners[i], id, /*now=*/false, idx);
+                if (auto st = states.find(tabs_->label(idx)); st != states.end())
+                    pendingState_[tabs_->widget(idx)] = *st;
                 if (curInFile && target < 0 && tabs_->label(idx) == curLabel) target = idx;
             }
             if (curInFile && target < 0) target = at + std::min(curOffset, (int)r.sources.size() - 1);
@@ -1589,6 +1789,8 @@ private:
             contextBar_->setFile(QFileInfo(f->path).fileName(), f->path, fileColor(f->id));
         else
             contextBar_->setFile({}, {}, {});
+        contextBar_->setChanged(f && changedFiles_.contains(f->id)
+                                    ? QFileInfo(f->path).fileName() : QString());
         if (!f || f->jsonTree) { contextBar_->clearState(); return; }
         auto* m = activeModel();
         contextBar_->setState(f->feat, m ? m->tabTraits() : TabTraits{}, f->opts);
@@ -1628,6 +1830,10 @@ protected:
     void syncHeaderTypes(QTableView* v) {
         if (auto* th = v ? dynamic_cast<TypedHeaderView*>(v->horizontalHeader()) : nullptr)
             th->setShowTypes(showTypes_);
+    }
+    bool event(QEvent* e) override {
+        if (e->type() == QEvent::WindowActivate && !stamps_.isEmpty()) checkChangedFiles();
+        return QMainWindow::event(e);
     }
     void changeEvent(QEvent* e) override {
         if (e->type() == QEvent::PaletteChange || e->type() == QEvent::ApplicationPaletteChange ||
@@ -3561,6 +3767,7 @@ private:
     bool                           showTypes_     = true;   // the header's type line
     QAction*                       typesAct_      = nullptr;   // View ▸ Column Types
     QAction*                       closeFileAct_  = nullptr;   // File ▸ Close File
+    QAction*                       reloadAct_     = nullptr;   // View ▸ Reload (F5)
     QAction*                       openAct_       = nullptr;   // toolbar + File
     QAction*                       openDirAct_    = nullptr;
     QAction*                       openUrlAct_    = nullptr;   // File ▸ Open URL
@@ -3574,6 +3781,12 @@ private:
     QHash<QString, QStringList>    recentFilters_;          // family key -> newest first
     QHash<QString, QVariantMap>    savedFilters_;           // family key -> name -> expression
     QStringListModel*              filterHistModel_ = nullptr;   // the Filter box's completions
+    QHash<QWidget*, TabViewState>  pendingState_;           // placeholder -> state to give it
+    QHash<ArrowTableModel*, QPair<qint64, int>> pendingCursor_;   // row, column once loaded
+    QHash<int, FileStamp>          stamps_;                 // file id -> size / mtime when read
+    QSet<int>                      changedFiles_;           // changed on disk since
+    QFileSystemWatcher*            watcher_    = nullptr;
+    QTimer*                        watchTimer_ = nullptr;   // debounces the watcher
     QThread*                       settingsThread_ = nullptr;   // writes vvg.conf (saveSetting)
     QObject*                       settingsCtx_    = nullptr;   // lives on settingsThread_
     QMenu*                         recentMenu_  = nullptr;
@@ -3795,6 +4008,47 @@ public:
         return QStringLiteral("key=%1 recent=%2 saved=%3 completions=%4")
             .arg(key, recentFilters_.value(key).join(QLatin1Char('|')), saved.join(QLatin1Char('|')))
             .arg(filterHistModel_->rowCount());
+    }
+    // Self-test of Reload on the active tab's (local, text) file: apply
+    // "filter;COL[:desc];HIDDEN", append `line` to the file, wait for the
+    // changed-on-disk bar, reload; the rows and view state before and after.
+    QString reloadForTest(const QString& spec, const QString& line) {
+        waitIdleForTest();
+        const QStringList p = spec.split(QLatin1Char(';'));
+        auto* m = activeModel();
+        auto* v = activeView();
+        const OpenFile* f = activeFile();
+        if (!m || !v || !f || p.size() != 3) return QStringLiteral("no table");
+        const int id = f->id;
+        useFilter(p[0]);
+        sortActiveByNames({p[1]});
+        hideActiveColumnForTest(p[2]);
+        waitIdleForTest();
+        auto state = [this](ArrowTableModel* mm) {
+            const TabViewState st = captureViewState(tabs_->currentIndex());
+            QStringList keys;
+            for (const auto& [c, d] : st.sort) keys << c + (d ? QStringLiteral(":desc") : QStringLiteral(":asc"));
+            return QStringLiteral("rows=%1 filter=%2 sort=%3 hidden=%4")
+                .arg(mm->viewRows()).arg(st.filter, keys.join(QLatin1Char(',')), st.hidden.join(QLatin1Char(',')));
+        };
+        QString out = QStringLiteral("before ") + state(m);
+        {
+            QFile file(f->path);
+            if (!file.open(QIODevice::Append)) return QStringLiteral("cannot append");
+            file.write((line + QLatin1Char('\n')).toUtf8());
+        }
+        QElapsedTimer t;
+        t.start();
+        while (!contextBar_->changedShownForTest() && t.elapsed() < 5000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        out += QStringLiteral(" | bar=%1").arg(contextBar_->changedShownForTest() ? 1 : 0);
+        reloadFile(id);
+        waitIdleForTest();
+        auto* m2 = activeModel();
+        for (int g = 0; m2 && m2->isComputing() && g < 2000000; ++g) QCoreApplication::processEvents();
+        out += QStringLiteral(" | after ") + (m2 ? state(m2) : QStringLiteral("no table")) +
+               QStringLiteral(" bar=%1").arg(contextBar_->changedShownForTest() ? 1 : 0);
+        return out;
     }
     // Self-test: the palette's rows for `query`, in order.
     void dumpPaletteForTest(const QString& query) {
@@ -4233,6 +4487,14 @@ int main(int argc, char** argv) {
             std::printf("filterhist %s\n", win.filterHistoryForTest(
                 QString::fromLocal8Bit(fh).split(QLatin1Char(';'), Qt::SkipEmptyParts),
                 sv ? QString::fromLocal8Bit(sv) : QString()).toUtf8().constData());
+        }
+        // Optional reload check: VVG_RELOAD_TEST="filter;COL[:desc];HIDDEN"
+        // with VVG_RELOAD_APPEND=<line> (reloadForTest).
+        if (const char* rt = std::getenv("VVG_RELOAD_TEST"); rt && *rt) {
+            const char* ap = std::getenv("VVG_RELOAD_APPEND");
+            std::printf("reload %s\n", win.reloadForTest(QString::fromLocal8Bit(rt),
+                                                         ap ? QString::fromLocal8Bit(ap) : QString())
+                                           .toUtf8().constData());
         }
         // Optional palette check: VVG_PALETTE="<query>" (the commands it lists).
         if (const char* pq = std::getenv("VVG_PALETTE"); pq)
