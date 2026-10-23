@@ -545,6 +545,21 @@ jobs:
             | grep -qx 'stream rows=60000 partial=0 bar=0 blank=0'
           VV_STREAM_BATCH_CAP=1 VVG_WINTEST=1 VVG_STREAM_TEST=1 VVG_STREAM_BUDGET=1 ./build-gui/gui/vvg "$RUNNER_TEMP/r60k.fq" 2>/dev/null \
             | grep -qx 'stream rows=8192 partial=1 bar=1 blank=0 more=4096'
+          # A sort, filter or find over the Memory Limits asks first: "no"
+          # leaves the view, "yes" runs it; a view state (session, Reload)
+          # skips it unasked. Under the limits nothing asks.
+          for f in tests/data/tiny.bam "$RUNNER_TEMP/r60k.fq"; do
+            VVG_WINTEST=1 VVG_FULLPASS=1,1,no ./build-gui/gui/vvg "$f" 2>/dev/null \
+              | grep -qx 'fullpass sort=asked,0 filter=asked,0 find=asked,0 restore=0'
+            VVG_WINTEST=1 VVG_FULLPASS=1,1,yes ./build-gui/gui/vvg "$f" 2>/dev/null \
+              | grep -qx 'fullpass sort=asked,1 filter=asked,1 find=asked,1 restore=0'
+            VVG_WINTEST=1 VVG_FULLPASS=10000000,1073741824,no ./build-gui/gui/vvg "$f" 2>/dev/null \
+              | grep -qx 'fullpass sort=ran,1 filter=ran,1 find=ran,1 restore=1'
+          done
+          # A sort canceled before it read past the view's rows keeps the tab
+          # as it is (no re-read).
+          VVG_WINTEST=1 VVG_STREAM_BUDGET=1 VVG_CANCEL_TEST=0 ./build-gui/gui/vvg "$RUNNER_TEMP/r60k.fq" 2>/dev/null \
+            | grep -qx 'cancel running=1 reloaded=0 tab=1 rows=4096'
           # Session: a run saves its files, options and each tab's view; a run
           # with no files restores them. A closed tab reopens at its place.
           ss="$RUNNER_TEMP/vvgcfg-session"; mkdir -p "$ss"
@@ -744,6 +759,14 @@ jobs:
               echo "$out"
               grep -qx 'before=0' <<<"$out" && grep -qx 'page=Table' <<<"$out" && grep -qx 'rows=3 cols=11' <<<"$out"
               ! grep -qx 'mimetypes=0' <<<"$out"
+              # Over vvg's Memory Limits a header click does not sort in a
+              # host's window; the pane says why.
+              lim="$RUNNER_TEMP/vvgcfg-limits"; mkdir -p "$lim/vv"
+              printf '[limits]\npassRows=1\npassBytes=1\n' > "$lim/vv/vvg.conf"
+              XDG_CONFIG_HOME="$lim" VVPLUGINTEST_SORT=1 ./build-gui/gui/kde/vvplugintest --part build-gui/gui/kde/vvpart.so tests/data/tiny.bam \
+                | grep -q '^sorted=0 said=Sorting would read all'
+              VVPLUGINTEST_SORT=1 ./build-gui/gui/kde/vvplugintest --part build-gui/gui/kde/vvpart.so tests/data/tiny.bam \
+                | grep -qx 'sorted=1 said=-'
             fi
           else
             echo "Skipping KF6 .so plugin checks (KF6 not installed)."

@@ -83,7 +83,14 @@ Command* goes the other way.
   rows are loaded, and *Load More* (*View ▸ Load More Rows*) reads another
   1 GiB. To see a place deep in an indexed BAM, CRAM or VCF, give a region
   instead. Parquet, Arrow, HDF5 and other formats that read any part of the
-  file on demand have no such limit.
+  file on demand have no such limit. A sort, filter or find reads every row,
+  and on such a file keeps them in memory: above 10 million rows, or, while
+  the rows are not counted yet, on a file over 1 GiB or a remote one, vvg
+  asks before it starts (*Continue*, *Cancel*, *Change Limits…*). Canceling
+  it lets go of the rows it had read. A restored session, Reload or Reopen
+  Closed Tab does not sort or filter such a file again unasked. *View ▸
+  Memory Limits…* sets the three numbers; the KDE part and Dolphin's Table
+  page use the same ones and do not sort or filter above them.
 - **Column types** — each header shows the column's type under its name, in
   a smaller, dimmer italic; *View ▸ Column Types* turns the line off.
 - **Help** — *Field Reference* (*F1*): how to use vvg, the syntax of the

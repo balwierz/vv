@@ -48,10 +48,16 @@ private:
     };
     void build(int i);
     void applyFilter();
+    // A sort or filter that would read more than vvg's Memory Limits is not
+    // started here (no question in a host's window): the pane says why.
+    bool refuseFullPass(ArrowTableModel* m, const QString& what);
     void onCurrent(int i);
 
     std::vector<Tab> tabs_;
     TabPane*         pane_;
     QLineEdit*       filter_ = nullptr;
     QLabel*          message_;
+    QString          path_;              // the file open()ed
+    qint64           passRows_;          // vvg's limits/passRows, limits/passBytes
+    qint64           passBytes_;
 };

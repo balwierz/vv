@@ -4,6 +4,8 @@
 //                                         one's rows / columns
 //   vvplugintest --props PLUGIN.so FILE   build FILE's Properties dialog with
 //                                         the plugin, show its Table page, the same
+//   VVPLUGINTEST_SORT=1                   then click the first header: whether
+//                                         it sorted, and the pane's message
 // Both first print the plugin's MIME type count (0 means KF6 will never
 // offer it, as with a thumbnailer whose MimeTypes sat outside KPlugin).
 #include <KFileItem>
@@ -16,6 +18,8 @@
 #include <KPropertiesDialogPlugin>
 
 #include <QApplication>
+#include <QHeaderView>
+#include <QLabel>
 #include <QTabBar>
 #include <QTableView>
 #include <QElapsedTimer>
@@ -60,6 +64,21 @@ static int report(QWidget* pane) {
     }
     if (!m) { std::printf("no table\n"); return 1; }
     std::printf("rows=%d cols=%d\n", m->rowCount(), m->columnCount());
+    // VVPLUGINTEST_SORT=1: click the first header; whether it sorted and
+    // what the pane says (a sort over vvg's Memory Limits is refused).
+    if (qEnvironmentVariableIsSet("VVPLUGINTEST_SORT")) {
+        for (QTableView* v : pane->findChildren<QTableView*>()) {
+            if (qstrcmp(v->metaObject()->className(), "TableView") != 0) continue;
+            emit v->horizontalHeader()->sectionClicked(0);
+            pump(300);
+            QString said;
+            for (QLabel* l : pane->findChildren<QLabel*>(Qt::FindDirectChildrenOnly))
+                if (l->isVisibleTo(pane)) said = l->text();
+            std::printf("sorted=%d said=%s\n", v->horizontalHeader()->isSortIndicatorShown() ? 1 : 0,
+                        said.isEmpty() ? "-" : said.toUtf8().constData());
+            break;
+        }
+    }
     return m->rowCount() > 0 ? 0 : 1;
 }
 

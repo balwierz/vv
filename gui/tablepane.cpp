@@ -10,6 +10,7 @@
 
 #include <QHeaderView>
 #include <QLabel>
+#include <QSettings>
 #include <QLineEdit>
 #include <QVBoxLayout>
 
@@ -17,6 +18,11 @@
 
 VvTablePane::VvTablePane(bool filterBox, QWidget* parent)
     : QWidget(parent), pane_(new TabPane(this)), message_(new QLabel(this)) {
+    const QSettings st(QStringLiteral("vv"), QStringLiteral("vvg"));
+    passRows_ = st.value(QStringLiteral("limits/passRows"),
+                         (qlonglong)ArrowTableModel::kDefaultPassRows).toLongLong();
+    passBytes_ = st.value(QStringLiteral("limits/passBytes"),
+                          (qlonglong)ArrowTableModel::kDefaultPassBytes).toLongLong();
     auto* lay = new QVBoxLayout(this);
     lay->setContentsMargins(0, 0, 0, 0);
     lay->setSpacing(4);
@@ -61,6 +67,7 @@ void VvTablePane::clear() {
 
 QString VvTablePane::open(const QString& path) {
     clear();
+    path_ = path;
     LoadResult r = loadSources(Config{}, {path}, /*expand=*/true);
     if (r.sources.empty()) {
         const QString why = r.errors.isEmpty() ? tr("%1: nothing to show").arg(path) : r.errors.join(QLatin1Char('\n'));
@@ -138,12 +145,13 @@ void VvTablePane::build(int i) {
         autosizeColumns(view, model);
     });
     for (QHeaderView* h : {view->horizontalHeader(), view->frozenView()->horizontalHeader()})
-        connect(h, &QHeaderView::sectionClicked, this, [view, model](int section) {
+        connect(h, &QHeaderView::sectionClicked, this, [this, view, model](int section) {
             const auto& keys = model->sortKeys();
             const bool alone = keys.size() == 1 && keys.front().col == section;
             std::vector<ArrowTableModel::SortKey> next;
             if (!alone) next = {{section, Qt::AscendingOrder}};
             else if (keys.front().order == Qt::AscendingOrder) next = {{section, Qt::DescendingOrder}};
+            if (!next.empty() && refuseFullPass(model, tr("Sorting"))) return;
             model->sortAsyncByKeys(next);
             view->horizontalHeader()->setSortIndicatorShown(!next.empty());
             if (!next.empty()) view->horizontalHeader()->setSortIndicator(section, next.front().order);
@@ -173,6 +181,14 @@ void VvTablePane::applyFilter() {
         message_->show();
         return;
     }
+    if (refuseFullPass(t.model, tr("Filtering"))) return;
     t.filter = text;
     t.model->setFilterAsync(fx);
+}
+
+bool VvTablePane::refuseFullPass(ArrowTableModel* m, const QString& what) {
+    if (!m->fullPassCost(path_, passRows_, passBytes_).over) return false;
+    message_->setText(tr("%1 would read all of this large file into memory; open it in vvg to do that.").arg(what));
+    message_->show();
+    return true;
 }

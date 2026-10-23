@@ -40,6 +40,7 @@
 #include <QFileDialog>
 #include <QDir>
 #include <QFileInfo>
+#include <QFormLayout>
 #include <QFutureWatcher>
 #include <QGraphicsOpacityEffect>
 #include <QHash>
@@ -265,6 +266,11 @@ public:
                                    (qlonglong)ArrowTableModel::kDefaultLoadBudget).toLongLong();
             if (const char* e = std::getenv("VVG_STREAM_BUDGET"); e && *e)   // self-test
                 loadBudget_ = std::atoll(e);
+            passRows_ = st.value(QStringLiteral("limits/passRows"),
+                                 (qlonglong)ArrowTableModel::kDefaultPassRows).toLongLong();
+            passBytes_ = st.value(QStringLiteral("limits/passBytes"),
+                                  (qlonglong)ArrowTableModel::kDefaultPassBytes).toLongLong();
+            statsAutoRows_ = passRows_;
             for (const char* kind : {"recent", "saved"}) {
                 QSettings& rs = st;
                 rs.beginGroup(QStringLiteral("filters/%1").arg(QLatin1String(kind)));
@@ -849,6 +855,16 @@ private:
                 [this, model](qint64){ onRecomputeFinished(model); });
         connect(model, &ArrowTableModel::recomputeCanceled, this,
                 [this]{ onRecomputeStopped(); });
+        // A canceled pass over a stream keeps what it read: read the file
+        // again to let it go (the tabs keep their view).
+        connect(model, &ArrowTableModel::heldAfterCancel, this, [this, fileId](qint64 bytes) {
+            // Not inside the model's own signal: the reload deletes it.
+            QTimer::singleShot(0, this, [this, fileId, bytes] {
+                if (!reloadFile(fileId)) return;
+                statusBar()->showMessage(tr("Canceled; the %1 of rows it had read were let go")
+                    .arg(QLocale().formattedDataSize(bytes, 1, QLocale::DataSizeTraditionalFormat)), 6000);
+            });
+        });
         connect(model, &ArrowTableModel::findReady, this,
                 [this, model](qint64 n){ onFindReady(model, n); });
 
@@ -1320,6 +1336,9 @@ private:
             tr("Read the next rows of a large file into memory; vvg stops at a limit so that scrolling cannot fill it"),
             [this] { loadMoreRows(); });
         loadMoreAct_->setEnabled(false);
+        QAction* limitsAct = makeAction(tr("&Memory Limits…"), {},
+            tr("How many rows a large file loads as you scroll, and when a sort, filter or find asks first"),
+            [this] { editMemoryLimits(); });
         reloadAct_ = makeAction(tr("&Reload"), QKeySequence(Qt::Key_F5),
             tr("Read the current tab's file again; each tab keeps its filter, sort and columns"),
             [this] {
@@ -1409,6 +1428,7 @@ private:
         view->addAction(go);
         view->addAction(reloadAct_);
         view->addAction(loadMoreAct_);
+        view->addAction(limitsAct);
         view->addSeparator();
         columnsMenu_ = view->addMenu(tr("&Columns"));
         refreshColumnsMenu();
@@ -1667,7 +1687,7 @@ private:
     // Give tab (m, v) a view state: columns hidden and ordered at once, the
     // filter and sort as one recompute, the cursor once its rows are there.
     // A model still reading its schema gets it when ready.
-    void applyViewState(ArrowTableModel* m, QTableView* v, const TabViewState& st) {
+    void applyViewState(ArrowTableModel* m, QTableView* v, TabViewState st) {
         if (!m || !v || st.isDefault()) return;
         if (!m->isReady()) {
             auto* once = new QMetaObject::Connection;
@@ -1690,6 +1710,16 @@ private:
             if (int c = colOf(name); c >= 0) v->setColumnHidden(c, true);
         if (st.frozen > 0) setFrozenColumns(v, st.frozen);
         bool recompute = false;
+        // A filter or sort reads every row: on a large file it is not
+        // re-applied unasked (at start, on Reload or Reopen Closed Tab).
+        if ((!st.filter.isEmpty() || !st.sort.isEmpty()) &&
+            m->fullPassCost(tabOrigin_.value(m).path, passRows_, passBytes_).over) {
+            statusBar()->showMessage(
+                tr("%1: the filter and sort were not applied again; on this file they read every row")
+                    .arg(QString::fromStdString(m->tabLabel())), 8000);
+            st.filter.clear();
+            st.sort.clear();
+        }
         if (!st.filter.isEmpty()) {
             FilterExpr fx;
             std::string err;
@@ -1703,7 +1733,7 @@ private:
         std::vector<ArrowTableModel::SortKey> keys;
         for (const auto& [name, desc] : st.sort)
             if (int c = colOf(name); c >= 0) keys.push_back({c, desc ? Qt::DescendingOrder : Qt::AscendingOrder});
-        if (!keys.empty()) { setSortKeys(m, v, std::move(keys)); recompute = true; }
+        if (!keys.empty()) { setSortKeys(m, v, std::move(keys), /*ask=*/false); recompute = true; }
         if (const int c = colOf(st.curColumn); c >= 0) {
             pendingCursor_[m] = {st.curRow, c};
             if (!recompute) placePendingCursor(m, v);
@@ -2190,19 +2220,96 @@ private:
     static constexpr int kStatsAllColumns = 256;
     // A larger table is summarised only on request, one column at a time:
     // a scan reads every row of the file (all of it, on a row-oriented
-    // format), which on a 3.4 G-row table takes hours. "Larger": more rows
-    // than this, or, while a stream's count is unknown, a file of more bytes
-    // than kStatsAutoBytes, or a remote file (a scan downloads it).
-    static constexpr int64_t kStatsAutoRows  = 10'000'000;
-    static constexpr int64_t kStatsAutoBytes = 1LL << 30;
-    int64_t statsAutoRows_ = kStatsAutoRows;   // VVG_STATS_AUTO_ROWS (self-test)
+    // format), which on a 3.4 G-row table takes hours. "Larger": over the
+    // limits a sort or filter asks at (ArrowTableModel::fullPassCost).
+    int64_t statsAutoRows_ = ArrowTableModel::kDefaultPassRows;   // VVG_STATS_AUTO_ROWS (self-test)
     bool statsOnRequest(ArrowTableModel* m) const {
-        const int64_t rows = m->totalRows();
-        if (rows >= 0) return rows > statsAutoRows_;
+        return m->fullPassCost(tabOrigin_.value(m).path, statsAutoRows_, passBytes_).over;
+    }
+
+    // Before a sort, filter or find of `m` that reads every row of its file:
+    // over the limits the user is asked first. `what` names the job
+    // ("Sorting by QNAME"). False: the view stays as it is.
+    bool confirmFullPass(ArrowTableModel* m, const QString& what) {
         const QString path = tabOrigin_.value(m).path;
-        if (path.contains(QLatin1String("://"))) return true;
-        const QFileInfo fi(path);
-        return fi.isFile() && fi.size() > kStatsAutoBytes;
+        const auto c = m->fullPassCost(path, passRows_, passBytes_);
+        if (!c.over) return true;
+        ++passAsked_;
+        if (passAnswer_ >= 0) return passAnswer_ == 1;
+        const QString size = c.rows >= 0 ? tr("%L1 rows").arg(c.rows)
+                           : c.remote    ? tr("a remote file")
+                                         : QLocale().formattedDataSize(c.fileBytes, 1,
+                                               QLocale::DataSizeTraditionalFormat);
+        QMessageBox box(QMessageBox::Warning, tr("Read the Whole File?"),
+                        tr("%1 reads all of %2 (%3) into memory.")
+                            .arg(what, QFileInfo(path).fileName(), size),
+                        QMessageBox::NoButton, this);
+        box.setInformativeText(
+            tr("On a file read front to back (BAM, CRAM, FASTQ, text, …) the rows it reads stay in "
+               "memory until the tab is closed, and a large file can take minutes and more memory "
+               "than the computer has. To look at a place in an indexed BAM, CRAM or VCF, a region "
+               "is faster.\n\nvvg asks above %L1 rows or, while a file's row count is not known, "
+               "above a %2 file (View \u25b8 Memory Limits…).")
+                .arg(passRows_)
+                .arg(QLocale().formattedDataSize(passBytes_, 1, QLocale::DataSizeTraditionalFormat)));
+        QPushButton* go = box.addButton(tr("Continue"), QMessageBox::AcceptRole);
+        QPushButton* cancel = box.addButton(QMessageBox::Cancel);
+        QPushButton* limits = box.addButton(tr("Change Limits…"), QMessageBox::ActionRole);
+        box.setDefaultButton(cancel);
+        box.exec();
+        if (box.clickedButton() == limits)
+            return editMemoryLimits() && confirmFullPass(m, what);
+        return box.clickedButton() == go;
+    }
+
+    // View ▸ Memory Limits…: the load budget and the full-pass limits.
+    bool editMemoryLimits() {
+        QDialog dlg(this);
+        dlg.setWindowTitle(tr("Memory Limits"));
+        auto* form = new QFormLayout;
+        const qint64 MiB = 1 << 20;
+        auto* load = new QSpinBox(&dlg);
+        load->setRange(16, 1 << 24);
+        load->setSingleStep(256);
+        load->setSuffix(tr(" MiB"));
+        load->setValue((int)std::min<qint64>(loadBudget_ / MiB, 1 << 24));
+        load->setToolTip(tr("A file read front to back keeps the rows read as the table scrolls; "
+                            "past this much vvg stops and offers Load More"));
+        auto* rows = new QSpinBox(&dlg);
+        rows->setRange(1000, std::numeric_limits<int>::max());
+        rows->setSingleStep(1'000'000);
+        rows->setGroupSeparatorShown(true);
+        rows->setValue((int)std::min<qint64>(passRows_, std::numeric_limits<int>::max()));
+        auto* bytes = new QSpinBox(&dlg);
+        bytes->setRange(1, 1 << 24);
+        bytes->setSingleStep(256);
+        bytes->setSuffix(tr(" MiB"));
+        bytes->setValue((int)std::min<qint64>(std::max<qint64>(passBytes_ / MiB, 1), 1 << 24));
+        form->addRow(tr("Rows read as the table scrolls, up to:"), load);
+        auto* note = new QLabel(tr("A sort, filter or find reads every row. Ask first above:"), &dlg);
+        note->setWordWrap(true);
+        form->addRow(note);
+        form->addRow(tr("Rows:"), rows);
+        form->addRow(tr("File size, while its rows are not counted:"), bytes);
+        auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+        connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+        auto* lay = new QVBoxLayout(&dlg);
+        lay->addLayout(form);
+        lay->addWidget(buttons);
+        if (dlg.exec() != QDialog::Accepted) return false;
+        setMemoryLimits(load->value() * MiB, rows->value(), bytes->value() * MiB);
+        return true;
+    }
+    void setMemoryLimits(qint64 load, qint64 rows, qint64 bytes) {
+        loadBudget_ = load;
+        passRows_ = statsAutoRows_ = rows;
+        passBytes_ = bytes;
+        saveSetting(QStringLiteral("limits/loadBytes"), load);
+        saveSetting(QStringLiteral("limits/passRows"), rows);
+        saveSetting(QStringLiteral("limits/passBytes"), bytes);
+        for (auto* m : models_) if (m) m->setLoadBudget(std::max<qint64>(load, m->loadedBytes()));
+        syncFileControls();
     }
 
     // The cursor column; while a job has the model blank, the column the
@@ -2541,7 +2648,15 @@ private:
     }
     // Sort `m` by `keys`; the header shows Qt's arrow for one key, and each
     // key's rank and direction (TypedHeaderView) for several.
-    void setSortKeys(ArrowTableModel* m, QTableView* v, std::vector<ArrowTableModel::SortKey> keys) {
+    // `ask`: a sort the user started is confirmed when the file is large
+    // (confirmFullPass); one given on the command line is not.
+    void setSortKeys(ArrowTableModel* m, QTableView* v, std::vector<ArrowTableModel::SortKey> keys,
+                     bool ask = true) {
+        if (ask && !keys.empty()) {
+            QStringList names;
+            for (const auto& k : keys) names << m->columnName(k.col);
+            if (!confirmFullPass(m, tr("Sorting by %1").arg(names.join(QStringLiteral(", "))))) return;
+        }
         m->sortAsyncByKeys(keys);
         if (!v) return;
         QHeaderView* h = v->horizontalHeader();
@@ -2697,7 +2812,7 @@ private:
         detailTabs_->setCurrentWidget(colPanel_);
     }
 
-    void applyFilter() {
+    void applyFilter(bool ask = true) {
         auto* m = activeModel();
         if (!m) return;
         QString text = filterEdit_->text().trimmed();
@@ -2716,6 +2831,10 @@ private:
             return;
         }
         filterEdit_->setStyleSheet({});
+        if (ask && !confirmFullPass(m, tr("Filtering"))) {
+            statusBar()->showMessage(tr("The filter was not applied"), 4000);
+            return;
+        }
         filterText_[m] = text;
         m->setFilterAsync(fx);       // runs off the UI thread; result on finish
         rememberFilter(text);
@@ -2910,6 +3029,7 @@ private:
         pendingFindCol_     = cur.isValid() ? cur.column() : -1;
         pendingFindForward_ = forward;
         pendingFindModel_   = m;
+        if (!confirmFullPass(m, tr("Finding"))) return;
         m->findAsync(re);
     }
 
@@ -3200,7 +3320,7 @@ public:
             if (found < 0) return col;
             keys.push_back({found, ord});
         }
-        setSortKeys(m, viewOf(m), std::move(keys));
+        setSortKeys(m, viewOf(m), std::move(keys), /*ask=*/false);
         for (int g = 0; m->isComputing() && g < 2000000; ++g)
             QCoreApplication::processEvents();
         return {};
@@ -3398,7 +3518,7 @@ public:
         }
         if (m && !o.filter.isEmpty()) {
             filterEdit_->setText(o.filter);
-            applyFilter();
+            applyFilter(/*ask=*/false);
             settle(m);
             if (!filterText_.contains(m))
                 errs << tr("--filter: %1").arg(statusBar()->currentMessage());
@@ -3422,6 +3542,81 @@ public:
         QCoreApplication::processEvents();
         v->horizontalScrollBar()->setValue(value);
         return {v->horizontalScrollBar()->value(), v->horizontalScrollBar()->maximum()};
+    }
+    // Under the limits `rows` / `bytes`, with every question answered
+    // `answer`: a header click's sort, a filter, a find and a view state's
+    // sort on the active tab — whether each asked ("asked" / "ran") and
+    // whether it took effect.
+    QString fullPassForTest(qint64 rows, qint64 bytes, bool answer) {
+        auto* m = activeModel();
+        auto* v = activeView();
+        if (!m || !v) return QStringLiteral("none");
+        passRows_ = rows;
+        passBytes_ = bytes;
+        passAnswer_ = answer ? 1 : 0;
+        auto wait = [m] {
+            for (int g = 0; (m->isComputing() || !m->isReady()) && g < 2000000; ++g)
+                QCoreApplication::processEvents();
+        };
+        wait();
+        QStringList out;
+        auto note = [&](const char* what, int before, int effect) {
+            out << QStringLiteral("%1=%2,%3").arg(QLatin1String(what),
+                       passAsked_ > before ? QStringLiteral("asked") : QStringLiteral("ran")).arg(effect);
+        };
+        int before = passAsked_;
+        headerSortClick(m, v, 0, false);
+        wait();
+        note("sort", before, (int)m->sortKeys().size());
+        if (!m->sortKeys().empty()) { setSortKeys(m, v, {}, false); wait(); }
+        before = passAsked_;
+        filterEdit_->setText(QStringLiteral("%1 is not null").arg(m->columnName(0)));
+        applyFilter();
+        wait();
+        note("filter", before, m->hasFilter() ? 1 : 0);
+        if (m->hasFilter()) { filterEdit_->clear(); applyFilter(); wait(); }
+        before = passAsked_;
+        const QRegularExpression re(QStringLiteral("."), QRegularExpression::CaseInsensitiveOption);
+        findEdit_->setText(re.pattern());
+        doFind(true);
+        wait();
+        note("find", before, m->findResultsValid(re) ? 1 : 0);
+        m->clearSearch();
+        TabViewState st;
+        st.label = QString::fromStdString(m->tabLabel());
+        st.sort = {{m->columnName(0), false}};
+        applyViewState(m, v, st);
+        wait();
+        out << QStringLiteral("restore=%1").arg(m->sortKeys().size());
+        passAnswer_ = -1;
+        return out.join(QLatin1Char(' '));
+    }
+    // Sort the active tab by its first column (unasked), cancel after `ms`
+    // and wait for what follows: the rows the sort read let go by a re-read
+    // of the file ("reloaded=1") when it had read past the view's rows.
+    QString cancelForTest(int ms) {
+        auto* m = activeModel();
+        auto* v = activeView();
+        if (!m || !v) return QStringLiteral("none");
+        for (int g = 0; !m->isReady() && g < 2000000; ++g) QCoreApplication::processEvents();
+        const QString label = QString::fromStdString(m->tabLabel());
+        const QPointer<ArrowTableModel> old(m);   // the re-read deletes it
+        bool held = false;
+        connect(m, &ArrowTableModel::heldAfterCancel, this, [&held](qint64) { held = true; });
+        setSortKeys(m, v, {{0, Qt::AscendingOrder}}, /*ask=*/false);
+        QElapsedTimer t;
+        t.start();
+        while (t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        const bool running = m->isComputing();
+        m->cancelRecompute();
+        t.restart();
+        // The re-read replaces the tab's model.
+        while (t.elapsed() < 3000 && old) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        auto* now = activeModel();
+        for (int g = 0; now && !now->isReady() && g < 2000000; ++g) QCoreApplication::processEvents();
+        return QStringLiteral("running=%1 reloaded=%2 tab=%3 rows=%4")
+            .arg(running ? 1 : 0).arg(held && !old ? 1 : 0)
+            .arg(now ? QString::fromStdString(now->tabLabel()) == label : false).arg(now ? now->rowCount() : -1);
     }
     // Go to row `row` (0-based), with the first `frozen` columns frozen, and
     // scroll five rows down: the top row after the jump and after the scroll.
@@ -4092,6 +4287,13 @@ private:
     // Load More (limits/loadBytes; ArrowTableModel::setLoadBudget).
     qint64                         loadBudget_ = ArrowTableModel::kDefaultLoadBudget;
     QAction*                       loadMoreAct_ = nullptr;   // View ▸ Load More Rows
+    // A sort, filter or find over more rows than this, or a file of more
+    // bytes while its row count is unknown, asks first (confirmFullPass;
+    // limits/passRows, limits/passBytes). Column statistics use the same.
+    qint64                         passRows_  = ArrowTableModel::kDefaultPassRows;
+    qint64                         passBytes_ = ArrowTableModel::kDefaultPassBytes;
+    int                            passAsked_ = 0;     // questions asked (self-test)
+    int                            passAnswer_ = -1;   // self-test: 1 yes, 0 no; -1 ask
     QList<ClosedTab>               closedTabs_;             // newest last, 20 kept
     QAction*                       openAct_       = nullptr;   // toolbar + File
     QAction*                       openDirAct_    = nullptr;
@@ -4833,6 +5035,17 @@ int main(int argc, char** argv) {
         // VVG_STREAM_BUDGET=<bytes> read at start.
         if (const char* sr = std::getenv("VVG_STREAM_TEST"); sr && *sr && *sr != '0')
             std::printf("stream %s\n", win.streamForTest().toStdString().c_str());
+        // Optional large-file question check: VVG_FULLPASS="<rows>,<bytes>,yes|no"
+        // (fullPassForTest).
+        if (const char* fp = std::getenv("VVG_FULLPASS"); fp && *fp) {
+            const QStringList p = QString::fromLocal8Bit(fp).split(QLatin1Char(','));
+            std::printf("fullpass %s\n", win.fullPassForTest(p.value(0).toLongLong(), p.value(1).toLongLong(),
+                                                              p.value(2) == QLatin1String("yes"))
+                                              .toStdString().c_str());
+        }
+        // Optional cancel check: VVG_CANCEL_TEST=<ms> (cancelForTest).
+        if (const char* ct = std::getenv("VVG_CANCEL_TEST"); ct && *ct)
+            std::printf("cancel %s\n", win.cancelForTest(std::atoi(ct)).toStdString().c_str());
         // Optional vertical jump check: VVG_GOTO="<0-based row>[,<frozen columns>]".
         if (const char* gt = std::getenv("VVG_GOTO"); gt && *gt) {
             const QStringList p = QString::fromLocal8Bit(gt).split(QLatin1Char(','));

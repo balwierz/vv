@@ -2,6 +2,7 @@
 
 #include <QBrush>
 #include <QColor>
+#include <QFileInfo>
 #include <QLocale>
 #include <QString>
 #include <QTimer>
@@ -136,7 +137,12 @@ ArrowTableModel::~ArrowTableModel() {
         std::lock_guard<std::mutex> l(mail_->m);
         mail_->model = nullptr;
     }
-    owner_->post([core = std::move(core_)]() mutable { core.reset(); });
+    owner_->post([core = std::move(core_)]() mutable {
+        core.reset();
+        // The allocator keeps freed pages for reuse, per thread: give what
+        // this thread decoded (a stream's batches, GBs after a sort) back.
+        arrow::default_memory_pool()->ReleaseUnused();
+    });
 }
 
 ArrowTableModel::Meta ArrowTableModel::readMeta(TabularSource& s) {
@@ -147,10 +153,16 @@ ArrowTableModel::Meta ArrowTableModel::readMeta(TabularSource& s) {
     m.footer     = s.footer();
     m.readStatus = s.read_status();
     m.traits     = tab_traits(s);
+    m.loadedBytes = heldBytes(s);
+    return m;
+}
+
+int64_t ArrowTableModel::heldBytes(TabularSource& s) {
+    int64_t n = 0;
     if (!s.random_access())
         for (int c = 0; c < s.num_chunks(); ++c)
-            if (const int64_t b = s.chunk_bytes(c); b > 0) m.loadedBytes += b;
-    return m;
+            if (const int64_t b = s.chunk_bytes(c); b > 0) n += b;
+    return n;
 }
 
 void ArrowTableModel::refreshMeta() {
@@ -540,6 +552,24 @@ bool ArrowTableModel::canFetchMore(const QModelIndex& parent) const {
     return !fully_loaded_ && meta_.loadedBytes < loadBudget_;
 }
 
+ArrowTableModel::FullPassCost ArrowTableModel::fullPassCost(const QString& path, int64_t rowLimit,
+                                                           int64_t byteLimit) const {
+    FullPassCost c;
+    c.rows = meta_.totalRows;
+    if (c.rows >= 0) {
+        c.over = c.rows > rowLimit;
+        return c;
+    }
+    if (path.contains(QLatin1String("://"))) {
+        c.remote = c.over = true;   // a pass downloads it
+        return c;
+    }
+    const QFileInfo fi(path);
+    if (fi.isFile()) c.fileBytes = fi.size();
+    c.over = c.fileBytes > byteLimit;
+    return c;
+}
+
 void ArrowTableModel::setLoadBudget(int64_t bytes) {
     loadBudget_ = loadStep_ = std::max<int64_t>(1, bytes);
 }
@@ -764,6 +794,13 @@ void ArrowTableModel::cancelRecompute() {
     pendingJob_ = Job::None;
     endResetModel();
     emit recomputeCanceled();
+    // Queued behind the canceled job: what the stream holds once it stopped,
+    // against what the view had read before.
+    owner_->post([this, core = core_, mail = mail_, before = meta_.loadedBytes] {
+        const int64_t held = heldBytes(*core->src);
+        if (held > before)
+            deliver(mail, [this, held] { emit heldAfterCancel((qint64)held); });
+    });
 }
 
 void ArrowTableModel::setSearch(const QRegularExpression& re) {

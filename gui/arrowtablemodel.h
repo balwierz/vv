@@ -86,6 +86,21 @@ public:
     void    loadMore();
     bool    isFetching() const { return fetching_; }
 
+    // What a pass over every row (a sort, filter or find) reads, and whether
+    // that is over the limits: more rows than `rowLimit`, or, while a
+    // stream's row count is unknown, a file `path` of more than `byteLimit`
+    // bytes or a remote one. On a stream the rows such a pass reads stay in
+    // memory until the tab closes.
+    static constexpr int64_t kDefaultPassRows  = 10'000'000;
+    static constexpr int64_t kDefaultPassBytes = 1LL << 30;
+    struct FullPassCost {
+        int64_t rows = -1;          // -1: not known yet
+        qint64  fileBytes = -1;     // -1: not a local file
+        bool    remote = false;
+        bool    over = false;
+    };
+    FullPassCost fullPassCost(const QString& path, int64_t rowLimit, int64_t byteLimit) const;
+
     // A sort key: a display column and its order. The first key decides,
     // each next one orders the ties of the ones before.
     struct SortKey { int col; Qt::SortOrder order; };
@@ -159,6 +174,9 @@ signals:
     void    recomputeStarted();
     void    recomputeFinished(qint64 viewRows);
     void    recomputeCanceled();
+    // After a canceled job: the stream holds `bytes` of batches, more than
+    // the view had read (what the job read on is kept; a re-open lets it go).
+    void    heldAfterCancel(qint64 bytes);
     void    findReady(qint64 matches);
 
 public:
@@ -245,6 +263,7 @@ private:
     };
     Meta meta_;
     static Meta readMeta(TabularSource& s);
+    static int64_t heldBytes(TabularSource& s);   // a stream's batches (chunk_bytes)
     void refreshMeta();
 
     struct LoadedChunk {
