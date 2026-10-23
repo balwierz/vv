@@ -30,6 +30,9 @@ public:
     // `name` changed on disk since it was read: a "Reload / Ignore" bar; an
     // empty `name` hides it.
     void setChanged(const QString& name);
+    // The tab shows a stream's first rows only (ArrowTableModel::loadBudget):
+    // `text` says how many, with a "Load More" button; empty hides it.
+    void setPartial(const QString& text);
     // A re-open with `attempted` failed: say why, until the next setState,
     // and keep the typed region and tags for editing.
     void showError(const QString& why, const FileOptions& attempted);
@@ -38,12 +41,14 @@ public:
     QString describeForTest() const;
     QString fileForTest() const;            // the file name shown, or ""
     bool    changedShownForTest() const;
+    bool    partialShownForTest() const;
 
 signals:
     void optionsChanged(const FileOptions& opts);
     void sliceStep(int delta);
     void reloadRequested();
     void ignoreChangeRequested();
+    void loadMoreRequested();
 
 private:
     FileOptions current() const;            // the options the controls show
@@ -58,6 +63,8 @@ private:
     QLabel*       fileName_;
     QWidget*      changedGroup_;
     QLabel*       changedText_;
+    QWidget*      partialGroup_;
+    QLabel*       partialText_;
     bool          regionReady_ = false;
 
     QWidget*      regionGroup_;

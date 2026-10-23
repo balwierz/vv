@@ -352,6 +352,7 @@ public:
     void    set_retain_all(bool b)  override { inner_->set_retain_all(b); }
     bool    random_access() const   override { return inner_->random_access(); }
     bool    evicted_any()     const override { return inner_->evicted_any(); }
+    int64_t chunk_bytes(int i) const override { return inner_->chunk_bytes(i); }
     arrow::Status read_status() const override { return inner_->read_status(); }
     bool    region_applied()  const override { return inner_->region_applied(); }
     bool    has_slices()      const override { return inner_->has_slices(); }
@@ -479,6 +480,7 @@ public:
     void    set_retain_all(bool b)  override { inner_->set_retain_all(b); }
     bool    random_access() const   override { return inner_->random_access(); }
     bool    evicted_any()     const override { return inner_->evicted_any(); }
+    int64_t chunk_bytes(int i) const override { return inner_->chunk_bytes(i); }
     arrow::Status read_status() const override { return inner_->read_status(); }
     bool    region_applied()  const override { return inner_->region_applied(); }
     bool    has_slices()      const override { return inner_->has_slices(); }
@@ -815,6 +817,7 @@ public:
     void    set_retain_all(bool b)  override { inner_->set_retain_all(b); }
     bool    random_access() const   override { return inner_->random_access(); }
     bool    evicted_any()     const override { return inner_->evicted_any(); }
+    int64_t chunk_bytes(int i) const override { return inner_->chunk_bytes(i); }
     arrow::Status read_status() const override { return inner_->read_status(); }
     bool    region_applied()  const override { return inner_->region_applied(); }
     bool    has_slices()      const override { return inner_->has_slices(); }
@@ -1259,6 +1262,7 @@ public:
     void    set_retain_all(bool b)  override { inner_->set_retain_all(b); }
     bool    random_access() const   override { return inner_->random_access(); }
     bool    evicted_any()     const override { return inner_->evicted_any(); }
+    int64_t chunk_bytes(int i) const override { return inner_->chunk_bytes(i); }
     arrow::Status read_status() const override { return inner_->read_status(); }
     bool    region_applied()  const override { return inner_->region_applied(); }
     bool    has_slices()      const override { return inner_->has_slices(); }

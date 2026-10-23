@@ -314,6 +314,7 @@ public:
     }
     void set_retain_all(bool b) override { retain_all_ = b; }
     bool evicted_any() const override { return evicted_any_; }
+    int64_t chunk_bytes(int i) const override { return stream_chunk_bytes(batches_, i); }
     void ensure(int i) override {
         while (!all_read_ && (int)batches_.size() <= i) (void)advance();
     }

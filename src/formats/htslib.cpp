@@ -505,6 +505,7 @@ public:
     }
     void set_retain_all(bool b) override { retain_all_ = b; }
     bool evicted_any() const override { return evicted_any_; }
+    int64_t chunk_bytes(int i) const override { return stream_chunk_bytes(batches_, i); }
     bool region_applied() const override { return iter_ != nullptr; }
     arrow::Status read_status() const override { return read_status_; }
     void ensure(int i) override {
@@ -992,6 +993,7 @@ public:
     }
     void set_retain_all(bool b) override { retain_all_ = b; }
     bool evicted_any() const override { return evicted_any_; }
+    int64_t chunk_bytes(int i) const override { return stream_chunk_bytes(batches_, i); }
     bool region_applied() const override { return iter_ != nullptr; }
     void ensure(int i) override {
         while (!all_read_ && (int)batches_.size() <= i)
@@ -1300,6 +1302,7 @@ public:
     }
     void set_retain_all(bool b) override { retain_all_ = b; }
     bool evicted_any() const override { return evicted_any_; }
+    int64_t chunk_bytes(int i) const override { return stream_chunk_bytes(batches_, i); }
     bool region_applied() const override { return region_mode_; }
     void ensure(int i) override {
         while (!all_read_ && (int)batches_.size() <= i)
@@ -1499,6 +1502,7 @@ public:
     }
     void set_retain_all(bool b) override { retain_all_ = b; }
     bool evicted_any() const override { return evicted_any_; }
+    int64_t chunk_bytes(int i) const override { return stream_chunk_bytes(batches_, i); }
     void ensure(int i) override {
         while (!all_read_ && (int)batches_.size() <= i)
             (void)advance();
@@ -1965,6 +1969,7 @@ public:
     void          ensure(int i) override { inner_->ensure(i); }
     void          set_retain_all(bool retain) override { inner_->set_retain_all(retain); }
     bool          evicted_any() const override { return inner_->evicted_any(); }
+    int64_t       chunk_bytes(int i) const override { return inner_->chunk_bytes(i); }
     bool          random_access() const override { return inner_->random_access(); }
     bool          region_applied() const override { return inner_->region_applied(); }
     bool          has_slices() const override { return inner_->has_slices(); }

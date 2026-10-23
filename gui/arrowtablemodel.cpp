@@ -62,6 +62,7 @@ ArrowTableModel::ArrowTableModel(std::unique_ptr<TabularSource> src,
         owner_->post([this, core = core_, mail = mail_] {
             test_read_delay();
             TabularSource& s = *core->src;
+            s.set_retain_all(true);   // a stream's batches: see loadBudget()
             auto schema = s.schema();
             auto hidden = s.hidden_for_display();
             int64_t rows = 0;
@@ -85,6 +86,7 @@ ArrowTableModel::ArrowTableModel(std::unique_ptr<TabularSource> src,
     syncReads_ = true;
     std::vector<std::string> hide;
     withSource([&](TabularSource& s) {
+        s.set_retain_all(true);
         schema_ = s.schema();
         hide = s.hidden_for_display();
         meta_ = readMeta(s);
@@ -145,6 +147,9 @@ ArrowTableModel::Meta ArrowTableModel::readMeta(TabularSource& s) {
     m.footer     = s.footer();
     m.readStatus = s.read_status();
     m.traits     = tab_traits(s);
+    if (!s.random_access())
+        for (int c = 0; c < s.num_chunks(); ++c)
+            if (const int64_t b = s.chunk_bytes(c); b > 0) m.loadedBytes += b;
     return m;
 }
 
@@ -532,7 +537,16 @@ QVariant ArrowTableModel::headerData(int section, Qt::Orientation o, int role) c
 
 bool ArrowTableModel::canFetchMore(const QModelIndex& parent) const {
     if (parent.isValid() || computing_ || loading_ || fetching_ || !identity_) return false;
-    return !fully_loaded_;
+    return !fully_loaded_ && meta_.loadedBytes < loadBudget_;
+}
+
+void ArrowTableModel::setLoadBudget(int64_t bytes) {
+    loadBudget_ = loadStep_ = std::max<int64_t>(1, bytes);
+}
+
+void ArrowTableModel::loadMore() {
+    loadBudget_ = std::max(loadBudget_, meta_.loadedBytes) + loadStep_;
+    if (canFetchMore({})) fetchMore({});
 }
 
 void ArrowTableModel::onFetched(int64_t newrows, bool fullyLoaded, Meta meta) {
@@ -940,6 +954,10 @@ QString ArrowTableModel::footer() const {
     if (const arrow::Status& st = meta_.readStatus; !st.ok())
         f += QStringLiteral("  |  read error (rows after it are missing): %1")
                  .arg(QString::fromStdString(st.message()));
+    if (budgetReached())
+        f += QStringLiteral("  |  the first %1 rows (%2 in memory); the file goes on: View \u25b8 Load More Rows")
+                 .arg(QLocale().toString((qlonglong)loaded_rows_))
+                 .arg(QLocale().formattedDataSize(meta_.loadedBytes, 1, QLocale::DataSizeTraditionalFormat));
     if (const int64_t n = viewRows(); n > maxViewRows_)
         f += QStringLiteral("  |  the window shows the first %1 of %2 rows; an export writes all")
                  .arg(QLocale().toString((qlonglong)maxViewRows_))

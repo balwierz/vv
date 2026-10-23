@@ -535,6 +535,16 @@ jobs:
             VVG_WINTEST=1 VVG_GOTO=$gt ./build-gui/gui/vvg "$RUNNER_TEMP/n2000.tsv" 2>/dev/null \
               | grep -qx 'goto top=900 scrolled=905'
           done
+          # A stream keeps every batch the view has read: with the source's
+          # window forced to one batch, no row of 60 000 FASTQ records reads
+          # blank after a scroll to the end and back. A load budget of one
+          # byte stops after the first batch with the Load More bar, and Load
+          # More reads one budget's worth on.
+          awk 'BEGIN{for(i=1;i<=60000;i++) printf "@r%d\nACGTACGTAC\n+\nIIIIIIIIII\n", i}' > "$RUNNER_TEMP/r60k.fq"
+          VV_STREAM_BATCH_CAP=1 VVG_WINTEST=1 VVG_STREAM_TEST=1 ./build-gui/gui/vvg "$RUNNER_TEMP/r60k.fq" 2>/dev/null \
+            | grep -qx 'stream rows=60000 partial=0 bar=0 blank=0'
+          VV_STREAM_BATCH_CAP=1 VVG_WINTEST=1 VVG_STREAM_TEST=1 VVG_STREAM_BUDGET=1 ./build-gui/gui/vvg "$RUNNER_TEMP/r60k.fq" 2>/dev/null \
+            | grep -qx 'stream rows=8192 partial=1 bar=1 blank=0 more=4096'
           # Session: a run saves its files, options and each tab's view; a run
           # with no files restores them. A closed tab reopens at its place.
           ss="$RUNNER_TEMP/vvgcfg-session"; mkdir -p "$ss"

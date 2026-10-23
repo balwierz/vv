@@ -413,6 +413,11 @@ public:
     // window — i.e. a full-pass result may be incomplete for the freed range.
     // Default: false (nothing is ever evicted).
     virtual bool evicted_any() const { return false; }
+    // Bytes chunk i holds in memory while the source keeps it (a forward-only
+    // stream's decoded batch); -1 when not known or not held (random-access
+    // sources read a chunk on demand). A viewer that keeps every batch it
+    // has read (set_retain_all) bounds its memory with this.
+    virtual int64_t chunk_bytes(int /*i*/) const { return -1; }
     // True when every chunk is known at open (num_chunks / chunk_meta exact)
     // and read_chunk(i) works for any i in any order, without reading the
     // chunks before it — Parquet row groups, ORC stripes, an in-memory table.

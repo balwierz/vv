@@ -170,6 +170,20 @@ ContextBar::ContextBar(QWidget* parent) : QWidget(parent) {
     lay->addWidget(changedGroup_);
     changedGroup_->hide();
 
+    // A stream read up to the load budget: Load More.
+    QHBoxLayout* pl = nullptr;
+    partialGroup_ = group(&pl);
+    partialText_ = new QLabel(partialGroup_);
+    partialText_->setEnabled(false);   // dimmed, as the hint
+    pl->addWidget(partialText_);
+    auto* more = new QToolButton(partialGroup_);
+    more->setText(tr("Load More"));
+    more->setToolTip(tr("Read the next rows of the file into memory (View \u25b8 Load More Rows)"));
+    connect(more, &QToolButton::clicked, this, &ContextBar::loadMoreRequested);
+    pl->addWidget(more);
+    lay->addWidget(partialGroup_);
+    partialGroup_->hide();
+
     // Region: the box, Go, the coordinate convention and the slop.
     QHBoxLayout* rl = nullptr;
     regionGroup_ = group(&rl);
@@ -418,9 +432,18 @@ void ContextBar::setChanged(const QString& name) {
 
 bool ContextBar::changedShownForTest() const { return changedGroup_->isVisibleTo(this); }
 
+void ContextBar::setPartial(const QString& text) {
+    partialText_->setText(text);
+    partialGroup_->setVisible(!text.isEmpty());
+    updateVisibility();
+}
+
+bool ContextBar::partialShownForTest() const { return partialGroup_->isVisibleTo(this); }
+
 // Shown while it holds anything: the file's name, a change on disk or an option.
 void ContextBar::updateVisibility() {
     const bool any = fileGroup_->isVisibleTo(this) || changedGroup_->isVisibleTo(this) ||
+                     partialGroup_->isVisibleTo(this) ||
                      regionGroup_->isVisibleTo(this) || alignGroup_->isVisibleTo(this) ||
                      tagsGroup_->isVisibleTo(this) || samplesGroup_->isVisibleTo(this) ||
                      gtStats_->isVisibleTo(this) || expand_->isVisibleTo(this) ||

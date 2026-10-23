@@ -229,6 +229,7 @@ public:
         connect(contextBar_, &ContextBar::ignoreChangeRequested, this, [this] {
             if (const OpenFile* f = activeFile()) ignoreChange(f->id);
         });
+        connect(contextBar_, &ContextBar::loadMoreRequested, this, [this] { loadMoreRows(); });
         tabs_->setTabsClosable(true);
         tabs_->setDocumentMode(true);
         setCentralWidget(tabs_);
@@ -260,6 +261,10 @@ public:
             recent_ = st.value(QStringLiteral("recentFiles")).toStringList();
             openFilter_ = st.value(QStringLiteral("ui/openFilter")).toString();
             restoreSession_ = st.value(QStringLiteral("ui/restoreSession"), true).toBool();
+            loadBudget_ = st.value(QStringLiteral("limits/loadBytes"),
+                                   (qlonglong)ArrowTableModel::kDefaultLoadBudget).toLongLong();
+            if (const char* e = std::getenv("VVG_STREAM_BUDGET"); e && *e)   // self-test
+                loadBudget_ = std::atoll(e);
             for (const char* kind : {"recent", "saved"}) {
                 QSettings& rs = st;
                 rs.beginGroup(QStringLiteral("filters/%1").arg(QLatin1String(kind)));
@@ -737,9 +742,15 @@ private:
         const int rowPx = std::max(view->verticalHeader()->defaultSectionSize(),
                                    view->verticalHeader()->minimumSectionSize());
         model->setMaxViewRows(std::numeric_limits<int>::max() / rowPx - 1);
+        model->setLoadBudget(loadBudget_);
         view->setModel(model);
         view->setAlternatingRowColors(true);
         applyScrollMode(view);
+        // A stream's rows arrive as the view scrolls down; the last batch
+        // before the load budget brings the Load More row.
+        connect(model, &QAbstractItemModel::rowsInserted, this, [this, model] {
+            if (model == activeModel()) { syncFileControls(); refreshStatus(); }
+        });
         // Size columns to their content once, from the first rows read (the
         // first chunk the view asks for). Nothing resizes them again, so a
         // later manual drag is preserved for the life of the tab.
@@ -1305,6 +1316,10 @@ private:
             restoreSession_ = on;
             saveSetting(QStringLiteral("ui/restoreSession"), on);
         });
+        loadMoreAct_ = makeAction(tr("&Load More Rows"), {},
+            tr("Read the next rows of a large file into memory; vvg stops at a limit so that scrolling cannot fill it"),
+            [this] { loadMoreRows(); });
+        loadMoreAct_->setEnabled(false);
         reloadAct_ = makeAction(tr("&Reload"), QKeySequence(Qt::Key_F5),
             tr("Read the current tab's file again; each tab keeps its filter, sort and columns"),
             [this] {
@@ -1393,6 +1408,7 @@ private:
         viewMenu_ = view;
         view->addAction(go);
         view->addAction(reloadAct_);
+        view->addAction(loadMoreAct_);
         view->addSeparator();
         columnsMenu_ = view->addMenu(tr("&Columns"));
         refreshColumnsMenu();
@@ -1475,8 +1491,11 @@ private:
         auto* v = activeView();
         if (!m || !v || m->rowCount() == 0) return;
         bool ok = false;
-        int row = QInputDialog::getInt(this, tr("Go to row"), tr("Row (1-based):"),
-                                       1, 1, m->rowCount(), 1, &ok);
+        // A stream's rows count up as they are read: say the range there is.
+        const QString label = m->totalRows() < 0 && m->sortKeys().empty() && !m->hasFilter()
+            ? tr("Row (1 to %1, the rows read so far):").arg(QLocale().toString(m->rowCount()))
+            : tr("Row (1-based):");
+        int row = QInputDialog::getInt(this, tr("Go to row"), label, 1, 1, m->rowCount(), 1, &ok);
         if (ok) goToRow(v, row - 1);
     }
     static void goToRow(QTableView* v, int row) {
@@ -2000,6 +2019,19 @@ private:
     }
     const OpenFile* activeFile() const { return fileById(tabFile_.value(tabs_->currentWidget(), 0)); }
 
+    static QString partialText(const ArrowTableModel* m) {
+        return tr("The first %1 rows (%2 in memory); the file goes on")
+            .arg(QLocale().toString((qlonglong)m->rowCount()))
+            .arg(QLocale().formattedDataSize(m->loadedBytes(), 1, QLocale::DataSizeTraditionalFormat));
+    }
+    void loadMoreRows() {
+        auto* m = activeModel();
+        if (!m || !m->budgetReached()) return;
+        m->loadMore();
+        syncFileControls();
+        refreshStatus();
+    }
+
     // Show the active tab's format options under the tab bar: the ones its
     // file and tab offer, as the file was opened; none for a tab with no file
     // to re-open (a JSON tree, a table made from one).
@@ -2012,6 +2044,9 @@ private:
             contextBar_->setFile({}, {}, {});
         contextBar_->setChanged(f && changedFiles_.contains(f->id)
                                     ? QFileInfo(f->path).fileName() : QString());
+        auto* am = activeModel();
+        contextBar_->setPartial(am && am->budgetReached() ? partialText(am) : QString());
+        if (loadMoreAct_) loadMoreAct_->setEnabled(am && am->budgetReached());
         if (!f || f->jsonTree) { contextBar_->clearState(); return; }
         auto* m = activeModel();
         contextBar_->setState(f->feat, m ? m->tabTraits() : TabTraits{}, f->opts);
@@ -3408,6 +3443,44 @@ public:
         QCoreApplication::processEvents();
         return QStringLiteral("top=%1 scrolled=%2").arg(top).arg(v->rowAt(0));
     }
+    // Read the active stream tab as a user scrolling to the end would, up to
+    // the load budget (and once more after Load More), then sample its rows
+    // twice over: a batch the source let go reads empty.
+    QString streamForTest() {
+        auto* m = activeModel();
+        if (!m) return QStringLiteral("none");
+        QElapsedTimer t;
+        t.start();
+        while (!m->isReady() && t.elapsed() < 10000) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        auto toEnd = [&] {
+            while (t.elapsed() < 20000) {
+                while (m->isFetching() && t.elapsed() < 20000)
+                    QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+                if (!m->canFetchMore({})) break;
+                m->fetchMore({});
+            }
+        };
+        toEnd();
+        QString more;
+        if (m->budgetReached()) {   // Load More reads one budget's worth on
+            const int before = m->rowCount();
+            loadMoreRows();
+            toEnd();
+            more = QStringLiteral(" more=%1").arg(m->rowCount() - before);
+        }
+        syncFileControls();
+        // Every 1000th row, as a scroll to the end and back paints them.
+        int blank = 0;
+        {
+            ArrowTableModel::SyncReads sync(m);
+            for (int pass = 0; pass < 2; ++pass)
+                for (int r = 0; r < m->rowCount(); r += 1000)
+                    if (m->data(m->index(r, 0), Qt::DisplayRole).toString().isEmpty()) ++blank;
+        }
+        return QStringLiteral("rows=%1 partial=%2 bar=%3 blank=%4%5")
+            .arg(m->rowCount()).arg(m->budgetReached() ? 1 : 0)
+            .arg(contextBar_->partialShownForTest() ? 1 : 0).arg(blank).arg(more);
+    }
     const char* scrollModeForTest() const {
         auto* v = activeView();
         if (!v) return "none";
@@ -4015,6 +4088,10 @@ private:
     QAction*                       reopenClosedAct_ = nullptr; // File ▸ Reopen Closed Tab
     QAction*                       restoreSessionAct_ = nullptr;
     bool                           restoreSession_ = true;   // ui/restoreSession
+    // Bytes of a stream's batches a tab reads before it stops and offers
+    // Load More (limits/loadBytes; ArrowTableModel::setLoadBudget).
+    qint64                         loadBudget_ = ArrowTableModel::kDefaultLoadBudget;
+    QAction*                       loadMoreAct_ = nullptr;   // View ▸ Load More Rows
     QList<ClosedTab>               closedTabs_;             // newest last, 20 kept
     QAction*                       openAct_       = nullptr;   // toolbar + File
     QAction*                       openDirAct_    = nullptr;
@@ -4752,6 +4829,10 @@ int main(int argc, char** argv) {
         // Optional menu dump: VVG_MENU_DUMP=1 (the menu bar and ≡ trees).
         if (const char* md = std::getenv("VVG_MENU_DUMP"); md && *md && *md != '0')
             win.dumpMenusForTest();
+        // Optional stream check: VVG_STREAM_TEST=1 (streamForTest), with
+        // VVG_STREAM_BUDGET=<bytes> read at start.
+        if (const char* sr = std::getenv("VVG_STREAM_TEST"); sr && *sr && *sr != '0')
+            std::printf("stream %s\n", win.streamForTest().toStdString().c_str());
         // Optional vertical jump check: VVG_GOTO="<0-based row>[,<frozen columns>]".
         if (const char* gt = std::getenv("VVG_GOTO"); gt && *gt) {
             const QStringList p = QString::fromLocal8Bit(gt).split(QLatin1Char(','));

@@ -122,6 +122,8 @@ void VvTablePane::build(int i) {
     const int rowPx = std::max(view->verticalHeader()->defaultSectionSize(),
                                view->verticalHeader()->minimumSectionSize());
     model->setMaxViewRows(std::numeric_limits<int>::max() / rowPx - 1);
+    // In a file manager's or Konqueror's process: a quarter of vvg's budget.
+    model->setLoadBudget(ArrowTableModel::kDefaultLoadBudget / 4);
     view->setModel(model);
     view->setAlternatingRowColors(true);
     view->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);

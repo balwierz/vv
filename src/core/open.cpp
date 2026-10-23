@@ -644,6 +644,7 @@ public:
     bool random_access() const override { return indexed_; }
     void set_retain_all(bool b) override { retain_all_ = b; }
     bool evicted_any() const override { return evicted_any_; }
+    int64_t chunk_bytes(int i) const override { return stream_chunk_bytes(batches_, i); }
     void ensure(int i) override {
         if (indexed_) return;
         while (!all_read_ && (int)batches_.size() <= i) {
@@ -849,6 +850,7 @@ public:
     void    set_retain_all(bool b)  override { inner_->set_retain_all(b); }
     bool    random_access() const   override { return inner_->random_access(); }
     bool    evicted_any()     const override { return inner_->evicted_any(); }
+    int64_t chunk_bytes(int i) const override { return inner_->chunk_bytes(i); }
     arrow::Status read_status() const override { return inner_->read_status(); }
     const std::string& path() const override { return inner_->path(); }
     std::string footer() const override { return inner_->footer() + "  |  " + note_; }

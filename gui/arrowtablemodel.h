@@ -69,6 +69,23 @@ public:
     bool canFetchMore(const QModelIndex& parent) const override;
     void fetchMore(const QModelIndex& parent) override;
 
+    // A forward-only stream cannot read a batch again once it has let it
+    // go, so the model keeps every batch it has read (set_retain_all) and
+    // stops reading on at the load budget: the bytes those batches hold
+    // (TabularSource::chunk_bytes). loadMore() raises the budget by its
+    // first value and reads on. Sources that read chunks on demand are not
+    // limited.
+    static constexpr int64_t kDefaultLoadBudget = 1LL << 30;
+    void    setLoadBudget(int64_t bytes);
+    int64_t loadBudget() const { return loadBudget_; }
+    int64_t loadedBytes() const { return meta_.loadedBytes; }
+    // The view shows the file's first rows only: more are there, unread.
+    bool    budgetReached() const {
+        return identity_ && !fully_loaded_ && !loading_ && meta_.loadedBytes >= loadBudget_;
+    }
+    void    loadMore();
+    bool    isFetching() const { return fetching_; }
+
     // A sort key: a display column and its order. The first key decides,
     // each next one orders the ties of the ones before.
     struct SortKey { int col; Qt::SortOrder order; };
@@ -224,6 +241,7 @@ private:
         std::string  footer;
         arrow::Status readStatus;
         TabTraits    traits;          // matrix tab / slices / coordinate columns
+        int64_t      loadedBytes = 0; // the stream's batches in memory (chunk_bytes)
     };
     Meta meta_;
     static Meta readMeta(TabularSource& s);
@@ -360,6 +378,8 @@ private:
     QString                               findPattern_;
     bool                                  findValid_ = false;
 
+    int64_t         loadBudget_ = kDefaultLoadBudget;
+    int64_t         loadStep_   = kDefaultLoadBudget;
     mutable int64_t loaded_rows_  = 0;
     mutable bool    fully_loaded_ = false;
 };

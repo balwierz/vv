@@ -8,6 +8,7 @@
 #pragma once
 
 #include <arrow/api.h>
+#include <arrow/util/byte_size.h>
 #include <arrow/io/api.h>
 #include <parquet/statistics.h>
 #include <arrow/type.h>
@@ -959,6 +960,14 @@ inline void stream_retain(
             evicted_any = true;
         }
     }
+}
+
+// TabularSource::chunk_bytes for the sources above: the buffers of batch i,
+// -1 once it was released.
+inline int64_t stream_chunk_bytes(const std::vector<std::shared_ptr<arrow::RecordBatch>>& batches,
+                                  int i) {
+    if (i < 0 || i >= (int)batches.size() || !batches[(size_t)i]) return -1;
+    return arrow::util::TotalBufferSize(*batches[(size_t)i]);
 }
 
 void split_delimited_line(const std::string& line, char delim,

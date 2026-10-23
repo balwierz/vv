@@ -280,6 +280,7 @@ public:
     ChunkMeta chunk_meta(int i) const override { return {batch_first_row_[i], batch_num_rows_[i]}; }
     void set_retain_all(bool b) override { retain_all_ = b; }
     bool evicted_any() const override { return evicted_any_; }
+    int64_t chunk_bytes(int i) const override { return stream_chunk_bytes(batches_, i); }
     void ensure(int i) override {
         while (!all_read_ && (int)batches_.size() <= i) advance();
     }

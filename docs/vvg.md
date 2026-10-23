@@ -76,6 +76,14 @@ Command* goes the other way.
   Changes are noticed by a file watcher and, for files on network storage
   (where it sees no changes made elsewhere), whenever the window is
   activated.
+- **Large files** — a file read front to back (BAM / CRAM / SAM, FASTA /
+  FASTQ, text and delimited files, …) is read as the table scrolls down, and
+  every row read stays in memory, so scrolling back is instant. At 1 GiB of
+  decoded rows vvg stops reading: the strip under the tab bar says how many
+  rows are loaded, and *Load More* (*View ▸ Load More Rows*) reads another
+  1 GiB. To see a place deep in an indexed BAM, CRAM or VCF, give a region
+  instead. Parquet, Arrow, HDF5 and other formats that read any part of the
+  file on demand have no such limit.
 - **Column types** — each header shows the column's type under its name, in
   a smaller, dimmer italic; *View ▸ Column Types* turns the line off.
 - **Help** — *Field Reference* (*F1*): how to use vvg, the syntax of the
