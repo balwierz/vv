@@ -485,6 +485,13 @@ jobs:
           grep -q '^shortcut F1 -> Field Reference…$' <<<"$out"
           grep -q '^shortcut Ctrl+/ -> Keyboard Shortcuts…$' <<<"$out"
           grep -q '^shortcut Ctrl+Shift+P -> Find Action…$' <<<"$out"
+          # Filter to / Exclude from cells: the expression, ANDed into the
+          # current filter; several cells of a column give in (…).
+          VVG_WINTEST=1 VVG_CELLFILTER=0,0 ./build-gui/gui/vvg tests/data/tiny.parquet | grep -qx 'cellfilter Chr == "chr1" -> rows=12'
+          VVG_WINTEST=1 VVG_CELLEXCLUDE=0,0 ./build-gui/gui/vvg tests/data/tiny.parquet | grep -qx 'cellexclude Chr != "chr1" -> rows=8'
+          VVG_WINTEST=1 VVG_CELLFILTER=0,0,15,0 ./build-gui/gui/vvg tests/data/tiny.parquet | grep -qx 'cellfilter Chr in ("chr1", "chr2") -> rows=20'
+          VVG_WINTEST=1 VVG_AFILTER='Score > 0.5' VVG_CELLFILTER=0,0 ./build-gui/gui/vvg tests/data/tiny.parquet | grep -qx 'cellfilter Score > 0.5 AND Chr == "chr1" -> rows=1'
+          VVG_WINTEST=1 VVG_CELLFILTER=2,2 ./build-gui/gui/vvg tests/data/tiny.dates.parquet | grep -qx 'cellfilter ts == "2024-06-15 12:30:00.000" -> rows=1'
           # Find Action: every word of the query must match a command.
           test "$(VVG_WINTEST=1 VVG_PALETTE='copy row' ./build-gui/gui/vvg tests/data/tiny.parquet | sed -n 's/^palette //p')" = "Copy Row"
           # Help: the shortcuts table lists the commands with their menus, and

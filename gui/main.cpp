@@ -2855,7 +2855,73 @@ private:
         menu.addSeparator();
         QAction* copyCmd = menu.addAction(tr("Copy as &vv Command"));
         connect(copyCmd, &QAction::triggered, this, [this]{ copyCommand(); });
+        if (idx.isValid()) {
+            // Filter by the selected values of the clicked column (that cell
+            // alone when the selection spans other columns).
+            auto* m = qobject_cast<ArrowTableModel*>(view->model());
+            const QList<QModelIndex> cells = cellsForFilter(view, idx);
+            const QString what = cellFilterLabel(m, cells);
+            menu.addSeparator();
+            connect(menu.addAction(tr("&Filter to %1").arg(what)), &QAction::triggered, this,
+                    [this, m, cells] { applyCellFilter(m, cells, false); });
+            connect(menu.addAction(tr("&Exclude %1").arg(what)), &QAction::triggered, this,
+                    [this, m, cells] { applyCellFilter(m, cells, true); });
+            connect(menu.addAction(tr("Column &Statistics")), &QAction::triggered, this,
+                    [this, view, idx] { view->setCurrentIndex(idx); showColumnTab(); });
+        }
         menu.exec(view->viewport()->mapToGlobal(pos));
+    }
+
+    // The cells a cell filter takes: the selected cells of `clicked`'s
+    // column, or `clicked` alone when the selection spans other columns.
+    static QList<QModelIndex> cellsForFilter(QTableView* view, const QModelIndex& clicked) {
+        QList<QModelIndex> sel = view->selectionModel()->selectedIndexes();
+        for (const QModelIndex& i : sel)
+            if (i.column() != clicked.column()) return {clicked};
+        return sel.isEmpty() ? QList<QModelIndex>{clicked} : sel;
+    }
+    // "“chr1”", "empty cells" or "3 values", for the menu.
+    QString cellFilterLabel(ArrowTableModel* m, const QList<QModelIndex>& cells) const {
+        std::vector<ValueCount> vs = cellValues(m, cells);
+        if (vs.size() == 1) {
+            if (vs[0].null) return tr("Empty Cells");
+            return QStringLiteral("\u201C%1\u201D").arg(
+                fontMetrics().elidedText(QString::fromStdString(vs[0].value), Qt::ElideMiddle, 240));
+        }
+        return tr("%n Values", nullptr, (int)vs.size());
+    }
+    // The distinct values of `cells` (at most 200), nulls once.
+    static std::vector<ValueCount> cellValues(ArrowTableModel* m, const QList<QModelIndex>& cells) {
+        std::vector<ValueCount> out;
+        ArrowTableModel::SyncReads sync(m);
+        for (const QModelIndex& i : cells) {
+            bool ok = false;
+            ValueCount v = m->filterValue(i.row(), i.column(), &ok);
+            if (!ok) continue;
+            const bool dup = std::any_of(out.begin(), out.end(), [&](const ValueCount& o) {
+                return o.null == v.null && o.value == v.value;
+            });
+            if (!dup) out.push_back(v);
+            if (out.size() >= 200) break;
+        }
+        return out;
+    }
+    // Filter to (or exclude) the values of `cells`, ANDed into the current
+    // filter. Returns the expression applied, or "" with the reason shown.
+    QString applyCellFilter(ArrowTableModel* m, const QList<QModelIndex>& cells, bool exclude) {
+        if (!m || cells.isEmpty()) return {};
+        const std::vector<ValueCount> vs = cellValues(m, cells);
+        std::string expr, why;
+        if (vs.empty() || !narrow_filter_by_values(activeFilterText(m).toStdString(), *m->schema(),
+                                                   m->sourceColumn(cells.first().column()), vs,
+                                                   exclude, &expr, &why)) {
+            statusBar()->showMessage(tr("filter: %1").arg(
+                QString::fromStdString(why.empty() ? std::string("the rows are not loaded") : why)), 4000);
+            return {};
+        }
+        filterEdit_->setText(QString::fromStdString(expr));
+        applyFilter();
+        return QString::fromStdString(expr);
     }
 
     void refreshStatus() {
@@ -3312,6 +3378,20 @@ public:
         p->popupAt(anchor->mapToGlobal(QPoint(anchor->width() / 2, anchor->height())));
         return p;
     }
+    // Self-test: Filter to / Exclude the cells "row,col[,row,col…]" of the
+    // active tab; the expression and the rows left.
+    QString cellFilterForTest(const QString& spec, bool exclude) {
+        waitIdleForTest();
+        auto* v = activeView();
+        auto* m = activeModel();
+        if (!v || !m) return QStringLiteral("no table");
+        const QStringList n = spec.split(QLatin1Char(','));
+        QList<QModelIndex> cells;
+        for (int i = 0; i + 1 < n.size(); i += 2) cells << m->index(n[i].toInt(), n[i + 1].toInt());
+        const QString expr = applyCellFilter(m, cells, exclude);
+        waitIdleForTest();
+        return QStringLiteral("%1 -> rows=%2").arg(expr).arg(m->rowCount());
+    }
     // Self-test: the palette's rows for `query`, in order.
     void dumpPaletteForTest(const QString& query) {
         ActionPalette* p = openPalette(query);
@@ -3723,6 +3803,12 @@ int main(int argc, char** argv) {
         // Optional header check: VVG_HEADER=1 (the first column's header).
         if (const char* hd = std::getenv("VVG_HEADER"); hd && *hd && *hd != '0')
             std::printf("header %s\n", win.headerForTest().toUtf8().constData());
+        // Optional cell-filter check: VVG_CELLFILTER="row,col,…" (Filter to)
+        // or VVG_CELLEXCLUDE (Exclude) on the active tab.
+        if (const char* cf = std::getenv("VVG_CELLFILTER"); cf && *cf)
+            std::printf("cellfilter %s\n", win.cellFilterForTest(QString::fromLocal8Bit(cf), false).toUtf8().constData());
+        if (const char* ce = std::getenv("VVG_CELLEXCLUDE"); ce && *ce)
+            std::printf("cellexclude %s\n", win.cellFilterForTest(QString::fromLocal8Bit(ce), true).toUtf8().constData());
         // Optional palette check: VVG_PALETTE="<query>" (the commands it lists).
         if (const char* pq = std::getenv("VVG_PALETTE"); pq)
             win.dumpPaletteForTest(QString::fromLocal8Bit(pq));

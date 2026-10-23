@@ -1201,7 +1201,14 @@ std::string apply_region_modifiers(Config& cfg) {
 bool narrow_filter_to_value(const std::string& current, const arrow::Schema& schema,
                             int col, const ValueCount& v, std::string* out,
                             std::string* why) {
+    return narrow_filter_by_values(current, schema, col, {v}, false, out, why);
+}
+
+bool narrow_filter_by_values(const std::string& current, const arrow::Schema& schema,
+                             int col, const std::vector<ValueCount>& values, bool exclude,
+                             std::string* out, std::string* why) {
     if (col < 0 || col >= schema.num_fields()) { *why = "no such column"; return false; }
+    if (values.empty()) { *why = "no value"; return false; }
     auto field = schema.field(col);
     const std::string ident = filter_quote_name(field->name());
     // A dictionary column compares by its decoded values.
@@ -1213,39 +1220,64 @@ bool narrow_filter_to_value(const std::string& current, const arrow::Schema& sch
                         arrow::is_decimal(id) || id == arrow::Type::BOOL;
     const bool text = id == arrow::Type::STRING || id == arrow::Type::LARGE_STRING ||
                       is_date_or_timestamp(*vt);
-    std::string atom;
-    if (v.null) {
-        atom = ident + " is null";
-    } else if (!number && !text) {
-        // Lists, structs, maps, binary and extension columns: == does not
-        // compare their values.
-        *why = "a " + type_label(*field->type()) + " column cannot be filtered with ==";
-        return false;
-    } else if (number) {
-        atom = ident + " == " + v.value;
-    } else if (v.value.find('"') == std::string::npos) {
-        atom = ident + " == \"" + v.value + "\"";
-    } else if (v.value.find('\'') == std::string::npos) {
-        atom = ident + " == '" + v.value + "'";
-    } else {
-        *why = "this value holds both quote characters; no filter can name it";
-        return false;
+    // The literals, each quoted on its own; nulls apart.
+    bool has_null = false;
+    std::vector<std::string> lits;
+    for (const ValueCount& v : values) {
+        if (v.null) { has_null = true; continue; }
+        if (!number && !text) {
+            // Lists, structs, maps, binary and extension columns: == does not
+            // compare their values.
+            *why = "a " + type_label(*field->type()) + " column cannot be filtered by value";
+            return false;
+        }
+        std::string lit;
+        if (number) lit = v.value;
+        else if (v.value.find('"') == std::string::npos) lit = "\"" + v.value + "\"";
+        else if (v.value.find('\'') == std::string::npos) lit = "'" + v.value + "'";
+        else {
+            *why = "this value holds both quote characters; no filter can name it";
+            return false;
+        }
+        if (std::find(lits.begin(), lits.end(), lit) == lits.end()) lits.push_back(lit);
     }
-    std::string expr = atom;
+    // Keep: any of the values (alternatives, OR). Drop: none of them (AND).
+    std::vector<std::string> atoms;
+    if (lits.size() == 1) atoms.push_back(ident + (exclude ? " != " : " == ") + lits[0]);
+    else if (lits.size() > 1) {
+        std::string set;
+        for (const auto& l : lits) set += (set.empty() ? "" : ", ") + l;
+        atoms.push_back(ident + (exclude ? " not in (" : " in (") + set + ")");
+    }
+    if (has_null) atoms.push_back(ident + (exclude ? " is not null" : " is null"));
+
     FilterExpr before;
     const bool had = !current.empty();
-    if (had) {
-        if (!parse_filter_expr(current, schema, &before, why)) return false;
-        expr.clear();
-        for (const auto& branch : filter_split_or(current))
-            expr += (expr.empty() ? "" : " OR ") + branch + " AND " + atom;
+    if (had && !parse_filter_expr(current, schema, &before, why)) return false;
+    std::vector<std::string> branches = had ? filter_split_or(current) : std::vector<std::string>{""};
+    auto both = [](const std::string& l, const std::string& r) {
+        return l.empty() ? r : l + " AND " + r;
+    };
+    std::string expr;
+    for (const auto& branch : branches) {
+        if (exclude) {
+            std::string b = branch;
+            for (const auto& a : atoms) b = both(b, a);
+            expr += (expr.empty() ? "" : " OR ") + b;
+        } else {
+            for (const auto& a : atoms) expr += (expr.empty() ? "" : " OR ") + both(branch, a);
+        }
     }
     FilterExpr fx;
     if (!parse_filter_expr(expr, schema, &fx, why)) return false;
-    // Each OR branch must have gained exactly the one new condition.
-    bool shape_ok = !had || fx.groups.size() == before.groups.size();
-    for (size_t g = 0; shape_ok && had && g < fx.groups.size(); ++g)
-        shape_ok = fx.groups[g].size() == before.groups[g].size() + 1;
+    // Each OR branch must have gained exactly the new conditions.
+    const size_t before_groups = had ? before.groups.size() : 1;
+    const size_t per_branch = exclude ? 1 : atoms.size();
+    bool shape_ok = fx.groups.size() == before_groups * per_branch;
+    for (size_t g = 0; shape_ok && g < fx.groups.size(); ++g) {
+        const size_t base = had ? before.groups[g / per_branch].size() : 0;
+        shape_ok = fx.groups[g].size() == base + (exclude ? atoms.size() : 1);
+    }
     if (!shape_ok) { *why = "could not combine with the current filter"; return false; }
     *out = expr;
     return true;

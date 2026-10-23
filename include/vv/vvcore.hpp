@@ -317,6 +317,12 @@ std::string format_temporal_value(double v, const std::shared_ptr<arrow::DataTyp
 bool narrow_filter_to_value(const std::string& current, const arrow::Schema& schema,
                             int col, const ValueCount& v, std::string* out,
                             std::string* why);
+// The same for several values of column `col` at once: keep the rows holding
+// any of them (`== v`, `in (a, b)`, `is null`), or with `exclude` drop them
+// (`!= v`, `not in (a, b)`, `is not null`), in every OR branch of `current`.
+bool narrow_filter_by_values(const std::string& current, const arrow::Schema& schema,
+                             int col, const std::vector<ValueCount>& values, bool exclude,
+                             std::string* out, std::string* why);
 
 // ── Source interface ─────────────────────────────────────────────────────────
 struct ChunkMeta { int64_t first_row; int64_t num_rows; };

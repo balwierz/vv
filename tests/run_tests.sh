@@ -5392,6 +5392,21 @@ if [ -x "$FC" ]; then
     assert_contains "features_rds_sparse"  "$FOUT" "tab dgc matrix=1 slices=0 coords=0"
     assert_contains "features_rds_frame"   "$FOUT" "tab lst\$df matrix=0 slices=0 coords=0"
     refute_contains "features_quiet"       "$FOUT" "[W::"
+    # Filter / Exclude from cells (vvg): the expression narrow_filter_by_values
+    # builds, and that vv --filter reads it back with the expected rows.
+    NP="$DATA/tiny.parquet"
+    assert_eq_file_inline "narrow_keep_one" "$("$FC" --narrow "$NP" Chr keep "" chr1)" 'Chr == "chr1"'
+    assert_eq_file_inline "narrow_drop_one" "$("$FC" --narrow "$NP" Chr drop "" chr1)" 'Chr != "chr1"'
+    assert_eq_file_inline "narrow_keep_set" "$("$FC" --narrow "$NP" Chr keep "Score > 0.5" chr1 chr2)" \
+        'Score > 0.5 AND Chr in ("chr1", "chr2")'
+    assert_eq_file_inline "narrow_keep_null_or" "$("$FC" --narrow "$NP" Chr keep "Score > 0.5 OR Start < 300" chr1 '\N')" \
+        'Score > 0.5 AND Chr == "chr1" OR Score > 0.5 AND Chr is null OR Start < 300 AND Chr == "chr1" OR Start < 300 AND Chr is null'
+    assert_eq_file_inline "narrow_drop_set_null" "$("$FC" --narrow "$NP" Chr drop "" chr1 chr2 '\N')" \
+        'Chr not in ("chr1", "chr2") AND Chr is not null'
+    assert_eq_file_inline "narrow_number" "$("$FC" --narrow "$NP" Start keep "" 100)" 'Start == 100'
+    assert_contains "narrow_list_refused" "$("$FC" --narrow "$NP" Tags keep "" x)" "error: a list<element: string> column cannot be filtered by value"
+    assert_eq_file_inline "narrow_keep_rows" "$("$VV" --count --filter "$("$FC" --narrow "$NP" Chr keep "" chr1)" "$NP")" "12"
+    assert_eq_file_inline "narrow_drop_rows" "$("$VV" --count --filter "$("$FC" --narrow "$NP" Chr drop "" chr1)" "$NP")" "8"
 else
     echo "  skip  features (no $FC)"
 fi

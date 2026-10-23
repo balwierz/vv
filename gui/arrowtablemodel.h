@@ -157,6 +157,10 @@ public:
 
     QString footer() const;
     QString columnName(int displayCol) const;
+    // Cell (row, displayCol) as a --filter value: its stored text (not
+    // digit-grouped, no format_cell), or null. `ok` is false when the row
+    // is not loaded.
+    ValueCount filterValue(int row, int displayCol, bool* ok) const;
     QString columnType(int displayCol) const;
     int     displayColumnCount() const { return (int)displayCols_.size(); }
     int     sourceColumn(int displayCol) const { return displayCols_[(size_t)displayCol]; }

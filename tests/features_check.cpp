@@ -5,12 +5,41 @@
 //        contigs=… variants=… samples=… expand=<column> hint=<region_hint>
 //   tab <label> matrix=0|1 slices=0|1 coords=0|1
 // --matrix-long opens the files after it with --matrix long.
+// --narrow FILE COLUMN keep|drop CURRENT VALUE…: the filter
+// narrow_filter_by_values builds (a VALUE of \N is a null), or "error: …".
 #include "vv/vvcore.hpp"
 
 #include <cstdio>
 #include <string>
 
+static int narrow(int argc, char** argv) {
+    if (argc < 7) { std::fprintf(stderr, "--narrow FILE COLUMN keep|drop CURRENT VALUE...\n"); return 2; }
+    Config cfg;
+    cfg.path = argv[2];
+    std::unique_ptr<TabularSource> src;
+    if (std::string e = open_source(cfg.path, cfg, &src); !e.empty() || !src) {
+        std::printf("error: %s\n", e.c_str());
+        return 1;
+    }
+    const auto schema = src->schema();
+    const int col = schema->GetFieldIndex(argv[3]);
+    std::vector<ValueCount> values;
+    for (int i = 6; i < argc; ++i) {
+        ValueCount v;
+        if (std::string(argv[i]) == "\\N") v.null = true;
+        else v.value = argv[i];
+        values.push_back(v);
+    }
+    std::string out, why;
+    if (narrow_filter_by_values(argv[5], *schema, col, values, std::string(argv[4]) == "drop", &out, &why))
+        std::printf("%s\n", out.c_str());
+    else
+        std::printf("error: %s\n", why.c_str());
+    return 0;
+}
+
 int main(int argc, char** argv) {
+    if (argc > 1 && std::string(argv[1]) == "--narrow") return narrow(argc, argv);
     int rc = 0;
     bool matrix_long = false;
     for (int i = 1; i < argc; ++i) {

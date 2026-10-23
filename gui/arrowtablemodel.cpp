@@ -424,6 +424,24 @@ int ArrowTableModel::summableDigits(int displayCol) const {
     return 15;
 }
 
+ValueCount ArrowTableModel::filterValue(int row, int dispCol, bool* ok) const {
+    ValueCount v;
+    *ok = false;
+    const LoadedChunk* lc = chunkForRow(sourceRow(row));
+    if (!lc || !lc->table || dispCol < 0 || dispCol >= lc->table->num_columns()) return v;
+    int64_t local = sourceRow(row) - lc->first_row;
+    for (const auto& a : lc->table->column(dispCol)->chunks()) {
+        if (local < a->length()) {
+            v.null = a->IsNull(local);
+            if (!v.null) v.value = cell_to_string(*a, local);
+            *ok = true;
+            return v;
+        }
+        local -= a->length();
+    }
+    return v;
+}
+
 QString ArrowTableModel::rawCellText(int viewRow, int dispCol) const {
     const LoadedChunk* lc = chunkForRow(sourceRow(viewRow));
     if (!lc || !lc->table) return {};

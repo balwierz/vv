@@ -93,7 +93,10 @@ Command* goes the other way.
   menu and *View ▸*). The Filter box (*Ctrl+Shift+F*) uses vv's `--filter`
   grammar (`score > 5 and chrom == "chr1"`); the Find box (*Ctrl+F*) takes a
   regex. All three run off the UI thread with a progress bar and *Cancel*, so
-  multi-GB files stay responsive.
+  multi-GB files stay responsive. Right-click a cell for *Filter to “value”*,
+  *Exclude “value”* (with several cells of one column selected: `in (…)` /
+  `not in (…)`; an empty cell: `is null`), added to the current filter, and
+  *Column Statistics*.
 - **JSON tree** — a JSON document (`.json`, `.geojson`, `.ipynb`, `.har`, also
   compressed) opens as a tree: keys, values and types, children loaded as you
   expand, the jq path and validation in the status bar, the value in the detail
