@@ -1148,6 +1148,50 @@ std::string build_sort(std::unique_ptr<TabularSource>& src,
     return "";
 }
 
+std::string build_row_subset(std::unique_ptr<TabularSource>& src,
+                             const std::vector<int64_t>& rows) {
+    std::vector<int64_t> want = rows;
+    std::sort(want.begin(), want.end());
+    want.erase(std::unique(want.begin(), want.end()), want.end());
+    auto schema = src->schema();
+    const int n = schema->num_fields();
+    std::vector<int> all((size_t)n);
+    std::iota(all.begin(), all.end(), 0);
+    std::vector<arrow::ArrayVector> parts((size_t)n);
+    int64_t N = 0;
+    size_t w = 0;
+    while (w < want.size() && want[w] < 0) ++w;
+    for (int c = 0; w < want.size(); ++c) {
+        src->ensure(c);
+        if (c >= src->num_chunks()) break;
+        std::shared_ptr<arrow::Table> t;
+        if (!src->read_chunk(c, all, &t).ok() || !t) continue;
+        const int64_t first = src->chunk_meta(c).first_row, end = first + t->num_rows();
+        std::vector<int64_t> local;
+        for (; w < want.size() && want[w] < end; ++w)
+            if (want[w] >= first) local.push_back(want[w] - first);
+        if (local.empty()) continue;
+        for (int k = 0; k < n; ++k) {
+            auto g = gather_chunked(*t->column(k), local);
+            if (!g.ok()) return "selection: gather failed: " + g.status().ToString();
+            parts[(size_t)k].push_back(*g);
+        }
+        N += (int64_t)local.size();
+    }
+    if (!src->read_status().ok())
+        return shorten_reader_error(src->read_status().ToString());
+    std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
+    for (int k = 0; k < n; ++k)
+        cols.push_back(std::make_shared<arrow::ChunkedArray>(std::move(parts[(size_t)k]),
+                                                             schema->field(k)->type()));
+    auto hidden = src->hidden_for_display();
+    const std::string path = src->path();
+    src = std::make_unique<MemoryTableSource>(arrow::Table::Make(schema, cols, N),
+                                              "<selection of " + path + ">",
+                                              "Selected rows: " + std::to_string(N), hidden);
+    return "";
+}
+
 // --distinct: SQL SELECT DISTINCT — drop duplicate rows, keeping the first
 // occurrence, over the columns that would be shown (honouring --select and
 // --filter). So `--select chrom --distinct` lists distinct chromosomes, and a

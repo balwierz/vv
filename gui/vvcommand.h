@@ -25,6 +25,8 @@ struct VvCommandSpec {
     QList<QPair<QString, bool>> sort; // (column, descending), first key first; empty = unsorted
     QStringList select;               // --select terms; empty = all columns
     bool        describe = false;     // --describe (the Column tab's command)
+    std::vector<int64_t> rows;        // Export Selection: these source rows only
+                                      // (Config::row_subset; not on the command line)
 };
 
 // POSIX shell quoting: the word unchanged when it is made only of characters

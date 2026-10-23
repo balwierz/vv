@@ -94,6 +94,9 @@ struct Config {
     // first, its ties by the next, …
     struct SortKey { std::string col; bool desc = false; };
     std::vector<SortKey> sort_then;
+    // export_view only (vvg's Export Selection): write just these source
+    // rows (any order; the view's filter and sort still apply). Empty = all.
+    std::vector<int64_t> row_subset;
     std::string bam_tags;                // --tags LIST: BAM/CRAM/SAM only — add
                                          // one typed column per named aux tag
                                          // (comma-separated 2-char SAM tags)

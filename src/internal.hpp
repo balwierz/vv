@@ -1421,6 +1421,12 @@ std::string build_sort(std::unique_ptr<TabularSource>& src,
 
 std::string build_distinct(std::unique_ptr<TabularSource>& src,
                            Config& cfg);
+
+// Keep only the source rows `rows` (any order, duplicates ignored), in source
+// order, as a MemoryTableSource. Reads chunk by chunk and holds only the
+// rows kept.
+std::string build_row_subset(std::unique_ptr<TabularSource>& src,
+                             const std::vector<int64_t>& rows);
 #ifndef VV_CORE_LIB
 
 // The view the TUI opens with, from --select / --filter / --sort, applied as

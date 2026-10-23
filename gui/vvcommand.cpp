@@ -75,5 +75,6 @@ Config vvCommandConfig(const VvCommandSpec& s) {
     }
     cfg.select_cols = s.select.join(QLatin1Char(',')).toStdString();
     cfg.describe    = s.describe;
+    cfg.row_subset  = s.rows;
     return cfg;
 }

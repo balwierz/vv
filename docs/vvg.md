@@ -101,6 +101,13 @@ Command* goes the other way.
   *Exclude “value”* (with several cells of one column selected: `in (…)` /
   `not in (…)`; an empty cell: `is null`), added to the current filter, and
   *Column Statistics*.
+- **Copy and export a selection** — *Ctrl+C* copies the selected cells as
+  tab-separated text, *Ctrl+Shift+C* whole rows; *Edit ▸ Copy As* adds a
+  header row, as TSV, CSV (RFC 4180 quoting) or a Markdown table. Columns come
+  in on-screen order, hidden ones left out. *Export Selection As…* (File, the
+  *Export* button's ▾, or a cell's right-click menu) writes the selected rows
+  — and columns, when the selection does not span all — to Parquet, Arrow,
+  TSV, CSV or JSON, typed, in the view's order.
 - **JSON tree** — a JSON document (`.json`, `.geojson`, `.ipynb`, `.har`, also
   compressed) opens as a tree: keys, values and types, children loaded as you
   expand, the jq path and validation in the status bar, the value in the detail

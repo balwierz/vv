@@ -647,7 +647,8 @@ private:
         syncHeaderTypes(activeView());
         updateTitle();
         // Copy and Copy Row act on a table; elsewhere Ctrl+C reaches the view.
-        for (QAction* a : {copyAct_, copyRowAct_}) if (a) a->setEnabled(activeView() != nullptr);
+        for (QAction* a : {copyAct_, copyRowAct_, exportSelAct_}) if (a) a->setEnabled(activeView() != nullptr);
+        for (QAction* a : copyAsActs_) a->setEnabled(activeView() != nullptr);
         if (selTimer_) selTimer_->start();
         if (colTimer_) colTimer_->start();
         syncFileControls();
@@ -1153,6 +1154,20 @@ private:
                                  [this] { copySelection(); });
         copyRowAct_ = makeAction(tr("Copy &Row"), QKeySequence(QStringLiteral("Ctrl+Shift+C")),
                                     tr("Copy the selected rows, every column"), [this] { copyRows(); });
+        // Edit ▸ Copy As: the selection with a header row, as CSV or a Markdown table.
+        copyAsMenu_ = new QMenu(tr("Copy &As"), this);
+        copyAsMenu_->setToolTipsVisible(true);
+        for (auto [text, fmt, tip] : std::initializer_list<std::tuple<QString, CopyFormat, QString>>{
+                 {tr("&TSV with Header"), CopyFormat::TsvHeader, tr("Tab-separated, the column names first")},
+                 {tr("&CSV"), CopyFormat::Csv, tr("Comma-separated with a header row, quoted as RFC 4180")},
+                 {tr("&Markdown Table"), CopyFormat::Markdown, tr("A GitHub-flavoured Markdown table")}}) {
+            QAction* a = makeAction(text, {}, tip, [this, fmt] { copySelectionAs(fmt, false); });
+            copyAsMenu_->addAction(a);
+            copyAsActs_ << a;
+        }
+        exportSelAct_ = makeAction(tr("Export &Selection As…"), {},
+            tr("Write the selected rows and columns (in the view's order) to Parquet, Arrow, TSV, "
+               "CSV or JSON"), [this] { exportViewDialog(true); });
         openAct_->setIconText(tr("Open"));
         setActionIcon(openAct_, "document-open", Glyph::Open);
         setActionIcon(openDirAct_, "folder-open", Glyph::Directory);
@@ -1251,6 +1266,7 @@ private:
         rebuildRecentMenu();
         file->addSeparator();
         file->addAction(exportAction_);
+        file->addAction(exportSelAct_);
         file->addSeparator();
         file->addAction(close);
         file->addAction(closeFileAct_);
@@ -1261,6 +1277,7 @@ private:
         edit->setToolTipsVisible(true);
         edit->addAction(copyAct_);
         edit->addAction(copyRowAct_);
+        edit->addMenu(copyAsMenu_);
         edit->addSeparator();
         edit->addAction(copyCmdAct_);
         edit->addSeparator();
@@ -1307,6 +1324,7 @@ private:
         appMenu_->addMenu(recentMenu_);
         appMenu_->addSeparator();
         appMenu_->addAction(exportAction_);
+        appMenu_->addAction(exportSelAct_);
         appMenu_->addAction(close);
         appMenu_->addAction(closeFileAct_);
         appMenu_->addSeparator();
@@ -1320,6 +1338,7 @@ private:
         exportMenu_ = new QMenu(this);
         exportMenu_->setToolTipsVisible(true);
         exportMenu_->addAction(exportAction_);
+        exportMenu_->addAction(exportSelAct_);
         exportMenu_->addAction(copyCmdAct_);
         exportMenu_->addSeparator();
         exportMenu_->addAction(openExportDirAct_);
@@ -2341,58 +2360,101 @@ private:
                 statusBar()->showMessage(tr("Copied"), 2000);
             return;
         }
-        auto* v = activeView();
-        if (!v) return;
-        auto sel = v->selectionModel()->selectedIndexes();
-        if (sel.isEmpty()) return;
-        auto* sm = qobject_cast<ArrowTableModel*>(v->model());
-        if (!sm) return;
-        ArrowTableModel::SyncReads now(sm);   // rows not on screen are read here
-        std::sort(sel.begin(), sel.end(), [](const QModelIndex& a, const QModelIndex& b){
-            return a.row() != b.row() ? a.row() < b.row() : a.column() < b.column();
-        });
-        QString out;
-        int curRow = sel.first().row();
-        bool firstInRow = true;
-        for (const auto& idx : sel) {
-            if (idx.row() != curRow) { out += '\n'; curRow = idx.row(); firstInRow = true; }
-            if (!firstInRow) out += '\t';
-            out += idx.data(ArrowTableModel::RawTextRole).toString();
-            firstInRow = false;
-        }
-        QApplication::clipboard()->setText(out);
-        statusBar()->showMessage(tr("Copied %1 cell(s)").arg(sel.size()), 2000);
+        copySelectionAs(CopyFormat::Tsv, false);
     }
 
     // Copy the full row(s) touched by the selection (or the current cell) as
-    // one TSV line each — every column, in display order, raw values. This
-    // works across columns of different types because a cell's value is always
-    // rendered to text (that is what the grid shows); joining those texts with
-    // tabs is type-agnostic.
-    void copyRows() {
+    // one TSV line each — every visible column, in on-screen order, raw values.
+    void copyRows() { copySelectionAs(CopyFormat::Tsv, true); }
+
+    enum class CopyFormat { Tsv, TsvHeader, Csv, Markdown };
+    // The selection as a grid: its rows (view order) and its columns (display
+    // columns, on-screen order, hidden ones left out); with `wholeRows` every
+    // visible column. A cell of the grid that is not selected is empty.
+    struct SelectionGrid { std::vector<int> rows, cols; QSet<quint64> cells; bool all = false; };
+    SelectionGrid selectionGrid(QTableView* v, ArrowTableModel* m, bool wholeRows) const {
+        SelectionGrid g;
+        const QModelIndexList sel = v->selectionModel()->selectedIndexes();
+        std::set<int> rows, cols;
+        for (const QModelIndex& i : sel) {
+            if (v->isColumnHidden(i.column())) continue;
+            rows.insert(i.row());
+            cols.insert(i.column());
+            g.cells.insert(((quint64)i.row() << 32) | (quint32)i.column());
+        }
+        if (rows.empty() && v->currentIndex().isValid()) {
+            rows.insert(v->currentIndex().row());
+            cols.insert(v->currentIndex().column());
+            g.cells.insert(((quint64)v->currentIndex().row() << 32) | (quint32)v->currentIndex().column());
+        }
+        g.rows.assign(rows.begin(), rows.end());
+        auto* h = v->horizontalHeader();
+        for (int vis = 0; vis < m->columnCount(); ++vis) {
+            const int c = h->logicalIndex(vis);
+            if (v->isColumnHidden(c)) continue;
+            if (wholeRows || cols.count(c)) g.cols.push_back(c);
+        }
+        g.all = wholeRows;
+        return g;
+    }
+    // `g` as text: TSV (no header, what Ctrl+C copies), TSV with a header
+    // row, CSV (RFC 4180 quoting) or a Markdown table (numbers right-aligned).
+    static QString gridText(ArrowTableModel* m, const SelectionGrid& g, CopyFormat f) {
+        auto csv = [](QString t) {
+            if (t.contains(QLatin1Char(',')) || t.contains(QLatin1Char('"')) || t.contains(QLatin1Char('\n')) ||
+                t.contains(QLatin1Char('\r')) || t != t.trimmed()) {
+                t.replace(QLatin1String("\""), QLatin1String("\"\""));
+                t = QLatin1Char('"') + t + QLatin1Char('"');
+            }
+            return t;
+        };
+        auto md = [](QString t) {
+            t.replace(QLatin1Char('|'), QLatin1String("\\|"));
+            t.replace(QLatin1String("\r\n"), QLatin1String("<br>"));
+            t.replace(QLatin1Char('\n'), QLatin1String("<br>"));
+            return t;
+        };
+        auto cell = [&](const QString& t) {
+            return f == CopyFormat::Csv ? csv(t) : f == CopyFormat::Markdown ? md(t) : t;
+        };
+        const QString sep = f == CopyFormat::Csv ? QStringLiteral(",")
+                          : f == CopyFormat::Markdown ? QStringLiteral(" | ") : QStringLiteral("\t");
+        auto line = [&](const QStringList& fields) {
+            return f == CopyFormat::Markdown ? QStringLiteral("| ") + fields.join(sep) + QStringLiteral(" |")
+                                             : fields.join(sep);
+        };
+        QStringList lines;
+        if (f != CopyFormat::Tsv) {
+            QStringList head, rule;
+            for (int c : g.cols) {
+                head << cell(m->columnName(c));
+                const bool num = m->summableDigits(c) > 0;
+                rule << (num ? QStringLiteral("---:") : QStringLiteral("---"));
+            }
+            lines << line(head);
+            if (f == CopyFormat::Markdown) lines << line(rule);
+        }
+        ArrowTableModel::SyncReads now(m);   // rows not on screen are read here
+        for (int r : g.rows) {
+            QStringList fields;
+            for (int c : g.cols) {
+                const bool in = g.all || g.cells.contains(((quint64)r << 32) | (quint32)c);
+                fields << (in ? cell(m->index(r, c).data(ArrowTableModel::RawTextRole).toString()) : QString());
+            }
+            lines << line(fields);
+        }
+        return lines.join(QLatin1Char('\n'));
+    }
+    void copySelectionAs(CopyFormat f, bool wholeRows) {
         auto* v = activeView();
         auto* m = activeModel();
         if (!v || !m) return;
-        std::set<int> rows;
-        for (const auto& idx : v->selectionModel()->selectedIndexes())
-            rows.insert(idx.row());
-        if (rows.empty() && v->currentIndex().isValid())
-            rows.insert(v->currentIndex().row());
-        if (rows.empty()) return;
-        ArrowTableModel::SyncReads now(m);    // rows not on screen are read here
-        const int ncols = m->columnCount();
-        QString out;
-        bool firstRow = true;
-        for (int r : rows) {
-            if (!firstRow) out += '\n';
-            firstRow = false;
-            for (int c = 0; c < ncols; ++c) {
-                if (c) out += '\t';
-                out += m->index(r, c).data(ArrowTableModel::RawTextRole).toString();
-            }
-        }
-        QApplication::clipboard()->setText(out);
-        statusBar()->showMessage(tr("Copied %1 row(s)").arg((int)rows.size()), 2000);
+        const SelectionGrid g = selectionGrid(v, m, wholeRows);
+        if (g.rows.empty() || g.cols.empty()) return;
+        QApplication::clipboard()->setText(gridText(m, g, f));
+        statusBar()->showMessage(wholeRows ? tr("Copied %n row(s)", nullptr, (int)g.rows.size())
+                                           : tr("Copied %1 × %2 cells").arg(g.rows.size()).arg(g.cols.size()),
+                                 2000);
     }
 
     // The vv command line that reproduces the active tab (see vvcommand.h).
@@ -2444,13 +2506,7 @@ public:
             const int c = h->logicalIndex(vis);
             if (c != vis) reordered = true;
             if (v->isColumnHidden(c)) { anyHidden = true; continue; }
-            const QString name = m->columnName(c);
-            if (name.contains(QLatin1Char(',')) || name.trimmed() != name || name.isEmpty()) {
-                const int pos = m->sourceColumn(c) + 1;
-                visible << QStringLiteral("%1-%1").arg(pos);
-            } else {
-                visible << name;
-            }
+            visible << selectTerm(m, c);
         }
         if (anyHidden || reordered) s.select = visible;
         return true;
@@ -2789,10 +2845,11 @@ private:
         return true;
     }
 
-    void exportViewDialog() {
+    void exportViewDialog(bool selection = false) {
         if (exportWatcher_) return;                 // one export at a time
         VvCommandSpec s;
         if (!specForActiveTab(&s)) return;
+        if (selection && !restrictToSelection(&s)) return;
         struct Choice { QString filter, ext; };
         const Choice choices[] = {
             {tr("Parquet (*.parquet)"),          QStringLiteral("parquet")},
@@ -2806,9 +2863,10 @@ private:
         for (const auto& c : choices) filters << c.filter;
         QString chosen = filters.first();
         const QString base = QFileInfo(s.path).completeBaseName()
-                             + (s.tab.isEmpty() ? QString() : QLatin1Char('.') + s.tab);
+                             + (s.tab.isEmpty() ? QString() : QLatin1Char('.') + s.tab)
+                             + (selection ? QStringLiteral(".selection") : QString());
         QString out = QFileDialog::getSaveFileName(
-            this, tr("Export view"),
+            this, selection ? tr("Export selection") : tr("Export view"),
             QDir(lastDir_.isEmpty() ? QDir::currentPath() : lastDir_)
                 .filePath(base + QStringLiteral(".parquet")),
             filters.join(QStringLiteral(";;")), &chosen);
@@ -2820,6 +2878,32 @@ private:
             if (!exportFormatForPath(out, &f)) return;
         }
         startExport(s, out, f);
+    }
+
+    // Limit an export of the active tab to the selection: its rows (as source
+    // rows) and, when it does not span every visible column, its columns.
+    bool restrictToSelection(VvCommandSpec* s) const {
+        auto* v = activeView();
+        auto* m = activeModel();
+        if (!v || !m) return false;
+        const SelectionGrid g = selectionGrid(v, m, false);
+        if (g.rows.empty()) return false;
+        for (int r : g.rows) s->rows.push_back(m->sourceRowOf(r));
+        int visible = 0;
+        for (int c = 0; c < m->columnCount(); ++c) visible += !v->isColumnHidden(c);
+        if ((int)g.cols.size() < visible) {
+            s->select.clear();
+            for (int c : g.cols) s->select << selectTerm(m, c);
+        }
+        return true;
+    }
+    // A display column as a --select term: its name, or its 1-based source
+    // position ("N-N") when --select would split or trim the name.
+    static QString selectTerm(ArrowTableModel* m, int c) {
+        const QString name = m->columnName(c);
+        if (name.contains(QLatin1Char(',')) || name.trimmed() != name || name.isEmpty())
+            return QStringLiteral("%1-%1").arg(m->sourceColumn(c) + 1);
+        return name;
     }
 
     // Run export_view on a worker thread; the status bar shows the rows written
@@ -2914,6 +2998,9 @@ private:
                     [this, m, cells] { applyCellFilter(m, cells, true); });
             connect(menu.addAction(tr("Column &Statistics")), &QAction::triggered, this,
                     [this, view, idx] { view->setCurrentIndex(idx); showColumnTab(); });
+            menu.addSeparator();
+            menu.addMenu(copyAsMenu_);
+            menu.addAction(exportSelAct_);
         }
         menu.exec(view->viewport()->mapToGlobal(pos));
     }
@@ -3293,6 +3380,9 @@ private:
     QAction*                       openDirAct_    = nullptr;
     QAction*                       copyAct_       = nullptr;   // toolbar + Edit
     QAction*                       copyRowAct_    = nullptr;
+    QMenu*                         copyAsMenu_    = nullptr;   // Edit ▸ Copy As
+    QList<QAction*>                copyAsActs_;
+    QAction*                       exportSelAct_  = nullptr;   // Export Selection As…
     QStringList                    recent_;                 // Open Recent, newest first
     QString                        openFilter_;             // the Open dialog's last type
     QThread*                       settingsThread_ = nullptr;   // writes vvg.conf (saveSetting)
@@ -3464,6 +3554,35 @@ public:
                         v->horizontalHeader()->isSortIndicatorShown() ? 1 : 0,
                         m->data(m->index(0, 3), Qt::DisplayRole).toString().toUtf8().constData());
         }
+    }
+    // Self-test: select rows r0..r1 × columns c0..c1 of the active tab.
+    bool selectForTest(int r0, int c0, int r1, int c1) {
+        waitIdleForTest();
+        auto* v = activeView();
+        if (!v) return false;
+        QItemSelection sel(v->model()->index(r0, c0), v->model()->index(r1, c1));
+        v->selectionModel()->select(sel, QItemSelectionModel::ClearAndSelect);
+        return true;
+    }
+    // Self-test: Copy As `fmt` (tsv, tsvh, csv, md, rows) of the selection.
+    QString copyAsForTest(const QString& fmt) {
+        if (fmt == QLatin1String("rows")) copyRows();
+        else copySelectionAs(fmt == QLatin1String("csv") ? CopyFormat::Csv
+                             : fmt == QLatin1String("md") ? CopyFormat::Markdown
+                             : fmt == QLatin1String("tsvh") ? CopyFormat::TsvHeader : CopyFormat::Tsv,
+                             false);
+        return QApplication::clipboard()->text();
+    }
+    // Self-test: Export Selection to `out`; "" or the error, and the rows.
+    QString exportSelectionForTest(const QString& out, qint64* rows) {
+        VvCommandSpec s;
+        if (!specForActiveTab(&s) || !restrictToSelection(&s)) return QStringLiteral("no selection");
+        ExportFormat f;
+        if (!exportFormatForPath(out, &f)) return QStringLiteral("unknown extension");
+        startExport(s, out, f);
+        while (exportWatcher_) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        *rows = lastExportRows_;
+        return lastExportError_;
     }
     // Self-test: the palette's rows for `query`, in order.
     void dumpPaletteForTest(const QString& query) {
@@ -3944,6 +4063,21 @@ int main(int argc, char** argv) {
             for (const QString& c : QString::fromLocal8Bit(hd).split(QLatin1Char(',')))
                 if (!win.hideActiveColumnForTest(c))
                     std::fprintf(stderr, "vvg: no column '%s' to hide\n", c.toLocal8Bit().constData());
+        // Optional copy / export-selection checks: VVG_SELECT="r0,c0,r1,c1"
+        // selects a block (after VVG_SORT / VVG_HIDE), then VVG_COPYAS=<fmt>
+        // prints the clipboard and VVG_EXPORT_SEL=<path> exports it.
+        if (const char* se = std::getenv("VVG_SELECT"); se && *se) {
+            const QStringList q = QString::fromLocal8Bit(se).split(QLatin1Char(','));
+            if (q.size() == 4) win.selectForTest(q[0].toInt(), q[1].toInt(), q[2].toInt(), q[3].toInt());
+            if (const char* ca = std::getenv("VVG_COPYAS"); ca && *ca)
+                std::printf("copyas:\n%s\n", win.copyAsForTest(QString::fromLocal8Bit(ca)).toUtf8().constData());
+            if (const char* es = std::getenv("VVG_EXPORT_SEL"); es && *es) {
+                qint64 rows = 0;
+                const QString err = win.exportSelectionForTest(QString::fromLocal8Bit(es), &rows);
+                if (err.isEmpty()) std::printf("export-selection -> rows=%lld\n", (long long)rows);
+                else std::printf("export-selection -> error: %s\n", err.toUtf8().constData());
+            }
+        }
         if (const char* ex = std::getenv("VVG_EXPORT"); ex && *ex) {
             qint64 rows = 0;
             const char* ec = std::getenv("VVG_EXPORT_CANCEL_AFTER");

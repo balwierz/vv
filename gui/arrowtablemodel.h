@@ -166,6 +166,7 @@ public:
 
     QString footer() const;
     QString columnName(int displayCol) const;
+    int64_t sourceRowOf(int viewRow) const { return sourceRow(viewRow); }
     // Cell (row, displayCol) as a --filter value: its stored text (not
     // digit-grouped, no format_cell), or null. `ok` is false when the row
     // is not loaded.
