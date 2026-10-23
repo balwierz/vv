@@ -5394,6 +5394,10 @@ if [ -x "$FC" ]; then
     assert_contains "features_gtf"         "$FOUT" "file tiny.gtf region=ready pileup=0 tags=0 contigs=0 variants=0 samples=0 expand=attributes"
     assert_contains "features_bed_tabix"   "$FOUT" "file tiny.bed.gz region=ready pileup=0 tags=0 contigs=0 variants=0 samples=0 expand=- hint=-"
     assert_contains "features_csv"         "$FOUT" "file tiny.csv region=none pileup=0"
+    # The format_table() row and family each file's extension names.
+    assert_contains "features_format_bam"  "$FOUT" "format BAM / CRAM alignments family=Alignments (BAM, CRAM, SAM, PAF, pileup)"
+    assert_contains "features_format_bedgz" "$FOUT" "format BED family=Intervals and annotations (BED, GFF, bigBed, bigWig)"
+    assert_contains "features_format_h5ad" "$FOUT" "format HDF5 / AnnData / Loom family=HDF5 (AnnData, Loom, MuData, Cooler)"
     assert_contains "features_parquet"     "$FOUT" "file tiny.parquet region=none by-columns"
     assert_contains "features_parquet_tab" "$FOUT" "tab tiny.parquet matrix=0 slices=0 coords=1"
     assert_contains "features_h5ad_x"      "$FOUT" "tab X (preview) matrix=1 slices=0 coords=0"

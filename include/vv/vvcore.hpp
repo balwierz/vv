@@ -549,6 +549,11 @@ struct FileFeatures {
     bool        variants = false;      // VCF / BCF
     bool        has_samples = false;   // VCF / BCF with sample columns (--samples, --gt-stats)
     std::string expand_column;         // packed_column_for(path)
+    // The format_table() row its extension names ("VCF", "HDF5 / AnnData /
+    // Loom") and that row's family; "" for a file named by none (a dataset
+    // directory, an unknown extension sniffed by content).
+    std::string format;
+    std::string family;
 };
 FileFeatures file_features(const std::string& path);
 

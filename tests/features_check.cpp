@@ -50,6 +50,8 @@ int main(int argc, char** argv) {
                            : f.region == FileFeatures::Region::NeedsIndex ? "needs-index"
                                                                           : "none";
         std::string name = path.substr(path.find_last_of('/') + 1);
+        std::printf("format %s family=%s\n", f.format.empty() ? "-" : f.format.c_str(),
+                    f.family.empty() ? "-" : f.family.c_str());
         std::printf("file %s region=%s%s pileup=%d tags=%d contigs=%d variants=%d samples=%d "
                     "expand=%s hint=%s\n",
                     name.c_str(), region, f.region_by_columns ? " by-columns" : "", f.pileup,

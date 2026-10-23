@@ -17,6 +17,10 @@
 #include <arrow/util/compression.h>
 
 #include <QApplication>
+#include <QDialogButtonBox>
+#include <QListWidget>
+#include <QStringListModel>
+#include <QCompleter>
 #include <QIcon>
 #include <QClipboard>
 #include <QComboBox>
@@ -194,7 +198,7 @@ static void flashRect(QWidget* host, const QRect& r) {
 // Toolbar icons where the icon theme has none: monochrome strokes in the
 // window text colour, drawn on a 16-unit grid with gg's line weight (its
 // bundled SVGs), so vvg needs no SVG module.
-enum class Glyph { Menu, Details, Export, Filter, Find, Open, Directory, Copy, CopyRow };
+enum class Glyph { Menu, Details, Export, Filter, Find, Open, Directory, Copy, CopyRow, History };
 static QIcon glyphIcon(Glyph g, const QColor& color) {
     QIcon icon;
     for (int px : {16, 20, 22, 24, 32, 48}) {
@@ -228,6 +232,10 @@ static QIcon glyphIcon(Glyph g, const QColor& color) {
         case Glyph::Find:                     // a magnifier
             p.drawEllipse(QPointF(6.75, 6.75), 4.25, 4.25);
             p.drawLine(QPointF(9.9, 9.9), QPointF(13.5, 13.5));
+            break;
+        case Glyph::History:                  // a clock face
+            p.drawEllipse(QPointF(8, 8), 5.75, 5.75);
+            p.drawPolyline(QPolygonF({QPointF(8, 4.5), QPointF(8, 8), QPointF(10.5, 9.5)}));
             break;
         case Glyph::Open:                     // a sheet with a folded corner
             p.drawPolygon(QPolygonF({QPointF(3.25, 1.75), QPointF(9.5, 1.75), QPointF(12.75, 5),
@@ -293,11 +301,20 @@ public:
         connect(settingsThread_, &QThread::finished, settingsCtx_, &QObject::deleteLater);
         settingsThread_->start();
         {
-            const QSettings st(QStringLiteral("vv"), QStringLiteral("vvg"));
+            QSettings st(QStringLiteral("vv"), QStringLiteral("vvg"));
             showTypes_ = st.value(QStringLiteral("ui/showColumnTypes"), true).toBool();
             smoothScroll_ = st.value(QStringLiteral("smoothScroll"), true).toBool();
             recent_ = st.value(QStringLiteral("recentFiles")).toStringList();
             openFilter_ = st.value(QStringLiteral("ui/openFilter")).toString();
+            for (const char* kind : {"recent", "saved"}) {
+                QSettings& rs = st;
+                rs.beginGroup(QStringLiteral("filters/%1").arg(QLatin1String(kind)));
+                for (const QString& k : rs.childKeys()) {
+                    if (!std::strcmp(kind, "recent")) recentFilters_[k] = rs.value(k).toStringList();
+                    else savedFilters_[k] = rs.value(k).toMap();
+                }
+                rs.endGroup();
+            }
         }
         buildDetailDock();
         buildMenus();
@@ -647,6 +664,7 @@ private:
         materializeTab(i);   // a tab not shown before: build its model now
         syncHeaderTypes(activeView());
         updateTitle();
+        syncFilterCompletions();
         // Copy and Copy Row act on a table; elsewhere Ctrl+C reaches the view.
         for (QAction* a : {copyAct_, copyRowAct_, exportSelAct_}) if (a) a->setEnabled(activeView() != nullptr);
         for (QAction* a : copyAsActs_) a->setEnabled(activeView() != nullptr);
@@ -2114,6 +2132,17 @@ private:
         auto* filterIcon = filterEdit_->addAction(QIcon(), QLineEdit::LeadingPosition);
         setActionIcon(filterIcon, "view-filter", Glyph::Filter);
         connect(filterEdit_, &QLineEdit::returnPressed, this, [this]{ applyFilter(); });
+        // Recent and saved filters of the tab's format family: the clock
+        // menu, and completions while typing.
+        auto* hist = filterEdit_->addAction(QIcon(), QLineEdit::TrailingPosition);
+        setActionIcon(hist, "document-open-recent", Glyph::History);
+        hist->setToolTip(tr("Recent and saved filters for this kind of file"));
+        connect(hist, &QAction::triggered, this, [this] { filterHistoryMenu(); });
+        filterHistModel_ = new QStringListModel(this);
+        auto* completer = new QCompleter(filterHistModel_, filterEdit_);
+        completer->setCaseSensitivity(Qt::CaseInsensitive);
+        completer->setFilterMode(Qt::MatchContains);
+        filterEdit_->setCompleter(completer);
         findEdit_ = new QLineEdit(searchGroup_);
         findEdit_->setPlaceholderText(tr("Find (regex) — Enter: next match"));
         findEdit_->setClearButtonEnabled(true);
@@ -2226,6 +2255,131 @@ private:
         filterEdit_->setStyleSheet({});
         filterText_[m] = text;
         m->setFilterAsync(fx);       // runs off the UI thread; result on finish
+        rememberFilter(text);
+    }
+
+    // The settings key of the active tab's format family ("alignments",
+    // "hdf5", …; "other" for a file of no known family).
+    QString filterFamilyKey() const {
+        const OpenFile* f = activeFile();
+        QString k = f ? QString::fromStdString(f->feat.family).section(QLatin1Char(' '), 0, 0).toLower()
+                      : QString();
+        k.remove(QRegularExpression(QStringLiteral("[^a-z0-9]")));
+        return k.isEmpty() ? QStringLiteral("other") : k;
+    }
+    // An applied filter heads the family's recent list (15 kept).
+    void rememberFilter(const QString& text) {
+        const QString key = filterFamilyKey();
+        QStringList& r = recentFilters_[key];
+        r.removeAll(text);
+        r.prepend(text);
+        while (r.size() > 15) r.removeLast();
+        saveSetting(QStringLiteral("filters/recent/") + key, r);
+        syncFilterCompletions();
+    }
+    void syncFilterCompletions() {
+        if (filterHistModel_) filterHistModel_->setStringList(recentFilters_.value(filterFamilyKey()));
+    }
+    void saveFilter(const QString& name, const QString& expr) {
+        const QString key = filterFamilyKey();
+        savedFilters_[key][name] = expr;
+        saveSetting(QStringLiteral("filters/saved/") + key, savedFilters_[key]);
+    }
+    void useFilter(const QString& expr) {
+        filterEdit_->setText(expr);
+        applyFilter();
+    }
+    // The clock menu of the Filter box: this family's recent and saved
+    // filters, Save Current Filter…, Manage Saved Filters…, Clear Recent.
+    void filterHistoryMenu() {
+        const QString key = filterFamilyKey();
+        const OpenFile* f = activeFile();
+        const QString family = f && !f->feat.family.empty()
+                                   ? QString::fromStdString(f->feat.family).section(QLatin1String(" ("), 0, 0)
+                                   : tr("other files");
+        QMenu menu(this);
+        menu.setToolTipsVisible(true);
+        auto item = [&](const QString& text, const QString& expr) {
+            QAction* a = menu.addAction(fontMetrics().elidedText(text, Qt::ElideMiddle, 420));
+            a->setToolTip(expr);
+            connect(a, &QAction::triggered, this, [this, expr] { useFilter(expr); });
+        };
+        menu.addSection(tr("Recent: %1").arg(family));
+        const QStringList recent = recentFilters_.value(key);
+        for (const QString& e : recent) item(e, e);
+        if (recent.isEmpty()) menu.addAction(tr("(none)"))->setEnabled(false);
+        menu.addSection(tr("Saved: %1").arg(family));
+        const QVariantMap saved = savedFilters_.value(key);
+        for (auto it = saved.cbegin(); it != saved.cend(); ++it)
+            item(it.key() + QStringLiteral("  \u2014  ") + it.value().toString(), it.value().toString());
+        if (saved.isEmpty()) menu.addAction(tr("(none)"))->setEnabled(false);
+        menu.addSeparator();
+        QAction* save = menu.addAction(tr("Save Current Filter…"));
+        save->setEnabled(!filterEdit_->text().trimmed().isEmpty());
+        connect(save, &QAction::triggered, this, [this] {
+            bool ok = false;
+            const QString name = QInputDialog::getText(this, tr("Save Filter"), tr("Name:"),
+                                                       QLineEdit::Normal, {}, &ok).trimmed();
+            if (ok && !name.isEmpty()) saveFilter(name, filterEdit_->text().trimmed());
+        });
+        QAction* manage = menu.addAction(tr("Manage Saved Filters…"));
+        manage->setEnabled(!saved.isEmpty());
+        connect(manage, &QAction::triggered, this, [this] { manageSavedFilters(); });
+        QAction* clear = menu.addAction(tr("Clear Recent"));
+        clear->setEnabled(!recent.isEmpty());
+        connect(clear, &QAction::triggered, this, [this, key] {
+            recentFilters_.remove(key);
+            saveSetting(QStringLiteral("filters/recent/") + key, {});
+            syncFilterCompletions();
+        });
+        menu.exec(filterEdit_->mapToGlobal(QPoint(filterEdit_->width() - menu.sizeHint().width(),
+                                                  filterEdit_->height())));
+    }
+    // Rename or delete this family's saved filters.
+    void manageSavedFilters() {
+        const QString key = filterFamilyKey();
+        QDialog dlg(this);
+        dlg.setWindowTitle(tr("Saved Filters"));
+        dlg.resize(560, 360);
+        auto* lay = new QVBoxLayout(&dlg);
+        auto* list = new QListWidget(&dlg);
+        auto fill = [&] {
+            list->clear();
+            const QVariantMap saved = savedFilters_.value(key);
+            for (auto it = saved.cbegin(); it != saved.cend(); ++it) {
+                auto* li = new QListWidgetItem(it.key() + QStringLiteral("  \u2014  ") + it.value().toString(), list);
+                li->setData(Qt::UserRole, it.key());
+            }
+        };
+        fill();
+        lay->addWidget(list, 1);
+        auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+        QPushButton* rename = buttons->addButton(tr("Rename…"), QDialogButtonBox::ActionRole);
+        QPushButton* del = buttons->addButton(tr("Delete"), QDialogButtonBox::ActionRole);
+        lay->addWidget(buttons);
+        connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+        connect(rename, &QPushButton::clicked, &dlg, [&] {
+            QListWidgetItem* li = list->currentItem();
+            if (!li) return;
+            const QString old = li->data(Qt::UserRole).toString();
+            bool ok = false;
+            const QString name = QInputDialog::getText(&dlg, tr("Rename Filter"), tr("Name:"),
+                                                       QLineEdit::Normal, old, &ok).trimmed();
+            if (!ok || name.isEmpty() || name == old) return;
+            QVariantMap& m = savedFilters_[key];
+            m[name] = m.take(old);
+            saveSetting(QStringLiteral("filters/saved/") + key, m);
+            fill();
+        });
+        connect(del, &QPushButton::clicked, &dlg, [&] {
+            QListWidgetItem* li = list->currentItem();
+            if (!li) return;
+            QVariantMap& m = savedFilters_[key];
+            m.remove(li->data(Qt::UserRole).toString());
+            saveSetting(QStringLiteral("filters/saved/") + key, m.isEmpty() ? QVariant() : QVariant(m));
+            fill();
+        });
+        dlg.exec();
     }
 
     // Find in a JSON tree tab: the next / previous key or value matching the
@@ -3417,6 +3571,9 @@ private:
     QAction*                       exportSelAct_  = nullptr;   // Export Selection As…
     QStringList                    recent_;                 // Open Recent, newest first
     QString                        openFilter_;             // the Open dialog's last type
+    QHash<QString, QStringList>    recentFilters_;          // family key -> newest first
+    QHash<QString, QVariantMap>    savedFilters_;           // family key -> name -> expression
+    QStringListModel*              filterHistModel_ = nullptr;   // the Filter box's completions
     QThread*                       settingsThread_ = nullptr;   // writes vvg.conf (saveSetting)
     QObject*                       settingsCtx_    = nullptr;   // lives on settingsThread_
     QMenu*                         recentMenu_  = nullptr;
@@ -3620,6 +3777,24 @@ public:
     QString openUrlStateForTest() const {
         return QStringLiteral("enabled=%1 schemes=%2").arg(openUrlAct_->isEnabled() ? 1 : 0)
             .arg(QString::fromStdString(remote_schemes()));
+    }
+    // Self-test: apply each filter of `exprs` through the Filter box, save
+    // the last as `saveAs` (unless empty); then the family's lists.
+    QString filterHistoryForTest(const QStringList& exprs, const QString& saveAs) {
+        waitIdleForTest();
+        auto* m = activeModel();
+        for (const QString& e : exprs) {
+            useFilter(e);
+            for (int g = 0; m && m->isComputing() && g < 2000000; ++g) QCoreApplication::processEvents();
+        }
+        if (!saveAs.isEmpty()) saveFilter(saveAs, filterEdit_->text().trimmed());
+        const QString key = filterFamilyKey();
+        QStringList saved;
+        const QVariantMap sm = savedFilters_.value(key);
+        for (auto it = sm.cbegin(); it != sm.cend(); ++it) saved << it.key() + QLatin1Char('=') + it.value().toString();
+        return QStringLiteral("key=%1 recent=%2 saved=%3 completions=%4")
+            .arg(key, recentFilters_.value(key).join(QLatin1Char('|')), saved.join(QLatin1Char('|')))
+            .arg(filterHistModel_->rowCount());
     }
     // Self-test: the palette's rows for `query`, in order.
     void dumpPaletteForTest(const QString& query) {
@@ -4051,6 +4226,14 @@ int main(int argc, char** argv) {
         // Optional Open URL check: VVG_OPENURL_STATE=1.
         if (const char* ou = std::getenv("VVG_OPENURL_STATE"); ou && *ou && *ou != '0')
             std::printf("openurl %s\n", win.openUrlStateForTest().toUtf8().constData());
+        // Optional filter-history check: VVG_FILTERHIST="expr;expr…" applies
+        // each through the Filter box, VVG_SAVEFILTER=<name> saves the last.
+        if (const char* fh = std::getenv("VVG_FILTERHIST"); fh) {
+            const char* sv = std::getenv("VVG_SAVEFILTER");
+            std::printf("filterhist %s\n", win.filterHistoryForTest(
+                QString::fromLocal8Bit(fh).split(QLatin1Char(';'), Qt::SkipEmptyParts),
+                sv ? QString::fromLocal8Bit(sv) : QString()).toUtf8().constData());
+        }
         // Optional palette check: VVG_PALETTE="<query>" (the commands it lists).
         if (const char* pq = std::getenv("VVG_PALETTE"); pq)
             win.dumpPaletteForTest(QString::fromLocal8Bit(pq));

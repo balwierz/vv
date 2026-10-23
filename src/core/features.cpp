@@ -16,6 +16,20 @@ std::string drop_ext(const std::string& path) {
 
 }  // namespace
 
+// The format_table() row whose extension `name` ends with, the longest such
+// (.zarr.zip over .zip-like shorter ones), with .gz where the format reads it.
+static const FormatInfo* format_row(const std::string& name) {
+    const FormatInfo* best = nullptr;
+    size_t best_len = 0;
+    for (const FormatInfo& fi : format_table())
+        for (const std::string& e : format_extensions(fi))
+            if ((fends_ci(name, e) || (fi.gz && fends_ci(name, e + ".gz"))) && e.size() > best_len) {
+                best = &fi;
+                best_len = e.size();
+            }
+    return best;
+}
+
 FileFeatures file_features(const std::string& path) {
     FileFeatures f;
     // The extension as open_source() reads it: .zst / .zstd / .bz2 / .xz are
@@ -30,6 +44,10 @@ FileFeatures file_features(const std::string& path) {
         return false;
     };
     const bool remote = is_remote_url(path);
+    if (const FormatInfo* fi = format_row(remote ? strip_url_query(det) : det)) {
+        f.format = fi->name;
+        f.family = fi->family;
+    }
     std::error_code ec;
     if (!remote && std::filesystem::is_directory(path, ec)) return f;   // a dataset or a Zarr store
     // An index file beside `path`; a remote file is taken to have one (the

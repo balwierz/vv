@@ -496,6 +496,15 @@ jobs:
           diff "$RUNNER_TEMP/two.tsv" <(./build/vv --tsv --sort Chr:desc --sort Score tests/data/tiny.parquet)
           VVG_WINTEST=1 VVG_SORT='Chr:desc,Score' VVG_COPYCMD=1 ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -q '^cmd=vv --sort Chr:desc --sort Score '
+          # Filter history: applied filters head their format family's recent
+          # list, a saved one is named, both persist; another family has its own.
+          fh="$RUNNER_TEMP/vvgcfg-filters"; mkdir -p "$fh"
+          XDG_CONFIG_HOME="$fh" VVG_WINTEST=1 VVG_FILTERHIST='Score > 0.5;Chr == "chr2"' VVG_SAVEFILTER=chr2 \
+            ./build-gui/gui/vvg tests/data/tiny.parquet | grep -qxF 'filterhist key=columnar recent=Chr == "chr2"|Score > 0.5 saved=chr2=Chr == "chr2" completions=2'
+          XDG_CONFIG_HOME="$fh" VVG_WINTEST=1 VVG_FILTERHIST='Score > 0.5' ./build-gui/gui/vvg tests/data/tiny.parquet \
+            | grep -qxF 'filterhist key=columnar recent=Score > 0.5|Chr == "chr2" saved=chr2=Chr == "chr2" completions=2'
+          XDG_CONFIG_HOME="$fh" VVG_WINTEST=1 VVG_FILTERHIST='' ./build-gui/gui/vvg tests/data/tiny.bam \
+            | grep -qxF 'filterhist key=alignments recent= saved= completions=0'
           # File ▸ Open URL is enabled exactly when this build reads URLs; then
           # a file served over http opens as a tab.
           out=$(VVG_WINTEST=1 VVG_OPENURL_STATE=1 ./build-gui/gui/vvg tests/data/tiny.parquet | grep '^openurl'); echo "$out"
