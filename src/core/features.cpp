@@ -139,3 +139,25 @@ TabTraits tab_traits(const TabularSource& src) {
     if (auto sch = src.schema()) t.coord_columns = has_genomic_coord_columns(*sch);
     return t;
 }
+
+LocusColumns locus_columns(const arrow::Schema& schema, const std::string& format) {
+    LocusColumns l;
+    auto find = [&](std::initializer_list<const char*> names) {
+        for (const char* n : names)
+            if (int i = schema.GetFieldIndex(n); i >= 0) return i;
+        return -1;
+    };
+    l.chrom = find({"Chr", "chrom", "Chrom", "CHROM", "#CHROM", "chr", "Chromosome", "chromosome",
+                    "RNAME", "seqname", "seqid", "contig", "tname", "seqnames"});
+    l.start = find({"[Beg", "start", "Start", "chromStart", "POS", "pos", "Position", "position",
+                    "begin", "Begin", "tstart", "txStart"});
+    l.end   = find({"End)", "end", "End", "chromEnd", "stop", "Stop", "chromStop", "tend", "txEnd"});
+    static const char* const kOneBased[] = {"VCF", "BCF", "BAM / CRAM alignments", "SAM alignments (text)",
+                                            "GFF / GFF3 / GTF", "samtools mpileup", "GenBank / EMBL"};
+    for (const char* f : kOneBased) if (format == f) l.one_based = true;
+    if (l.end < 0) {
+        if (format == "VCF" || format == "BCF") l.length_from = find({"REF"});
+        else if (format == "BAM / CRAM alignments" || format == "SAM alignments (text)") l.length_from = find({"SEQ"});
+    }
+    return l;
+}

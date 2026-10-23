@@ -598,6 +598,21 @@ struct TabTraits {
 };
 TabTraits tab_traits(const TabularSource& src);
 
+// Where a row of a tab says its genomic position: the chromosome, start and
+// end columns (-1 when absent), whether the format numbers them 1-based
+// inclusive (VCF, BCF, SAM / BAM / CRAM, GFF / GTF, mpileup, GenBank) or
+// 0-based half-open (BED and its relatives, bigBed, PAF, Parquet, …), and
+// for a row without an end the column whose length gives it: REF (VCF /
+// BCF: end = POS + len(REF) - 1) or SEQ (alignments: POS + len(SEQ) - 1).
+// `format` is FileFeatures::format.
+struct LocusColumns {
+    int  chrom = -1, start = -1, end = -1;
+    int  length_from = -1;   // REF / SEQ when there is no end column
+    bool one_based = false;
+    bool ok() const { return chrom >= 0 && start >= 0; }
+};
+LocusColumns locus_columns(const arrow::Schema& schema, const std::string& format);
+
 // Resolve a --select spec (names, globs, 1-based ranges, @type classes,
 // !exclusions — see --help) against `src`'s schema: the selected field
 // indices in the spec's order. Terms matching nothing go to `unknown`.

@@ -119,6 +119,13 @@ Command* goes the other way.
   *Exclude “value”* (with several cells of one column selected: `in (…)` /
   `not in (…)`; an empty cell: `is null`), added to the current filter, and
   *Column Statistics*.
+- **Genome Goggles** — with gg, the genome browser, installed (on `PATH` or
+  beside vvg), a cell's right-click menu offers *Open in Genome Goggles at
+  chr1:…*: gg starts with the file as a track, at that row's position (BED,
+  VCF, BAM / CRAM / SAM, GFF / GTF, bigBed / bigWig, LociSSD, Parquet with
+  position columns; 1-based formats converted; a short feature centred in
+  100 bp). A tab's right-click menu opens the file at its Region, and a FASTA
+  or 2bit file becomes gg's genome.
 - **Sequences** — the sequence of a BAM / CRAM / SAM read, a FASTA or FASTQ
   record and a VCF's REF / ALT show in a fixed-width font with each base in
   its colour (A green, C blue, G orange, T red, N grey); a quality string

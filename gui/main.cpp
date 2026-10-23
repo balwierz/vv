@@ -17,6 +17,8 @@
 #include <arrow/util/compression.h>
 
 #include <QApplication>
+#include <QStandardPaths>
+#include <QProcess>
 #include <QFontDatabase>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -1048,6 +1050,98 @@ private:
         refreshStatus();
     }
 
+    // ── Genome Goggles (gg), the genome browser ──────────────────────────────
+    // gg's program: on PATH, else beside vvg; "" when neither.
+    static QString ggProgram() {
+        static const QString found = [] {
+            QString p = QStandardPaths::findExecutable(QStringLiteral("gg"));
+            if (p.isEmpty())
+                p = QStandardPaths::findExecutable(QStringLiteral("gg"), {QCoreApplication::applicationDirPath()});
+            return p;
+        }();
+        return found;
+    }
+    // How gg takes a file of this format: as a track, as the genome (FASTA,
+    // 2bit), or not at all.
+    enum class GgRole { None, Track, Genome };
+    static GgRole ggRole(const std::string& fmt) {
+        static const char* const kTracks[] = {
+            "BED", "ENCODE peak / signal", "GFF / GFF3 / GTF", "VCF", "BCF", "BAM / CRAM alignments",
+            "SAM alignments (text)", "UCSC bigBed / bigWig", "UCSC wiggle", "LociSSD", "Apache Parquet",
+            "Genomics TSV layouts"};
+        for (const char* t : kTracks) if (fmt == t) return GgRole::Track;
+        if (fmt == "FASTA" || fmt == "UCSC 2bit") return GgRole::Genome;
+        return GgRole::None;
+    }
+    // The BED-style locus (0-based, half-open) of view row `row` of `m`,
+    // at least 100 bp wide around it; "" when the tab has no position
+    // columns or the row none.
+    static QString rowLocus(ArrowTableModel* m, int row, const std::string& fmt) {
+        const LocusColumns lc = locus_columns(*m->schema(), fmt);
+        if (!lc.ok()) return {};
+        auto display = [m](int src) {
+            for (int c = 0; c < m->displayColumnCount(); ++c) if (m->sourceColumn(c) == src) return c;
+            return -1;
+        };
+        ArrowTableModel::SyncReads sync(m);
+        auto value = [&](int src, bool* ok) {
+            const int c = display(src);
+            if (c < 0) { *ok = false; return ValueCount{}; }
+            ValueCount v = m->filterValue(row, c, ok);
+            if (v.null) *ok = false;
+            return v;
+        };
+        bool ok1 = false, ok2 = false;
+        const QString chrom = QString::fromStdString(value(lc.chrom, &ok1).value);
+        const qint64 start = QString::fromStdString(value(lc.start, &ok2).value).toLongLong(&ok2);
+        if (!ok1 || !ok2 || chrom.isEmpty()) return {};
+        qint64 end = -1;
+        bool ok3 = false;
+        if (lc.end >= 0) {
+            end = QString::fromStdString(value(lc.end, &ok3).value).toLongLong(&ok3);
+            if (!ok3) end = -1;
+        } else if (lc.length_from >= 0) {
+            const std::string t = value(lc.length_from, &ok3).value;
+            if (ok3 && t != "*" && !t.empty()) end = start + (qint64)t.size() - (lc.one_based ? 1 : 0);
+        }
+        // To BED-style: a 1-based inclusive end is the half-open end.
+        qint64 b = lc.one_based ? start - 1 : start;
+        qint64 e = end >= 0 ? end : b + 1;
+        if (e <= b) e = b + 1;
+        if (e - b < 100) {   // some context: a short feature centred in 100 bp
+            b = std::max<qint64>(0, b - (100 - (e - b)) / 2);
+            e = b + 100;
+        }
+        return QStringLiteral("%1:%2-%3").arg(chrom).arg(b).arg(e);
+    }
+    // gg's arguments for file `f`, at `locus` (BED-style) when given, else
+    // at the file's Region when it has one.
+    static QStringList ggArguments(const OpenFile& f, const QString& locus) {
+        QStringList a;
+        if (!locus.isEmpty()) a << QStringLiteral("--coords") << QStringLiteral("bed") << QStringLiteral("-l") << locus;
+        else if (!f.opts.region.empty())
+            a << QStringLiteral("--coords") << (f.opts.ncbi ? QStringLiteral("one") : QStringLiteral("bed"))
+              << QStringLiteral("-l") << QString::fromStdString(f.opts.region).section(QLatin1Char(','), 0, 0);
+        if (ggRole(f.feat.format) == GgRole::Genome) a << QStringLiteral("-g");
+        a << f.path;
+        return a;
+    }
+    // "Open in Genome Goggles" for file `f` (at `locus`), when gg is there
+    // and reads the file; nullptr otherwise.
+    QAction* addGgAction(QMenu& menu, const OpenFile* f, const QString& locus) {
+        if (!f || f->jsonTree || ggRole(f->feat.format) == GgRole::None || ggProgram().isEmpty()) return nullptr;
+        QAction* a = menu.addAction(locus.isEmpty() ? tr("Open in &Genome Goggles")
+                                                    : tr("Open in &Genome Goggles at %1").arg(locus));
+        a->setToolTip(tr("Start gg, the genome browser, with this file") +
+                      (locus.isEmpty() ? QString() : tr(" at this row's position")));
+        const QStringList args = ggArguments(*f, locus);
+        connect(a, &QAction::triggered, this, [this, args] {
+            if (!QProcess::startDetached(ggProgram(), args))
+                statusBar()->showMessage(tr("Could not start %1").arg(ggProgram()), 5000);
+        });
+        return a;
+    }
+
     // Sequence and quality columns of alignment, FASTA / FASTQ and variant
     // files get coloured bases / quality backgrounds (SequenceDelegate).
     void applySequenceDelegates(ArrowTableModel* m, QTableView* v, int fileId) {
@@ -1203,6 +1297,7 @@ private:
             const QString path = f->path;
             connect(menu.addAction(tr("Copy Path")), &QAction::triggered, this,
                     [path] { QGuiApplication::clipboard()->setText(path); });
+            addGgAction(menu, f, {});
         }
         menu.addSeparator();
         menu.addAction(reopenClosedAct_);
@@ -3657,6 +3752,8 @@ private:
                     [this, m, cells] { applyCellFilter(m, cells, true); });
             connect(menu.addAction(tr("Column &Statistics")), &QAction::triggered, this,
                     [this, view, idx] { view->setCurrentIndex(idx); showColumnTab(); });
+            if (const OpenFile* f = activeFile(); f && m)
+                addGgAction(menu, f, rowLocus(m, idx.row(), f->feat.format));
             menu.addSeparator();
             menu.addMenu(copyAsMenu_);
             menu.addAction(exportSelAct_);
@@ -4402,6 +4499,18 @@ public:
         }
         return out.isEmpty() ? QStringLiteral("none") : out.join(QLatin1Char(' '));
     }
+    // Self-test: gg's arguments for row `row` of the active tab (gg need not
+    // be installed), and whether gg was found.
+    QString ggCommandForTest(int row) {
+        waitIdleForTest();
+        auto* m = activeModel();
+        const OpenFile* f = activeFile();
+        if (!m || !f) return QStringLiteral("no table");
+        if (ggRole(f->feat.format) == GgRole::None) return QStringLiteral("not for gg");
+        QStringList a = ggArguments(*f, row >= 0 ? rowLocus(m, row, f->feat.format) : QString());
+        a.last() = QFileInfo(a.last()).fileName();
+        return QStringLiteral("gg %1").arg(a.join(QLatin1Char(' ')));
+    }
     // Self-test: the palette's rows for `query`, in order.
     void dumpPaletteForTest(const QString& query) {
         ActionPalette* p = openPalette(query);
@@ -4900,6 +5009,9 @@ int main(int argc, char** argv) {
             for (const QString& c : QString::fromLocal8Bit(hd).split(QLatin1Char(',')))
                 if (!win.hideActiveColumnForTest(c))
                     std::fprintf(stderr, "vvg: no column '%s' to hide\n", c.toLocal8Bit().constData());
+        // Optional Genome Goggles check: VVG_GG_CMD=<row> (-1: the file).
+        if (const char* gc = std::getenv("VVG_GG_CMD"); gc && *gc)
+            std::printf("ggcmd %s\n", win.ggCommandForTest(std::atoi(gc)).toUtf8().constData());
         // Optional sequence-colour check: VVG_SEQRENDER=1.
         if (const char* sr = std::getenv("VVG_SEQRENDER"); sr && *sr && *sr != '0')
             std::printf("seqrender %s\n", win.seqRenderForTest().toUtf8().constData());

@@ -503,6 +503,16 @@ jobs:
             ./build-gui/gui/vvg "$RUNNER_TEMP/reload.csv" \
             | grep -qxF 'reload before rows=2 filter=count > 100 sort=count:desc hidden=ratio | bar=1 | after rows=3 filter=count > 100 sort=count:desc hidden=ratio bar=0'
           VVG_WINTEST=1 VVG_SHORTCUTS=1 ./build-gui/gui/vvg tests/data/tiny.parquet | grep -q '^shortcut F5 -> Reload$'
+          # Open in Genome Goggles: gg's arguments for a row, the locus always
+          # BED-style (--coords bed), from 1-based VCF / BAM / GTF too, at
+          # least 100 bp; FASTA as gg's genome; a CSV is not offered.
+          gg() { VVG_WINTEST=1 VVG_GG_CMD="$1" ./build-gui/gui/vvg "$2" 2>/dev/null | sed -n 's/^ggcmd //p'; }
+          test "$(gg 0 tests/data/tiny.bed.gz)" = "gg --coords bed -l chr1:100-200 tiny.bed.gz"
+          test "$(gg 0 tests/data/tiny.vcf)" = "gg --coords bed -l chr1:50-150 tiny.vcf"
+          test "$(gg 0 tests/data/tiny.bam)" = "gg --coords bed -l chr1:59-159 tiny.bam"
+          test "$(gg 0 tests/data/tiny.gtf)" = "gg --coords bed -l chr1:11868-14409 tiny.gtf"
+          test "$(gg 0 tests/data/tiny.fa)" = "gg -g tiny.fa"
+          test "$(gg 0 tests/data/tiny.csv)" = "not for gg"
           # Sequence columns: bases coloured (A C G T), quality strings on a
           # red-to-green ramp by Phred score; VCF REF / ALT; not Parquet.
           printf '@r1\nACGTN\n+\n!+5?I\n' > "$RUNNER_TEMP/ramp.fq"
