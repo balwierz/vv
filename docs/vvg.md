@@ -82,7 +82,9 @@ Command* goes the other way.
   AnnData components, Cooler resolutions, GenBank sections, POD5 tables, R
   objects and NumPy arrays each get a tab. Open with *File ▸ Open* (its type
   list has every format vv reads, by family: alignments, variants, HDF5, …),
-  *Open Directory* (a directory of parts as one dataset), drag-and-drop or the
+  *Open Directory* (a directory of parts as one dataset), *Open URL*
+  (*Ctrl+Shift+O*: https, s3, gs, ftp — when vvg's htslib has libcurl;
+  prefilled from the clipboard), drag-and-drop (files or URLs) or the
   recent-files list. A tab reads its file only when first shown, and reads
   in the background: it says *Loading…* until its columns are known, and a
   block of rows not read yet shows `…` until it arrives, so the window stays

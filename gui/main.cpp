@@ -323,7 +323,8 @@ public:
     // window self-test (VVG_WINTEST) can drive it.
     void openPaths(const QStringList& paths_in, bool quiet = false) {
         if (paths_in.isEmpty()) return;
-        lastDir_ = QFileInfo(paths_in.first()).absolutePath();
+        if (!is_remote_url(paths_in.first().toStdString()))
+            lastDir_ = QFileInfo(paths_in.first()).absolutePath();
         // Show the first file's first tab once all are open (the first tab
         // added when that file failed to open).
         const int firstNew = tabs_->count();
@@ -1165,6 +1166,12 @@ private:
             copyAsMenu_->addAction(a);
             copyAsActs_ << a;
         }
+        openUrlAct_ = makeAction(tr("Open &URL…"), QKeySequence(QStringLiteral("Ctrl+Shift+O")),
+            tr("Open a file over https, s3, gs or ftp (read through htslib)"), [this] { openUrlDialog(); });
+        if (remote_schemes() == "none") {
+            openUrlAct_->setEnabled(false);
+            openUrlAct_->setToolTip(tr("This build of vvg reads no URLs: its htslib has no libcurl"));
+        }
         exportSelAct_ = makeAction(tr("Export &Selection As…"), {},
             tr("Write the selected rows and columns (in the view's order) to Parquet, Arrow, TSV, "
                "CSV or JSON"), [this] { exportViewDialog(true); });
@@ -1262,6 +1269,7 @@ private:
         file->setToolTipsVisible(true);
         file->addAction(openAct_);
         file->addAction(openDirAct_);
+        file->addAction(openUrlAct_);
         recentMenu_ = file->addMenu(tr("Open &Recent"));
         rebuildRecentMenu();
         file->addSeparator();
@@ -1321,6 +1329,7 @@ private:
         appMenu_->setToolTipsVisible(true);
         appMenu_->addAction(openAct_);
         appMenu_->addAction(openDirAct_);
+        appMenu_->addAction(openUrlAct_);
         appMenu_->addMenu(recentMenu_);
         appMenu_->addSeparator();
         appMenu_->addAction(exportAction_);
@@ -1415,6 +1424,26 @@ private:
 
     // A directory opens as one dataset (libvvcore concatenates its part files
     // and turns Hive key=value/ path components into columns).
+    // File ▸ Open URL: a URL this build reads (https, s3, …), prefilled from
+    // the clipboard when it holds one.
+    void openUrlDialog() {
+        QString guess = QGuiApplication::clipboard()->text().trimmed();
+        if (guess.contains(QLatin1Char('\n')) || !is_remote_url(guess.toStdString())) guess.clear();
+        bool ok = false;
+        const QString url = QInputDialog::getText(
+            this, tr("Open URL"),
+            tr("URL of a file (this build reads %1):").arg(QString::fromStdString(remote_schemes())),
+            QLineEdit::Normal, guess, &ok).trimmed();
+        if (!ok || url.isEmpty()) return;
+        if (!remote_supported(url.toStdString())) {
+            QMessageBox::warning(this, tr("Open URL"),
+                                 tr("This build cannot open %1 URLs; it reads %2.")
+                                     .arg(QUrl(url).scheme().isEmpty() ? url : QUrl(url).scheme() + QStringLiteral("://"),
+                                          QString::fromStdString(remote_schemes())));
+            return;
+        }
+        openPaths({url});
+    }
     void openDirectoryDialog() {
         QString dir = QFileDialog::getExistingDirectory(
             this, tr("Open directory as dataset"), lastDir_);
@@ -1553,8 +1582,10 @@ protected:
     }
     void dropEvent(QDropEvent* e) override {
         QStringList paths;
-        for (const QUrl& u : e->mimeData()->urls())
+        for (const QUrl& u : e->mimeData()->urls()) {
             if (u.isLocalFile()) paths << u.toLocalFile();
+            else if (remote_supported(u.toString().toStdString())) paths << u.toString();
+        }
         openPaths(paths);
     }
     void resizeEvent(QResizeEvent* e) override {
@@ -3378,6 +3409,7 @@ private:
     QAction*                       closeFileAct_  = nullptr;   // File ▸ Close File
     QAction*                       openAct_       = nullptr;   // toolbar + File
     QAction*                       openDirAct_    = nullptr;
+    QAction*                       openUrlAct_    = nullptr;   // File ▸ Open URL
     QAction*                       copyAct_       = nullptr;   // toolbar + Edit
     QAction*                       copyRowAct_    = nullptr;
     QMenu*                         copyAsMenu_    = nullptr;   // Edit ▸ Copy As
@@ -3583,6 +3615,11 @@ public:
         while (exportWatcher_) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
         *rows = lastExportRows_;
         return lastExportError_;
+    }
+    // Self-test: whether File ▸ Open URL is enabled, and the schemes.
+    QString openUrlStateForTest() const {
+        return QStringLiteral("enabled=%1 schemes=%2").arg(openUrlAct_->isEnabled() ? 1 : 0)
+            .arg(QString::fromStdString(remote_schemes()));
     }
     // Self-test: the palette's rows for `query`, in order.
     void dumpPaletteForTest(const QString& query) {
@@ -4011,6 +4048,9 @@ int main(int argc, char** argv) {
         // Optional sort-click check: VVG_HEADERSORT="3,+0,…" (headerSortForTest).
         if (const char* hs = std::getenv("VVG_HEADERSORT"); hs && *hs)
             win.headerSortForTest(QString::fromLocal8Bit(hs));
+        // Optional Open URL check: VVG_OPENURL_STATE=1.
+        if (const char* ou = std::getenv("VVG_OPENURL_STATE"); ou && *ou && *ou != '0')
+            std::printf("openurl %s\n", win.openUrlStateForTest().toUtf8().constData());
         // Optional palette check: VVG_PALETTE="<query>" (the commands it lists).
         if (const char* pq = std::getenv("VVG_PALETTE"); pq)
             win.dumpPaletteForTest(QString::fromLocal8Bit(pq));

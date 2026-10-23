@@ -1481,15 +1481,12 @@ void stderr_unmute(int saved);
 // ── Remote input (src/core/remote.cpp) ───────────────────────────────────────
 // A URL (https://, s3://, gs://, ...; not file://) names remote input, read
 // through htslib's hFILE layer when its htslib has libcurl.
-bool is_remote_url(const std::string& path);
 // The URL without its ?query / #fragment (a pre-signed URL's signature), for
 // matching extensions; other paths unchanged.
 std::string strip_url_query(const std::string& url);
 // The last path component of a URL, query removed and %XX decoded: its label.
 std::string url_display_name(const std::string& url);
-// The remote schemes this build opens ("https http s3 gs ftp ..."), or "none".
-std::string remote_schemes();
-bool remote_supported(const std::string& url);
+// is_remote_url, remote_schemes and remote_supported are in vvcore.hpp.
 std::string remote_unsupported_message(const std::string& url);
 // A local file (arrow::io::ReadableFile) or a URL (over an hFILE), for reading
 // at offsets.

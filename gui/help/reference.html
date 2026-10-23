@@ -15,7 +15,7 @@ match.</p>
 
 <a name="using"></a><h2>Using vvg</h2>
 <table>
-<tr><td class="k">Open</td><td><i>Open</i> (Ctrl+O; its ▾ lists the recent files), <i>Open Directory</i> (a directory of Parquet / CSV / JSON parts as one dataset, Hive <code>key=value/</code> directories as columns) or drag files onto the window. Every format <code>vv --formats</code> lists opens here.</td></tr>
+<tr><td class="k">Open</td><td><i>Open</i> (Ctrl+O; its ▾ lists the recent files), <i>Open Directory</i> (a directory of Parquet / CSV / JSON parts as one dataset, Hive <code>key=value/</code> directories as columns), <i>Open URL</i> (Ctrl+Shift+O; https, s3, gs, ftp when this build reads them) or drag files or URLs onto the window. Every format <code>vv --formats</code> lists opens here.</td></tr>
 <tr><td class="k">Tabs</td><td>A file of several parts (AnnData, a workbook, a database, HDF5, NumPy archive, R data) opens one tab per part; a tab reads its file when first shown. With several files open each file's tabs are underlined in a colour of their own and the first names the file. Right-click a tab: Close File (Ctrl+Shift+W), Close Other Files, Copy Path.</td></tr>
 <tr><td class="k">Sort</td><td>Click a column header: ascending, then descending, then the file's order. Numbers sort as numbers, dates as dates. Shift+click adds the column as a further key that orders the ties of the ones before (▲1, ▼2 in the headers).</td></tr>
 <tr><td class="k">Filter</td><td>The Filter box (Ctrl+Shift+F): keep the rows matching an expression (see <a href="#filter">Filter expressions</a>); Enter applies. Right-click a cell for Filter to / Exclude its value (or the selected values of its column), added to the current filter.</td></tr>

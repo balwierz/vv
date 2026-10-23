@@ -566,6 +566,13 @@ struct FormatInfo {
     const char* family;    // the underlying format, grouping rows (vvg's Open dialog)
 };
 const std::vector<FormatInfo>& format_table();
+// Remote input: a URL (https://, s3://, gs://, …; not file://) is read
+// through htslib's hFILE layer when this build's htslib has libcurl.
+bool is_remote_url(const std::string& path);
+// The URL schemes this build opens ("https http s3 gs ftp ..."), or "none".
+std::string remote_schemes();
+bool remote_supported(const std::string& url);
+
 // This build's version ("1.32.0") and the DOI to cite (Zenodo's concept DOI).
 const char* vv_version();
 const char* vv_doi();

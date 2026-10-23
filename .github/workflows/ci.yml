@@ -496,6 +496,18 @@ jobs:
           diff "$RUNNER_TEMP/two.tsv" <(./build/vv --tsv --sort Chr:desc --sort Score tests/data/tiny.parquet)
           VVG_WINTEST=1 VVG_SORT='Chr:desc,Score' VVG_COPYCMD=1 ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -q '^cmd=vv --sort Chr:desc --sort Score '
+          # File ▸ Open URL is enabled exactly when this build reads URLs; then
+          # a file served over http opens as a tab.
+          out=$(VVG_WINTEST=1 VVG_OPENURL_STATE=1 ./build-gui/gui/vvg tests/data/tiny.parquet | grep '^openurl'); echo "$out"
+          if grep -q 'schemes=none$' <<<"$out"; then
+            grep -q '^openurl enabled=0 ' <<<"$out"
+          else
+            grep -q '^openurl enabled=1 ' <<<"$out"
+            (cd tests/data && exec python3 -m http.server 8765 --bind 127.0.0.1 >/dev/null 2>&1) & hp=$!
+            sleep 2
+            VVG_WINTEST=1 VVG_TABDIMS=1 ./build-gui/gui/vvg http://127.0.0.1:8765/tiny.parquet | grep -q "tab 'tiny.parquet' rows=20 cols=5"
+            kill $hp
+          fi
           # Copy As: the selection with a header row, as CSV (RFC 4180 quoting)
           # or a Markdown table; hidden columns are left out, the view's sort
           # kept. Export Selection writes those rows / columns, types kept.
