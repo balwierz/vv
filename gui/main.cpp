@@ -107,6 +107,9 @@
 #include "tabpane.h"
 #include "typedheader.h"
 #include "tableview.h"
+#include "loadsources.h"
+#include "columnwidths.h"
+#include "cursordelegate.h"
 #include "sequencedelegate.h"
 #include "viewstate.h"
 #include "helpdialog.h"
@@ -114,74 +117,6 @@
 #include "actionpalette.h"
 #include "vv/vvcore.hpp"
 
-// Open every path through libvvcore (using a shared base Config so a later
-// region/pileup query applies uniformly) and flatten each file's sibling tabs
-// — sheets / tables / datasets / NPZ arrays — into one source list. Per-path
-// open errors are collected rather than thrown; `opened` lists the paths that
-// produced at least one source (for the recent-files list).
-struct LoadResult {
-    std::vector<std::unique_ptr<TabularSource>> sources;
-    std::vector<QString>                        origins;   // per source: the path it came from
-    std::vector<QString>                        expands;   // per source: its --expand column
-    std::vector<bool>                           primary;   // per source: first tab of its file
-    // per source: the thread its file's tabs are read on (shared by siblings)
-    std::vector<std::shared_ptr<SourceOwner>>   owners;
-    QStringList                                 opened;
-    QStringList                                 errors;
-};
-// `expand`: unpack each file's packed key=value column (GFF/GTF attributes,
-// VCF/BCF INFO — see packed_column_for) into real columns, as --expand does.
-static LoadResult loadSources(const Config& base, const QStringList& paths,
-                              bool expand = false) {
-    LoadResult r;
-    for (const QString& p : paths) {
-        Config cfg = base;
-        cfg.path = p.toStdString();
-        if (expand && !cfg.contigs && cfg.expand_col.empty())
-            cfg.expand_col = packed_column_for(cfg.path);
-        std::unique_ptr<TabularSource> src;
-        std::string err = open_source(cfg.path, cfg, &src);
-        if (!err.empty() || !src) {
-            r.errors << QStringLiteral("%1: %2").arg(
-                p, QString::fromStdString(err.empty() ? "open failed" : err));
-            continue;
-        }
-        auto siblings = src->expand_tabs();
-        auto owner = std::make_shared<SourceOwner>();
-        r.sources.push_back(std::move(src));
-        const QString ex = QString::fromStdString(cfg.expand_col);
-        r.origins.push_back(p);
-        r.expands.push_back(ex);
-        r.primary.push_back(true);
-        r.owners.push_back(owner);
-        for (auto& s : siblings) {
-            r.sources.push_back(std::move(s));
-            r.origins.push_back(p);
-            r.expands.push_back(ex);
-            r.primary.push_back(false);
-            r.owners.push_back(owner);
-        }
-        r.opened << p;
-    }
-    return r;
-}
-
-// Tints the cursor column, the one the Column tab summarises, so it stands
-// out from its neighbours; selection and search highlights paint over it.
-class CursorColumnDelegate : public QStyledItemDelegate {
-public:
-    explicit CursorColumnDelegate(QTableView* view) : QStyledItemDelegate(view), view_(view) {}
-    void paint(QPainter* p, const QStyleOptionViewItem& opt, const QModelIndex& idx) const override {
-        if (idx.column() == view_->currentIndex().column()) {
-            QColor c = opt.palette.color(QPalette::Highlight);
-            c.setAlpha(40);
-            p->fillRect(opt.rect, c);
-        }
-        QStyledItemDelegate::paint(p, opt, idx);
-    }
-private:
-    QTableView* view_;
-};
 
 // A highlight over `r` of `host` that fades out, drawing the eye to a column
 // just scrolled into view.
@@ -705,83 +640,6 @@ private:
     }
     static std::string src_label(ArrowTableModel* m) {
         return m->tabLabel();
-    }
-
-    // Auto-size columns to their content at open. Each column is sized to the
-    // 95th percentile of a sample of its rendered cells, so the common case
-    // shows in full and the occasional long value elides; capped so a prose
-    // column can't dominate. The horizontal scrollbar absorbs any overflow, so
-    // identifiers are always shown in full rather than pre-truncated. This runs
-    // once at open; nothing resizes the columns afterwards, so a manual drag is
-    // preserved.
-    static std::vector<int> planColumnWidths(ArrowTableModel* model,
-                                             const QFontMetrics& fm,
-                                             const QFontMetrics* typeFm = nullptr) {
-        // A summary tab (an AnnData's key / value / about) shows its cells in
-        // full, as the CLI table does.
-        const bool full = model->tabTraits().cells_in_full;
-        const int ncols = model->columnCount();
-        const int64_t nrows = model->rowCount();
-        if (ncols <= 0) return {};
-        const int ch  = std::max(1, fm.horizontalAdvance(QLatin1Char('0')));
-        const int pad = 2 * ch;                 // cell text margins, both sides
-        // About 40,000 cells, 64 to 2,000 rows, of the rows already loaded:
-        // every cell sampled is measured on the UI thread, and a row not yet
-        // read would only show "…".
-        const int64_t sample = std::min<int64_t>({nrows, (int64_t)std::clamp(40000 / ncols, 64, 2000),
-                                                  model->loadedPrefixRows()});
-
-        std::vector<std::vector<int>> samples((size_t)ncols);
-        std::vector<int> floors((size_t)ncols);
-        for (int c = 0; c < ncols; ++c) {
-            // Floor: the header label must stay readable, plus room for the
-            // sort-indicator arrow.
-            const QString head = model->headerData(c, Qt::Horizontal, Qt::DisplayRole).toString();
-            int headW = fm.horizontalAdvance(head);
-            if (typeFm)
-                headW = std::max(headW, typeFm->horizontalAdvance(
-                    model->headerData(c, Qt::Horizontal, ArrowTableModel::TypeRole).toString()));
-            floors[(size_t)c] = headW + pad + 3 * ch;
-            samples[(size_t)c].reserve((size_t)sample);
-            for (int64_t r = 0; r < sample; ++r) {
-                QString t = model->data(model->index((int)r, c), Qt::DisplayRole).toString();
-                if (t.isEmpty()) continue;       // nulls / blanks don't set width
-                samples[(size_t)c].push_back(fm.horizontalAdvance(t) + pad);
-            }
-        }
-
-        WidthPlanOptions opt;
-        opt.percentile = 95;
-        opt.c_max      = full ? (1 << 20) : 50 * ch + pad;   // 50 characters, in pixels
-        opt.slack      = 2 * ch;
-        opt.min_floor  = 3 * ch;
-        // viewport 0 = no shrink-to-fit: give each column its natural width and
-        // let the scrollbar handle a wide table (idiomatic for a GUI, and it
-        // keeps identifiers un-truncated).
-        return plan_column_widths(samples, floors, 0, opt);
-    }
-
-    static void autosizeColumns(QTableView* view, ArrowTableModel* model) {
-        auto* th = dynamic_cast<TypedHeaderView*>(view->horizontalHeader());
-        const QFontMetrics typeFm(th ? th->typeFont() : view->font());
-        std::vector<int> w = planColumnWidths(model, view->fontMetrics(),
-                                              th && th->showTypes() ? &typeFm : nullptr);
-        QHeaderView* hh = view->horizontalHeader();
-        // A column drawn as bases / qualities uses a fixed-width font: sized
-        // by its longest sampled value in that font, up to 50 characters.
-        QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-        mono.setPointSizeF(view->font().pointSizeF() > 0 ? view->font().pointSizeF() : mono.pointSizeF());
-        const int cw = std::max(1, QFontMetrics(mono).horizontalAdvance(QLatin1Char('A')));
-        for (int c = 0; c < model->columnCount() && c < (int)w.size(); ++c) {
-            if (dynamic_cast<SequenceDelegate*>(view->itemDelegateForColumn(c))) {
-                int longest = 0;
-                const int rows = (int)std::min<int64_t>(model->loadedPrefixRows(), 2000);
-                for (int r = 0; r < rows; ++r)
-                    longest = std::max(longest, (int)model->data(model->index(r, c), Qt::DisplayRole).toString().size());
-                w[(size_t)c] = std::max(w[(size_t)c], std::min(longest, 50) * cw + 2 * cw);
-            }
-            hh->resizeSection(c, w[(size_t)c]);
-        }
     }
 
     // Per-pixel scrolling (the default), or Qt's per-item stepping, which
