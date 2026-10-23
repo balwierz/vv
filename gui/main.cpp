@@ -1477,11 +1477,12 @@ private:
         bool ok = false;
         int row = QInputDialog::getInt(this, tr("Go to row"), tr("Row (1-based):"),
                                        1, 1, m->rowCount(), 1, &ok);
-        if (ok) {
-            QModelIndex idx = m->index(row - 1, 0);
-            v->setCurrentIndex(idx);
-            v->scrollTo(idx, QAbstractItemView::PositionAtTop);
-        }
+        if (ok) goToRow(v, row - 1);
+    }
+    static void goToRow(QTableView* v, int row) {
+        const QModelIndex idx = v->model()->index(row, 0);
+        v->setCurrentIndex(idx);
+        v->scrollTo(idx, QAbstractItemView::PositionAtTop);
     }
 
     // The Open dialog's types, from libvvcore's format table: every
@@ -3387,6 +3388,26 @@ public:
         v->horizontalScrollBar()->setValue(value);
         return {v->horizontalScrollBar()->value(), v->horizontalScrollBar()->maximum()};
     }
+    // Go to row `row` (0-based), with the first `frozen` columns frozen, and
+    // scroll five rows down: the top row after the jump and after the scroll.
+    QString gotoForTest(int row, int frozen) {
+        auto* v = activeView();
+        auto* m = activeModel();
+        if (!v || !m) return QStringLiteral("none");
+        v->resize(400, 300);
+        if (frozen > 0) setFrozenColumns(v, frozen);
+        QCoreApplication::processEvents();
+        if (row >= m->rowCount()) return QStringLiteral("rows=%1").arg(m->rowCount());
+        goToRow(v, row);
+        QCoreApplication::processEvents();
+        const int top = v->rowAt(0);
+        // Five rows on, as a wheel turn does (the self-test's window is not
+        // shown, so its page step is 0).
+        QScrollBar* vs = v->verticalScrollBar();
+        vs->setValue(vs->value() + (vs->maximum() > m->rowCount() ? 5 * v->rowHeight(row) : 5));
+        QCoreApplication::processEvents();
+        return QStringLiteral("top=%1 scrolled=%2").arg(top).arg(v->rowAt(0));
+    }
     const char* scrollModeForTest() const {
         auto* v = activeView();
         if (!v) return "none";
@@ -4731,6 +4752,12 @@ int main(int argc, char** argv) {
         // Optional menu dump: VVG_MENU_DUMP=1 (the menu bar and ≡ trees).
         if (const char* md = std::getenv("VVG_MENU_DUMP"); md && *md && *md != '0')
             win.dumpMenusForTest();
+        // Optional vertical jump check: VVG_GOTO="<0-based row>[,<frozen columns>]".
+        if (const char* gt = std::getenv("VVG_GOTO"); gt && *gt) {
+            const QStringList p = QString::fromLocal8Bit(gt).split(QLatin1Char(','));
+            std::printf("goto %s\n", win.gotoForTest(p.value(0).toInt(), p.value(1).toInt())
+                                          .toStdString().c_str());
+        }
         if (const char* hs = std::getenv("VVG_HSCROLL"); hs && *hs)
             {
                 auto [val, max] = win.hscrollForTest(std::atoi(hs));

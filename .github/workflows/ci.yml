@@ -527,6 +527,14 @@ jobs:
             | grep -qx 'freeze frozen=key visible=1 at-left=1 width-ok=1 scrolled=1 kept=1'
           VVG_WINTEST=1 VVG_HIDE=Start VVG_FREEZE=2,420 ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -q '^freeze frozen=Chr,End visible=1 at-left=1 width-ok=1 '
+          # Go to Row lands on the row and the table scrolls on from there,
+          # with and without a frozen column (a hidden overlay's row-counted
+          # scroll range used to clamp the per-pixel position: row 900 → 86).
+          { printf 'n\tsq\n'; seq 1 2000 | awk '{print $1"\t"$1*$1}'; } > "$RUNNER_TEMP/n2000.tsv"
+          for gt in 900 900,1; do
+            VVG_WINTEST=1 VVG_GOTO=$gt ./build-gui/gui/vvg "$RUNNER_TEMP/n2000.tsv" 2>/dev/null \
+              | grep -qx 'goto top=900 scrolled=905'
+          done
           # Session: a run saves its files, options and each tab's view; a run
           # with no files restores them. A closed tab reopens at its place.
           ss="$RUNNER_TEMP/vvgcfg-session"; mkdir -p "$ss"

@@ -21,9 +21,16 @@ TableView::TableView(QWidget* parent)
     syncTimer_->setInterval(0);
     connect(syncTimer_, &QTimer::timeout, this, [this] { sync(); });
 
-    // Scrolled together, whichever is scrolled (the wheel over the overlay).
-    connect(verticalScrollBar(), &QScrollBar::valueChanged, overlay_->verticalScrollBar(), &QScrollBar::setValue);
-    connect(overlay_->verticalScrollBar(), &QScrollBar::valueChanged, verticalScrollBar(), &QScrollBar::setValue);
+    // Scrolled together, whichever is scrolled (the wheel over the overlay),
+    // while the overlay shows. A hidden overlay keeps a range of its own (in
+    // rows, and stale): passing values to it then clamped this view's
+    // per-pixel position to the row count and moved it to an unrelated row.
+    connect(verticalScrollBar(), &QScrollBar::valueChanged, this, [this](int v) {
+        if (overlay_->isVisible()) overlay_->verticalScrollBar()->setValue(v);
+    });
+    connect(overlay_->verticalScrollBar(), &QScrollBar::valueChanged, this, [this](int v) {
+        if (overlay_->isVisible()) verticalScrollBar()->setValue(v);
+    });
     QHeaderView* h = horizontalHeader();
     connect(h, &QHeaderView::sectionResized, this, [this](int logical, int oldSize, int newSize) {
         if (!frozen_) return;
