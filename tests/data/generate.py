@@ -2786,4 +2786,137 @@ tsv = "name\tcount\tratio\nfoo\t100\t0.5\nbar\t250\t0.75\nbaz\t9999\t0.1\n"
 csv = tsv.replace("\t", ",")
 (HERE / "tiny.csv").write_text(csv)
 
+# ── Multiple sequence alignments ──────────────────────────────────────────────
+# One made-up protein alignment (4 sequences × 24 columns) in each format vv
+# reads, so that the readers can be checked against each other:
+#   human  MKVLAAGIVG-LLAFSQTEAHPKD   (23 residues)
+#   mouse  MKVLATGIVG-LLAFSQSEAHPKD   (23)
+#   yeast  --MLSAGLVGALL-FSQ-EAN---   (17)
+#   plant  MRVL-AGIIGSLLAFAQTE-HPRD   (22)
+msa = {
+    "tiny.sto": """# STOCKHOLM 1.0
+#=GF ID   TINY_DOMAIN
+#=GF DE   A tiny made-up protein family
+#=GF AC   PF99999.1
+#=GS human/1-23 AC P00001.1
+#=GS yeast/5-21 AC Q00003.2
+
+human/1-23     MKVLAAGIVG-LLAF
+mouse/1-23     MKVLATGIVG-LLAF
+yeast/5-21     --MLSAGLVGALL-F
+#=GR yeast/5-21 SS --HHHHHHHHHHH-C
+plant/1-22     MRVL-AGIIGSLLAF
+#=GC SS_cons   HHHHHHHHHHHHHHC
+
+human/1-23     SQTEAHPKD
+mouse/1-23     SQSEAHPKD
+yeast/5-21     SQ-EAN---
+#=GR yeast/5-21 SS CC-CCC---
+plant/1-22     AQTE-HPRD
+#=GC SS_cons   CCCCCCCCC
+//
+""",
+    # The second block's conservation line is all blank, saved as nothing.
+    "tiny.aln": """CLUSTAL W (1.83) multiple sequence alignment
+
+
+human           MKVLAAGIVG-LLAF
+mouse           MKVLATGIVG-LLAF
+yeast           --MLSAGLVGALL-F
+plant           MRVL-AGIIGSLLAF
+                  :* .*:.* ** *
+
+human           SQTEAHPKD
+mouse           SQSEAHPKD
+yeast           SQ-EAN---
+plant           AQTE-HPRD
+
+""",
+    # Interleaved, relaxed names.
+    "tiny.phy": """ 4 24
+human      MKVLAAGIVG -LLAF
+mouse      MKVLATGIVG -LLAF
+yeast      --MLSAGLVG ALL-F
+plant      MRVL-AGIIG SLLAF
+
+SQTEAHPKD
+SQSEAHPKD
+SQ-EAN---
+AQTE-HPRD
+""",
+    # Sequential, strict 10-character names with spaces, wrapped lines.
+    "tiny.seq.phy": """4 24
+H sapiens MKVLAAGIVG-LLAF
+SQTEAHPKD
+M musculusMKVLATGIVG-LLAF
+SQSEAHPKD
+S cerevisi--MLSAGLVGALL-F
+SQ-EAN---
+A thaliana MRVL-AGIIGSLLAF
+AQTE-HPRD
+""",
+    # Interleaved, a quoted name, MATCHCHAR, a comment.
+    "tiny.nex": """#NEXUS
+[ a tiny made-up protein alignment ]
+BEGIN DATA;
+  DIMENSIONS NTAX=4 NCHAR=24;
+  FORMAT DATATYPE=PROTEIN GAP=- MATCHCHAR=. INTERLEAVE;
+  MATRIX
+    'H. sapiens' MKVLAAGIVG-LLAF
+    mouse        .....T....-....
+    yeast        --MLSAGLVGALL-F
+    plant        MRVL-AGIIGSLLAF
+
+    'H. sapiens' SQTEAHPKD
+    mouse        ..S......
+    yeast        SQ-EAN---
+    plant        AQTE-HPRD
+  ;
+END;
+""",
+    # GCG MSF: '.' for gaps, residues in groups of ten.
+    "tiny.msf": """!!AA_MULTIPLE_ALIGNMENT 1.0
+
+ tiny.msf  MSF: 24  Type: P  23/10/26  Check: 1234  ..
+
+ Name: human   Len: 24  Check: 1111  Weight: 1.00
+ Name: mouse   Len: 24  Check: 2222  Weight: 1.00
+ Name: yeast   Len: 24  Check: 3333  Weight: 1.00
+ Name: plant   Len: 24  Check: 4444  Weight: 1.00
+
+//
+
+           1                                       24
+human      MKVLAAGIVG .LLAFSQTEA HPKD
+mouse      MKVLATGIVG .LLAFSQSEA HPKD
+yeast      ..MLSAGLVG ALL.FSQ.EA N...
+plant      MRVL.AGIIG SLLAFAQTE. HPRD
+""",
+    # A3M: lower case are insert states (mouse 2, plant 1).
+    "tiny.a3m": """#A3M#
+>human query
+MKVLAAGIVG-LLAFSQTEAHPKD
+>mouse
+MKVLATGIVGkk-LLAFSQSEAHPKD
+>yeast
+--MLSAGLVGALL-FSQ-EAN---
+>plant
+MRVL-AGIIGSLLAFAQTE-HPRDg
+""",
+}
+afa = """>human/1-23 Homo sapiens
+MKVLAAGIVG-LLAF
+SQTEAHPKD
+>mouse/1-23 Mus musculus
+MKVLATGIVG-LLAFSQSEAHPKD
+>yeast/5-21 Saccharomyces cerevisiae
+--MLSAGLVGALL-FSQ-EAN---
+>plant/1-22 Arabidopsis thaliana
+MRVL-AGIIGSLLAFAQTE-HPRD
+"""
+msa["tiny.afa"] = afa
+msa["tiny.aligned.fa"] = afa      # a .fa that is an alignment
+for name, text in msa.items():
+    (HERE / name).write_text(text, newline="\n")
+
 print("done; files in", HERE)

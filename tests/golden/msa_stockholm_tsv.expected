@@ -1,0 +1,7 @@
+name	description	start	end	length	gaps	identity	sequence
+human/1-23		1	23	23	1	100	MKVLAAGIVG-LLAFSQTEAHPKD
+mouse/1-23		1	23	23	1	91.3	MKVLATGIVG-LLAFSQSEAHPKD
+yeast/5-21		5	21	17	7	75	--MLSAGLVGALL-FSQ-EAN---
+yeast/5-21 #=GR SS	residue annotation						--HHHHHHHHHHH-CCC-CCC---
+plant/1-22		1	22	22	2	81	MRVL-AGIIGSLLAFAQTE-HPRD
+#=GC SS_cons	column annotation						HHHHHHHHHHHHHHCCCCCCCCCC

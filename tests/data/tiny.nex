@@ -1,0 +1,17 @@
+#NEXUS
+[ a tiny made-up protein alignment ]
+BEGIN DATA;
+  DIMENSIONS NTAX=4 NCHAR=24;
+  FORMAT DATATYPE=PROTEIN GAP=- MATCHCHAR=. INTERLEAVE;
+  MATRIX
+    'H. sapiens' MKVLAAGIVG-LLAF
+    mouse        .....T....-....
+    yeast        --MLSAGLVGALL-F
+    plant        MRVL-AGIIGSLLAF
+
+    'H. sapiens' SQTEAHPKD
+    mouse        ..S......
+    yeast        SQ-EAN---
+    plant        AQTE-HPRD
+  ;
+END;

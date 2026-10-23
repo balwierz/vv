@@ -1222,6 +1222,17 @@ std::unique_ptr<TabularSource> lock_hdf5_source(std::unique_ptr<TabularSource> s
 // (xlsx, ods, HDF5 / AnnData): its sheets; empty for any other source.
 std::vector<std::unique_ptr<TabularSource>> workbook_siblings(const TabularSource& src);
 
+// Multiple sequence alignments (src/formats/msa.cpp): Stockholm, Clustal,
+// PHYLIP, NEXUS, MSF, A2M / A3M, aligned FASTA. `kind` ("stockholm",
+// "clustal", "phylip", "nexus", "msf", "a3m", "afa") or "" to decide by
+// msa_kind() and then the extension.
+std::string open_msa_source(const std::string& path, const Config& cfg, std::unique_ptr<TabularSource>* out,
+                            std::string kind = {});
+// The alignment format a file's first lines show (a kind above), or "".
+std::string msa_kind(const std::string& path);
+// A FASTA file whose first records (those whole in its first 64 KiB, at
+// least two) have one length and gaps ('-'): an alignment, not sequences.
+bool fasta_is_aligned(const std::string& path);
 // GenBank / EMBL flat files (src/formats/genbank.cpp): features, records, sequences.
 std::string open_genbank_source(const std::string& path, const Config& cfg,
                                 std::unique_ptr<TabularSource>* out);

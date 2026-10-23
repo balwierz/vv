@@ -1465,7 +1465,57 @@ assert_eq_file_inline "gb_region_locus" "$("$VV" -r TOY00001:95-100 --select typ
 GB_XZ="$TMP/tiny.gb.xz"; xz -c "$DATA/tiny.gb" > "$GB_XZ" 2>/dev/null && \
     assert_eq_file_inline "gb_compressed" "$("$VV" --count "$GB_XZ")" "6"
 
-echo '── Cooler (.cool / .mcool) ────────────────────────────'
+echo '── Multiple sequence alignments ───────────────────────'
+# The same 4 × 24 protein alignment in every format (tests/data/generate.py):
+# each reader gives the same aligned sequences, lengths, gaps and identities.
+MSA_SEQS=$(printf 'MKVLAAGIVG-LLAFSQTEAHPKD\nMKVLATGIVG-LLAFSQSEAHPKD\n--MLSAGLVGALL-FSQ-EAN---\nMRVL-AGIIGSLLAFAQTE-HPRD')
+MSA_STATS=$(printf '23\t1\t100\n23\t1\t91.3\n17\t7\t75\n22\t2\t81')
+for f in tiny.sto tiny.aln tiny.phy tiny.seq.phy tiny.nex tiny.msf tiny.afa tiny.aligned.fa; do
+    assert_eq_file_inline "msa_sequences_$f" \
+        "$("$VV" --tsv --no-header --filter 'length is not null' --select sequence "$DATA/$f")" "$MSA_SEQS"
+    assert_eq_file_inline "msa_stats_$f" \
+        "$("$VV" --tsv --no-header --filter 'length is not null' --select length,gaps,identity "$DATA/$f")" "$MSA_STATS"
+done
+run_case msa_stockholm_tsv --tsv "$DATA/tiny.sto"
+# Names: Pfam-style ranges, strict 10-character PHYLIP names, a quoted NEXUS name.
+assert_eq_file_inline "msa_sto_ranges" "$("$VV" --tsv --no-header --filter 'start is not null' --select start,end "$DATA/tiny.sto" | tr '\n' ' ')" \
+    "$(printf '1\t23 1\t23 5\t21 1\t22 ')"
+assert_eq_file_inline "msa_phylip_strict_names" "$("$VV" --tsv --no-header --select name "$DATA/tiny.seq.phy" | tr '\n' '|')" \
+    "H sapiens|M musculus|S cerevisi|A thaliana|"
+assert_eq_file_inline "msa_nexus_quoted_name" "$("$VV" --tsv --no-header --select name "$DATA/tiny.nex" | head -1)" "H. sapiens"
+# Annotations: #=GR under its sequence, #=GC last; #=GF / #=GS in their tab;
+# Clustal's conservation line padded over the blank second block.
+assert_eq_file_inline "msa_sto_annotation_rows" "$("$VV" --tsv --no-header --filter 'length is null' --select name,sequence "$DATA/tiny.sto")" \
+    "$(printf 'yeast/5-21 #=GR SS\t--HHHHHHHHHHH-CCC-CCC---\n#=GC SS_cons\tHHHHHHHHHHHHHHCCCCCCCCCC')"
+assert_eq_file_inline "msa_sto_tabs" "$("$VV" --list-tabs "$DATA/tiny.sto" | tr '\n' ' ')" "alignment annotations "
+assert_eq_file_inline "msa_sto_annotations" "$("$VV" --tab annotations --tsv --no-header "$DATA/tiny.sto" | sed -n '1p;4p')" \
+    "$(printf '\tID\tTINY_DOMAIN\nhuman/1-23\tAC\tP00001.1')"
+assert_eq_file_inline "msa_clustal_conservation" \
+    "$("$VV" --tsv --no-header --filter 'name == "conservation"' --select sequence "$DATA/tiny.aln" | awk '{print length($0)}')" "24"
+# A3M: insert states (lower case) out of the aligned sequence, counted.
+assert_eq_file_inline "msa_a3m_inserts" "$("$VV" --tsv --no-header --select name,length,inserts,sequence "$DATA/tiny.a3m" | sed -n '2p;4p')" \
+    "$(printf 'mouse\t25\t2\tMKVLATGIVG-LLAFSQSEAHPKD\nplant\t23\t1\tMRVL-AGIIGSLLAFAQTE-HPRD')"
+assert_contains "msa_footer" "$("$VV" -n 1 "$DATA/tiny.sto" 2>&1)" "Format: Stockholm  |  4 sequences × 24 columns  |  protein"
+# A .fa without gaps is still read as sequences.
+assert_eq_file_inline "msa_unaligned_fa_is_fasta" "$("$VV" --list-columns "$DATA/tiny.fa" | tr '\n' ' ')" "name comment seq "
+# Compressed, stdin (by the first line), an unknown extension by content,
+# and a text file whose first line only looks like a PHYLIP header.
+gzip -c "$DATA/tiny.sto" > "$TMP/tiny.sto.gz"
+assert_eq_file_inline "msa_sto_gz" "$("$VV" --count "$TMP/tiny.sto.gz")" "6"
+if command -v zstd >/dev/null 2>&1; then
+    zstd -q -c "$DATA/tiny.aln" > "$TMP/tiny.aln.zst"
+    assert_eq_file_inline "msa_aln_zst" "$("$VV" --count "$TMP/tiny.aln.zst")" "5"
+fi
+assert_eq_file_inline "msa_stdin_stockholm" "$("$VV" --tsv - < "$DATA/tiny.sto")" "$("$VV" --tsv "$DATA/tiny.sto")"
+assert_eq_file_inline "msa_stdin_clustal" "$("$VV" --count - < "$DATA/tiny.aln")" "5"
+cp "$DATA/tiny.nex" "$TMP/alignment.data"
+assert_eq_file_inline "msa_sniff_unknown_ext" "$("$VV" --count "$TMP/alignment.data" 2>/dev/null)" "4"
+printf '3 5\nnot an alignment\n' > "$TMP/numbers.data"
+assert_eq_file_inline "msa_sniff_falls_back_to_text" "$("$VV" --list-columns "$TMP/numbers.data" 2>/dev/null)" "line"
+printf 'hello\n' > "$TMP/bad.phy"
+assert_exit_code "msa_bad_phylip" 1 "$VV" "$TMP/bad.phy"
+
+echo '── Cooler (.cool / .mcool) ────────────────────────────\'
 # generate.py: chr1 1000 bp + chr2 500 bp, 100 bp bins, weight 1/(1 + bin % 3)
 # with bin 3 NaN; tiny.mcool adds a 250 bp resolution without weights.
 assert_eq_file_inline "cool_tabs" "$("$VV" --list-tabs "$DATA/tiny.cool" | tr '\n' ' ')" "summary chroms pixels bins "
@@ -5396,6 +5446,7 @@ if [ -x "$FC" ]; then
     FOUT=$("$FC" "$DATA/tiny.bam" "$DATA/tiny.noseq.bam" "$DATA/tiny.samples.bcf" "$DATA/tiny.vcf" \
                  "$DATA/tiny.gtf" "$DATA/tiny.bed.gz" "$DATA/tiny.csv" "$DATA/tiny.parquet" \
                  "$DATA/tiny.h5ad" "$DATA/tiny.slices.npz" "$DATA/tiny.sparse.RData" \
+                 "$DATA/tiny.sto" "$DATA/tiny.aligned.fa" \
                  --matrix-long "$DATA/tiny.h5ad" 2>&1)
     assert_contains "features_bam"         "$FOUT" "file tiny.bam region=ready pileup=1 tags=1 contigs=1 variants=0 samples=0 expand=- hint=-"
     assert_contains "features_bam_noindex" "$FOUT" "file tiny.noseq.bam region=needs-index pileup=1 tags=1 contigs=1 variants=0 samples=0 expand=- hint=a region needs an index: samtools index"
@@ -5408,6 +5459,9 @@ if [ -x "$FC" ]; then
     assert_contains "features_format_bam"  "$FOUT" "format BAM / CRAM alignments family=Alignments (BAM, CRAM, SAM, PAF, pileup)"
     assert_contains "features_format_bedgz" "$FOUT" "format BED family=Intervals and annotations (BED, GFF, bigBed, bigWig)"
     assert_contains "features_format_h5ad" "$FOUT" "format HDF5 / AnnData / Loom family=HDF5 (AnnData, Loom, MuData, Cooler)"
+    assert_contains "features_format_sto"  "$FOUT" "format Stockholm family=Multiple sequence alignments (Stockholm, Clustal, PHYLIP, NEXUS, MSF, A3M)"
+    assert_contains "features_msa_alphabet" "$FOUT" "tab alignment matrix=0 slices=0 coords=0 alphabet=protein"
+    assert_contains "features_msa_annotations" "$FOUT" "tab annotations matrix=0 slices=0 coords=0"
     assert_contains "features_parquet"     "$FOUT" "file tiny.parquet region=none by-columns"
     assert_contains "features_parquet_tab" "$FOUT" "tab tiny.parquet matrix=0 slices=0 coords=1"
     assert_contains "features_h5ad_x"      "$FOUT" "tab X (preview) matrix=1 slices=0 coords=0"

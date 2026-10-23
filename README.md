@@ -49,6 +49,7 @@ More screenshots, one per format: **[docs/formats.md](docs/formats.md)**.
 | R data, incl. Seurat / SingleCellExperiment / sparse Matrix | `.rds` `.RData` `.rda` | [screens](docs/formats.md#r-data) |
 | Cooler Hi-C, single-cell | `.cool` `.mcool` `.scool` | [screens](docs/formats.md#cooler-hi-c) |
 | GenBank / EMBL | `.gb` `.gbk` `.gbff` `.genbank` `.embl` | [screens](docs/formats.md#genbank--embl) |
+| Multiple sequence alignments: Stockholm, Clustal, PHYLIP, NEXUS, MSF, A2M / A3M, aligned FASTA | `.sto` `.stk` `.stockholm` `.aln` `.clustal` `.clw` `.clustalw` `.phy` `.phylip` `.nex` `.nxs` `.nexus` `.msf` `.a2m` `.a3m` `.afa` `.afasta` | [screens](docs/formats.md#multiple-sequence-alignments) |
 | Nanopore POD5 | `.pod5` | [screens](docs/formats.md#nanopore-pod5) |
 | Parquet, LociSSD | `.parquet` `.lociss` | [screens](docs/formats.md#parquet--arrow--orc) |
 | Arrow IPC / Feather, ORC | `.arrow` `.arrows` `.feather` `.orc` | [screens](docs/formats.md#parquet--arrow--orc) |

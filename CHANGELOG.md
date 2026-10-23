@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Multiple sequence alignments: Stockholm, Clustal, PHYLIP (sequential or
+  interleaved, strict or relaxed names), NEXUS, GCG MSF, A2M / A3M and
+  aligned FASTA (`.afa`, or a `.fa` whose records have one length and
+  gaps). One row per sequence with its name, description, start / end from
+  `name/12-345`, length, gaps, identity to the first sequence and the
+  aligned sequence; column annotations are rows under the sequences, and
+  Stockholm's `#=GF` / `#=GS` lines an annotations tab.
+
 ## [1.32.0] - 2026-10-21
 
 ### Added

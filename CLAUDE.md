@@ -104,7 +104,8 @@ src/formats/         one file per reader family: parquet, lociss, delimited,
                      htslib (BAM/CRAM/SAM, pileup, BCF, FASTA/FASTQ, --contigs),
                      ucsc (bigWig/bigBed, 2bit), text, json, sqlite, arrow
                      (IPC, ORC), workbook (xlsx, ods), duckdb (optional libduckdb),
-                     genbank (GenBank / EMBL),
+                     genbank (GenBank / EMBL), msa (Stockholm, Clustal,
+                     PHYLIP, NEXUS, MSF, A2M / A3M, aligned FASTA),
                      hdf5 (+ store.hpp: the Store interface its AnnData / generic
                      readers use), zarr (a Store over .zarr / .zarr.zip), cooler
                      (Hi-C .cool / .mcool / .scool on HDF5), npz, pod5, rserial

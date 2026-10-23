@@ -481,6 +481,9 @@ public:
     // cells the table view and TUI show in full instead of eliding at the -w
     // cap (an explicit -w still applies).
     virtual bool show_cells_in_full() const { return false; }
+    // A tab of aligned sequences: "nucleotide" or "protein" (how a viewer
+    // colours its residues); "" for any other tab.
+    virtual std::string sequence_alphabet() const { return ""; }
     // Column names that should be hidden from human-facing views (table,
     // vertical-head, TUI). Delimited and Parquet output keep all columns.
     // Used e.g. to hide the derived `MaxEndSoFar` column in LociSSD files.
@@ -613,6 +616,7 @@ struct TabTraits {
     bool slices = false;          // has_slices(): the slice stepper
     bool coord_columns = false;   // chromosome / start / end columns (-r on Parquet)
     bool cells_in_full = false;   // show_cells_in_full(): a summary, no width cap
+    std::string alphabet;         // sequence_alphabet(): an alignment's residues
 };
 TabTraits tab_traits(const TabularSource& src);
 

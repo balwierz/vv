@@ -23,6 +23,7 @@ build prints. Flags and options are covered in the [manual](USAGE.md).
 [R data](#r-data) ·
 [Cooler Hi-C](#cooler-hi-c) ·
 [GenBank / EMBL](#genbank--embl) ·
+[Multiple sequence alignments](#multiple-sequence-alignments) ·
 [Nanopore POD5](#nanopore-pod5)<br>
 **Tables** —
 [Parquet / Arrow / ORC](#parquet--arrow--orc) ·
@@ -260,6 +261,29 @@ accession.version, accession or locus name.
 
 Try: `vv --filter 'type == "CDS"' --select locus_tag,product,start,end NC_000913.gbff` ·
 `vv -r NC_001416.1:0-5000 lambda.gb`.
+
+## Multiple sequence alignments
+
+Stockholm `.sto` `.stk` `.stockholm` (Pfam, Rfam) · Clustal `.aln` `.clustal`
+`.clw` `.clustalw` · PHYLIP `.phy` `.phylip` (sequential or interleaved, strict
+or relaxed names) · NEXUS `.nex` `.nxs` `.nexus` (the DATA / CHARACTERS
+matrix) · GCG MSF `.msf` · A2M / A3M `.a2m` `.a3m` (HMMER, HH-suite) ·
+aligned FASTA `.afa` `.afasta`, and a `.fa` whose records have one length and
+gaps (all plain or compressed; Stockholm, Clustal, NEXUS and MSF are also
+recognised by their first line, on stdin too). One row per sequence: `name`,
+`description`, `start` / `end` from a Pfam-style `name/12-345` (1-based),
+`length` (residues), `gaps`, `identity` (% identical to the first sequence
+over the columns where neither has a gap), and the aligned `sequence`; A2M /
+A3M insert states (lower case) are left out of it and counted in `inserts`.
+Column annotations — Stockholm `#=GC` / `#=GR`, Clustal's conservation line —
+are rows under the sequences, so they line up. Stockholm's `#=GF` / `#=GS`
+lines are the **annotations** tab. The footer says whether the residues are
+nucleotides or protein; vvg colours them by that.
+
+![vv: a Stockholm protein family](img/vv/msa.svg)
+
+Try: `vv --sort identity:desc PF00046_seed.sto` ·
+`vv --filter 'gaps < 10' --select name,identity alignment.aln`.
 
 ## Cooler Hi-C
 

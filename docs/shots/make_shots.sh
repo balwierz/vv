@@ -108,6 +108,7 @@ MAXL=11 cli rds     110 -n 6 --sort padj deseq2.rds
 MAXL=20 cli rds-seurat 130 --tab structure -n 16 -w 44 --select path,class,size,value pbmc_seurat.rds   # needs SeuratObject
 MAXL=11 cli cooler  110 --tab pixels@10kb -r chr17:1000000-1100000 -n 6 hic.mcool
 MAXL=12 cli genbank 118 --tab features --select type,start,end,strand,gene,product,note pUC19.gb
+MAXL=13 cli msa     118 --select name,length,gaps,identity,sequence homeodomain.sto
 MAXL=11 cli pod5    110 --tab reads --select read_id,channel,num_samples,end_reason,median_before -n 6 run.pod5
 MAXL=11 cli blast   118 -n 6 hits.m8
 MAXL=20 cli zarr    118 --tab summary -n 16 -w 80 pbmc.zarr

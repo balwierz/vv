@@ -3,7 +3,7 @@
 // line per file and one per tab:
 //   file <name> region=<none|ready|needs-index> [by-columns] pileup=0|1 tags=…
 //        contigs=… variants=… samples=… expand=<column> hint=<region_hint>
-//   tab <label> matrix=0|1 slices=0|1 coords=0|1
+//   tab <label> matrix=0|1 slices=0|1 coords=0|1 [alphabet=nucleotide|protein]
 // --matrix-long opens the files after it with --matrix long.
 // --narrow FILE COLUMN keep|drop CURRENT VALUE…: the filter
 // narrow_filter_by_values builds (a VALUE of \N is a null), or "error: …".
@@ -71,8 +71,9 @@ int main(int argc, char** argv) {
         tabs.insert(tabs.begin(), std::move(src));
         for (const auto& t : tabs) {
             const TabTraits tt = tab_traits(*t);
-            std::printf("tab %s matrix=%d slices=%d coords=%d\n", t->tab_label().c_str(),
-                        tt.matrix_tab, tt.slices, tt.coord_columns);
+            std::printf("tab %s matrix=%d slices=%d coords=%d%s%s\n", t->tab_label().c_str(),
+                        tt.matrix_tab, tt.slices, tt.coord_columns,
+                        tt.alphabet.empty() ? "" : " alphabet=", tt.alphabet.c_str());
         }
     }
     return rc;

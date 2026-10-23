@@ -476,6 +476,36 @@ try:
 except ImportError:
     note("Biopython not found; skipping pUC19.gb")
 
+# ── Multiple alignment: a homeodomain-like family (Stockholm) ───────────────
+# A made-up consensus mutated per sequence, with gaps, Pfam-style names
+# (name/start-end), #=GF / #=GS lines and a #=GC SS_cons line.
+RM = random.Random(17)   # its own, so the sections after it keep their data
+cons = "RRKRTAYTRYQLLELEKEFHFNRYLTRRRRIEIAHALCLTERQIKIWFQNRRMKWKK"
+species = ["HXA1_HUMAN", "HXA1_MOUSE", "HXB1_CHICK", "HXA1_DANRE", "LAB_DROME", "CEH13_CAEEL",
+           "HXB2_HUMAN", "HXD1_XENLA", "HM01_NEMVE", "HX1A_BRAFL"]
+rows = []
+for i, name in enumerate(species):
+    s = list(cons)
+    for _ in range(i * 2 + 3):                       # substitutions, more for the distant ones
+        s[RM.randrange(len(s))] = RM.choice("ACDEFGHIKLMNPQRSTVWY")
+    if i >= 4:                                       # a gap run in the distant ones
+        at = RM.randrange(5, len(s) - 8)
+        for k in range(at, at + RM.randint(1, 4)):
+            s[k] = "-"
+    if i == 5:
+        s[:3] = "---"
+    start = RM.randint(120, 220)
+    n = sum(c != "-" for c in s)
+    rows.append(("%s/%d-%d" % (name, start, start + n - 1), "".join(s)))
+ss = "".join("H" if 9 <= k <= 21 or 27 <= k <= 37 or 41 <= k <= 57 else "C" for k in range(len(cons)))
+w = max(len(n) for n, _ in rows) + 2
+sto = ["# STOCKHOLM 1.0", "#=GF ID   Homeodomain_like", "#=GF DE   Homeodomain-like DNA-binding domain (made up)",
+       "#=GF AC   PF99999.1", "#=GF TP   Domain", "#=GS %s AC P09022.2" % rows[0][0], ""]
+sto += ["%-*s%s" % (w, n, s) for n, s in rows]
+sto += ["%-*s%s" % (w, "#=GC SS_cons", ss), "//", ""]
+with open(os.path.join(out, "homeodomain.sto"), "w") as f:
+    f.write("\n".join(sto))
+
 # ── Nanopore: a POD5 run ─────────────────────────────────────────────────────
 try:
     import datetime, uuid

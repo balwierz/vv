@@ -1,0 +1,16 @@
+!!AA_MULTIPLE_ALIGNMENT 1.0
+
+ tiny.msf  MSF: 24  Type: P  23/10/26  Check: 1234  ..
+
+ Name: human   Len: 24  Check: 1111  Weight: 1.00
+ Name: mouse   Len: 24  Check: 2222  Weight: 1.00
+ Name: yeast   Len: 24  Check: 3333  Weight: 1.00
+ Name: plant   Len: 24  Check: 4444  Weight: 1.00
+
+//
+
+           1                                       24
+human      MKVLAAGIVG .LLAFSQTEA HPKD
+mouse      MKVLATGIVG .LLAFSQSEA HPKD
+yeast      ..MLSAGLVG ALL.FSQ.EA N...
+plant      MRVL.AGIIG SLLAFAQTE. HPRD

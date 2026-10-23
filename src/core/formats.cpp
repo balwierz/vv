@@ -28,6 +28,7 @@ static constexpr const char* kVariants     = "Variants (VCF, BCF, PLINK)";
 static constexpr const char* kIntervals    = "Intervals and annotations (BED, GFF, bigBed, bigWig)";
 static constexpr const char* kDelimited    = "Delimited text (TSV, CSV, BLAST, MatrixMarket)";
 static constexpr const char* kSequences    = "Sequences (FASTA, FASTQ, 2bit, GenBank)";
+static constexpr const char* kMsa          = "Multiple sequence alignments (Stockholm, Clustal, PHYLIP, NEXUS, MSF, A3M)";
 static constexpr const char* kHdf5         = "HDF5 (AnnData, Loom, MuData, Cooler)";
 static constexpr const char* kArrays       = "Arrays (Zarr, NumPy)";
 static constexpr const char* kRdata        = "R data (rds, RData)";
@@ -101,6 +102,20 @@ static const FormatInfo kFormats[] = {
    false, false, true,  false, false, "", kHdf5},
   {"GenBank / EMBL", ".gb .gbk .gbff .genbank .embl", "FlatFileSource",
    true,  true,  true,  false, false, "", kSequences},
+  {"Stockholm", ".sto .stk .stockholm", "MsaSource",
+   true,  false, true,  false, true,  "", kMsa},
+  {"Clustal", ".aln .clustal .clw .clustalw", "MsaSource",
+   true,  false, false, false, true,  "", kMsa},
+  {"PHYLIP", ".phy .phylip", "MsaSource",
+   true,  false, false, false, true,  "", kMsa},
+  {"NEXUS", ".nex .nxs .nexus", "MsaSource",
+   true,  false, false, false, true,  "", kMsa},
+  {"MSF", ".msf", "MsaSource",
+   true,  false, false, false, true,  "", kMsa},
+  {"A2M / A3M", ".a2m .a3m", "MsaSource",
+   true,  false, false, false, false, "", kMsa},
+  {"Aligned FASTA", ".afa .afasta", "MsaSource",
+   true,  false, false, false, false, "", kMsa},
   {"Nanopore POD5", ".pod5", "Pod5Tab",
    false, false, true,  true,  true,  "", kColumnar},
   {"Zarr store", ".zarr .zarr.zip", "ZarrStore",

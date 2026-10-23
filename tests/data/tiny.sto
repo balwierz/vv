@@ -1,0 +1,21 @@
+# STOCKHOLM 1.0
+#=GF ID   TINY_DOMAIN
+#=GF DE   A tiny made-up protein family
+#=GF AC   PF99999.1
+#=GS human/1-23 AC P00001.1
+#=GS yeast/5-21 AC Q00003.2
+
+human/1-23     MKVLAAGIVG-LLAF
+mouse/1-23     MKVLATGIVG-LLAF
+yeast/5-21     --MLSAGLVGALL-F
+#=GR yeast/5-21 SS --HHHHHHHHHHH-C
+plant/1-22     MRVL-AGIIGSLLAF
+#=GC SS_cons   HHHHHHHHHHHHHHC
+
+human/1-23     SQTEAHPKD
+mouse/1-23     SQSEAHPKD
+yeast/5-21     SQ-EAN---
+#=GR yeast/5-21 SS CC-CCC---
+plant/1-22     AQTE-HPRD
+#=GC SS_cons   CCCCCCCCC
+//

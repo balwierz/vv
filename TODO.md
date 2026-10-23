@@ -128,6 +128,9 @@ user-facing summary).
 - Galaxy `.dat` / Galaxy archive — niche but visible.
 
 ### Done
+- Multiple sequence alignments — Stockholm, Clustal, PHYLIP, NEXUS, MSF,
+  A2M / A3M, aligned FASTA: a row per sequence (gaps, identity), column
+  annotations as rows, Stockholm #=GF / #=GS as a tab.
 - Markdown TUI mode — on a terminal a `.md` opens in the TUI: rendered prose
   as a text tab, each GFM table as a tab (d4d8a6d).
 - Compressed text: `.xz` and `.bz2` alongside `.gz` / `.zst`, by content.

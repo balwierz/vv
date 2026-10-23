@@ -255,6 +255,12 @@ static std::string sniff_text_format(const std::string& head) {
     if (starts("##gff-version"))     return "gff";
     for (const char* t : {"@HD\t", "@SQ\t", "@RG\t", "@PG\t", "@CO\t"})
         if (starts(t)) return "sam";
+    // Multiple alignments with a header line of their own.
+    if (starts("# STOCKHOLM")) return "stockholm";
+    if (starts("CLUSTAL") || starts("MUSCLE (") || starts("PROBCONS")) return "clustal";
+    if (starts("#NEXUS") || starts("#nexus")) return "nexus";
+    if (starts("!!AA_MULTIPLE_ALIGNMENT") || starts("!!NA_MULTIPLE_ALIGNMENT") || starts("PileUp"))
+        return "msf";
     if (starts(">")) return "fasta";
     if (vvjson::looks_like_json(head)) return "json";
     if (starts("@")) {
@@ -1401,6 +1407,16 @@ static std::string dispatch_by_kind(const std::string& path, const Config& cfg,
                     *out = std::move(src);
                     return "";
                 }
+                if (fmt == "stockholm" || fmt == "clustal" || fmt == "nexus" || fmt == "msf") {
+                    // The alignment reader reads a file: copy the text to one.
+                    std::string tmp;
+                    int64_t bytes = 0;
+                    const char* ext = fmt == "stockholm" ? ".sto" : fmt == "clustal" ? ".aln"
+                                    : fmt == "nexus"     ? ".nex" : ".msf";
+                    std::string serr = spool_stream(input, ext, &tmp, &bytes);
+                    if (!serr.empty()) return serr;
+                    return open_msa_source(tmp, cfg, out, fmt);
+                }
                 if (fmt == "fasta" || fmt == "fastq") {
                     // The FASTA / FASTQ reader opens a file: copy the text to one.
                     std::string tmp;
@@ -1552,6 +1568,14 @@ static std::string dispatch_by_kind(const std::string& path, const Config& cfg,
                    return false;
                }()) {
         return open_genbank_source(path, cfg, out);
+    } else if ([&] {
+                   for (const char* x : {".sto", ".stk", ".stockholm", ".aln", ".clustal", ".clw", ".clustalw",
+                                         ".phy", ".phylip", ".nex", ".nxs", ".nexus", ".msf", ".a2m", ".a3m",
+                                         ".afa", ".afasta"})
+                       if (fends_ci(det, x) || fends_ci(det, std::string(x) + ".gz")) return true;
+                   return false;
+               }()) {
+        return open_msa_source(path, cfg, out);
     } else if (fends_ci(path, ".pod5")) {
         return open_pod5_source(path, out);
     } else if (fends_ci(path, ".cool") || fends_ci(path, ".mcool") || fends_ci(path, ".scool") ||
@@ -1592,6 +1616,9 @@ static std::string dispatch_by_kind(const std::string& path, const Config& cfg,
         *out = std::move(src);
         return "";
     } else if (fastx_ext(path, det, {".fa", ".fasta", ".fna", ".faa", ".ffn", ".frn"})) {
+        // Records of one length with gaps: an alignment (a row per sequence
+        // with its gaps and identity), not sequences to read one by one.
+        if (cfg.region.empty() && fasta_is_aligned(path)) return open_msa_source(path, cfg, out, "afa");
         std::unique_ptr<TabularSource> src;
         std::string err = cfg.region.empty()
             ? open_fastx_source(path, /*is_fastq=*/false, cfg, &src)
@@ -1734,8 +1761,11 @@ static std::string dispatch_by_kind(const std::string& path, const Config& cfg,
         }
         if (!is_parquet) {
             // No known format claims it. Before giving up, look at the
-            // content: if it is text, show it as text. Binary is refused —
-            // deliberately unlike less, which offers to dump it anyway.
+            // content: an alignment that says so in its first line, else
+            // text. Binary is refused — deliberately unlike less, which
+            // offers to dump it anyway.
+            if (const std::string k = msa_kind(path); !k.empty() && k != "afa" && k != "a3m")
+                if (open_msa_source(path, cfg, out, k).empty()) return "";
             return open_text(path, cfg, out, !has_no_extension(path));
         }
     }
