@@ -15,7 +15,7 @@ end
 function __vv_file
     set -l valopts n w c @ threads decode-threads delimiter in-delimiter d header color theme box r region \
         window regions-file region-cols slop coords tail sort tags expand parquet arrow \
-        feather compression image-mode samples matrix f fasta select cols filter tab unique value-counts percentiles sample \
+        feather compression image-mode samples matrix f fasta index select cols filter tab unique value-counts percentiles sample \
         exclude-flags ff require-flags rf min-mapq min-bq
     set -l toks (commandline -opc)
     set -l i 2
@@ -145,6 +145,7 @@ complete -c vv -c vh -l count-orphans      -d '--pileup: keep paired reads that 
 complete -c vv -c vh -l ignore-overlaps    -d '--pileup: no mate-overlap quality merging'
 complete -c vv -c vh -l tags -x            -d 'BAM/CRAM/SAM/PAF: add a typed column per aux tag (comma-separated, e.g. NM,AS,RG)'
 complete -c vv -c vh -s f -l fasta -r -F   -d 'reference FASTA (.fai): --pileup ref column + ./, notation, or CRAM decoding'
+complete -c vv -c vh -l index -r -F         -d 'the BAM / CRAM / BCF index when it is not beside the file'
 complete -c vv -c vh -l select -x -a '(__vv_columns_csv)' -d 'Project columns: names, globs, N-M ranges, @types, !exclusions'
 complete -c vv -c vh -l cols -x -a '(__vv_columns_csv)' -d 'Alias of --select'
 complete -c vv -c vh -l filter -x -a '(__vv_columns)' -d 'Row predicate: <col> <op> <value> [AND/OR ...]'

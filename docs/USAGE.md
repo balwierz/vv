@@ -608,6 +608,14 @@ in 2000 and used by BED, bigBed, bigWig, BAM, and LociSSD). For
 samtools / tabix / VCF / GFF style 1-based inclusive coordinates, pass
 `--coords NCBI`. See [Coordinate convention](#coordinate-convention---coords).
 
+An index that is not beside its BAM, CRAM or BCF file (one built elsewhere
+because the file's directory is read-only) is given with `--index FILE`:
+
+```sh
+samtools index -o ~/idx/sample.crai /data/ro/sample.cram
+vv -r chr1:1000000-1001000 --index ~/idx/sample.crai /data/ro/sample.cram
+```
+
 ## Column names (`--region-cols`)
 
 For plain Parquet, `vv` auto-detects the chrom / start / end columns

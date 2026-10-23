@@ -29,6 +29,7 @@ QString vvCommandLine(const VvCommandSpec& s) {
             opt("-r", s.region);
             if (s.ncbi)     opt("--coords", QStringLiteral("NCBI"));
             if (s.slop > 0) opt("--slop", QString::number(s.slop));
+            if (!s.index.isEmpty()) opt("--index", s.index);
         }
         if (s.pileup)            w << QStringLiteral("--pileup");
         if (!s.tags.isEmpty())   opt("--tags", s.tags);
@@ -60,6 +61,7 @@ Config vvCommandConfig(const VvCommandSpec& s) {
             cfg.region           = s.region.toStdString();
             cfg.coords_one_based = s.ncbi;
             cfg.slop             = s.slop;
+            cfg.index_path       = s.index.toStdString();
         }
         cfg.pileup   = s.pileup;
         cfg.bam_tags = s.tags.toStdString();

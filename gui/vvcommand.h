@@ -12,6 +12,7 @@ struct VvCommandSpec {
     QString     path;                 // the file (or dataset directory)
     QString     tab;                  // component tab label; empty = the first tab
     QString     region;               // as typed in the Region box
+    QString     index;                // --index: the index when not beside the file
     bool        ncbi     = false;     // region is NCBI 1-based (--coords NCBI)
     int         slop     = 0;
     bool        pileup   = false;

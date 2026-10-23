@@ -24,7 +24,7 @@ _vv_input_file() {
     local val_opts=' -n -w -c -@ --threads --decode-threads --delimiter --in-delimiter -d --header --color
         --theme --box -r --region --window --regions-file --region-cols --slop --coords
         --tail --sort --tags --expand --parquet --arrow --feather --compression --image-mode
-        --samples --matrix -f --fasta --select --cols --filter --tab --unique --value-counts --percentiles --sample
+        --samples --matrix -f --fasta --index --select --cols --filter --tab --unique --value-counts --percentiles --sample
         --exclude-flags --ff --require-flags --rf --min-mapq --min-bq '
     for (( i = 1; i < ${#words[@]}; i++ )); do
         tok=${words[i]}
@@ -158,6 +158,10 @@ _vv() {
             _filedir 'fa|fasta|fa.gz|fna'
             return
             ;;
+        --index)
+            _filedir 'bai|crai|csi|tbi'
+            return
+            ;;
         --compression)
             COMPREPLY=( $(compgen -W 'zstd snappy gzip lz4 none' -- "$cur") )
             return
@@ -200,7 +204,7 @@ _vv() {
                 --exclude-flags --ff --require-flags --rf --min-mapq --min-bq --count-orphans --ignore-overlaps
                 --in-delimiter --header
                 --expand --formats --list-columns --list-tabs
-                -f --fasta
+                -f --fasta --index
                 --tab
                 --value-counts --unique --percentiles --distinct --sample --sort --tags
                 --box

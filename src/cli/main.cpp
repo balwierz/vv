@@ -550,7 +550,7 @@ int main(int argc, char** argv) {
         // --samples long makes one row per record × sample, so it scans.
         if (cfg.filter_expr.empty() && cfg.region.empty() && !cfg.distinct &&
             !cfg.pileup && !cfg.contigs && cfg.tab.empty() && cfg.samples != "long" &&
-            read_index_stats(cfg.path, &ix)) {
+            read_index_stats(cfg.path, &ix, cfg.index_path)) {
             total = (int64_t)ix.total();
         } else if (cfg.filter_expr.empty()) {
             while (src->total_rows() < 0) src->ensure(src->num_chunks());

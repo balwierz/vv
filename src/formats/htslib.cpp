@@ -465,7 +465,7 @@ public:
             if (self->fmt_name_ == "SAM")
                 return "'" + path + "': -r needs an indexed BAM/CRAM; plain "
                        "SAM has no index (convert with `samtools view -b`)";
-            self->idx_ = vv_sam_index_load(self->hts_, path.c_str());
+            self->idx_ = vv_sam_index_load(self->hts_, path.c_str(), cfg.index_path);
             if (!self->idx_)
                 return "'" + path + "': -r needs an index (.bai/.csi/.crai); "
                        "build one with `samtools index`";
@@ -905,7 +905,7 @@ public:
         // index (.bai / .csi / .crai). We accept comma-separated regions
         // via the same `chrom:start-end[,…]` syntax tabix uses.
         if (!cfg.region.empty()) {
-            self->idx_ = vv_sam_index_load(self->fp_, path.c_str());
+            self->idx_ = vv_sam_index_load(self->fp_, path.c_str(), cfg.index_path);
             if (!self->idx_)
                 return "'" + path + "': --pileup -r needs an index (.bai/.csi/.crai)";
             // cfg.region is canonical 0-based half-open; both sam_itr_regarray
@@ -1247,7 +1247,7 @@ public:
 
         // ── Range mode: load .csi/.tbi index and build per-window iterators ─
         if (!cfg.region.empty()) {
-            self->idx_ = vv_bcf_index_load(path.c_str());
+            self->idx_ = vv_bcf_index_load(path.c_str(), cfg.index_path);
             if (!self->idx_)
                 return "No BCF index for '" + path + "' (try: "
                        "`bcftools index '" + path + "'`)";
@@ -2138,7 +2138,37 @@ genomic_header_fields(const GenomicHeader& h) {
     return f;
 }
 
-bool read_index_stats(const std::string& path, IndexStats* out) {
+std::string index_suffix(const std::string& path) {
+    if (fends_ci(path, ".bam")) return ".bai";
+    if (fends_ci(path, ".cram")) return ".crai";
+    if (fends_ci(path, ".bcf")) return ".csi";
+    return "";
+}
+
+std::string build_index(const std::string& path, const std::string& out, int threads) {
+    const std::string suffix = index_suffix(path);
+    if (suffix.empty()) return "'" + path + "': vv builds indexes of BAM, CRAM and BCF files only";
+    // A partial index under the final name would be taken for a whole one.
+    const std::string tmp = out + ".tmp";
+    const int rc = suffix == ".csi" ? bcf_index_build3(path.c_str(), tmp.c_str(), 14, threads)
+                                    : sam_index_build3(path.c_str(), tmp.c_str(), 0, threads);
+    if (rc != 0) {
+        std::remove(tmp.c_str());
+        switch (rc) {
+            case -2: return "cannot open '" + path + "'";
+            case -3: return "'" + path + "' cannot be indexed (compressed with plain gzip, not BGZF?)";
+            case -4: return "cannot write '" + out + "'";
+            default: return "indexing '" + path + "' failed (is it sorted by position?)";
+        }
+    }
+    if (std::rename(tmp.c_str(), out.c_str()) != 0) {
+        std::remove(tmp.c_str());
+        return "cannot write '" + out + "'";
+    }
+    return "";
+}
+
+bool read_index_stats(const std::string& path, IndexStats* out, const std::string& index) {
     struct stat st;
     if (path == "-") return false;
     if (!is_remote_url(path) && (::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode))) return false;
@@ -2164,7 +2194,7 @@ bool read_index_stats(const std::string& path, IndexStats* out) {
         };
         if (f->format == bam) {
             if (sam_hdr_t* h = sam_hdr_read(fp)) {
-                if (hts_idx_t* idx = vv_sam_index_load(fp, path.c_str())) {
+                if (hts_idx_t* idx = vv_sam_index_load(fp, path.c_str(), index)) {
                     ok = collect(idx, sam_hdr_nref(h), [&](int i) { return sam_hdr_tid2name(h, i); });
                     hts_idx_destroy(idx);
                 }
@@ -2173,7 +2203,7 @@ bool read_index_stats(const std::string& path, IndexStats* out) {
         } else if (f->format == bcf) {
             s.variant = true;
             if (bcf_hdr_t* h = bcf_hdr_read(fp)) {
-                if (hts_idx_t* idx = vv_bcf_index_load(path.c_str())) {
+                if (hts_idx_t* idx = vv_bcf_index_load(path.c_str(), index)) {
                     ok = collect(idx, h->n[BCF_DT_CTG], [&](int i) { return bcf_hdr_id2name(h, i); });
                     hts_idx_destroy(idx);
                 }
@@ -2222,7 +2252,7 @@ std::string build_contigs(const Config& cfg,
     // name: a tabix index has its own sequence list). A sequence the index
     // has but the header does not name is appended with no length.
     IndexStats ix;
-    const bool have_ix = read_index_stats(path, &ix);
+    const bool have_ix = read_index_stats(path, &ix, cfg.index_path);
     std::vector<std::string> all_names = names;
     std::vector<int64_t>     all_lengths = lengths;
     std::map<std::string, size_t> ix_row;

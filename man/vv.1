@@ -874,6 +874,12 @@ Aliases: \fB1-based\fR, \fBGenBank\fR, \fBtabix\fR.
 \fB\-\-regions\-file\fR entries are always parsed as BED (UCSC
 0-based) per the BED spec, regardless of \fB\-\-coords\fR.
 .TP
+.BI \-\-index " FILE"
+The index of a BAM, CRAM or BCF input (\fB.bai\fR, \fB.crai\fR,
+\fB.csi\fR) when it is not beside the file, e.g. one built elsewhere
+because the file's directory is read-only. Used by \fB\-r\fR and
+\fB\-\-contigs\fR.
+.TP
 .BI \-r ", " \-\-region " REGION"
 Filter to records overlapping \fIREGION\fR (e.g. \fBchr1:1000-2000\fR).
 Multiple regions may be given comma-separated. Open-ended forms

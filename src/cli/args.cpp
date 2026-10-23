@@ -379,6 +379,8 @@ static void print_usage(const char* prog) {
         "                           (default; 0-based half-open, as in BED)\n"
         "                           or NCBI (1-based inclusive, as in GenBank,\n"
         "                           VCF, GFF, and the samtools/tabix CLI)\n"
+        "  --index <file>           the BAM / CRAM / BCF index when it is not\n"
+        "                           beside the file (a read-only directory)\n"
         "  Supported on indexed BAM/CRAM (.bai/.csi/.crai), tabix-indexed\n"
         "  VCF/BED/GFF/TSV, indexed BCF (.csi/.tbi), LociSSD (.lociss),\n"
         "  plain sorted Parquet with chrom/start/end columns,\n"
@@ -705,6 +707,8 @@ Config parse_args(int argc, char** argv) {
         } else if ((!std::strcmp(argv[i], "-f") ||
                     !std::strcmp(argv[i], "--fasta")) && i + 1 < argc) {
             cfg.pileup_ref = argv[++i];
+        } else if (!std::strcmp(argv[i], "--index") && i + 1 < argc) {
+            cfg.index_path = argv[++i];
         } else if (!std::strcmp(argv[i], "--heatmap")) {
             cfg.heatmap = true;
         } else if (!std::strcmp(argv[i], "--image-mode") && i + 1 < argc) {
@@ -792,7 +796,7 @@ Config parse_args(int argc, char** argv) {
                 "--select", "--cols", "--image-mode", "--tab", "--theme",
                 "--expand", "--samples", "--matrix",
                 "--delimiter", "--in-delimiter", "-d", "--header",
-                "-f", "--fasta", "--box",
+                "-f", "--fasta", "--box", "--index",
                 "--exclude-flags", "--ff", "--require-flags", "--rf",
                 "--min-mapq", "--min-bq",
             };

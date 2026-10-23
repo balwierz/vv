@@ -38,6 +38,8 @@ struct Config {
     std::string path;                    // first positional (back-compat)
     std::vector<std::string> paths;      // every positional (multi-file TUI)
     std::string region;                  // -r: tabix region(s), e.g. "chr1:1000-2000"
+    std::string index_path;              // --index: the input's index when it is not
+                                         // beside it (.bai / .crai / .csi / .tbi)
     std::string regions_file;            // --regions-file BED: many windows from a BED
     std::string region_cols;             // --region-cols Chr,Start,End for generic Parquet
     int64_t     slop = 0;                // --slop N: pad each region by N bp
@@ -561,6 +563,17 @@ struct FileFeatures {
     std::string family;
 };
 FileFeatures file_features(const std::string& path);
+// The same, with `index` (Config::index_path) standing in for an index beside
+// the file when it exists.
+FileFeatures file_features(const std::string& path, const std::string& index);
+
+// An index for a region query on `path` that vv can build: ".bai" (BAM),
+// ".crai" (CRAM) or ".csi" (BCF); "" for other formats.
+std::string index_suffix(const std::string& path);
+// Build that index at `out` (written under a temporary name and renamed when
+// complete) on `threads` threads, reading the whole file. "" or why it failed
+// (an unsorted file, a read error, a directory it cannot write).
+std::string build_index(const std::string& path, const std::string& out, int threads);
 
 // The formats vv reads, one row per format (what `vv --formats` prints).
 struct FormatInfo {

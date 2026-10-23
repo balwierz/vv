@@ -18,6 +18,7 @@
 
 #include <QApplication>
 #include <QStandardPaths>
+#include <QCryptographicHash>
 #include <QProcess>
 #include <QFontDatabase>
 #include <QJsonObject>
@@ -231,6 +232,9 @@ public:
             if (const OpenFile* f = activeFile()) ignoreChange(f->id);
         });
         connect(contextBar_, &ContextBar::loadMoreRequested, this, [this] { loadMoreRows(); });
+        connect(contextBar_, &ContextBar::buildIndexRequested, this, [this] {
+            if (const OpenFile* f = activeFile()) buildIndex(f->id);
+        });
         tabs_->setTabsClosable(true);
         tabs_->setDocumentMode(true);
         setCentralWidget(tabs_);
@@ -329,7 +333,8 @@ public:
                 continue;
             }
             OpenFile f{nextFileId_++, p, newFileOptions_, false};
-            f.feat = file_features(p.toStdString());
+            f.opts.index = knownIndex(p).toStdString();
+            f.feat = file_features(p.toStdString(), f.opts.index);
             LoadResult r = loadFile(f.path, f.opts);
             errors << r.errors;
             if (r.sources.empty()) continue;
@@ -1977,7 +1982,8 @@ public:
             }
         } else {
             OpenFile f{nextFileId_++, c.path, c.opts, false};
-            f.feat = file_features(c.path.toStdString());
+            f.opts.index = knownIndex(c.path).toStdString();
+            f.feat = file_features(c.path.toStdString(), f.opts.index);
             files_.push_back(f);
             id = f.id;
             stampFile(id);
@@ -2049,6 +2055,72 @@ private:
     }
     const OpenFile* activeFile() const { return fileById(tabFile_.value(tabs_->currentWidget(), 0)); }
 
+    // Where vvg keeps an index it built for a file in a directory it cannot
+    // write: its cache, under a name from the file's absolute path.
+    static QString cachedIndexPath(const QString& path) {
+        const QString abs = QFileInfo(path).absoluteFilePath();
+        const QString key = QString::fromLatin1(
+            QCryptographicHash::hash(abs.toUtf8(), QCryptographicHash::Sha1).toHex().left(16));
+        return QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/index/") +
+               key + QLatin1Char('-') + QFileInfo(path).fileName() +
+               QString::fromStdString(index_suffix(path.toStdString()));
+    }
+    // The index vvg built for `path` in its cache, if there is one no older
+    // than the file; "" otherwise (an index beside the file needs no name).
+    static QString knownIndex(const QString& path) {
+        if (path.contains(QLatin1String("://")) || index_suffix(path.toStdString()).empty()) return {};
+        const QFileInfo idx(cachedIndexPath(path));
+        return idx.isFile() && idx.lastModified() >= QFileInfo(path).lastModified() ? idx.filePath()
+                                                                                     : QString();
+    }
+    // Build the index a region query on file `id` needs, on a worker thread:
+    // beside the file, or in vvg's cache when its directory is read-only.
+    // The file's tabs stay as they are; the Region box works when it is done.
+    void buildIndex(int id) {
+        const OpenFile* f = fileById(id);
+        if (!f || indexBuilds_.contains(id)) return;
+        const QString path = f->path;
+        const QString name = QFileInfo(path).fileName();
+        const bool beside = QFileInfo(QFileInfo(path).absolutePath()).isWritable();
+        const QString out = beside ? path + QString::fromStdString(index_suffix(path.toStdString()))
+                                   : cachedIndexPath(path);
+        if (!beside) QDir().mkpath(QFileInfo(out).absolutePath());
+        auto* watcher = new QFutureWatcher<QString>(this);
+        indexBuilds_[id] = watcher;
+        auto* clock = new QTimer(watcher);
+        auto started = std::make_shared<QElapsedTimer>();
+        started->start();
+        auto elapsed = [started] {
+            const qint64 s = started->elapsed() / 1000;
+            return QStringLiteral("%1:%2").arg(s / 60).arg(s % 60, 2, 10, QLatin1Char('0'));
+        };
+        connect(clock, &QTimer::timeout, this, [this, name, elapsed] {
+            statusBar()->showMessage(tr("Building the index of %1 (it reads the whole file)… %2")
+                                         .arg(name, elapsed()));
+        });
+        clock->start(1000);
+        connect(watcher, &QFutureWatcher<QString>::finished, this, [this, id, watcher, out, beside, name, elapsed] {
+            const QString err = watcher->result();
+            indexBuilds_.remove(id);
+            watcher->deleteLater();
+            if (OpenFile* g = fileById(id); g && err.isEmpty()) {
+                if (!beside) g->opts.index = out.toStdString();
+                g->feat = file_features(g->path.toStdString(), g->opts.index);
+                statusBar()->showMessage(tr("Index of %1 built in %2: %3").arg(name, elapsed(), out), 10000);
+            } else if (!err.isEmpty()) {
+                statusBar()->showMessage(tr("No index: %1").arg(err), 15000);
+            }
+            syncFileControls();
+        });
+        const std::string p = path.toStdString(), o = out.toStdString();
+        const int threads = std::clamp(QThread::idealThreadCount() / 2, 2, 8);   // vv's default
+        watcher->setFuture(QtConcurrent::run([p, o, threads] {
+            return QString::fromStdString(build_index(p, o, threads));
+        }));
+        statusBar()->showMessage(tr("Building the index of %1 (it reads the whole file)…").arg(name));
+        syncFileControls();
+    }
+
     static QString partialText(const ArrowTableModel* m) {
         return tr("The first %1 rows (%2 in memory); the file goes on")
             .arg(QLocale().toString((qlonglong)m->rowCount()))
@@ -2080,6 +2152,12 @@ private:
         if (!f || f->jsonTree) { contextBar_->clearState(); return; }
         auto* m = activeModel();
         contextBar_->setState(f->feat, m ? m->tabTraits() : TabTraits{}, f->opts);
+        contextBar_->setIndexBuild(indexBuilds_.contains(f->id) ? ContextBar::IndexBuild::Building
+                                   : f->feat.region == FileFeatures::Region::NeedsIndex &&
+                                             !index_suffix(f->path.toStdString()).empty() &&
+                                             !f->path.contains(QLatin1String("://"))
+                                       ? ContextBar::IndexBuild::Offer
+                                       : ContextBar::IndexBuild::Hidden);
     }
 
 protected:
@@ -3249,6 +3327,7 @@ public:
         const OpenFile* f = fileById(tabFile_.value(v, 0));
         const FileOptions fo = f ? f->opts : FileOptions{};
         s.region  = QString::fromStdString(fo.region);
+        s.index   = QString::fromStdString(fo.index);
         s.ncbi    = fo.ncbi;
         s.slop    = (int)fo.slop;
         s.pileup  = fo.pileup;
@@ -3542,6 +3621,29 @@ public:
         QCoreApplication::processEvents();
         v->horizontalScrollBar()->setValue(value);
         return {v->horizontalScrollBar()->value(), v->horizontalScrollBar()->maximum()};
+    }
+    // Build the active file's index (buildIndex), wait for it, then query
+    // `region`: where the index went and the rows the region shows.
+    QString buildIndexForTest(const QString& region) {
+        const OpenFile* f = activeFile();
+        if (!f) return QStringLiteral("none");
+        const int id = f->id;
+        const bool offered = contextBar_->describeForTest().contains(QLatin1String("build-index"));
+        buildIndex(id);
+        QElapsedTimer t;
+        t.start();
+        while (indexBuilds_.contains(id) && t.elapsed() < 30 * 60 * 1000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        f = fileById(id);
+        const QString where = f->opts.index.empty() ? QStringLiteral("beside") : QStringLiteral("cache");
+        if (f->feat.region != FileFeatures::Region::Ready) return QStringLiteral("built=0 %1").arg(statusBar()->currentMessage());
+        FileOptions o = f->opts;
+        o.region = region.toStdString();
+        if (!reopenFile(id, o)) return QStringLiteral("built=1 where=%1 region failed").arg(where);
+        auto* m = activeModel();
+        for (int g = 0; m && !m->isReady() && g < 2000000; ++g) QCoreApplication::processEvents();
+        return QStringLiteral("offered=%1 built=1 where=%2 rows=%3").arg(offered ? 1 : 0).arg(where)
+            .arg(m ? m->rowCount() : -1);
     }
     // Under the limits `rows` / `bytes`, with every question answered
     // `answer`: a header click's sort, a filter, a find and a view state's
@@ -4294,6 +4396,7 @@ private:
     qint64                         passBytes_ = ArrowTableModel::kDefaultPassBytes;
     int                            passAsked_ = 0;     // questions asked (self-test)
     int                            passAnswer_ = -1;   // self-test: 1 yes, 0 no; -1 ask
+    QHash<int, QFutureWatcher<QString>*> indexBuilds_;  // file id → its index build
     QList<ClosedTab>               closedTabs_;             // newest last, 20 kept
     QAction*                       openAct_       = nullptr;   // toolbar + File
     QAction*                       openDirAct_    = nullptr;
@@ -5046,6 +5149,9 @@ int main(int argc, char** argv) {
         // Optional cancel check: VVG_CANCEL_TEST=<ms> (cancelForTest).
         if (const char* ct = std::getenv("VVG_CANCEL_TEST"); ct && *ct)
             std::printf("cancel %s\n", win.cancelForTest(std::atoi(ct)).toStdString().c_str());
+        // Optional index build check: VVG_BUILD_INDEX=<region> (buildIndexForTest).
+        if (const char* bi = std::getenv("VVG_BUILD_INDEX"); bi && *bi)
+            std::printf("index %s\n", win.buildIndexForTest(QString::fromLocal8Bit(bi)).toStdString().c_str());
         // Optional vertical jump check: VVG_GOTO="<0-based row>[,<frozen columns>]".
         if (const char* gt = std::getenv("VVG_GOTO"); gt && *gt) {
             const QStringList p = QString::fromLocal8Bit(gt).split(QLatin1Char(','));

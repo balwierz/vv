@@ -82,8 +82,11 @@ Command* goes the other way.
   decoded rows vvg stops reading: the strip under the tab bar says how many
   rows are loaded, and *Load More* (*View ▸ Load More Rows*) reads another
   1 GiB. To see a place deep in an indexed BAM, CRAM or VCF, give a region
-  instead. Parquet, Arrow, HDF5 and other formats that read any part of the
-  file on demand have no such limit. A sort, filter or find reads every row,
+  instead: a BAM, CRAM or BCF without an index offers *Build Index* by the
+  Region box (it reads the whole file once, as `samtools index` does, and
+  writes the index beside it, or into vvg's cache when the directory is
+  read-only; later opens find it there). Parquet, Arrow, HDF5 and other
+  formats that read any part of the file on demand have no such limit. A sort, filter or find reads every row,
   and on such a file keeps them in memory: above 10 million rows, or, while
   the rows are not counted yet, on a file over 1 GiB or a remote one, vvg
   asks before it starts (*Continue*, *Cancel*, *Change Limits…*). Canceling

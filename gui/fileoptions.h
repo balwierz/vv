@@ -22,6 +22,9 @@ struct FileOptions {
     bool        expand = true;          // unpack GFF/GTF attributes, VCF/BCF INFO
     std::string samples = "struct";
     std::string matrix = "wide";
+    // --index: the file's index when it is not beside it (one vvg built in
+    // its cache). Looked up when the file opens, not kept in the session.
+    std::string index;
     bool operator==(const FileOptions&) const = default;
 
     // For the session (vvg's settings).
@@ -63,6 +66,7 @@ struct FileOptions {
         c.contigs          = contigs;
         c.samples          = samples;
         c.matrix           = matrix;
+        c.index_path       = index;
         return c;
     }
 };

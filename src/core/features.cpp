@@ -30,6 +30,17 @@ static const FormatInfo* format_row(const std::string& name) {
     return best;
 }
 
+FileFeatures file_features(const std::string& path, const std::string& index) {
+    FileFeatures f = file_features(path);
+    std::error_code ec;
+    if (f.region == FileFeatures::Region::NeedsIndex && !index.empty() &&
+        std::filesystem::exists(index, ec)) {
+        f.region = FileFeatures::Region::Ready;
+        f.region_hint.clear();
+    }
+    return f;
+}
+
 FileFeatures file_features(const std::string& path) {
     FileFeatures f;
     // The extension as open_source() reads it: .zst / .zstd / .bz2 / .xz are

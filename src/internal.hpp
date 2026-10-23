@@ -38,8 +38,13 @@
 
 // htslib's sam_/bcf_/tbx_index_load save a copy of a remote file's index in
 // the working directory (HTS_IDX_SAVE_REMOTE). vv reads the index in place.
-inline hts_idx_t* vv_sam_index_load(samFile* fp, const char* fn) { return sam_index_load3(fp, fn, nullptr, 0); }
-inline hts_idx_t* vv_bcf_index_load(const char* fn) { return bcf_index_load3(fn, nullptr, 0); }
+// `fnidx`: Config::index_path, or "" for the index beside the file.
+inline hts_idx_t* vv_sam_index_load(samFile* fp, const char* fn, const std::string& fnidx = {}) {
+    return sam_index_load3(fp, fn, fnidx.empty() ? nullptr : fnidx.c_str(), 0);
+}
+inline hts_idx_t* vv_bcf_index_load(const char* fn, const std::string& fnidx = {}) {
+    return bcf_index_load3(fn, fnidx.empty() ? nullptr : fnidx.c_str(), 0);
+}
 inline tbx_t* vv_tbx_index_load(const char* fn) { return tbx_index_load3(fn, nullptr, 0); }
 
 // libBigWig (vendored under vendored/libBigWig/, compiled with -DNOCURL).
@@ -1558,4 +1563,4 @@ struct IndexStats {
     }
 };
 
-bool read_index_stats(const std::string& path, IndexStats* out);
+bool read_index_stats(const std::string& path, IndexStats* out, const std::string& index = {});

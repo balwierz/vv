@@ -37,6 +37,9 @@ public:
     // and keep the typed region and tags for editing.
     void showError(const QString& why, const FileOptions& attempted);
     void focusRegion();                     // when the region box shows
+    // The Build Index button by the region box of a file that needs one.
+    enum class IndexBuild { Hidden, Offer, Building };
+    void setIndexBuild(IndexBuild state);
     // The visible controls, e.g. "region pileup tags contigs", or "none".
     QString describeForTest() const;
     QString fileForTest() const;            // the file name shown, or ""
@@ -49,6 +52,7 @@ signals:
     void reloadRequested();
     void ignoreChangeRequested();
     void loadMoreRequested();
+    void buildIndexRequested();
 
 private:
     FileOptions current() const;            // the options the controls show
@@ -70,6 +74,7 @@ private:
     QWidget*      regionGroup_;
     QLineEdit*    regionEdit_;
     QToolButton*  goButton_;
+    QToolButton*  indexButton_;
     QComboBox*    coords_;
     QSpinBox*     slop_;
     QWidget*      alignGroup_;

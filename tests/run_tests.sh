@@ -4561,6 +4561,16 @@ if [ -f "$DATA/tiny.cram" ] && [ -f "$DATA/tiny.pileup.fa" ]; then
             chr1:100-105 | cut -f1)
         assert_eq_file_inline "cram_region_matches_samtools" "$CVV" "$CSAM"
     fi
+    # --index: an index kept elsewhere (the file's directory read-only).
+    # Without it the copy has no index beside it and -r is refused.
+    mkdir -p "$TMP/noidx" "$TMP/idx"
+    cp "$DATA/tiny.cram" "$TMP/noidx/tiny.cram"
+    cp "$DATA/tiny.cram.crai" "$TMP/idx/elsewhere.crai"
+    assert_exit_code "cram_region_without_index" 1 \
+        "$VV" -f "$DATA/tiny.pileup.fa" -r chr1:99-100 "$TMP/noidx/tiny.cram"
+    CRAM_IX=$("$VV" --tsv --no-header -f "$DATA/tiny.pileup.fa" --index "$TMP/idx/elsewhere.crai" \
+        -r chr1:99-100 "$TMP/noidx/tiny.cram" | cut -f1 | tr '\n' ' ')
+    assert_eq_file_inline "cram_region_index_elsewhere" "$CRAM_IX" "r1 r2 "
 fi
 
 # ── --tags: BAM/CRAM/SAM aux tags as typed columns ─────────────────────────────

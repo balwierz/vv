@@ -213,6 +213,13 @@ ContextBar::ContextBar(QWidget* parent) : QWidget(parent) {
     slop_->setToolTip(tr("Pad each window by this many bases on both sides"));
     slop_->setMaximumWidth(110);
     rl->addWidget(slop_);
+    indexButton_ = new QToolButton(regionGroup_);
+    indexButton_->setText(tr("Build Index"));
+    indexButton_->setToolTip(tr("Read the whole file once and write its index, so that a region "
+                                "reads only its own records (samtools index)"));
+    connect(indexButton_, &QToolButton::clicked, this, &ContextBar::buildIndexRequested);
+    rl->addWidget(indexButton_);
+    indexButton_->hide();
     lay->addWidget(regionGroup_);
     connect(regionEdit_, &QLineEdit::returnPressed, this, [this] { apply(); });
     connect(goButton_, &QToolButton::clicked, this, [this] { apply(); });
@@ -440,6 +447,12 @@ void ContextBar::setPartial(const QString& text) {
 
 bool ContextBar::partialShownForTest() const { return partialGroup_->isVisibleTo(this); }
 
+void ContextBar::setIndexBuild(IndexBuild state) {
+    indexButton_->setVisible(state != IndexBuild::Hidden);
+    indexButton_->setEnabled(state == IndexBuild::Offer);
+    indexButton_->setText(state == IndexBuild::Building ? tr("Building Index\u2026") : tr("Build Index"));
+}
+
 // Shown while it holds anything: the file's name, a change on disk or an option.
 void ContextBar::updateVisibility() {
     const bool any = fileGroup_->isVisibleTo(this) || changedGroup_->isVisibleTo(this) ||
@@ -476,6 +489,7 @@ QString ContextBar::describeForTest() const {
     QStringList parts;
     if (regionGroup_->isVisibleTo(this))
         parts << (regionEdit_->isEnabled() ? QStringLiteral("region") : QStringLiteral("region(needs-index)"));
+    if (indexButton_->isVisibleTo(this)) parts << QStringLiteral("build-index");
     if (alignGroup_->isVisibleTo(this)) parts << QStringLiteral("pileup");
     if (tagsGroup_->isVisibleTo(this)) parts << QStringLiteral("tags");
     if (samplesGroup_->isVisibleTo(this)) parts << QStringLiteral("samples");

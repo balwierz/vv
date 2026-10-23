@@ -273,7 +273,7 @@ jobs:
           # tab's file (and tab) offers; none on a plain CSV or an obs tab.
           ctx() { VVG_WINTEST=1 VVG_CONTEXT=1 ./build-gui/gui/vvg "$@" 2>/dev/null | sed -n 's/^context: //p'; }
           test "$(ctx tests/data/tiny.bam)" = "region pileup tags contigs"
-          test "$(ctx tests/data/tiny.noseq.bam)" = "region(needs-index) pileup tags contigs"
+          test "$(ctx tests/data/tiny.noseq.bam)" = "region(needs-index) build-index pileup tags contigs"
           test "$(ctx tests/data/tiny.samples.bcf)" = "region samples gtstats expand contigs"
           test "$(ctx tests/data/tiny.gtf)" = "region expand"
           test "$(ctx tests/data/tiny.parquet)" = "region"
@@ -556,6 +556,21 @@ jobs:
             VVG_WINTEST=1 VVG_FULLPASS=10000000,1073741824,no ./build-gui/gui/vvg "$f" 2>/dev/null \
               | grep -qx 'fullpass sort=ran,1 filter=ran,1 find=ran,1 restore=1'
           done
+          # Build Index: a BAM / CRAM / BCF without an index offers it by the
+          # Region box; the index goes beside the file, or into vvg's cache
+          # when the directory is read-only, and a later open finds it there.
+          for f in tiny.cram tiny.bam tiny.samples.bcf; do
+            for ro in 0 1; do
+              d="$RUNNER_TEMP/ix-$ro-$f"; mkdir -p "$d"; cp "tests/data/$f" "$d/"
+              [ $ro = 1 ] && chmod a-w "$d"
+              where=beside; [ $ro = 1 ] && where=cache
+              XDG_CACHE_HOME="$RUNNER_TEMP/ixcache" VVG_WINTEST=1 VVG_BUILD_INDEX=chr1:0-1000 \
+                ./build-gui/gui/vvg "$d/$f" 2>/dev/null | grep -q "^index offered=1 built=1 where=$where rows=[23]$"
+            done
+          done
+          XDG_CACHE_HOME="$RUNNER_TEMP/ixcache" VVG_WINTEST=1 VVG_CONTEXT=1 ./build-gui/gui/vvg "$RUNNER_TEMP/ix-1-tiny.cram/tiny.cram" \
+            | grep -qx 'context: region pileup tags contigs'
+          chmod -R u+w "$RUNNER_TEMP"/ix-1-*
           # A sort canceled before it read past the view's rows keeps the tab
           # as it is (no re-read).
           VVG_WINTEST=1 VVG_STREAM_BUDGET=1 VVG_CANCEL_TEST=0 ./build-gui/gui/vvg "$RUNNER_TEMP/r60k.fq" 2>/dev/null \
@@ -966,7 +981,7 @@ jobs:
           # tab's file (and tab) offers; none on a plain CSV or an obs tab.
           ctx() { VVG_WINTEST=1 VVG_CONTEXT=1 ./build/gui/vvg "$@" 2>/dev/null | sed -n 's/^context: //p'; }
           test "$(ctx tests/data/tiny.bam)" = "region pileup tags contigs"
-          test "$(ctx tests/data/tiny.noseq.bam)" = "region(needs-index) pileup tags contigs"
+          test "$(ctx tests/data/tiny.noseq.bam)" = "region(needs-index) build-index pileup tags contigs"
           test "$(ctx tests/data/tiny.samples.bcf)" = "region samples gtstats expand contigs"
           test "$(ctx tests/data/tiny.gtf)" = "region expand"
           test "$(ctx tests/data/tiny.parquet)" = "region"
