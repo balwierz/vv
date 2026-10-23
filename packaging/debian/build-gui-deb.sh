@@ -78,7 +78,8 @@ install -Dm644 "$REPO/gui/kde/icons/vv.svg" \
 multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || gcc -print-multiarch)"
 qt_plugdir="/usr/lib/$multiarch/qt6/plugins"
 payloads=("$root/usr/bin/vvg")
-for plug in kf6/thumbcreator/vvthumbnail.so kf6/kfilemetadata/vvextractor.so; do
+for plug in kf6/thumbcreator/vvthumbnail.so kf6/kfilemetadata/vvextractor.so \
+            kf6/parts/vvpart.so kf6/propertiesdialog/vvproperties.so; do
     built="$BLD/gui/kde/$(basename "$plug")"
     if [ -f "$built" ]; then
         install -Dm644 "$built" "$root$qt_plugdir/$plug"

@@ -1,0 +1,7 @@
+{
+    "KPlugin": {
+        "MimeTypes": @VV_MIME_TYPES@,
+        "Name": "vv table page"
+    },
+    "X-KDE-Protocols": ["file"]
+}

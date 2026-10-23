@@ -56,6 +56,7 @@ BuildRequires:  extra-cmake-modules
 BuildRequires:  kf6-kio-devel
 BuildRequires:  kf6-kcoreaddons-devel
 BuildRequires:  kf6-kfilemetadata-devel
+BuildRequires:  kf6-kparts-devel
 
 Provides:       bundled(xlsxio) = %{xlsxio_version}
 
@@ -124,6 +125,8 @@ XLSXIO_A="$(echo $PWD/xlsxio-local/lib*/libxlsxio_read.a)"
 %{_bindir}/vvg
 %{_libdir}/qt6/plugins/kf6/thumbcreator/vvthumbnail.so
 %{_libdir}/qt6/plugins/kf6/kfilemetadata/vvextractor.so
+%{_libdir}/qt6/plugins/kf6/parts/vvpart.so
+%{_libdir}/qt6/plugins/kf6/propertiesdialog/vvproperties.so
 %{_datadir}/applications/org.vv.Viewer.desktop
 %{_metainfodir}/org.vv.Viewer.metainfo.xml
 %{_datadir}/mime/packages/vv-formats.xml

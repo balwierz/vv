@@ -294,13 +294,14 @@ sudo pacman -S qt6-base extra-cmake-modules                          # Arch
 brew install qt                                                      # macOS
 ```
 
-The Dolphin thumbnailer and KFileMetaData plugins additionally need KF6, and
-are skipped with a status message if it is absent. The KF6 dev packages need
-Debian 13 (trixie)+ or Ubuntu 25.10+ — they are not in Ubuntu 24.04:
+The Dolphin thumbnailer, KFileMetaData and Properties-page plugins and the
+KPart additionally need KF6, and are skipped with a status message if it is
+absent. The KF6 dev packages need Debian 13 (trixie)+ or Ubuntu 25.10+ — they
+are not in Ubuntu 24.04:
 
 ```sh
-sudo apt-get install -y libkf6kio-dev libkf6coreaddons-dev libkf6filemetadata-dev
-sudo pacman -S kio kcoreaddons kfilemetadata                          # Arch
+sudo apt-get install -y libkf6kio-dev libkf6coreaddons-dev libkf6filemetadata-dev libkf6parts-dev
+sudo pacman -S kio kcoreaddons kfilemetadata kparts                   # Arch
 ```
 
 ### macOS

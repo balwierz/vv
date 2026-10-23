@@ -26,7 +26,7 @@ license=('MIT')
 # files are refused, as in the static binary.
 makedepends=('cmake' 'arrow' 'htslib' 'ncurses' 'hdf5' 'sqlite' 'xz' 'bzip2' 'blosc'
              'expat' 'minizip' 'xlsxio' 'zlib'
-             'qt6-base' 'extra-cmake-modules' 'kio' 'kcoreaddons' 'kfilemetadata')
+             'qt6-base' 'extra-cmake-modules' 'kio' 'kcoreaddons' 'kfilemetadata' 'kparts')
 source=("$pkgbase-$pkgver.tar.gz::https://github.com/balwierz/$pkgbase/archive/refs/tags/v$pkgver.tar.gz")
 # Regenerate after every pkgver bump — `updpkgsums` (from pacman-contrib)
 # rewrites this line in place. Do NOT use SKIP: this is a network-fetched
@@ -63,7 +63,7 @@ package_vv-gui() {
     # command lines vvg copies (Copy as vv Command).
     depends=('vv' 'qt6-base' 'arrow' 'htslib' 'hdf5' 'sqlite' 'xz' 'bzip2' 'blosc'
              'expat' 'minizip' 'xlsxio' 'zlib' 'kio' 'kcoreaddons' 'kfilemetadata'
-             'hicolor-icon-theme')
+             'kparts' 'hicolor-icon-theme')
     cd "$pkgbase-$pkgver"
     install -Dm755 ../build/gui/vvg "$pkgdir/usr/bin/vvg"
     # KF6 plugins.
@@ -71,6 +71,10 @@ package_vv-gui() {
         "$pkgdir/usr/lib/qt6/plugins/kf6/thumbcreator/vvthumbnail.so"
     install -Dm755 ../build/gui/kde/vvextractor.so \
         "$pkgdir/usr/lib/qt6/plugins/kf6/kfilemetadata/vvextractor.so"
+    install -Dm755 ../build/gui/kde/vvpart.so \
+        "$pkgdir/usr/lib/qt6/plugins/kf6/parts/vvpart.so"
+    install -Dm755 ../build/gui/kde/vvproperties.so \
+        "$pkgdir/usr/lib/qt6/plugins/kf6/propertiesdialog/vvproperties.so"
     # Desktop integration.
     install -Dm644 gui/kde/org.vv.Viewer.desktop \
         "$pkgdir/usr/share/applications/org.vv.Viewer.desktop"

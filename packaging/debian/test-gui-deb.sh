@@ -22,7 +22,8 @@ apt-get install -y -q "$deb"
 # 24.04 has no KF6 to build them against), the install must have placed them
 # and their KF6 library deps must resolve.
 if dpkg-deb -c "$deb" | grep 'thumbcreator/vvthumbnail.so' >/dev/null; then
-    for plug in 'thumbcreator/vvthumbnail.so' 'kfilemetadata/vvextractor.so'; do
+    for plug in 'thumbcreator/vvthumbnail.so' 'kfilemetadata/vvextractor.so' \
+                'parts/vvpart.so' 'propertiesdialog/vvproperties.so'; do
         path="$(dpkg -L vv-gui | grep "$plug")"
         test -f "$path"
         if ldd "$path" | grep 'not found'; then

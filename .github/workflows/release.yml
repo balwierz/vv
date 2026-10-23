@@ -135,7 +135,7 @@ jobs:
         run: |
           sudo apt-get install -y -V qt6-base-dev extra-cmake-modules patchelf
           sudo apt-get install -y -V \
-            libkf6kio-dev libkf6coreaddons-dev libkf6filemetadata-dev \
+            libkf6kio-dev libkf6coreaddons-dev libkf6filemetadata-dev libkf6parts-dev \
             || echo "::notice::KF6 dev packages unavailable; the .deb ships without the Dolphin/KFileMetaData plugins."
 
       - name: Build (VV_BUILD_GUI=ON)

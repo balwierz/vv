@@ -67,6 +67,40 @@ else()
   message(STATUS "GUI plugin  : vvextractor SKIPPED (KF6FileMetaData not found)")
 endif()
 
+# ── The table as a KPart (Konqueror, Ark) and a Properties page (Dolphin) ─────
+# Both take the thumbnailer's MIME types: its JSON is their one list.
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/vvthumbnail.json _vv_thumb_json)
+string(REGEX MATCH "\"MimeTypes\": *\\[[^]]*\\]" _vv_mimes "${_vv_thumb_json}")
+string(REGEX REPLACE "^\"MimeTypes\": *" "" VV_MIME_TYPES "${_vv_mimes}")
+configure_file(vvpart.json.in ${CMAKE_CURRENT_BINARY_DIR}/vvpart.json @ONLY)
+configure_file(vvproperties.json.in ${CMAKE_CURRENT_BINARY_DIR}/vvproperties.json @ONLY)
+
+find_package(KF6 COMPONENTS Parts KIO QUIET)
+if(_vv_plugins_ok AND KF6Parts_FOUND)
+  add_library(vvpart MODULE vvpart.cpp)
+  set_target_properties(vvpart PROPERTIES AUTOMOC ON PREFIX "")
+  target_include_directories(vvpart PRIVATE ${CMAKE_CURRENT_BINARY_DIR})   # vvpart.json
+  target_link_libraries(vvpart PRIVATE vvgui_core KF6::Parts)
+  install(TARGETS vvpart DESTINATION ${KDE_INSTALL_PLUGINDIR}/kf6/parts)
+  message(STATUS "GUI plugin  : vvpart (KParts: Konqueror, Ark)")
+else()
+  message(STATUS "GUI plugin  : vvpart SKIPPED (KF6 Parts not found)")
+endif()
+if(_vv_plugins_ok AND KF6KIO_FOUND)
+  add_library(vvproperties MODULE vvproperties.cpp)
+  set_target_properties(vvproperties PROPERTIES AUTOMOC ON PREFIX "")
+  target_include_directories(vvproperties PRIVATE ${CMAKE_CURRENT_BINARY_DIR})   # vvproperties.json
+  target_link_libraries(vvproperties PRIVATE vvgui_core KF6::KIOWidgets)
+  install(TARGETS vvproperties DESTINATION ${KDE_INSTALL_PLUGINDIR}/kf6/propertiesdialog)
+  message(STATUS "GUI plugin  : vvproperties (Dolphin Properties page)")
+else()
+  message(STATUS "GUI plugin  : vvproperties SKIPPED (KF6 KIO not found)")
+endif()
+if(TARGET vvpart AND TARGET vvproperties)
+  add_executable(vvplugintest vvplugintest.cpp)
+  target_link_libraries(vvplugintest PRIVATE vvgui_core KF6::Parts KF6::KIOWidgets)
+endif()
+
 # ── Desktop integration assets ───────────────────────────────────────────────
 # freedesktop.org formats: a .desktop entry, shared-mime-info XML, AppStream
 # metainfo and a hicolor icon. None of them means anything on macOS, where the

@@ -139,7 +139,7 @@ jobs:
           # is found (find_package(... QUIET)) and otherwise skips them, so
           # install KF6 best-effort and record whether it succeeded.
           if sudo apt-get install -y -V \
-               libkf6kio-dev libkf6coreaddons-dev libkf6filemetadata-dev; then
+               libkf6kio-dev libkf6coreaddons-dev libkf6filemetadata-dev libkf6parts-dev; then
             echo "kf6=yes" >> "$GITHUB_OUTPUT"
           else
             echo "kf6=no" >> "$GITHUB_OUTPUT"
@@ -717,6 +717,16 @@ jobs:
             # must have linked against libvvcore.
             test -f build-gui/gui/kde/vvthumbnail.so
             test -f build-gui/gui/kde/vvextractor.so
+            # The KPart and the Properties page: loaded as their hosts load
+            # them, they declare the MIME types and show the file as a table.
+            if [ -f build-gui/gui/kde/vvplugintest ]; then
+              ./build-gui/gui/kde/vvplugintest --part build-gui/gui/kde/vvpart.so tests/data/tiny.parquet \
+                | tee /dev/stderr | grep -qx 'rows=20 cols=5'
+              out=$(./build-gui/gui/kde/vvplugintest --props build-gui/gui/kde/vvproperties.so tests/data/tiny.bam)
+              echo "$out"
+              grep -qx 'before=0' <<<"$out" && grep -qx 'page=Table' <<<"$out" && grep -qx 'rows=3 cols=11' <<<"$out"
+              ! grep -qx 'mimetypes=0' <<<"$out"
+            fi
           else
             echo "Skipping KF6 .so plugin checks (KF6 not installed)."
           fi

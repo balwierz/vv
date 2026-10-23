@@ -9,8 +9,8 @@ set(CMAKE_AUTORCC ON)   # compile vvg.qrc (the app icon, the field reference)
 
 # The table widgets vvg shares with the KDE part and the Dolphin Properties
 # page: the model, the typed header, the table view with frozen columns, the
-# sequence colours, the tab pane, opening files and column widths.
-# Position-independent so a plugin .so can link it.
+# sequence colours, the tab pane, opening files, column widths and
+# VvTablePane. Position-independent so a plugin .so can link it.
 add_library(vvgui_core STATIC
     arrowtablemodel.cpp
     typedheader.cpp
@@ -19,6 +19,7 @@ add_library(vvgui_core STATIC
     tabpane.cpp
     loadsources.cpp
     columnwidths.cpp
+    tablepane.cpp
 )
 set_target_properties(vvgui_core PROPERTIES POSITION_INDEPENDENT_CODE ON AUTOMOC ON)
 target_include_directories(vvgui_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

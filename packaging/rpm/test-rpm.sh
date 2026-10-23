@@ -22,6 +22,8 @@ rpm -q vv vv-gui
 # first prebuilt artifact that carries them at all.
 rpm -ql vv-gui | grep 'thumbcreator/vvthumbnail.so' >/dev/null
 rpm -ql vv-gui | grep 'kfilemetadata/vvextractor.so' >/dev/null
+rpm -ql vv-gui | grep 'parts/vvpart.so' >/dev/null
+rpm -ql vv-gui | grep 'propertiesdialog/vvproperties.so' >/dev/null
 
 # CLI end-to-end: version, and an actual read through the Arrow reader core.
 vv --version

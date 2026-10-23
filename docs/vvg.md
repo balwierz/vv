@@ -222,6 +222,13 @@ The `vv-gui` package also integrates with Dolphin:
 - **Information Panel** — row and column counts, schema, codec, writer; for
   BAM / SAM / VCF / BCF the reference count, assembly, sort order, read groups
   and samples;
+- **Properties ▸ Table** — the file's *Properties* dialog has a *Table* page
+  with the file as tables (every tab, a header click sorts), read when the
+  page is first selected;
+- **in Konqueror and Ark** — a KPart shows the file as tables, with a
+  Filter box, where the host embeds a viewer (Konqueror: *Settings ▸
+  Configure ▸ File Types* or `embed-application` for `application/*`; Ark: a
+  file inside an archive);
 - MIME types for the genomic formats, so `.vcf` is not taken for a vCard,
   `.bam` for an archive nor `.gb` for a Game Boy ROM; also Cooler, Zarr zip,
   wiggle, BLAST tabular, GenBank / EMBL, POD5, DuckDB and R data.
@@ -242,5 +249,5 @@ and the Windows installer (`vv-<ver>-windows-x86_64.msi`, which puts *vv
 Viewer* in the Start menu) —
 [INSTALL.md](../INSTALL.md#prebuilt-binaries). From source:
 `cmake -DVV_BUILD_GUI=ON` ([details](../INSTALL.md#optional-qt6-gui--dvv_build_guion));
-vvg needs Qt6, and the KF6 `kio`, `kcoreaddons` and `kfilemetadata` modules add
-the Dolphin plugins when present.
+vvg needs Qt6, and the KF6 `kio`, `kcoreaddons`, `kfilemetadata` and `parts`
+modules add the Dolphin plugins and the KPart when present.

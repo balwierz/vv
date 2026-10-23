@@ -28,7 +28,7 @@ $SUDO apt-get install -y -V qt6-base-dev extra-cmake-modules patchelf
 # KF6 best-effort, same rule as everywhere else: absent → CMake (and hence
 # the .deb) simply skips the plugins.
 $SUDO apt-get install -y -V \
-    libkf6kio-dev libkf6coreaddons-dev libkf6filemetadata-dev \
+    libkf6kio-dev libkf6coreaddons-dev libkf6filemetadata-dev libkf6parts-dev \
     || echo "KF6 dev packages unavailable; the .deb ships without the Dolphin/KFileMetaData plugins."
 
 # A bind-mounted checkout is owned by the host user; git (build-gui-deb.sh's

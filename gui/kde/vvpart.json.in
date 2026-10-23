@@ -1,0 +1,13 @@
+{
+    "KParts": {
+        "Capabilities": ["ReadOnly"],
+        "InitialPreference": 3
+    },
+    "KPlugin": {
+        "Description": "Data files (Parquet, AnnData, VCF, BAM, …) as tables",
+        "Icon": "vv",
+        "MimeTypes": @VV_MIME_TYPES@,
+        "Name": "vv table viewer",
+        "ServiceTypes": ["KParts/ReadOnlyPart"]
+    }
+}
