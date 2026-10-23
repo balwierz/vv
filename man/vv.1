@@ -777,7 +777,7 @@ already draws a clean ASCII table. Affects only the plain table; the
 interactive viewer always uses the Unicode frame.
 .TP
 .B \-\-vertical
-\fIVertical head\fR. Transpose the preview so each input field becomes a row
+The view of \fBvh\fR, the viewer, horizontal. Transpose the preview so each input field becomes a row
 and each record becomes a column; show as many records as fit in the
 terminal width. Implies \fB\-\-no\-interactive\fR. Useful for wide tables
 that would otherwise need horizontal scrolling. Auto-enabled when the
@@ -1247,7 +1247,7 @@ vv \-@ 4 \-n 1000 alignments.bam
 .EE
 .RE
 .PP
-Vertical head on a wide Parquet file (50+ columns) that doesn't fit:
+A transposed preview (\fBvh\fR) of a wide Parquet file (50+ columns) that doesn't fit:
 .RS
 .EX
 vh wide.parquet

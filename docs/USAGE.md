@@ -48,9 +48,10 @@ When stdout is a terminal `vv` opens an ncurses row browser; otherwise
 it prints an ASCII table to stdout. Use `--no-interactive` to force
 the table view in any context.
 
-A symlinked binary named **`vh`** ("vertical head") flips the default
-preview to a transposed, vertical layout — useful for wide tables that
-would need horizontal scrolling.
+`vv` is the **Vertical Viewer**. A symlinked binary named **`vh`** — the
+viewer, horizontal — flips the default preview to a transposed layout,
+records running across the screen and fields down it: useful for wide
+tables that would need horizontal scrolling.
 
 ## Common flags
 
@@ -174,7 +175,7 @@ flag needed. `--box` affects only the non-interactive table; the ncurses
 viewer always uses the Unicode frame (it runs in an interactive terminal,
 which handles UTF-8).
 
-## Vertical-head (`vh`, or `--vertical`)
+## Transposed preview (`vh`, or `--vertical`)
 
 ```sh
 $ vh tests/data/tiny.lociss

@@ -545,6 +545,9 @@ struct FormatInfo {
     const char* family;    // the underlying format, grouping rows (vvg's Open dialog)
 };
 const std::vector<FormatInfo>& format_table();
+// This build's version ("1.32.0") and the DOI to cite (Zenodo's concept DOI).
+const char* vv_version();
+const char* vv_doi();
 // `f.exts` split: ".vcf", ".bed", … in their canonical case.
 std::vector<std::string> format_extensions(const FormatInfo& f);
 // File-name patterns for `f`: "*.vcf", plus "*.vcf.gz" "*.vcf.bgz" "*.vcf.zst"

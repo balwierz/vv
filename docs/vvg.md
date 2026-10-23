@@ -65,6 +65,13 @@ Command* goes the other way.
   (*Ctrl+Shift+W*), *Close Other Files* and *Copy Path*.
 - **Column types** — each header shows the column's type under its name, in
   a smaller, dimmer italic; *View ▸ Column Types* turns the line off.
+- **Help** — *Field Reference* (*F1*): how to use vvg, the syntax of the
+  Filter, Find and Region boxes, the column types, and what the columns and
+  keys of AnnData, VCF (with GATK, dbSNP, ClinVar, gnomAD, VEP / SnpEff
+  keys), BED-family, SAM / BAM, Cooler and FASTQ files mean, with a section
+  list and a search box; a column header's right-click menu opens it at that
+  column when it has an entry (*QUAL*, *FLAG*, *obsp*, …). *Keyboard
+  Shortcuts* (*Ctrl+/*): every command with its keys and menu, filterable.
 - The window's size and its docks are restored at the next start.
 
 ## What it does

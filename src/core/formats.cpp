@@ -161,3 +161,6 @@ std::vector<std::string> format_globs(const FormatInfo& f) {
     }
     return out;
 }
+
+const char* vv_version() { return kVersion; }
+const char* vv_doi() { return kDoi; }

@@ -76,7 +76,7 @@ Description: Universal genomic and tabular file viewer
  NumPy .npz and TSV/CSV (plus .gz variants and tabix range queries).
  .
  Ships the static, self-contained binary; \`vh\` is a symlink that defaults
- to the transposed "vertical head" view.
+ to the transposed view ("viewer, horizontal").
 CTL
 
 mkdir -p "$OUT"

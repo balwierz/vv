@@ -1,0 +1,254 @@
+<html><head><style>
+h1 { font-size: 150%; }
+h2 { font-size: 125%; margin-top: 18px; }
+h3 { font-size: 108%; margin-top: 12px; }
+td { padding: 2px 8px 2px 0; vertical-align: top; }
+td.k { font-weight: 600; white-space: nowrap; }
+</style></head><body>
+
+<h1>Field reference</h1>
+<p>How to use vvg, the syntax of its Filter, Find and Region boxes, and what
+the columns, keys and codes of common genomics files mean. Thresholds quoted
+are the tools' own published defaults; they are starting points, not
+clinical criteria. Type in the box above to search; Enter finds the next
+match.</p>
+
+<a name="using"></a><h2>Using vvg</h2>
+<table>
+<tr><td class="k">Open</td><td><i>Open</i> (Ctrl+O; its ▾ lists the recent files), <i>Open Directory</i> (a directory of Parquet / CSV / JSON parts as one dataset, Hive <code>key=value/</code> directories as columns) or drag files onto the window. Every format <code>vv --formats</code> lists opens here.</td></tr>
+<tr><td class="k">Tabs</td><td>A file of several parts (AnnData, a workbook, a database, HDF5, NumPy archive, R data) opens one tab per part; a tab reads its file when first shown. With several files open each file's tabs are underlined in a colour of their own and the first names the file. Right-click a tab: Close File (Ctrl+Shift+W), Close Other Files, Copy Path.</td></tr>
+<tr><td class="k">Sort</td><td>Click a column header: ascending, then descending, then the file's order. Numbers sort as numbers, dates as dates.</td></tr>
+<tr><td class="k">Filter</td><td>The Filter box (Ctrl+Shift+F): keep the rows matching an expression (see <a href="#filter">Filter expressions</a>); Enter applies.</td></tr>
+<tr><td class="k">Find</td><td>The Find box (Ctrl+F): highlight cells matching a regular expression; Enter or F3 jumps to the next match.</td></tr>
+<tr><td class="k">Format options</td><td>Under the tab bar, the options the current tab's file offers and nothing else: Region (Ctrl+L), Pileup and Tags (BAM / CRAM), Samples and GT stats (VCF / BCF), Expand (VCF INFO, GFF / GTF attributes), Contigs, Matrix wide / long (AnnData, Loom, 10x, Zarr), Slice (NumPy arrays of 3+ axes). They apply to that file's tabs only.</td></tr>
+<tr><td class="k">Copy</td><td>Ctrl+C copies the selected cells as tab-separated text, Ctrl+Shift+C whole rows; Ctrl+Alt+C copies the <code>vv</code> command that prints the current view.</td></tr>
+<tr><td class="k">Export</td><td>Ctrl+E writes the current tab's view (filter, sort, visible columns, every row) to Parquet, Arrow, TSV, CSV or JSON.</td></tr>
+<tr><td class="k">Details</td><td>Ctrl+B shows the panel on the right: the cursor row, one field per line, and the cursor column's statistics (counts, distinct values, range, mean, quantiles).</td></tr>
+<tr><td class="k">Columns, rows</td><td>View ▸ Columns shows and hides columns; Ctrl+G goes to a row. View ▸ Column Types shows or hides each column's type under its name (see <a href="#types">Column types</a>).</td></tr>
+<tr><td class="k">Menu</td><td>F10 or the ≡ button; right-click the toolbar for the same. View ▸ Menu Bar shows the classic menus.</td></tr>
+<tr><td class="k">Keys</td><td>Help ▸ Keyboard Shortcuts (Ctrl+/) lists every command with its key.</td></tr>
+</table>
+
+<a name="filter"></a><h2>Filter expressions</h2>
+<p>The same language as <code>vv --filter</code>: conditions
+<code>column operator value</code>, joined by <code>and</code> / <code>or</code>
+(<code>and</code> binds tighter). Words are case-insensitive.</p>
+<table>
+<tr><td class="k">== != &lt; &lt;= &gt; &gt;=</td><td>Compare. Numbers compare as numbers; text in quotes, <code>"chr1"</code> or <code>'chr1'</code>; a date or timestamp column takes a quoted date: <code>day &gt; "2024-01-01"</code>, <code>ts &lt; "2024-06-15 12:30Z"</code>; a boolean column takes <code>true</code> / <code>false</code>.</td></tr>
+<tr><td class="k">~ !~</td><td>Matches / does not match a regular expression (ECMAScript), anywhere in the text: <code>Gene ~ "^BRCA"</code>.</td></tr>
+<tr><td class="k">contains, startswith, endswith</td><td>Text tests without a regular expression: <code>name contains "kinase"</code>.</td></tr>
+<tr><td class="k">in, not in</td><td>Set membership: <code>chrom in ("chr1", "chr2")</code>; <code>in @ids.txt</code> reads the members from a file, one per line (its first tab-separated field).</td></tr>
+<tr><td class="k">is null, is not null</td><td>Missing values: <code>FILTER is null</code>.</td></tr>
+<tr><td class="k">has, lacks</td><td>Bits of an integer column, all set / none set, as numbers or SAM FLAG names: <code>FLAG lacks UNMAP,SECONDARY,DUP</code> (PAIRED, PROPER_PAIR, UNMAP, MUNMAP, REVERSE, MREVERSE, READ1, READ2, SECONDARY, QCFAIL, DUP, SUPPLEMENTARY).</td></tr>
+<tr><td class="k">`Column name`</td><td>A name with spaces or symbols goes in backticks: <code>`Sample ID` == "S1"</code> (two backticks stand for one).</td></tr>
+<tr><td class="k">Examples</td><td><code>score &gt; 5 and chrom == "chr1"</code><br><code>FILTER is null or Gene ~ "^BRCA"</code><br><code>MAPQ &gt;= 30 and FLAG lacks DUP</code></td></tr>
+</table>
+
+<a name="find"></a><h2>Find</h2>
+<p>A regular expression (ECMAScript), case-insensitive, matched anywhere in a
+cell's text as shown: <code>^chr(1|2)$</code>, <code>rs[0-9]+</code>,
+<code>BRCA[12]</code>. Matching cells are highlighted; Enter or F3 moves to
+the next one.</p>
+
+<a name="region"></a><h2>Region</h2>
+<p><code>chr1:1,000-2,000</code> (commas optional), several separated by
+commas; a chromosome alone means all of it. With 0-based (the default) the
+numbers are BED-style, half-open; with 1-based they are inclusive, as in
+samtools, tabix, VCF and GFF. <i>slop</i> widens each window on both sides.
+A region needs an index: <code>.bai</code> / <code>.csi</code> /
+<code>.crai</code> for BAM / CRAM, <code>.csi</code> / <code>.tbi</code> for
+BCF, tabix (<code>bgzip</code> + <code>tabix -p vcf|bed|gff</code>) for text,
+<code>.fai</code> for FASTA. Parquet with chromosome / start / end columns,
+LociSSD, bigBed / bigWig, Cooler and GenBank need none. An unindexed text file
+is read in full and filtered.</p>
+
+<a name="coordinates"></a><h2>Coordinates</h2>
+<p>File formats keep their own convention: BED, bigBed, bigWig, bedGraph,
+narrowPeak and BEDPE are 0-based, half-open, so <code>chr1:0-1000</code> is
+the first 1000 bases; VCF, GFF3, GTF and SAM are 1-based and inclusive. A VCF
+<code>POS</code> of 100 is the BED interval 99–100. vvg shows each file's
+numbers as stored.</p>
+
+<a name="types"></a><h2>Column types</h2>
+<p>The second line of a column header is its type, in Apache Arrow's terms.</p>
+<table>
+<tr><td class="k">int8 … int64, uint8 … uint64</td><td>Whole numbers, signed or not, of 8 to 64 bits.</td></tr>
+<tr><td class="k">float, double, halffloat</td><td>Floating-point numbers of 32, 64 and 16 bits.</td></tr>
+<tr><td class="k">decimal128(p, s)</td><td>Exact decimals: p digits, s of them after the point.</td></tr>
+<tr><td class="k">string, large_string</td><td>Text (UTF-8). <code>binary</code> is raw bytes.</td></tr>
+<tr><td class="k">bool</td><td>true / false.</td></tr>
+<tr><td class="k">date32[day], timestamp[unit, tz]</td><td>A calendar day; a point in time to the unit (s, ms, us, ns), in UTC when tz is given. <code>duration[unit]</code> is a length of time.</td></tr>
+<tr><td class="k">list&lt;element: T&gt;</td><td>A list of values of type T per cell (VCF multi-valued keys, Parquet arrays).</td></tr>
+<tr><td class="k">struct&lt;a: T, b: U&gt;</td><td>Named fields per cell (VCF samples with <i>Samples ▸ struct</i>).</td></tr>
+<tr><td class="k">map&lt;K, V&gt;</td><td>Key → value pairs per cell.</td></tr>
+<tr><td class="k">category[string]</td><td>A categorical (dictionary) column: each value is one of a fixed set, stored once (AnnData categoricals, R factors, Parquet dictionaries); <code>ordered</code> when the set has an order.</td></tr>
+</table>
+
+<a name="anndata"></a><h2>AnnData, MuData, Loom</h2>
+<p>An <code>.h5ad</code> file (and AnnData in Zarr) holds a matrix of
+observations (usually cells) × variables (genes) with tables and arrays
+aligned to either axis. The summary tab lists them by their names in the
+file, as code reaches them (<code>adata.obsp["distances"]</code>).</p>
+<table>
+<tr><td class="k"><a name="f-X"></a>X</td><td>The main matrix, cells × genes; dense, or sparse as CSR (rows stored) or CSC (columns stored). Often normalised; then raw counts are in <code>layers</code> or <code>raw</code>. Shown as a preview tab; <i>Matrix ▸ long</i> lists one row per stored value.</td></tr>
+<tr><td class="k"><a name="f-obs"></a>obs, var</td><td>Tables with one row per cell / per gene: QC metrics, cluster labels, gene names and IDs.</td></tr>
+<tr><td class="k"><a name="f-obsm"></a>obsm, varm</td><td>Arrays with one row per cell / gene and several columns: embeddings (<code>X_pca</code>, <code>X_umap</code>), PCA loadings (<code>PCs</code>).</td></tr>
+<tr><td class="k"><a name="f-obsp"></a>obsp, varp</td><td>Square cell × cell (gene × gene) matrices: the neighbour graph (<code>connectivities</code>, <code>distances</code>). Each opens as an edge list: i, j, the two names, weight.</td></tr>
+<tr><td class="k"><a name="f-layers"></a>layers</td><td>Matrices of X's shape: other versions of the data (<code>counts</code>, <code>spliced</code> / <code>unspliced</code>, scaled values).</td></tr>
+<tr><td class="k"><a name="f-raw"></a>raw.X, raw.var</td><td>The copy scanpy keeps before genes are filtered: all genes, often raw or log-normalised counts.</td></tr>
+<tr><td class="k"><a name="f-uns"></a>uns</td><td>Unstructured metadata: parameters of the analysis steps, colour palettes, neighbour settings.</td></tr>
+<tr><td class="k">profile, storage</td><td>Summary rows vv adds: a matrix's value type, stored fraction and range (whole non-negative numbers look like raw counts), and its encoding, chunking, compression and size on disk.</td></tr>
+<tr><td class="k">MuData (.h5mu)</td><td>Several AnnData objects, one per modality (<code>rna</code>, <code>atac</code>, <code>prot</code>), with joint obs / var; tabs read <code>rna:X</code>, <code>rna:obs</code>, ….</td></tr>
+<tr><td class="k">Loom</td><td><code>matrix</code> stored genes × cells (shown cells × genes), <code>layers</code>, <code>row_attrs</code> per gene, <code>col_attrs</code> per cell, <code>row_graphs</code> / <code>col_graphs</code>.</td></tr>
+</table>
+
+<a name="vcf"></a><h2>VCF: the columns</h2>
+<table>
+<tr><td class="k"><a name="f-CHROM"></a>CHROM, POS</td><td>Chromosome and the 1-based position of the first REF base. For indels POS is the base before the event (the "padding" base shared by REF and ALT).</td></tr>
+<tr><td class="k"><a name="f-ID"></a>ID</td><td>Identifiers, usually a dbSNP rsID; "." when none.</td></tr>
+<tr><td class="k">REF, ALT</td><td>Reference and alternative alleles. Several ALT alleles are comma-separated; <code>*</code> is an allele spanning a deletion upstream; <code>&lt;DEL&gt;</code>, <code>&lt;DUP&gt;</code>, <code>&lt;INV&gt;</code>, <code>&lt;CNV&gt;</code> are symbolic structural alleles; <code>&lt;NON_REF&gt;</code> (gVCF) stands for any unobserved allele.</td></tr>
+<tr><td class="k"><a name="f-QUAL"></a>Quality (QUAL)</td><td>Phred-scaled confidence that the site is variant: QUAL = −10·log<sub>10</sub> P(no ALT allele here). 20 means 1 % chance of a false call, 30 means 0.1 %. Callers differ in calibration; GATK's hard filter flags QUAL &lt; 30.</td></tr>
+<tr><td class="k"><a name="f-FILTER"></a>Filter (FILTER)</td><td><code>PASS</code> if every filter passed, otherwise the codes of the filters that failed (semicolon-separated), each described in a <code>##FILTER</code> header line; "." means no filters were applied.</td></tr>
+<tr><td class="k">INFO</td><td>Site-level annotations, <code>KEY=value</code> or flags, each declared in a <code>##INFO</code> header line with its type and Number (A: one per ALT allele, R: one per allele including REF, G: one per genotype, 0: a flag).</td></tr>
+<tr><td class="k">FORMAT, samples</td><td>The per-sample keys (e.g. <code>GT:AD:DP:GQ:PL</code>) and each sample's values in that order.</td></tr>
+</table>
+
+<a name="vcf-info"></a><h2>VCF INFO: the specification's keys</h2>
+<table>
+<tr><td class="k"><a name="f-AC"></a>Allele count (AC)</td><td>How many times each ALT allele appears in the called genotypes (a heterozygote counts 1, a homozygote 2).</td></tr>
+<tr><td class="k"><a name="f-AN"></a>Allele number (AN)</td><td>Total number of alleles in called genotypes: twice the number of diploid samples with a call. Missing genotypes lower AN.</td></tr>
+<tr><td class="k"><a name="f-AF"></a>Allele frequency (AF)</td><td>Frequency of each ALT allele, normally AC/AN within this file's samples (not a population frequency unless the file is a population resource).</td></tr>
+<tr><td class="k"><a name="f-DP"></a>Depth (DP)</td><td>Combined read depth at the site across samples, often after the caller's read filters; per sample in FORMAT.</td></tr>
+<tr><td class="k"><a name="f-MQ"></a>Mapping quality (MQ)</td><td>Root mean square of the mapping qualities of the reads at the site. Low values point to repetitive or paralogous sequence; GATK's hard filter flags MQ &lt; 40.</td></tr>
+<tr><td class="k"><a name="f-MQ0"></a>MAPQ 0 reads (MQ0)</td><td>Number of reads with mapping quality zero (placed equally well elsewhere).</td></tr>
+<tr><td class="k"><a name="f-NS"></a>Samples with data (NS)</td><td>Number of samples with data at the site.</td></tr>
+<tr><td class="k"><a name="f-SB"></a>Strand bias (SB)</td><td>Strand bias at the site; in GATK's per-sample form, four counts: REF forward, REF reverse, ALT forward, ALT reverse.</td></tr>
+<tr><td class="k"><a name="f-AA"></a>Ancestral allele (AA)</td><td>The allele inferred to be ancestral (from primate alignments).</td></tr>
+<tr><td class="k"><a name="f-DB"></a>In dbSNP (DB)</td><td>Flag: the variant is in dbSNP. <a name="f-H2"></a><code>H2</code>/<a name="f-H3"></a><code>H3</code> and <a name="f-1000G"></a><code>1000G</code> flag membership of HapMap and 1000 Genomes.</td></tr>
+<tr><td class="k"><a name="f-SOMATIC"></a>Somatic (SOMATIC)</td><td>Flag: the record is a somatic mutation (cancer genomics).</td></tr>
+<tr><td class="k"><a name="f-END"></a>End position (END)</td><td>The last position of the record (structural variants, gVCF reference blocks).</td></tr>
+<tr><td class="k"><a name="f-SVTYPE"></a>SV type (SVTYPE)</td><td>DEL, DUP, INS, INV, CNV or BND (a breakend; <a name="f-MATEID"></a><code>MATEID</code> names its partner). <a name="f-SVLEN"></a><code>SVLEN</code> is the length (negative for deletions in older files).</td></tr>
+<tr><td class="k"><a name="f-CIPOS"></a>Position CI (CIPOS)</td><td>Confidence interval around POS (and <a name="f-CIEND"></a><code>CIEND</code> around END) for imprecise structural variants (<a name="f-IMPRECISE"></a><code>IMPRECISE</code>).</td></tr>
+</table>
+
+<a name="gatk"></a><h2>VCF INFO: GATK's site annotations</h2>
+<p class="note">GATK's recommended hard filters (when VQSR or VETS cannot be
+used): for SNPs QD &lt; 2.0, QUAL &lt; 30, SOR &gt; 3.0, FS &gt; 60.0, MQ &lt; 40.0,
+MQRankSum &lt; −12.5, ReadPosRankSum &lt; −8.0; for indels QD &lt; 2.0,
+QUAL &lt; 30, FS &gt; 200, ReadPosRankSum &lt; −20.0. Keys starting with
+<code>AS_</code> are the same annotations computed per ALT allele.</p>
+<table>
+<tr><td class="k"><a name="f-QD"></a>Quality by depth (QD)</td><td>QUAL divided by the allele depth of the samples carrying the variant. Normalises QUAL for coverage: a high QUAL from very deep data with weak allelic support still gives a low QD. Low QD (&lt; 2) suggests a false positive.</td></tr>
+<tr><td class="k"><a name="f-FS"></a>Fisher strand bias (FS)</td><td>Phred-scaled p-value of Fisher's exact test on the 2 × 2 table of REF/ALT reads by forward/reverse strand. 0 means no evidence of bias; high values mean the ALT allele is seen mostly on one strand, a common sequencing or mapping artefact.</td></tr>
+<tr><td class="k"><a name="f-SOR"></a>Strand odds ratio (SOR)</td><td>Strand bias as a symmetric odds ratio of the same 2 × 2 table, which, unlike FS, does not grow with depth alone. Values above 3 (SNPs) suggest bias.</td></tr>
+<tr><td class="k"><a name="f-MQRankSum"></a>Mapping quality rank sum (MQRankSum)</td><td>z-score of the Wilcoxon (Mann–Whitney) rank-sum test comparing the mapping qualities of ALT-supporting reads with REF-supporting reads in heterozygotes. Near 0 is good; strongly negative means ALT reads map worse, as at paralogous sequence.</td></tr>
+<tr><td class="k"><a name="f-ReadPosRankSum"></a>Read position rank sum (ReadPosRankSum)</td><td>The same rank-sum test on the position of the variant within the reads. Strongly negative means the ALT allele sits mostly near read ends, where errors and misalignments gather.</td></tr>
+<tr><td class="k"><a name="f-BaseQRankSum"></a>Base quality rank sum (BaseQRankSum)</td><td>The rank-sum test on base qualities: negative means ALT bases have lower quality than REF bases.</td></tr>
+<tr><td class="k"><a name="f-ClippingRankSum"></a>Clipping rank sum (ClippingRankSum)</td><td>The rank-sum test on the number of clipped bases per read: ALT reads clipped more often hint at a structural event or misalignment.</td></tr>
+<tr><td class="k"><a name="f-ExcessHet"></a>Excess heterozygosity (ExcessHet)</td><td>Phred-scaled p-value of an exact test (Wigginton, Cutler &amp; Abecasis 2005) that the cohort holds more heterozygotes than Hardy–Weinberg equilibrium predicts from the allele frequency. A real germline variant in an outbred cohort should not show strong excess; high values (GATK flags &gt; 54.69, i.e. p &lt; 3.4 × 10<sup>−6</sup>) usually mean reads from two paralogous loci collapsed onto one, or a systematic genotyping error. Needs a cohort; meaningless for a single sample.</td></tr>
+<tr><td class="k"><a name="f-InbreedingCoeff"></a>Inbreeding coefficient (InbreedingCoeff)</td><td>F = 1 − (observed heterozygotes / expected heterozygotes) under Hardy–Weinberg equilibrium, across the cohort. Positive values: fewer heterozygotes than expected (inbreeding, population structure, or allele dropout). Strongly negative: excess heterozygotes, as above; gnomAD filters sites with F &lt; −0.3. Needs about ten or more samples.</td></tr>
+<tr><td class="k"><a name="f-VQSLOD"></a>VQSR log odds (VQSLOD)</td><td>Variant Quality Score Recalibration: the log odds that the variant is true rather than an artefact, from a Gaussian mixture model trained on known variants over the annotations above. Higher is better; the <code>VQSRTranche…</code> filters cut at sensitivity levels (e.g. "99.90to100.00" holds the lowest-scoring calls kept only to reach 99.9–100 % sensitivity). <a name="f-culprit"></a><code>culprit</code> names the annotation that weighed most against the call.</td></tr>
+<tr><td class="k"><a name="f-MLEAC"></a>ML allele count (MLEAC)</td><td>Maximum-likelihood estimate of the allele count (and <a name="f-MLEAF"></a><code>MLEAF</code> of the frequency), which may differ from AC when genotypes are uncertain.</td></tr>
+<tr><td class="k"><a name="f-DS"></a>Downsampled (DS)</td><td>Flag: reads were downsampled at this site.</td></tr>
+<tr><td class="k"><a name="f-TLOD"></a>Tumour log odds (TLOD)</td><td>Mutect2: log<sub>10</sub> likelihood ratio that the variant is present in the tumour versus absent. <a name="f-NLOD"></a><code>NLOD</code>: the evidence that the normal sample does not carry it. <a name="f-POPAF"></a><code>POPAF</code>: −log<sub>10</sub> of the population allele frequency used as a germline prior. <a name="f-GERMQ"></a><code>GERMQ</code>: Phred-scaled probability that the variant is germline.</td></tr>
+<tr><td class="k"><a name="f-STR"></a>Tandem repeat (STR)</td><td>Flag: the variant is a short tandem repeat expansion or contraction; <a name="f-RU"></a><code>RU</code> is the repeat unit and <a name="f-RPA"></a><code>RPA</code> the number of units in REF and each ALT.</td></tr>
+</table>
+
+<a name="vcf-format"></a><h2>VCF FORMAT: per-sample keys</h2>
+<table>
+<tr><td class="k"><a name="f-GT"></a>Genotype (GT)</td><td>Allele indices: 0 is REF, 1 the first ALT, 2 the second… <code>/</code> unphased, <code>|</code> phased (the order is the haplotype), <code>.</code> missing. 0/1 heterozygous, 1/1 homozygous ALT, 1/2 two different ALT alleles; a single index is a haploid call (chrY, chrM, males' chrX outside the PARs).</td></tr>
+<tr><td class="k"><a name="f-AD"></a>Allele depths (AD)</td><td>Reads supporting each allele, REF first. The allele balance AD<sub>ALT</sub>/DP of a germline heterozygote is near 0.5; far lower values suggest mosaicism, contamination or an artefact.</td></tr>
+<tr><td class="k"><a name="f-GQ"></a>Genotype quality (GQ)</td><td>Phred-scaled confidence that the GT is correct, given that the site is variant: in GATK the difference between the two smallest PL values, capped at 99. GQ 20 means 1 % chance the genotype is wrong.</td></tr>
+<tr><td class="k"><a name="f-PL"></a>Genotype likelihoods, Phred (PL)</td><td>−10·log<sub>10</sub> likelihood of each possible genotype, normalised so the most likely is 0. For one ALT allele the order is 0/0, 0/1, 1/1; e.g. <code>250,0,300</code> strongly favours 0/1. <a name="f-GL"></a><code>GL</code> holds the same as log<sub>10</sub> likelihoods; <a name="f-GP"></a><code>GP</code> posterior probabilities.</td></tr>
+<tr><td class="k"><a name="f-PS"></a>Phase set (PS)</td><td>Genotypes with the same phase set are phased relative to each other. <a name="f-PGT"></a><code>PGT</code>/<a name="f-PID"></a><code>PID</code> are GATK's physical (read-backed) phasing.</td></tr>
+<tr><td class="k"><a name="f-RGQ"></a>Reference genotype quality (RGQ)</td><td>gVCF: confidence that a sample is homozygous REF where no variant was called. <a name="f-MIN_DP"></a><code>MIN_DP</code> is the lowest depth within a reference block.</td></tr>
+<tr><td class="k"><a name="f-FT"></a>Sample filter (FT)</td><td>Per-sample filter status, like FILTER.</td></tr>
+<tr><td class="k"><a name="f-VAF"></a>Variant allele fraction (AF, VAF)</td><td>Somatic callers (Mutect2's <code>AF</code>): estimated fraction of reads carrying the ALT allele in that sample.</td></tr>
+<tr><td class="k"><a name="f-F1R2"></a>F1R2 / F2R1 orientation counts</td><td>Mutect2: reads supporting each allele by read orientation; a strong imbalance flags oxidation (OxoG) or FFPE artefacts.</td></tr>
+</table>
+
+<a name="dbsnp"></a><h2>dbSNP</h2>
+<p class="note">Older dbSNP VCFs (to build 151) carry many flags; newer ones
+(build 152 on) keep fewer and put frequencies in FREQ.</p>
+<table>
+<tr><td class="k"><a name="f-RS"></a>dbSNP ID (RS)</td><td>The rs number, without "rs". <a name="f-RSPOS"></a><code>RSPOS</code> its position; <a name="f-dbSNPBuildID"></a><code>dbSNPBuildID</code> the build that first reported it.</td></tr>
+<tr><td class="k"><a name="f-VC"></a>Variation class (VC)</td><td>SNV, MNV, INS, DEL, INDEL (DIV in old files) and others.</td></tr>
+<tr><td class="k"><a name="f-GENEINFO"></a>Genes (GENEINFO)</td><td>Overlapping genes as <code>SYMBOL:NCBI-Gene-ID</code>, several separated by "|".</td></tr>
+<tr><td class="k"><a name="f-SAO"></a>Variant origin (SAO)</td><td>0 unspecified, 1 germline, 2 somatic, 3 both.</td></tr>
+<tr><td class="k"><a name="f-SSR"></a>Suspect reason (SSR)</td><td>Why the variant is suspect, as bits: 0 none, 1 paralog, 2 from ESTs, 4 old alignment, 8 paralogous ESTs, 16 failed in 1000 Genomes, 1024 other.</td></tr>
+<tr><td class="k"><a name="f-NSM"></a>Function flags</td><td><code>NSM</code> missense, <a name="f-NSN"></a><code>NSN</code> nonsense, <a name="f-NSF"></a><code>NSF</code> frameshift, <a name="f-SYN"></a><code>SYN</code> synonymous, <a name="f-U3"></a><code>U3</code>/<code>U5</code> in a 3′/5′ UTR, <a name="f-ASS"></a><code>ASS</code>/<code>DSS</code> splice acceptor/donor, <a name="f-INT"></a><code>INT</code> intronic, <a name="f-R3"></a><code>R3</code>/<code>R5</code> within 500 bp / 2 kb downstream/upstream of a gene.</td></tr>
+<tr><td class="k"><a name="f-CAF"></a>1000G allele frequencies (CAF)</td><td>Allele frequencies from 1000 Genomes, REF first. <a name="f-COMMON"></a><code>COMMON=1</code>: minor allele frequency ≥ 1 % in at least one 1000 Genomes population. <a name="f-G5"></a><code>G5</code>/<code>G5A</code>: MAF &gt; 5 % in all / at least one population.</td></tr>
+<tr><td class="k"><a name="f-FREQ"></a>Frequencies by study (FREQ)</td><td>Newer builds: allele frequencies per study, <code>Study:REF,ALT…</code> separated by "|" (e.g. GnomAD, TOPMED, 1000Genomes, ALSPAC).</td></tr>
+<tr><td class="k"><a name="f-TOPMED"></a>TOPMed allele frequencies (TOPMED)</td><td>Allele frequencies in the TOPMed program, REF first.</td></tr>
+<tr><td class="k"><a name="f-PM"></a>Publication flags</td><td><code>PM</code> cited in PubMed, <a name="f-PMC"></a><code>PMC</code> in PubMed Central, <a name="f-OM"></a><code>OM</code> in OMIM, <a name="f-LSD"></a><code>LSD</code> in a locus-specific database, <a name="f-MUT"></a><code>MUT</code> cited as a mutation, <a name="f-CDA"></a><code>CDA</code> tested by a clinical diagnostic assay, <a name="f-VLD"></a><code>VLD</code> validated.</td></tr>
+</table>
+
+<a name="clinvar"></a><h2>ClinVar</h2>
+<table>
+<tr><td class="k"><a name="f-CLNSIG"></a>Clinical significance (CLNSIG)</td><td>The aggregate classification across submissions: Pathogenic, Likely pathogenic, Uncertain significance, Likely benign, Benign, combinations such as "Pathogenic/Likely pathogenic", "Conflicting classifications of pathogenicity" (submitters disagree; <a name="f-CLNSIGCONF"></a><code>CLNSIGCONF</code> lists them with counts), and non-Mendelian terms: drug response, risk factor, association, protective, Affects, other, not provided. Germline classifications follow ACMG/AMP criteria.</td></tr>
+<tr><td class="k"><a name="f-CLNREVSTAT"></a>Review status (CLNREVSTAT)</td><td>How well supported the classification is, shown on ClinVar's site as stars: practice guideline ★★★★; reviewed by expert panel ★★★; criteria provided, multiple submitters, no conflicts ★★; criteria provided, conflicting classifications ★; criteria provided, single submitter ★; no assertion criteria provided, and no classification provided: no stars. Give one-star and unstarred entries less weight.</td></tr>
+<tr><td class="k"><a name="f-CLNDN"></a>Condition (CLNDN)</td><td>The conditions the classification is for, "|"-separated; "not provided" and "not specified" are common placeholders. <a name="f-CLNDISDB"></a><code>CLNDISDB</code> gives their identifiers (MedGen, OMIM, Orphanet, MONDO, HPO). The <code>…INCL</code> keys describe haplotypes or genotypes the variant is part of.</td></tr>
+<tr><td class="k"><a name="f-CLNVC"></a>Variant type (CLNVC)</td><td>single nucleotide variant, Deletion, Duplication, Insertion, Indel, Microsatellite, … (<a name="f-CLNVCSO"></a><code>CLNVCSO</code> its Sequence Ontology term).</td></tr>
+<tr><td class="k"><a name="f-MC"></a>Molecular consequence (MC)</td><td>Sequence Ontology term and name, e.g. <code>SO:0001583|missense_variant</code>.</td></tr>
+<tr><td class="k"><a name="f-ORIGIN"></a>Allele origin (ORIGIN)</td><td>Bit flags: 0 unknown, 1 germline, 2 somatic, 4 inherited, 8 paternal, 16 maternal, 32 de novo, 64 biparental, 128 uniparental, 256 not tested, 512 tested inconclusive.</td></tr>
+<tr><td class="k"><a name="f-ALLELEID"></a>Allele ID (ALLELEID)</td><td>ClinVar's allele identifier (the VCF ID column holds the variation ID). <a name="f-CLNHGVS"></a><code>CLNHGVS</code>: the genomic HGVS expression; <a name="f-CLNVI"></a><code>CLNVI</code>: identifiers in other databases.</td></tr>
+<tr><td class="k"><a name="f-ONC"></a>Oncogenicity (ONC)</td><td>Since 2024, somatic variants: the oncogenicity classification (Oncogenic, Likely oncogenic, Uncertain significance, Likely benign, Benign) and <a name="f-SCI"></a><code>SCI</code>, somatic clinical impact (tiers I–IV, AMP/ASCO/CAP), each with its condition and review status keys.</td></tr>
+</table>
+
+<a name="gnomad"></a><h2>gnomAD</h2>
+<table>
+<tr><td class="k">AC, AN, AF, nhomalt</td><td>Counts over high-quality genotypes only (GQ ≥ 20, DP ≥ 10, allele balance ≥ 0.2 for heterozygotes): allele count, allele number, allele frequency, and <a name="f-nhomalt"></a><code>nhomalt</code>, the number of individuals homozygous for the ALT allele (hemizygous on male chrX outside the PARs). <code>_raw</code> keys count all genotypes.</td></tr>
+<tr><td class="k">Groups (AF_nfe, AC_afr_XX…)</td><td>The same per genetic ancestry group: afr African/African American, amr Admixed American, asj Ashkenazi Jewish, eas East Asian, fin Finnish, mid Middle Eastern, nfe Non-Finnish European, sas South Asian, ami Amish, remaining (oth in v2) the rest; <code>_XX</code>/<code>_XY</code> by karyotypic sex. Subsets (non_cancer, controls, non_neuro, non_topmed, non_ukb) exclude cohorts.</td></tr>
+<tr><td class="k"><a name="f-faf95"></a>Filtering AF (faf95)</td><td>Filtering allele frequency: the highest true population frequency still compatible, at 95 % confidence, with the observed allele count (Whiffin et al. 2017), computed per group; <code>fafmax</code> is the largest over groups. If faf95 exceeds the maximum credible frequency for a disorder (from prevalence, penetrance and heterogeneity), the variant is too common to cause it — the basis of ACMG BA1/BS1.</td></tr>
+<tr><td class="k"><a name="f-grpmax"></a>Group with max AF (grpmax, popmax)</td><td>The group with the highest allele frequency (bottlenecked groups such as Finnish and Ashkenazi Jewish excluded), and its AC, AN and AF in <a name="f-AF_grpmax"></a><code>AF_grpmax</code> etc.</td></tr>
+<tr><td class="k">Filters</td><td><a name="f-AC0"></a><code>AC0</code>: no high-quality ALT genotype; <a name="f-AS_VQSR"></a><code>AS_VQSR</code>/<a name="f-RF"></a><code>RF</code>: failed the allele-specific VQSR or random-forest model; <code>InbreedingCoeff</code>: excess heterozygotes (F &lt; −0.3). Flags <a name="f-lcr"></a><code>lcr</code> low-complexity region, <a name="f-segdup"></a><code>segdup</code> segmental duplication, <a name="f-non_par"></a><code>non_par</code> outside the pseudoautosomal regions.</td></tr>
+<tr><td class="k"><a name="f-cadd_phred"></a>CADD (Phred)</td><td>Combined Annotation Dependent Depletion, scaled so 10 is the top 10 % of all possible substitutions by predicted deleteriousness, 20 the top 1 %, 30 the top 0.1 %.</td></tr>
+<tr><td class="k"><a name="f-revel_max"></a>REVEL</td><td>Missense pathogenicity ensemble score, 0–1. ClinGen's calibration (Pejaver et al. 2022) for PP3/BP4: ≥ 0.932 strong, ≥ 0.773 moderate, ≥ 0.644 supporting evidence of pathogenicity; ≤ 0.290 supporting, ≤ 0.183 moderate, ≤ 0.016 strong evidence of benignity.</td></tr>
+<tr><td class="k"><a name="f-spliceai_ds_max"></a>SpliceAI max Δ</td><td>The largest predicted change in splice acceptor or donor probability (0–1) within 50 bp. The authors suggest 0.2 (high recall), 0.5 (recommended) and 0.8 (high precision) as cut-offs. <a name="f-pangolin_largest_ds"></a><code>Pangolin</code> gives a similar splice score.</td></tr>
+<tr><td class="k"><a name="f-phylop"></a>phyloP</td><td>Base-wise conservation across species: positive values mean slower evolution than neutral (conserved), negative faster.</td></tr>
+<tr><td class="k"><a name="f-sift_max"></a>SIFT, PolyPhen</td><td>Older missense predictors: SIFT 0–1 with ≤ 0.05 "deleterious"; PolyPhen-2 0–1 with ≥ 0.85 "probably damaging" (HumDiv).</td></tr>
+</table>
+
+<a name="annotators"></a><h2>Annotators: VEP and SnpEff</h2>
+<table>
+<tr><td class="k"><a name="f-CSQ"></a>VEP consequences (CSQ)</td><td>One entry per affected transcript, comma-separated; each entry's fields are "|"-separated in the order the <code>##INFO=&lt;ID=CSQ…Format: …&gt;</code> header line lists (Allele|Consequence|IMPACT|SYMBOL|Gene|Feature|…). Consequences are Sequence Ontology terms; IMPACT is HIGH (e.g. stop gained, frameshift, splice donor/acceptor), MODERATE (missense, in-frame indel), LOW (synonymous, splice region) or MODIFIER (non-coding).</td></tr>
+<tr><td class="k"><a name="f-ANN"></a>SnpEff annotation (ANN)</td><td>The same idea in SnpEff's fixed order: Allele|Annotation|Impact|Gene name|Gene ID|Feature type|Feature ID|Transcript biotype|Rank|HGVS.c|HGVS.p|…  <a name="f-LOF"></a><code>LOF</code>/<a name="f-NMD"></a><code>NMD</code> mark predicted loss of function and nonsense-mediated decay.</td></tr>
+</table>
+
+<a name="bed"></a><h2>BED and its relatives</h2>
+<table>
+<tr><td class="k">BED (3–12 columns)</td><td>chrom, chromStart, chromEnd (0-based, half-open), name, score (0–1000, shades the item when <code>useScore=1</code>), strand, thickStart, thickEnd (the coding part, drawn thick), itemRgb, blockCount, blockSizes, blockStarts (exons, relative to chromStart). A <code>track</code> line on top may give name, description, colour and assembly (<code>db=</code>).</td></tr>
+<tr><td class="k"><a name="narrowpeak"></a>narrowPeak (BED6+4)</td><td>ENCODE peaks of point-source signal (transcription factors, ATAC): signalValue (overall enrichment, usually fold change over control), pValue and qValue (−log<sub>10</sub>; −1 when not computed; MACS2's qValue is the Benjamini–Hochberg FDR), peak (summit offset from chromStart; −1 when none). Score is 0–1000, often scaled from the p-value.</td></tr>
+<tr><td class="k"><a name="broadpeak"></a>broadPeak (BED6+3)</td><td>Broad enriched domains (H3K27me3, H3K36me3, H3K9me3): signalValue, pValue, qValue as in narrowPeak, without a summit.</td></tr>
+<tr><td class="k"><a name="gappedpeak"></a>gappedPeak (BED12+3)</td><td>Broad regions made of narrower blocks (MACS2 <code>--broad</code>): BED12 whose thick part and blocks are the strong sub-peaks, then signalValue, pValue, qValue.</td></tr>
+<tr><td class="k">bedGraph, bigWig</td><td>A value per interval. What it means depends on the pipeline: read coverage, reads per million (RPM/CPM), fold change over control, −log<sub>10</sub> p-value of enrichment (ENCODE "signal p-value"), methylation fraction, conservation… The file name or track description usually says.</td></tr>
+<tr><td class="k"><a name="bedmethyl"></a>bedMethyl</td><td>Per-cytosine methylation (ENCODE; modkit for nanopore): BED9 + coverage (reads covering the base) + percent modified. modkit adds N_mod, N_canonical, N_other_mod, N_delete, N_fail, N_diff, N_nocall, and the modification code in the name column (m 5mC, h 5hmC, a 6mA).</td></tr>
+<tr><td class="k">interact, BEDPE</td><td>Pairs of regions (chromatin loops, enhancer–promoter links): BEDPE is chrom1, start1, end1, chrom2, start2, end2, name, score, strand1, strand2; UCSC's interact (BED5+13) adds value, experiment, colour and both regions' names and strands.</td></tr>
+<tr><td class="k">GFF3, GTF</td><td>seqid, source, type (gene, mRNA/transcript, exon, CDS, UTR…), start, end (1-based, inclusive), score, strand, phase (bases to drop before the first codon of a CDS: 0, 1, 2), attributes (GFF3 <code>ID=…;Parent=…</code>; GTF <code>gene_id "…"; transcript_id "…";</code>).</td></tr>
+</table>
+
+<a name="sam"></a><h2>Alignments: SAM, BAM, CRAM</h2>
+<table>
+<tr><td class="k"><a name="f-FLAG"></a>FLAG</td><td>Bits: 1 paired, 2 properly paired (as the aligner expects for the library), 4 unmapped, 8 mate unmapped, 16 reverse strand, 32 mate reverse strand, 64 first of pair (R1), 128 second (R2), 256 secondary alignment, 512 failed QC, 1024 PCR or optical duplicate, 2048 supplementary (part of a split/chimeric alignment).</td></tr>
+<tr><td class="k"><a name="f-MAPQ"></a>MAPQ</td><td>Mapping quality, −10·log<sub>10</sub> P(the read is placed wrongly); 255 when unknown. Aligners calibrate differently: BWA gives 0 to reads placed equally well elsewhere and up to 60; Bowtie2 up to 42; STAR uses 255 for unique, 3, 1 and 0 for 2, 3–4 and ≥ 5 placements.</td></tr>
+<tr><td class="k">CIGAR</td><td>How the read aligns: M aligned (match or mismatch), = match, X mismatch, I insertion, D deletion, N skipped reference (an intron in RNA-seq), S soft clip (bases kept in the read but not aligned), H hard clip, P padding.</td></tr>
+<tr><td class="k">TLEN</td><td>Template length: the fragment length from the leftmost to the rightmost mapped base of a pair, positive for the leftmost read.</td></tr>
+<tr><td class="k">Tags</td><td><code>NM</code> edit distance to the reference; <code>MD</code> the mismatching reference bases; <code>AS</code>/<code>XS</code> alignment score of this and the next-best placement; <code>SA</code> supplementary (split) alignments; <code>MC</code> the mate's CIGAR; <code>MQ</code> the mate's MAPQ; <code>RG</code> read group; <code>NH</code> number of loci the read maps to and <code>HI</code> which one; <code>XA</code> BWA's alternative hits; <code>RX</code>/<code>MI</code> UMI and molecule ID; <code>CB</code>/<code>UB</code> 10x cell barcode and UMI; <code>MM</code>/<code>ML</code> base modifications (methylation).</td></tr>
+<tr><td class="k">Header</td><td><code>@HD SO:</code> sort order; <code>@SQ</code> reference sequences with lengths (and <code>AS:</code> assembly, <code>M5:</code> checksum); <code>@RG</code> read groups (<code>SM</code> sample, <code>LB</code> library, <code>PL</code> platform, <code>PU</code> flowcell and lane); <code>@PG</code> the programs that produced the file, in order, with versions and command lines — the pipeline's history (alignment, sorting, duplicate marking, filtering).</td></tr>
+</table>
+
+<a name="cooler"></a><h2>Hi-C: Cooler</h2>
+<table>
+<tr><td class="k">bins</td><td>The genome cut into fixed-size bins: chrom, start, end and, once balanced, <code>weight</code> (the balancing factor; null for bins masked as unreliable).</td></tr>
+<tr><td class="k">pixels</td><td>The contact matrix's non-zero entries: <code>bin1_id</code>, <code>bin2_id</code> (upper triangle) and <code>count</code>, the raw number of read pairs linking the two bins. Balanced contacts are count × weight<sub>1</sub> × weight<sub>2</sub> (iterative correction, ICE).</td></tr>
+<tr><td class="k">.mcool, .scool</td><td>One Cooler per resolution (a tab per resolution), and one per single cell.</td></tr>
+<tr><td class="k">Observed / expected</td><td>Contacts divided by the average at the same genomic distance: shows loops and compartments above the strong decay with distance.</td></tr>
+</table>
+
+<a name="fastq"></a><h2>Sequences: FASTA and FASTQ</h2>
+<table>
+<tr><td class="k">FASTA</td><td>Name, description and sequence. IUPAC codes: N any base, R A/G, Y C/T, S G/C, W A/T, K G/T, M A/C, B not A, D not C, H not G, V not T. Lower case is usually soft-masked repeat sequence. With a <code>.fai</code> index a region gives one row per window: its sequence.</td></tr>
+<tr><td class="k">FASTQ quality</td><td>One character per base: Phred quality Q = ord(char) − 33 (Sanger / Illumina 1.8+), the error probability being 10<sup>−Q/10</sup>: <code>5</code> is Q20 (1 %), <code>?</code> Q30 (0.1 %), <code>I</code> Q40. Old Illumina files (1.3–1.7) use an offset of 64.</td></tr>
+</table>
+
+</body></html>

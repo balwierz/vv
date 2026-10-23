@@ -93,6 +93,8 @@
 #include "fileoptions.h"
 #include "tabpane.h"
 #include "typedheader.h"
+#include "helpdialog.h"
+#include "shortcutsdialog.h"
 #include "vv/vvcore.hpp"
 
 // Open every path through libvvcore (using a shared base Config so a later
@@ -879,6 +881,11 @@ private:
                         menu.addSeparator();
                         connect(menu.addAction(tr("&Hide Column")), &QAction::triggered, this,
                                 [=, this] { view->setColumnHidden(section, true); refreshColumnsMenu(); });
+                        // The field reference's entry for this column, when it has one.
+                        const QString name = model->headerData(section, Qt::Horizontal, Qt::DisplayRole).toString();
+                        if (const QString anchor = HelpDialog::anchorFor(name); !anchor.isEmpty())
+                            connect(menu.addAction(tr("Field Reference: %1").arg(name)), &QAction::triggered,
+                                    this, [this, anchor] { HelpDialog::showReference(this, anchor); });
                     }
                     menu.exec(view->horizontalHeader()->mapToGlobal(p));
                 });
@@ -1207,31 +1214,27 @@ private:
             else if (appMenu_) appMenu_->popup(mainBar_->mapToGlobal(QPoint(mainBar_->width() - 1, mainBar_->height())));
         });
         setActionIcon(showAppMenuAct_, "open-menu", Glyph::Menu);
-        QAction* helpAct = makeAction(tr("&Shortcuts && Syntax"), QKeySequence(Qt::Key_F1), {}, [this] {
-            QMessageBox::information(this, tr("vvg — help"),
-                tr("Sort:    click a column header (ascending, descending, then off)\n"
-                   "Filter:  the Filter box (Ctrl+Shift+F) — e.g.  score > 5 and chrom == \"chr1\"\n"
-                   "Find:    the Find box (Ctrl+F, regex); F3 for the next match\n"
-                   "Options: under the tab bar, the ones the tab's file offers — Region (Ctrl+L,\n"
-                   "         chr1:1000-2000, 0- or 1-based, slop), Pileup and Tags (BAM/CRAM),\n"
-                   "         Samples and GT stats (VCF/BCF), Expand (GFF/GTF attributes, VCF INFO),\n"
-                   "         Contigs, Matrix wide / long; they apply to that file's tabs only\n"
-                   "Copy:    Ctrl+C the selection, Ctrl+Shift+C a whole row; right-click for both\n"
-                   "Command: Ctrl+Alt+C copies the vv command line for this tab\n"
-                   "Export:  Ctrl+E writes this tab's view (filter, sort, visible columns) to a file\n"
-                   "Details: Ctrl+B shows the cursor row and the cursor column's statistics\n"
-                   "Slice:   ◀ / ▶ under the tab bar step the leading axis of NPZ 3-D+ arrays\n"
-                   "Go to:   Ctrl+G jumps to a row; View ▸ Columns shows/hides columns\n"
-                   "Menu:    F10 or the ≡ button; View ▸ Menu Bar shows the classic menus\n"
-                   "Scroll:  smooth (per-pixel) by default; View ▸ Smooth Scrolling off\n"
-                   "         steps whole columns / rows"));
+        QAction* referenceAct = makeAction(tr("Field &Reference…"), QKeySequence(Qt::Key_F1),
+            tr("How to use vvg, the Filter / Find / Region syntax, and what the columns and keys "
+               "of AnnData, VCF, BED, SAM and other files mean"),
+            [this] { HelpDialog::showReference(this); });
+        QAction* shortcutsAct = makeAction(tr("&Keyboard Shortcuts…"), QKeySequence(QStringLiteral("Ctrl+/")),
+            tr("Every command with its key"),
+            [this] { ShortcutsDialog::showFor(this, commandsForHelp()); });
+        QAction* about = makeAction(tr("&About vv"), {}, {}, [this] {
+            QMessageBox::about(this, tr("About vv"),
+                tr("<p><b>Vertical Viewer (vv)</b> %1<br>"
+                   "vvg, its graphical viewer</p>"
+                   "<p>Opens every format the vv command line reads (Parquet, Arrow, BAM / CRAM, "
+                   "VCF / BCF, BED / GFF, HDF5 / AnnData, Zarr, NumPy, xlsx / ods, SQLite, …) "
+                   "through the shared libvvcore reader core. <code>vh</code>, the viewer, "
+                   "horizontal, is the same program printing a transposed preview.</p>"
+                   "<p>© Piotr Balwierz — MIT licence<br>"
+                   "<a href=\"https://github.com/balwierz/vv\">github.com/balwierz/vv</a><br>"
+                   "Cite: <a href=\"https://doi.org/%2\">doi:%2</a> (<code>vv --cite</code>)</p>")
+                    .arg(QString::fromLatin1(vv_version()), QString::fromLatin1(vv_doi())));
         });
-        QAction* about = makeAction(tr("&About vvg"), {}, {}, [this] {
-            QMessageBox::about(this, tr("vvg"),
-                tr("vv — graphical viewer.\n\nOpens every format the vv CLI supports "
-                   "(Parquet, Arrow, BAM/VCF/BCF, BED/GFF, HDF5/AnnData, NPZ, xlsx/ods, "
-                   "SQLite, …) through the shared libvvcore reader core."));
-        });
+        about->setMenuRole(QAction::AboutRole);
 
         auto* file = menuBar()->addMenu(tr("&File"));
         file->setToolTipsVisible(true);
@@ -1276,7 +1279,9 @@ private:
 
         auto* help = menuBar()->addMenu(tr("&Help"));
         help->setToolTipsVisible(true);
-        help->addAction(helpAct);
+        help->addAction(referenceAct);
+        help->addAction(shortcutsAct);
+        help->addSeparator();
         help->addAction(about);
 
         // The menu bar is hidden unless asked for; a native one (macOS) always shows.
@@ -3270,6 +3275,43 @@ public:
             w << QString::number(v->horizontalHeader()->sectionSize(c) / ch, 'f', 1);
         return QStringLiteral("widths=") + w.join(QLatin1Char(','));
     }
+    // Every command for Help ▸ Keyboard Shortcuts, with the menu it is in
+    // ("File", "View ▸ Columns", …); commands in no menu are "Window".
+    ShortcutsDialog::Commands commandsForHelp() const {
+        ShortcutsDialog::Commands out;
+        QSet<QAction*> seen;
+        std::function<void(QMenu*, const QString&)> walk = [&](QMenu* m, const QString& where) {
+            if (m == recentMenu_ || m == columnsMenu_) return;   // lists of files / columns
+            for (QAction* a : m->actions()) {
+                if (a->isSeparator()) continue;
+                if (QMenu* sub = a->menu()) {
+                    walk(sub, where + QStringLiteral(" \u25B8 ") + sub->title().remove(QLatin1Char('&')));
+                    continue;
+                }
+                if (seen.contains(a)) continue;
+                seen.insert(a);
+                out << qMakePair(where, a);
+            }
+        };
+        for (QAction* top : menuBar()->actions())
+            if (QMenu* m = top->menu()) walk(m, m->title().remove(QLatin1Char('&')));
+        if (exportMenu_) walk(exportMenu_, tr("Export"));
+        for (QAction* a : actions())
+            if (!seen.contains(a) && !a->text().isEmpty()) out << qMakePair(tr("Window"), a);
+        return out;
+    }
+    // Self-test: the Keyboard Shortcuts rows and the Field Reference sections.
+    void dumpHelpForTest() {
+        auto* d = ShortcutsDialog::showFor(this, commandsForHelp());
+        std::printf("shortcuts rows=%d\n", d->rowCount());
+        for (int r = 0; r < d->rowCount(); ++r) std::printf("shortcut-row %s\n", d->rowText(r).toUtf8().constData());
+        d->close();
+        std::printf("reference sections=%s\n", HelpDialog::sections().join(QLatin1Char(',')).toUtf8().constData());
+        std::printf("reference anchor QUAL=%s obsp=%s AF_nfe=%s\n",
+                    HelpDialog::anchorFor(QStringLiteral("QUAL")).toUtf8().constData(),
+                    HelpDialog::anchorFor(QStringLiteral("obsp")).toUtf8().constData(),
+                    HelpDialog::anchorFor(QStringLiteral("AF_nfe")).toUtf8().constData());
+    }
     // Self-test: each tab's text and file group (files numbered in tab
     // order), then "groups=N" and the window title.
     void dumpTabLabelsForTest() {
@@ -3663,6 +3705,9 @@ int main(int argc, char** argv) {
         // Optional header check: VVG_HEADER=1 (the first column's header).
         if (const char* hd = std::getenv("VVG_HEADER"); hd && *hd && *hd != '0')
             std::printf("header %s\n", win.headerForTest().toUtf8().constData());
+        // Optional help check: VVG_HELP=1 (dumpHelpForTest).
+        if (const char* hp = std::getenv("VVG_HELP"); hp && *hp && *hp != '0')
+            win.dumpHelpForTest();
         // Optional tab-label check: VVG_TABLABELS=1 (dumpTabLabelsForTest).
         if (const char* tl = std::getenv("VVG_TABLABELS"); tl && *tl && *tl != '0')
             win.dumpTabLabelsForTest();

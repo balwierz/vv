@@ -73,7 +73,7 @@ complete -c vv -c vh -l cite               -d 'Print how to cite vv'
 complete -c vv -c vh -s i -l interactive   -d 'Open ncurses row browser'
 complete -c vv -c vh -l no-interactive     -d 'Force plain table output'
 complete -c vv -c vh -s t -l table         -d 'Force plain table output (alias of --no-interactive)'
-complete -c vv -c vh -l vertical           -d 'Transposed (vertical-head) preview'
+complete -c vv -c vh -l vertical           -d 'Transposed preview (as vh, viewer horizontal)'
 
 # Table options
 complete -c vv -c vh -s n -r               -d 'Rows to display (default: 10, 0 = all)'

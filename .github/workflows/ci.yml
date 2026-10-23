@@ -482,6 +482,15 @@ jobs:
           grep -q '^shortcut F3 -> Find Next$' <<<"$out"
           grep -q '^shortcut F10 -> Menu$' <<<"$out"
           grep -q '^shortcut Ctrl+B -> Details$' <<<"$out"
+          grep -q '^shortcut F1 -> Field Reference…$' <<<"$out"
+          grep -q '^shortcut Ctrl+/ -> Keyboard Shortcuts…$' <<<"$out"
+          # Help: the shortcuts table lists the commands with their menus, and
+          # the field reference (a Qt resource) has its sections and anchors.
+          out=$(VVG_WINTEST=1 VVG_HELP=1 ./build-gui/gui/vvg tests/data/tiny.parquet)
+          grep -qx 'shortcut-row Copy	Ctrl+C	Edit' <<<"$out"
+          grep -qx 'shortcut-row Field Reference…	F1	Help' <<<"$out"
+          grep -q '^reference sections=using,filter,find,region,.*,anndata,vcf,.*,sam,cooler,fastq$' <<<"$out"
+          grep -qx 'reference anchor QUAL=f-QUAL obsp=f-obsp AF_nfe=f-AF' <<<"$out"
           # The ≡ menu holds every command of the menu bar, which is hidden
           # unless ui/showMenuBar is set.
           out=$(XDG_CONFIG_HOME="$RUNNER_TEMP/vvgcfg-menus" VVG_WINTEST=1 VVG_MENU_DUMP=1 ./build-gui/gui/vvg tests/data/tiny.parquet)

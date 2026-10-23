@@ -753,7 +753,7 @@ endif()
 install(TARGETS vv RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # `vh` is the same binary as `vv`; when invoked via this name it auto-enables
-# vertical-head mode (transposed preview, non-interactive) so `vh wide.parquet`
+# the transposed preview (viewer, horizontal; non-interactive) so `vh wide.parquet`
 # scrolls vertically instead of horizontally.
 install(CODE "
     set(_vv \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/vv\")

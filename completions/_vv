@@ -111,7 +111,7 @@ _vv() {
         '(-i --interactive)'{-i,--interactive}'[Open ncurses row browser]' \
         '--no-interactive[Force plain table output]' \
         '(-t --table)'{-t,--table}'[Force plain table output (alias of --no-interactive)]' \
-        '--vertical[Transposed (vertical-head) preview]' \
+        '--vertical[Transposed preview (as vh, viewer horizontal)]' \
         '-n+[Rows to display]:rows:' \
         '-w+[Max cell width]:width:' \
         '-c+[Max columns]:cols:' \

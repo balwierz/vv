@@ -335,10 +335,10 @@ static void print_usage(const char* prog) {
         "  --box <style>       table frame: unicode (default) or ascii (+-| for a\n"
         "                      C locale, an ASCII-only pipe, or plain-text paste).\n"
         "                      Auto-selects ascii when the locale is not UTF-8\n"
-        "  --vertical          \"vertical head\": transpose the preview so each\n"
-        "                      field is a row; show as many records per line as\n"
-        "                      fit. Implies --no-interactive. Default when the\n"
-        "                      binary is invoked as `vh`.\n"
+        "  --vertical          transpose the preview so each field is a row;\n"
+        "                      show as many records per line as fit. Implies\n"
+        "                      --no-interactive. Default when the binary is\n"
+        "                      invoked as `vh` (the viewer, horizontal).\n"
         "\nVisualization (replaces table view):\n"
         "  --heatmap           render the numeric columns as a colour heatmap in\n"
         "                      the terminal (rows x numeric-columns, globally\n"
@@ -485,7 +485,7 @@ Config parse_args(int argc, char** argv) {
     const char* pileup_opt = nullptr;   // a --pileup filter option, if given
     bool percentiles_set = false;
     Config cfg;
-    // If invoked as `vh` (a symlink/copy of vv), default to vertical-head mode:
+    // If invoked as `vh` (a symlink/copy of vv), default to the transposed preview:
     // a "head"-style preview transposed so wide tables fit without horizontal
     // scrolling. Implies --no-interactive.
     if (argc > 0) {
