@@ -503,6 +503,14 @@ jobs:
             ./build-gui/gui/vvg "$RUNNER_TEMP/reload.csv" \
             | grep -qxF 'reload before rows=2 filter=count > 100 sort=count:desc hidden=ratio | bar=1 | after rows=3 filter=count > 100 sort=count:desc hidden=ratio bar=0'
           VVG_WINTEST=1 VVG_SHORTCUTS=1 ./build-gui/gui/vvg tests/data/tiny.parquet | grep -q '^shortcut F5 -> Reload$'
+          # Sequence columns: bases coloured (A C G T), quality strings on a
+          # red-to-green ramp by Phred score; VCF REF / ALT; not Parquet.
+          printf '@r1\nACGTN\n+\n!+5?I\n' > "$RUNNER_TEMP/ramp.fq"
+          VVG_WINTEST=1 VVG_SEQRENDER=1 ./build-gui/gui/vvg "$RUNNER_TEMP/ramp.fq" \
+            | grep -qxF 'seqrender seq:bases[ACGT=#1a9a3a,#2463d1,#d18400,#d02c2c] qual:qual[!+5?=#f26d6d,#f2b06d,#f2f26d,#b0f26d]'
+          VVG_WINTEST=1 VVG_SEQRENDER=1 ./build-gui/gui/vvg tests/data/tiny.bam | grep -q '^seqrender SEQ:bases\[.* QUAL:qual\['
+          VVG_WINTEST=1 VVG_SEQRENDER=1 ./build-gui/gui/vvg tests/data/tiny.vcf | grep -qxF 'seqrender REF:bases[A=#1a9a3a] ALT:bases[G=#d18400]'
+          VVG_WINTEST=1 VVG_SEQRENDER=1 ./build-gui/gui/vvg tests/data/tiny.parquet | grep -qx 'seqrender none'
           # Frozen columns stay at the left edge while the table scrolls right,
           # skip hidden columns, and a cursor put in one does not scroll.
           VVG_WINTEST=1 VVG_FREEZE=1,500 ./build-gui/gui/vvg tests/data/tiny.obsp.h5ad 2>/dev/null \

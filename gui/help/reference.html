@@ -250,6 +250,7 @@ QUAL &lt; 30, FS &gt; 200, ReadPosRankSum &lt; −20.0. Keys starting with
 <a name="fastq"></a><h2>Sequences: FASTA and FASTQ</h2>
 <table>
 <tr><td class="k">FASTA</td><td>Name, description and sequence. IUPAC codes: N any base, R A/G, Y C/T, S G/C, W A/T, K G/T, M A/C, B not A, D not C, H not G, V not T. Lower case is usually soft-masked repeat sequence. With a <code>.fai</code> index a region gives one row per window: its sequence.</td></tr>
+<tr><td class="k">Colours in vvg</td><td>Bases: A green, C blue, G orange, T / U red, N grey. Quality characters: a background from red (Phred 0) through yellow (20) to green (40).</td></tr>
 <tr><td class="k">FASTQ quality</td><td>One character per base: Phred quality Q = ord(char) − 33 (Sanger / Illumina 1.8+), the error probability being 10<sup>−Q/10</sup>: <code>5</code> is Q20 (1 %), <code>?</code> Q30 (0.1 %), <code>I</code> Q40. Old Illumina files (1.3–1.7) use an offset of 64.</td></tr>
 </table>
 

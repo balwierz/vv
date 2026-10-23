@@ -17,6 +17,7 @@
 #include <arrow/util/compression.h>
 
 #include <QApplication>
+#include <QFontDatabase>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -104,6 +105,7 @@
 #include "tabpane.h"
 #include "typedheader.h"
 #include "tableview.h"
+#include "sequencedelegate.h"
 #include "viewstate.h"
 #include "helpdialog.h"
 #include "shortcutsdialog.h"
@@ -763,8 +765,21 @@ private:
         std::vector<int> w = planColumnWidths(model, view->fontMetrics(),
                                               th && th->showTypes() ? &typeFm : nullptr);
         QHeaderView* hh = view->horizontalHeader();
-        for (int c = 0; c < model->columnCount() && c < (int)w.size(); ++c)
+        // A column drawn as bases / qualities uses a fixed-width font: sized
+        // by its longest sampled value in that font, up to 50 characters.
+        QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+        mono.setPointSizeF(view->font().pointSizeF() > 0 ? view->font().pointSizeF() : mono.pointSizeF());
+        const int cw = std::max(1, QFontMetrics(mono).horizontalAdvance(QLatin1Char('A')));
+        for (int c = 0; c < model->columnCount() && c < (int)w.size(); ++c) {
+            if (dynamic_cast<SequenceDelegate*>(view->itemDelegateForColumn(c))) {
+                int longest = 0;
+                const int rows = (int)std::min<int64_t>(model->loadedPrefixRows(), 2000);
+                for (int r = 0; r < rows; ++r)
+                    longest = std::max(longest, (int)model->data(model->index(r, c), Qt::DisplayRole).toString().size());
+                w[(size_t)c] = std::max(w[(size_t)c], std::min(longest, 50) * cw + 2 * cw);
+            }
             hh->resizeSection(c, w[(size_t)c]);
+        }
     }
 
     // Per-pixel scrolling (the default), or Qt's per-item stepping, which
@@ -892,6 +907,9 @@ private:
         view->setEditTriggers(QAbstractItemView::NoEditTriggers);
         view->setSelectionBehavior(QAbstractItemView::SelectItems);
         view->setItemDelegate(new CursorColumnDelegate(view));
+        if (model->isReady()) applySequenceDelegates(model, view, fileId);
+        else connect(model, &ArrowTableModel::ready, view,
+                     [this, model, view, fileId] { applySequenceDelegates(model, view, fileId); });
         view->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(view, &QWidget::customContextMenuRequested, this,
                 [this, view](const QPoint& p){ showTableContextMenu(view, p); });
@@ -1030,6 +1048,30 @@ private:
         refreshStatus();
     }
 
+    // Sequence and quality columns of alignment, FASTA / FASTQ and variant
+    // files get coloured bases / quality backgrounds (SequenceDelegate).
+    void applySequenceDelegates(ArrowTableModel* m, QTableView* v, int fileId) {
+        const OpenFile* f = fileById(fileId);
+        if (!f) return;
+        const std::string& fmt = f->feat.format;
+        const bool reads = fmt == "BAM / CRAM alignments" || fmt == "SAM alignments (text)" ||
+                           fmt == "FASTA" || fmt == "FASTQ";
+        const bool variants = fmt == "VCF" || fmt == "BCF";
+        if (!reads && !variants) return;
+        for (int c = 0; c < m->columnCount(); ++c) {
+            const QString name = m->columnName(c), type = m->columnType(c);
+            if (type != QLatin1String("string") && type != QLatin1String("large_string")) continue;
+            const bool seq = reads ? (name == QLatin1String("SEQ") || name == QLatin1String("seq") ||
+                                      name == QLatin1String("sequence"))
+                                   : (name == QLatin1String("REF") || name == QLatin1String("ALT"));
+            const bool qual = reads && fmt != "FASTA" &&
+                              (name == QLatin1String("QUAL") || name == QLatin1String("qual"));
+            if (seq || qual)
+                v->setItemDelegateForColumn(c, new SequenceDelegate(seq ? SequenceDelegate::Kind::Bases
+                                                                        : SequenceDelegate::Kind::Quality, v));
+        }
+    }
+
     // A column header's right-click menu (`h`: the table's header or the
     // frozen columns').
     void headerMenu(ArrowTableModel* model, TableView* view, QHeaderView* h, const QPoint& p) {
@@ -1054,6 +1096,15 @@ private:
             menu.addSeparator();
             connect(menu.addAction(tr("&Hide Column")), &QAction::triggered, this,
                     [=, this] { view->setColumnHidden(section, true); refreshColumnsMenu(); });
+            // Coloured bases / qualities can be turned off for the column.
+            if (auto* sd = dynamic_cast<SequenceDelegate*>(view->itemDelegateForColumn(section))) {
+                QAction* plain = menu.addAction(sd->kind() == SequenceDelegate::Kind::Bases
+                                                    ? tr("Plain Bases") : tr("Plain Qualities"));
+                connect(plain, &QAction::triggered, this, [view, section] {
+                    view->setItemDelegateForColumn(section, nullptr);
+                    view->viewport()->update();
+                });
+            }
             // Freeze the visible columns up to this one (on-screen order).
             int upTo = 0;
             for (int vis = 0; vis <= view->horizontalHeader()->visualIndex(section); ++vis)
@@ -4327,6 +4378,30 @@ public:
             .arg(o->width() == std::min(w, v->viewport()->width()) ? 1 : 0)
             .arg(before > 0 ? 1 : 0).arg(hs->value() == before ? 1 : 0);
     }
+    // Self-test: the active tab's columns drawn as bases or qualities, and
+    // the colours of the first characters of row 0 in the first of each.
+    QString seqRenderForTest() {
+        waitIdleForTest();
+        auto* v = activeView();
+        auto* m = activeModel();
+        if (!v || !m) return QStringLiteral("no table");
+        QStringList out;
+        ArrowTableModel::SyncReads sync(m);
+        for (int c = 0; c < m->columnCount(); ++c) {
+            auto* sd = dynamic_cast<SequenceDelegate*>(v->itemDelegateForColumn(c));
+            if (!sd) continue;
+            const QString text = m->index(0, c).data(Qt::DisplayRole).toString().left(4);
+            QStringList cols;
+            for (QChar ch : text)
+                cols << (sd->kind() == SequenceDelegate::Kind::Bases
+                             ? SequenceDelegate::baseColor(ch, false).name()
+                             : SequenceDelegate::qualityColor(ch.unicode() - 33).name());
+            out << QStringLiteral("%1:%2[%3=%4]").arg(m->columnName(c),
+                       sd->kind() == SequenceDelegate::Kind::Bases ? QStringLiteral("bases") : QStringLiteral("qual"),
+                       text, cols.join(QLatin1Char(',')));
+        }
+        return out.isEmpty() ? QStringLiteral("none") : out.join(QLatin1Char(' '));
+    }
     // Self-test: the palette's rows for `query`, in order.
     void dumpPaletteForTest(const QString& query) {
         ActionPalette* p = openPalette(query);
@@ -4825,6 +4900,9 @@ int main(int argc, char** argv) {
             for (const QString& c : QString::fromLocal8Bit(hd).split(QLatin1Char(',')))
                 if (!win.hideActiveColumnForTest(c))
                     std::fprintf(stderr, "vvg: no column '%s' to hide\n", c.toLocal8Bit().constData());
+        // Optional sequence-colour check: VVG_SEQRENDER=1.
+        if (const char* sr = std::getenv("VVG_SEQRENDER"); sr && *sr && *sr != '0')
+            std::printf("seqrender %s\n", win.seqRenderForTest().toUtf8().constData());
         // Optional frozen-column check: VVG_FREEZE="<n>,<window width>".
         if (const char* fz = std::getenv("VVG_FREEZE"); fz && *fz) {
             const QStringList q = QString::fromLocal8Bit(fz).split(QLatin1Char(','));

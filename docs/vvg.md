@@ -119,6 +119,12 @@ Command* goes the other way.
   *Exclude “value”* (with several cells of one column selected: `in (…)` /
   `not in (…)`; an empty cell: `is null`), added to the current filter, and
   *Column Statistics*.
+- **Sequences** — the sequence of a BAM / CRAM / SAM read, a FASTA or FASTQ
+  record and a VCF's REF / ALT show in a fixed-width font with each base in
+  its colour (A green, C blue, G orange, T red, N grey); a quality string
+  (SAM `QUAL`, FASTQ `qual`) shows each character on a red-to-green
+  background by its Phred score. *Plain Bases* / *Plain Qualities* in the
+  header's menu turns it off for the column.
 - **Frozen columns** — right-click a header for *Freeze Columns up to
   Here*: the visible columns up to that one stay at the left edge while the
   rest scrolls (row names, an index, chromosome and position); *Unfreeze
