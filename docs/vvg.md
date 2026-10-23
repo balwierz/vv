@@ -119,6 +119,10 @@ Command* goes the other way.
   *Exclude “value”* (with several cells of one column selected: `in (…)` /
   `not in (…)`; an empty cell: `is null`), added to the current filter, and
   *Column Statistics*.
+- **Frozen columns** — right-click a header for *Freeze Columns up to
+  Here*: the visible columns up to that one stay at the left edge while the
+  rest scrolls (row names, an index, chromosome and position); *Unfreeze
+  Columns* undoes it. Frozen columns are kept by Reload and the session.
 - **Copy and export a selection** — *Ctrl+C* copies the selected cells as
   tab-separated text, *Ctrl+Shift+C* whole rows; *Edit ▸ Copy As* adds a
   header row, as TSV, CSV (RFC 4180 quoting) or a Markdown table. Columns come

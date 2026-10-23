@@ -17,6 +17,7 @@ add_executable(vvg
     tabpane.cpp
     typedheader.cpp
     shortcutsdialog.cpp
+    tableview.cpp
     helpdialog.cpp
     actionpalette.cpp
     vvg.qrc

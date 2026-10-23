@@ -103,6 +103,7 @@
 #include "fileoptions.h"
 #include "tabpane.h"
 #include "typedheader.h"
+#include "tableview.h"
 #include "viewstate.h"
 #include "helpdialog.h"
 #include "shortcutsdialog.h"
@@ -841,7 +842,7 @@ private:
         const bool reopenable = origin != QLatin1String("-") &&
             (ofi.isFile() || ofi.isDir() || origin.contains(QLatin1String("://")));
         tabOrigin_[model] = TabOrigin{origin, primary, expand, reopenable};
-        auto* view  = new QTableView(tabs_);
+        auto* view  = new TableView(tabs_);
         auto* header = new TypedHeaderView(view);
         header->setSectionsClickable(true);
         header->setHighlightSections(true);
@@ -900,44 +901,21 @@ private:
         // file's order again; typed via Arrow, off the UI thread. Shift+click
         // adds the column as a further key (or cycles that key). The cursor
         // moves to that column, so the Column tab summarises the column clicked.
-        connect(view->horizontalHeader(), &QHeaderView::sectionClicked,
-                this, [this, view, model](int section) {
-                    keepCol_[model] = section;
-                    headerSortClick(model, view, section,
-                                    QGuiApplication::keyboardModifiers() & Qt::ShiftModifier);
-                });
-        view->horizontalHeader()->setContextMenuPolicy(Qt::CustomContextMenu);
-        connect(view->horizontalHeader(), &QWidget::customContextMenuRequested, this,
-                [this, view, model](const QPoint& p) {
-                    const int section = view->horizontalHeader()->logicalIndexAt(p);
-                    QMenu menu(this);
-                    if (section >= 0) {
-                        connect(menu.addAction(tr("Sort &Ascending")), &QAction::triggered, this,
-                                [=, this] { sortByColumn(model, view, section, Qt::AscendingOrder); });
-                        connect(menu.addAction(tr("Sort &Descending")), &QAction::triggered, this,
-                                [=, this] { sortByColumn(model, view, section, Qt::DescendingOrder); });
-                    }
-                    if (section >= 0 && !model->sortKeys().empty() && model->sortColumn() != section) {
-                        connect(menu.addAction(tr("Then Sort Ascending")), &QAction::triggered, this,
-                                [=, this] { addSortKey(model, view, section, Qt::AscendingOrder); });
-                        connect(menu.addAction(tr("Then Sort Descending")), &QAction::triggered, this,
-                                [=, this] { addSortKey(model, view, section, Qt::DescendingOrder); });
-                    }
-                    QAction* clr = menu.addAction(tr("Clear &Sort"));
-                    clr->setEnabled(model->sortColumn() >= 0);
-                    connect(clr, &QAction::triggered, this, [=, this] { clearSortOf(model, view); });
-                    if (section >= 0) {
-                        menu.addSeparator();
-                        connect(menu.addAction(tr("&Hide Column")), &QAction::triggered, this,
-                                [=, this] { view->setColumnHidden(section, true); refreshColumnsMenu(); });
-                        // The field reference's entry for this column, when it has one.
-                        const QString name = model->headerData(section, Qt::Horizontal, Qt::DisplayRole).toString();
-                        if (const QString anchor = HelpDialog::anchorFor(name); !anchor.isEmpty())
-                            connect(menu.addAction(tr("Field Reference: %1").arg(name)), &QAction::triggered,
-                                    this, [this, anchor] { HelpDialog::showReference(this, anchor); });
-                    }
-                    menu.exec(view->horizontalHeader()->mapToGlobal(p));
-                });
+        // The frozen columns' header (TableView's overlay) does the same.
+        for (QHeaderView* hh : {view->horizontalHeader(), view->frozenView()->horizontalHeader()}) {
+            hh->setSectionsClickable(true);
+            connect(hh, &QHeaderView::sectionClicked, this, [this, view, model](int section) {
+                keepCol_[model] = section;
+                headerSortClick(model, view, section,
+                                QGuiApplication::keyboardModifiers() & Qt::ShiftModifier);
+            });
+            hh->setContextMenuPolicy(Qt::CustomContextMenu);
+            connect(hh, &QWidget::customContextMenuRequested, this,
+                    [this, view, model, hh](const QPoint& p) { headerMenu(model, view, hh, p); });
+        }
+        view->frozenView()->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(view->frozenView(), &QWidget::customContextMenuRequested, this,
+                [this, view](const QPoint& p) { showTableContextMenu(view->frozenView(), p); });
 
         // A filter, sort or find resets the model twice (blank, then the new
         // order), and a reset drops the view's cursor. Keep its column: the
@@ -1050,6 +1028,48 @@ private:
             updateTitle();
         }
         refreshStatus();
+    }
+
+    // A column header's right-click menu (`h`: the table's header or the
+    // frozen columns').
+    void headerMenu(ArrowTableModel* model, TableView* view, QHeaderView* h, const QPoint& p) {
+        const int section = h->logicalIndexAt(p);
+        QMenu menu(this);
+        if (section >= 0) {
+            connect(menu.addAction(tr("Sort &Ascending")), &QAction::triggered, this,
+                    [=, this] { sortByColumn(model, view, section, Qt::AscendingOrder); });
+            connect(menu.addAction(tr("Sort &Descending")), &QAction::triggered, this,
+                    [=, this] { sortByColumn(model, view, section, Qt::DescendingOrder); });
+        }
+        if (section >= 0 && !model->sortKeys().empty() && model->sortColumn() != section) {
+            connect(menu.addAction(tr("Then Sort Ascending")), &QAction::triggered, this,
+                    [=, this] { addSortKey(model, view, section, Qt::AscendingOrder); });
+            connect(menu.addAction(tr("Then Sort Descending")), &QAction::triggered, this,
+                    [=, this] { addSortKey(model, view, section, Qt::DescendingOrder); });
+        }
+        QAction* clr = menu.addAction(tr("Clear &Sort"));
+        clr->setEnabled(model->sortColumn() >= 0);
+        connect(clr, &QAction::triggered, this, [=, this] { clearSortOf(model, view); });
+        if (section >= 0) {
+            menu.addSeparator();
+            connect(menu.addAction(tr("&Hide Column")), &QAction::triggered, this,
+                    [=, this] { view->setColumnHidden(section, true); refreshColumnsMenu(); });
+            // Freeze the visible columns up to this one (on-screen order).
+            int upTo = 0;
+            for (int vis = 0; vis <= view->horizontalHeader()->visualIndex(section); ++vis)
+                upTo += !view->isColumnHidden(view->horizontalHeader()->logicalIndex(vis));
+            connect(menu.addAction(upTo == 1 ? tr("&Freeze This Column") : tr("&Freeze Columns up to Here")),
+                    &QAction::triggered, this, [view, upTo] { view->setFrozenColumns(upTo); });
+            if (view->frozenColumns() > 0)
+                connect(menu.addAction(tr("&Unfreeze Columns")), &QAction::triggered, this,
+                        [view] { view->setFrozenColumns(0); });
+            // The field reference's entry for this column, when it has one.
+            const QString name = model->headerData(section, Qt::Horizontal, Qt::DisplayRole).toString();
+            if (const QString anchor = HelpDialog::anchorFor(name); !anchor.isEmpty())
+                connect(menu.addAction(tr("Field Reference: %1").arg(name)), &QAction::triggered,
+                        this, [this, anchor] { HelpDialog::showReference(this, anchor); });
+        }
+        menu.exec(h->mapToGlobal(p));
     }
 
     // Close every tab of file `id`.
@@ -1581,9 +1601,14 @@ private:
     // the other files' tabs keep their filters, sorts and columns. When the
     // file does not open with `opts` (a region on an un-indexed file, …) its
     // tabs and options stay and the reason goes to the status bar.
-    // Frozen leading columns of a view (set by §9's frozen-column overlay).
-    int frozenColumns(QTableView*) const { return 0; }
-    void setFrozenColumns(QTableView*, int) {}
+    // The frozen leading columns of a table view (TableView).
+    static int frozenColumns(QTableView* v) {
+        auto* t = dynamic_cast<TableView*>(v);
+        return t ? t->frozenColumns() : 0;
+    }
+    static void setFrozenColumns(QTableView* v, int n) {
+        if (auto* t = dynamic_cast<TableView*>(v)) t->setFrozenColumns(n);
+    }
     // The view state of tab `i` (a tab never shown: the state it is waiting
     // to be given, or none).
     TabViewState captureViewState(int i) const {
@@ -4258,14 +4283,50 @@ public:
             const TabViewState st = captureViewState(i);
             QStringList keys;
             for (const auto& [c, d] : st.sort) keys << c + (d ? QStringLiteral(":desc") : QStringLiteral(":asc"));
-            std::printf("state %s%s filter=%s sort=%s hidden=%s cursor=%s:%lld\n",
+            std::printf("state %s%s filter=%s sort=%s hidden=%s cursor=%s:%lld frozen=%d\n",
                         i == tabs_->currentIndex() ? "*" : "", st.label.toUtf8().constData(),
                         st.filter.toUtf8().constData(), keys.join(QLatin1Char(',')).toUtf8().constData(),
                         st.hidden.join(QLatin1Char(',')).toUtf8().constData(),
-                        st.curColumn.toUtf8().constData(), (long long)st.curRow);
+                        st.curColumn.toUtf8().constData(), (long long)st.curRow, st.frozen);
         }
     }
     void saveSessionForTest() { waitIdleForTest(); saveSession(); }
+    // Self-test of frozen columns: shown `width` px wide, freeze `n` columns
+    // of the active tab and scroll right to the end; the overlay's columns,
+    // whether it sits at the table's left edge with their width, and whether
+    // putting the cursor in a frozen cell scrolls the table.
+    QString freezeForTest(int n, int width) {
+        waitIdleForTest();
+        auto* v = dynamic_cast<TableView*>(activeView());
+        auto* m = activeModel();
+        if (!v || !m) return QStringLiteral("no table");
+        resize(width, 500);
+        show();
+        auto pump = [](int ms) {
+            QElapsedTimer t;
+            t.start();
+            while (t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        };
+        pump(200);
+        v->setFrozenColumns(n);
+        pump(100);
+        QScrollBar* hs = v->horizontalScrollBar();
+        hs->setValue(hs->maximum());
+        pump(100);
+        QTableView* o = v->frozenView();
+        QStringList names;
+        int w = 0;
+        for (int c : v->frozenLogical()) { names << m->columnName(c); w += v->columnWidth(c); }
+        const bool atLeft = o->x() == v->verticalHeader()->width() + v->frameWidth();
+        const int before = hs->value();
+        v->selectionModel()->setCurrentIndex(m->index(3, v->frozenLogical().value(0)),
+                                             QItemSelectionModel::ClearAndSelect);
+        pump(100);
+        return QStringLiteral("frozen=%1 visible=%2 at-left=%3 width-ok=%4 scrolled=%5 kept=%6")
+            .arg(names.join(QLatin1Char(','))).arg(o->isVisible() ? 1 : 0).arg(atLeft ? 1 : 0)
+            .arg(o->width() == std::min(w, v->viewport()->width()) ? 1 : 0)
+            .arg(before > 0 ? 1 : 0).arg(hs->value() == before ? 1 : 0);
+    }
     // Self-test: the palette's rows for `query`, in order.
     void dumpPaletteForTest(const QString& query) {
         ActionPalette* p = openPalette(query);
@@ -4764,6 +4825,12 @@ int main(int argc, char** argv) {
             for (const QString& c : QString::fromLocal8Bit(hd).split(QLatin1Char(',')))
                 if (!win.hideActiveColumnForTest(c))
                     std::fprintf(stderr, "vvg: no column '%s' to hide\n", c.toLocal8Bit().constData());
+        // Optional frozen-column check: VVG_FREEZE="<n>,<window width>".
+        if (const char* fz = std::getenv("VVG_FREEZE"); fz && *fz) {
+            const QStringList q = QString::fromLocal8Bit(fz).split(QLatin1Char(','));
+            std::printf("freeze %s\n", win.freezeForTest(q.value(0).toInt(), q.value(1, QStringLiteral("420")).toInt())
+                                           .toUtf8().constData());
+        }
         // Optional session checks: VVG_REOPEN_CLOSED=<tab> closes that tab
         // and reopens it; VVG_SESSION_SAVE=1 saves the session as closing the
         // window does; VVG_RESTORE=1 (with no files) restores it;
