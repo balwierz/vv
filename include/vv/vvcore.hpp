@@ -90,6 +90,10 @@ struct Config {
     bool        tail_rows_set  = false;
     std::string sort_col;                // --sort COL[:asc|:desc]: order rows
     bool        sort_desc      = false;  // by one column before output
+    // Further --sort keys, in order: ties of sort_col are ordered by the
+    // first, its ties by the next, …
+    struct SortKey { std::string col; bool desc = false; };
+    std::vector<SortKey> sort_then;
     std::string bam_tags;                // --tags LIST: BAM/CRAM/SAM only — add
                                          // one typed column per named aux tag
                                          // (comma-separated 2-char SAM tags)
@@ -190,6 +194,9 @@ bool array_value_as_double(const arrow::Array& a, int64_t r, double* out);
 // every Arrow linkage — the same reason the CLI's --sort avoids them. Shared by
 // --sort and the GUI's click-to-sort.
 std::vector<int64_t> stable_sort_order(const arrow::Array& key, bool descending);
+// The same over several keys of equal length, the first deciding, each next
+// one ordering the ties of the ones before.
+std::vector<int64_t> stable_sort_order(const std::vector<std::pair<const arrow::Array*, bool>>& keys);
 
 // The source rows of `src` in the order of column `col` (stable_sort_order's
 // order), reading only that column, chunk by chunk. A forward-only source is
@@ -202,6 +209,11 @@ class TabularSource;
 bool sort_rows_by_column(TabularSource& src, int col, bool descending,
                          const std::vector<int64_t>* subset,
                          const std::atomic<bool>* cancel, std::vector<int64_t>* out);
+// The same by several columns: `keys` = (column, descending), the first
+// deciding. Reads only those columns.
+bool sort_rows_by_columns(TabularSource& src, const std::vector<std::pair<int, bool>>& keys,
+                          const std::vector<int64_t>* subset,
+                          const std::atomic<bool>* cancel, std::vector<int64_t>* out);
 
 // ── Filter engine ────────────────────────────────────────────────────────────
 // The same DSL behind --filter and the TUI's `&` live filter. Parse once

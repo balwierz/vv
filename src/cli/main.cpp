@@ -645,7 +645,7 @@ int main(int argc, char** argv) {
     // The TUI sorts by an on-screen column; a --sort column left out by
     // --select is materialised as before.
     bool tui_sorts = false;
-    if (tui_view && !cfg.sort_col.empty()) {
+    if (tui_view && !cfg.sort_col.empty() && cfg.sort_then.empty()) {   // the TUI sorts by one key
         const int si = src->schema()->GetFieldIndex(cfg.sort_col);
         tui_sorts = si >= 0 && (tui_start.select.empty() ||
                                 std::find(tui_start.select.begin(), tui_start.select.end(), si)

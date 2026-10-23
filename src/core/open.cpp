@@ -1140,6 +1140,8 @@ static bool vcf_sites_only_run(const Config& cfg) {
                 c.resize(c.size() - std::strlen(suf));
         if (!is_site(c)) return false;
     }
+    for (const auto& k : cfg.sort_then)
+        if (!is_site(k.col)) return false;
     if (!cfg.filter_expr.empty()) {
         // It names only site columns if it parses against them alone.
         auto site = arrow::schema({arrow::field("CHROM", arrow::utf8()), arrow::field("POS", arrow::int64()),

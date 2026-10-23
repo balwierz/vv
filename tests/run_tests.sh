@@ -3456,6 +3456,17 @@ assert_eq_file_inline "sort_nulls_last_stable" \
 rm -f "$SORTNULL"
 # An unknown sort column is a clean error, exit 1.
 assert_exit_code "sort_unknown_column_exit1" 1 "$VV" --sort nope "$DATA/tiny.parquet"
+# A repeated --sort adds keys: the second orders the ties of the first, a
+# null key sorts last within its group, equal pairs keep input order.
+SORTTWO="$TMP/sorttwo.csv"
+printf 'g,v,id\nb,1,p\na,2,q\nb,3,r\na,,s\na,1,t\nb,3,u\n' > "$SORTTWO"
+assert_eq_file_inline "sort_two_keys" \
+    "$("$VV" --tsv --no-header --select id --sort g --sort v:desc "$SORTTWO" | tr '\n' ' ')" "q t s r u p "
+assert_eq_file_inline "sort_two_keys_desc_first" \
+    "$("$VV" --tsv --no-header --select id --sort g:desc --sort v "$SORTTWO" | tr '\n' ' ')" "p r u t q s "
+assert_contains "sort_two_keys_footer" "$("$VV" -n 1 --sort g --sort v:desc "$SORTTWO")" "Sorted by g, v (desc)"
+assert_exit_code "sort_second_unknown_exit1" 1 "$VV" --sort g --sort nope "$SORTTWO"
+rm -f "$SORTTWO"
 # An export with --select keeps only the selected columns (and the sort
 # column) through the sort; the rows match a full sort cut to the selection,
 # also when the sort column is not selected.

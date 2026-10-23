@@ -63,7 +63,7 @@ tables that would need horizontal scrolling.
 | `--no-index` | no row-index column |
 | `--select COLS` | columns by name, glob, range or type class |
 | `--filter EXPR` | row predicate (`<col> <op> <value>`, `AND` / `OR`) |
-| `--sort COL[:desc]` | order the rows |
+| `--sort COL[:desc]` | order the rows (repeat for more keys) |
 | `-r REGION` / `--coords UCSC\|NCBI` | range query / its coordinate convention |
 | `--tab NAME` | a sheet, table or component of a multi-table file |
 | `--tsv` `--csv` `--json` `--ndjson` `--md` | text output |
@@ -1172,7 +1172,9 @@ chr2	5100	5200	0.85	[]
 ```
 
 Order the rows by one column before any output. Ascending by default;
-append `:desc` to reverse. Numeric columns sort numerically (`9` before
+append `:desc` to reverse. Repeat `--sort` for more keys, each ordering
+the ties of the ones before: `--sort chrom --sort score:desc` lists each
+chromosome's rows by score. Numeric columns sort numerically (`9` before
 `100`), others by their rendered text; nulls sort last and equal keys
 keep their input order (stable). It reads the whole source (honouring
 `--filter`) into memory and then feeds the sorted result to every view /

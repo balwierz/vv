@@ -907,10 +907,10 @@ std::string build_tail(std::unique_ptr<TabularSource>& src,
 // ties keep input order. Hand-rolled because arrow::compute's sort kernels are
 // GC'd from the static build / not reliably registered — shared by --sort and
 // the GUI's click-to-sort so their semantics stay identical.
-std::vector<int64_t> stable_sort_order(const arrow::Array& key, bool descending) {
+// Stable-sort `order` (positions into `key`) by `key`'s values.
+static void stable_sort_positions(const arrow::Array& key, bool descending,
+                                  std::vector<int64_t>& order) {
     const int64_t N = key.length();
-    std::vector<int64_t> order((size_t)N);
-    std::iota(order.begin(), order.end(), (int64_t)0);
     std::vector<char> kn((size_t)N);
     auto sort_by = [&](const auto& kv) {
         std::stable_sort(order.begin(), order.end(), [&](int64_t a, int64_t b) -> bool {
@@ -947,38 +947,69 @@ std::vector<int64_t> stable_sort_order(const arrow::Array& key, bool descending)
         }
         sort_by(kv);
     }
+}
+
+std::vector<int64_t> stable_sort_order(const arrow::Array& key, bool descending) {
+    return stable_sort_order({{&key, descending}});
+}
+
+// Several keys: stable sorts from the last key to the first, so the first
+// decides and each later one orders the ties before it.
+std::vector<int64_t> stable_sort_order(const std::vector<std::pair<const arrow::Array*, bool>>& keys) {
+    const int64_t N = keys.empty() ? 0 : keys.front().first->length();
+    std::vector<int64_t> order((size_t)N);
+    std::iota(order.begin(), order.end(), (int64_t)0);
+    for (auto k = keys.rbegin(); k != keys.rend(); ++k)
+        stable_sort_positions(*k->first, k->second, order);
     return order;
 }
 
 bool sort_rows_by_column(TabularSource& src, int col, bool descending,
                          const std::vector<int64_t>* subset,
                          const std::atomic<bool>* cancel, std::vector<int64_t>* out) {
+    return sort_rows_by_columns(src, {{col, descending}}, subset, cancel, out);
+}
+
+bool sort_rows_by_columns(TabularSource& src, const std::vector<std::pair<int, bool>>& keys,
+                          const std::vector<int64_t>* subset,
+                          const std::atomic<bool>* cancel, std::vector<int64_t>* out) {
     out->clear();
+    if (keys.empty()) return true;
     src.set_retain_all(true);
-    arrow::ArrayVector keys;
+    std::vector<int> cols;
+    for (const auto& k : keys)
+        if (std::find(cols.begin(), cols.end(), k.first) == cols.end()) cols.push_back(k.first);
+    std::vector<arrow::ArrayVector> parts(cols.size());
     std::vector<int64_t> src_row;   // the source row of each key position
     for (int c = 0; ; ++c) {
         if (cancel && cancel->load()) return false;
         src.ensure(c);
         if (c >= src.num_chunks()) break;
         std::shared_ptr<arrow::Table> t;
-        if (!src.read_chunk(c, {col}, &t).ok() || !t || t->num_columns() == 0) continue;
+        if (!src.read_chunk(c, cols, &t).ok() || !t || t->num_columns() != (int)cols.size()) continue;
         const int64_t first = src.chunk_meta(c).first_row;
         for (int64_t i = 0; i < t->num_rows(); ++i) src_row.push_back(first + i);
-        for (const auto& ch : t->column(0)->chunks()) keys.push_back(ch);
+        for (size_t k = 0; k < cols.size(); ++k)
+            for (const auto& ch : t->column((int)k)->chunks()) parts[k].push_back(ch);
     }
     if (src_row.empty()) return true;
-    std::shared_ptr<arrow::Array> flat;
-    if (keys.size() == 1) flat = keys[0];
-    else {
-        auto cc = arrow::Concatenate(keys);
-        if (!cc.ok()) return true;
-        flat = *cc;
+    std::vector<std::shared_ptr<arrow::Array>> flat(cols.size());
+    for (size_t k = 0; k < cols.size(); ++k) {
+        if (parts[k].size() == 1) flat[k] = parts[k][0];
+        else {
+            auto cc = arrow::Concatenate(parts[k]);
+            if (!cc.ok()) return true;
+            flat[k] = *cc;
+        }
+        parts[k].clear();
     }
-    keys.clear();
     if (cancel && cancel->load()) return false;
-    std::vector<int64_t> order = stable_sort_order(*flat, descending);
-    flat.reset();
+    std::vector<std::pair<const arrow::Array*, bool>> by;
+    for (const auto& k : keys)
+        by.push_back({flat[(size_t)(std::find(cols.begin(), cols.end(), k.first) - cols.begin())].get(),
+                      k.second});
+    std::vector<int64_t> order = stable_sort_order(by);
+    flat.clear();
     if (cancel && cancel->load()) return false;
     std::vector<char> keep;
     if (subset) {
@@ -994,7 +1025,8 @@ bool sort_rows_by_column(TabularSource& src, int col, bool descending,
     return true;
 }
 
-// --sort COL[:asc|:desc]: stable-sort the (filtered) rows by one column and
+// --sort COL[:asc|:desc] (repeated: further keys): stable-sort the (filtered)
+// rows by those columns and
 // replace `src` with a MemoryTableSource so every downstream view / export
 // renders the sorted result identically. Every row is held (a viewer
 // convenience; for ordering huge files, a query engine is the right tool),
@@ -1007,10 +1039,17 @@ std::string build_sort(std::unique_ptr<TabularSource>& src,
                         const Config& cfg, bool project) {
     auto schema = src->schema();
     int n_fields = schema->num_fields();
-    int sort_idx = -1;
-    for (int i = 0; i < n_fields; ++i)
-        if (schema->field(i)->name() == cfg.sort_col) { sort_idx = i; break; }
-    if (sort_idx < 0) return "--sort: unknown column '" + cfg.sort_col + "'";
+    // The keys: (field index, descending), the first deciding.
+    std::vector<std::pair<int, bool>> keys;
+    std::vector<Config::SortKey> named{{cfg.sort_col, cfg.sort_desc}};
+    named.insert(named.end(), cfg.sort_then.begin(), cfg.sort_then.end());
+    for (const auto& k : named) {
+        int idx = -1;
+        for (int i = 0; i < n_fields; ++i)
+            if (schema->field(i)->name() == k.col) { idx = i; break; }
+        if (idx < 0) return "--sort: unknown column '" + k.col + "'";
+        keys.push_back({idx, k.desc});
+    }
 
     FilterExpr fx; bool have_filter = false;
     if (!cfg.filter_expr.empty()) {
@@ -1028,7 +1067,7 @@ std::string build_sort(std::unique_ptr<TabularSource>& src,
         if (unknown.empty()) {   // else keep every column; the writer reports it
             std::vector<char> want((size_t)n_fields, 0);
             for (int i : sel) want[(size_t)i] = 1;
-            want[(size_t)sort_idx] = 1;
+            for (const auto& k : keys) want[(size_t)k.first] = 1;
             for (int i = 0; i < n_fields; ++i) if (want[(size_t)i]) out_cols.push_back(i);
         }
     }
@@ -1038,8 +1077,6 @@ std::string build_sort(std::unique_ptr<TabularSource>& src,
     std::vector<int> pos(out_cols.size());
     for (size_t k = 0; k < out_cols.size(); ++k)
         pos[k] = (int)(std::find(read_set.begin(), read_set.end(), out_cols[k]) - read_set.begin());
-    size_t key_k = 0;
-    while (out_cols[key_k] != sort_idx) ++key_k;
 
     // Each result column's chunks, as read.
     std::vector<arrow::ArrayVector> cols(out_cols.size());
@@ -1068,17 +1105,24 @@ std::string build_sort(std::unique_ptr<TabularSource>& src,
 
     std::vector<int64_t> order;
     {
-        const arrow::ChunkedArray key(cols[key_k], schema->field(sort_idx)->type());
-        std::shared_ptr<arrow::Array> flat;
-        if (key.num_chunks() == 1) flat = key.chunk(0);
-        else if (key.num_chunks() == 0)
-            flat = arrow::MakeArrayOfNull(key.type(), 0).ValueOrDie();
-        else {
-            auto cc = arrow::Concatenate(key.chunks());
-            if (!cc.ok()) return "--sort: concat column failed: " + cc.status().ToString();
-            flat = cc.ValueOrDie();
+        std::vector<std::shared_ptr<arrow::Array>> flats;
+        std::vector<std::pair<const arrow::Array*, bool>> by;
+        for (const auto& k : keys) {
+            const size_t key_k = (size_t)(std::find(out_cols.begin(), out_cols.end(), k.first) - out_cols.begin());
+            const arrow::ChunkedArray key(cols[key_k], schema->field(k.first)->type());
+            std::shared_ptr<arrow::Array> flat;
+            if (key.num_chunks() == 1) flat = key.chunk(0);
+            else if (key.num_chunks() == 0)
+                flat = arrow::MakeArrayOfNull(key.type(), 0).ValueOrDie();
+            else {
+                auto cc = arrow::Concatenate(key.chunks());
+                if (!cc.ok()) return "--sort: concat column failed: " + cc.status().ToString();
+                flat = cc.ValueOrDie();
+            }
+            flats.push_back(flat);
+            by.push_back({flats.back().get(), k.second});
         }
-        order = stable_sort_order(*flat, cfg.sort_desc);
+        order = stable_sort_order(by);
     }
 
     // Gather each column into the sorted order, releasing what was read.
@@ -1094,7 +1138,11 @@ std::string build_sort(std::unique_ptr<TabularSource>& src,
 
     src = std::make_unique<MemoryTableSource>(sorted,
         "<sorted " + old_path + ">",
-        "Sorted by " + cfg.sort_col + (cfg.sort_desc ? " (desc)" : "") +
+        "Sorted by " + [&] {
+            std::string by;
+            for (const auto& k : named) by += (by.empty() ? "" : ", ") + k.col + (k.desc ? " (desc)" : "");
+            return by;
+        }() +
         "  |  Rows: " + std::to_string(N),
         hidden_from_src);
     return "";

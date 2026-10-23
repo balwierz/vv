@@ -358,10 +358,13 @@ just the last chunks.
 Order rows by column \fICOL\fR before output (ascending by default;
 append \fB:desc\fR to reverse). Numeric columns sort numerically,
 others by their rendered text; null values sort last and equal keys
-keep input order. Reads the whole source (filtered by
+keep input order. Repeat \fB\-\-sort\fR for more keys: each orders
+the ties of the ones before it (\fB\-\-sort chrom \-\-sort score:desc\fR).
+The interactive viewer sorts by one key; with several the rows are
+sorted before it opens. Reads the whole source (filtered by
 \fB\-\-filter\fR if any) into memory, so it combines with every view /
 export mode; an export with \fB\-\-select\fR holds only the selected
-columns and the sort column. For ordering very large files, a query
+columns and the sort columns. For ordering very large files, a query
 engine is the right tool.
 .TP
 .BI \-\-tags " LIST"

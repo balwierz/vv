@@ -194,7 +194,9 @@ static void print_usage(const char* prog) {
         "  --tail <N>          show the last N rows instead of the first N\n"
         "  --sort <col>[:desc]  order rows by a column before output (asc\n"
         "                      default; numeric columns sort numerically,\n"
-        "                      others by text; nulls last). Loads the file\n"
+        "                      others by text; nulls last). Repeat for more\n"
+        "                      keys: --sort chrom --sort score:desc orders\n"
+        "                      each chrom's rows by score. Loads the file\n"
         "                      into memory.\n"
         "  -w <width>          max cell width   (default: 32; an AnnData / Loom\n"
         "                      summary tab shows its cells whole unless -w is given)\n"
@@ -562,14 +564,17 @@ Config parse_args(int argc, char** argv) {
         } else if (!std::strcmp(argv[i], "--sort") && i + 1 < argc) {
             // COL, or COL:asc / COL:desc. Only a trailing :asc/:desc is a
             // direction — a column name may itself contain a colon.
+            // A repeated --sort adds a key that orders the ties of the ones before.
             std::string v = argv[++i];
+            bool desc = false;
             auto colon = v.rfind(':');
             if (colon != std::string::npos) {
                 std::string suf = v.substr(colon + 1);
-                if      (suf == "desc") { cfg.sort_desc = true;  v.resize(colon); }
-                else if (suf == "asc")  { cfg.sort_desc = false; v.resize(colon); }
+                if      (suf == "desc") { desc = true;  v.resize(colon); }
+                else if (suf == "asc")  { desc = false; v.resize(colon); }
             }
-            cfg.sort_col = v;
+            if (cfg.sort_col.empty()) { cfg.sort_col = v; cfg.sort_desc = desc; }
+            else cfg.sort_then.push_back({v, desc});
         } else if (!std::strcmp(argv[i], "--tags") && i + 1 < argc) {
             cfg.bam_tags = argv[++i];
         } else if ((!std::strcmp(argv[i], "-@") ||
