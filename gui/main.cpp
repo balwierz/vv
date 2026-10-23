@@ -95,6 +95,7 @@
 #include "typedheader.h"
 #include "helpdialog.h"
 #include "shortcutsdialog.h"
+#include "actionpalette.h"
 #include "vv/vvcore.hpp"
 
 // Open every path through libvvcore (using a shared base Config so a later
@@ -1221,6 +1222,8 @@ private:
         QAction* shortcutsAct = makeAction(tr("&Keyboard Shortcuts…"), QKeySequence(QStringLiteral("Ctrl+/")),
             tr("Every command with its key"),
             [this] { ShortcutsDialog::showFor(this, commandsForHelp()); });
+        QAction* paletteAct = makeAction(tr("Find &Action…"), QKeySequence(QStringLiteral("Ctrl+Shift+P")),
+            tr("Run any command by typing part of its name, key or menu"), [this] { openPalette(); });
         QAction* about = makeAction(tr("&About vv"), {}, {}, [this] {
             QMessageBox::about(this, tr("About vv"),
                 tr("<p><b>Vertical Viewer (vv)</b> %1<br>"
@@ -1281,6 +1284,7 @@ private:
         help->setToolTipsVisible(true);
         help->addAction(referenceAct);
         help->addAction(shortcutsAct);
+        help->addAction(paletteAct);
         help->addSeparator();
         help->addAction(about);
 
@@ -3300,6 +3304,20 @@ public:
             if (!seen.contains(a) && !a->text().isEmpty()) out << qMakePair(tr("Window"), a);
         return out;
     }
+    // Help ▸ Find Action: the palette under the toolbar's centre.
+    ActionPalette* openPalette(const QString& query = {}) {
+        auto* p = new ActionPalette(commandsForHelp(), this);
+        if (!query.isEmpty()) p->setQuery(query);
+        const QWidget* anchor = mainBar_ ? static_cast<QWidget*>(mainBar_) : this;
+        p->popupAt(anchor->mapToGlobal(QPoint(anchor->width() / 2, anchor->height())));
+        return p;
+    }
+    // Self-test: the palette's rows for `query`, in order.
+    void dumpPaletteForTest(const QString& query) {
+        ActionPalette* p = openPalette(query);
+        for (const QString& n : p->shown()) std::printf("palette %s\n", n.toUtf8().constData());
+        p->close();
+    }
     // Self-test: the Keyboard Shortcuts rows and the Field Reference sections.
     void dumpHelpForTest() {
         auto* d = ShortcutsDialog::showFor(this, commandsForHelp());
@@ -3705,6 +3723,9 @@ int main(int argc, char** argv) {
         // Optional header check: VVG_HEADER=1 (the first column's header).
         if (const char* hd = std::getenv("VVG_HEADER"); hd && *hd && *hd != '0')
             std::printf("header %s\n", win.headerForTest().toUtf8().constData());
+        // Optional palette check: VVG_PALETTE="<query>" (the commands it lists).
+        if (const char* pq = std::getenv("VVG_PALETTE"); pq)
+            win.dumpPaletteForTest(QString::fromLocal8Bit(pq));
         // Optional help check: VVG_HELP=1 (dumpHelpForTest).
         if (const char* hp = std::getenv("VVG_HELP"); hp && *hp && *hp != '0')
             win.dumpHelpForTest();

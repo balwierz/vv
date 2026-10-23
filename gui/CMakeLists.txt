@@ -18,6 +18,7 @@ add_executable(vvg
     typedheader.cpp
     shortcutsdialog.cpp
     helpdialog.cpp
+    actionpalette.cpp
     vvg.qrc
 )
 target_include_directories(vvg PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

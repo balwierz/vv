@@ -484,6 +484,9 @@ jobs:
           grep -q '^shortcut Ctrl+B -> Details$' <<<"$out"
           grep -q '^shortcut F1 -> Field Reference…$' <<<"$out"
           grep -q '^shortcut Ctrl+/ -> Keyboard Shortcuts…$' <<<"$out"
+          grep -q '^shortcut Ctrl+Shift+P -> Find Action…$' <<<"$out"
+          # Find Action: every word of the query must match a command.
+          test "$(VVG_WINTEST=1 VVG_PALETTE='copy row' ./build-gui/gui/vvg tests/data/tiny.parquet | sed -n 's/^palette //p')" = "Copy Row"
           # Help: the shortcuts table lists the commands with their menus, and
           # the field reference (a Qt resource) has its sections and anchors.
           out=$(VVG_WINTEST=1 VVG_HELP=1 ./build-gui/gui/vvg tests/data/tiny.parquet)

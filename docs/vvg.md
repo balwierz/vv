@@ -72,6 +72,8 @@ Command* goes the other way.
   list and a search box; a column header's right-click menu opens it at that
   column when it has an entry (*QUAL*, *FLAG*, *obsp*, …). *Keyboard
   Shortcuts* (*Ctrl+/*): every command with its keys and menu, filterable.
+  *Find Action* (*Ctrl+Shift+P*): type part of a command's name, key or menu
+  and press Enter to run it.
 - The window's size and its docks are restored at the next start.
 
 ## What it does
