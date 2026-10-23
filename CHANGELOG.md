@@ -17,6 +17,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - UCSC MAF: a `.maf` starting with `##maf` (shown as text until now) is
   read forward as a row per `s` line — block, score, src, start, size,
   strand, srcSize, text; a mutation annotation `.maf` stays a table.
+- `--index FILE`: the index of a BAM, CRAM or BCF kept elsewhere than
+  beside the file (a read-only directory), for `-r` and `--contigs`.
+- vvg: Build Index by the Region box of a BAM, CRAM or BCF without an index
+  (beside the file, or in vvg's cache when the directory is read-only).
+- vvg: View ▸ Memory Limits…; a sort, filter or find over 10 million rows,
+  or over a 1 GiB file whose rows are not counted yet, asks first.
+
+### Fixed
+- vvg: scrolling deep into a BAM / CRAM (past 64 batches of 32 768 reads)
+  made every earlier row blank until Reload. A stream's rows now stay in
+  memory up to 1 GiB, with Load More beyond it.
+- vvg: after Go to Row the table jumped to an unrelated row on the next
+  scroll (row 900 of 2 000 showed as 86).
 
 ## [1.32.0] - 2026-10-21
 
