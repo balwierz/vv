@@ -90,6 +90,7 @@
 #include <QVBoxLayout>
 
 #include <functional>
+#include <future>
 #include <map>
 
 #include <cstdio>
@@ -3719,6 +3720,8 @@ public:
     // Sort the active tab by its first column (unasked), cancel after `ms`
     // and wait for what follows: the rows the sort read let go by a re-read
     // of the file ("reloaded=1") when it had read past the view's rows.
+    // With `ms` 0 the owner thread is held until the cancel, so the sort
+    // reads nothing (no race with the thread starting it).
     QString cancelForTest(int ms) {
         auto* m = activeModel();
         auto* v = activeView();
@@ -3728,12 +3731,15 @@ public:
         const QPointer<ArrowTableModel> old(m);   // the re-read deletes it
         bool held = false;
         connect(m, &ArrowTableModel::heldAfterCancel, this, [&held](qint64) { held = true; });
+        auto gate = std::make_shared<std::promise<void>>();
+        if (ms == 0) m->postToOwnerForTest([f = gate->get_future().share()] { f.wait(); });
         setSortKeys(m, v, {{0, Qt::AscendingOrder}}, /*ask=*/false);
         QElapsedTimer t;
         t.start();
         while (t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
         const bool running = m->isComputing();
         m->cancelRecompute();
+        if (ms == 0) gate->set_value();
         t.restart();
         // The re-read replaces the tab's model.
         while (t.elapsed() < 3000 && old) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);

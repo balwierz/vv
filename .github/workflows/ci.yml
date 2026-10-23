@@ -165,6 +165,8 @@ jobs:
           KF6: ${{ steps.gui_deps.outputs.kf6 }}
         run: |
           set -e
+          # Most checks here are `… | grep -q`, silent when they fail: name it.
+          trap 'echo "::error::Verify GUI artifacts failed at script line $LINENO: $BASH_COMMAND"' ERR
           # vvg and the headless plugin-core harness build with just Qt6 — they
           # exercise libvvcore end to end and need no KF6.
           test -x build-gui/gui/vvg
@@ -950,6 +952,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           set -e
+          trap 'echo "::error::Verify GUI artifacts failed at script line $LINENO: $BASH_COMMAND"' ERR
           test -x build/gui/vvg
           ./build/gui/kde/vvkdetest tests/data/tiny.parquet
           ./build/gui/kde/vvkdetest --allow-empty tests/data/tiny.malformed.npz

@@ -15,6 +15,7 @@
 #include <QAbstractTableModel>
 #include <QRegularExpression>
 #include <atomic>
+#include <functional>
 #include <list>
 #include <map>
 #include <memory>
@@ -85,6 +86,9 @@ public:
     }
     void    loadMore();
     bool    isFetching() const { return fetching_; }
+    // Self-test: run `fn` on the source's owner thread, queued as a job is
+    // (a test holds the thread there to order a job and a cancel).
+    void    postToOwnerForTest(std::function<void()> fn) { owner_->post(std::move(fn)); }
 
     // What a pass over every row (a sort, filter or find) reads, and whether
     // that is over the limits: more rows than `rowLimit`, or, while a
