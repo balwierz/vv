@@ -191,7 +191,7 @@ static void flashRect(QWidget* host, const QRect& r) {
 // Toolbar icons where the icon theme has none: monochrome strokes in the
 // window text colour, drawn on a 16-unit grid with gg's line weight (its
 // bundled SVGs), so vvg needs no SVG module.
-enum class Glyph { Menu, Details, Export, Filter, Find };
+enum class Glyph { Menu, Details, Export, Filter, Find, Open, Directory, Copy, CopyRow };
 static QIcon glyphIcon(Glyph g, const QColor& color) {
     QIcon icon;
     for (int px : {16, 20, 22, 24, 32, 48}) {
@@ -225,6 +225,26 @@ static QIcon glyphIcon(Glyph g, const QColor& color) {
         case Glyph::Find:                     // a magnifier
             p.drawEllipse(QPointF(6.75, 6.75), 4.25, 4.25);
             p.drawLine(QPointF(9.9, 9.9), QPointF(13.5, 13.5));
+            break;
+        case Glyph::Open:                     // a sheet with a folded corner
+            p.drawPolygon(QPolygonF({QPointF(3.25, 1.75), QPointF(9.5, 1.75), QPointF(12.75, 5),
+                                     QPointF(12.75, 14.25), QPointF(3.25, 14.25)}));
+            p.drawPolyline(QPolygonF({QPointF(9.5, 1.75), QPointF(9.5, 5), QPointF(12.75, 5)}));
+            break;
+        case Glyph::Directory:                // a folder
+            p.drawPolygon(QPolygonF({QPointF(1.75, 3.25), QPointF(6, 3.25), QPointF(7.5, 4.75),
+                                     QPointF(14.25, 4.75), QPointF(14.25, 12.75), QPointF(1.75, 12.75)}));
+            p.drawLine(QPointF(1.75, 6.75), QPointF(14.25, 6.75));
+            break;
+        case Glyph::Copy:                     // two overlapping sheets
+        case Glyph::CopyRow:                  // … the front one with a row marked
+            p.drawRoundedRect(QRectF(1.75, 1.75, 8.5, 9.5), 1, 1);
+            p.setBrush(QColor(0, 0, 0, 0));
+            p.drawRoundedRect(QRectF(5.75, 4.75, 8.5, 9.5), 1, 1);
+            if (g == Glyph::CopyRow) {
+                p.setBrush(color);
+                p.drawRect(QRectF(5.75, 8, 8.5, 2.5));
+            }
             break;
         }
         p.end();
@@ -623,6 +643,8 @@ private:
         materializeTab(i);   // a tab not shown before: build its model now
         syncHeaderTypes(activeView());
         updateTitle();
+        // Copy and Copy Row act on a table; elsewhere Ctrl+C reaches the view.
+        for (QAction* a : {copyAct_, copyRowAct_}) if (a) a->setEnabled(activeView() != nullptr);
         if (selTimer_) selTimer_->start();
         if (colTimer_) colTimer_->start();
         syncFileControls();
@@ -1076,7 +1098,8 @@ private:
     }
     // The theme's icon, else the drawn glyph; redrawn when the palette changes.
     QIcon themedIcon(const char* themeName, Glyph g) const {
-        if (QIcon::hasThemeIcon(QLatin1String(themeName))) return QIcon::fromTheme(QLatin1String(themeName));
+        if (*themeName && QIcon::hasThemeIcon(QLatin1String(themeName)))
+            return QIcon::fromTheme(QLatin1String(themeName));
         return glyphIcon(g, palette().color(QPalette::WindowText));
     }
     void setActionIcon(QAction* a, const char* themeName, Glyph g) {
@@ -1088,9 +1111,9 @@ private:
     }
 
     void buildMenus() {
-        QAction* open = makeAction(tr("&Open…"), QKeySequence::Open, tr("Open one or more data files"),
+        openAct_ = makeAction(tr("&Open…"), QKeySequence::Open, tr("Open one or more data files"),
                                    [this] { openFilesDialog(); });
-        QAction* openDir = makeAction(tr("Open &Directory…"), {},
+        openDirAct_ = makeAction(tr("Open &Directory…"), {},
             tr("Open a directory as one dataset (Parquet / CSV / JSON parts; Hive key=value/ partitions)"),
             [this] { openDirectoryDialog(); });
         exportAction_ = makeAction(tr("&Export View As…"), QKeySequence(QStringLiteral("Ctrl+E")),
@@ -1114,10 +1137,17 @@ private:
             });
         QAction* quit = makeAction(tr("&Quit"), QKeySequence::Quit, {}, [] { QApplication::quit(); });
 
-        QAction* cp = makeAction(tr("&Copy"), QKeySequence::Copy, tr("Copy the selected cells"),
+        copyAct_ = makeAction(tr("&Copy"), QKeySequence::Copy, tr("Copy the selected cells"),
                                  [this] { copySelection(); });
-        QAction* cpRow = makeAction(tr("Copy &Row"), QKeySequence(QStringLiteral("Ctrl+Shift+C")),
+        copyRowAct_ = makeAction(tr("Copy &Row"), QKeySequence(QStringLiteral("Ctrl+Shift+C")),
                                     tr("Copy the selected rows, every column"), [this] { copyRows(); });
+        openAct_->setIconText(tr("Open"));
+        setActionIcon(openAct_, "document-open", Glyph::Open);
+        setActionIcon(openDirAct_, "folder-open", Glyph::Directory);
+        setActionIcon(copyAct_, "edit-copy", Glyph::Copy);
+        setActionIcon(copyRowAct_, "", Glyph::CopyRow);
+        copyAct_->setEnabled(false);       // until a table tab is shown
+        copyRowAct_->setEnabled(false);
         copyCmdAct_ = makeAction(tr("Copy as &vv Command"), QKeySequence(QStringLiteral("Ctrl+Alt+C")),
             tr("Copy the vv command line that reproduces this tab: file, tab, format options, "
                "filter, sort and the visible columns"),
@@ -1205,8 +1235,8 @@ private:
 
         auto* file = menuBar()->addMenu(tr("&File"));
         file->setToolTipsVisible(true);
-        file->addAction(open);
-        file->addAction(openDir);
+        file->addAction(openAct_);
+        file->addAction(openDirAct_);
         recentMenu_ = file->addMenu(tr("Open &Recent"));
         rebuildRecentMenu();
         file->addSeparator();
@@ -1219,8 +1249,8 @@ private:
 
         auto* edit = menuBar()->addMenu(tr("&Edit"));
         edit->setToolTipsVisible(true);
-        edit->addAction(cp);
-        edit->addAction(cpRow);
+        edit->addAction(copyAct_);
+        edit->addAction(copyRowAct_);
         edit->addSeparator();
         edit->addAction(copyCmdAct_);
         edit->addSeparator();
@@ -1259,8 +1289,8 @@ private:
         // The ≡ menu: the same actions and submenus.
         appMenu_ = new QMenu(tr("vvg"), this);
         appMenu_->setToolTipsVisible(true);
-        appMenu_->addAction(open);
-        appMenu_->addAction(openDir);
+        appMenu_->addAction(openAct_);
+        appMenu_->addAction(openDirAct_);
         appMenu_->addMenu(recentMenu_);
         appMenu_->addSeparator();
         appMenu_->addAction(exportAction_);
@@ -1956,6 +1986,19 @@ private:
         mainBar_->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(mainBar_, &QToolBar::customContextMenuRequested, this,
                 [this](const QPoint& p) { appMenu_->popup(mainBar_->mapToGlobal(p)); });
+
+        // Open (its ▾ lists the recent files), Open Directory, Copy, Copy Row.
+        auto* openButton = new QToolButton(mainBar_);
+        openButton->setDefaultAction(openAct_);
+        openButton->setPopupMode(QToolButton::MenuButtonPopup);
+        openButton->setMenu(recentMenu_);
+        openButton->setAutoRaise(true);
+        mainBar_->addWidget(openButton);
+        mainBar_->addAction(openDirAct_);
+        mainBar_->addSeparator();
+        mainBar_->addAction(copyAct_);
+        mainBar_->addAction(copyRowAct_);
+        mainBar_->addSeparator();
 
         // The boxes in one widget, so the toolbar never squeezes them into
         // the buttons; capped so a wide window leaves the buttons at the right.
@@ -3125,6 +3168,10 @@ private:
     bool                           showTypes_     = true;   // the header's type line
     QAction*                       typesAct_      = nullptr;   // View ▸ Column Types
     QAction*                       closeFileAct_  = nullptr;   // File ▸ Close File
+    QAction*                       openAct_       = nullptr;   // toolbar + File
+    QAction*                       openDirAct_    = nullptr;
+    QAction*                       copyAct_       = nullptr;   // toolbar + Edit
+    QAction*                       copyRowAct_    = nullptr;
     QStringList                    recent_;                 // Open Recent, newest first
     QString                        openFilter_;             // the Open dialog's last type
     QThread*                       settingsThread_ = nullptr;   // writes vvg.conf (saveSetting)

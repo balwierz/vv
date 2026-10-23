@@ -23,7 +23,8 @@ Command* goes the other way.
 
 ## The window
 
-- **Toolbar** — one row: the *Filter* and *Find* boxes, then on the right
+- **Toolbar** — one row: *Open* (its ▾ lists the recent files), *Open
+  Directory*, *Copy* and *Copy Row*, the *Filter* and *Find* boxes, then on the right
   *Details* (*Ctrl+B*, the Row / Column panel), *Export…* (*Ctrl+E*; its ▾ has
   *Copy as vv Command* and *Open Export Directory*) and **≡**, the menu (*F10*, or
   right-click the toolbar): open, recent files, close, *Edit ▸*, *View ▸*,
