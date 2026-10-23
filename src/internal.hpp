@@ -1228,6 +1228,9 @@ std::vector<std::unique_ptr<TabularSource>> workbook_siblings(const TabularSourc
 // msa_kind() and then the extension.
 std::string open_msa_source(const std::string& path, const Config& cfg, std::unique_ptr<TabularSource>* out,
                             std::string kind = {});
+// UCSC MAF (src/formats/maf.cpp): a .maf that starts with "##maf", streamed,
+// a row per "s" line.
+std::string open_maf_source(const std::string& path, const Config& cfg, std::unique_ptr<TabularSource>* out);
 // The alignment format a file's first lines show (a kind above), or "".
 std::string msa_kind(const std::string& path);
 // A FASTA file whose first records (those whole in its first 64 KiB, at

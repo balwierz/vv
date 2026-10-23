@@ -261,6 +261,7 @@ static std::string sniff_text_format(const std::string& head) {
     if (starts("#NEXUS") || starts("#nexus")) return "nexus";
     if (starts("!!AA_MULTIPLE_ALIGNMENT") || starts("!!NA_MULTIPLE_ALIGNMENT") || starts("PileUp"))
         return "msf";
+    if (starts("##maf")) return "maf";
     if (starts(">")) return "fasta";
     if (vvjson::looks_like_json(head)) return "json";
     if (starts("@")) {
@@ -1407,6 +1408,13 @@ static std::string dispatch_by_kind(const std::string& path, const Config& cfg,
                     *out = std::move(src);
                     return "";
                 }
+                if (fmt == "maf") {
+                    std::string tmp;
+                    int64_t bytes = 0;
+                    std::string serr = spool_stream(input, ".maf", &tmp, &bytes);
+                    if (!serr.empty()) return serr;
+                    return open_maf_source(tmp, cfg, out);
+                }
                 if (fmt == "stockholm" || fmt == "clustal" || fmt == "nexus" || fmt == "msf") {
                     // The alignment reader reads a file: copy the text to one.
                     std::string tmp;
@@ -1683,7 +1691,7 @@ static std::string dispatch_by_kind(const std::string& path, const Config& cfg,
         // annotation format; it starts with "##maf" and is not a table.
         if (tsv_dialect_of(det) == TsvDialect::Maf &&
             delimited_first_line_after_meta_raw(path).rfind("##maf", 0) == 0)
-            return open_text(path, cfg, out);
+            return open_maf_source(path, cfg, out);
         dk = DelimKind::TSV;
     } else if (fends_ci(path, ".rds") || fends_ci(path, ".rdata") || fends_ci(path, ".rda")) {
         return open_rdata_source(path, cfg, out);

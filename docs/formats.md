@@ -280,6 +280,11 @@ are rows under the sequences, so they line up. Stockholm's `#=GF` / `#=GS`
 lines are the **annotations** tab. The footer says whether the residues are
 nucleotides or protein; vvg colours them by that.
 
+A UCSC MAF (`.maf` whose first line is `##maf`; a mutation annotation `.maf`
+stays a table) is read forward, as genome-wide multiz files are gigabytes:
+one row per `s` line — `block`, its `score`, `src` (`hg38.chr7`), `start`
+(0-based, on its strand), `size`, `strand`, `srcSize` and the aligned `text`.
+
 ![vv: a Stockholm protein family](img/vv/msa.svg)
 
 Try: `vv --sort identity:desc PF00046_seed.sto` ·

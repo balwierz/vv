@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `name/12-345`, length, gaps, identity to the first sequence and the
   aligned sequence; column annotations are rows under the sequences, and
   Stockholm's `#=GF` / `#=GS` lines an annotations tab.
+- UCSC MAF: a `.maf` starting with `##maf` (shown as text until now) is
+  read forward as a row per `s` line — block, score, src, start, size,
+  strand, srcSize, text; a mutation annotation `.maf` stays a table.
 
 ## [1.32.0] - 2026-10-21
 

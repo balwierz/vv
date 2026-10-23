@@ -2914,6 +2914,25 @@ MKVLATGIVG-LLAFSQSEAHPKD
 >plant/1-22 Arabidopsis thaliana
 MRVL-AGIIGSLLAFAQTE-HPRD
 """
+# UCSC MAF: two blocks of five species ("i" lines are skipped).
+msa["tiny.ucsc.maf"] = """##maf version=1 scoring=tba.v8
+# tba.v8 (((human chimp) baboon) (mouse rat))
+
+a score=23262.0
+s hg38.chr7    27578828 38 + 158545518 AAA-GGGAATGTTAACCAAATGA---ATTGTCTCTTACGGTG
+s panTro4.chr6 28741140 38 + 161576975 AAA-GGGAATGTTAACCAAATGA---ATTGTCTCTTACGGTG
+s baboon         116834 38 +   4622798 AAA-GGGAATGTTAACCAGATGA---ATTGTCTCTTACGGTG
+s mm10.chr6    53215344 38 + 151104725 -AATGGGAATGTTAAGCAAACGA---ATTGTCTCTCAGTGTG
+s rn5.chr4     81344243 40 + 187371129 -AA-GGGGATGCTAAGCCAATGAGTTGTTGTCTCTCAATGTG
+
+a score=5062.0
+s hg38.chr7    27699739 6 + 158545518 TAAAGA
+s panTro4.chr6 28862317 6 + 161576975 TAAAGA
+s baboon         241163 6 +   4622798 TAAAGA
+s mm10.chr6    53303881 6 - 151104725 TAAAGA
+s rn5.chr4     81444246 6 + 187371129 taagga
+i rn5.chr4     C 0 C 0
+"""
 msa["tiny.afa"] = afa
 msa["tiny.aligned.fa"] = afa      # a .fa that is an alignment
 for name, text in msa.items():

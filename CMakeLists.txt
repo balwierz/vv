@@ -403,7 +403,7 @@ set(VV_CORE_SOURCES
     src/formats/duckdb.cpp
     src/formats/genbank.cpp   src/formats/hdf5.cpp
     src/formats/htslib.cpp    src/formats/json.cpp      src/formats/lociss.cpp
-    src/formats/msa.cpp
+    src/formats/maf.cpp       src/formats/msa.cpp
     src/formats/npz.cpp       src/formats/parquet.cpp   src/formats/pod5.cpp
     src/formats/rdata.cpp     src/formats/rserial.cpp
     src/formats/sqlite.cpp

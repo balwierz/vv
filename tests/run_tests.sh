@@ -335,7 +335,8 @@ assert_eq_file_inline "dialect_gct13_values" \
 assert_contains "dialect_gct13_meta_in_header" "$("$VV" --schema --color=never "$DL/b.gct")" "tissue"
 assert_contains "dialect_gct_footer" "$("$VV" --schema --color=never "$DL/a.gct")" "GenePattern GCT 1.2"
 assert_eq_file_inline "dialect_bedpe_filter" "$("$VV" --count --filter 'start2 > 700' "$DL/a.bedpe")" "1"
-assert_eq_file_inline "dialect_alignment_maf_is_text" "$("$VV" --list-columns "$DL/aln.maf")" "line"
+assert_eq_file_inline "dialect_alignment_maf_ucsc" "$("$VV" --list-columns "$DL/aln.maf" | tr '\n' ' ')" \
+    "block score src start size strand srcSize text "
 rm -rf "$DL"
 
 # PLINK. A PLINK 1 .bed (magic 6c 1b) was read as a one-column BED of hex
@@ -1514,6 +1515,17 @@ printf '3 5\nnot an alignment\n' > "$TMP/numbers.data"
 assert_eq_file_inline "msa_sniff_falls_back_to_text" "$("$VV" --list-columns "$TMP/numbers.data" 2>/dev/null)" "line"
 printf 'hello\n' > "$TMP/bad.phy"
 assert_exit_code "msa_bad_phylip" 1 "$VV" "$TMP/bad.phy"
+# UCSC MAF: a row per "s" line with its block and score; "i" lines skipped;
+# the header above the table; a broken "s" line is a read error.
+assert_eq_file_inline "maf_rows" "$("$VV" --count "$DATA/tiny.ucsc.maf")" "10"
+assert_eq_file_inline "maf_block2" "$("$VV" --tsv --no-header --filter 'block == 2 and strand == "-"' "$DATA/tiny.ucsc.maf")" \
+    "$(printf '2\t5062\tmm10.chr6\t53303881\t6\t-\t151104725\tTAAAGA')"
+assert_contains "maf_preamble" "$("$VV" -n 1 --color=never "$DATA/tiny.ucsc.maf" 2>&1)" "##maf version=1 scoring=tba.v8"
+assert_eq_file_inline "maf_stdin" "$("$VV" --count - < "$DATA/tiny.ucsc.maf")" "10"
+gzip -c "$DATA/tiny.ucsc.maf" > "$TMP/tiny.ucsc.maf.gz"
+assert_eq_file_inline "maf_gz" "$("$VV" --count "$TMP/tiny.ucsc.maf.gz")" "10"
+printf '##maf version=1\na score=1\ns hg38.chr1 x 10 + 100 ACGT\n' > "$TMP/broken.maf"
+assert_exit_code "maf_broken_s_line" 1 "$VV" --count "$TMP/broken.maf"
 
 echo '── Cooler (.cool / .mcool) ────────────────────────────\'
 # generate.py: chr1 1000 bp + chr2 500 bp, 100 bp bins, weight 1/(1 + bin % 3)
@@ -5459,7 +5471,7 @@ if [ -x "$FC" ]; then
     assert_contains "features_format_bam"  "$FOUT" "format BAM / CRAM alignments family=Alignments (BAM, CRAM, SAM, PAF, pileup)"
     assert_contains "features_format_bedgz" "$FOUT" "format BED family=Intervals and annotations (BED, GFF, bigBed, bigWig)"
     assert_contains "features_format_h5ad" "$FOUT" "format HDF5 / AnnData / Loom family=HDF5 (AnnData, Loom, MuData, Cooler)"
-    assert_contains "features_format_sto"  "$FOUT" "format Stockholm family=Multiple sequence alignments (Stockholm, Clustal, PHYLIP, NEXUS, MSF, A3M)"
+    assert_contains "features_format_sto"  "$FOUT" "format Stockholm family=Multiple sequence alignments (Stockholm, Clustal, PHYLIP, NEXUS, MSF, A3M, MAF)"
     assert_contains "features_msa_alphabet" "$FOUT" "tab alignment matrix=0 slices=0 coords=0 alphabet=protein"
     assert_contains "features_msa_annotations" "$FOUT" "tab annotations matrix=0 slices=0 coords=0"
     assert_contains "features_parquet"     "$FOUT" "file tiny.parquet region=none by-columns"
