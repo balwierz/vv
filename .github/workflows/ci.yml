@@ -525,6 +525,14 @@ jobs:
           VVG_WINTEST=1 VVG_SEQRENDER=1 ./build-gui/gui/vvg tests/data/tiny.bam | grep -q '^seqrender SEQ:bases\[.* QUAL:qual\['
           VVG_WINTEST=1 VVG_SEQRENDER=1 ./build-gui/gui/vvg tests/data/tiny.vcf | grep -qxF 'seqrender REF:bases[A=#1a9a3a] ALT:bases[G=#d18400]'
           VVG_WINTEST=1 VVG_SEQRENDER=1 ./build-gui/gui/vvg tests/data/tiny.parquet | grep -qx 'seqrender none'
+          # A multiple alignment: residues (protein) or bases (MAF) by the
+          # tab's alphabet, and a ruler of positions in the header.
+          for f in tiny.sto tiny.aln tiny.aligned.fa; do
+            VVG_WINTEST=1 VVG_SEQRENDER=1 ./build-gui/gui/vvg "tests/data/$f" \
+              | grep -q '^seqrender sequence:residues\[MKVL=#2463d1,#d02c2c,#2463d1,#2463d1\] ruler=1,10,20 chars='
+          done
+          VVG_WINTEST=1 VVG_SEQRENDER=1 ./build-gui/gui/vvg tests/data/tiny.ucsc.maf \
+            | grep -q '^seqrender text:bases\[AAA-=#1a9a3a,#1a9a3a,#1a9a3a,#000000\] ruler=1,10,20 chars='
           # Frozen columns stay at the left edge while the table scrolls right,
           # skip hidden columns, and a cursor put in one does not scroll.
           VVG_WINTEST=1 VVG_FREEZE=1,500 ./build-gui/gui/vvg tests/data/tiny.obsp.h5ad 2>/dev/null \

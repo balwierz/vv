@@ -1,6 +1,7 @@
 #include "pluginbudget.h"
 
 #include <QFileInfo>
+#include <QStringList>
 
 bool vv_within_plugin_budget(const QString& path) {
     constexpr qint64 MiB = 1024 * 1024;
@@ -20,5 +21,12 @@ bool vv_within_plugin_budget(const QString& path) {
              ext == QLatin1String("gbff") || ext == QLatin1String("genbank") ||
              ext == QLatin1String("embl"))
         ceiling = 96 * MiB;
+    else if (QStringList{QStringLiteral("sto"), QStringLiteral("stk"), QStringLiteral("stockholm"),
+                         QStringLiteral("aln"), QStringLiteral("clustal"), QStringLiteral("clw"),
+                         QStringLiteral("clustalw"), QStringLiteral("phy"), QStringLiteral("phylip"),
+                         QStringLiteral("nex"), QStringLiteral("nxs"), QStringLiteral("nexus"),
+                         QStringLiteral("msf"), QStringLiteral("a2m"), QStringLiteral("a3m"),
+                         QStringLiteral("afa"), QStringLiteral("afasta")}.contains(ext))
+        ceiling = 64 * MiB;   // alignments are read whole; a Pfam "full" one is GBs
     return ceiling < 0 || fi.size() <= ceiling;
 }

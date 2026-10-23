@@ -1,5 +1,7 @@
 #include "sequencedelegate.h"
 
+#include "arrowtablemodel.h"
+
 #include <QApplication>
 #include <QFontDatabase>
 #include <QPainter>
@@ -21,6 +23,37 @@ QColor SequenceDelegate::baseColor(QChar c, bool dark) {
     default: return {};
     }
     return dark ? col.lighter(150) : col;
+}
+
+QColor SequenceDelegate::residueColor(QChar c, bool dark) {
+    QColor col;
+    switch (c.toUpper().unicode()) {
+    case 'A': case 'I': case 'L': case 'M': case 'F': case 'W': case 'V':
+        col = QColor(0x24, 0x63, 0xd1); break;
+    case 'K': case 'R': col = QColor(0xd0, 0x2c, 0x2c); break;
+    case 'D': case 'E': col = QColor(0xb0, 0x30, 0xa0); break;
+    case 'N': case 'Q': case 'S': case 'T': col = QColor(0x1a, 0x9a, 0x3a); break;
+    case 'G': col = QColor(0xd1, 0x84, 0x00); break;
+    case 'P': col = QColor(0xa8, 0x8f, 0x00); break;
+    case 'C': col = QColor(0xd8, 0x5a, 0x90); break;
+    case 'H': case 'Y': col = QColor(0x10, 0x95, 0x95); break;
+    default: return {};
+    }
+    return dark ? col.lighter(150) : col;
+}
+
+static QFont sequenceFont(const QFont& viewFont) {
+    QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    font.setPointSizeF(viewFont.pointSizeF() > 0 ? viewFont.pointSizeF() : font.pointSizeF());
+    return font;
+}
+
+int SequenceDelegate::charAdvance(const QWidget* view) {
+    return std::max(1, QFontMetrics(sequenceFont(view->font())).horizontalAdvance(QLatin1Char('A')));
+}
+
+int SequenceDelegate::inset(const QWidget* view) {
+    return view->style()->pixelMetric(QStyle::PM_FocusFrameHMargin, nullptr, view) + 1;
 }
 
 QColor SequenceDelegate::qualityColor(int q) {
@@ -48,8 +81,7 @@ void SequenceDelegate::paint(QPainter* p, const QStyleOptionViewItem& opt, const
         c.setAlpha(40);
         p->fillRect(o.rect, c);
     }
-    QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-    font.setPointSizeF(o.font.pointSizeF() > 0 ? o.font.pointSizeF() : font.pointSizeF());
+    const QFont font = sequenceFont(o.font);
     const QFontMetrics fm(font);
     const int cw = std::max(1, fm.horizontalAdvance(QLatin1Char('A')));
     const int margin = style->pixelMetric(QStyle::PM_FocusFrameHMargin, nullptr, w) + 1;
@@ -58,6 +90,11 @@ void SequenceDelegate::paint(QPainter* p, const QStyleOptionViewItem& opt, const
     const bool selected = o.state & QStyle::State_Selected;
     const bool dark = o.palette.color(QPalette::Base).lightness() < 128;
     const QColor plain = o.palette.color(selected ? QPalette::HighlightedText : QPalette::Text);
+    const QColor gapColor = dark ? QColor(0x70, 0x70, 0x70) : QColor(0xa0, 0xa0, 0xa0);
+    // An alignment's annotation row (its length is null): characters, not
+    // residues.
+    const bool annotation = alignment_ && plainColumn_ >= 0 &&
+                            !idx.sibling(idx.row(), plainColumn_).data(ArrowTableModel::NumericRole).isValid();
     p->save();
     p->setClipRect(o.rect);
     p->setFont(font);
@@ -67,8 +104,11 @@ void SequenceDelegate::paint(QPainter* p, const QStyleOptionViewItem& opt, const
         QColor pen = plain;
         if (kind_ == Kind::Quality) {
             if (!selected) p->fillRect(cell.adjusted(0, 2, 0, -2), qualityColor(ch.unicode() - 33));
-        } else if (!selected) {
-            if (const QColor b = baseColor(ch, dark); b.isValid()) pen = b;
+        } else if (!selected && !annotation) {
+            if (ch == QLatin1Char('-') || ch == QLatin1Char('.') || ch == QLatin1Char('~')) pen = gapColor;
+            else if (const QColor b = kind_ == Kind::Residues ? residueColor(ch, dark) : baseColor(ch, dark);
+                     b.isValid())
+                pen = b;
         }
         p->setPen(pen);
         p->drawText(cell, Qt::AlignCenter, QString(ch));

@@ -5,6 +5,28 @@
 
 TypedHeaderView::TypedHeaderView(QWidget* parent) : QHeaderView(Qt::Horizontal, parent) {}
 
+void TypedHeaderView::setRuler(int logicalIndex, int advance, int inset) {
+    if (advance > 0) rulers_.insert(logicalIndex, {advance, inset});
+    else rulers_.remove(logicalIndex);
+    viewport()->update();
+}
+
+QList<QPair<int, int>> TypedHeaderView::rulerMarks(int logicalIndex, int width) const {
+    QList<QPair<int, int>> marks;
+    const auto it = rulers_.constFind(logicalIndex);
+    if (it == rulers_.constEnd()) return marks;
+    const auto [advance, inset] = *it;
+    const int labelW = QFontMetrics(typeFont()).horizontalAdvance(QStringLiteral("0000"));
+    int lastEnd = -labelW;
+    for (int pos = 1; inset + (pos - 1) * advance < width; pos = pos == 1 ? 10 : pos + 10) {
+        const int x = inset + (pos - 1) * advance;
+        if (x < lastEnd) continue;                 // no room since the last label
+        marks.append({pos, x});
+        lastEnd = x + QFontMetrics(typeFont()).horizontalAdvance(QString::number(pos)) + advance;
+    }
+    return marks;
+}
+
 void TypedHeaderView::setShowTypes(bool on) {
     if (on == show_) return;
     show_ = on;
@@ -58,9 +80,23 @@ void TypedHeaderView::paintSection(QPainter* p, const QRect& rect, int logicalIn
     p->save();
     p->setFont(tf);
     p->setPen(opt.palette.color(QPalette::PlaceholderText));
-    const Qt::Alignment h = opt.textAlignment & Qt::AlignHorizontal_Mask;
-    p->drawText(typeRect, int(h | Qt::AlignVCenter),
-                tfm.elidedText(type, Qt::ElideRight, typeRect.width()));
+    if (rulers_.contains(logicalIndex)) {
+        // Positions over the characters: a tick and the number after it.
+        p->setClipRect(rect);
+        QFont rf = tf;
+        rf.setItalic(false);
+        p->setFont(rf);
+        for (const auto& [pos, x] : rulerMarks(logicalIndex, rect.width())) {
+            const int left = rect.left() + x;
+            p->drawLine(left, typeRect.top() + 2, left, typeRect.bottom());
+            p->drawText(QRect(left + 2, typeRect.top(), 60, typeH), Qt::AlignLeft | Qt::AlignVCenter,
+                        QString::number(pos));
+        }
+    } else {
+        const Qt::Alignment h = opt.textAlignment & Qt::AlignHorizontal_Mask;
+        p->drawText(typeRect, int(h | Qt::AlignVCenter),
+                    tfm.elidedText(type, Qt::ElideRight, typeRect.width()));
+    }
     p->restore();
     paintSortMark(p, rect, logicalIndex);
 }

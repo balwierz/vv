@@ -6,7 +6,10 @@
 // top-right corner (the model's SortMarkRole).
 #pragma once
 
+#include <QHash>
 #include <QHeaderView>
+#include <QList>
+#include <QPair>
 
 class TypedHeaderView : public QHeaderView {
 public:
@@ -18,6 +21,13 @@ public:
     bool showTypes() const { return show_; }
     // The type line's font: the header's, smaller and italic.
     QFont typeFont() const;
+    // Column `logicalIndex` holds one character per `advance` pixels from
+    // `inset` on (an alignment's sequence): its type line is a ruler of
+    // positions (1, 10, 20, …) instead. advance 0 removes it.
+    void setRuler(int logicalIndex, int advance, int inset);
+    // The positions the ruler draws for a section `width` pixels wide, and
+    // where (x from the section's left edge).
+    QList<QPair<int, int>> rulerMarks(int logicalIndex, int width) const;
 
 protected:
     void  paintSection(QPainter* p, const QRect& rect, int logicalIndex) const override;
@@ -25,6 +35,7 @@ protected:
 
 private:
     QString typeOf(int logicalIndex) const;
+    QHash<int, QPair<int, int>> rulers_;   // logical index → (advance, inset)
     void    paintSortMark(QPainter* p, const QRect& rect, int logicalIndex) const;
     bool show_ = true;
 };

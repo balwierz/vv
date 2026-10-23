@@ -1037,6 +1037,25 @@ private:
     void applySequenceDelegates(ArrowTableModel* m, QTableView* v, int fileId) {
         const OpenFile* f = fileById(fileId);
         if (!f) return;
+        // A multiple alignment: its aligned sequences coloured by the tab's
+        // alphabet, the annotation rows (no length) plain, a ruler of
+        // positions in the header.
+        if (const std::string& alphabet = m->tabTraits().alphabet; !alphabet.empty()) {
+            int lengthCol = -1, seqCol = -1;
+            for (int c = 0; c < m->columnCount(); ++c) {
+                const QString name = m->columnName(c);
+                if (name == QLatin1String("length")) lengthCol = c;
+                if (name == QLatin1String("sequence") || name == QLatin1String("text")) seqCol = c;
+            }
+            if (seqCol < 0) return;
+            auto* sd = new SequenceDelegate(alphabet == "protein" ? SequenceDelegate::Kind::Residues
+                                                                  : SequenceDelegate::Kind::Bases, v);
+            sd->setAlignment(lengthCol);
+            v->setItemDelegateForColumn(seqCol, sd);
+            if (auto* th = dynamic_cast<TypedHeaderView*>(v->horizontalHeader()))
+                th->setRuler(seqCol, SequenceDelegate::charAdvance(v), SequenceDelegate::inset(v));
+            return;
+        }
         const std::string& fmt = f->feat.format;
         const bool reads = fmt == "BAM / CRAM alignments" || fmt == "SAM alignments (text)" ||
                            fmt == "FASTA" || fmt == "FASTQ";
@@ -1082,10 +1101,14 @@ private:
                     [=, this] { view->setColumnHidden(section, true); refreshColumnsMenu(); });
             // Coloured bases / qualities can be turned off for the column.
             if (auto* sd = dynamic_cast<SequenceDelegate*>(view->itemDelegateForColumn(section))) {
-                QAction* plain = menu.addAction(sd->kind() == SequenceDelegate::Kind::Bases
-                                                    ? tr("Plain Bases") : tr("Plain Qualities"));
+                QAction* plain = menu.addAction(sd->kind() == SequenceDelegate::Kind::Bases      ? tr("Plain Bases")
+                                                : sd->kind() == SequenceDelegate::Kind::Residues ? tr("Plain Residues")
+                                                                                                 : tr("Plain Qualities"));
                 connect(plain, &QAction::triggered, this, [view, section] {
                     view->setItemDelegateForColumn(section, nullptr);
+                    // The ruler counts fixed-width characters: gone with them.
+                    if (auto* th = dynamic_cast<TypedHeaderView*>(view->horizontalHeader()))
+                        th->setRuler(section, 0, 0);
                     view->viewport()->update();
                 });
             }
@@ -4751,12 +4774,22 @@ public:
             const QString text = m->index(0, c).data(Qt::DisplayRole).toString().left(4);
             QStringList cols;
             for (QChar ch : text)
-                cols << (sd->kind() == SequenceDelegate::Kind::Bases
-                             ? SequenceDelegate::baseColor(ch, false).name()
-                             : SequenceDelegate::qualityColor(ch.unicode() - 33).name());
+                cols << (sd->kind() == SequenceDelegate::Kind::Bases      ? SequenceDelegate::baseColor(ch, false).name()
+                         : sd->kind() == SequenceDelegate::Kind::Residues ? SequenceDelegate::residueColor(ch, false).name()
+                                                                         : SequenceDelegate::qualityColor(ch.unicode() - 33).name());
             out << QStringLiteral("%1:%2[%3=%4]").arg(m->columnName(c),
-                       sd->kind() == SequenceDelegate::Kind::Bases ? QStringLiteral("bases") : QStringLiteral("qual"),
+                       sd->kind() == SequenceDelegate::Kind::Bases      ? QStringLiteral("bases")
+                       : sd->kind() == SequenceDelegate::Kind::Residues ? QStringLiteral("residues")
+                                                                       : QStringLiteral("qual"),
                        text, cols.join(QLatin1Char(',')));
+            // An alignment: its ruler's first positions, and the width it got.
+            if (auto* th = dynamic_cast<TypedHeaderView*>(v->horizontalHeader()); th && sd->isAlignment()) {
+                QStringList marks;
+                for (const auto& [pos, x] : th->rulerMarks(c, v->columnWidth(c)))
+                    if (marks.size() < 3) marks << QString::number(pos);
+                out << QStringLiteral("ruler=%1 chars=%2").arg(marks.join(QLatin1Char(',')))
+                           .arg(v->columnWidth(c) / SequenceDelegate::charAdvance(v));
+            }
         }
         return out.isEmpty() ? QStringLiteral("none") : out.join(QLatin1Char(' '));
     }

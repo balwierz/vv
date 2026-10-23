@@ -9,7 +9,7 @@
     <p>
       vv opens Parquet, Arrow/Feather, HDF5, Zarr and AnnData, NumPy .npz,
       R .rds / .RData, spreadsheets (xlsx/ods), SQLite, DuckDB, Cooler
-      Hi-C, POD5, GenBank / EMBL, and the common genomic table
+      Hi-C, POD5, GenBank / EMBL, multiple sequence alignments (Stockholm, Clustal, PHYLIP, NEXUS, MSF, A3M), and the common genomic table
       formats in a fast windowed viewer with sort, filter, regex search,
       per-column statistics, a row-detail panel, and multi-tab navigation
       of multi-sheet / multi-dataset files.

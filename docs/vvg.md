@@ -148,8 +148,15 @@ Command* goes the other way.
   record and a VCF's REF / ALT show in a fixed-width font with each base in
   its colour (A green, C blue, G orange, T red, N grey); a quality string
   (SAM `QUAL`, FASTQ `qual`) shows each character on a red-to-green
-  background by its Phred score. *Plain Bases* / *Plain Qualities* in the
-  header's menu turns it off for the column.
+  background by its Phred score. A multiple alignment (Stockholm, Clustal,
+  PHYLIP, NEXUS, MSF, A3M, aligned FASTA, UCSC MAF) colours its aligned
+  sequences the same way, a protein one by residue class (hydrophobic blue,
+  K / R red, D / E magenta, N / Q / S / T green, G orange, P yellow, C pink,
+  H / Y cyan), gaps grey and its annotation rows (`#=GC SS_cons`, Clustal's
+  conservation line) plain; the column's header shows a ruler of positions
+  (1, 10, 20, …) instead of its type, and it opens up to 120 characters
+  wide. *Plain Bases* / *Plain Residues* / *Plain Qualities* in the header's
+  menu turns it off for the column.
 - **Frozen columns** — right-click a header for *Freeze Columns up to
   Here*: the visible columns up to that one stay at the left edge while the
   rest scrolls (row names, an index, chromosome and position); *Unfreeze
@@ -231,6 +238,8 @@ keep their limits.
 
 ![vvg: a JSON document as a tree](img/vvg/json-tree.png)
 
+![vvg: a Stockholm protein family, residues coloured by class](img/vvg/msa.png)
+
 ## KDE Plasma
 
 The `vv-gui` package also integrates with Dolphin:
@@ -249,7 +258,9 @@ The `vv-gui` package also integrates with Dolphin:
   file inside an archive);
 - MIME types for the genomic formats, so `.vcf` is not taken for a vCard,
   `.bam` for an archive nor `.gb` for a Game Boy ROM; also Cooler, Zarr zip,
-  wiggle, BLAST tabular, GenBank / EMBL, POD5, DuckDB and R data.
+  wiggle, BLAST tabular, GenBank / EMBL, multiple sequence alignments
+  (Stockholm, Clustal, PHYLIP, NEXUS, MSF, A2M / A3M, aligned FASTA), POD5,
+  DuckDB and R data.
 
 ![Dolphin thumbnails: Parquet, VCF, AnnData, BAM](img/vvg/kde-thumbnails.png)
 
@@ -258,7 +269,7 @@ over the network, and a FASTA's first record can be a whole chromosome. Nor do
 DuckDB files (opening one takes a lock that would block a writer while it is
 indexed) or compressed GenBank / EMBL. Formats read whole at open get a
 thumbnail only up to a size limit: xlsx 16 MB, ods 8 MB, npz 256 MB, R data
-32 MB, GenBank / EMBL 96 MB.
+32 MB, GenBank / EMBL 96 MB, alignments 64 MB.
 
 ## Install
 

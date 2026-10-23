@@ -41,6 +41,13 @@
         "application/x-compressed-blast-tabular": { "Version": "1.0" },
         "text/x-genbank": { "Version": "1.0" },
         "text/x-embl": { "Version": "1.0" },
+        "text/x-stockholm": { "Version": "1.0" },
+        "text/x-clustal": { "Version": "1.0" },
+        "text/x-phylip": { "Version": "1.0" },
+        "text/x-nexus": { "Version": "1.0" },
+        "text/x-msf": { "Version": "1.0" },
+        "text/x-a3m": { "Version": "1.0" },
+        "text/x-aligned-fasta": { "Version": "1.0" },
         "application/x-pod5": { "Version": "1.0" },
         "application/x-r-data": { "Version": "1.0" },
         "application/rdata": { "Version": "1.0" }

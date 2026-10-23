@@ -41,6 +41,13 @@
             "application/x-compressed-blast-tabular",
             "text/x-genbank",
             "text/x-embl",
+            "text/x-stockholm",
+            "text/x-clustal",
+            "text/x-phylip",
+            "text/x-nexus",
+            "text/x-msf",
+            "text/x-a3m",
+            "text/x-aligned-fasta",
             "application/x-pod5",
             "application/x-r-data",
             "application/rdata"

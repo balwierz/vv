@@ -363,6 +363,72 @@
     <glob pattern="*.genbank.gz"/>
     <icon name="vv"/>
   </mime-type>
+  <mime-type type="text/x-stockholm">
+    <comment>Stockholm multiple sequence alignment</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.sto"/>
+    <glob pattern="*.stk"/>
+    <glob pattern="*.stockholm"/>
+    <magic priority="60">
+      <match type="string" value="# STOCKHOLM" offset="0"/>
+    </magic>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="text/x-clustal">
+    <comment>Clustal multiple sequence alignment</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.aln"/>
+    <glob pattern="*.clustal"/>
+    <glob pattern="*.clw"/>
+    <glob pattern="*.clustalw"/>
+    <magic priority="60">
+      <match type="string" value="CLUSTAL" offset="0"/>
+    </magic>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="text/x-phylip">
+    <comment>PHYLIP multiple sequence alignment</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.phy"/>
+    <glob pattern="*.phylip"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="text/x-nexus">
+    <comment>NEXUS multiple sequence alignment</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.nex"/>
+    <glob pattern="*.nxs"/>
+    <glob pattern="*.nexus"/>
+    <magic priority="60">
+      <match type="string" value="#NEXUS" offset="0"/>
+    </magic>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="text/x-msf">
+    <comment>GCG MSF multiple sequence alignment</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.msf"/>
+    <magic priority="60">
+      <match type="string" value="!!AA_MULTIPLE_ALIGNMENT" offset="0"/>
+      <match type="string" value="!!NA_MULTIPLE_ALIGNMENT" offset="0"/>
+      <match type="string" value="PileUp" offset="0"/>
+    </magic>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="text/x-a3m">
+    <comment>A2M / A3M multiple sequence alignment</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.a2m"/>
+    <glob pattern="*.a3m"/>
+    <icon name="vv"/>
+  </mime-type>
+  <mime-type type="text/x-aligned-fasta">
+    <comment>Aligned FASTA multiple sequence alignment</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.afa"/>
+    <glob pattern="*.afasta"/>
+    <icon name="vv"/>
+  </mime-type>
   <mime-type type="text/x-embl">
     <comment>EMBL sequence record</comment>
     <sub-class-of type="text/plain"/>

@@ -69,6 +69,13 @@ public:
             // a writer while Baloo indexes).
             QStringLiteral("text/x-genbank"),
             QStringLiteral("text/x-embl"),
+            QStringLiteral("text/x-stockholm"),
+            QStringLiteral("text/x-clustal"),
+            QStringLiteral("text/x-phylip"),
+            QStringLiteral("text/x-nexus"),
+            QStringLiteral("text/x-msf"),
+            QStringLiteral("text/x-a3m"),
+            QStringLiteral("text/x-aligned-fasta"),
             QStringLiteral("application/x-r-data"),
             QStringLiteral("application/rdata"),     // RKWard's name for .RData
         };

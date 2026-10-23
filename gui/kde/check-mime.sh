@@ -56,6 +56,7 @@ gzip -c "$f/signal.wig" > "$f/signal.wig.gz"
 printf 'q1\ts1\t98.5\t100\t1\t0\t1\t100\t1\t100\t1e-50\t180\n' > "$f/hits.m8"
 gzip -c "$f/hits.m8" > "$f/hits.m8.gz"
 cp "$data/tiny.gb" "$f/plasmid.gbff"
+cp "$data/tiny.sto" "$f/family.stk"      # *.stk is also audio/x-mod's: the magic decides
 gzip -c "$data/tiny.gb" > "$f/plasmid.gbff.gz"
 gzip -c "$data/tiny.embl" > "$f/tiny.embl.gz"
 printf 'xxxxxxxxDUCK\0\0\0\0' > "$f/warehouse.db"
@@ -106,6 +107,14 @@ expect=(
   "$f/plasmid.gbff"             text/x-genbank
   "$f/plasmid.gbff.gz"          application/x-compressed-genbank
   "$data/tiny.embl"             text/x-embl
+  "$data/tiny.sto"              text/x-stockholm
+  "$f/family.stk"               text/x-stockholm
+  "$data/tiny.aln"              text/x-clustal
+  "$data/tiny.phy"              text/x-phylip
+  "$data/tiny.nex"              text/x-nexus
+  "$data/tiny.msf"              text/x-msf
+  "$data/tiny.a3m"              text/x-a3m
+  "$data/tiny.afa"              text/x-aligned-fasta
   "$f/tiny.embl.gz"             application/x-compressed-embl
   "$data/tiny.pod5"             application/x-pod5
   "$data/tiny.rds"              application/x-r-data

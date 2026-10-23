@@ -75,12 +75,13 @@ void autosizeColumns(QTableView* view, ArrowTableModel* model) {
     mono.setPointSizeF(view->font().pointSizeF() > 0 ? view->font().pointSizeF() : mono.pointSizeF());
     const int cw = std::max(1, QFontMetrics(mono).horizontalAdvance(QLatin1Char('A')));
     for (int c = 0; c < model->columnCount() && c < (int)w.size(); ++c) {
-        if (dynamic_cast<SequenceDelegate*>(view->itemDelegateForColumn(c))) {
+        if (auto* sd = dynamic_cast<SequenceDelegate*>(view->itemDelegateForColumn(c))) {
             int longest = 0;
             const int rows = (int)std::min<int64_t>(model->loadedPrefixRows(), 2000);
             for (int r = 0; r < rows; ++r)
                 longest = std::max(longest, (int)model->data(model->index(r, c), Qt::DisplayRole).toString().size());
-            w[(size_t)c] = std::max(w[(size_t)c], std::min(longest, 50) * cw + 2 * cw);
+            // An alignment is read across its columns: room for more of it.
+            w[(size_t)c] = std::max(w[(size_t)c], std::min(longest, sd->isAlignment() ? 120 : 50) * cw + 2 * cw);
         }
         hh->resizeSection(c, w[(size_t)c]);
     }
