@@ -1300,6 +1300,11 @@ to be useful.
 .IP \(bu 2
 \fBscrolloff\fR \(en integer \(>= 0; TUI rows kept between the
 cursor and the viewport edge (config-only, no flag).
+.IP \(bu 2
+\fBreference\fR \(en a FASTA (with a \fB.fai\fR); repeatable. A CRAM
+whose recorded reference is missing, read without \fB\-f\fR, is decoded
+with the first one whose contig names and lengths match its header
+(noted on stderr).
 .IP
 Unknown keys are ignored, so a config written for a newer vv does
 not break an older one. Writes are atomic (\fI.tmp\fR + rename) and

@@ -991,6 +991,21 @@ else:
                catch_stdout=False)
     pysam.index(str(cram_path))
 
+    # tiny.noref.cram: tiny.cram with its @SQ UR pointing at a FASTA that does
+    # not exist — a CRAM whose reference has to be found (-f, the config's
+    # "reference =" lines, vvg's Choose Reference). Run with REF_PATH /
+    # REF_CACHE pointing nowhere so htslib cannot fetch it by MD5.
+    if have("samtools"):
+        hdr = pysam.view("-H", str(cram_path))
+        hdr_file = HERE / "tiny.noref.header.sam"
+        hdr_file.write_text(re.sub(r"UR:[^\t\n]*", "UR:/nonexistent/tiny.pileup.fa", hdr))
+        (HERE / "tiny.noref.cram").write_bytes(
+            subprocess.run(["samtools", "reheader", str(hdr_file), str(cram_path)],
+                           check=True, capture_output=True).stdout)
+        hdr_file.unlink()
+    else:
+        print("warn: samtools not found; keeping tiny.noref.cram", file=sys.stderr)
+
     # tiny.splice.bam: reads with a reference skip (CIGAR N, e.g. an RNA-seq
     # intron) and a deletion (CIGAR D), on both strands, so --pileup can be
     # checked byte-for-byte against `samtools mpileup`. Refskips must render as

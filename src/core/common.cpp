@@ -288,6 +288,7 @@ void load_user_config(Config& cfg) {
         strip_ws_inplace(key);
         strip_ws_inplace(val);
         if (key == "theme" && cfg.theme.empty()) cfg.theme = val;
+        else if (key == "reference" && !val.empty()) cfg.references.push_back(val);
         else if (key == "scrolloff") {
             // Rows kept between the cell cursor and the viewport edge.
             // Clamped again at use against the window height.

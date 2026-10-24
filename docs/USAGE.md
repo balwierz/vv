@@ -561,8 +561,11 @@ Supported sources:
 * **BAM / CRAM**: requires an index (`.bai` / `.csi` / `.crai`) from
   `samtools index`. vv uses htslib's multi-region iterator, so several
   comma-separated windows are walked in one pass. CRAM decoding needs
-  a reference: pass `-f ref.fa`, or let htslib fall back to `$REF_PATH` /
-  `$REF_CACHE`;
+  the reference the file was written against: the path its header records,
+  or `-f ref.fa`, or a `reference =` FASTA of the config file whose contigs
+  match the CRAM's (names and lengths; see [the config file](#user-config-file-configvvconfig)), or
+  htslib's `$REF_PATH` / `$REF_CACHE`. Without one vv says which reference
+  the file recorded;
 * **tabix-indexed text**: `.vcf.gz`, `.bed.gz`, `.gff.gz`, `.tsv.gz`
   (requires a `.tbi`);
 * **unindexed text** — BED and its peak / signal variants, VCF, GFF / GTF,
@@ -1405,6 +1408,8 @@ background = light      # what VV_BACKGROUND=light sets, permanently
 max_col_width = 48      # like -w
 threads = 4             # like -@
 scrolloff = 5           # TUI: rows kept between cursor and edge
+reference = /data/ref/hg38.fa   # for a CRAM whose own reference is missing
+reference = /data/ref/mm39.fa   # (repeatable; the one whose contigs match)
 ```
 
 Recognised keys:
@@ -1416,6 +1421,7 @@ Recognised keys:
 | `max_col_width` | integer ≥ 4                                   | `-w`               |
 | `threads`       | integer ≥ 1                                   | `-@`               |
 | `scrolloff`     | integer ≥ 0                                   | (config only)      |
+| `reference`     | a FASTA with a `.fai`; repeatable             | `-f` (for a CRAM whose recorded reference is missing, the first whose contig names and lengths match; noted on stderr) |
 
 The command line always wins over the config file, and the
 `VV_BACKGROUND` environment variable wins over the `background` key.

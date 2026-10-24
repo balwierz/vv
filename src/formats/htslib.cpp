@@ -558,9 +558,16 @@ public:
     }
 };
 
-std::string open_bam_source(const std::string& path, const Config& cfg, std::unique_ptr<TabularSource>* out) {
+// The CRAM reference a run uses, and the error when there is none (below).
+static Config with_reference(const std::string& path, const Config& cfg);
+static std::string missing_reference_error(const std::string& path, const Config& cfg);
+
+std::string open_bam_source(const std::string& path, const Config& cfg_in, std::unique_ptr<TabularSource>* out) {
+    const Config cfg = with_reference(path, cfg_in);
     std::unique_ptr<BamSource> s;
     std::string e = BamSource::open(path, cfg, &s);
+    if (!e.empty() && e.rfind("Error reading", 0) == 0)
+        if (std::string m = missing_reference_error(path, cfg); !m.empty()) e = m;
     if (e.empty()) *out = std::move(s);
     return e;
 }
@@ -879,6 +886,9 @@ public:
         if (!self->fp_) return "Cannot open '" + path + "'";
         int n = effective_threads(cfg);
         if (n > 1) hts_set_threads(self->fp_, n);
+        // A CRAM's reads decode against -f too (before the header read).
+        if (!cfg.pileup_ref.empty() && fends_ci(path, ".cram"))
+            (void)hts_set_fai_filename(self->fp_, cfg.pileup_ref.c_str());
 
         self->hdr_ = sam_hdr_read(self->fp_);
         if (!self->hdr_)
@@ -1017,9 +1027,12 @@ public:
     }
 };
 
-std::string open_bam_pileup_source(const std::string& path, const Config& cfg, std::unique_ptr<TabularSource>* out) {
+std::string open_bam_pileup_source(const std::string& path, const Config& cfg_in, std::unique_ptr<TabularSource>* out) {
+    const Config cfg = with_reference(path, cfg_in);
     std::unique_ptr<BamPileupSource> s;
     std::string e = BamPileupSource::open(path, cfg, &s);
+    if (!e.empty())
+        if (std::string m = missing_reference_error(path, cfg); !m.empty()) e = m;
     if (e.empty()) *out = std::move(s);
     return e;
 }
@@ -2136,6 +2149,146 @@ genomic_header_fields(const GenomicHeader& h) {
     if (!h.samples.empty())    f.emplace_back("Samples", abbreviate(h.samples, 3));
     if (!h.programs.empty())   f.emplace_back("Programs", abbreviate(h.programs, 4));
     return f;
+}
+
+// The header's reference sequences (names, lengths), or false.
+static bool header_contigs(const std::string& path, std::vector<std::pair<std::string, int64_t>>* out,
+                           std::string* ur = nullptr, std::string* m5 = nullptr) {
+    htsFile* fp = hts_open(path.c_str(), "r");
+    if (!fp) return false;
+    sam_hdr_t* h = sam_hdr_read(fp);
+    if (!h) { hts_close(fp); return false; }
+    for (int i = 0; i < sam_hdr_nref(h); ++i)
+        out->emplace_back(sam_hdr_tid2name(h, i), (int64_t)sam_hdr_tid2len(h, i));
+    kstring_t ks = KS_INITIALIZE;
+    if (ur && sam_hdr_find_tag_pos(h, "SQ", 0, "UR", &ks) == 0) *ur = std::string(ks.s, ks.l);
+    if (m5 && sam_hdr_find_tag_pos(h, "SQ", 0, "M5", &ks) == 0) *m5 = std::string(ks.s, ks.l);
+    ks_free(&ks);
+    sam_hdr_destroy(h);
+    hts_close(fp);
+    return true;
+}
+
+// A path pattern of $REF_PATH / $REF_CACHE expanded for `md5` the way htslib
+// does: %Ns takes the next N characters, %s the rest; no % appends "/md5".
+static std::string expand_ref_pattern(const std::string& pat, const std::string& md5) {
+    std::string out;
+    size_t used = 0;
+    bool any = false;
+    for (size_t i = 0; i < pat.size(); ++i) {
+        if (pat[i] != '%') { out += pat[i]; continue; }
+        size_t j = i + 1, n = 0;
+        while (j < pat.size() && std::isdigit((unsigned char)pat[j])) n = n * 10 + (size_t)(pat[j++] - '0');
+        if (j < pat.size() && pat[j] == 's') {
+            out += n ? md5.substr(std::min(used, md5.size()), n) : md5.substr(std::min(used, md5.size()));
+            used += n ? n : md5.size();
+            any = true;
+            i = j;
+        } else {
+            out += pat[i];
+        }
+    }
+    return any ? out : out + "/" + md5;
+}
+
+// The sequence of MD5 `md5` is in a local htslib reference cache.
+static bool md5_cached(const std::string& md5) {
+    if (md5.empty()) return false;
+    std::vector<std::string> pats;
+    if (const char* c = std::getenv("REF_CACHE"); c && *c) pats.emplace_back(c);
+    else if (const char* home = std::getenv("HOME"); home && *home)
+        pats.push_back(std::string(home) + "/.cache/hts-ref/%2s/%2s/%s");
+    if (const char* p = std::getenv("REF_PATH"); p && *p) {
+        std::string all(p);
+        // Entries are ':'-separated; a URL ("http:") is not local.
+        for (size_t a = 0; a <= all.size();) {
+            size_t b = all.find(':', a);
+            if (b == std::string::npos) b = all.size();
+            std::string e = all.substr(a, b - a);
+            if (b < all.size() && (e == "http" || e == "https" || e == "ftp")) {
+                size_t c = all.find(':', b + 3);   // skip the URL's own "://"
+                b = c == std::string::npos ? all.size() : c;
+            } else if (!e.empty()) {
+                pats.push_back(e);
+            }
+            a = b + 1;
+        }
+    }
+    std::error_code ec;
+    for (const std::string& pat : pats)
+        if (std::filesystem::exists(expand_ref_pattern(pat, md5), ec)) return true;
+    return false;
+}
+
+CramReference cram_reference_status(const std::string& path) {
+    CramReference r;
+    if (!fends_ci(path, ".cram") || is_remote_url(path)) return r;
+    r.cram = true;
+    std::vector<std::pair<std::string, int64_t>> contigs;
+    std::string m5;
+    if (!header_contigs(path, &contigs, &r.recorded, &m5) || contigs.empty()) return r;
+    if (r.recorded.rfind("file://", 0) == 0) r.recorded.erase(0, 7);
+    std::error_code ec;
+    const bool there = !r.recorded.empty() && !is_remote_url(r.recorded) &&
+                       std::filesystem::exists(r.recorded, ec);
+    r.needed = !there && !md5_cached(m5);
+    return r;
+}
+
+bool reference_matches(const std::string& alignment, const std::string& fasta, std::string* why) {
+    auto fail = [&](std::string w) { if (why) *why = std::move(w); return false; };
+    std::vector<std::pair<std::string, int64_t>> contigs;
+    if (!header_contigs(alignment, &contigs)) return fail("cannot read the header of '" + alignment + "'");
+    std::ifstream fai(fasta + ".fai");
+    if (!fai) return fail("'" + fasta + "' has no .fai index");
+    std::unordered_map<std::string, int64_t> len;
+    for (std::string line; std::getline(fai, line);) {
+        const size_t t1 = line.find('\t');
+        if (t1 == std::string::npos) continue;
+        len[line.substr(0, t1)] = std::atoll(line.c_str() + t1 + 1);
+    }
+    for (const auto& [name, n] : contigs) {
+        auto it = len.find(name);
+        if (it == len.end()) return fail(name + " is not in '" + fasta + "'");
+        if (it->second != n)
+            return fail(name + " is " + digits_with_sep(std::to_string(it->second)) + " long in '" + fasta +
+                        "', " + digits_with_sep(std::to_string(n)) + " in the file");
+    }
+    if (why) why->clear();
+    return true;
+}
+
+std::string choose_reference(const std::string& alignment, const std::vector<std::string>& candidates) {
+    for (const std::string& c : candidates)
+        if (reference_matches(alignment, c)) return c;
+    return "";
+}
+
+// The reference a run decodes `path` with: -f, else for a CRAM whose own is
+// not found a "reference =" FASTA of the config whose contigs match (said
+// on stderr), else none.
+static Config with_reference(const std::string& path, const Config& cfg) {
+    Config c = cfg;
+    if (!c.pileup_ref.empty() || c.references.empty()) return c;
+    if (!cram_reference_status(path).needed) return c;
+    if (std::string ref = choose_reference(path, c.references); !ref.empty()) {
+        std::vector<std::pair<std::string, int64_t>> contigs;
+        header_contigs(path, &contigs);
+        std::fprintf(stderr, "vv: reference %s (its %zu contigs match %s)\n", ref.c_str(), contigs.size(),
+                     display_basename(path).c_str());
+        c.pileup_ref = ref;
+    }
+    return c;
+}
+
+// The error for a CRAM whose reads failed to decode for want of a reference.
+static std::string missing_reference_error(const std::string& path, const Config& cfg) {
+    if (!cfg.pileup_ref.empty()) return "";
+    const CramReference r = cram_reference_status(path);
+    if (!r.needed) return "";
+    return "the reads cannot be decoded without the reference FASTA the file was written "
+           "against (recorded: " + (r.recorded.empty() ? std::string("none") : r.recorded + ", not found") +
+           "); give it with -f/--fasta or a \"reference =\" line in ~/.config/vv/config";
 }
 
 std::string index_suffix(const std::string& path) {

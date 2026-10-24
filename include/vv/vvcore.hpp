@@ -40,6 +40,8 @@ struct Config {
     std::string region;                  // -r: tabix region(s), e.g. "chr1:1000-2000"
     std::string index_path;              // --index: the input's index when it is not
                                          // beside it (.bai / .crai / .csi / .tbi)
+    std::vector<std::string> references; // "reference =" lines of the config file:
+                                         // FASTAs a CRAM without its own is matched to
     std::string regions_file;            // --regions-file BED: many windows from a BED
     std::string region_cols;             // --region-cols Chr,Start,End for generic Parquet
     int64_t     slop = 0;                // --slop N: pad each region by N bp
@@ -577,6 +579,25 @@ std::string index_suffix(const std::string& path);
 // complete) on `threads` threads, reading the whole file. "" or why it failed
 // (an unsorted file, a read error, a directory it cannot write).
 std::string build_index(const std::string& path, const std::string& out, int threads);
+
+// The reference a CRAM was written against: the path its first @SQ records
+// (UR, file:// stripped) and whether decoding its reads needs one given here
+// — that path is missing and the first contig's MD5 is in no local htslib
+// cache ($REF_CACHE, local $REF_PATH entries). `cram` is false for another
+// format (needed is then false too).
+struct CramReference {
+    bool        cram = false;
+    bool        needed = false;
+    std::string recorded;
+};
+CramReference cram_reference_status(const std::string& path);
+// `fasta` holds every reference sequence the BAM / CRAM / SAM header of
+// `alignment` names, with the same length (by the FASTA's .fai; sequence
+// contents are not compared). False with `why` ("no .fai", the first
+// contig that differs) otherwise.
+bool reference_matches(const std::string& alignment, const std::string& fasta, std::string* why = nullptr);
+// The first of `candidates` that matches `alignment`, or "".
+std::string choose_reference(const std::string& alignment, const std::vector<std::string>& candidates);
 
 // The formats vv reads, one row per format (what `vv --formats` prints).
 struct FormatInfo {

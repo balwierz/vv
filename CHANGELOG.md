@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - UCSC MAF: a `.maf` starting with `##maf` (shown as text until now) is
   read forward as a row per `s` line — block, score, src, start, size,
   strand, srcSize, text; a mutation annotation `.maf` stays a table.
+- A CRAM whose recorded reference is missing is decoded with a
+  `reference =` FASTA of `~/.config/vv/config` whose contig names and
+  lengths match (repeatable); without one, the error names the recorded
+  reference and suggests `-f`. `--pileup` on a CRAM decodes with `-f` too.
 - `--index FILE`: the index of a BAM, CRAM or BCF kept elsewhere than
   beside the file (a read-only directory), for `-r` and `--contigs`.
 - vvg: Build Index by the Region box of a BAM, CRAM or BCF without an index

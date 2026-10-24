@@ -4634,6 +4634,31 @@ if [ -f "$DATA/tiny.cram" ] && [ -f "$DATA/tiny.pileup.fa" ]; then
         -r chr1:99-100 "$TMP/noidx/tiny.cram" | cut -f1 | tr '\n' ' ')
     assert_eq_file_inline "cram_region_index_elsewhere" "$CRAM_IX" "r1 r2 "
 fi
+# A CRAM whose recorded reference is missing (tiny.noref.cram: UR points at
+# /nonexistent). REF_PATH / REF_CACHE point nowhere, so htslib cannot fetch
+# it by MD5. Without a reference: an error that names the recorded path; -f
+# decodes; a "reference =" line of the config whose contigs match is used
+# (a non-matching one before it is skipped); the reads and pileup decode.
+if [ -f "$DATA/tiny.noref.cram" ] && [ -f "$DATA/tiny.pileup.fa" ]; then
+    NOREF="REF_PATH=$TMP/noref-none REF_CACHE=$TMP/noref-none"
+    NR_ERR=$(env $NOREF "$VV" --count "$DATA/tiny.noref.cram" 2>&1 >/dev/null | grep '^vv:')
+    assert_contains "cram_noref_error" "$NR_ERR" \
+        "the reads cannot be decoded without the reference FASTA the file was written against (recorded: /nonexistent/tiny.pileup.fa, not found)"
+    assert_exit_code "cram_noref_exit" 1 env $NOREF "$VV" --count "$DATA/tiny.noref.cram"
+    assert_eq_file_inline "cram_noref_with_f" \
+        "$(env $NOREF "$VV" --count -f "$DATA/tiny.pileup.fa" "$DATA/tiny.noref.cram" 2>/dev/null)" "3"
+    mkdir -p "$TMP/refcfg/vv"
+    printf 'reference = %s\nreference = %s\n' "$DATA/tiny.fa" "$DATA/tiny.pileup.fa" > "$TMP/refcfg/vv/config"
+    NR_OUT=$(env $NOREF XDG_CONFIG_HOME="$TMP/refcfg" "$VV" --count "$DATA/tiny.noref.cram" 2>"$TMP/refcfg.err")
+    assert_eq_file_inline "cram_config_reference_rows" "$NR_OUT" "3"
+    assert_contains "cram_config_reference_note" "$(cat "$TMP/refcfg.err")" "tiny.pileup.fa (its 2 contigs match tiny.noref.cram)"
+    assert_eq_file_inline "cram_config_reference_pileup" \
+        "$(env $NOREF XDG_CONFIG_HOME="$TMP/refcfg" "$VV" --pileup --tsv --no-header -n 1 "$DATA/tiny.noref.cram" 2>/dev/null)" \
+        "$(printf 'chr1\t100\tT\t2\t^].^],\tII')"
+    # -f wins over the config.
+    assert_eq_file_inline "cram_config_reference_f_wins" \
+        "$(env $NOREF XDG_CONFIG_HOME="$TMP/refcfg" "$VV" --count -f "$DATA/tiny.pileup.fa" "$DATA/tiny.noref.cram" 2>&1)" "3"
+fi
 
 # ── --tags: BAM/CRAM/SAM aux tags as typed columns ─────────────────────────────
 # tiny.bam carries NM:i / AS:i / BC:Z on every read and Xf:f on r1/r3 only.
