@@ -66,6 +66,7 @@
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QProgressBar>
+#include <QProgressDialog>
 #include <QPointer>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -233,6 +234,16 @@ public:
             if (const OpenFile* f = activeFile()) ignoreChange(f->id);
         });
         connect(contextBar_, &ContextBar::loadMoreRequested, this, [this] { loadMoreRows(); });
+        connect(contextBar_, &ContextBar::chooseReferenceRequested, this, [this] {
+            if (const OpenFile* f = activeFile()) chooseReference(f->id);
+        });
+        connect(contextBar_, &ContextBar::clearReferenceRequested, this, [this] {
+            if (const OpenFile* f = activeFile()) {
+                FileOptions o = f->opts;
+                o.reference.clear();
+                reopenFile(f->id, o);
+            }
+        });
         connect(contextBar_, &ContextBar::buildIndexRequested, this, [this] {
             if (const OpenFile* f = activeFile()) buildIndex(f->id);
         });
@@ -276,6 +287,9 @@ public:
             passBytes_ = st.value(QStringLiteral("limits/passBytes"),
                                   (qlonglong)ArrowTableModel::kDefaultPassBytes).toLongLong();
             statsAutoRows_ = passRows_;
+            knownRefs_ = st.value(QStringLiteral("references/known")).toStringList();
+            if (const char* e = std::getenv("VVG_KNOWN_REFS"); e && *e)   // self-test
+                knownRefs_ = QString::fromLocal8Bit(e).split(QLatin1Char(','), Qt::SkipEmptyParts);
             for (const char* kind : {"recent", "saved"}) {
                 QSettings& rs = st;
                 rs.beginGroup(QStringLiteral("filters/%1").arg(QLatin1String(kind)));
@@ -336,7 +350,23 @@ public:
             OpenFile f{nextFileId_++, p, newFileOptions_, false};
             f.opts.index = knownIndex(p).toStdString();
             f.feat = file_features(p.toStdString(), f.opts.index);
+            autoReference(f);
             LoadResult r = loadFile(f.path, f.opts);
+            // A CRAM whose reads need a reference no remembered FASTA matches:
+            // ask for it, then open again.
+            if (r.sources.empty() && f.cramRef.needed && f.opts.reference.empty() && !quiet && !headless_) {
+                const QString recorded = QString::fromStdString(f.cramRef.recorded);
+                const auto answer = QMessageBox::question(this, tr("Reference Needed"),
+                    tr("The reads of %1 cannot be decoded without the reference FASTA the file was "
+                       "written against%2.").arg(QFileInfo(p).fileName(),
+                       recorded.isEmpty() ? QString() : tr(" (it records %1, which is not there)").arg(recorded)),
+                    QMessageBox::Open | QMessageBox::Cancel, QMessageBox::Open);
+                if (answer == QMessageBox::Open)
+                    if (const QString ref = pickReference(p); !ref.isEmpty()) {
+                        f.opts.reference = ref.toStdString();
+                        r = loadFile(f.path, f.opts);
+                    }
+            }
             errors << r.errors;
             if (r.sources.empty()) continue;
             files_.push_back(f);
@@ -630,6 +660,7 @@ private:
         FileOptions opts;
         bool        jsonTree = false;     // a JSON tree tab: nothing to re-open
         FileFeatures feat;                // which format options it offers
+        CramReference cramRef;            // a CRAM: its recorded reference, found or not
     };
 
     void onCurrentTab(int i) {
@@ -2008,6 +2039,7 @@ public:
             OpenFile f{nextFileId_++, c.path, c.opts, false};
             f.opts.index = knownIndex(c.path).toStdString();
             f.feat = file_features(c.path.toStdString(), f.opts.index);
+            autoReference(f);
             files_.push_back(f);
             id = f.id;
             stampFile(id);
@@ -2145,6 +2177,126 @@ private:
         syncFileControls();
     }
 
+    // ── A CRAM's reference ──────────────────────────────────────────────
+    // The FASTAs a CRAM is matched to: those chosen before (references/
+    // known), then the "reference =" lines of vv's config file.
+    std::vector<std::string> referenceCandidates() const {
+        std::vector<std::string> c;
+        for (const QString& r : knownRefs_) c.push_back(r.toStdString());
+        for (const std::string& r : config_references())
+            if (std::find(c.begin(), c.end(), r) == c.end()) c.push_back(r);
+        return c;
+    }
+    // On open: a CRAM's recorded reference, and, when that is missing, a
+    // remembered FASTA whose contig names and lengths match.
+    void autoReference(OpenFile& f) {
+        f.cramRef = cram_reference_status(f.path.toStdString());
+        if (!f.cramRef.needed || !f.opts.reference.empty()) return;
+        const std::string ref = choose_reference(f.path.toStdString(), referenceCandidates());
+        if (ref.empty()) return;
+        f.opts.reference = ref;
+        statusBar()->showMessage(tr("Reference %1: its contigs match %2")
+                                     .arg(QFileInfo(QString::fromStdString(ref)).fileName(), QFileInfo(f.path).fileName()),
+                                 8000);
+    }
+    // Wait for `future` with a busy dialog saying `what` (fai_build3 cannot be
+    // stopped part-way, so there is no Cancel).
+    QString waitBusy(QFuture<QString> future, const QString& what) {
+        QFutureWatcher<QString> w;
+        QEventLoop loop;
+        connect(&w, &QFutureWatcher<QString>::finished, &loop, &QEventLoop::quit);
+        w.setFuture(future);
+        std::unique_ptr<QProgressDialog> busy;
+        if (!headless_) {
+            busy = std::make_unique<QProgressDialog>(what, QString(), 0, 0, this);
+            busy->setWindowModality(Qt::WindowModal);
+            busy->setMinimumDuration(300);
+        }
+        if (!w.isFinished()) loop.exec();
+        return future.result();
+    }
+    // A FASTA htslib can use as a reference: it needs a .fai beside it. One
+    // is built beside the FASTA, or, when its directory is read-only, beside
+    // a link to it in vvg's cache (htslib looks for "<path>.fai"; it does not
+    // take an index kept elsewhere for a CRAM's reference). "" and `err`
+    // when that fails.
+    QString usableReference(const QString& fasta, QString* err) {
+        if (QFileInfo::exists(fasta + QStringLiteral(".fai"))) return fasta;
+        const QString name = QFileInfo(fasta).fileName();
+        QString target = fasta;
+        if (!QFileInfo(QFileInfo(fasta).absolutePath()).isWritable()) {
+            const QString abs = QFileInfo(fasta).absoluteFilePath();
+            const QString dir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) +
+                                QStringLiteral("/ref/") +
+                                QString::fromLatin1(QCryptographicHash::hash(abs.toUtf8(), QCryptographicHash::Sha1)
+                                                        .toHex().left(16));
+            target = dir + QLatin1Char('/') + name;
+            if (QFileInfo::exists(target + QStringLiteral(".fai"))) return target;
+            QDir().mkpath(dir);
+            std::error_code ec;
+            std::filesystem::remove(target.toStdString(), ec);
+            std::filesystem::create_symlink(abs.toStdString(), target.toStdString(), ec);
+            if (ec) {
+                *err = tr("%1 has no .fai index and its folder is read-only (%2); index it with samtools faidx")
+                           .arg(name, QString::fromStdString(ec.message()));
+                return {};
+            }
+        }
+        const std::string t = target.toStdString(), src = fasta.toStdString();
+        const bool gz = name.endsWith(QStringLiteral(".gz"), Qt::CaseInsensitive);
+        const QString e = waitBusy(QtConcurrent::run([src, t, gz] {
+            return QString::fromStdString(build_fasta_index(t, t + ".fai", gz ? t + ".gzi" : std::string()));
+        }), tr("Indexing %1 (it reads the whole file)\u2026").arg(name));
+        if (!e.isEmpty()) { *err = e; return {}; }
+        return target;
+    }
+    // Ask for the reference FASTA of `alignment` (or take `preset`), make it
+    // usable, check its contigs against the file's (a mismatch is asked
+    // about, `askMismatch` false: used anyway) and remember it. "" when
+    // nothing was chosen or it cannot be used.
+    QString pickReference(const QString& alignment, const QString& preset = {}, bool askMismatch = true) {
+        QString fasta = preset;
+        if (fasta.isEmpty()) {
+            QStringList globs;
+            for (const FormatInfo& fi : format_table())
+                if (QString::fromUtf8(fi.name) == QLatin1String("FASTA"))
+                    for (const std::string& g : format_globs(fi)) globs << QString::fromStdString(g);
+            fasta = QFileDialog::getOpenFileName(this, tr("Reference FASTA for %1").arg(QFileInfo(alignment).fileName()),
+                                                 lastDir_, tr("FASTA (%1);;All files (*)").arg(globs.join(QLatin1Char(' '))));
+            if (fasta.isEmpty()) return {};
+        }
+        QString err;
+        const QString ref = usableReference(fasta, &err);
+        if (ref.isEmpty()) {
+            if (headless_) std::fprintf(stderr, "vvg: %s\n", err.toLocal8Bit().constData());
+            else QMessageBox::warning(this, tr("Reference"), err);
+            return {};
+        }
+        std::string why;
+        if (!reference_matches(alignment.toStdString(), ref.toStdString(), &why) && askMismatch) {
+            const auto a = QMessageBox::warning(this, tr("Reference Does Not Match"),
+                tr("%1 does not match %2: %3. Decoding with the wrong reference gives wrong bases.")
+                    .arg(QFileInfo(fasta).fileName(), QFileInfo(alignment).fileName(), QString::fromStdString(why)),
+                QMessageBox::Ignore | QMessageBox::Cancel, QMessageBox::Cancel);
+            if (a != QMessageBox::Ignore) return {};
+        }
+        knownRefs_.removeAll(ref);
+        knownRefs_.prepend(ref);
+        while (knownRefs_.size() > 20) knownRefs_.removeLast();
+        saveSetting(QStringLiteral("references/known"), knownRefs_);
+        return ref;
+    }
+    // Choose… in the strip: the file opens again with the chosen reference.
+    void chooseReference(int id, const QString& preset = {}) {
+        const OpenFile* f = fileById(id);
+        if (!f) return;
+        const QString ref = pickReference(f->path, preset, preset.isEmpty());
+        if (ref.isEmpty()) return;
+        FileOptions o = f->opts;
+        o.reference = ref.toStdString();
+        reopenFile(id, o);
+    }
+
     static QString partialText(const ArrowTableModel* m) {
         return tr("The first %1 rows (%2 in memory); the file goes on")
             .arg(QLocale().toString((qlonglong)m->rowCount()))
@@ -2176,6 +2328,13 @@ private:
         if (!f || f->jsonTree) { contextBar_->clearState(); return; }
         auto* m = activeModel();
         contextBar_->setState(f->feat, m ? m->tabTraits() : TabTraits{}, f->opts);
+        {
+            // A CRAM's reference, and a pileup's (its ref column).
+            const bool cram = f->cramRef.cram, pileupRef = f->feat.pileup && f->opts.pileup;
+            const QString ref = QString::fromStdString(f->opts.reference);
+            contextBar_->setReference(cram || pileupRef, ref,
+                                      cram && ref.isEmpty() && f->cramRef.needed ? tr("needed:") : QString());
+        }
         contextBar_->setIndexBuild(indexBuilds_.contains(f->id) ? ContextBar::IndexBuild::Building
                                    : f->feat.region == FileFeatures::Region::NeedsIndex &&
                                              !index_suffix(f->path.toStdString()).empty() &&
@@ -3352,6 +3511,7 @@ public:
         const FileOptions fo = f ? f->opts : FileOptions{};
         s.region  = QString::fromStdString(fo.region);
         s.index   = QString::fromStdString(fo.index);
+        s.reference = QString::fromStdString(fo.reference);
         s.ncbi    = fo.ncbi;
         s.slop    = (int)fo.slop;
         s.pileup  = fo.pileup;
@@ -3645,6 +3805,21 @@ public:
         QCoreApplication::processEvents();
         v->horizontalScrollBar()->setValue(value);
         return {v->horizontalScrollBar()->value(), v->horizontalScrollBar()->maximum()};
+    }
+    // Choose `fasta` as the active file's reference (no dialog; a mismatch
+    // is used anyway): the reference used, the first tab's rows, the strip.
+    QString referenceForTest(const QString& fasta) {
+        waitIdleForTest();
+        const OpenFile* f = activeFile();
+        if (!f) return QStringLiteral("none");
+        chooseReference(f->id, fasta);
+        waitIdleForTest();
+        f = activeFile();
+        auto* m = activeModel();
+        for (int g = 0; m && !m->isReady() && g < 2000000; ++g) QCoreApplication::processEvents();
+        return QStringLiteral("ref=%1 rows=%2 context=%3")
+            .arg(f ? QFileInfo(QString::fromStdString(f->opts.reference)).fileName() : QString())
+            .arg(m ? m->rowCount() : -1).arg(contextForTest());
     }
     // Build the active file's index (buildIndex), wait for it, then query
     // `region`: where the index went and the rows the region shows.
@@ -4428,6 +4603,7 @@ private:
     int                            passAsked_ = 0;     // questions asked (self-test)
     int                            passAnswer_ = -1;   // self-test: 1 yes, 0 no; -1 ask
     QHash<int, QFutureWatcher<QString>*> indexBuilds_;  // file id → its index build
+    QStringList                    knownRefs_;      // references/known: FASTAs chosen before
     QList<ClosedTab>               closedTabs_;             // newest last, 20 kept
     QAction*                       openAct_       = nullptr;   // toolbar + File
     QAction*                       openDirAct_    = nullptr;
@@ -5190,6 +5366,9 @@ int main(int argc, char** argv) {
         // Optional cancel check: VVG_CANCEL_TEST=<ms> (cancelForTest).
         if (const char* ct = std::getenv("VVG_CANCEL_TEST"); ct && *ct)
             std::printf("cancel %s\n", win.cancelForTest(std::atoi(ct)).toStdString().c_str());
+        // Optional reference check: VVG_REFERENCE=<fasta> (referenceForTest).
+        if (const char* rf = std::getenv("VVG_REFERENCE"); rf && *rf)
+            std::printf("reference %s\n", win.referenceForTest(QString::fromLocal8Bit(rf)).toStdString().c_str());
         // Optional index build check: VVG_BUILD_INDEX=<region> (buildIndexForTest).
         if (const char* bi = std::getenv("VVG_BUILD_INDEX"); bi && *bi)
             std::printf("index %s\n", win.buildIndexForTest(QString::fromLocal8Bit(bi)).toStdString().c_str());

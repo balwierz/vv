@@ -268,6 +268,12 @@ std::string type_label(const arrow::DataType& t) {
 // ── CLI args ─────────────────────────────────────────────────────────────────
 // (ColorMode + Config are defined in vv/vvcore.hpp, included near the top.)
 
+std::vector<std::string> config_references() {
+    Config c;
+    load_user_config(c);
+    return c.references;
+}
+
 // Out-of-line definition of load_user_config — declared further up
 // (near the other XDG-config helpers) but needs the full Config struct.
 void load_user_config(Config& cfg) {

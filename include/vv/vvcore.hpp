@@ -598,6 +598,11 @@ CramReference cram_reference_status(const std::string& path);
 bool reference_matches(const std::string& alignment, const std::string& fasta, std::string* why = nullptr);
 // The first of `candidates` that matches `alignment`, or "".
 std::string choose_reference(const std::string& alignment, const std::vector<std::string>& candidates);
+// The "reference =" lines of the user's config file (~/.config/vv/config).
+std::vector<std::string> config_references();
+// Write the .fai of `fasta` at `fai` (and, for a bgzip FASTA, its .gzi at
+// `gzi`), reading the whole file. "" or why it failed.
+std::string build_fasta_index(const std::string& fasta, const std::string& fai, const std::string& gzi);
 
 // The formats vv reads, one row per format (what `vv --formats` prints).
 struct FormatInfo {

@@ -2264,6 +2264,12 @@ std::string choose_reference(const std::string& alignment, const std::vector<std
     return "";
 }
 
+std::string build_fasta_index(const std::string& fasta, const std::string& fai, const std::string& gzi) {
+    if (fai_build3(fasta.c_str(), fai.c_str(), gzi.empty() ? nullptr : gzi.c_str()) != 0)
+        return "cannot index '" + fasta + "' (a FASTA, plain or bgzip-compressed?)";
+    return "";
+}
+
 // The reference a run decodes `path` with: -f, else for a CRAM whose own is
 // not found a "reference =" FASTA of the config whose contigs match (said
 // on stderr), else none.

@@ -588,6 +588,23 @@ jobs:
           XDG_CACHE_HOME="$RUNNER_TEMP/ixcache" VVG_WINTEST=1 VVG_CONTEXT=1 ./build-gui/gui/vvg "$RUNNER_TEMP/ix-1-tiny.bam/tiny.bam" \
             | grep -qx 'context: region pileup tags contigs'
           chmod -R u+w "$RUNNER_TEMP"/ix-1-*
+          # A CRAM whose recorded reference is missing (REF_PATH / REF_CACHE
+          # point nowhere, so htslib cannot fetch it by MD5): it does not open
+          # unattended; a remembered FASTA whose contigs match is picked (one
+          # that does not match is skipped); a chosen FASTA without a .fai in
+          # a read-only folder is indexed beside a link in vvg's cache.
+          noref() { env REF_PATH="$RUNNER_TEMP/none" REF_CACHE="$RUNNER_TEMP/none" \
+                        XDG_CACHE_HOME="$RUNNER_TEMP/refcache" VVG_WINTEST=1 "$@"; }
+          refs="$PWD/tests/data/tiny.fa,$PWD/tests/data/tiny.pileup.fa"
+          noref ./build-gui/gui/vvg tests/data/tiny.noref.cram 2>/dev/null | grep -qx 'win_tabs=0'
+          noref VVG_CONTEXT=1 VVG_KNOWN_REFS="$refs" ./build-gui/gui/vvg tests/data/tiny.noref.cram \
+            | grep -qx 'context: region(needs-index) build-index reference pileup tags contigs'
+          mkdir -p "$RUNNER_TEMP/roref" && cp tests/data/tiny.pileup.fa "$RUNNER_TEMP/roref/" && chmod a-w "$RUNNER_TEMP/roref"
+          out=$(noref VVG_KNOWN_REFS="$refs" VVG_REFERENCE="$RUNNER_TEMP/roref/tiny.pileup.fa" VVG_COPYCMD=1 \
+                  ./build-gui/gui/vvg tests/data/tiny.noref.cram 2>&1); echo "$out"
+          grep -q '^reference ref=tiny.pileup.fa rows=3 ' <<<"$out"
+          grep -q '^cmd=vv -f [^ ]*/refcache/vv/ref/[0-9a-f]*/tiny.pileup.fa ' <<<"$out"
+          chmod u+w "$RUNNER_TEMP/roref"
           # A sort canceled before it read past the view's rows keeps the tab
           # as it is (no re-read).
           VVG_WINTEST=1 VVG_STREAM_BUDGET=1 VVG_CANCEL_TEST=0 ./build-gui/gui/vvg "$RUNNER_TEMP/r60k.fq" 2>/dev/null \

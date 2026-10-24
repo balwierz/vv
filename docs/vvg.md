@@ -85,7 +85,14 @@ Command* goes the other way.
   instead: a BAM, CRAM or BCF without an index offers *Build Index* by the
   Region box (it reads the whole file once, as `samtools index` does, and
   writes the index beside it, or into vvg's cache when the directory is
-  read-only; later opens find it there). Parquet, Arrow, HDF5 and other
+  read-only; later opens find it there). A CRAM whose recorded reference
+  FASTA is missing asks for it (*Reference Needed* ▸ Open); vvg remembers
+  each FASTA chosen and, for a later CRAM, picks one whose contig names and
+  lengths match by itself (the `reference =` lines of vv's config file count
+  too). *Reference* in the strip under the tab bar shows it, *Choose…*
+  changes it, × goes back to the recorded one. A FASTA without a `.fai` is
+  indexed, beside it or, in a read-only folder, beside a link to it in vvg's
+  cache. Parquet, Arrow, HDF5 and other
   formats that read any part of the file on demand have no such limit. A sort, filter or find reads every row,
   and on such a file keeps them in memory: above 10 million rows, or, while
   the rows are not counted yet, on a file over 1 GiB or a remote one, vvg

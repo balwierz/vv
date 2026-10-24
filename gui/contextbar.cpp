@@ -3,6 +3,7 @@
 #include <QAbstractButton>
 #include <QButtonGroup>
 #include <QComboBox>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLayout>
@@ -169,6 +170,32 @@ ContextBar::ContextBar(QWidget* parent) : QWidget(parent) {
     chl->addWidget(ignore);
     lay->addWidget(changedGroup_);
     changedGroup_->hide();
+
+    // A CRAM's reference: the FASTA's name, Choose…, ×; or what is missing.
+    QHBoxLayout* refl = nullptr;
+    referenceGroup_ = group(&refl);
+    refl->addWidget(new QLabel(tr("Reference"), referenceGroup_));
+    referenceNeeded_ = new QLabel(referenceGroup_);
+    QPalette np = referenceNeeded_->palette();
+    np.setColor(QPalette::WindowText, QColor(0xb3, 0x6b, 0x00));
+    referenceNeeded_->setPalette(np);
+    refl->addWidget(referenceNeeded_);
+    referenceName_ = new QLabel(referenceGroup_);
+    refl->addWidget(referenceName_);
+    auto* choose = new QToolButton(referenceGroup_);
+    choose->setText(tr("Choose\u2026"));
+    choose->setToolTip(tr("The reference FASTA the file was written against (-f); vvg remembers it and "
+                          "picks it for other files whose contigs match"));
+    connect(choose, &QToolButton::clicked, this, &ContextBar::chooseReferenceRequested);
+    refl->addWidget(choose);
+    referenceClear_ = new QToolButton(referenceGroup_);
+    referenceClear_->setText(QStringLiteral("\u00d7"));
+    referenceClear_->setAutoRaise(true);
+    referenceClear_->setToolTip(tr("Use the reference the file records again"));
+    connect(referenceClear_, &QToolButton::clicked, this, &ContextBar::clearReferenceRequested);
+    refl->addWidget(referenceClear_);
+    lay->addWidget(referenceGroup_);
+    referenceGroup_->hide();
 
     // A stream read up to the load budget: Load More.
     QHBoxLayout* pl = nullptr;
@@ -447,6 +474,17 @@ void ContextBar::setPartial(const QString& text) {
 
 bool ContextBar::partialShownForTest() const { return partialGroup_->isVisibleTo(this); }
 
+void ContextBar::setReference(bool show, const QString& path, const QString& needed) {
+    referenceName_->setText(path.isEmpty() ? QString() : QFileInfo(path).fileName());
+    referenceName_->setToolTip(path);
+    referenceName_->setVisible(!path.isEmpty());
+    referenceClear_->setVisible(!path.isEmpty());
+    referenceNeeded_->setText(needed);
+    referenceNeeded_->setVisible(!needed.isEmpty());
+    referenceGroup_->setVisible(show);
+    updateVisibility();
+}
+
 void ContextBar::setIndexBuild(IndexBuild state) {
     indexButton_->setVisible(state != IndexBuild::Hidden);
     indexButton_->setEnabled(state == IndexBuild::Offer);
@@ -456,7 +494,7 @@ void ContextBar::setIndexBuild(IndexBuild state) {
 // Shown while it holds anything: the file's name, a change on disk or an option.
 void ContextBar::updateVisibility() {
     const bool any = fileGroup_->isVisibleTo(this) || changedGroup_->isVisibleTo(this) ||
-                     partialGroup_->isVisibleTo(this) ||
+                     partialGroup_->isVisibleTo(this) || referenceGroup_->isVisibleTo(this) ||
                      regionGroup_->isVisibleTo(this) || alignGroup_->isVisibleTo(this) ||
                      tagsGroup_->isVisibleTo(this) || samplesGroup_->isVisibleTo(this) ||
                      gtStats_->isVisibleTo(this) || expand_->isVisibleTo(this) ||
@@ -490,6 +528,8 @@ QString ContextBar::describeForTest() const {
     if (regionGroup_->isVisibleTo(this))
         parts << (regionEdit_->isEnabled() ? QStringLiteral("region") : QStringLiteral("region(needs-index)"));
     if (indexButton_->isVisibleTo(this)) parts << QStringLiteral("build-index");
+    if (referenceGroup_->isVisibleTo(this))
+        parts << (referenceNeeded_->isVisibleTo(this) ? QStringLiteral("reference(needed)") : QStringLiteral("reference"));
     if (alignGroup_->isVisibleTo(this)) parts << QStringLiteral("pileup");
     if (tagsGroup_->isVisibleTo(this)) parts << QStringLiteral("tags");
     if (samplesGroup_->isVisibleTo(this)) parts << QStringLiteral("samples");

@@ -25,6 +25,9 @@ struct FileOptions {
     // --index: the file's index when it is not beside it (one vvg built in
     // its cache). Looked up when the file opens, not kept in the session.
     std::string index;
+    // -f: the reference FASTA a CRAM's reads decode against (and a pileup's
+    // ref column), when the one it records is missing.
+    std::string reference;
     bool operator==(const FileOptions&) const = default;
 
     // For the session (vvg's settings).
@@ -34,7 +37,8 @@ struct FileOptions {
                            {QStringLiteral("slop"), (double)slop}, {QStringLiteral("pileup"), pileup},
                            {QStringLiteral("tags"), q(tags)}, {QStringLiteral("gtStats"), gtStats},
                            {QStringLiteral("contigs"), contigs}, {QStringLiteral("expand"), expand},
-                           {QStringLiteral("samples"), q(samples)}, {QStringLiteral("matrix"), q(matrix)}};
+                           {QStringLiteral("samples"), q(samples)}, {QStringLiteral("matrix"), q(matrix)},
+                           {QStringLiteral("reference"), q(reference)}};
     }
     static FileOptions fromJson(const QJsonObject& o) {
         FileOptions f;
@@ -52,6 +56,7 @@ struct FileOptions {
         f.expand  = o.value(QStringLiteral("expand")).toBool(f.expand);
         f.samples = str("samples", f.samples);
         f.matrix  = str("matrix", f.matrix);
+        f.reference = str("reference", f.reference);
         return f;
     }
 
@@ -67,6 +72,7 @@ struct FileOptions {
         c.samples          = samples;
         c.matrix           = matrix;
         c.index_path       = index;
+        c.pileup_ref       = reference;
         return c;
     }
 };

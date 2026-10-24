@@ -31,6 +31,7 @@ QString vvCommandLine(const VvCommandSpec& s) {
             if (s.slop > 0) opt("--slop", QString::number(s.slop));
             if (!s.index.isEmpty()) opt("--index", s.index);
         }
+        if (!s.reference.isEmpty()) opt("-f", s.reference);
         if (s.pileup)            w << QStringLiteral("--pileup");
         if (!s.tags.isEmpty())   opt("--tags", s.tags);
         if (s.gtStats)           w << QStringLiteral("--gt-stats");
@@ -63,6 +64,7 @@ Config vvCommandConfig(const VvCommandSpec& s) {
             cfg.slop             = s.slop;
             cfg.index_path       = s.index.toStdString();
         }
+        cfg.pileup_ref = s.reference.toStdString();
         cfg.pileup   = s.pileup;
         cfg.bam_tags = s.tags.toStdString();
         cfg.gt_stats = s.gtStats;

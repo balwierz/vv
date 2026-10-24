@@ -37,6 +37,9 @@ public:
     // and keep the typed region and tags for editing.
     void showError(const QString& why, const FileOptions& attempted);
     void focusRegion();                     // when the region box shows
+    // A CRAM's reference FASTA (or a pileup's): its name, Choose… and ×;
+    // `needed`, when non-empty, says the reads cannot decode without one.
+    void setReference(bool show, const QString& path, const QString& needed);
     // The Build Index button by the region box of a file that needs one.
     enum class IndexBuild { Hidden, Offer, Building };
     void setIndexBuild(IndexBuild state);
@@ -53,6 +56,8 @@ signals:
     void ignoreChangeRequested();
     void loadMoreRequested();
     void buildIndexRequested();
+    void chooseReferenceRequested();
+    void clearReferenceRequested();
 
 private:
     FileOptions current() const;            // the options the controls show
@@ -67,6 +72,10 @@ private:
     QLabel*       fileName_;
     QWidget*      changedGroup_;
     QLabel*       changedText_;
+    QWidget*      referenceGroup_;
+    QLabel*       referenceName_;
+    QLabel*       referenceNeeded_;
+    QToolButton*  referenceClear_;
     QWidget*      partialGroup_;
     QLabel*       partialText_;
     bool          regionReady_ = false;

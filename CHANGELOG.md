@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   beside the file (a read-only directory), for `-r` and `--contigs`.
 - vvg: Build Index by the Region box of a BAM, CRAM or BCF without an index
   (beside the file, or in vvg's cache when the directory is read-only).
+- vvg: a CRAM whose recorded reference is missing asks for the FASTA; vvg
+  remembers it and picks a remembered one whose contigs match for later
+  CRAMs (Reference ▸ Choose… under the tab bar).
 - vvg: View ▸ Memory Limits…; a sort, filter or find over 10 million rows,
   or over a 1 GiB file whose rows are not counted yet, asks first.
 
