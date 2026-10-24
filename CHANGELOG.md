@@ -6,7 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.33.0] - 2026-10-24
+
 ### Added
+- `--sort` may be repeated: `vv --sort chrom --sort score:desc` sorts by
+  several keys, each ordering the ties of the ones before.
+- The AnnData / Loom / 10x summary tab has an `about` column saying what
+  each component (obs, var, obsm, obsp, layers, …) holds.
+- vvg: Find Action palette (Ctrl+Shift+P); Field Reference (F1) and
+  Keyboard Shortcuts (Ctrl+/) dialogs; Open, Open Directory, Copy and Copy
+  Row on the toolbar; File ▸ Open URL….
+- vvg: Filter to / Exclude a cell's value; Shift+click a header to add a
+  sort key; Copy As TSV / CSV / Markdown and Export Selection; recent and
+  saved filters per kind of file; freeze the leading columns; coloured
+  bases and quality strings; Open in Genome Goggles at a row's position.
+- vvg: a file that changed on disk offers Reload (F5), keeping each tab's
+  filter, sort and columns; the last session is restored at start, and
+  Reopen Closed Tab (Ctrl+Shift+T) brings back a closed tab.
+- KDE: the table as a KPart (Konqueror, Ark) and as a Table page in
+  Dolphin's Properties dialog.
 - Multiple sequence alignments: Stockholm, Clustal, PHYLIP (sequential or
   interleaved, strict or relaxed names), NEXUS, GCG MSF, A2M / A3M and
   aligned FASTA (`.afa`, or a `.fa` whose records have one length and
@@ -31,7 +49,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - vvg: View ▸ Memory Limits…; a sort, filter or find over 10 million rows,
   or over a 1 GiB file whose rows are not counted yet, asks first.
 
+### Changed
+- vvg: one toolbar row with a ≡ menu (the menu bar is hidden by default),
+  one Details dock with Row and Column tabs, a strip under the tab bar with
+  each file's own format options, the column type in a dimmer line under
+  each name (View ▸ Column Types), tabs of several files told apart, and
+  the Open dialog listing file types by format family.
+
 ### Fixed
+- KDE: the thumbnailer's MIME types sat where KF6 does not read them, so
+  Dolphin showed no thumbnails.
+- vvg: a sorted view re-read its chunks without end; a table of more than
+  ~70 M rows froze under styles with tall rows (Breeze); toggling Column
+  Types took seconds on a busy disk (settings are written on a thread).
 - vvg: scrolling deep into a BAM / CRAM (past 64 batches of 32 768 reads)
   made every earlier row blank until Reload. A stream's rows now stay in
   memory up to 1 GiB, with Load More beyond it.

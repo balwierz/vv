@@ -22,7 +22,7 @@
 %global xlsxio_version 0.2.36
 
 Name:           vv
-Version:        1.32.0
+Version:        1.33.0
 Release:        1%{?dist}
 Summary:        Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)
 License:        MIT
@@ -133,6 +133,12 @@ XLSXIO_A="$(echo $PWD/xlsxio-local/lib*/libxlsxio_read.a)"
 %{_datadir}/icons/hicolor/scalable/apps/vv.svg
 
 %changelog
+* Sat Oct 24 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.33.0-1
+- Update to 1.33.0: multiple sequence alignments (Stockholm, Clustal,
+  PHYLIP, NEXUS, MSF, A2M / A3M, aligned FASTA, UCSC MAF); repeated --sort;
+  --index and a CRAM's reference from the config; vvg: large-file memory
+  limits, Build Index, CRAM reference, palette, cell filters, multi-key
+  sort, Reload, sessions, frozen columns; KDE KPart and Properties page.
 * Wed Oct 21 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.32.0-1
 - Update to 1.32.0: delimited text parsed in small blocks on the -@ threads
   (sites-only VCF reads skip sample fields; VCF QUAL / sample types pinned);
