@@ -8,7 +8,7 @@ package:
 
 source:
   - url: https://github.com/balwierz/vv/archive/refs/tags/v{{ version }}.tar.gz
-    sha256: 43a4b589ba4cdf007c12007ff0ed30595e40759f63db05015a852910ce770399
+    sha256: 828d41c4138c0752c0930746b344e2c51f9ef8a83e312f9293371d3df779b26f
   # xlsxio (.xlsx reading) is on no conda channel: built here as a static
   # library and linked into vv, as the Fedora RPM does.
   - url: https://github.com/brechtsanders/xlsxio/archive/refs/tags/{{ xlsxio_version }}.tar.gz
