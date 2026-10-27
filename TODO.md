@@ -336,6 +336,8 @@ user-facing summary).
   Explorer), a winget manifest, Windows on ARM.
 
 ### Done
+- Portable zip (`vv-<ver>-windows-x86_64.zip`): the MSI's files under one
+  folder, tested unzipped with only Windows on PATH, published with the MSI.
 - Native build with MSYS2 UCRT64 (`src/core/platform.cpp`; vv without the
   viewers, vvg), CI (`.github/workflows/windows.yml`), the WiX MSI with a
   UTF-8 code-page manifest, install-tested in CI and published by

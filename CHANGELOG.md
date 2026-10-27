@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Windows: a portable zip, `vv-<ver>-windows-x86_64.zip`, next to the MSI:
+  the same `vv.exe`, `vvg.exe` and DLLs, run from wherever it is unzipped,
+  with no installation or administrator rights.
+
 ## [1.33.0] - 2026-10-24
 
 ### Added

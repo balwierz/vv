@@ -67,8 +67,8 @@ full capability table.
 
 ## Install
 
-Linux and macOS packages for x86_64 and aarch64, and a Windows installer
-(`.msi`), are on the
+Linux and macOS packages for x86_64 and aarch64, and for Windows an installer
+(`.msi`) and a portable `.zip`, are on the
 [releases page](https://github.com/balwierz/vv/releases/latest) (with `SHA256SUMS`):
 
 ```sh
@@ -87,7 +87,7 @@ sudo install vv-1.33.0-linux-x86_64/vv /usr/local/bin/
 git clone https://github.com/balwierz/vv.git && cd vv/packaging/arch && makepkg -si
 ```
 
-macOS tarball, the Windows installer, building from source and the GUI build:
+macOS tarball, Windows (installer or portable zip), building from source and the GUI build:
 [INSTALL.md](INSTALL.md).
 
 ## Quick start

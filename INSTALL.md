@@ -17,6 +17,7 @@ Every tagged release publishes, for **x86_64** and **aarch64**:
 | `vv-gui-<ver>-1.fc<NN>.<arch>.rpm` | Fedora package — Qt6 GUI **with the KF6 Dolphin plugins** |
 | `vv-<ver>-macos-arm64.tar.gz` | Apple Silicon `vv` + `vvg`; **not** static — needs the Homebrew deps |
 | `vv-<ver>-windows-x86_64.msi` | Windows 10 / 11 installer: `vv` + `vvg` with their DLLs (from 1.29.0) |
+| `vv-<ver>-windows-x86_64.zip` | the same files, portable: unzip and run, no installation (from 1.34.0) |
 | `SHA256SUMS` | checksums for everything above |
 
 Replace `1.33.0` below with the
@@ -166,6 +167,14 @@ uninstall from *Settings ▸ Apps*. Everything it needs is inside — no MSYS2,
 Qt or Python. The package is **not code-signed**, so SmartScreen shows
 "Windows protected your PC" on the first run: *More info ▸ Run anyway*. Check
 it against `SHA256SUMS` first (`Get-FileHash vv-*.msi` in PowerShell).
+
+Without installing — no administrator rights, a locked-down machine, a USB
+stick — use `vv-<ver>-windows-x86_64.zip` instead: unzip it anywhere and run
+`vvg.exe` or `vv.exe` from the folder (add it to your user `PATH` to type
+`vv` in any terminal). It holds the same files as the MSI. vvg keeps its
+settings and cache where the installed one does (the registry,
+`%LOCALAPPDATA%\vv`); to remove it, delete the folder. If Windows blocks the
+unsigned files, *Properties ▸ Unblock* the zip before extracting it.
 
 On Windows, vv prints tables and documents but has no interactive terminal
 viewer (`-i` is ignored with a note); `vvg` is the interactive viewer. File

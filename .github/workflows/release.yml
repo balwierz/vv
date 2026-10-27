@@ -361,7 +361,7 @@ jobs:
             SHA256SUMS-macos-arm64
 
   windows:
-    name: Build MSI (Windows, MSYS2 UCRT64)
+    name: Build MSI and portable zip (Windows, MSYS2 UCRT64)
     runs-on: windows-latest
     steps:
       - name: Keep LF line endings
@@ -370,7 +370,7 @@ jobs:
 
       - uses: actions/checkout@v6
 
-      # MSYS2 build, the MSI, and its install / run / uninstall test; the same
+      # MSYS2 build, the MSI and the portable zip, and their tests; the same
       # action CI runs on every push.
       - name: Build and package
         id: win
@@ -379,9 +379,10 @@ jobs:
       - name: Checksum
         shell: pwsh
         run: |
-          $msi = '${{ steps.win.outputs.msi }}'
-          $h = (Get-FileHash -Algorithm SHA256 $msi).Hash.ToLower()
-          [IO.File]::WriteAllText("$PWD\SHA256SUMS-windows", "$h  $msi`n")
+          $lines = foreach ($f in '${{ steps.win.outputs.msi }}', '${{ steps.win.outputs.zip }}') {
+            "$((Get-FileHash -Algorithm SHA256 $f).Hash.ToLower())  $f"
+          }
+          [IO.File]::WriteAllText("$PWD\SHA256SUMS-windows", ($lines -join "`n") + "`n")
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
@@ -389,6 +390,7 @@ jobs:
           name: windows-x86_64
           path: |
             ${{ steps.win.outputs.msi }}
+            ${{ steps.win.outputs.zip }}
             SHA256SUMS-windows
 
   release:
@@ -420,6 +422,7 @@ jobs:
           find dist-all -name 'vv-[0-9]*.rpm'       -exec cp {} release/ \;
           find dist-all -name 'vv-gui-[0-9]*.rpm'   -exec cp {} release/ \;
           find dist-all -name 'vv-*-windows-*.msi'  -exec cp {} release/ \;
+          find dist-all -name 'vv-*-windows-*.zip'  -exec cp {} release/ \;
           # Merge per-arch SHA256SUMS into one file so the user can verify
           # any tarball or .deb with `sha256sum -c SHA256SUMS`.
           (cd release && find ../dist-all -name 'SHA256SUMS-*' \
@@ -453,4 +456,5 @@ jobs:
             release/vv-[0-9]*.rpm
             release/vv-gui-[0-9]*.rpm
             release/vv-*-windows-*.msi
+            release/vv-*-windows-*.zip
             release/SHA256SUMS

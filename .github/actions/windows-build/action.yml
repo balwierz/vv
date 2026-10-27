@@ -1,17 +1,22 @@
 # The Windows build shared by CI (windows.yml) and release.yml: MSYS2 UCRT64
 # packages, vv + vvg, the staged install tree (packaging/windows/stage.sh),
-# the WiX MSI (packaging/windows/vv.wxs), and a test of that MSI as a user
-# gets it — installed, run with only C:\Windows on PATH (so a DLL missing
-# from the package cannot be found elsewhere on the runner), uninstalled.
-name: Build vv for Windows and package the MSI
+# the WiX MSI (packaging/windows/vv.wxs) and the portable zip of the same
+# tree, and a test of each as a user gets it — the MSI installed, the zip
+# unzipped, both run with only C:\Windows on PATH (so a DLL missing from the
+# package cannot be found elsewhere on the runner;
+# packaging/windows/check-install.ps1), the MSI uninstalled.
+name: Build vv for Windows and package the MSI and the zip
 description: >
-  MSYS2 UCRT64 build of vv and vvg (-DVV_BUILD_GUI=ON), the MSI, and an
-  install / run / uninstall test of it.
+  MSYS2 UCRT64 build of vv and vvg (-DVV_BUILD_GUI=ON), the MSI and the
+  portable zip, and a test of each.
 
 outputs:
   msi:
     description: File name of the MSI, in the workspace root
     value: ${{ steps.msi.outputs.msi }}
+  zip:
+    description: File name of the portable zip, in the workspace root
+    value: ${{ steps.zip.outputs.zip }}
 
 runs:
   using: composite
@@ -55,6 +60,31 @@ runs:
         Get-Item $msi | Format-Table Name, Length
         "msi=$msi" >> $env:GITHUB_OUTPUT
 
+    - name: Build the portable zip
+      id: zip
+      shell: pwsh
+      run: |
+        # The MSI's files under one folder named like the zip, with a README.
+        $v = '${{ steps.stage.outputs.version }}'
+        $name = "vv-$v-windows-x86_64"
+        Copy-Item stage $name -Recurse
+        Copy-Item packaging\windows\README-portable.txt "$name\README.txt"
+        Compress-Archive -Path $name -DestinationPath "$name.zip" -CompressionLevel Optimal
+        Remove-Item $name -Recurse
+        Get-Item "$name.zip" | Format-Table Name, Length
+        "zip=$name.zip" >> $env:GITHUB_OUTPUT
+
+    - name: Run the portable zip, unzipped
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $zip = '${{ steps.zip.outputs.zip }}'
+        $to = Join-Path $env:RUNNER_TEMP 'portable'
+        Expand-Archive $zip -DestinationPath $to -Force
+        $dir = Join-Path $to ([IO.Path]::GetFileNameWithoutExtension($zip))
+        if (-not (Test-Path "$dir\README.txt")) { throw 'README.txt missing from the zip' }
+        & packaging\windows\check-install.ps1 -Dir $dir
+
     - name: Install, run and uninstall the MSI
       shell: pwsh
       run: |
@@ -64,35 +94,13 @@ runs:
           $p = Start-Process msiexec -ArgumentList $argv -Wait -PassThru
           if ($p.ExitCode -ne 0) { Get-Content msi.log -Tail 60; throw "msiexec ${argv}: exit $($p.ExitCode)" }
         }
-        function Expect($what, $out, $want) {
-          if (-not ("$out" -match $want)) { throw "${what}: got '$out', want /$want/" }
-          Write-Output "ok  $what"
-        }
         Msi "/i `"$msi`" /qn /l*v msi.log"
         $dir = "$env:ProgramFiles\vv"
         # The system PATH gained the install directory.
         $syspath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
-        Expect 'install dir on the system PATH' $syspath ([regex]::Escape($dir))
-        # Only Windows itself on PATH from here: every DLL must come from $dir.
-        $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
-        Expect 'vv --version' (& "$dir\vv.exe" --version) '^vv \d+\.\d+\.\d+$'
-        Expect 'vv --count' (& "$dir\vv.exe" --count tests\data\tiny.parquet) '^20$'
-        Expect 'vv HDF5' (& "$dir\vv.exe" --count --tab obs tests\data\tiny.h5ad) '^\d+$'
-        Expect 'vv BAM' (& "$dir\vv.exe" --count tests\data\tiny.bam) '^\d+$'
-        # A non-ASCII file name (the UTF-8 code page from the manifest).
-        $u = Join-Path $env:RUNNER_TEMP "t$([char]0xEB)st_$([char]0x65E5)$([char]0x672C).parquet"
-        Copy-Item tests\data\tiny.parquet $u
-        Expect 'vv on a UTF-8 file name' (& "$dir\vv.exe" --count $u) '^20$'
-        $env:QT_QPA_PLATFORM = 'offscreen'
-        $env:VVG_SELFTEST = '1'
-        # vvg is a GUI-subsystem program: piping its output makes pwsh wait.
-        $o = (& "$dir\vvg.exe" tests\data\tiny.parquet | Out-String)
-        Write-Output $o
-        Expect 'vvg self-test' $o 'icon=ok'
-        Expect 'vvg reads the file' $o 'tabs=1 rows=20 cols=5'
-        $o = (& "$dir\vvg.exe" $u | Out-String)
-        Expect 'vvg on a UTF-8 file name' $o 'tabs=1 rows=20 cols=5'
-        Remove-Item Env:VVG_SELFTEST
+        if (-not ($syspath -match [regex]::Escape($dir))) { throw "install dir not on the system PATH: $syspath" }
+        Write-Output 'ok  install dir on the system PATH'
+        & packaging\windows\check-install.ps1 -Dir $dir
         Msi "/x `"$msi`" /qn /l*v msi.log"
         if (Test-Path "$dir\vv.exe") { throw 'uninstall left vv.exe behind' }
         Write-Output 'ok  uninstall'
