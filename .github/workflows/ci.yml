@@ -593,8 +593,10 @@ jobs:
           # unattended; a remembered FASTA whose contigs match is picked (one
           # that does not match is skipped); a chosen FASTA without a .fai in
           # a read-only folder is indexed beside a link in vvg's cache.
+          # Settings of their own: a chosen reference is remembered there.
           noref() { env REF_PATH="$RUNNER_TEMP/none" REF_CACHE="$RUNNER_TEMP/none" \
-                        XDG_CACHE_HOME="$RUNNER_TEMP/refcache" VVG_WINTEST=1 "$@"; }
+                        XDG_CACHE_HOME="$RUNNER_TEMP/refcache" XDG_CONFIG_HOME="$RUNNER_TEMP/refcfg" \
+                        VVG_WINTEST=1 "$@"; }
           refs="$PWD/tests/data/tiny.fa,$PWD/tests/data/tiny.pileup.fa"
           noref ./build-gui/gui/vvg tests/data/tiny.noref.cram 2>/dev/null | grep -qx 'win_tabs=0'
           noref VVG_CONTEXT=1 VVG_KNOWN_REFS="$refs" ./build-gui/gui/vvg tests/data/tiny.noref.cram \
