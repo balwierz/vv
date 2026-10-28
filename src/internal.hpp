@@ -874,6 +874,9 @@ std::vector<int> select_field_indices(
  std::vector<std::string>* unknown_out = nullptr,
  bool include_hidden = false);
 
+// The schema's column nearest to `probe` by edit distance ("" when none is
+// close): the did-you-mean of --select, --compute.
+std::string closest_column_name(const arrow::Schema& schema, const std::string& probe);
 std::string unknown_columns_error(const TabularSource& src,
                                   const std::vector<std::string>& unknown);
 
@@ -1375,6 +1378,22 @@ std::vector<std::pair<std::string, arrow::Type::type>>
 parse_vcf_info_headers(const std::vector<std::string>& preamble);
 
 bool is_expanded_source(const TabularSource& src);
+
+// --compute 'name=expr' (core/compute.cpp): `inner` with one column appended
+// per spec; "" or the error (syntax with a caret, unknown column, a text
+// column in arithmetic, a name in use).
+std::string open_compute_source(std::unique_ptr<TabularSource> inner, const std::vector<std::string>& specs,
+                                std::unique_ptr<TabularSource>* out);
+// The source a ComputeSource wraps; nullptr for any other source.
+const TabularSource* compute_source_inner(const TabularSource& src);
+// The column names the specs read that they do not define themselves (in
+// order, repeats kept), and the names they define; false on a syntax error.
+bool compute_columns_read(const std::vector<std::string>& specs, std::vector<std::string>* names,
+                          std::vector<std::string>* defined);
+// An integer-typed cell (integers, dates / times / durations, booleans;
+// dictionary cells decoded) as int64; false for a null, another type, or a
+// uint64 beyond int64.
+bool array_value_as_int64(const arrow::Array& a, int64_t r, int64_t* out);
 
 bool text_ext(const std::string& p);
 

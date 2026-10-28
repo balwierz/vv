@@ -388,9 +388,6 @@ public:
     }
 };
 
-bool is_expanded_source(const TabularSource& src) {
-    return dynamic_cast<const ExpandedSource*>(&src) != nullptr;
-}
 
 // ── --flatten: struct columns as one column per leaf ────────────────────────
 //
@@ -420,6 +417,7 @@ class FlattenSource : public TabularSource {
     }
 
 public:
+    const TabularSource& inner() const { return *inner_; }
     // Wrap `inner`; a schema without a struct column is returned unwrapped.
     static void open(std::unique_ptr<TabularSource> inner, std::unique_ptr<TabularSource>* out) {
         auto sch = inner->schema();
@@ -704,6 +702,7 @@ class GenotypeStatsSource : public TabularSource {
     }
 
 public:
+    const TabularSource& inner() const { return *inner_; }
     // `samples`: the sample column names (vcf_sample_names() of the source as
     // read). Columns appended after them (--expand) are not samples; without
     // the list every column after FORMAT is taken as one.
@@ -1038,6 +1037,7 @@ class VcfSamplesSource : public TabularSource {
     }
 
 public:
+    const TabularSource& inner() const { return *inner_; }
     static std::unique_ptr<TabularSource> wrap(std::unique_ptr<TabularSource> inner,
                                                const std::vector<std::string>& samples,
                                                bool long_form) {
@@ -1359,6 +1359,28 @@ public:
 // rather than at each `*out = std::move(src)` means every format and every
 // caller (CLI, multi-file TUI loop, Qt GUI, KDE plugins) gets it, and no
 // future dispatch branch can forget to.
+// --compute over the source open_source() built.
+static std::string apply_compute(const Config& cfg, std::unique_ptr<TabularSource>* out) {
+    if (cfg.compute.empty()) return "";
+    std::unique_ptr<TabularSource> wrapped;
+    std::string err = open_compute_source(std::move(*out), cfg.compute, &wrapped);
+    if (!err.empty()) return err;
+    *out = std::move(wrapped);
+    return "";
+}
+
+// Under any of the decorators open_source() adds after it.
+bool is_expanded_source(const TabularSource& src) {
+    for (const TabularSource* s = &src; s;) {
+        if (dynamic_cast<const ExpandedSource*>(s)) return true;
+        if (auto* f = dynamic_cast<const FlattenSource*>(s))            s = &f->inner();
+        else if (auto* g = dynamic_cast<const GenotypeStatsSource*>(s)) s = &g->inner();
+        else if (auto* v = dynamic_cast<const VcfSamplesSource*>(s))    s = &v->inner();
+        else s = compute_source_inner(*s);
+    }
+    return false;
+}
+
 std::string open_source(const std::string& path, const Config& cfg,
                          std::unique_ptr<TabularSource>* out) {
     // Arrow's CPU and IO thread pools are function-local statics created on
@@ -1373,9 +1395,14 @@ std::string open_source(const std::string& path, const Config& cfg,
     (void)cpu_pool_first;
     // --contigs replaces the data view with the header's reference-sequence
     // table (BAM/CRAM/SAM, VCF/BCF), reading no records.
-    if (cfg.contigs) return build_contigs(cfg, out);
-    if (cfg.seq_stats) return build_seq_stats(cfg, out);
-    std::string err = open_source_dispatch(path, cfg, out);
+    std::string err;
+    if (cfg.contigs || cfg.seq_stats) {
+        // Header / summary tables: --compute applies to them as to a file.
+        err = cfg.contigs ? build_contigs(cfg, out) : build_seq_stats(cfg, out);
+        if (!err.empty() || !*out) return err;
+        return apply_compute(cfg, out);
+    }
+    err = open_source_dispatch(path, cfg, out);
     if (!err.empty() || !*out) return err;
     // Order matters. The VCF sample columns are named as read, before
     // --expand appends columns after them; --gt-stats parses the samples'
@@ -1401,5 +1428,6 @@ std::string open_source(const std::string& path, const Config& cfg,
         FlattenSource::open(std::move(*out), &wrapped);
         *out = std::move(wrapped);
     }
-    return "";
+    // Last: an expression sees every column the options above made.
+    return apply_compute(cfg, out);
 }

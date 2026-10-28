@@ -484,6 +484,26 @@ one row per stored non-zero value, with columns \fBobs\fR, \fBvar\fR and
 it has them). The long form is the whole matrix, not a preview, in the
 viewer and in every export.
 .TP
+.BI \-\-compute " name=expr"
+Append a column computed from each row; repeat the flag for more, in order
+(a later one may use an earlier one). \fIexpr\fR has numbers, columns (a
+name with spaces or symbols in backticks, \fB``\fR for a backtick),
+\fB+ \- * /\fR, unary minus, parentheses and the functions
+\fBlen(\fIcol\fB)\fR (text length in characters, list length),
+\fBabs\fR, \fBlog10\fR, \fBlog2\fR, \fBround(\fIx\fR[\fB, \fIdigits\fR]\fB)\fR
+(half away from zero; negative digits round to tens, hundreds, …),
+\fBmin\fR and \fBmax\fR (two or more arguments). The column is
+\fBint64\fR when every operand is an integer (integer, date / time and
+boolean columns, whole-number literals) and no \fB/\fR or log is used, else
+\fBfloat64\fR. A null operand, a division by zero, the log of a number
+<= 0, an \fBint64\fR overflow and a non-finite result give null. The new
+columns work with \fB\-\-filter\fR, \fB\-\-sort\fR, \fB\-\-select\fR and
+every writer; they come after \fB\-\-expand\fR, \fB\-\-gt\-stats\fR,
+\fB\-\-samples\fR and \fB\-\-flatten\fR, so they can use those columns,
+and apply to the \fB\-\-contigs\fR and \fB\-\-seq\-stats\fR tables. An
+unknown column, a text column in arithmetic and a name already in use are
+errors (exit 1).
+.TP
 .BI \-\-on\-bad\-row " stop|skip|null"
 A row of a text table (CSV / TSV, BED, GFF / GTF, VCF, SAM, PAF, mpileup)
 with another number of fields than the header or the first row.

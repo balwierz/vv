@@ -15,7 +15,7 @@ end
 function __vv_file
     set -l valopts n w c @ threads decode-threads delimiter in-delimiter d header color theme box r region \
         window regions-file region-cols slop coords tail sort tags expand parquet arrow \
-        feather compression on-bad-row bad-rows image-mode samples matrix f fasta index select cols filter tab unique value-counts percentiles sample \
+        feather compression on-bad-row bad-rows compute image-mode samples matrix f fasta index select cols filter tab unique value-counts percentiles sample \
         exclude-flags ff require-flags rf min-mapq min-bq
     set -l toks (commandline -opc)
     set -l i 2
@@ -119,6 +119,7 @@ complete -c vv -c vh -l parquet -r -F      -d 'Write a Parquet file at this path
 complete -c vv -c vh -l arrow   -r -F      -d 'Write an Arrow IPC file (Feather v2) at this path'
 complete -c vv -c vh -l feather -r -F      -d 'Write an Arrow IPC file (Feather v2) at this path'
 complete -c vv -c vh -l compression -r -a 'zstd snappy gzip lz4 none' -d 'Parquet codec'
+complete -c vv -c vh -l compute -x -d 'Add a column computed from each row (name=expr)'
 complete -c vv -c vh -l on-bad-row -x -a 'stop skip null' -d 'A text row with the wrong number of fields'
 complete -c vv -c vh -l bad-rows -r -F -d 'Write the skipped / padded rows to this file'
 

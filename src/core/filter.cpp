@@ -611,7 +611,7 @@ static bool resolve_dict_cell(const arrow::Array& a, int64_t r,
 
 // An integer-typed cell as int64; false for null, a non-integer type (floats
 // included), or a uint64 beyond int64.
-static bool value_as_int(const arrow::Array& ch, int64_t r, int64_t* out) {
+bool array_value_as_int64(const arrow::Array& ch, int64_t r, int64_t* out) {
     const arrow::Array* a; int64_t i;
     if (!resolve_dict_cell(ch, r, &a, &i)) return false;
     switch (a->type_id()) {
@@ -764,7 +764,7 @@ static bool eval_cell(const FilterAtom& a, const arrow::Array& ch, int64_t r,
 
     if (a.op == FilterAtom::Has || a.op == FilterAtom::Lacks) {
         int64_t v;
-        if (!value_as_int(ch, r, &v)) return false;   // null: no match
+        if (!array_value_as_int64(ch, r, &v)) return false;   // null: no match
         return a.op == FilterAtom::Has ? (v & a.i_lit) == a.i_lit
                                        : (v & a.i_lit) == 0;
     }
@@ -822,7 +822,7 @@ static bool eval_cell(const FilterAtom& a, const arrow::Array& ch, int64_t r,
         }
     } else if (a.kind == FilterAtom::K_Int) {
         int64_t v;
-        if (value_as_int(ch, r, &v)) {
+        if (array_value_as_int64(ch, r, &v)) {
             switch (a.op) {
                 case FilterAtom::Eq: return v == a.i_lit;
                 case FilterAtom::Ne: return v != a.i_lit;

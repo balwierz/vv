@@ -24,7 +24,7 @@ _vv_file_arg() {
     valopts=(-n -w -c -@ --threads --decode-threads --delimiter --in-delimiter -d --header --color --theme --box
              -r --region --window --regions-file --region-cols --slop --coords
              --tail --sort --tags --expand --parquet --arrow --feather --compression
-             --on-bad-row --bad-rows --image-mode --samples --matrix -f --fasta --index --select --cols --filter --tab --unique --value-counts --percentiles
+             --on-bad-row --bad-rows --compute --image-mode --samples --matrix -f --fasta --index --select --cols --filter --tab --unique --value-counts --percentiles
              --sample --exclude-flags --ff --require-flags --rf --min-mapq --min-bq)
     local i tok
     for (( i = 2; i < CURRENT; i++ )); do
@@ -138,6 +138,7 @@ _vv() {
         '--arrow+[Write an Arrow IPC file (Feather v2)]:path:_files' \
         '--feather+[Write an Arrow IPC file (Feather v2)]:path:_files' \
         '--compression+[Parquet codec]:codec:(zstd snappy gzip lz4 none)' \
+        '*--compute+[Add a column computed from each row]:name=expression: ' \
         '--on-bad-row+[A text row with the wrong number of fields]:policy:(stop skip null)' \
         '--bad-rows+[Write the skipped / padded rows to this file]:file:_files' \
         '--heatmap[Render numeric columns as a terminal heatmap]' \

@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Windows: a portable zip, `vv-<ver>-windows-x86_64.zip`, next to the MSI:
   the same `vv.exe`, `vvg.exe` and DLLs, run from wherever it is unzipped,
   with no installation or administrator rights.
+- `--compute 'name=expr'` (repeatable): a column computed from each row,
+  with `+ - * /`, parentheses, `len`, `abs`, `log10`, `log2`, `round`,
+  `min` and `max`; int64 when every operand is an integer, else float64;
+  null for null operands, a division by zero or log of x <= 0. Works with
+  `--filter`, `--sort`, `--select` and every writer, after `--expand`,
+  `--gt-stats`, `--samples` and `--flatten`. On GENCODE's CSV (2.2 M rows)
+  `--compute 'len=end-start+1' --sort len:desc -n 5` takes 1.1 s, converting
+  3 of 28 columns.
 - `--on-bad-row stop|skip|null` and `--bad-rows FILE`: a text table row
   (CSV / TSV, BED, GFF / GTF, VCF, SAM, PAF, mpileup) with the wrong number
   of fields stops the run (the default for scripted runs), is left out

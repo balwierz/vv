@@ -156,6 +156,8 @@ struct Config {
                                          // row with the wrong number of fields ("":
                                          // stop, the TUI and vvg skip)
     std::string bad_rows_path;           // --bad-rows FILE: those rows, "line<TAB>text"
+    std::vector<std::string> compute;    // --compute NAME=EXPR (repeatable): row-wise
+                                         // derived columns, appended in order
     std::string expand_col;              // --expand COL: unpack a packed
                                          // key=value column (VCF INFO,
                                          // GFF/GTF attributes) into real

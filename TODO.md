@@ -604,13 +604,6 @@ get re-proposed.
   payload is in the tags (10x barcodes, methylation calls, edit distance).
   Composes with 1.16.0's BAM regions: `-r … --tags CB --unique CB`. `auto`
   must not be the default and must be defined as "union over the first batch".
-- **`--compute 'len=End-Start'`** (M) — row-wise derived columns. Every shaping
-  verb vv has *subsets*; nothing produces a value the file lacks. Row-wise
-  only — no aggregates, no windows, no joins; that boundary is what keeps it a
-  viewer. Do **not** reach for `arrow::compute` (its kernels are GC'd by
-  `--gc-sections` in the static build — see the note at `main.cpp` ~2338);
-  `array_value_as_double` plus typed builders is the house path. Same decorator
-  shape as `--expand`, so it becomes a much smaller patch afterwards.
 - **Accessibility** (S) — `--box unicode|ascii|none` (`auto` picks ascii when
   `nl_langinfo(CODESET)` is not UTF-8; `LC_ALL=C vv tiny.bed` currently emits
   UTF-8 box characters, i.e. mojibake in a C-locale terminal or a CI log), plus

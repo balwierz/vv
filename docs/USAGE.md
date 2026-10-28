@@ -1256,6 +1256,43 @@ occurrence in the first 1000 lines, null where a record lacks the tag.
 `--tags` is rejected on other files and cannot be combined with `--pileup`
 (whose rows are per-base counts, not alignment records).
 
+## `--compute NAME=EXPR` (derived columns)
+
+```
+$ vv gencode.csv --compute 'len=end-start+1' --sort len:desc -n 3 --select gene_name,len --tsv
+gene_name	len
+RBFOX1	2473539
+RBFOX1	2471657
+CNTNAP2	2304997
+$ vv variants.vcf --expand INFO --compute 'maf=min(AF, 1-AF)' --filter 'maf > 0.01'
+$ vv reads.bam --compute 'qlen=len(SEQ)' --value-counts qlen
+```
+
+Each `--compute` appends one column, computed from the row; repeat it for
+more. A later one may use an earlier one (`--compute 'len=end-start'
+--compute 'kb=len/1000'`). The new columns work with `--filter`, `--sort`,
+`--select`, `--value-counts` and every writer.
+
+| | |
+|---|---|
+| Operands | numbers (`3`, `0.5`, `1e6`), columns (`` `End)` `` in backticks for a name with spaces or symbols, ` `` ` for a backtick) |
+| Operators | `+ - * /`, unary `-`, parentheses |
+| Functions | `len(col)` — text length in characters, list length; `abs(x)`, `log10(x)`, `log2(x)`; `round(x)`, `round(x, digits)` (half away from zero; negative digits round to tens, hundreds, …); `min(a, b, …)`, `max(a, b, …)` |
+
+The result is `int64` when every operand is an integer — integer, date /
+time and boolean columns, whole-number literals — and neither `/` nor a log
+takes part; otherwise `float64`. A null operand gives null, and so do a
+division by zero, the log of a number <= 0, an `int64` overflow and a
+non-finite result. A text column in arithmetic is an error (`len()` gives
+its length), as are an unknown column (with a did-you-mean) and a name
+already in use.
+
+Computed columns come after `--expand`, `--gt-stats`, `--samples` and
+`--flatten`, so an expression can use an `INFO` key, `AF` from
+`--gt-stats` or a sample's `DP`; they apply to the `--contigs` and
+`--seq-stats` tables too. On a CSV / TSV, a scripted run converts only the
+columns it shows and the ones its expressions read.
+
 ## `--expand COL` (VCF `INFO`, GFF / GTF `attributes`)
 
 ```sh

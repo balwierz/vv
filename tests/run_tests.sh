@@ -2269,6 +2269,60 @@ assert_eq_file_inline "csv_projection_none_for_pattern" \
     "$(VV_DEBUG_PROJECTION=1 "$VV" --select 'c*' --tsv "$TMP/wide.csv" 2>&1 >/dev/null)" ""
 assert_eq_file_inline "csv_projection_none_for_table_view" \
     "$(VV_DEBUG_PROJECTION=1 "$VV" -n 3 --select name "$TMP/wide.csv" 2>&1 >/dev/null)" ""
+# --compute 'name=expr': a column per spec, appended in order. int64 when
+# every operand is an integer and no / or log takes part, else float64;
+# null operands, a division by zero, log of x <= 0 and an int64 overflow
+# give null. A later spec may use an earlier one; filter, sort and select
+# see the new columns.
+B="$DATA/tiny.bed"
+assert_eq_file_inline "compute_int_arith" \
+    "$("$VV" --compute 'len=`End)`-`[Beg`' --compute 'twice=len*2+1' --select len,twice --tsv -n 2 "$B")" \
+    "$(printf 'len\ttwice\n100\t201\n100\t201')"
+assert_eq_file_inline "compute_types" \
+    "$("$VV" --compute 'i=`[Beg`*2' --compute 'f=`[Beg`/2' --compute 'g=Score*2' --compute 'n=len(Name)' --schema "$B" | awk '$1 ~ /^(i|f|g|n)$/ {print $1, $2}')" \
+    "$(printf 'i int64\nf double\ng double\nn int64')"
+assert_eq_file_inline "compute_float_and_funcs" \
+    "$("$VV" --compute 'h=`[Beg`/400' --compute 'r=round(h, 1)' --compute 'l=log10(`End)`)' --compute 'm=min(Score, 0.07)' --compute 'a=abs(-`[Beg`)' --compute 'k=round(`[Beg`, -3)' --select h,r,l,m,a,k --tsv -n 3 "$B")" \
+    "$(printf 'h\tr\tl\tm\ta\tk\n0.25\t0.3\t2.3010299956639813\t0\t100\t0\n2.75\t2.8\t3.0791812460476247\t0.05\t1100\t1000\n5.25\t5.3\t3.342422680822206\t0.07\t2100\t2000')"
+assert_eq_file_inline "compute_nulls" \
+    "$("$VV" --compute 'z=`[Beg`/(Score-Score)' --compute 'lz=log2(Score)' --compute 'o=9223372036854775807+`[Beg`' --select z,lz,o --json -n 1 "$B")" \
+    '[{"z": null, "lz": null, "o": null}]'
+assert_eq_file_inline "compute_filter_sort" \
+    "$("$VV" --compute 'w=Score*100' --filter 'w >= 90' --sort w:desc --select Name,w --tsv "$B")" \
+    "$(printf 'Name\tw\npeak_19\t95\npeak_18\t90')"
+assert_eq_file_inline "compute_head_is_full_head" \
+    "$("$VV" --compute 'w=(`End)`-`[Beg`)*Score' -n 5 --tsv "$B")" \
+    "$("$VV" --compute 'w=(`End)`-`[Beg`)*Score' --tsv "$B" | head -n 6)"
+assert_eq_file_inline "compute_list_len" \
+    "$("$VV" --compute 'n=len(Tags)' --select n --tsv -n 3 "$DATA/tiny.parquet")" "$(printf 'n\n1\n2\n0')"
+assert_eq_file_inline "compute_after_expand" \
+    "$("$VV" --expand INFO --compute 'af2=AF*2' --select POS,af2 --tsv -n 2 "$DATA/tiny.vcf")" \
+    "$(printf 'POS\taf2\n100\t1\n500\t0.2')"
+assert_eq_file_inline "compute_samples_long" \
+    "$("$VV" --samples long --compute 'd=DP*2' --select sample,d --tsv -n 2 "$DATA/tiny.samples.bcf")" \
+    "$("$VV" --samples long --select sample,DP --tsv -n 2 "$DATA/tiny.samples.bcf" | awk -F'\t' 'NR == 1 {print "sample\td"; next} {print $1 "\t" $2 * 2}')"
+assert_eq_file_inline "compute_contigs" \
+    "$("$VV" --contigs --compute 'kb=length/1000' --select name,kb --tsv "$DATA/tiny.bam" | head -n 2)" \
+    "$(printf 'name\tkb\nchr1\t1')"
+"$VV" --compute 'w=End-Start' --parquet "$TMP/compute.parquet" "$DATA/tiny.parquet" 2>/dev/null
+assert_eq_file_inline "compute_parquet_export" "$("$VV" --select w --tsv -n 2 "$TMP/compute.parquet")" "$(printf 'w\n100\n100')"
+# A CSV run converts the columns a computed column reads, not every one.
+assert_contains "compute_csv_projection" \
+    "$(VV_DEBUG_PROJECTION=1 "$VV" --compute 'x=c4+c7' --select name,x --tsv "$TMP/wide.csv" 2>&1 >/dev/null)" \
+    "converting 3 of 23 columns: name,c4,c7"
+assert_eq_file_inline "compute_csv_projection_same" \
+    "$("$VV" --compute 'x=c4+c7' --sort x:desc --select name,x --tsv "$TMP/wide.csv")" \
+    "$(VV_NO_PROJECTION=1 "$VV" --compute 'x=c4+c7' --sort x:desc --select name,x --tsv "$TMP/wide.csv")"
+assert_eq_file_inline "compute_error_unknown" "$("$VV" --compute 'x=Scor*2' --tsv "$B" 2>&1 | sed "s|$DATA/||")" \
+    "vv: tiny.bed: --compute x: unknown column 'Scor' (did you mean 'Score'?)"
+assert_eq_file_inline "compute_error_text" "$("$VV" --compute 'x=Name+1' --tsv "$B" 2>&1 | sed "s|$DATA/||")" \
+    "vv: tiny.bed: --compute x: column 'Name' is string, not a number (len(Name) is its length)"
+assert_eq_file_inline "compute_error_syntax" "$("$VV" --compute 'x=(Score+' --tsv "$B" 2>&1 | sed "s|$DATA/||")" \
+    "$(printf 'vv: tiny.bed: --compute: expression ends early\n  x=(Score+\n           ^')"
+assert_contains "compute_error_exists" "$("$VV" --compute 'Score=1' --tsv "$B" 2>&1)" "a column named 'Score' exists already"
+assert_contains "compute_error_function" "$("$VV" --compute 'x=sqrt(Score)' --tsv "$B" 2>&1)" "unknown function 'sqrt'"
+assert_exit_code "compute_error_exit1" 1 "$VV" --compute 'x=nope' --tsv "$B"
+assert_exit_code "compute_missing_arg" 2 "$VV" --tsv --compute
 # --on-bad-row: a text row with the wrong number of fields. stop (the
 # default for a scripted run) ends the run with exit 1 and the row's file
 # line; skip drops it, null pads a short row with empty fields and cuts a

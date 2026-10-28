@@ -293,6 +293,21 @@ static int edit_distance(const std::string& a, const std::string& b, int max) {
     return prev[b.size()];
 }
 
+// The schema's column nearest to `probe`, for a did-you-mean; "" when none
+// is close. One edit per 4 characters (min 1, max 3) — tight enough that an
+// unrelated name is never suggested.
+std::string closest_column_name(const arrow::Schema& schema, const std::string& probe) {
+    const int budget = std::min(3, std::max(1, (int)probe.size() / 4));
+    int best = budget + 1;
+    std::string best_name;
+    for (int i = 0; i < schema.num_fields(); ++i) {
+        const std::string& f = schema.field(i)->name();
+        const int d = edit_distance(probe, f, budget);
+        if (d < best) { best = d; best_name = f; }
+    }
+    return best_name;
+}
+
 // Format the "unknown column(s) in --select" message, appending a did-you-mean
 // for each name that is close to a real field. Shared by every --select
 // consumer (delimited / markdown / json / parquet / arrow / describe) so the
@@ -329,16 +344,7 @@ std::string unknown_columns_error(const TabularSource& src,
         const std::string& probe =
             (names[k].size() > 1 && names[k][0] == '!') ? names[k].substr(1)
                                                         : names[k];
-        // Allow one edit per 4 characters (min 1, max 3) — tight enough that
-        // an unrelated name never gets suggested.
-        int budget = std::min(3, std::max(1, (int)probe.size() / 4));
-        int best = budget + 1;
-        std::string best_name;
-        for (int i = 0; i < schema->num_fields(); ++i) {
-            const std::string& f = schema->field(i)->name();
-            int d = edit_distance(probe, f, budget);
-            if (d < best) { best = d; best_name = f; }
-        }
+        const std::string best_name = closest_column_name(*schema, probe);
         if (!best_name.empty()) msg += " (did you mean '" + best_name + "'?)";
     }
     for (size_t k = 0; k < patterns.size(); ++k) {

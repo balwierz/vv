@@ -245,6 +245,16 @@ static void print_usage(const char* prog) {
         "  --schema            print schema + file metadata and exit\n"
         "                      (with --json: machine-readable; `rows` is null\n"
         "                      when the file has not been fully scanned)\n"
+        "  --compute <name=expr>  add a column computed from each row; repeat\n"
+        "                      for more (a later one may use an earlier one).\n"
+        "                      + - * / ( ), numbers, columns (`any name` in\n"
+        "                      backticks), len(col) (text / list length),\n"
+        "                      abs log10 log2 round(x[,digits]) min max.\n"
+        "                      int64 when every operand is an integer and no\n"
+        "                      / or log is used, else float64; a null operand,\n"
+        "                      a division by zero or log of x <= 0 gives null\n"
+        "                      e.g. --compute 'len=end-start' --sort len:desc\n"
+        "                           --compute 'gc=round(GC/len(seq), 3)'\n"
         "  --on-bad-row <how>  a text row with the wrong number of fields:\n"
         "                      stop (default: an error naming its line), skip\n"
         "                      it, or null (pad a short row with empty fields,\n"
@@ -609,6 +619,8 @@ Config parse_args(int argc, char** argv) {
             cfg.compression = argv[++i];
         } else if (!std::strcmp(argv[i], "--expand") && i + 1 < argc) {
             cfg.expand_col = argv[++i];
+        } else if (!std::strcmp(argv[i], "--compute") && i + 1 < argc) {
+            cfg.compute.push_back(argv[++i]);
         } else if (!std::strcmp(argv[i], "--on-bad-row") && i + 1 < argc) {
             cfg.on_bad_row = argv[++i];
         } else if (!std::strcmp(argv[i], "--bad-rows") && i + 1 < argc) {
@@ -814,7 +826,7 @@ Config parse_args(int argc, char** argv) {
                 "--arrow", "--feather",
                 "--compression", "--unique", "--value-counts", "--percentiles", "--sample", "--filter",
                 "--select", "--cols", "--image-mode", "--tab", "--theme",
-                "--expand", "--samples", "--matrix", "--on-bad-row", "--bad-rows",
+                "--expand", "--samples", "--matrix", "--on-bad-row", "--bad-rows", "--compute",
                 "--delimiter", "--in-delimiter", "-d", "--header",
                 "-f", "--fasta", "--box", "--index",
                 "--exclude-flags", "--ff", "--require-flags", "--rf",

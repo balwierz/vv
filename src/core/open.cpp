@@ -1119,7 +1119,8 @@ static bool vcf_sites_only_run(const Config& cfg) {
                           cfg.head_rows_set || cfg.tail_rows_set;
     if (!scripted || cfg.interactive) return false;
     if (cfg.schema_only || cfg.list_columns || cfg.list_tabs || cfg.gt_stats || cfg.flatten ||
-        cfg.contigs || cfg.heatmap || cfg.validate || cfg.stats_only || cfg.samples == "long")
+        cfg.contigs || cfg.heatmap || cfg.validate || cfg.stats_only || cfg.samples == "long" ||
+        !cfg.compute.empty())
         return false;
     if (!cfg.expand_col.empty() && cfg.expand_col != "INFO") return false;
     static const char* const kSite[] = {"CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO"};
@@ -1227,6 +1228,15 @@ static ColumnNeed csv_column_need(const Config& cfg) {
     }
     for (const auto& k : cfg.sort_then)
         if (!terms(k.col)) return ColumnNeed{};
+    if (!cfg.compute.empty()) {
+        // A computed column is made from the file's columns it reads.
+        std::vector<std::string> read, defined;
+        if (!compute_columns_read(cfg.compute, &read, &defined)) return ColumnNeed{};
+        std::erase_if(n.names, [&](const std::string& c) {
+            return std::find(defined.begin(), defined.end(), c) != defined.end();
+        });
+        n.names.insert(n.names.end(), read.begin(), read.end());
+    }
     n.filter = cfg.filter_expr;
     n.active = true;
     return n;

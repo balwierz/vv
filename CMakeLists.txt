@@ -392,7 +392,8 @@ endif()
 # plugins) and the fuzz harnesses. The CLI adds the argument parser, main()
 # and the ncurses viewers.
 set(VV_CORE_SOURCES
-    src/core/common.cpp   src/core/compress.cpp src/core/derived.cpp
+    src/core/common.cpp   src/core/compress.cpp src/core/compute.cpp
+    src/core/derived.cpp
     src/core/features.cpp
     src/core/formats.cpp
     src/core/filter.cpp   src/core/format_fast.cpp
