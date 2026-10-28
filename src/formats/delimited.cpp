@@ -1591,7 +1591,7 @@ public:
     std::string new_bad_log() {
         bad_log_ = std::make_shared<BadRowLog>();
         if (bad_rows_path_.empty()) return "";
-        bad_log_->out = std::fopen(bad_rows_path_.c_str(), "w");
+        bad_log_->out = std::fopen(bad_rows_path_.c_str(), "wb");   // LF lines on Windows too
         if (!bad_log_->out) return "--bad-rows: cannot write '" + bad_rows_path_ + "': " + std::strerror(errno);
         return "";
     }
