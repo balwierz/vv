@@ -982,13 +982,27 @@ std::vector<std::string>
 leading_zero_columns(const std::vector<std::string>& sample_lines, char delim,
               const std::vector<std::string>& col_names);
 
+// The columns a run of a CSV / TSV uses, as written on its command line:
+// exact names (--select, --sort keys, --unique), the --filter text (parsed
+// against the file's typed columns once they are known) and, for --count,
+// any one column. Inactive: every column.
+struct ColumnNeed {
+    bool active = false;
+    bool any_one = false;
+    std::vector<std::string> names;
+    std::string filter;
+};
+
 // What the run will read, decided before the open (open_source_dispatch).
 // `vcf_sites_only`: a VCF's lines are cut after INFO before Arrow parses
 // them — the run reads no FORMAT / sample column. `parse_threads` > 1: a
-// full scan, parsed on that many threads (ParallelCsvReader).
+// full scan, parsed on that many threads (ParallelCsvReader). `columns`: a
+// CSV / TSV converts only these (ConvertOptions::include_columns); the
+// source's schema is then those columns.
 struct DelimitedHints {
     bool vcf_sites_only = false;
     int  parse_threads  = 1;
+    ColumnNeed columns;
 };
 std::string open_delimited_source(const std::string& path, DelimKind kind, const std::string& region,
                                   std::unique_ptr<TabularSource>* out, char delim_override = 0,

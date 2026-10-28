@@ -2198,6 +2198,40 @@ for args in "--select CHROM,POS,REF,ALT --tsv" "--count --filter 'QUAL > 40'" "-
         "$(eval "\"\$VV\" $args \"\$TMP/sites.vcf\"" 2>&1)" \
         "$(eval "VV_NO_PROJECTION=1 \"\$VV\" $args \"\$TMP/sites.vcf\"" 2>&1)"
 done
+# CSV / TSV: a scripted run that names its columns exactly converts only
+# those (ConvertOptions::include_columns; GENCODE CSV, 28 columns, --select
+# two of them to TSV 0.33 s / 520 MB -> 0.21 s / 166 MB). The output equals
+# the full conversion's (VV_NO_PROJECTION=1), parallel (a full scan) and
+# serial (-n), with a header and without (f0, f1, … after the re-read); a
+# pattern, a range or an unknown name converts every column.
+awk 'BEGIN { srand(7); printf "id,name,score"; for (k = 0; k < 20; k++) printf ",c%d", k; printf "\n";
+             for (i = 0; i < 3000; i++) { printf "%d,g%d,%.3f", i, i % 37, (i * 7919 % 1000) / 1000;
+               for (k = 0; k < 20; k++) printf (k % 3 ? ",%d" : ",x%d"), (i * (k + 3)) % 997; printf "\n" } }' > "$TMP/wide.csv"
+awk 'BEGIN { for (i = 0; i < 3000; i++) { for (k = 0; k < 8; k++) printf (k ? "\t%d" : "%d"), (i * (k + 5)) % 991; printf "\n" } }' > "$TMP/nohdr.tsv"
+for case in "wide.csv|--count" "wide.csv|--count --filter 'score > 0.5'" "wide.csv|--select name,score --tsv" \
+            "wide.csv|--select name --filter 'c4 > 500' --tsv" "wide.csv|--select name --sort score:desc --sort id --tsv" \
+            "wide.csv|--describe --select score" "wide.csv|--unique name" "wide.csv|-n 5 --select score,name --tsv" \
+            "wide.csv|--distinct --select name --tsv" "wide.csv|--distinct --select name --count" \
+            "wide.csv|--distinct --count" "wide.csv|--select name,score --json" \
+            "wide.csv|--select 'c*' --tsv" "wide.csv|--select 2-3 --tsv" "wide.csv|--select nosuch --tsv" \
+            "nohdr.tsv|--select f2,f5 --tsv" "nohdr.tsv|--count --filter 'f3 > 500'"; do
+    f=${case%%|*}; args=${case#*|}
+    name=$(printf '%s_%s' "$f" "$args" | tr -c 'A-Za-z0-9' '_' | tr -s '_')
+    assert_eq_file_inline "csv_projection_same_$name" \
+        "$(eval "\"\$VV\" $args \"\$TMP/$f\"" 2>&1)" \
+        "$(eval "VV_NO_PROJECTION=1 \"\$VV\" $args \"\$TMP/$f\"" 2>&1)"
+done
+assert_contains "csv_projection_select" \
+    "$(VV_DEBUG_PROJECTION=1 "$VV" --select name --filter 'c4 > 500' --tsv "$TMP/wide.csv" 2>&1 >/dev/null)" \
+    "converting 2 of 23 columns: name,c4"
+assert_contains "csv_projection_count" \
+    "$(VV_DEBUG_PROJECTION=1 "$VV" --count "$TMP/wide.csv" 2>&1 >/dev/null)" "converting 1 of 23 columns: id"
+assert_contains "csv_projection_headerless" \
+    "$(VV_DEBUG_PROJECTION=1 "$VV" --select f2,f5 --tsv "$TMP/nohdr.tsv" 2>&1 >/dev/null)" "converting 2 of 8 columns: f2,f5"
+assert_eq_file_inline "csv_projection_none_for_pattern" \
+    "$(VV_DEBUG_PROJECTION=1 "$VV" --select 'c*' --tsv "$TMP/wide.csv" 2>&1 >/dev/null)" ""
+assert_eq_file_inline "csv_projection_none_for_table_view" \
+    "$(VV_DEBUG_PROJECTION=1 "$VV" -n 3 --select name "$TMP/wide.csv" 2>&1 >/dev/null)" ""
 # Delimited text: types come from the first 16 MiB as before, the rest is
 # parsed in smaller blocks with every column pinned to those types (GENCODE
 # CSV.gz --count 1.59 s / 2.5 GB -> 0.92 s / 0.46 GB). Results equal the
@@ -2221,9 +2255,13 @@ w("blk_longlater.tsv", 2_000_000, tail="9\t" + "y" * 3_000_000 + "\n", text=True
 PYBLK
     for f in blk_typeearly blk_typelater blk_longlater; do
         assert_eq_file_inline "csv_small_blocks_same_$f" \
-            "$("$VV" --count "$TMP/$f.tsv" 2>&1 | sed "s|$TMP/||")" \
-            "$(VV_CSV_NO_SMALL_BLOCKS=1 "$VV" --count "$TMP/$f.tsv" 2>&1 | sed "s|$TMP/||")"
+            "$(VV_NO_PROJECTION=1 "$VV" --count "$TMP/$f.tsv" 2>&1 | sed "s|$TMP/||")" \
+            "$(VV_NO_PROJECTION=1 VV_CSV_NO_SMALL_BLOCKS=1 "$VV" --count "$TMP/$f.tsv" 2>&1 | sed "s|$TMP/||")"
     done
+    # --count converts one column: a bad value in another one does not stop
+    # it; a run that reads that column still fails.
+    assert_eq_file_inline "csv_projection_count_skips_unused_column" "$("$VV" --count "$TMP/blk_typelater.tsv" 2>&1)" "2000001"
+    assert_exit_code "csv_projection_used_column_still_fails" 1 "$VV" --select val --tsv "$TMP/blk_typelater.tsv"
     assert_eq_file_inline "csv_small_blocks_type_inside_sample_is_text" \
         "$("$VV" --schema "$TMP/blk_typeearly.tsv" | awk '$1 == "val" {print $2}')" "string"
     assert_eq_file_inline "csv_small_blocks_long_line_reads" "$("$VV" --count "$TMP/blk_longlater.tsv")" "2000001"

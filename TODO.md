@@ -243,9 +243,6 @@ user-facing summary).
   `VcfSamplesSource` (`src/core/derived.cpp`) still derives
   the whole first chunk for a head read; delegating to the inner source's
   `read_first` would derive only the rows shown.
-- **CSV column projection.** `ConvertOptions::include_columns` is never set,
-  so `--select`, `--count` and `--describe --select` convert every column
-  (parsing stays serial, see above).
 - **Remaining reader stages:** XLSX now defers sibling sheet parsing; ODS
   defers Arrow conversion, but still buffers the whole XML/all-sheet CSV.
   Follow with selected-sheet streaming only if schema inference stays stable.
@@ -258,6 +255,11 @@ user-facing summary).
   first NUL byte (`finish_csv_field`, `src/core/format_fast.cpp`).
 
 ### Done
+- CSV / TSV column projection: a scripted run that names its columns
+  exactly converts only those (`ColumnNeed`, `ConvertOptions::include_columns`;
+  GENCODE CSV `--select` two columns 0.33 s / 520 MB -> 0.21 s / 166 MB).
+  Not yet for VCF beyond the sites cut, BEDPE / PLINK / BLAST / 10x layouts,
+  patterns / ranges in `--select`, or the table view.
 - **Wide VCF text** (2026-10-21): a run that reads no sample column cuts each
   line after INFO before parsing — the chr22 1000 Genomes sites to TSV
   29.6 s / 3.2 GB → 6.1 s / 0.35 GB (bcftools query 2.0 s). A run that shows

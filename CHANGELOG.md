@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the same `vv.exe`, `vvg.exe` and DLLs, run from wherever it is unzipped,
   with no installation or administrator rights.
 
+### Changed
+- CSV / TSV: a run that names its columns (`--select`, `--filter`,
+  `--sort`, `--unique`, and `--count`, which needs none) converts only
+  those. On the 28-column GENCODE CSV, `--select gene_name,start --tsv`
+  takes 0.21 s / 166 MB instead of 0.33 s / 520 MB and `--count` 0.18 s /
+  173 MB instead of 0.29 s / 499 MB. A `--count` no longer fails on a bad
+  value in a column it does not read. `VV_NO_PROJECTION=1` converts every
+  column as before.
+
 ## [1.33.0] - 2026-10-24
 
 ### Added

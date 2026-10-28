@@ -393,6 +393,13 @@ public:
         ropts_.skip_rows_after_names = 0;
         copts_.column_types.clear();
         for (const auto& f : schema_->fields()) copts_.column_types[f->name()] = f->type();
+        // Converted columns only (include_columns): the blocks' batches hold
+        // those, in that order.
+        if (!copts_.include_columns.empty()) {
+            arrow::FieldVector fv;
+            for (const auto& n : copts_.include_columns) fv.push_back(schema_->GetFieldByName(n));
+            schema_ = arrow::schema(std::move(fv));
+        }
     }
     ~ParallelCsvReader() override {
         for (auto& f : inflight_) if (f.valid()) f.wait();
@@ -863,6 +870,8 @@ class DelimitedSource : public TabularSource {
     bool vcf_sites_only_ = false;  // VCF lines cut after INFO (no sample column read)
     int  parse_threads_  = 1;      // > 1: a full scan, parsed in parallel
     int  cut_fields_     = 0;      // > 0: make_reader cuts lines to that many fields
+    ColumnNeed need_;              // the columns the run uses (CSV / TSV; see make_reader)
+    std::shared_ptr<arrow::Schema> full_schema_;   // every column, when only some are converted
     mutable arrow::Status                 read_status_;   // sticky stream error
 
     // Append a freshly-decoded batch via the shared bounded-window helper.
@@ -957,7 +966,44 @@ class DelimitedSource : public TabularSource {
         return "";
     }
 
-    // Create a StreamingReader from an already-open stream.
+    // The columns `need` uses, by name in `typed`'s order (ConvertOptions::
+    // include_columns); empty = every column: a name that is not exactly one
+    // column, an unnamed or repeated column, a filter that does not parse
+    // (its error is reported later, against the whole file), or all of them.
+    static std::vector<std::string> project_columns(const ColumnNeed& need, const arrow::Schema& typed) {
+        if (!need.active || typed.num_fields() == 0) return {};
+        std::unordered_map<std::string, int> seen;
+        for (const auto& f : typed.fields())
+            if (f->name().empty() || ++seen[f->name()] > 1) return {};
+        std::set<int> keep;
+        for (const auto& n : need.names) {
+            const int i = typed.GetFieldIndex(n);
+            if (i < 0) return {};
+            keep.insert(i);
+        }
+        if (!need.filter.empty()) {
+            FilterExpr fx;
+            std::string err;
+            if (!parse_filter_expr(need.filter, typed, &fx, &err)) return {};
+            for (const auto& g : fx.groups)
+                for (const auto& a : g) keep.insert(a.col_idx);
+        }
+        if (keep.empty() && need.any_one) keep.insert(0);
+        if (keep.empty() || (int)keep.size() == typed.num_fields()) return {};
+        std::vector<std::string> out;
+        for (int i : keep) out.push_back(typed.field(i)->name());
+        if (const char* d = std::getenv("VV_DEBUG_PROJECTION"); d && *d && *d != '0') {
+            std::string list;
+            for (const auto& n : out) list += (list.empty() ? "" : ",") + n;
+            std::fprintf(stderr, "vv: converting %zu of %d columns: %s\n", out.size(), typed.num_fields(),
+                         list.c_str());
+        }
+        return out;
+    }
+
+    // Create a StreamingReader from an already-open stream. With `need`, only
+    // the columns it uses are converted once the types are known (the reader's
+    // schema is then those); `full_out` gets every column's name and type.
     static arrow::Result<std::shared_ptr<arrow::RecordBatchReader>>
     make_reader(std::shared_ptr<arrow::io::InputStream> input, char delim,
                 bool autogen_names, const std::vector<std::string>& col_names,
@@ -967,7 +1013,9 @@ class DelimitedSource : public TabularSource {
                     column_types = {},
                 std::shared_ptr<ReadGate>* gate_out = nullptr,
                 const std::vector<std::string>& extra_nulls = {},
-                int parse_threads = 1, int cut_to_fields = 0) {
+                int parse_threads = 1, int cut_to_fields = 0,
+                const ColumnNeed* need = nullptr,
+                std::shared_ptr<arrow::Schema>* full_out = nullptr) {
         if (gate_out) {
             *gate_out = std::make_shared<ReadGate>();
             input = std::make_shared<GatedInputStream>(std::move(input), *gate_out);
@@ -1064,6 +1112,10 @@ class DelimitedSource : public TabularSource {
                         for (const auto& n : col_names) fv.push_back(arrow::field(n, copts.column_types[n]));
                         typed = arrow::schema(fv);
                     }
+                }
+                if (typed) {
+                    if (full_out) *full_out = typed;
+                    if (need) copts.include_columns = project_columns(*need, *typed);
                 }
                 // A full scan with several threads: parse blocks in parallel,
                 // every type known. The header row (CSV / TSV: names not given
@@ -1303,6 +1355,7 @@ public:
         self->kind_      = kind;
         self->vcf_sites_only_ = hints.vcf_sites_only && kind == DelimKind::VCF;
         self->parse_threads_  = std::max(1, hints.parse_threads);
+        if (kind == DelimKind::CSV || kind == DelimKind::TSV) self->need_ = hints.columns;
         self->dialect_   = dialect;
         self->paf_tags_  = paf_tags;
         if (!paf_tags.empty()) self->paf_tag_types_ = paf_tag_types(path, paf_tags);
@@ -1684,7 +1737,8 @@ private:
         }
         auto r = make_reader(input, self->delimiter_, autogen, col_names,
                              force_string, strings_nullable, col_types, &self->gate_,
-                             extra_nulls, self->parse_threads_, self->cut_fields_);
+                             extra_nulls, self->parse_threads_, self->cut_fields_,
+                             self->need_.active ? &self->need_ : nullptr, &self->full_schema_);
         if (!r.ok()) {
             // A region query whose window overlaps no records leaves the tabix
             // stream empty, and Arrow's CSV reader rejects empty input with
@@ -1735,10 +1789,12 @@ private:
             if (self->header_mode_ == HeaderMode::Off) {
                 headerless = true;                       // user forced --header off
             } else {                                     // HeaderMode::Auto
+                // Every column, also those the run does not convert.
+                const auto& all = self->full_schema_ ? self->full_schema_ : self->schema_;
                 int informative = 0, broken = 0;
-                for (int i = 0; i < self->schema_->num_fields(); ++i) {
-                    auto id = self->schema_->field(i)->type()->id();
-                    const std::string& nm = self->schema_->field(i)->name();
+                for (int i = 0; i < all->num_fields(); ++i) {
+                    auto id = all->field(i)->type()->id();
+                    const std::string& nm = all->field(i)->name();
                     bool numeric =
                         id == arrow::Type::INT8   || id == arrow::Type::INT16  ||
                         id == arrow::Type::INT32  || id == arrow::Type::INT64  ||
@@ -1767,9 +1823,13 @@ private:
                     std::vector<std::string> force2 = detect_leading_zero_columns(
                         path, is_gz, self->delimiter_, {}, /*headerless=*/true);
                     std::shared_ptr<ReadGate> gate2;
+                    // The columns are named f0, f1, … now: the run's names
+                    // are looked up again.
+                    self->full_schema_.reset();
                     auto r2 = make_reader(input2, self->delimiter_,
                                           /*autogen=*/true, {}, force2,
-                                          /*strings_nullable=*/true, {}, &gate2);
+                                          /*strings_nullable=*/true, {}, &gate2, {}, 1, 0,
+                                          self->need_.active ? &self->need_ : nullptr, &self->full_schema_);
                     if (r2.ok()) {
                         close_stream_reader(self->reader_, self->gate_);
                         self->gate_ = std::move(gate2);

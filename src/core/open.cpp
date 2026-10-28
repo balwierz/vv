@@ -1174,6 +1174,64 @@ static bool delimited_full_scan_run(const Config& cfg) {
            !cfg.unique_cols.empty() || cfg.distinct || cfg.sample_n > 0 || cfg.tail_rows_set;
 }
 
+// The columns a scripted run of a plain CSV / TSV uses (ColumnNeed), when
+// every one is named exactly: --select / --unique terms that are plain names
+// (no pattern, range, !exclusion or @type), --sort keys, the --filter text,
+// and for --count any one column. Inactive for a run that shows every
+// column, the table view (its footer lists them all), the TUI and vvg (they
+// never pass hints), and under VV_NO_PROJECTION=1 (the tests compare both
+// paths).
+static ColumnNeed csv_column_need(const Config& cfg) {
+    ColumnNeed n;
+    if (const char* e = std::getenv("VV_NO_PROJECTION"); e && *e && *e != '0') return n;
+    // Not the table view: its footer lists every column of the file.
+    const bool scripted = cfg.delimiter || cfg.json_array || cfg.json_lines || cfg.md ||
+                          !cfg.parquet_out.empty() || !cfg.arrow_out.empty() || cfg.count ||
+                          cfg.describe || !cfg.unique_cols.empty() || cfg.distinct;
+    if (!scripted || cfg.interactive) return n;
+    if (cfg.schema_only || cfg.list_columns || cfg.list_tabs || cfg.flatten || !cfg.expand_col.empty() ||
+        cfg.heatmap || cfg.validate || cfg.stats_only || cfg.contigs || cfg.sample_n > 0 ||
+        cfg.tail_rows_set)
+        return n;
+    auto plain = [](std::string t, std::string* out) {
+        while (!t.empty() && (t.front() == ' ' || t.front() == '\t')) t.erase(t.begin());
+        while (!t.empty() && (t.back() == ' ' || t.back() == '\t')) t.pop_back();
+        if (t.empty() || t[0] == '!' || t[0] == '@' || t.find_first_of("*?[") != std::string::npos) return false;
+        if (t.find_first_not_of("0123456789-") == std::string::npos) return false;   // an index or range
+        *out = t;
+        return true;
+    };
+    auto terms = [&](const std::string& list) {
+        size_t b = 0;
+        for (;;) {
+            const size_t e = list.find(',', b);
+            std::string t;
+            if (!plain(list.substr(b, e == std::string::npos ? std::string::npos : e - b), &t)) return false;
+            n.names.push_back(t);
+            if (e == std::string::npos) return true;
+            b = e + 1;
+        }
+    };
+    // --distinct compares whole rows unless --select names the columns.
+    if (cfg.distinct && cfg.select_cols.empty()) return n;
+    if (cfg.count && !cfg.distinct) n.any_one = true;
+    else if (!cfg.select_cols.empty()) { if (!terms(cfg.select_cols)) return ColumnNeed{}; }
+    else if (cfg.unique_cols.empty()) return ColumnNeed{};    // every column is shown
+    if (!cfg.unique_cols.empty() && !terms(cfg.unique_cols)) return ColumnNeed{};
+    if (!cfg.sort_col.empty()) {
+        std::string c = cfg.sort_col;
+        for (const char* suf : {":desc", ":asc"})
+            if (c.size() > std::strlen(suf) && c.compare(c.size() - std::strlen(suf), std::string::npos, suf) == 0)
+                c.resize(c.size() - std::strlen(suf));
+        if (!terms(c)) return ColumnNeed{};
+    }
+    for (const auto& k : cfg.sort_then)
+        if (!terms(k.col)) return ColumnNeed{};
+    n.filter = cfg.filter_expr;
+    n.active = true;
+    return n;
+}
+
 static DelimitedHints delimited_hints(const Config& cfg, DelimKind dk) {
     DelimitedHints h;
     h.vcf_sites_only = dk == DelimKind::VCF && vcf_sites_only_run(cfg);
@@ -1845,9 +1903,15 @@ static std::string dispatch_by_kind(const std::string& path, const Config& cfg,
         if (!terr.empty()) return terr;
     }
     std::unique_ptr<TabularSource> src;
+    DelimitedHints hints = delimited_hints(cfg, dk);
+    // Columns renamed by position after the open (10x sidecars, PLINK /
+    // BLAST names, BEDPE) or other layouts: every column.
+    if ((dk == DelimKind::CSV || dk == DelimKind::TSV) && dialect == TsvDialect::None && !tenx &&
+        !named_headerless)
+        hints.columns = csv_column_need(cfg);
     std::string err = open_delimited_source(path, dk, cfg.region, &src, delim_override,
                                             headerless ? HeaderMode::Off : cfg.header, dialect,
-                                            paf_tags, delimited_hints(cfg, dk));
+                                            paf_tags, hints);
     if (!err.empty()) return err;
     // BEDPE has no header row unless it starts with a "#chrom1 …" line (read
     // as the header); without one, name the bedtools columns.
