@@ -227,9 +227,15 @@ user-facing summary).
 - **Parquet directories:** raw `.parquet` children now supply row-group counts
   from footers and preserve projection. Other dataset formats and compressed
   children retain the streaming fallback.
-- **Parquet row-group read-ahead** for exports and the TUI: decode is under
-  10 % of an export after the threaded formatter (12.2 M rows, `--tsv`
-  1.7 s); worth it on cold network storage only.
+- **Parquet row-group read-ahead** — measured 2026-10-28 and not done: on
+  the NFS share (/genomics, 374 MB / 64 row groups / 67 M rows, page cache
+  evicted before each run, output through a pipe) a cold `--tsv` export
+  takes 0.86 s, a warm one 0.84 s — Arrow's pre-buffering and the threaded
+  formatter already hide the I/O. A prototype that asked the kernel for
+  the next row group's byte ranges (GetReadRanges + posix_fadvise WILLNEED)
+  gave 0.93 s (`--tsv`), 0.58 s vs 0.68 s (`--select POS`) and no change
+  (`-n 20M`): no consistent gain. Revisit only for slower storage (S3 /
+  HTTP), where a one-group lookahead would need Arrow's own async reads.
 - **HDF5 viewport reads:** metadata-backed projected blocks and a bounded
   dataset-handle/raw-chunk cache are implemented. Frames, 1-D arrays, dense
   and CSR expose all rows. CSC remains row-capped and matrices column-capped;
