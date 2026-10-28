@@ -5,6 +5,8 @@
 
 #include "internal.hpp"
 
+#include <mutex>
+
 // ── Tabular source abstraction ────────────────────────────────────────────────
 //
 // Common interface for Parquet, CSV, TSV, BED, etc.
@@ -344,4 +346,20 @@ std::string unknown_columns_error(const TabularSource& src,
         msg += patterns[k] + " (pattern matched no column)";
     }
     return msg;
+}
+
+static std::mutex       g_chunk_error_mutex;
+static arrow::Status    g_chunk_error;
+
+void note_chunk_error(const arrow::Status& st) {
+    if (st.ok()) return;
+    std::lock_guard<std::mutex> lock(g_chunk_error_mutex);
+    if (g_chunk_error.ok()) g_chunk_error = st;
+}
+
+arrow::Status run_read_status(const TabularSource& src) {
+    arrow::Status st = src.read_status();
+    if (!st.ok()) return st;
+    std::lock_guard<std::mutex> lock(g_chunk_error_mutex);
+    return g_chunk_error;
 }

@@ -1075,7 +1075,7 @@ std::vector<int64_t> filter_rows(TabularSource& src, const FilterExpr& expr,
         if (cancelled()) return {};
         ChunkMeta m = src.chunk_meta(c);
         std::shared_ptr<arrow::Table> tbl;
-        if (!src.read_chunk(c, all, &tbl).ok() || !tbl) continue;
+        if (auto st = src.read_chunk(c, all, &tbl); !st.ok() || !tbl) { note_chunk_error(st); continue; }
         for_each_match(*tbl, expr, all, [&](int64_t r) { keep.push_back(m.first_row + r); });
     }
     return keep;

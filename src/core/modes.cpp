@@ -183,7 +183,7 @@ int emit_text_stream(TabularSource& src, const Config& cfg) {
         src.ensure(c);
         if (c >= src.num_chunks()) break;
         std::shared_ptr<arrow::Table> tbl;
-        if (!src.read_chunk(c, col, &tbl).ok() || !tbl) continue;
+        if (auto st = src.read_chunk(c, col, &tbl); !st.ok() || !tbl) { note_chunk_error(st); continue; }
         if (have_filter) {
             tbl = apply_filter(tbl, fx, col);
             if (!tbl) continue;
@@ -218,9 +218,9 @@ int emit_text_stream(TabularSource& src, const Config& cfg) {
         // ended without one AND we printed all the way to the end.
         if (truncated || final_newline) std::fputc('\n', stdout);
     }
-    if (!src.read_status().ok()) {
+    if (!run_read_status(src).ok()) {
         std::fprintf(stderr, "vv: %s: %s\n", cfg.path.c_str(),
-                     shorten_reader_error(src.read_status().ToString()).c_str());
+                     shorten_reader_error(run_read_status(src).ToString()).c_str());
         return 1;
     }
     return 0;
@@ -368,8 +368,8 @@ std::string open_view_source(Config cfg, std::unique_ptr<TabularSource>* out) {
         return err.empty() ? "cannot open '" + cfg.path + "'" : err;
     if (!cfg.tab.empty())
         if (auto err = select_tab(src, cfg.tab); !err.empty()) return err;
-    if (!src->read_status().ok())
-        return shorten_reader_error(src->read_status().ToString());
+    if (!run_read_status(*src).ok())
+        return shorten_reader_error(run_read_status(*src).ToString());
     *out = std::move(src);
     return "";
 }
@@ -446,8 +446,8 @@ std::string export_view(const Config& cfg_in, const std::string& out_path,
         if (std::fclose(f) != 0 || bad)
             if (err.empty()) err = "write to '" + part + "' failed: " + std::strerror(errno);
     }
-    if (err.empty() && !src->read_status().ok())
-        err = shorten_reader_error(src->read_status().ToString());
+    if (err.empty() && !run_read_status(*src).ok())
+        err = shorten_reader_error(run_read_status(*src).ToString());
     if (err.empty() && progress && progress->cancel.load()) err = kExportCanceled;
     if (!err.empty()) {
         std::remove(part.c_str());

@@ -295,6 +295,7 @@ std::string write_delimited(TabularSource& src, const Config& cfg) {
         if (!st.ok()) {
             std::fprintf(stderr, "Warning: error reading chunk %d: %s\n",
                          c, st.ToString().c_str());
+            note_chunk_error(st);
             continue;
         }
         if (have_filter) table = apply_filter(table, fx, col_indices);
@@ -410,6 +411,7 @@ std::string write_markdown(TabularSource& src, const Config& cfg) {
         if (!st.ok()) {
             std::fprintf(stderr, "Warning: error reading chunk %d: %s\n",
                          c, st.ToString().c_str());
+            note_chunk_error(st);
             continue;
         }
         if (have_filter) table = apply_filter(table, fx, col_indices);
@@ -530,6 +532,7 @@ std::string write_parquet(TabularSource& src, const Config& cfg) {
         if (!st.ok()) {
             std::fprintf(stderr, "Warning: error reading chunk %d: %s\n",
                          c, st.ToString().c_str());
+            note_chunk_error(st);
             continue;
         }
         if (have_filter) table = apply_filter(table, fx, col_indices);
@@ -673,6 +676,7 @@ std::string write_arrow(TabularSource& src, const Config& cfg) {
         if (!st.ok()) {
             std::fprintf(stderr, "Warning: error reading chunk %d: %s\n",
                          c, st.ToString().c_str());
+            note_chunk_error(st);
             continue;
         }
         if (have_filter) table = apply_filter(table, fx, col_indices);
@@ -905,7 +909,7 @@ std::string write_json(TabularSource& src, const Config& cfg) {
         src.ensure(c);
         if (c >= src.num_chunks()) break;
         std::shared_ptr<arrow::Table> chunk;
-        if (!src.read_chunk(c, read_set, &chunk).ok()) continue;
+        if (auto st = src.read_chunk(c, read_set, &chunk); !st.ok()) { note_chunk_error(st); continue; }
         if (have_filter) chunk = apply_filter(chunk, fx, read_set);
         if (!chunk || chunk->num_rows() == 0) continue;
         const int64_t take = std::min(chunk->num_rows(), rows_left);

@@ -861,6 +861,14 @@ static void close_stream_reader(std::shared_ptr<Reader>& reader,
     reader.reset();
 }
 
+// A chunk a whole-file pass could not read is skipped, its rows missing.
+// note_chunk_error() keeps the first such error of the run, and
+// run_read_status() is the source's own read status or, when that is OK,
+// that error — so the run still ends in an error (exit 1) instead of a short
+// output that looks complete.
+void note_chunk_error(const arrow::Status& st);
+arrow::Status run_read_status(const TabularSource& src);
+
 std::vector<int> select_field_indices(
  const TabularSource& src, const Config& cfg,
  std::vector<std::string>* unknown_out = nullptr,

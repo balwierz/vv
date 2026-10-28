@@ -709,7 +709,7 @@ static std::shared_ptr<arrow::Table> read_filtered(TabularSource& src, int c,
                                                    const std::vector<int>& cols,
                                                    const FilterExpr& fx, bool have_filter) {
     std::shared_ptr<arrow::Table> tbl;
-    if (!src.read_chunk(c, cols, &tbl).ok() || !tbl) return nullptr;
+    if (auto st = src.read_chunk(c, cols, &tbl); !st.ok() || !tbl) { note_chunk_error(st); return nullptr; }
     if (have_filter) tbl = apply_filter(tbl, fx, cols);
     if (!tbl || tbl->num_rows() == 0) return nullptr;
     return tbl;
@@ -860,7 +860,8 @@ std::string build_tail(std::unique_ptr<TabularSource>& src,
         for (int i = 0; i <= c; ++i) {
             if (!have_filter) { M += src->chunk_meta(i).num_rows; continue; }
             std::shared_ptr<arrow::Table> t;
-            if (src->read_chunk(i, fcols, &t).ok() && t) M += count_filter_matches(*t, fx, fcols);
+            if (auto st = src->read_chunk(i, fcols, &t); st.ok() && t) M += count_filter_matches(*t, fx, fcols);
+            else note_chunk_error(st);
         }
     } else {
         for (int c = 0; ; ++c) {
@@ -986,7 +987,10 @@ bool sort_rows_by_columns(TabularSource& src, const std::vector<std::pair<int, b
         src.ensure(c);
         if (c >= src.num_chunks()) break;
         std::shared_ptr<arrow::Table> t;
-        if (!src.read_chunk(c, cols, &t).ok() || !t || t->num_columns() != (int)cols.size()) continue;
+        if (auto st = src.read_chunk(c, cols, &t); !st.ok() || !t || t->num_columns() != (int)cols.size()) {
+            note_chunk_error(st);
+            continue;
+        }
         const int64_t first = src.chunk_meta(c).first_row;
         for (int64_t i = 0; i < t->num_rows(); ++i) src_row.push_back(first + i);
         for (size_t k = 0; k < cols.size(); ++k)
@@ -1165,7 +1169,7 @@ std::string build_row_subset(std::unique_ptr<TabularSource>& src,
         src->ensure(c);
         if (c >= src->num_chunks()) break;
         std::shared_ptr<arrow::Table> t;
-        if (!src->read_chunk(c, all, &t).ok() || !t) continue;
+        if (auto st = src->read_chunk(c, all, &t); !st.ok() || !t) { note_chunk_error(st); continue; }
         const int64_t first = src->chunk_meta(c).first_row, end = first + t->num_rows();
         std::vector<int64_t> local;
         for (; w < want.size() && want[w] < end; ++w)

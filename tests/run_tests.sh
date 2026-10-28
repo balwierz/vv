@@ -2198,6 +2198,32 @@ for args in "--select CHROM,POS,REF,ALT --tsv" "--count --filter 'QUAL > 40'" "-
         "$(eval "\"\$VV\" $args \"\$TMP/sites.vcf\"" 2>&1)" \
         "$(eval "VV_NO_PROJECTION=1 \"\$VV\" $args \"\$TMP/sites.vcf\"" 2>&1)"
 done
+# Long form is derived in slices of records whose output stays under a
+# budget (a chunk of 32 768 BCF records × 2,504 samples passed Arrow's 2 GB
+# per string array, and the chunk was dropped with a warning and exit 0).
+# One record per slice (VV_SAMPLES_SLICE_BYTES=1) gives the same output.
+for f in "$DATA/tiny.samples.bcf" "$TMP/sites.vcf"; do
+    for lay in struct long; do
+        for args in "--tsv" "--count" "-n 4 --tsv" "--select POS,sample,GT --tsv"; do
+            assert_eq_file_inline "vcf_samples_slices_same_$(basename "$f" | tr -c 'a-z0-9' _)_${lay}_$(printf '%s' "$args" | tr -c 'A-Za-z0-9' _)" \
+                "$(VV_SAMPLES_SLICE_BYTES=1 "$VV" $args --samples "$lay" "$f" 2>&1)" \
+                "$("$VV" $args --samples "$lay" "$f" 2>&1)"
+        done
+    done
+done
+# A chunk that cannot be read is no longer skipped silently: the run ends
+# with its error and exit 1 (VV_TEST_FAIL_CHUNK fails chunk N of the samples
+# source); a count that reads no chunk is unaffected.
+for args in "--tsv" "--json" "--md" "--describe --select POS" "--unique POS" "--sort POS --tsv" \
+            "--distinct --select POS --tsv" "--count --filter 'POS > 0'"; do
+    name=$(printf '%s' "$args" | tr -c 'A-Za-z0-9' '_' | tr -s '_')
+    assert_contains "chunk_error_fails_run_$name" \
+        "$(eval "VV_TEST_FAIL_CHUNK=0 \"\$VV\" $args --samples long \"\$DATA/tiny.samples.bcf\"" 2>&1 >/dev/null; echo "rc=$?")" \
+        "chunk 0 failed (VV_TEST_FAIL_CHUNK)"
+    assert_exit_code "chunk_error_exit1_$name" 1 sh -c "VV_TEST_FAIL_CHUNK=0 \"\$0\" $args --samples long \"\$1\"" "$VV" "$DATA/tiny.samples.bcf"
+done
+assert_eq_file_inline "chunk_error_count_unaffected" \
+    "$(VV_TEST_FAIL_CHUNK=0 "$VV" --count --samples long "$DATA/tiny.samples.bcf" 2>&1)" "$("$VV" --count --samples long "$DATA/tiny.samples.bcf")"
 # A samples preview (-n) derives only the records it shows (in long form a
 # record is one row per sample); its rows equal the full output's first.
 for f in "$DATA/tiny.samples.bcf" "$TMP/sites.vcf"; do

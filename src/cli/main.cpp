@@ -428,8 +428,8 @@ int main(int argc, char** argv) {
         // A component that failed to read (e.g. an HDF5 dataset compressed with
         // a codec this build lacks) is reported here, before any output mode
         // would print its error placeholder as if it were data.
-        if (!src->read_status().ok()) {
-            report(cfg.path, shorten_reader_error(src->read_status().ToString()));
+        if (!run_read_status(*src).ok()) {
+            report(cfg.path, shorten_reader_error(run_read_status(*src).ToString()));
             return 1;
         }
     }
@@ -527,6 +527,10 @@ int main(int argc, char** argv) {
     if (cfg.describe) {
         std::string err = print_describe(*src, cfg);
         if (!err.empty()) { report(cfg.path, err); return 1; }
+        if (!run_read_status(*src).ok()) {
+            report(cfg.path, shorten_reader_error(run_read_status(*src).ToString()));
+            return 1;
+        }
         return 0;
     }
 
@@ -565,12 +569,12 @@ int main(int argc, char** argv) {
                 src->ensure(c);
                 if (c >= src->num_chunks()) break;
                 std::shared_ptr<arrow::Table> tbl;
-                if (!src->read_chunk(c, read_set, &tbl).ok() || !tbl) continue;
+                if (auto st = src->read_chunk(c, read_set, &tbl); !st.ok() || !tbl) { note_chunk_error(st); continue; }
                 total += count_filter_matches(*tbl, fx, read_set);
             }
         }
-        if (!src->read_status().ok()) {
-            report(cfg.path, shorten_reader_error(src->read_status().ToString()));
+        if (!run_read_status(*src).ok()) {
+            report(cfg.path, shorten_reader_error(run_read_status(*src).ToString()));
             return 1;
         }
         if (cfg.json_array || cfg.json_lines)
@@ -584,6 +588,10 @@ int main(int argc, char** argv) {
     if (cfg.heatmap) {
         std::string err = render_heatmap(*src, cfg);
         if (!err.empty()) { report(cfg.path, err); return 1; }
+        if (!run_read_status(*src).ok()) {
+            report(cfg.path, shorten_reader_error(run_read_status(*src).ToString()));
+            return 1;
+        }
         return 0;
     }
 
@@ -591,6 +599,10 @@ int main(int argc, char** argv) {
     if (!cfg.unique_cols.empty()) {
         std::string err = print_unique(*src, cfg);
         if (!err.empty()) { report(cfg.path, err); return 1; }
+        if (!run_read_status(*src).ok()) {
+            report(cfg.path, shorten_reader_error(run_read_status(*src).ToString()));
+            return 1;
+        }
         return 0;
     }
 
@@ -673,8 +685,8 @@ int main(int argc, char** argv) {
         if (!err.empty()) { report(cfg.path, err); return 1; }
         // A streaming source that hit a parse/I/O error mid-file has emitted a
         // truncated result; report it and exit non-zero so pipelines can tell.
-        if (!src->read_status().ok()) {
-            report(cfg.path, shorten_reader_error(src->read_status().ToString()));
+        if (!run_read_status(*src).ok()) {
+            report(cfg.path, shorten_reader_error(run_read_status(*src).ToString()));
             return 1;
         }
         return 0;
@@ -686,8 +698,8 @@ int main(int argc, char** argv) {
         if (!mcfg.head_rows_set) mcfg.head_rows = 0;
         std::string err = write_markdown(*src, mcfg);
         if (!err.empty()) { report(cfg.path, err); return 1; }
-        if (!src->read_status().ok()) {
-            report(cfg.path, shorten_reader_error(src->read_status().ToString()));
+        if (!run_read_status(*src).ok()) {
+            report(cfg.path, shorten_reader_error(run_read_status(*src).ToString()));
             return 1;
         }
         return 0;
@@ -769,8 +781,8 @@ int main(int argc, char** argv) {
         if (!werr.empty()) { report(cfg.path, werr); return 1; }
         // A streaming source that hit a parse/I/O error mid-file has emitted a
         // truncated result; report it and exit non-zero so pipelines can tell.
-        if (!src->read_status().ok()) {
-            report(cfg.path, shorten_reader_error(src->read_status().ToString()));
+        if (!run_read_status(*src).ok()) {
+            report(cfg.path, shorten_reader_error(run_read_status(*src).ToString()));
             return 1;
         }
         return 0;
@@ -786,8 +798,8 @@ int main(int argc, char** argv) {
             return 1;
         }
         // Never hand back a silently truncated conversion.
-        if (!src->read_status().ok()) {
-            report(cfg.path, shorten_reader_error(src->read_status().ToString()));
+        if (!run_read_status(*src).ok()) {
+            report(cfg.path, shorten_reader_error(run_read_status(*src).ToString()));
             return 1;
         }
         return 0;
@@ -802,8 +814,8 @@ int main(int argc, char** argv) {
             report(cfg.path, err);
             return 1;
         }
-        if (!src->read_status().ok()) {
-            report(cfg.path, shorten_reader_error(src->read_status().ToString()));
+        if (!run_read_status(*src).ok()) {
+            report(cfg.path, shorten_reader_error(run_read_status(*src).ToString()));
             return 1;
         }
         return 0;
@@ -826,8 +838,8 @@ int main(int argc, char** argv) {
                                         : print_table(*src, cfg);
         if (!terr.empty()) { report(cfg.path, terr); return 1; }
     }
-    if (!src->read_status().ok()) {
-        report(cfg.path, shorten_reader_error(src->read_status().ToString()));
+    if (!run_read_status(*src).ok()) {
+        report(cfg.path, shorten_reader_error(run_read_status(*src).ToString()));
         return 1;
     }
     return 0;

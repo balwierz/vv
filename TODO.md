@@ -244,12 +244,10 @@ user-facing summary).
 - **TUI long passes:** signal polling, visible read errors and partial/capped
   scope are implemented. Cancellation is between bounded reads, not inside
   a blocking HDF5 call.
-- **`--samples long` over a BCF with thousands of samples.** A BCF chunk is
-  32 768 records; in long form `VcfSamplesSource` derives records × samples
-  rows into one string array per column, which passes Arrow's 2 GB limit on
-  the 2,504-sample 1000 Genomes chr22 BCF ("Capacity error: array cannot
-  contain more than 2147483646 bytes") — a full long-form read fails per
-  chunk. Derive each chunk in slices of records (or as large_string).
+- **`--samples long` memory.** Long form is now derived in slices (no 2 GB
+  overflow), but a whole inner chunk is still held: 23,766 records × 2,504
+  samples with INFO selected is 10.5 GB of RSS. Smaller BCF batches for
+  many-sample files (a byte budget, as FASTX has) would bound it.
 - **Remaining reader stages:** XLSX now defers sibling sheet parsing; ODS
   defers Arrow conversion, but still buffers the whole XML/all-sheet CSV.
   Follow with selected-sheet streaming only if schema inference stays stable.

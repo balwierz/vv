@@ -125,7 +125,7 @@ std::string summarize_columns(TabularSource& src, const SummaryOptions& opt,
         src.ensure(c);
         if (c >= src.num_chunks()) break;
         std::shared_ptr<arrow::Table> tbl;
-        if (!src.read_chunk(c, read_set, &tbl).ok()) continue;
+        if (auto st = src.read_chunk(c, read_set, &tbl); !st.ok()) { note_chunk_error(st); continue; }
         if (opt.rows_done && tbl) *opt.rows_done += tbl->num_rows();
         if (have_filter) tbl = apply_filter(tbl, *opt.filter, read_set);
         if (!tbl || tbl->num_rows() == 0) continue;

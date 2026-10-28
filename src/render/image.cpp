@@ -319,7 +319,7 @@ std::string render_heatmap(TabularSource& src, const Config& cfg) {
         src.ensure(c);
         if (c >= src.num_chunks()) break;
         std::shared_ptr<arrow::Table> tbl;
-        if (!src.read_chunk(c, use, &tbl).ok() || !tbl) continue;
+        if (auto st = src.read_chunk(c, use, &tbl); !st.ok() || !tbl) { note_chunk_error(st); continue; }
         int64_t n = tbl->num_rows();
         for (int64_t r = 0; r < n && rows_read < MAXROWS; ++r, ++rows_read) {
             for (int j = 0; j < W; ++j) {

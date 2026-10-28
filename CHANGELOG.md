@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the same `vv.exe`, `vvg.exe` and DLLs, run from wherever it is unzipped,
   with no installation or administrator rights.
 
+### Fixed
+- `--samples long` on a VCF / BCF with thousands of samples dropped whole
+  chunks (their strings passed Arrow's 2 GB per array) with a warning and
+  exit 0: on the 2,504-sample 1000 Genomes chr22 BCF a 23,766-record region
+  wrote 0 of 59,510,064 rows. Long form is now built in slices and writes
+  every row.
+- A chunk that cannot be read no longer leaves a short output that looks
+  complete: the run ends with the read error and exit 1 (exports, `--sort`,
+  `--unique`, `--distinct`, `--describe`, `--count --filter`, the table).
+
 ### Changed
 - CSV / TSV: a run that names its columns (`--select`, `--filter`,
   `--sort`, `--unique`, and `--count`, which needs none) converts only

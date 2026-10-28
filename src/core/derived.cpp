@@ -1134,6 +1134,13 @@ public:
     }
     arrow::Status read(int i, int64_t rows, const std::vector<int>& col_indices,
                        std::shared_ptr<arrow::Table>* out) {
+        // Tests: chunk N fails to read (VV_TEST_FAIL_CHUNK=N), as an overflow did.
+        static const int fail_chunk = [] {
+            const char* e = std::getenv("VV_TEST_FAIL_CHUNK");
+            return e && *e ? std::atoi(e) : -1;
+        }();
+        if (rows < 0 && i == fail_chunk)
+            return arrow::Status::CapacityError("chunk ", i, " failed (VV_TEST_FAIL_CHUNK)");
         // Inner columns needed: the passed-through ones, plus FORMAT and the
         // samples whenever a sample-derived column is asked for.
         std::vector<int> need;
@@ -1157,6 +1164,46 @@ public:
             ARROW_RETURN_NOT_OK(inner_->read_chunk(i, need, &in));
         }
         if (!in) { *out = nullptr; return arrow::Status::OK(); }
+        // Long form repeats each record once per sample: a chunk of 32 768
+        // BCF records × 2,504 samples is tens of GB of strings, past Arrow's
+        // 2 GB per string array. Derive it in slices of records whose output
+        // stays under a budget; each column is then one array per slice.
+        const int64_t n_all = in->num_rows();
+        int64_t step = n_all;
+        if (long_ && n_all > 0) {
+            static const int64_t budget = [] {
+                const char* e = std::getenv("VV_SAMPLES_SLICE_BYTES");   // tests
+                return e && *e ? std::max<int64_t>(1, std::atoll(e)) : int64_t(256) << 20;
+            }();
+            const int64_t per_record = std::max<int64_t>(1, arrow::util::TotalBufferSize(*in) / n_all) *
+                                       std::max<int64_t>(nsamp(), 1);
+            step = std::clamp<int64_t>(budget / per_record, 1, n_all);
+        }
+        arrow::FieldVector fields;
+        for (int c : col_indices) fields.push_back(schema_->field(c));
+        std::vector<arrow::ArrayVector> parts(col_indices.size());
+        for (int64_t r0 = 0; r0 < n_all || (n_all == 0 && r0 == 0); r0 += step) {
+            std::vector<std::shared_ptr<arrow::Array>> cols;
+            ARROW_RETURN_NOT_OK(derive(*in->Slice(r0, std::min(step, n_all - r0)), need, col_indices,
+                                       any_field, &cols));
+            for (size_t k = 0; k < cols.size(); ++k) parts[k].push_back(std::move(cols[k]));
+            if (n_all == 0) break;
+        }
+        std::vector<std::shared_ptr<arrow::ChunkedArray>> out_cols;
+        for (size_t k = 0; k < parts.size(); ++k)
+            out_cols.push_back(std::make_shared<arrow::ChunkedArray>(std::move(parts[k]), fields[k]->type()));
+        const int64_t S_all = long_ ? nsamp() : 1;
+        *out = arrow::Table::Make(arrow::schema(fields), std::move(out_cols), n_all * S_all);
+        if (rows >= 0 && (*out)->num_rows() > rows) *out = (*out)->Slice(0, rows);
+        return arrow::Status::OK();
+    }
+
+    // The output columns `col_indices` for the records of `in` (the inner
+    // columns `need`, in that order).
+    arrow::Status derive(const arrow::Table& in_t, const std::vector<int>& need,
+                         const std::vector<int>& col_indices, bool any_field,
+                         std::vector<std::shared_ptr<arrow::Array>>* cols_out) {
+        const arrow::Table* in = &in_t;
         auto col_of = [&](int inner_c) {
             return in->column((int)(std::find(need.begin(), need.end(), inner_c) - need.begin()));
         };
@@ -1173,7 +1220,7 @@ public:
         };
         // Long form: every sample-derived column for this chunk in one pass.
         std::vector<std::unique_ptr<arrow::ArrayBuilder>> field_b(defs_.size());
-        std::shared_ptr<arrow::Array> name_arr;
+        std::vector<std::shared_ptr<arrow::Array>> field_done(defs_.size());   // finished, by field
         if (long_ && any_field) {
             for (size_t k = 0; k < defs_.size(); ++k)
                 ARROW_RETURN_NOT_OK(arrow::MakeBuilder(arrow::default_memory_pool(),
@@ -1192,11 +1239,9 @@ public:
                                                    : field_b[k]->AppendNull());
                 }
         }
-        arrow::FieldVector fields;
-        std::vector<std::shared_ptr<arrow::Array>> cols;
+        std::vector<std::shared_ptr<arrow::Array>>& cols = *cols_out;
         for (int c : col_indices) {
             const OutCol& oc = out_[(size_t)c];
-            fields.push_back(schema_->field(c));
             std::shared_ptr<arrow::Array> arr;
             if (oc.kind == OutCol::Pass) {
                 auto ca = col_of(oc.inner);
@@ -1224,13 +1269,14 @@ public:
                     for (int64_t s = 0; s < S; ++s) ARROW_RETURN_NOT_OK(b.Append(samp_names_[(size_t)s]));
                 ARROW_RETURN_NOT_OK(b.Finish(&arr));
             } else if (oc.kind == OutCol::Field) {
-                // Finish each builder once; a column asked for twice reuses it.
+                // Finish each builder once; a column asked for twice reuses
+                // that field's array.
                 if (field_b[(size_t)oc.idx]) {
                     ARROW_RETURN_NOT_OK(field_b[(size_t)oc.idx]->Finish(&arr));
                     field_b[(size_t)oc.idx].reset();
-                    name_arr = arr;                       // keep for a repeat
+                    field_done[(size_t)oc.idx] = arr;
                 } else {
-                    arr = name_arr;
+                    arr = field_done[(size_t)oc.idx];
                 }
             } else {                                      // Sample → struct
                 std::unique_ptr<arrow::ArrayBuilder> ub;
@@ -1259,8 +1305,6 @@ public:
             }
             cols.push_back(std::move(arr));
         }
-        *out = arrow::Table::Make(arrow::schema(fields), cols, n * S);
-        if (rows >= 0 && (*out)->num_rows() > rows) *out = (*out)->Slice(0, rows);
         return arrow::Status::OK();
     }
 
