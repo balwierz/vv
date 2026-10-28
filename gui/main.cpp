@@ -5223,6 +5223,7 @@ int main(int argc, char** argv) {
         if (paths.isEmpty()) { std::fprintf(stderr, "usage: vvg <file>\n"); return 2; }
         Config cfg;
         cfg.path = paths.first().toStdString();
+        cfg.on_bad_row = FileOptions{}.config().on_bad_row;
         std::unique_ptr<TabularSource> src;
         std::string err = open_source(cfg.path, cfg, &src);
         if (!err.empty()) { std::fprintf(stderr, "vvg: %s\n", err.c_str()); return 1; }

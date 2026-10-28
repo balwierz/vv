@@ -451,6 +451,10 @@ jobs:
           # status bar, not an empty table presented as the file.
           printf '@r1\nACGT\n+\nII\n' > "$RUNNER_TEMP/bad.fq"
           VVG_SELFTEST=1 ./build-gui/gui/vvg "$RUNNER_TEMP/bad.fq" | grep -q '^footer=Format: FASTQ  |  read error (rows after it are missing): Error reading FASTA/FASTQ'
+          # A text row with the wrong number of fields is skipped, and counted.
+          printf 'a,b,c\n1,2,3\n4,5\n6,7,8\n' > "$RUNNER_TEMP/badrow.csv"
+          VVG_SELFTEST=1 ./build-gui/gui/vvg "$RUNNER_TEMP/badrow.csv" | grep -q '^tabs=1 rows=2 cols=3'
+          VVG_SELFTEST=1 ./build-gui/gui/vvg "$RUNNER_TEMP/badrow.csv" | grep -q '^footer=.*|  1 malformed row skipped (first: line 3)$'
           # The session toolbar exposes the new open-time options through the same
           # reopen path as region/pileup. --tags adds a column per aux tag (11 SAM
           # columns + NM,AS = 13); --gt-stats adds 9 genotype columns to the BCF's
@@ -1147,6 +1151,10 @@ jobs:
           # status bar, not an empty table presented as the file.
           printf '@r1\nACGT\n+\nII\n' > "$RUNNER_TEMP/bad.fq"
           VVG_SELFTEST=1 ./build/gui/vvg "$RUNNER_TEMP/bad.fq" | grep -q '^footer=Format: FASTQ  |  read error (rows after it are missing): Error reading FASTA/FASTQ'
+          # A text row with the wrong number of fields is skipped, and counted.
+          printf 'a,b,c\n1,2,3\n4,5\n6,7,8\n' > "$RUNNER_TEMP/badrow.csv"
+          VVG_SELFTEST=1 ./build/gui/vvg "$RUNNER_TEMP/badrow.csv" | grep -q '^tabs=1 rows=2 cols=3'
+          VVG_SELFTEST=1 ./build/gui/vvg "$RUNNER_TEMP/badrow.csv" | grep -q '^footer=.*|  1 malformed row skipped (first: line 3)$'
           VVG_WINTEST=1 VVG_AFIND='chr1' ./build/gui/vvg tests/data/tiny.parquet \
             | grep -q 'afind .* matches=12'
           out=$(VVG_WINTEST=1 VVG_COPYCMD=1 ./build/gui/vvg --filter 'Score > 0.5' --sort Score:desc \

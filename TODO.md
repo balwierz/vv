@@ -604,12 +604,6 @@ get re-proposed.
   payload is in the tags (10x barcodes, methylation calls, edit distance).
   Composes with 1.16.0's BAM regions: `-r … --tags CB --unique CB`. `auto`
   must not be the default and must be defined as "union over the first batch".
-- **`--on-bad-row skip|null|stop` + `--bad-rows`** (M) — one short row in a
-  4 GB GTF currently fails the whole file with zero rows shown, which makes vv
-  less useful than `head` on exactly the files you most need a viewer for. Use
-  Arrow's `csv::ParseOptions::invalid_row_handler`. Line numbers must be
-  counted **before** the preamble strippers shift the stream, or the reported
-  line points at the wrong place. Lenient to look at, strict to convert.
 - **`--compute 'len=End-Start'`** (M) — row-wise derived columns. Every shaping
   verb vv has *subsets*; nothing produces a value the file lacks. Row-wise
   only — no aggregates, no windows, no joins; that boundary is what keeps it a

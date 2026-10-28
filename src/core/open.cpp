@@ -1234,6 +1234,8 @@ static ColumnNeed csv_column_need(const Config& cfg) {
 
 static DelimitedHints delimited_hints(const Config& cfg, DelimKind dk) {
     DelimitedHints h;
+    h.on_bad_row = cfg.on_bad_row;
+    h.bad_rows_path = cfg.bad_rows_path;
     h.vcf_sites_only = dk == DelimKind::VCF && vcf_sites_only_run(cfg);
     const char* ser = std::getenv("VV_CSV_SERIAL");
     if (delimited_full_scan_run(cfg) && !(ser && *ser && *ser != '0'))

@@ -1011,6 +1011,11 @@ struct DelimitedHints {
     bool vcf_sites_only = false;
     int  parse_threads  = 1;
     ColumnNeed columns;
+    // --on-bad-row: "skip" / "null" check every row's field count
+    // (FieldCountStream); otherwise a malformed row stops the read with an
+    // error naming its line. --bad-rows: where the skipped / padded rows go.
+    std::string on_bad_row;
+    std::string bad_rows_path;
 };
 std::string open_delimited_source(const std::string& path, DelimKind kind, const std::string& region,
                                   std::unique_ptr<TabularSource>* out, char delim_override = 0,

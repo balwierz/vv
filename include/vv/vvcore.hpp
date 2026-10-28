@@ -152,6 +152,10 @@ struct Config {
     bool        list_formats = false;    // --formats: the supported-format table
     bool        force_text   = false;    // --text: read as plain text whatever
                                          // the extension says
+    std::string on_bad_row;              // --on-bad-row stop|skip|null: a delimited
+                                         // row with the wrong number of fields ("":
+                                         // stop, the TUI and vvg skip)
+    std::string bad_rows_path;           // --bad-rows FILE: those rows, "line<TAB>text"
     std::string expand_col;              // --expand COL: unpack a packed
                                          // key=value column (VCF INFO,
                                          // GFF/GTF attributes) into real

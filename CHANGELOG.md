@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Windows: a portable zip, `vv-<ver>-windows-x86_64.zip`, next to the MSI:
   the same `vv.exe`, `vvg.exe` and DLLs, run from wherever it is unzipped,
   with no installation or administrator rights.
+- `--on-bad-row stop|skip|null` and `--bad-rows FILE`: a text table row
+  (CSV / TSV, BED, GFF / GTF, VCF, SAM, PAF, mpileup) with the wrong number
+  of fields stops the run (the default for scripted runs), is left out
+  (the default in the TUI and vvg, with a footer count), or is padded / cut;
+  `--bad-rows` lists such rows with their file line. On GENCODE's GFF3
+  (2,223,367 records) with line 1,500,000 cut to three fields,
+  `--on-bad-row skip --count` gives 2,223,366; the check adds 0.25 s per GB
+  read.
 
 ### Fixed
 - `--samples long` on a VCF / BCF with thousands of samples dropped whole
@@ -20,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A chunk that cannot be read no longer leaves a short output that looks
   complete: the run ends with the read error and exit 1 (exports, `--sort`,
   `--unique`, `--distinct`, `--describe`, `--count --filter`, the table).
+- A row with the wrong number of fields, or a value its column's type
+  cannot hold, is reported with its line in the file
+  (`line 1500000: CSV parse error: Expected 9 columns, got 3: …`); before,
+  the message carried the row text only.
 
 ### Changed
 - CSV / TSV: a run that names its columns (`--select`, `--filter`,

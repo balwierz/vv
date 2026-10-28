@@ -73,6 +73,7 @@ struct FileOptions {
         c.matrix           = matrix;
         c.index_path       = index;
         c.pileup_ref       = reference;
+        c.on_bad_row       = "skip";       // a viewer shows the file; the footer counts the rest
         return c;
     }
 };

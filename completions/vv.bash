@@ -23,7 +23,7 @@ _vv_input_file() {
     local i tok
     local val_opts=' -n -w -c -@ --threads --decode-threads --delimiter --in-delimiter -d --header --color
         --theme --box -r --region --window --regions-file --region-cols --slop --coords
-        --tail --sort --tags --expand --parquet --arrow --feather --compression --image-mode
+        --tail --sort --tags --expand --parquet --arrow --feather --compression --on-bad-row --bad-rows --image-mode
         --samples --matrix -f --fasta --index --select --cols --filter --tab --unique --value-counts --percentiles --sample
         --exclude-flags --ff --require-flags --rf --min-mapq --min-bq '
     for (( i = 1; i < ${#words[@]}; i++ )); do
@@ -166,6 +166,14 @@ _vv() {
             COMPREPLY=( $(compgen -W 'zstd snappy gzip lz4 none' -- "$cur") )
             return
             ;;
+        --on-bad-row)
+            COMPREPLY=( $(compgen -W 'stop skip null' -- "$cur") )
+            return
+            ;;
+        --bad-rows)
+            _filedir
+            return
+            ;;
         --image-mode)
             COMPREPLY=( $(compgen -W 'auto kitty iterm sixel halfblock ascii' -- "$cur") )
             return
@@ -203,7 +211,7 @@ _vv() {
                 --schema --describe --count --stats --contigs --seq-stats --flatten --tree --pretty --json-paths --no-tree --gt-stats --validate --decode-pileup --pileup --text
                 --exclude-flags --ff --require-flags --rf --min-mapq --min-bq --count-orphans --ignore-overlaps
                 --in-delimiter --header
-                --expand --formats --list-columns --list-tabs
+                --expand --formats --list-columns --list-tabs --on-bad-row --bad-rows
                 -f --fasta --index
                 --tab
                 --value-counts --unique --percentiles --distinct --sample --sort --tags

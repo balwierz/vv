@@ -245,6 +245,13 @@ static void print_usage(const char* prog) {
         "  --schema            print schema + file metadata and exit\n"
         "                      (with --json: machine-readable; `rows` is null\n"
         "                      when the file has not been fully scanned)\n"
+        "  --on-bad-row <how>  a text row with the wrong number of fields:\n"
+        "                      stop (default: an error naming its line), skip\n"
+        "                      it, or null (pad a short row with empty fields,\n"
+        "                      cut a long one); the viewer skips by default.\n"
+        "                      A value a column cannot convert still stops.\n"
+        "  --bad-rows <file>   write the skipped / padded rows there, one\n"
+        "                      \"line<TAB>text\" per row\n"
         "  --expand <col>      unpack a packed key=value column into real\n"
         "                      columns, appended to the schema — VCF INFO,\n"
         "                      GFF/GTF attributes. The keys then work with\n"
@@ -602,6 +609,10 @@ Config parse_args(int argc, char** argv) {
             cfg.compression = argv[++i];
         } else if (!std::strcmp(argv[i], "--expand") && i + 1 < argc) {
             cfg.expand_col = argv[++i];
+        } else if (!std::strcmp(argv[i], "--on-bad-row") && i + 1 < argc) {
+            cfg.on_bad_row = argv[++i];
+        } else if (!std::strcmp(argv[i], "--bad-rows") && i + 1 < argc) {
+            cfg.bad_rows_path = argv[++i];
         } else if (!std::strcmp(argv[i], "--list-columns")) {
             cfg.list_columns = true;
         } else if (!std::strcmp(argv[i], "--list-tabs")) {
@@ -803,7 +814,7 @@ Config parse_args(int argc, char** argv) {
                 "--arrow", "--feather",
                 "--compression", "--unique", "--value-counts", "--percentiles", "--sample", "--filter",
                 "--select", "--cols", "--image-mode", "--tab", "--theme",
-                "--expand", "--samples", "--matrix",
+                "--expand", "--samples", "--matrix", "--on-bad-row", "--bad-rows",
                 "--delimiter", "--in-delimiter", "-d", "--header",
                 "-f", "--fasta", "--box", "--index",
                 "--exclude-flags", "--ff", "--require-flags", "--rf",
@@ -831,6 +842,16 @@ Config parse_args(int argc, char** argv) {
     if (cfg.color == ColorMode::Auto) {
         if (const char* e = std::getenv("NO_COLOR"); e && e[0])
             cfg.color = ColorMode::Never;
+    }
+    if (!cfg.on_bad_row.empty() && cfg.on_bad_row != "stop" && cfg.on_bad_row != "skip" &&
+        cfg.on_bad_row != "null") {
+        std::fprintf(stderr, "--on-bad-row: unknown policy '%s' (use stop|skip|null)\n",
+                     cfg.on_bad_row.c_str());
+        std::exit(2);
+    }
+    if (!cfg.bad_rows_path.empty() && (cfg.on_bad_row.empty() || cfg.on_bad_row == "stop")) {
+        std::fprintf(stderr, "--bad-rows needs --on-bad-row skip or null\n");
+        std::exit(2);
     }
     // Validate --image-mode up front so a typo is reported rather than silently
     // ignored (the heatmap renderer also checks, but only when --heatmap runs).

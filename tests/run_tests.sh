@@ -2269,6 +2269,52 @@ assert_eq_file_inline "csv_projection_none_for_pattern" \
     "$(VV_DEBUG_PROJECTION=1 "$VV" --select 'c*' --tsv "$TMP/wide.csv" 2>&1 >/dev/null)" ""
 assert_eq_file_inline "csv_projection_none_for_table_view" \
     "$(VV_DEBUG_PROJECTION=1 "$VV" -n 3 --select name "$TMP/wide.csv" 2>&1 >/dev/null)" ""
+# --on-bad-row: a text row with the wrong number of fields. stop (the
+# default for a scripted run) ends the run with exit 1 and the row's file
+# line; skip drops it, null pads a short row with empty fields and cuts a
+# long one; --bad-rows lists them as "line<TAB>text". A quoted delimiter is
+# one field; SAM / PAF / GFF / VCF accept more fields than their columns.
+printf 'a,b,c\n1,2,3\n4,5\n6,"x,y",7\n8,9,10,11\n12,13,14\n' > "$TMP/badrow.csv"
+assert_eq_file_inline "bad_row_stop_message" "$("$VV" --tsv "$TMP/badrow.csv" 2>&1 >/dev/null | sed "s|$TMP/||")" \
+    "vv: badrow.csv: Invalid: line 3: CSV parse error: Expected 3 columns, got 2: 4,5"
+assert_exit_code "bad_row_stop_exit1" 1 "$VV" --tsv "$TMP/badrow.csv"
+assert_exit_code "bad_row_stop_explicit_exit1" 1 "$VV" --on-bad-row stop --tsv "$TMP/badrow.csv"
+assert_eq_file_inline "bad_row_skip_rows" "$("$VV" --on-bad-row skip --tsv "$TMP/badrow.csv")" \
+    "$(printf 'a\tb\tc\n1\t2\t3\n6\tx,y\t7\n12\t13\t14')"
+assert_eq_file_inline "bad_row_null_rows" "$("$VV" --on-bad-row null --tsv "$TMP/badrow.csv")" \
+    "$(printf 'a\tb\tc\n1\t2\t3\n4\t5\t\n6\tx,y\t7\n8\t9\t10\n12\t13\t14')"
+for p in skip null; do
+    "$VV" --on-bad-row $p --bad-rows "$TMP/badrow.$p.txt" --count "$TMP/badrow.csv" >/dev/null
+    assert_eq_file_inline "bad_row_${p}_log" "$(cat "$TMP/badrow.$p.txt")" "$(printf '3\t4,5\n5\t8,9,10,11')"
+done
+assert_contains "bad_row_skip_footer" "$("$VV" --on-bad-row skip "$TMP/badrow.csv")" \
+    "|  2 malformed rows skipped (first: line 3)"
+assert_contains "bad_row_null_footer" "$("$VV" --on-bad-row null "$TMP/badrow.csv")" \
+    "|  2 malformed rows padded / cut (first: line 3)"
+refute_contains "bad_row_clean_no_footer" "$("$VV" --on-bad-row skip "$DATA/tiny.bed")" "malformed"
+assert_exit_code "bad_row_unknown_policy" 2 "$VV" --on-bad-row drop --tsv "$TMP/badrow.csv"
+assert_exit_code "bad_row_log_needs_policy" 2 "$VV" --bad-rows "$TMP/x.txt" --tsv "$TMP/badrow.csv"
+assert_exit_code "bad_row_missing_arg" 2 "$VV" --tsv --on-bad-row
+assert_exit_code "bad_rows_missing_arg" 2 "$VV" --tsv --on-bad-row skip --bad-rows
+assert_exit_code "bad_rows_unwritable" 1 "$VV" --on-bad-row skip --bad-rows "$TMP/no/such/dir.txt" --tsv "$TMP/badrow.csv"
+# The formats behind preambles count file lines from the file start.
+awk 'NR == 5 { print "chr1\tHAVANA\texon"; next } { print }' "$DATA/tiny.gtf" > "$TMP/badrow.gtf"
+assert_contains "bad_row_gtf_stop_line" "$("$VV" --tsv "$TMP/badrow.gtf" 2>&1 >/dev/null)" "line 5: CSV parse error"
+"$VV" --on-bad-row skip --bad-rows "$TMP/badrow.gtf.txt" --count "$TMP/badrow.gtf" > "$TMP/badrow.gtf.n"
+assert_eq_file_inline "bad_row_gtf_skip_count" "$(cat "$TMP/badrow.gtf.n")" "$(( $(grep -vc '^#' "$DATA/tiny.gtf") - 1 ))"
+assert_eq_file_inline "bad_row_gtf_log" "$(cat "$TMP/badrow.gtf.txt")" "$(printf '5\tchr1\tHAVANA\texon')"
+awk '!/^#/ && ++n == 2 { print "chr1\t5"; next } { print }' "$DATA/tiny.vcf" > "$TMP/badrow.vcf"
+"$VV" --on-bad-row skip --bad-rows "$TMP/badrow.vcf.txt" --count "$TMP/badrow.vcf" > "$TMP/badrow.vcf.n"
+assert_eq_file_inline "bad_row_vcf_skip_count" "$(cat "$TMP/badrow.vcf.n")" "$(( $(grep -vc '^#' "$DATA/tiny.vcf") - 1 ))"
+assert_eq_file_inline "bad_row_vcf_log" "$(cut -f1 "$TMP/badrow.vcf.txt")" "$(( $(grep -c '^#' "$DATA/tiny.vcf") + 2 ))"
+awk 'NR == 3 { print "chr1\t5" } { print }' "$DATA/tiny.bed" > "$TMP/badrow.bed"
+assert_eq_file_inline "bad_row_bed_skip_same" "$("$VV" --on-bad-row skip --tsv "$TMP/badrow.bed")" "$("$VV" --tsv "$DATA/tiny.bed")"
+assert_eq_file_inline "bad_row_paf_extra_fields_ok" "$("$VV" --on-bad-row skip --count "$DATA/tiny.paf")" "$("$VV" --count "$DATA/tiny.paf")"
+# A headerless TSV is read twice (header detection): each bad row is logged once.
+printf '1\t2\t3\n4\t5\t6\n7\t8\n9\t10\t11\n' > "$TMP/badrow_nohdr.tsv"
+"$VV" --on-bad-row skip --bad-rows "$TMP/badrow_nohdr.txt" --tsv "$TMP/badrow_nohdr.tsv" > "$TMP/badrow_nohdr.out"
+assert_eq_file_inline "bad_row_headerless_rows" "$(cat "$TMP/badrow_nohdr.out")" "$(printf 'f0\tf1\tf2\n1\t2\t3\n4\t5\t6\n9\t10\t11')"
+assert_eq_file_inline "bad_row_headerless_log_once" "$(cat "$TMP/badrow_nohdr.txt")" "$(printf '3\t7\t8')"
 # Delimited text: types come from the first 16 MiB as before, the rest is
 # parsed in smaller blocks with every column pinned to those types (GENCODE
 # CSV.gz --count 1.59 s / 2.5 GB -> 0.92 s / 0.46 GB). Results equal the
@@ -2299,6 +2345,15 @@ PYBLK
     # it; a run that reads that column still fails.
     assert_eq_file_inline "csv_projection_count_skips_unused_column" "$("$VV" --count "$TMP/blk_typelater.tsv" 2>&1)" "2000001"
     assert_exit_code "csv_projection_used_column_still_fails" 1 "$VV" --select val --tsv "$TMP/blk_typelater.tsv"
+    # A value the column's type cannot hold, after the type sample: its file line.
+    assert_contains "bad_row_conversion_line" "$("$VV" --select val --tsv "$TMP/blk_typelater.tsv" 2>&1 >/dev/null)" \
+        "line 2000002: In CSV column #1: CSV conversion error to int64: invalid value 'notanumber'"
+    # A short row after the first 16 MiB: skip drops it, stop names its line.
+    { cat "$TMP/blk_typelater.tsv" | head -n 2000001; printf '5
+'; printf '6	6
+'; } > "$TMP/blk_shortlater.tsv"
+    assert_contains "bad_row_late_stop_line" "$("$VV" --tsv "$TMP/blk_shortlater.tsv" 2>&1 >/dev/null)" "line 2000002: CSV parse error"
+    assert_eq_file_inline "bad_row_late_skip_count" "$("$VV" --on-bad-row skip --select val --tsv "$TMP/blk_shortlater.tsv" | wc -l)" "2000002"
     assert_eq_file_inline "csv_small_blocks_type_inside_sample_is_text" \
         "$("$VV" --schema "$TMP/blk_typeearly.tsv" | awk '$1 == "val" {print $2}')" "string"
     assert_eq_file_inline "csv_small_blocks_long_line_reads" "$("$VV" --count "$TMP/blk_longlater.tsv")" "2000001"

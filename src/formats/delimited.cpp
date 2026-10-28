@@ -505,6 +505,144 @@ private:
     arrow::Status                           status_;
 };
 
+// What --on-bad-row skip / null did: the rows with the wrong number of
+// fields, the first one's line, and --bad-rows (one "line<TAB>text" per row).
+// What --on-bad-row skip / null did: written by the stream (on the CSV
+// reader's read-ahead thread), read by footer(). `muted`: the stream's reader
+// was replaced (headerless retry), its lines are no longer the run's.
+struct BadRowLog {
+    std::mutex mu;
+    int64_t count = 0;
+    int64_t first_line = -1;
+    std::FILE* out = nullptr;
+    bool muted = false;
+    void note(int64_t line, const std::string& text) {
+        std::lock_guard<std::mutex> lk(mu);
+        if (muted) return;
+        ++count;
+        if (first_line < 0) first_line = line;
+        if (out) std::fprintf(out, "%lld\t%s\n", (long long)line, text.c_str());
+    }
+    void mute() {
+        std::lock_guard<std::mutex> lk(mu);
+        muted = true;
+        if (out) { std::fclose(out); out = nullptr; }
+    }
+    std::pair<int64_t, int64_t> counts() {
+        std::lock_guard<std::mutex> lk(mu);
+        return {count, first_line};
+    }
+    ~BadRowLog() { if (out) std::fclose(out); }
+};
+
+// The fields of a delimited line: delimiters outside double quotes, plus one.
+static int count_fields(std::string_view line, char delim, bool quoted) {
+    if (!quoted || line.find('"') == std::string_view::npos)
+        return 1 + (int)std::count(line.begin(), line.end(), delim);
+    int n = 1;
+    bool inq = false;
+    for (char c : line) {
+        if (quoted && c == '"') inq = !inq;
+        else if (c == delim && !inq) ++n;
+    }
+    return n;
+}
+
+// The line cut to its first `fields` fields.
+static void cut_to_fields(std::string* line, char delim, bool quoted, int fields) {
+    bool inq = false;
+    int n = 1;
+    for (size_t k = 0; k < line->size(); ++k) {
+        const char c = (*line)[k];
+        if (quoted && c == '"') inq = !inq;
+        else if (c == delim && !inq && ++n > fields) { line->resize(k); return; }
+    }
+}
+
+// --on-bad-row skip / null: every data line's field count checked against
+// the expected one (the header's, or the first line's when there is none:
+// `expected` < 0). A line with another count is logged (BadRowLog), then
+// dropped (skip) or padded with empty fields / cut (null). `short_only`:
+// more fields are allowed (SAM / PAF optional fields). Blank lines and
+// `comment` lines pass through untouched. `line` is the physical line
+// number of the stream's first line in the file (0: not known).
+class FieldCountStream : public arrow::io::InputStream {
+    std::shared_ptr<arrow::io::InputStream> inner_;
+    LineReader   lr_;
+    char         delim_;
+    bool         quoted_;
+    int          expected_;
+    bool         short_only_;
+    char         comment_;
+    bool         pad_;                 // null: pad / cut; skip: drop
+    int64_t      line_;
+    std::shared_ptr<BadRowLog> log_;
+    std::string  out_buf_;
+    size_t       out_pos_    = 0;
+    bool         inner_done_ = false;
+
+    bool refill() {
+        out_pos_ = 0;
+        for (;;) {
+            const bool ok = lr_.read_line(&out_buf_);
+            if (!ok && out_buf_.empty()) { inner_done_ = true; return false; }
+            if (!ok) inner_done_ = true;
+            const int64_t this_line = line_ > 0 ? line_++ : 0;
+            if (out_buf_.empty() || (comment_ && out_buf_[0] == comment_)) {
+                // GFF3's FASTA section: no more feature lines to check.
+                if (comment_ == '#' && out_buf_.rfind("##FASTA", 0) == 0) expected_ = 0;
+                break;
+            }
+            if (expected_ == 0) break;
+            const int n = count_fields(out_buf_, delim_, quoted_);
+            if (expected_ < 0) { expected_ = n; break; }
+            if (n == expected_ || (short_only_ && n > expected_)) break;
+            log_->note(this_line, out_buf_);
+            if (!pad_) {                                    // skip
+                if (inner_done_) { out_buf_.clear(); return false; }
+                continue;
+            }
+            if (n < expected_) out_buf_.append((size_t)(expected_ - n), delim_);
+            else cut_to_fields(&out_buf_, delim_, quoted_, expected_);
+            break;
+        }
+        out_buf_ += '\n';
+        return true;
+    }
+
+public:
+    FieldCountStream(std::shared_ptr<arrow::io::InputStream> inner, char delim, bool quoted, int expected,
+                     bool short_only, char comment, bool pad, int64_t first_line,
+                     std::shared_ptr<BadRowLog> log)
+        : inner_(inner), lr_(inner), delim_(delim), quoted_(quoted), expected_(expected),
+          short_only_(short_only), comment_(comment), pad_(pad), line_(first_line), log_(std::move(log)) {}
+
+    arrow::Status Close() override { return inner_->Close(); }
+    bool closed() const override { return inner_->closed(); }
+    arrow::Result<int64_t> Tell() const override {
+        return arrow::Status::NotImplemented("FieldCountStream::Tell");
+    }
+    arrow::Result<int64_t> Read(int64_t n, void* buf) override {
+        uint8_t* p = static_cast<uint8_t*>(buf);
+        int64_t total = 0;
+        while (n > 0) {
+            if (out_pos_ >= out_buf_.size()) {
+                if (inner_done_ || !refill()) break;
+            }
+            const int64_t take = std::min(n, (int64_t)(out_buf_.size() - out_pos_));
+            std::memcpy(p, out_buf_.data() + out_pos_, (size_t)take);
+            p += take; out_pos_ += (size_t)take; n -= take; total += take;
+        }
+        return total;
+    }
+    arrow::Result<std::shared_ptr<arrow::Buffer>> Read(int64_t n) override {
+        ARROW_ASSIGN_OR_RAISE(auto buf, arrow::AllocateResizableBuffer(n));
+        ARROW_ASSIGN_OR_RAISE(int64_t actual, Read(n, buf->mutable_data()));
+        ARROW_RETURN_NOT_OK(buf->Resize(actual, false));
+        return std::shared_ptr<arrow::Buffer>(std::move(buf));
+    }
+};
+
 class TruncateFieldsStream : public arrow::io::InputStream {
     std::shared_ptr<arrow::io::InputStream> inner_;
     LineReader   lr_;          // buffered reader — avoids one-byte-at-a-time reads
@@ -868,6 +1006,9 @@ class DelimitedSource : public TabularSource {
     // True when the data stream was replaced by a tabix iterator for -r.
     bool                                  region_applied_ = false;
     bool vcf_sites_only_ = false;  // VCF lines cut after INFO (no sample column read)
+    std::string on_bad_row_;       // --on-bad-row: "skip" / "null" (FieldCountStream), else stop
+    std::shared_ptr<BadRowLog> bad_log_;   // what skip / null did
+    std::string bad_rows_path_;            // --bad-rows
     int  parse_threads_  = 1;      // > 1: a full scan, parsed in parallel
     int  cut_fields_     = 0;      // > 0: make_reader cuts lines to that many fields
     ColumnNeed need_;              // the columns the run uses (CSV / TSV; see make_reader)
@@ -893,9 +1034,9 @@ class DelimitedSource : public TabularSource {
             // that ignore advance()'s result (ensure()) must not spin forever,
             // and the CLI can report the truncation and exit non-zero instead
             // of silently emitting a partial result with status 0.
-            read_status_ = st;
+            read_status_ = with_line(st);
             all_read_ = true;
-            return st;
+            return read_status_;
         }
         if (!batch) {
             all_read_ = true;
@@ -1356,6 +1497,12 @@ public:
         self->vcf_sites_only_ = hints.vcf_sites_only && kind == DelimKind::VCF;
         self->parse_threads_  = std::max(1, hints.parse_threads);
         if (kind == DelimKind::CSV || kind == DelimKind::TSV) self->need_ = hints.columns;
+        if ((hints.on_bad_row == "skip" || hints.on_bad_row == "null") && kind != DelimKind::Mtx) {
+            self->on_bad_row_ = hints.on_bad_row;
+            self->bad_rows_path_ = hints.bad_rows_path;
+            std::string err = self->new_bad_log();
+            if (!err.empty()) return err;
+        }
         self->dialect_   = dialect;
         self->paf_tags_  = paf_tags;
         if (!paf_tags.empty()) self->paf_tag_types_ = paf_tag_types(path, paf_tags);
@@ -1381,6 +1528,104 @@ public:
         }
         return continue_open(std::move(self), std::move(input),
                              std::move(raw), is_gz, kind, region, out);
+    }
+
+    // The file line an Arrow CSV error names by content: "Expected N columns,
+    // got M: <row>" by the row's text, "In CSV column #K: … invalid value 'V'"
+    // by the first line whose field K is V. 0 when not found (or a region
+    // query, whose records are not file lines).
+    int64_t error_line(const arrow::Status& st) const {
+        if (region_applied_) return 0;
+        const std::string& m = st.message();
+        std::string row, value;
+        int col = -1;
+        if (size_t k = m.find(" columns, got "); k != std::string::npos) {
+            const size_t c = m.find(": ", k);
+            if (c == std::string::npos) return 0;
+            row = m.substr(c + 2);
+        } else if (size_t k = m.find("In CSV column #"); k != std::string::npos) {
+            col = std::atoi(m.c_str() + k + 15);
+            const size_t v = m.find("invalid value '");
+            if (v == std::string::npos || m.back() != '\'') return 0;
+            value = m.substr(v + 15, m.size() - v - 16);
+        } else {
+            return 0;
+        }
+        std::shared_ptr<arrow::io::RandomAccessFile> raw;
+        std::shared_ptr<arrow::io::InputStream> in;
+        if (!open_stream(path_, has_compression_suffix(path_), &raw, &in).empty()) return 0;
+        const bool quoted = kind_ == DelimKind::CSV;
+        const bool comments = kind_ != DelimKind::CSV && kind_ != DelimKind::TSV;
+        LineReader lr(in);
+        std::string line;
+        for (int64_t n = 1;; ++n) {
+            const bool ok = lr.read_line(&line);
+            if (!ok && line.empty()) return 0;
+            if (!row.empty()) {
+                if (line == row || (row.size() >= 64 && line.rfind(row, 0) == 0)) return n;
+            } else if (n > 1 && !(comments && !line.empty() && line[0] == '#')) {
+                std::string f = line;
+                cut_to_fields(&f, delimiter_, quoted, col + 1);   // field `col` ends f
+                size_t start = 0;
+                bool inq = false;
+                int seen = 0;
+                for (size_t i = 0; i < f.size() && seen < col; ++i) {
+                    if (quoted && f[i] == '"') inq = !inq;
+                    else if (f[i] == delimiter_ && !inq && ++seen == col) start = i + 1;
+                }
+                if (seen == col) {
+                    std::string_view field(f.data() + start, f.size() - start);
+                    if (quoted && field.size() >= 2 && field.front() == '"' && field.back() == '"')
+                        field = field.substr(1, field.size() - 2);
+                    if (field == value) return n;
+                }
+            }
+            if (!ok) return 0;
+        }
+    }
+    arrow::Status with_line(const arrow::Status& st) const {
+        const int64_t n = st.ok() ? 0 : error_line(st);
+        return n > 0 ? st.WithMessage("line ", n, ": ", st.message()) : st;
+    }
+
+    std::string new_bad_log() {
+        bad_log_ = std::make_shared<BadRowLog>();
+        if (bad_rows_path_.empty()) return "";
+        bad_log_->out = std::fopen(bad_rows_path_.c_str(), "w");
+        if (!bad_log_->out) return "--bad-rows: cannot write '" + bad_rows_path_ + "': " + std::strerror(errno);
+        return "";
+    }
+
+    // The line number (1-based) of the first line of `path` equal to `text`,
+    // reading the decoded file from its start; 0 when not found in its first
+    // million lines. Where a preamble stripper's first data line sits.
+    static int64_t physical_line_of(const std::string& path, bool is_gz, const std::string& text) {
+        std::shared_ptr<arrow::io::RandomAccessFile> raw;
+        std::shared_ptr<arrow::io::InputStream> in;
+        if (!open_stream(path, is_gz, &raw, &in).empty()) return 0;
+        LineReader lr(in);
+        std::string line;
+        for (int64_t n = 1; n <= 1000000; ++n) {
+            const bool ok = lr.read_line(&line);
+            if (!ok && line.empty()) return 0;
+            if (line == text) return n;
+            if (!ok) return 0;
+        }
+        return 0;
+    }
+    // --on-bad-row skip / null: check each line's field count (see
+    // FieldCountStream); `first` is the stream's first line, to number the
+    // file's lines from. A region query reads records, not file lines: none.
+    std::shared_ptr<arrow::io::InputStream> guard_fields(std::shared_ptr<arrow::io::InputStream> in,
+                                                         bool is_gz, int expected, bool short_only,
+                                                         char comment, const std::string& first) {
+        if (!bad_log_ || region_applied_) return in;
+        const int64_t line = first.empty() ? 1 : physical_line_of(path_, is_gz, first);
+        return std::make_shared<FieldCountStream>(std::move(in), delimiter_, kind_ == DelimKind::CSV, expected,
+                                                  short_only, comment, on_bad_row_ == "null", line, bad_log_);
+    }
+    static std::string first_line_of(const std::string& put_back) {
+        return put_back.substr(0, put_back.find('\n'));
     }
 
     // Stop and drain the reader's read-ahead (see ReadGate).
@@ -1519,6 +1764,7 @@ private:
         // GFF and SAM wrap the stream in TruncateFieldsStream to handle variable columns.
         std::vector<std::string> col_names;
         std::string put_back;
+        bool fields_checked = false;   // --on-bad-row stream in place (guard_fields)
 
         switch (kind) {
             case DelimKind::BED:
@@ -1536,10 +1782,13 @@ private:
                     self->cut_fields_ = 8;
                 } else if (self->vcf_sites_only_ && col_names.size() > 8) {
                     col_names.resize(8);
+                    const std::string first = first_line_of(put_back);
                     std::shared_ptr<arrow::io::InputStream> base =
                         put_back.empty() ? input
                         : std::shared_ptr<arrow::io::InputStream>(
                             std::make_shared<PrependInputStream>(std::move(put_back), input));
+                    base = self->guard_fields(std::move(base), is_gz, 8, true, 0, first);
+                    fields_checked = true;
                     input = std::make_shared<TruncateFieldsStream>(base, 8);
                     put_back.clear();
                 }
@@ -1548,11 +1797,13 @@ private:
                 self->preamble_lines_ = strip_prefix_preamble(input, '#', &put_back);
                 col_names = {"seqname","source","feature","start","end",
                              "score","strand","frame","attributes"};
+                const std::string first = first_line_of(put_back);
                 // Rebuild input with put_back then truncate to 9 fields
                 std::shared_ptr<arrow::io::InputStream> base =
                     put_back.empty() ? input
                     : std::shared_ptr<arrow::io::InputStream>(
                         std::make_shared<PrependInputStream>(std::move(put_back), input));
+                base = self->guard_fields(std::move(base), is_gz, 9, true, '#', first);
                 input = std::make_shared<TruncateFieldsStream>(base, 9, '#');
                 put_back.clear();
                 break;
@@ -1561,10 +1812,12 @@ private:
                 self->preamble_lines_ = strip_prefix_preamble(input, '@', &put_back);
                 col_names = {"QNAME","FLAG","RNAME","POS","MAPQ",
                              "CIGAR","RNEXT","PNEXT","TLEN","SEQ","QUAL"};
+                const std::string first = first_line_of(put_back);
                 std::shared_ptr<arrow::io::InputStream> base =
                     put_back.empty() ? input
                     : std::shared_ptr<arrow::io::InputStream>(
                         std::make_shared<PrependInputStream>(std::move(put_back), input));
+                base = self->guard_fields(std::move(base), is_gz, 11, true, 0, first);
                 input = std::make_shared<TruncateFieldsStream>(base, 11);
                 put_back.clear();
                 break;
@@ -1592,6 +1845,7 @@ private:
                 col_names = {"qname","qlen","qstart","qend","strand",
                              "tname","tlen","tstart","tend",
                              "nmatch","alen","mapq"};
+                input = self->guard_fields(std::move(input), is_gz, 12, true, 0, "");
                 if (self->paf_tags_.empty()) {
                     input = std::make_shared<TruncateFieldsStream>(input, 12);
                 } else {
@@ -1622,8 +1876,14 @@ private:
         }
 
         // BED non-gz: put_back still handled here; GFF/SAM already cleared it above.
+        const std::string first_data = first_line_of(put_back);
         if (!put_back.empty())
             input = std::make_shared<PrependInputStream>(std::move(put_back), input);
+        if (kind == DelimKind::BED || kind == DelimKind::Mpileup)
+            input = self->guard_fields(std::move(input), is_gz, -1, false, '#', first_data);
+        else if (kind == DelimKind::VCF && !fields_checked)
+            input = self->guard_fields(std::move(input), is_gz, (int)col_names.size(),
+                                       self->cut_fields_ > 0, 0, first_data);
 
         // Tabix range query: drop the file-driven data stream and replace it
         // with a tabix iterator that yields only records overlapping `region`.
@@ -1680,6 +1940,9 @@ private:
             std::string inject = std::string(kRowIndexColName) + self->delimiter_;
             input = std::make_shared<PrependInputStream>(std::move(inject), input);
         }
+        if (kind == DelimKind::CSV || kind == DelimKind::TSV)
+            input = self->guard_fields(std::move(input), is_gz, col_names.empty() ? -1 : (int)col_names.size(),
+                                       false, 0, first_data);
 
         bool autogen = (kind == DelimKind::BED) ||
                        (kind == DelimKind::Mpileup);
@@ -1762,7 +2025,7 @@ private:
                     return "";
                 }
             }
-            return "Cannot open '" + path + "': " + r.status().ToString();
+            return "Cannot open '" + path + "': " + self->with_line(r.status()).ToString();
         }
         self->reader_ = r.ValueOrDie();
         self->schema_ = self->reader_->schema();
@@ -1826,6 +2089,12 @@ private:
                     // The columns are named f0, f1, … now: the run's names
                     // are looked up again.
                     self->full_schema_.reset();
+                    if (self->bad_log_) {
+                        self->bad_log_->mute();       // the first reader's lines, read again here
+                        std::string err = self->new_bad_log();
+                        if (!err.empty()) return err;
+                        input2 = self->guard_fields(std::move(input2), is_gz, -1, false, 0, "");
+                    }
                     auto r2 = make_reader(input2, self->delimiter_,
                                           /*autogen=*/true, {}, force2,
                                           /*strings_nullable=*/true, {}, &gate2, {}, 1, 0,
@@ -2011,6 +2280,19 @@ private:
     const std::string& path() const override { return path_; }
 
     std::string footer() const override {
+        std::string s = kind_footer();
+        if (bad_log_) {
+            const auto [n, first] = bad_log_->counts();
+            if (n > 0) {
+                s += "  |  " + std::to_string(n) + (n == 1 ? " malformed row " : " malformed rows ") +
+                     (on_bad_row_ == "null" ? "padded / cut" : "skipped");
+                if (first > 0) s += " (first: line " + std::to_string(first) + ")";
+            }
+        }
+        return s;
+    }
+
+    std::string kind_footer() const {
         switch (kind_) {
             case DelimKind::VCF: return "Format: VCF";
             case DelimKind::GFF: return "Format: GFF3/GTF";

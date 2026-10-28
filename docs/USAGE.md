@@ -550,6 +550,39 @@ Filter is evaluated per row in C++ after the source's own pruning
 (tabix iterator / LociSSD row-group stats / BCF iterator), so
 combining with `-r` is fine and fast.
 
+# Malformed rows (`--on-bad-row`, `--bad-rows`)
+
+A text table row with another number of fields than the header (or, with
+no header, the first row) — a line cut short in a GTF, an extra comma in a
+CSV — is handled by `--on-bad-row`:
+
+| Policy | The row | Exit |
+|---|---|---|
+| `stop` (scripted runs) | ends the run, with its line in the file | 1 |
+| `skip` (the TUI and `vvg`) | left out | 0 |
+| `null` | short: padded with empty fields (null); long: cut | 0 |
+
+```
+$ vv --tsv genes.gtf
+vv: genes.gtf: Invalid: line 1500000: CSV parse error: Expected 9 columns, got 3: chr14	HAVANA	exon
+$ vv --on-bad-row skip --bad-rows bad.txt --count genes.gtf
+2223366
+$ cat bad.txt
+1500000	chr14	HAVANA	exon
+```
+
+`--bad-rows FILE` (with `skip` or `null`) lists each such row as
+`line<TAB>text`. Line numbers count every line of the file, preamble
+included. A quoted delimiter in a CSV field is part of the field. SAM, PAF,
+GFF / GTF and a VCF read without its samples accept more fields than their
+columns (optional fields, a FASTA section). The table view's footer and
+`vvg`'s status bar say how many rows were skipped and the first one's line.
+
+A value its column's type cannot hold (a word in an integer column after the
+first 16 MiB, which the types come from) is not a malformed row: it stops the
+run under every policy, with its line. A `-r` region query reads records, not
+file lines: its rows are not checked.
+
 # Range queries (`-r`, `--regions-file`, `--slop`)
 
 ```sh

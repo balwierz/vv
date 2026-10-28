@@ -484,6 +484,22 @@ one row per stored non-zero value, with columns \fBobs\fR, \fBvar\fR and
 it has them). The long form is the whole matrix, not a preview, in the
 viewer and in every export.
 .TP
+.BI \-\-on\-bad\-row " stop|skip|null"
+A row of a text table (CSV / TSV, BED, GFF / GTF, VCF, SAM, PAF, mpileup)
+with another number of fields than the header or the first row.
+\fBstop\fR (the default for a scripted run) ends the run with exit 1 and
+the row's line in the file. \fBskip\fR leaves the row out; \fBnull\fR pads a
+short row with empty fields (null) and cuts a long one. SAM, PAF, GFF and a
+VCF read without its samples accept more fields than their columns. The
+interactive viewer and \fBvvg\fR skip, and their footer counts the rows
+skipped and names the first one's line. A value a typed column cannot hold
+(a word in an integer column, past the first 16 MiB the types are taken
+from) stops the run under every policy, with its line.
+.TP
+.BI \-\-bad\-rows " file"
+With \fB\-\-on\-bad\-row skip\fR or \fBnull\fR: write each such row to
+\fIfile\fR as \fIline\fR<TAB>\fItext\fR, in file order.
+.TP
 .BI \-\-expand " col"
 Unpack a packed \fBkey=value\fR column into real columns, appended to the
 schema. Written for VCF \fBINFO\fR and GFF/GTF \fBattributes\fR, which carry

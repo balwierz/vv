@@ -338,6 +338,14 @@ int main(int argc, char** argv) {
         cfg.json_document = json_stdin && one_file && !json_tflag && !cfg.force_text;
     }
 
+    // The viewer shows a file with a malformed row (skipping it, with a note);
+    // a scripted run stops at it unless told otherwise.
+    if (cfg.on_bad_row.empty() && tui_wanted(cfg) &&
+        !(cfg.count || cfg.describe || cfg.schema_only || cfg.stats_only || cfg.heatmap ||
+          !cfg.unique_cols.empty() || cfg.json_array || cfg.json_lines || cfg.md || cfg.distinct ||
+          cfg.sample_n > 0 || cfg.tail_rows_set || cfg.list_columns || cfg.list_tabs))
+        cfg.on_bad_row = "skip";
+
     std::unique_ptr<TabularSource> src;
     // --contigs is applied inside open_source() now (so the GUI / KDE plugins
     // reach it too); it reads only the header and returns the reference-sequence
