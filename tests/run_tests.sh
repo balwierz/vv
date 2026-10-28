@@ -2198,6 +2198,17 @@ for args in "--select CHROM,POS,REF,ALT --tsv" "--count --filter 'QUAL > 40'" "-
         "$(eval "\"\$VV\" $args \"\$TMP/sites.vcf\"" 2>&1)" \
         "$(eval "VV_NO_PROJECTION=1 \"\$VV\" $args \"\$TMP/sites.vcf\"" 2>&1)"
 done
+# A samples preview (-n) derives only the records it shows (in long form a
+# record is one row per sample); its rows equal the full output's first.
+for f in "$DATA/tiny.samples.bcf" "$TMP/sites.vcf"; do
+    for lay in struct long text; do
+        for k in 1 2 5; do
+            assert_eq_file_inline "vcf_samples_head_$(basename "$f" | tr -c 'a-z0-9' _)_${lay}_$k" \
+                "$("$VV" -n "$k" --tsv --samples "$lay" "$f" 2>&1)" \
+                "$("$VV" --tsv --samples "$lay" "$f" 2>&1 | head -n $((k + 1)))"
+        done
+    done
+done
 # CSV / TSV: a scripted run that names its columns exactly converts only
 # those (ConvertOptions::include_columns; GENCODE CSV, 28 columns, --select
 # two of them to TSV 0.33 s / 520 MB -> 0.21 s / 166 MB). The output equals

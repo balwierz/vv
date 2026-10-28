@@ -238,11 +238,12 @@ user-facing summary).
 - **TUI long passes:** signal polling, visible read errors and partial/capped
   scope are implemented. Cancellation is between bounded reads, not inside
   a blocking HDF5 call.
-- **Decorator `read_first`.** Expanded attributes, flattened fields and
-  genotype statistics now delegate bounded head reads before transforming.
-  `VcfSamplesSource` (`src/core/derived.cpp`) still derives
-  the whole first chunk for a head read; delegating to the inner source's
-  `read_first` would derive only the rows shown.
+- **`--samples long` over a BCF with thousands of samples.** A BCF chunk is
+  32 768 records; in long form `VcfSamplesSource` derives records × samples
+  rows into one string array per column, which passes Arrow's 2 GB limit on
+  the 2,504-sample 1000 Genomes chr22 BCF ("Capacity error: array cannot
+  contain more than 2147483646 bytes") — a full long-form read fails per
+  chunk. Derive each chunk in slices of records (or as large_string).
 - **Remaining reader stages:** XLSX now defers sibling sheet parsing; ODS
   defers Arrow conversion, but still buffers the whole XML/all-sheet CSV.
   Follow with selected-sheet streaming only if schema inference stays stable.
@@ -255,6 +256,9 @@ user-facing summary).
   first NUL byte (`finish_csv_field`, `src/core/format_fast.cpp`).
 
 ### Done
+- `VcfSamplesSource::read_first`: a preview derives only the records it shows
+  (1000 Genomes chr22 BCF `-n 20 --samples long` 313 s / 26 GB -> 1.8 s /
+  0.87 GB; struct 3.9 s -> 1.8 s).
 - CSV / TSV column projection: a scripted run that names its columns
   exactly converts only those (`ColumnNeed`, `ConvertOptions::include_columns`;
   GENCODE CSV `--select` two columns 0.33 s / 520 MB -> 0.21 s / 166 MB).

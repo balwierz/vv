@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   173 MB instead of 0.29 s / 499 MB. A `--count` no longer fails on a bad
   value in a column it does not read. `VV_NO_PROJECTION=1` converts every
   column as before.
+- A VCF / BCF preview with sample columns (`-n`, the TUI's first screen)
+  derives only the rows it shows: on the 2,504-sample 1000 Genomes chr22
+  BCF, `-n 20 --samples long` takes 1.8 s / 0.87 GB instead of 313 s /
+  26 GB, and `-n 20` 1.6 s instead of 3.4 s.
 
 ## [1.33.0] - 2026-10-24
 

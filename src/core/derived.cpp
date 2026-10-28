@@ -1124,6 +1124,16 @@ public:
 
     arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
                              std::shared_ptr<arrow::Table>* out) override {
+        return read(i, -1, col_indices, out);
+    }
+    // A head read derives only the records it shows: in long form a record
+    // is nsamp() rows, so ceil(rows / nsamp()) of them.
+    arrow::Status read_first(int64_t rows, const std::vector<int>& cols,
+                             std::shared_ptr<arrow::Table>* out) override {
+        return read(0, rows, cols, out);
+    }
+    arrow::Status read(int i, int64_t rows, const std::vector<int>& col_indices,
+                       std::shared_ptr<arrow::Table>* out) {
         // Inner columns needed: the passed-through ones, plus FORMAT and the
         // samples whenever a sample-derived column is asked for.
         std::vector<int> need;
@@ -1140,7 +1150,12 @@ public:
         if (any_field) { want(fmt_col_); for (int sc : samp_cols_) want(sc); }
         if (need.empty()) want(fmt_col_);                 // for the row count
         std::shared_ptr<arrow::Table> in;
-        ARROW_RETURN_NOT_OK(inner_->read_chunk(i, need, &in));
+        if (rows >= 0) {
+            const int64_t per = long_ ? std::max<int64_t>(nsamp(), 1) : 1;
+            ARROW_RETURN_NOT_OK(inner_->read_first((rows + per - 1) / per, need, &in));
+        } else {
+            ARROW_RETURN_NOT_OK(inner_->read_chunk(i, need, &in));
+        }
         if (!in) { *out = nullptr; return arrow::Status::OK(); }
         auto col_of = [&](int inner_c) {
             return in->column((int)(std::find(need.begin(), need.end(), inner_c) - need.begin()));
@@ -1245,6 +1260,7 @@ public:
             cols.push_back(std::move(arr));
         }
         *out = arrow::Table::Make(arrow::schema(fields), cols, n * S);
+        if (rows >= 0 && (*out)->num_rows() > rows) *out = (*out)->Slice(0, rows);
         return arrow::Status::OK();
     }
 
