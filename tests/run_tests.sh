@@ -2417,7 +2417,7 @@ PYBLK
 '; printf '6	6
 '; } > "$TMP/blk_shortlater.tsv"
     assert_contains "bad_row_late_stop_line" "$("$VV" --tsv "$TMP/blk_shortlater.tsv" 2>&1 >/dev/null)" "line 2000002: CSV parse error"
-    assert_eq_file_inline "bad_row_late_skip_count" "$("$VV" --on-bad-row skip --select val --tsv "$TMP/blk_shortlater.tsv" | wc -l)" "2000002"
+    assert_eq_file_inline "bad_row_late_skip_count" "$("$VV" --on-bad-row skip --select val --tsv "$TMP/blk_shortlater.tsv" | awk 'END { print NR }')" "2000002"
     assert_eq_file_inline "csv_small_blocks_type_inside_sample_is_text" \
         "$("$VV" --schema "$TMP/blk_typeearly.tsv" | awk '$1 == "val" {print $2}')" "string"
     assert_eq_file_inline "csv_small_blocks_long_line_reads" "$("$VV" --count "$TMP/blk_longlater.tsv")" "2000001"
