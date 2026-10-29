@@ -431,6 +431,27 @@ public:
         }
         return leaves;
     }
+    // A dictionary column's indices within its dictionary. The Parquet
+    // reader does not check them: a corrupt file gave an index past the
+    // dictionary, which --sort's gather then read beyond the buffer.
+    static arrow::Status check_dictionaries(const arrow::Table& t) {
+        for (int c = 0; c < t.num_columns(); ++c) {
+            if (t.column(c)->type()->id() != arrow::Type::DICTIONARY) continue;
+            for (const auto& ch : t.column(c)->chunks()) {
+                const auto& d = static_cast<const arrow::DictionaryArray&>(*ch);
+                const int64_t n = d.dictionary()->length();
+                for (int64_t r = 0; r < d.length(); ++r) {
+                    if (d.IsNull(r)) continue;
+                    const int64_t k = d.GetValueIndex(r);
+                    if (k < 0 || k >= n)
+                        return arrow::Status::Invalid("column '", t.field(c)->name(), "': dictionary index ",
+                                                      k, " outside its ", n, " values (a corrupt file)");
+                }
+            }
+        }
+        return arrow::Status::OK();
+    }
+
     arrow::Status read_chunk(int i, const std::vector<int>& cols,
                               std::shared_ptr<arrow::Table>* out) override {
         if (!region_mode_) {
@@ -440,10 +461,10 @@ public:
 #if ARROW_VERSION_MAJOR >= 24
             ARROW_ASSIGN_OR_RAISE(
                 *out, reader_->ReadRowGroups({i}, arrow_to_leaf_indices(cols)));
-            return arrow::Status::OK();
 #else
-            return reader_->ReadRowGroups({i}, arrow_to_leaf_indices(cols), out);
+            ARROW_RETURN_NOT_OK(reader_->ReadRowGroups({i}, arrow_to_leaf_indices(cols), out));
 #endif
+            return check_dictionaries(**out);
         }
 
         // Region mode: read the full row group of the slice, slice it to the
@@ -484,6 +505,7 @@ public:
             ARROW_RETURN_NOT_OK(reader_->ReadRowGroups(
                 {s.row_group}, arrow_to_leaf_indices(need), &raw));
 #endif
+            ARROW_RETURN_NOT_OK(check_dictionaries(*raw));
             rg_cache_.insert(rg_cache_.begin(),
                              RgCacheEntry{s.row_group, need, raw});
             if (rg_cache_.size() > kRgCacheMax) rg_cache_.pop_back();
@@ -666,6 +688,7 @@ public:
         }
         auto r = arrow::Table::FromRecordBatches(rb->schema(), batches);
         ARROW_RETURN_NOT_OK(r.status());
+        ARROW_RETURN_NOT_OK(check_dictionaries(**r));
         *out = r.ValueOrDie();
         return arrow::Status::OK();
     }

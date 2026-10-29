@@ -2269,6 +2269,16 @@ assert_eq_file_inline "csv_projection_none_for_pattern" \
     "$(VV_DEBUG_PROJECTION=1 "$VV" --select 'c*' --tsv "$TMP/wide.csv" 2>&1 >/dev/null)" ""
 assert_eq_file_inline "csv_projection_none_for_table_view" \
     "$(VV_DEBUG_PROJECTION=1 "$VV" -n 3 --select name "$TMP/wide.csv" 2>&1 >/dev/null)" ""
+# Parquet dictionary indices are checked against the dictionary: a corrupt
+# file (tests/fuzz/regress, found by fuzz_parquet) with index 3 into three
+# values ended --sort in a SEGV inside the gather; it is now a read error.
+REG="$HERE/fuzz/regress"
+assert_contains "parquet_dict_index_sort" "$("$VV" --sort dc --tsv "$REG/parquet-dict-index.parquet" 2>&1 >/dev/null)" \
+    "column 'dc': dictionary index 3 outside its 3 values (a corrupt file)"
+assert_exit_code "parquet_dict_index_sort_exit1" 1 "$VV" --sort dc --tsv "$REG/parquet-dict-index.parquet"
+assert_exit_code "parquet_dict_index_select_exit1" 1 "$VV" --select dc --tsv "$REG/parquet-dict-index.parquet"
+assert_eq_file_inline "parquet_dict_valid_sort" "$("$VV" --sort dc --select id,dc --tsv "$DATA/tiny.jsonvals.parquet")" \
+    "$(printf 'id\tdc\n1\ta\n4\ta\n2\tb\n6\tb\n5\tc\n3\t')"
 # --compute 'name=expr': a column per spec, appended in order. int64 when
 # every operand is an integer and no / or log takes part, else float64;
 # null operands, a division by zero, log of x <= 0 and an int64 overflow
