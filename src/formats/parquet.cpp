@@ -17,6 +17,18 @@ struct GenomicCoordCols {
     std::string chrom_name, start_name, end_name;
 };
 
+// A column chunk's statistics; null when it has none or when its metadata
+// cannot be decoded (Arrow throws ParquetException on a corrupt chunk —
+// region pruning then reads the row group, whose reader reports it).
+static std::shared_ptr<parquet::Statistics> chunk_stats(const parquet::RowGroupMetaData& rg, int leaf) {
+    try {
+        auto cc = rg.ColumnChunk(leaf);
+        return cc->is_stats_set() ? cc->statistics() : nullptr;
+    } catch (const std::exception&) {
+        return nullptr;
+    }
+}
+
 static GenomicCoordCols detect_coord_columns(const arrow::Schema& schema,
                                              const std::string& override_cols) {
     GenomicCoordCols r;
@@ -227,9 +239,7 @@ public:
                 int leaf = field_to_leaf(field_idx);
                 auto md = self->meta_->RowGroup(rg);
                 if (leaf < 0 || leaf >= md->num_columns()) return false;
-                auto cc = md->ColumnChunk(leaf);
-                if (!cc->is_stats_set()) return false;
-                auto stats = cc->statistics();
+                auto stats = chunk_stats(*md, leaf);
                 if (!stats || !stats->HasMinMax()) return false;
                 if (auto s64 = std::dynamic_pointer_cast<parquet::Int64Statistics>(stats)) {
                     *lo = s64->min(); *hi = s64->max(); return true;
@@ -248,9 +258,7 @@ public:
                 int leaf = field_to_leaf(field_idx);
                 auto md = self->meta_->RowGroup(rg);
                 if (leaf < 0 || leaf >= md->num_columns()) return false;
-                auto cc = md->ColumnChunk(leaf);
-                if (!cc->is_stats_set()) return false;
-                auto stats = cc->statistics();
+                auto stats = chunk_stats(*md, leaf);
                 if (!stats || !stats->HasMinMax()) return false;
                 if (auto sb = std::dynamic_pointer_cast<parquet::ByteArrayStatistics>(stats)) {
                     auto mn = sb->min(); auto mx = sb->max();
@@ -746,17 +754,23 @@ public:
 // holds at least the row group's row count. A footer whose row count is
 // above that is corrupt: Arrow 26's reader believed one claiming 2.9e11
 // rows for 2 values and grew past 40 GB. The row count is one field per
-// row group, so the first leaf column is enough to test it.
+// row group, so the first leaf column is enough to test it. Decoding a
+// column chunk's metadata throws ParquetException on a corrupt one (Arrow's
+// reader turns that into a Status; here it is the message).
 std::string parquet_row_count_error(const parquet::FileMetaData& meta) {
     if (meta.num_columns() == 0) return "";
-    for (int g = 0; g < meta.num_row_groups(); ++g) {
-        auto rg = meta.RowGroup(g);
-        const int64_t rows = rg->num_rows();
-        const int64_t values = rg->ColumnChunk(0)->num_values();
-        if (rows < 0 || values < rows)
-            return "row group " + std::to_string(g) + " claims " + std::to_string(rows) +
-                   " rows but column '" + meta.schema()->Column(0)->path()->ToDotString() +
-                   "' holds " + std::to_string(values) + " values (a corrupt file)";
+    try {
+        for (int g = 0; g < meta.num_row_groups(); ++g) {
+            auto rg = meta.RowGroup(g);
+            const int64_t rows = rg->num_rows();
+            const int64_t values = rg->ColumnChunk(0)->num_values();
+            if (rows < 0 || values < rows)
+                return "row group " + std::to_string(g) + " claims " + std::to_string(rows) +
+                       " rows but column '" + meta.schema()->Column(0)->path()->ToDotString() +
+                       "' holds " + std::to_string(values) + " values (a corrupt file)";
+        }
+    } catch (const std::exception& e) {
+        return e.what();
     }
     return "";
 }
@@ -838,24 +852,30 @@ std::string print_stats_only(TabularSource& src, const Config& cfg) {
         auto leaves = pq->parquet_arrow_leaves_for(i);
         if (!leaves.empty()) leaf_for_field[i] = leaves[0];
     }
+    // Decodes every column chunk's metadata the min / max / null lookups
+    // below read again; a corrupt one throws ParquetException here.
     std::vector<ColAgg> agg(n_cols);
-    for (int g = 0; g < n_rg; ++g) {
-        auto rg = meta->RowGroup(g);
-        for (int i = 0; i < n_cols; ++i) {
-            int leaf = leaf_for_field[i];
-            if (leaf < 0 || leaf >= rg->num_columns()) continue;
-            auto cc = rg->ColumnChunk(leaf);
-            agg[i].comp += cc->total_compressed_size();
-            agg[i].raw  += cc->total_uncompressed_size();
-            agg[i].codecs.insert(cc->compression());
-            if (cc->is_stats_set()) {
-                auto st = cc->statistics();
-                if (st && st->HasNullCount()) {
-                    agg[i].nulls += st->null_count();
-                    agg[i].has_nulls = true;
+    try {
+        for (int g = 0; g < n_rg; ++g) {
+            auto rg = meta->RowGroup(g);
+            for (int i = 0; i < n_cols; ++i) {
+                int leaf = leaf_for_field[i];
+                if (leaf < 0 || leaf >= rg->num_columns()) continue;
+                auto cc = rg->ColumnChunk(leaf);
+                agg[i].comp += cc->total_compressed_size();
+                agg[i].raw  += cc->total_uncompressed_size();
+                agg[i].codecs.insert(cc->compression());
+                if (cc->is_stats_set()) {
+                    auto st = cc->statistics();
+                    if (st && st->HasNullCount()) {
+                        agg[i].nulls += st->null_count();
+                        agg[i].has_nulls = true;
+                    }
                 }
             }
         }
+    } catch (const std::exception& e) {
+        return std::string("Not a valid Parquet file: ") + e.what();
     }
 
     auto codecs_of = [&](const ColAgg& c) {
@@ -879,9 +899,7 @@ std::string print_stats_only(TabularSource& src, const Config& cfg) {
         auto rg = meta->RowGroup(g);
         const int leaf = leaf_for_field[i];
         if (leaf < 0 || leaf >= rg->num_columns()) return false;
-        auto cc = rg->ColumnChunk(leaf);
-        if (!cc->is_stats_set()) return false;
-        auto st = cc->statistics();
+        auto st = chunk_stats(*rg, leaf);
         if (!st || !st->HasMinMax()) return false;
         std::shared_ptr<arrow::Scalar> a, b;
         if (!parquet::arrow::StatisticsAsScalars(*st, &a, &b).ok() || !a || !b) return false;
@@ -897,9 +915,9 @@ std::string print_stats_only(TabularSource& src, const Config& cfg) {
         auto rg = meta->RowGroup(g);
         const int leaf = leaf_for_field[i];
         if (leaf < 0 || leaf >= rg->num_columns()) return false;
-        auto cc = rg->ColumnChunk(leaf);
-        if (!cc->is_stats_set() || !cc->statistics() || !cc->statistics()->HasNullCount()) return false;
-        *n = cc->statistics()->null_count();
+        auto st = chunk_stats(*rg, leaf);
+        if (!st || !st->HasNullCount()) return false;
+        *n = st->null_count();
         return true;
     };
     if (json) {

@@ -2288,6 +2288,21 @@ assert_contains "parquet_row_count_tsv" "$(capped_vv --tsv "$REG/parquet-row-cou
     "row group 0 claims 286792808062 rows but column 'id' holds 2 values (a corrupt file)"
 assert_exit_code "parquet_row_count_exit1" 1 capped_vv --tsv "$REG/parquet-row-count.parquet"
 assert_exit_code "parquet_row_count_count_exit1" 1 capped_vv --count "$REG/parquet-row-count.parquet"
+# Column-chunk metadata Arrow cannot decode (a definition-level histogram
+# of 2 entries for a column of max level 0) throws ParquetException outside
+# the reader: the row-count check at open (first column, found by
+# fuzz_parquet), --stats, and -r pruning on the 'end' column aborted with
+# an uncaught exception (exit 134); each is now an error, exit 1.
+HIST="Definition level histogram size mismatch"
+assert_contains "parquet_chunk_meta_open" \
+    "$(capped_vv --tsv "$REG/parquet-chunk-meta-first.parquet" 2>&1 >/dev/null)" "Not a valid Parquet file: $HIST"
+assert_exit_code "parquet_chunk_meta_open_exit1" 1 capped_vv --tsv "$REG/parquet-chunk-meta-first.parquet"
+assert_contains "parquet_chunk_meta_stats" \
+    "$(capped_vv --stats "$REG/parquet-chunk-meta-end.parquet" 2>&1 >/dev/null)" "Not a valid Parquet file: $HIST"
+assert_exit_code "parquet_chunk_meta_stats_exit1" 1 capped_vv --stats "$REG/parquet-chunk-meta-end.parquet"
+assert_contains "parquet_chunk_meta_region" \
+    "$(capped_vv -r chr1:1-1000 --tsv "$REG/parquet-chunk-meta-end.parquet" 2>&1 >/dev/null)" "$HIST"
+assert_exit_code "parquet_chunk_meta_region_exit1" 1 capped_vv -r chr1:1-1000 --tsv "$REG/parquet-chunk-meta-end.parquet"
 # --compute 'name=expr': a column per spec, appended in order. int64 when
 # every operand is an integer and no / or log takes part, else float64;
 # null operands, a division by zero, log of x <= 0 and an int64 overflow
