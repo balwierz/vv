@@ -876,6 +876,10 @@ jobs:
     # job adds arm64.
     name: Build & install-test vv-gui deb (${{ matrix.image }})
     runs-on: ubuntu-latest
+    # testing's packages move under it (2026-10: Apache's Arrow 26 debs need
+    # libthrift-0.23.0, which testing no longer has), so its failure is shown
+    # on the job but does not fail the run; debian:13 still does.
+    continue-on-error: ${{ matrix.image == 'debian:testing' }}
     strategy:
       fail-fast: false
       matrix:
