@@ -356,10 +356,10 @@ user-facing summary).
 ## Quality / signal
 
 ### Open
-- libFuzzer harness — extend to the remaining binary parsers (BAM, Parquet, BCF,
-  FASTA/FASTQ, HDF5, 2bit, ODS). The LociSSD v4 codec decoder and the NumPy `.npy`
-  parser are done (see Done); the rest reuse the same `VV_BUILD_FUZZERS` +
-  `tests/fuzz/` scaffolding.
+- libFuzzer harness — extend to the remaining binary parsers (FASTA/FASTQ, HDF5,
+  2bit, ODS). BAM / SAM / BCF / VCF (`fuzz_hts`) and Parquet (`fuzz_parquet`)
+  go through `source_fuzz_one()` (src/core/open.cpp), which opens any extension
+  the way vv does; a new reader needs only a harness file and its CI corpus.
 - Code coverage badge.
 - Reproducible builds.
 

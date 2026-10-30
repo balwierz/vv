@@ -96,7 +96,7 @@ jobs:
       # read / overflow / misaligned load / null memcpy fails here. Needs clang
       # (libFuzzer). Deterministic seed; a clean tree survives far more than this
       # budget's iterations, so it is not flaky.
-      - name: Fuzz smoke (decode_colblock + npy + lzf + rdata + pod5 + zarr)
+      - name: Fuzz smoke (colblock, npy, lzf, json, rdata, pod5, zarr, msa, hts, parquet)
         if: matrix.os == '24.04'
         env:
           ARROW_DEFAULT_MEMORY_POOL: system
@@ -106,10 +106,12 @@ jobs:
           sudo apt-get install -y -V clang
           cmake -S . -B build-fuzz -DVV_BUILD_FUZZERS=ON -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
-          cmake --build build-fuzz -j"$(nproc)" --target fuzz_colblock fuzz_npy fuzz_lzf fuzz_rdata fuzz_pod5 fuzz_zarr fuzz_msa
+          cmake --build build-fuzz -j"$(nproc)" --target fuzz_colblock fuzz_npy fuzz_lzf fuzz_json fuzz_rdata fuzz_pod5 fuzz_zarr fuzz_msa \
+            fuzz_hts fuzz_parquet
           ./build-fuzz/fuzz_colblock -max_total_time=40 -seed=1
           ./build-fuzz/fuzz_npy      -max_total_time=40 -seed=1
           ./build-fuzz/fuzz_lzf      -max_total_time=30 -seed=1
+          ./build-fuzz/fuzz_json     -max_total_time=30 -seed=1
           # seeded with the R fixtures, copied (libFuzzer adds to its corpus dir)
           mkdir -p "$RUNNER_TEMP/rdata-corpus"
           cp tests/data/*.rds tests/data/*.RData "$RUNNER_TEMP/rdata-corpus/"
@@ -123,6 +125,19 @@ jobs:
           cp tests/data/tiny.sto tests/data/tiny.aln tests/data/tiny*.phy tests/data/tiny.nex tests/data/tiny.msf \
              tests/data/tiny.a3m tests/data/tiny.afa "$RUNNER_TEMP/msa-corpus/"
           ./build-fuzz/fuzz_msa      -max_total_time=40 -seed=1 "$RUNNER_TEMP/msa-corpus"
+          # A seed is the file behind its extension's index byte: 0 bam, 1 sam, 2 bcf, 3 vcf.
+          mkdir -p "$RUNNER_TEMP/hts-corpus"
+          for f in tiny.bam:0 tiny.splice.bam:0 tiny.bcf:2 tiny.samples.bcf:2 tiny.vcf:3; do
+            n=${f%%:*}; b=${f#*:}
+            { printf "\\x0$b"; cat "tests/data/$n"; } > "$RUNNER_TEMP/hts-corpus/$n"
+          done
+          printf '\x01@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:1000\nr1\t0\tchr1\t10\t60\t4M\t*\t0\t0\tACGT\tIIII\tNM:i:0\n' \
+            > "$RUNNER_TEMP/hts-corpus/tiny.sam"
+          ./build-fuzz/fuzz_hts      -max_total_time=40 -seed=1 -max_len=65536 "$RUNNER_TEMP/hts-corpus"
+          mkdir -p "$RUNNER_TEMP/parquet-corpus"
+          find tests/data -name '*.parquet' -size -64k -exec cp {} "$RUNNER_TEMP/parquet-corpus/" \;
+          # tests/fuzz/regress (read-only second dir) replays the files earlier runs found
+          ./build-fuzz/fuzz_parquet  -max_total_time=40 -seed=1 -max_len=65536 "$RUNNER_TEMP/parquet-corpus" tests/fuzz/regress
 
       # ── Qt6/KDE GUI (24.04 only) ─────────────────────────────────────────
       # Reuses the shared Arrow / htslib / hdf5 / sqlite / xlsxio stack

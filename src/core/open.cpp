@@ -1959,3 +1959,109 @@ static std::string dispatch_by_kind(const std::string& path, const Config& cfg,
     *out = std::move(src);
     return "";
 }
+
+#ifdef VV_FUZZ
+// `t` with text as binary and decimals as their fixed-width storage, nested
+// types included. A file's strings and decimals are passed through as
+// stored: Arrow's Parquet reader checks neither UTF-8 nor a decimal's
+// precision, and vv prints both as they are. The check covers every other
+// invariant.
+static std::shared_ptr<arrow::DataType> fuzz_binary_twin(const std::shared_ptr<arrow::DataType>& t) {
+    switch (t->id()) {
+        case arrow::Type::DECIMAL32:
+        case arrow::Type::DECIMAL64:
+        case arrow::Type::DECIMAL128:
+        case arrow::Type::DECIMAL256:
+            return arrow::fixed_size_binary(static_cast<const arrow::FixedSizeBinaryType&>(*t).byte_width());
+        case arrow::Type::STRING:       return arrow::binary();
+        case arrow::Type::LARGE_STRING: return arrow::large_binary();
+        case arrow::Type::STRING_VIEW:  return arrow::binary_view();
+        case arrow::Type::LIST: {
+            const auto& l = static_cast<const arrow::ListType&>(*t);
+            return arrow::list(l.value_field()->WithType(fuzz_binary_twin(l.value_type())));
+        }
+        case arrow::Type::LARGE_LIST: {
+            const auto& l = static_cast<const arrow::LargeListType&>(*t);
+            return arrow::large_list(l.value_field()->WithType(fuzz_binary_twin(l.value_type())));
+        }
+        case arrow::Type::FIXED_SIZE_LIST: {
+            const auto& l = static_cast<const arrow::FixedSizeListType&>(*t);
+            return arrow::fixed_size_list(l.value_field()->WithType(fuzz_binary_twin(l.value_type())),
+                                          l.list_size());
+        }
+        case arrow::Type::MAP: {
+            const auto& m = static_cast<const arrow::MapType&>(*t);
+            return std::make_shared<arrow::MapType>(m.key_field()->WithType(fuzz_binary_twin(m.key_type())),
+                                                    m.item_field()->WithType(fuzz_binary_twin(m.item_type())),
+                                                    m.keys_sorted());
+        }
+        case arrow::Type::STRUCT: {
+            arrow::FieldVector f;
+            for (const auto& c : t->fields()) f.push_back(c->WithType(fuzz_binary_twin(c->type())));
+            return arrow::struct_(f);
+        }
+        case arrow::Type::DICTIONARY: {
+            const auto& d = static_cast<const arrow::DictionaryType&>(*t);
+            return arrow::dictionary(d.index_type(), fuzz_binary_twin(d.value_type()), d.ordered());
+        }
+        case arrow::Type::EXTENSION:     // arrow.json, …: checked as their storage
+            return fuzz_binary_twin(static_cast<const arrow::ExtensionType&>(*t).storage_type());
+        default: return t;
+    }
+}
+
+// Write an untrusted buffer to a file named *.<ext> (one per process, reused)
+// and open it the way vv does: open_source() with the default options, then
+// read the head and every chunk; abort when a built table is not valid.
+void source_fuzz_one(const char* ext, const uint8_t* buf, size_t n) {
+    static std::string path;
+    if (path.empty()) {
+        // A CRAM's reference is looked up in REF_PATH, by default a URL:
+        // no network from a fuzzer.
+        set_env("REF_PATH", "/nonexistent/%s", true);
+        set_env("REF_CACHE", "/nonexistent/%s", true);
+        std::string tmpl = temp_dir() + "/vvfuzz-XXXXXX." + ext;
+        const int fd = make_temp_file(&tmpl, (int)std::strlen(ext) + 1);
+        if (fd < 0) std::abort();
+        ::close(fd);
+        path = tmpl;
+    }
+    if (FILE* f = std::fopen(path.c_str(), "wb")) {
+        if (n && std::fwrite(buf, 1, n, f) != n) std::abort();
+        std::fclose(f);
+    } else {
+        std::abort();
+    }
+    Config cfg;
+    cfg.path = path;
+    cfg.threads = 1;
+    std::unique_ptr<TabularSource> src;
+    if (!open_source(path, cfg, &src).empty() || !src) return;
+    std::vector<int> cols;
+    for (int j = 0; j < src->schema()->num_fields(); ++j) cols.push_back(j);
+    auto check = [](const std::shared_ptr<arrow::Table>& t) {
+        if (!t) return;
+        if (auto s = t->Validate(); !s.ok()) {
+            std::fprintf(stderr, "invalid: %s\n", s.ToString().c_str());
+            std::abort();
+        }
+        for (const auto& col : t->columns())
+            for (const auto& ch : col->chunks()) {
+                auto v = ch->View(fuzz_binary_twin(ch->type()));
+                arrow::Status s = v.ok() ? (*v)->ValidateFull() : v.status();
+                if (!s.ok()) {
+                    std::fprintf(stderr, "invalid: %s\n", s.ToString().c_str());
+                    std::abort();
+                }
+            }
+    };
+    std::shared_ptr<arrow::Table> t;
+    if (src->read_first(10, cols, &t).ok()) check(t);
+    for (int c = 0; c < 64; ++c) {
+        src->ensure(c);
+        if (c >= src->num_chunks()) break;
+        if (!src->read_chunk(c, cols, &t).ok()) break;
+        check(t);
+    }
+}
+#endif

@@ -735,7 +735,7 @@ if(VV_BUILD_FUZZERS)
   target_include_directories(vvcore_fuzz_obj PRIVATE $<TARGET_PROPERTY:vv,INCLUDE_DIRECTORIES>)
   target_compile_options(vvcore_fuzz_obj PRIVATE ${_fz_flags})
   target_link_libraries(vvcore_fuzz_obj PRIVATE ${_vv_link_common})
-  foreach(_fz colblock npy lzf json rdata pod5 zarr msa)
+  foreach(_fz colblock npy lzf json rdata pod5 zarr msa hts parquet)
     add_executable(fuzz_${_fz} tests/fuzz/fuzz_${_fz}.cpp $<TARGET_OBJECTS:vvcore_fuzz_obj>)
     target_compile_definitions(fuzz_${_fz} PRIVATE
         VV_CORE_LIB=1 VV_FUZZ=1
@@ -748,7 +748,7 @@ if(VV_BUILD_FUZZERS)
         -fsanitize=fuzzer,address,undefined)
     target_link_libraries(fuzz_${_fz} PRIVATE ${_vv_link_common})
   endforeach()
-  message(STATUS "Fuzzers     : enabled (fuzz_colblock, fuzz_npy, fuzz_lzf, fuzz_json, fuzz_rdata, fuzz_pod5, fuzz_zarr, fuzz_msa)")
+  message(STATUS "Fuzzers     : enabled (fuzz_colblock, fuzz_npy, fuzz_lzf, fuzz_json, fuzz_rdata, fuzz_pod5, fuzz_zarr, fuzz_msa, fuzz_hts, fuzz_parquet)")
 endif()
 
 # ── Install rules ─────────────────────────────────────────────────────────────

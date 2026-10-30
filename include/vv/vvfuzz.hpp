@@ -50,6 +50,11 @@ void rdata_fuzz_one(const uint8_t* buf, size_t n);
 // tables; aborts when a built table is not valid. Compiled only under VV_FUZZ.
 void msa_fuzz_one(const uint8_t* buf, size_t n);
 
+// Write an untrusted buffer to a temporary file named *.<ext> and open it
+// as vv does (open_source(), default options), reading the head and every
+// chunk; aborts when a built table is not valid. Compiled only under VV_FUZZ.
+void source_fuzz_one(const char* ext, const uint8_t* buf, size_t n);
+
 // Decode an untrusted LZF stream (HDF5 filter 32000) into `out`. Returns the
 // decoded length, or 0 on failure (*out_too_small set if `out` ran out of room).
 namespace h5lzf {
