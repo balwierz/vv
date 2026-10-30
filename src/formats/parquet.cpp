@@ -180,6 +180,8 @@ public:
         if (!st.ok()) return "Error opening Parquet: " + st.ToString();
 
         self->meta_ = self->reader_->parquet_reader()->metadata();
+        if (auto e = parquet_row_count_error(*self->meta_); !e.empty())
+            return "Not a valid Parquet file: " + e;
         st = self->reader_->GetSchema(&self->schema_);
         if (!st.ok()) return "Error reading schema: " + st.ToString();
 
@@ -739,6 +741,25 @@ public:
         return {};
     }
 };
+
+// A row has at least one level in every leaf column, so a column chunk
+// holds at least the row group's row count. A footer whose row count is
+// above that is corrupt: Arrow 26's reader believed one claiming 2.9e11
+// rows for 2 values and grew past 40 GB. The row count is one field per
+// row group, so the first leaf column is enough to test it.
+std::string parquet_row_count_error(const parquet::FileMetaData& meta) {
+    if (meta.num_columns() == 0) return "";
+    for (int g = 0; g < meta.num_row_groups(); ++g) {
+        auto rg = meta.RowGroup(g);
+        const int64_t rows = rg->num_rows();
+        const int64_t values = rg->ColumnChunk(0)->num_values();
+        if (rows < 0 || values < rows)
+            return "row group " + std::to_string(g) + " claims " + std::to_string(rows) +
+                   " rows but column '" + meta.schema()->Column(0)->path()->ToDotString() +
+                   "' holds " + std::to_string(values) + " values (a corrupt file)";
+    }
+    return "";
+}
 
 std::string open_parquet_source(const std::string& path, const Config& cfg, std::unique_ptr<TabularSource>* out) {
     std::unique_ptr<ParquetSource> s;

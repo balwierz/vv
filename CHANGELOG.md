@@ -40,6 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   cannot hold, is reported with its line in the file
   (`line 1500000: CSV parse error: Expected 9 columns, got 3: …`); before,
   the message carried the row text only.
+- Corrupt Parquet files are rejected instead of read: a dictionary index
+  past its dictionary (`--sort` read beyond the buffer and crashed), and a
+  row group claiming more rows than its column chunks hold (an 8.6 kB file
+  claiming 2.9e11 rows grew past 40 GB with Arrow 26).
 
 ### Changed
 - CSV / TSV: a run that names its columns (`--select`, `--filter`,

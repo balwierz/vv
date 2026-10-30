@@ -47,6 +47,8 @@ std::string validate_lociss(const std::string& path) {
     if (!st.ok()) return "Error opening Parquet: " + st.ToString();
 
     auto meta = reader->parquet_reader()->metadata();
+    if (auto e = parquet_row_count_error(*meta); !e.empty())
+        return "Not a valid Parquet file: " + e;
     std::shared_ptr<arrow::Schema> schema;
     st = reader->GetSchema(&schema);
     if (!st.ok()) return "Error reading schema: " + st.ToString();

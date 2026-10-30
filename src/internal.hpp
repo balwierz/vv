@@ -883,6 +883,9 @@ std::string unknown_columns_error(const TabularSource& src,
 std::string open_parquet_source(const std::string& path, const Config& cfg, std::unique_ptr<TabularSource>* out);
 
 bool is_parquet_source(const TabularSource& src);
+// "" when every row group's row count agrees with its column chunks; else
+// the message for a footer that claims more rows than a chunk holds.
+std::string parquet_row_count_error(const parquet::FileMetaData& meta);
 
 enum class DelimKind { CSV, TSV, BED, VCF, GFF, SAM, PAF, Mpileup, Mtx };
 

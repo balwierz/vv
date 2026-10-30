@@ -2279,6 +2279,15 @@ assert_exit_code "parquet_dict_index_sort_exit1" 1 "$VV" --sort dc --tsv "$REG/p
 assert_exit_code "parquet_dict_index_select_exit1" 1 "$VV" --select dc --tsv "$REG/parquet-dict-index.parquet"
 assert_eq_file_inline "parquet_dict_valid_sort" "$("$VV" --sort dc --select id,dc --tsv "$DATA/tiny.jsonvals.parquet")" \
     "$(printf 'id\tdc\n1\ta\n4\ta\n2\tb\n6\tb\n5\tc\n3\t')"
+# A footer whose row group claims more rows than its column chunks hold
+# values (2.9e11 rows over 2 values, found by fuzz_parquet) is rejected at
+# open: Arrow 26's reader trusted the count and grew past 40 GB. The runs
+# are capped so a regression fails instead of exhausting memory.
+capped_vv() { (ulimit -v 4000000 2>/dev/null; exec "$VV" "$@"); }
+assert_contains "parquet_row_count_tsv" "$(capped_vv --tsv "$REG/parquet-row-count.parquet" 2>&1 >/dev/null)" \
+    "row group 0 claims 286792808062 rows but column 'id' holds 2 values (a corrupt file)"
+assert_exit_code "parquet_row_count_exit1" 1 capped_vv --tsv "$REG/parquet-row-count.parquet"
+assert_exit_code "parquet_row_count_count_exit1" 1 capped_vv --count "$REG/parquet-row-count.parquet"
 # --compute 'name=expr': a column per spec, appended in order. int64 when
 # every operand is an integer and no / or log takes part, else float64;
 # null operands, a division by zero, log of x <= 0 and an int64 overflow
