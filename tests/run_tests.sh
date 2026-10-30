@@ -2282,8 +2282,14 @@ assert_eq_file_inline "parquet_dict_valid_sort" "$("$VV" --sort dc --select id,d
 # A footer whose row group claims more rows than its column chunks hold
 # values (2.9e11 rows over 2 values, found by fuzz_parquet) is rejected at
 # open: Arrow 26's reader trusted the count and grew past 40 GB. The runs
-# are capped so a regression fails instead of exhausting memory.
-capped_vv() { (ulimit -v 4000000 2>/dev/null; exec "$VV" "$@"); }
+# are capped so a regression fails instead of exhausting memory: ulimit -v,
+# or under ASan (which reserves terabytes of shadow address space at start,
+# so ulimit -v stops it before main) its own RSS limit.
+if LC_ALL=C grep -qa __asan_init "$VV"; then
+    capped_vv() { ASAN_OPTIONS="${ASAN_OPTIONS:+$ASAN_OPTIONS:}hard_rss_limit_mb=4000" "$VV" "$@"; }
+else
+    capped_vv() { (ulimit -v 4000000 2>/dev/null; exec "$VV" "$@"); }
+fi
 assert_contains "parquet_row_count_tsv" "$(capped_vv --tsv "$REG/parquet-row-count.parquet" 2>&1 >/dev/null)" \
     "row group 0 claims 286792808062 rows but column 'id' holds 2 values (a corrupt file)"
 assert_exit_code "parquet_row_count_exit1" 1 capped_vv --tsv "$REG/parquet-row-count.parquet"
