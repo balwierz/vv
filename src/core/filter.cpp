@@ -1054,16 +1054,22 @@ std::vector<int> union_with_filter(
 
 // Evaluate a parsed filter over the entire source, returning the source row
 // indices that match, in source order. Drains streaming sources and reads
-// every chunk with all columns so any referenced column is present. The GUI
-// uses this to build a filtered view; CLI export paths use apply_filter on
-// the already-projected table instead.
+// every chunk with only the columns the filter names (a 62,710-gene matrix
+// tab reads one column per atom, not the matrix). The GUI uses this to build
+// a filtered view; CLI export paths use apply_filter on the already-projected
+// table instead.
 std::vector<int64_t> filter_rows(TabularSource& src, const FilterExpr& expr,
                                  const std::atomic<bool>* cancel) {
     auto cancelled = [&] { return cancel && cancel->load(); };
     std::vector<int64_t> keep;
-    int nf = src.schema()->num_fields();
-    std::vector<int> all((size_t)nf);
-    for (int i = 0; i < nf; ++i) all[(size_t)i] = i;
+    const int nf = src.schema()->num_fields();
+    std::vector<int> all;
+    for (const auto& g : expr.groups)
+        for (const auto& a : g)
+            if (a.col_idx >= 0 && a.col_idx < nf) all.push_back(a.col_idx);
+    std::sort(all.begin(), all.end());
+    all.erase(std::unique(all.begin(), all.end()), all.end());
+    if (all.empty() && nf > 0) all.push_back(0);   // still walk the rows
     src.set_retain_all(true);            // re-reads every chunk after draining
     while (true) {                       // drain streaming sources
         if (cancelled()) return {};
