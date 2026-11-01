@@ -674,6 +674,32 @@ jobs:
           grep -qxP 'Chr\tEnd\tScore\tTags' <<<"$out" && grep -qxP 'chr2\t7200\t0.95\t\[promoter, TF\]' <<<"$out"
           VVG_WINTEST=1 VVG_SORT=Score:desc VVG_SELECT=3,0,5,3 VVG_EXPORT_SEL="$RUNNER_TEMP/sel.tsv" ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -qx 'export-selection -> rows=3'
+          # A table of more than 256 columns reads a column window: scrolled
+          # to its last column, every visible cell is read (none left at "…"),
+          # and no cached chunk holds more than three windows of columns.
+          awk 'BEGIN { printf "id"; for (c = 0; c < 600; c++) printf "\tc%d", c; print "";
+                       for (r = 0; r < 40; r++) { printf "r%d", r; for (c = 0; c < 600; c++) printf "\t%d", r * 1000 + c; print "" } }' \
+            > "$RUNNER_TEMP/wide600.tsv"
+          out=$(VVG_WINTEST=1 VVG_HWINDOW=1 ./build-gui/gui/vvg "$RUNNER_TEMP/wide600.tsv")
+          echo "$out" | grep '^hwindow'
+          grep -q "^hwindow windowed=1 cols=601 .* unread=0 .* last='599'$" <<<"$out"
+          read -r win held < <(sed -n 's/^hwindow .* window=\([0-9]*\) held=\([0-9]*\) .*/\1 \2/p' <<<"$out")
+          test "$held" -le $(( 3 * (win > 64 ? win : 64) ))
+          # Copy far right of it reads the cells it copies; the detail dock
+          # lists the window's columns and a line for the rest.
+          out=$(VVG_WINTEST=1 VVG_SELECT=0,590,1,600 VVG_COPYAS=tsvh ./build-gui/gui/vvg "$RUNNER_TEMP/wide600.tsv")
+          grep -qxP 'c589\tc590\tc591\tc592\tc593\tc594\tc595\tc596\tc597\tc598\tc599' <<<"$out"
+          grep -qxP '1589\t1590\t1591\t1592\t1593\t1594\t1595\t1596\t1597\t1598\t1599' <<<"$out"
+          VVG_WINTEST=1 VVG_DETAIL='3,0' ./build-gui/gui/vvg "$RUNNER_TEMP/wide600.tsv" \
+            | grep -qE '^detail 3,0 -> row=3 rows=([2-9]|[1-9][0-9]|[1-5][0-9]{2}) values=r3,3_000 '
+          # Find on a matrix tab: a gene name moves to its column (gene15,
+          # then gene150), a row label to its row; other tabs search cells.
+          out=$(VVG_WINTEST=1 VVG_TAB=1 VVG_WFIND='gene15;gene15;cell2' ./build-gui/gui/vvg tests/data/tiny.dense.h5ad)
+          grep -qx "wfind 'gene15' -> row=0 col=16 name=gene15 cell=15" <<<"$out"
+          grep -qx "wfind 'gene15' -> row=0 col=151 name=gene150 cell=150" <<<"$out"
+          grep -qx "wfind 'cell2' -> row=2 col=0 name=obs cell=cell2" <<<"$out"
+          VVG_WINTEST=1 VVG_WFIND='chr2' ./build-gui/gui/vvg tests/data/tiny.parquet \
+            | grep -qx "wfind 'chr2' -> row=12 col=0 name=Chr cell=chr2"
           diff "$RUNNER_TEMP/sel.tsv" <(./build/vv --tsv --sort Score:desc --select Chr,Start,End,Score tests/data/tiny.parquet | sed -n '1p;5,7p')
           # Filter to / Exclude from cells: the expression, ANDed into the
           # current filter; several cells of a column give in (…).

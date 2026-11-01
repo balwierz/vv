@@ -872,6 +872,7 @@ private:
                     if (cur.column() != prev.column()) {
                         view->viewport()->update();   // the column tint
                         updateColumnLocation();
+                        scheduleColumnWindow(view, qobject_cast<ArrowTableModel*>(view->model()));
                         if (colTimer_) colTimer_->start();
                     }
                 });
@@ -880,6 +881,16 @@ private:
                 this, [this] { updateColumnLocation(); });
         connect(view->horizontalHeader(), &QHeaderView::sectionResized,
                 this, [this] { updateColumnLocation(); });
+        // A windowed tab reads the columns near the view: follow it.
+        for (auto sig : {&QHeaderView::sectionResized, &QHeaderView::sectionMoved})
+            connect(view->horizontalHeader(), sig, this, [this, view, model] { scheduleColumnWindow(view, model); });
+        connect(view->horizontalHeader(), &QHeaderView::geometriesChanged,
+                this, [this, view, model] { scheduleColumnWindow(view, model); });
+        connect(view->horizontalScrollBar(), &QScrollBar::valueChanged,
+                this, [this, view, model] { scheduleColumnWindow(view, model); });
+        connect(view->horizontalScrollBar(), &QScrollBar::rangeChanged,
+                this, [this, view, model] { scheduleColumnWindow(view, model); });
+        connect(model, &ArrowTableModel::ready, this, [this, view, model] { scheduleColumnWindow(view, model); });
         connect(view->selectionModel(), &QItemSelectionModel::selectionChanged,
                 selTimer_, [this]{ selTimer_->start(); });
         connect(model, &QAbstractItemModel::modelReset,
@@ -1149,10 +1160,10 @@ private:
             for (int vis = 0; vis <= view->horizontalHeader()->visualIndex(section); ++vis)
                 upTo += !view->isColumnHidden(view->horizontalHeader()->logicalIndex(vis));
             connect(menu.addAction(upTo == 1 ? tr("&Freeze This Column") : tr("&Freeze Columns up to Here")),
-                    &QAction::triggered, this, [view, upTo] { view->setFrozenColumns(upTo); });
+                    &QAction::triggered, this, [this, view, upTo] { setFrozenColumns(view, upTo); });
             if (view->frozenColumns() > 0)
                 connect(menu.addAction(tr("&Unfreeze Columns")), &QAction::triggered, this,
-                        [view] { view->setFrozenColumns(0); });
+                        [this, view] { setFrozenColumns(view, 0); });
             // The field reference's entry for this column, when it has one.
             const QString name = model->headerData(section, Qt::Horizontal, Qt::DisplayRole).toString();
             if (const QString anchor = HelpDialog::anchorFor(name); !anchor.isEmpty())
@@ -1556,7 +1567,11 @@ private:
             columnsMenu_->addAction(tr("(no columns)"))->setEnabled(false);
             return;
         }
-        for (int c = 0; c < m->displayColumnCount(); ++c) {
+        // At most kColumnsMenuMax entries: a menu of 62,710 genes is built
+        // for nothing (the header menu hides any column).
+        constexpr int kColumnsMenuMax = 500;
+        const int shown = std::min(m->displayColumnCount(), kColumnsMenuMax);
+        for (int c = 0; c < shown; ++c) {
             QAction* a = columnsMenu_->addAction(m->columnName(c));
             a->setCheckable(true);
             a->setChecked(!v->isColumnHidden(c));
@@ -1564,6 +1579,9 @@ private:
                 v->setColumnHidden(c, !on);
             });
         }
+        if (m->displayColumnCount() > shown)
+            columnsMenu_->addAction(tr("%L1 more columns (the column header's menu hides one)")
+                                        .arg(m->displayColumnCount() - shown))->setEnabled(false);
     }
 
     void gotoRow() {
@@ -1710,8 +1728,9 @@ private:
         auto* t = dynamic_cast<TableView*>(v);
         return t ? t->frozenColumns() : 0;
     }
-    static void setFrozenColumns(QTableView* v, int n) {
+    void setFrozenColumns(QTableView* v, int n) {
         if (auto* t = dynamic_cast<TableView*>(v)) t->setFrozenColumns(n);
+        scheduleColumnWindow(v, qobject_cast<ArrowTableModel*>(v->model()));
     }
     // The view state of tab `i` (a tab never shown: the state it is waiting
     // to be given, or none).
@@ -1758,11 +1777,9 @@ private:
             });
             return;
         }
-        auto colOf = [m](const QString& name) {
-            for (int c = 0; c < m->columnCount(); ++c)
-                if (m->columnName(c) == name) return c;
-            return -1;
-        };
+        QHash<QString, int> byName;
+        for (int c = m->columnCount() - 1; c >= 0; --c) byName.insert(m->columnName(c), c);   // the first wins
+        auto colOf = [&byName](const QString& name) { return byName.value(name, -1); };
         auto* h = v->horizontalHeader();
         for (int i = 0; i < st.order.size(); ++i)
             if (int c = colOf(st.order[i]); c >= 0 && i < m->columnCount()) h->moveSection(h->visualIndex(c), i);
@@ -2582,6 +2599,37 @@ private:
         auto* m = qobject_cast<ArrowTableModel*>(v->model());
         return m ? keepCol_.value(m, 0) : 0;
     }
+    // A windowed tab (ArrowTableModel::columnWindowed) reads the columns on
+    // screen, a screen's width of columns on either side (at least 16), the
+    // frozen columns and the cursor's. Set after a scroll, a resize or a
+    // column change, posted so a burst of scroll events sets it once.
+    void scheduleColumnWindow(QTableView* v, ArrowTableModel* m) {
+        if (!v || !m || !m->columnWindowed() || v->property("vvWindowPending").toBool()) return;
+        v->setProperty("vvWindowPending", true);
+        QTimer::singleShot(0, v, [this, v, m = QPointer<ArrowTableModel>(m)] {
+            v->setProperty("vvWindowPending", false);
+            if (m && v->model() == m) updateColumnWindow(v, m);
+        });
+    }
+    void updateColumnWindow(QTableView* v, ArrowTableModel* m) {
+        const int n = m->columnCount();
+        if (n == 0) return;
+        auto* h = v->horizontalHeader();
+        int first = h->visualIndexAt(0);
+        int last  = h->visualIndexAt(std::max(0, v->viewport()->width() - 1));
+        if (first < 0) first = 0;
+        if (last < 0) last = n - 1;                 // the columns end inside the view
+        const int span = std::max(16, last - first + 1);
+        std::vector<int> cols;
+        for (int vis = std::max(0, first - span); vis <= std::min(n - 1, last + span); ++vis)
+            if (const int c = h->logicalIndex(vis); c >= 0 && !v->isColumnHidden(c)) cols.push_back(c);
+        if (auto* tv = dynamic_cast<TableView*>(v))
+            for (int c : tv->frozenLogical()) cols.push_back(c);
+        if (v->currentIndex().isValid()) cols.push_back(v->currentIndex().column());
+        m->setColumnWindow(std::move(cols));
+        sizeWindowColumns(v, m);
+    }
+
     // Tell the Column tab where its column is: its position, and whether it
     // is hidden or scrolled out of the view.
     void updateColumnLocation() {
@@ -3280,6 +3328,15 @@ private:
         if (pat.isEmpty()) { m->clearSearch(); return; }
         QRegularExpression re(pat, QRegularExpression::CaseInsensitiveOption);
         m->setSearch(re);                       // live cell highlight
+        // A matrix tab: a gene name (column) first; its row labels only when
+        // no name matches.
+        if (m->tabTraits().matrix_tab) {
+            const QModelIndex cur = v->currentIndex();
+            if (m->findColumnName(cur.isValid() ? cur.column() : -1, forward) >= 0) {
+                jumpToFind(m, v, cur, forward);    // findNext answers from the names
+                return;
+            }
+        }
         if (m->findResultsValid(re)) {
             jumpToFind(m, v, v->currentIndex(), forward);   // instant (F3 replay)
             return;
@@ -3367,20 +3424,31 @@ private:
             detailModel_ = nullptr; detailRow_ = -1;
             return;
         }
-        const int cols = m->displayColumnCount();
-        const bool relabel = m != detailModel_ || detail_->rowCount() != cols;
+        // A windowed tab lists the window's columns (the ones near the view)
+        // and a last line for the rest: one item per column of a 62,710-gene
+        // row would be rebuilt on every cursor move.
+        std::vector<int> show;
+        if (m->columnWindowed()) show = m->columnWindow();
+        else for (int c = 0; c < m->displayColumnCount(); ++c) show.push_back(c);
+        const int more = m->displayColumnCount() - (int)show.size();
+        const int rows = (int)show.size() + (more > 0 ? 1 : 0);
+        const bool relabel = m != detailModel_ || detail_->rowCount() != rows || show != detailCols_;
         if (!relabel && cur.row() == detailRow_) return;
-        detail_->setRowCount(cols);
+        detail_->setRowCount(rows);
         auto put = [&](int r, int c, const QString& text) {
             if (QTableWidgetItem* it = detail_->item(r, c)) it->setText(text);
             else detail_->setItem(r, c, new QTableWidgetItem(text));
         };
-        for (int c = 0; c < cols; ++c) {
-            if (relabel) put(c, 0, m->columnName(c));
-            put(c, 1, m->data(m->index(cur.row(), c), Qt::DisplayRole).toString());
+        for (int k = 0; k < (int)show.size(); ++k) {
+            if (relabel) put(k, 0, m->columnName(show[(size_t)k]));
+            put(k, 1, m->data(m->index(cur.row(), show[(size_t)k]), Qt::DisplayRole).toString());
+        }
+        if (more > 0) {
+            put(rows - 1, 0, QStringLiteral("\u2026"));
+            put(rows - 1, 1, tr("%L1 more columns: scroll the table to them").arg(more));
         }
         if (relabel) detail_->resizeColumnToContents(0);
-        detailModel_ = m; detailRow_ = cur.row();
+        detailModel_ = m; detailRow_ = cur.row(); detailCols_ = std::move(show);
     }
 
     void copySelection() {
@@ -3463,7 +3531,7 @@ private:
             lines << line(head);
             if (f == CopyFormat::Markdown) lines << line(rule);
         }
-        ArrowTableModel::SyncReads now(m);   // rows not on screen are read here
+        ArrowTableModel::SyncReads now(m, g.cols);   // rows not on screen are read here
         for (int r : g.rows) {
             QStringList fields;
             for (int c : g.cols) {
@@ -3717,6 +3785,57 @@ public:
             .arg((last < 0 ? m->rowCount() - 1 : last) - std::max(0, first) + 1).arg(unread);
     }
     QString contextForTest() { waitIdleForTest(); syncFileControls(); return contextBar_->describeForTest(); }
+    // Window self-test: Find `pattern` forward from the cursor; where the
+    // cursor lands (row, column, its name, the cell).
+    QString findForTest(const QString& pattern) {
+        waitIdleForTest();
+        findEdit_->setText(pattern);
+        doFind(true);
+        waitIdleForTest();
+        auto* m = activeModel();
+        auto* v = activeView();
+        if (!m || !v) return QStringLiteral("no table");
+        const QModelIndex cur = v->currentIndex();
+        if (!cur.isValid()) return QStringLiteral("none");
+        ArrowTableModel::SyncReads now(m);
+        return QStringLiteral("row=%1 col=%2 name=%3 cell=%4")
+            .arg(cur.row()).arg(cur.column()).arg(m->columnName(cur.column()),
+                                                  m->data(cur, Qt::DisplayRole).toString());
+    }
+    // Window self-test: the active tab shown at 1600 x 1000, scrolled to its
+    // last column, and let read. Whether it reads a column window, its
+    // columns, the window's size, the most columns a cached chunk holds, the
+    // visible cells still "…", the time to the last read, and row 0's value
+    // in the last column.
+    QString columnWindowForTest() {
+        show();
+        resize(1600, 1000);
+        auto* m = activeModel();
+        auto* v = activeView();
+        if (!m || !v) return QStringLiteral("no table");
+        waitIdleForTest();
+        QElapsedTimer t;
+        t.start();
+        v->horizontalScrollBar()->setValue(v->horizontalScrollBar()->maximum());
+        for (int k = 0; k < 3; ++k) {               // paint, request, deliver, repaint
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            waitIdleForTest();
+        }
+        const qint64 ms = t.elapsed();
+        auto* h = v->horizontalHeader();
+        int unread = 0;
+        const int r0 = std::max(0, v->rowAt(0)), r1 = v->rowAt(v->viewport()->height() - 1);
+        const int c0 = std::max(0, h->visualIndexAt(0)), c1 = h->visualIndexAt(v->viewport()->width() - 1);
+        for (int r = r0; r <= (r1 < 0 ? m->rowCount() - 1 : r1); ++r)
+            for (int vis = c0; vis <= (c1 < 0 ? m->columnCount() - 1 : c1); ++vis)
+                unread += m->data(m->index(r, h->logicalIndex(vis)), Qt::DisplayRole).toString() ==
+                          QStringLiteral("\u2026");
+        const int last = m->columnCount() - 1;
+        return QStringLiteral("windowed=%1 cols=%2 window=%3 held=%4 unread=%5 ms=%6 last='%7'")
+            .arg(m->columnWindowed() ? 1 : 0).arg(m->columnCount()).arg(m->columnWindow().size())
+            .arg(m->maxHeldColumns()).arg(unread).arg(ms)
+            .arg(m->data(m->index(0, last), Qt::DisplayRole).toString());
+    }
 
     // vv's view flags on vvg's command line (vvg --filter … --sort … file).
     struct ViewOptions {
@@ -4508,7 +4627,10 @@ private:
             selSum_->setVisible(true);
             return;
         }
-        ArrowTableModel::SyncReads now(m);   // the selection's rows, loaded or not (capped above)
+        std::vector<int> selCols;            // the selection's columns, read together
+        for (const auto& r : sel)
+            for (int c = r.left(); c <= r.right(); ++c) selCols.push_back(c);
+        ArrowTableModel::SyncReads now(m, std::move(selCols));   // the selection's rows, loaded or not (capped above)
         long double sum = 0;
         double mn = 0, mx = 0;
         qint64 n = 0;
@@ -4581,6 +4703,7 @@ private:
     QTableWidget*                  detail_ = nullptr;
     QPointer<ArrowTableModel>      detailModel_;      // model / row the dock shows
     int                            detailRow_ = -1;
+    std::vector<int>               detailCols_;       // the display columns it lists
     QLineEdit*                     filterEdit_ = nullptr;
     QLineEdit*                     findEdit_   = nullptr;
     bool                           smoothScroll_  = true;   // per-pixel scrolling
@@ -5379,6 +5502,9 @@ int main(int argc, char** argv) {
             std::printf("goto %s\n", win.gotoForTest(p.value(0).toInt(), p.value(1).toInt())
                                           .toStdString().c_str());
         }
+        // Optional column-window check: VVG_HWINDOW=1 (columnWindowForTest).
+        if (const char* hw = std::getenv("VVG_HWINDOW"); hw && *hw && *hw != '0')
+            std::printf("hwindow %s\n", win.columnWindowForTest().toUtf8().constData());
         if (const char* hs = std::getenv("VVG_HSCROLL"); hs && *hs)
             {
                 auto [val, max] = win.hscrollForTest(std::atoi(hs));
@@ -5428,6 +5554,12 @@ int main(int argc, char** argv) {
         // VVG_COPYCMD=1 prints "cmd=<command line>".
         if (const char* ti = std::getenv("VVG_TAB"); ti && *ti)
             win.selectTabForTest(std::atoi(ti));
+        // Optional Find check: VVG_WFIND="<regex>[;<regex>…]" runs Find (as the
+        // find bar's Enter does) for each, from where the last one landed.
+        if (const char* wf = std::getenv("VVG_WFIND"); wf && *wf)
+            for (const QString& q : QString::fromLocal8Bit(wf).split(QLatin1Char(';')))
+                std::printf("wfind '%s' -> %s\n", q.toUtf8().constData(),
+                            win.findForTest(q).toUtf8().constData());
         // Optional context-bar dump: VVG_CONTEXT=1 prints the active tab's
         // format options, e.g. "context: region pileup tags contigs".
         if (const char* cx = std::getenv("VVG_CONTEXT"); cx && *cx && *cx != '0')

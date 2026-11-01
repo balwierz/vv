@@ -57,6 +57,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   derives only the rows it shows: on the 2,504-sample 1000 Genomes chr22
   BCF, `-n 20 --samples long` takes 1.8 s / 0.87 GB instead of 313 s /
   26 GB, and `-n 20` 1.6 s instead of 3.4 s.
+- vvg: a table of more than 256 columns reads only the columns near the
+  view, not every column of each block of rows, and sizes the columns it
+  shows instead of all of them. On a 2,000 x 62,711-column Parquet, opening
+  and scrolling to the last column takes 0.66 s / 506 MB instead of 7.5 s /
+  958 MB. The Row dock lists the columns near the view, View > Columns the
+  first 500.
+- Find on a matrix tab (vvg's Find box, the TUI's `/`) matches gene names
+  (the column names) and moves to that column, then row labels; it no
+  longer searches the numbers.
 
 ## [1.33.0] - 2026-10-24
 

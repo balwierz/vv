@@ -125,6 +125,10 @@ void ArrowTableModel::setColumns(const std::vector<std::string>& hide) {
         colNames_.push_back(QString::fromStdString(f->name()));
         colTypes_.push_back(QString::fromStdString(type_label(*f->type())));
     }
+    allColumns_.resize(displayCols_.size());
+    for (size_t c = 0; c < allColumns_.size(); ++c) allColumns_[c] = (int)c;
+    windowed_ = (int)displayCols_.size() > kColumnWindowMin;
+    window_.assign(allColumns_.begin(), allColumns_.begin() + (windowed_ ? 64 : 0));
 }
 
 ArrowTableModel::~ArrowTableModel() {
@@ -255,15 +259,66 @@ int ArrowTableModel::coreChunkIndex(Core& core, int64_t row) {
     return c;
 }
 
-bool ArrowTableModel::coreLoadChunk(Core& core, int64_t row, const std::vector<int>& cols,
-                                    LoadedChunk* out) {
+bool ArrowTableModel::coreLoadChunk(Core& core, int64_t row, const std::vector<int>& disp,
+                                    const std::vector<int>& src, LoadedChunk* out) {
     const int c = coreChunkIndex(core, row);
     if (c < 0) return false;
     const ChunkMeta m = core.src->chunk_meta(c);
     std::shared_ptr<arrow::Table> tbl;
-    if (!core.src->read_chunk(c, cols, &tbl).ok() || !tbl) return false;
-    *out = LoadedChunk{c, m.first_row, m.num_rows, std::move(tbl)};
+    if (!core.src->read_chunk(c, src, &tbl).ok() || !tbl || tbl->num_columns() != (int)src.size())
+        return false;
+    *out = LoadedChunk{c, m.first_row, m.num_rows, disp, tbl->columns()};
     return true;
+}
+
+std::vector<int> ArrowTableModel::readColumns(const LoadedChunk* held, int also) const {
+    std::vector<int> want;
+    if (!windowed_) {
+        want = allColumns_;
+    } else {
+        std::set<int> w(window_.begin(), window_.end());
+        w.insert(extraCols_.begin(), extraCols_.end());
+        w.insert(syncCols_.begin(), syncCols_.end());
+        if (also >= 0) w.insert(also);
+        for (int c : w)
+            if (c >= 0 && c < (int)displayCols_.size()) want.push_back(c);
+    }
+    if (held)
+        want.erase(std::remove_if(want.begin(), want.end(),
+                                  [held](int c) { return held->column(c) != nullptr; }),
+                   want.end());
+    return want;
+}
+
+std::vector<int> ArrowTableModel::sourceColumns(const std::vector<int>& disp) const {
+    std::vector<int> src;
+    src.reserve(disp.size());
+    for (int c : disp) src.push_back(displayCols_[(size_t)c]);
+    return src;
+}
+
+void ArrowTableModel::setColumnWindow(std::vector<int> cols) {
+    if (!windowed_) return;
+    std::sort(cols.begin(), cols.end());
+    cols.erase(std::unique(cols.begin(), cols.end()), cols.end());
+    cols.erase(std::remove_if(cols.begin(), cols.end(),
+                              [this](int c) { return c < 0 || c >= (int)displayCols_.size(); }),
+               cols.end());
+    if (cols.empty() || cols == window_) return;
+    window_ = std::move(cols);
+    // The chunks the view used last read the window's new columns now, so
+    // the margin is there before the view scrolls onto it.
+    int n = 0;
+    for (int idx : lru_) {
+        if (n++ == 4) break;
+        if (!readColumns(&cache_.at(idx)).empty()) requestColumn(idx, -1);
+    }
+}
+
+int ArrowTableModel::maxHeldColumns() const {
+    size_t n = 0;
+    for (const auto& [idx, lc] : cache_) n = std::max(n, lc.cols.size());
+    return (int)n;
 }
 
 const ArrowTableModel::LoadedChunk* ArrowTableModel::cachedChunk(int64_t row) const {
@@ -288,7 +343,33 @@ const ArrowTableModel::LoadedChunk* ArrowTableModel::cachedChunk(int64_t row) co
 const ArrowTableModel::LoadedChunk* ArrowTableModel::insertChunk(LoadedChunk lc) const {
     const int c = lc.idx;
     auto it = cache_.find(c);
-    if (it == cache_.end()) {
+    if (it != cache_.end()) {
+        // More columns of a cached chunk: merge them in, in column order. A
+        // chunk that has gathered more than three windows' worth lets go of
+        // the columns outside the window.
+        LoadedChunk& have = it->second;
+        std::vector<int> cols;
+        std::vector<std::shared_ptr<arrow::ChunkedArray>> arrays;
+        const bool trim = windowed_ && have.cols.size() + lc.cols.size() >
+                                           3 * std::max<size_t>(window_.size(), 64);
+        auto keep = [&](int col) {
+            return !trim || std::binary_search(window_.begin(), window_.end(), col);
+        };
+        size_t i = 0, j = 0;
+        while (i < have.cols.size() || j < lc.cols.size()) {
+            const bool fromNew = i == have.cols.size() ||
+                                 (j < lc.cols.size() && lc.cols[j] <= have.cols[i]);
+            if (fromNew) {
+                if (i < have.cols.size() && have.cols[i] == lc.cols[j]) ++i;   // the read wins
+                cols.push_back(lc.cols[j]); arrays.push_back(std::move(lc.arrays[j])); ++j;
+            } else {
+                if (keep(have.cols[i])) { cols.push_back(have.cols[i]); arrays.push_back(std::move(have.arrays[i])); }
+                ++i;
+            }
+        }
+        have.cols = std::move(cols);
+        have.arrays = std::move(arrays);
+    } else {
         it = cache_.emplace(c, std::move(lc)).first;
         lru_.push_front(c);
         while ((int)lru_.size() > cacheCap_) {
@@ -304,21 +385,42 @@ const ArrowTableModel::LoadedChunk* ArrowTableModel::insertChunk(LoadedChunk lc)
     return lastChunk_;
 }
 
-const ArrowTableModel::LoadedChunk* ArrowTableModel::chunkForRow(int64_t row) const {
-    if (const LoadedChunk* lc = cachedChunk(row)) return lc;
+const ArrowTableModel::LoadedChunk* ArrowTableModel::chunkFor(int64_t row, int dispCol) const {
+    const LoadedChunk* have = cachedChunk(row);
+    if (have && have->column(dispCol)) return have;
     if (!syncReads_) {
-        if (!failedRows_.count(row)) requestRow(row);
+        if (failedRows_.count(row)) return nullptr;
+        if (have) requestColumn(have->idx, dispCol);
+        else      requestRow(row, dispCol);
         return nullptr;
     }
     LoadedChunk lc;
     auto core = core_;
-    const std::vector<int>& cols = displayCols_;
-    if (!owner_->runSync([&] { return coreLoadChunk(*core, row, cols, &lc); })) return nullptr;
-    return insertChunk(std::move(lc));
+    const std::vector<int> disp = readColumns(have, dispCol);
+    const std::vector<int> src = sourceColumns(disp);
+    if (disp.empty() || !owner_->runSync([&] { return coreLoadChunk(*core, row, disp, src, &lc); }))
+        return nullptr;
+    const LoadedChunk* got = insertChunk(std::move(lc));
+    return got->column(dispCol) ? got : nullptr;
 }
 
-void ArrowTableModel::requestRow(int64_t row) const {
-    if (row < 0 || inflight_.count(row) || !wantRows_.insert(row).second) return;
+void ArrowTableModel::requestRow(int64_t row, int dispCol) const {
+    if (row < 0) return;
+    if (windowed_ && dispCol >= 0 && !std::binary_search(window_.begin(), window_.end(), dispCol))
+        extraCols_.insert(dispCol);
+    if (inflight_.count(row) || !wantRows_.insert(row).second) return;
+    scheduleFlush();
+}
+
+void ArrowTableModel::requestColumn(int chunkIdx, int dispCol) const {
+    if (!windowed_) return;                  // a chunk holds every column
+    if (dispCol >= 0 && !std::binary_search(window_.begin(), window_.end(), dispCol))
+        extraCols_.insert(dispCol);
+    if (inflightMerge_.count(chunkIdx) || !wantMerge_.insert(chunkIdx).second) return;
+    scheduleFlush();
+}
+
+void ArrowTableModel::scheduleFlush() const {
     if (flushPending_) return;
     flushPending_ = true;
     QTimer::singleShot(0, const_cast<ArrowTableModel*>(this), &ArrowTableModel::flushRequests);
@@ -326,35 +428,59 @@ void ArrowTableModel::requestRow(int64_t row) const {
 
 void ArrowTableModel::flushRequests() {
     flushPending_ = false;
-    if (wantRows_.empty()) return;
+    if (wantRows_.empty() && wantMerge_.empty()) return;
     std::vector<int64_t> rows(wantRows_.begin(), wantRows_.end());
     wantRows_.clear();
+    // A chunk read for the first time gets the window's columns; a cached
+    // chunk the window's columns (and the ones asked for) it lacks.
+    struct Read { int64_t row; std::vector<int> disp, src; int merge; };
+    std::vector<Read> reads;
+    const std::vector<int> fresh = readColumns(nullptr);
+    for (int64_t r : rows) reads.push_back({r, fresh, sourceColumns(fresh), -1});
+    for (int idx : wantMerge_) {
+        auto it = cache_.find(idx);
+        if (it == cache_.end()) continue;    // evicted since: the next paint asks again
+        std::vector<int> miss = readColumns(&it->second);
+        if (miss.empty()) continue;
+        std::vector<int> src = sourceColumns(miss);
+        reads.push_back({it->second.first_row, std::move(miss), std::move(src), idx});
+        inflightMerge_.insert(idx);
+    }
+    wantMerge_.clear();
+    extraCols_.clear();
+    if (reads.empty()) return;
     inflight_.insert(rows.begin(), rows.end());
     ++readBatches_;
-    owner_->post([this, core = core_, mail = mail_, cols = displayCols_, rows, gen = gen_] {
+    owner_->post([this, core = core_, mail = mail_, reads = std::move(reads), rows, gen = gen_] {
         test_read_delay();
         std::vector<LoadedChunk> got;
+        std::vector<int> merged;
         std::vector<int64_t> failed;
-        for (int64_t r : rows) {
-            bool covered = false;
-            for (const LoadedChunk& lc : got)
-                if (r >= lc.first_row && r < lc.first_row + lc.num_rows) { covered = true; break; }
-            if (covered) continue;
+        for (const Read& rd : reads) {
+            if (rd.merge >= 0) merged.push_back(rd.merge);
+            else {
+                bool covered = false;
+                for (const LoadedChunk& lc : got)
+                    if (rd.row >= lc.first_row && rd.row < lc.first_row + lc.num_rows) { covered = true; break; }
+                if (covered) continue;
+            }
             LoadedChunk lc;
-            if (coreLoadChunk(*core, r, cols, &lc)) got.push_back(std::move(lc));
-            else failed.push_back(r);
+            if (coreLoadChunk(*core, rd.row, rd.disp, rd.src, &lc)) got.push_back(std::move(lc));
+            else if (rd.merge < 0) failed.push_back(rd.row);
         }
         Meta meta = readMeta(*core->src);
-        deliver(mail, [this, gen, got = std::move(got), rows, failed, meta]() mutable {
-            onChunksLoaded(gen, std::move(got), std::move(rows), std::move(failed), std::move(meta));
+        deliver(mail, [this, gen, got = std::move(got), rows, merged, failed, meta]() mutable {
+            onChunksLoaded(gen, std::move(got), std::move(rows), std::move(merged), std::move(failed),
+                           std::move(meta));
         });
     });
 }
 
 void ArrowTableModel::onChunksLoaded(uint64_t gen, std::vector<LoadedChunk> chunks,
-                                     std::vector<int64_t> asked, std::vector<int64_t> failed,
-                                     Meta meta) {
+                                     std::vector<int64_t> asked, std::vector<int> merged,
+                                     std::vector<int64_t> failed, Meta meta) {
     for (int64_t r : asked) inflight_.erase(r);
+    for (int idx : merged) inflightMerge_.erase(idx);
     if (gen != gen_) return;                 // the cache was cleared since: stale
     meta_ = std::move(meta);
     for (int64_t r : failed) failedRows_.insert(r);
@@ -395,15 +521,16 @@ void ArrowTableModel::clearChunkCache() const {
     lastHit_ = -1;
     wantRows_.clear();
     failedRows_.clear();
+    wantMerge_.clear();
+    extraCols_.clear();
     ++gen_;              // chunks still in flight are dropped on arrival
 }
 
 QString ArrowTableModel::cellText(int viewRow, int dispCol) const {
-    const LoadedChunk* lc = chunkForRow(sourceRow(viewRow));
-    if (!lc || !lc->table) return {};
-    if (dispCol < 0 || dispCol >= lc->table->num_columns()) return {};
+    const LoadedChunk* lc = chunkFor(sourceRow(viewRow), dispCol);
+    if (!lc) return {};
     int64_t local = sourceRow(viewRow) - lc->first_row;
-    std::string raw = chunked_cell(*lc->table->column(dispCol), local);
+    std::string raw = chunked_cell(*lc->column(dispCol), local);
     // format_cell reads only what the source fixed at open (column roles,
     // digit grouping), so the UI thread calls it directly.
     raw = core_->src->format_cell(displayCols_[dispCol], std::move(raw));
@@ -412,11 +539,10 @@ QString ArrowTableModel::cellText(int viewRow, int dispCol) const {
 
 QVariant ArrowTableModel::cellNumber(int viewRow, int dispCol) const {
     if (summableDigits(dispCol) == 0) return {};
-    const LoadedChunk* lc = chunkForRow(sourceRow(viewRow));
-    if (!lc || !lc->table) return {};
-    if (dispCol < 0 || dispCol >= lc->table->num_columns()) return {};
+    const LoadedChunk* lc = chunkFor(sourceRow(viewRow), dispCol);
+    if (!lc) return {};
     int64_t local = sourceRow(viewRow) - lc->first_row;
-    for (const auto& a : lc->table->column(dispCol)->chunks()) {
+    for (const auto& a : lc->column(dispCol)->chunks()) {
         if (local < a->length()) {
             double d;
             if (!array_value_as_double(*a, local, &d)) return {};
@@ -444,10 +570,10 @@ int ArrowTableModel::summableDigits(int displayCol) const {
 ValueCount ArrowTableModel::filterValue(int row, int dispCol, bool* ok) const {
     ValueCount v;
     *ok = false;
-    const LoadedChunk* lc = chunkForRow(sourceRow(row));
-    if (!lc || !lc->table || dispCol < 0 || dispCol >= lc->table->num_columns()) return v;
+    const LoadedChunk* lc = chunkFor(sourceRow(row), dispCol);
+    if (!lc) return v;
     int64_t local = sourceRow(row) - lc->first_row;
-    for (const auto& a : lc->table->column(dispCol)->chunks()) {
+    for (const auto& a : lc->column(dispCol)->chunks()) {
         if (local < a->length()) {
             v.null = a->IsNull(local);
             if (!v.null) v.value = cell_to_string(*a, local);
@@ -460,11 +586,10 @@ ValueCount ArrowTableModel::filterValue(int row, int dispCol, bool* ok) const {
 }
 
 QString ArrowTableModel::rawCellText(int viewRow, int dispCol) const {
-    const LoadedChunk* lc = chunkForRow(sourceRow(viewRow));
-    if (!lc || !lc->table) return {};
-    if (dispCol < 0 || dispCol >= lc->table->num_columns()) return {};
+    const LoadedChunk* lc = chunkFor(sourceRow(viewRow), dispCol);
+    if (!lc) return {};
     int64_t local = sourceRow(viewRow) - lc->first_row;
-    std::string raw = chunked_cell_raw(*lc->table->column(dispCol), local);
+    std::string raw = chunked_cell_raw(*lc->column(dispCol), local);
     raw = core_->src->format_cell(displayCols_[dispCol], std::move(raw));
     return QString::fromStdString(raw);
 }
@@ -495,14 +620,17 @@ int ArrowTableModel::columnCount(const QModelIndex& parent) const {
 
 QVariant ArrowTableModel::data(const QModelIndex& index, int role) const {
     if (!index.isValid() || computing_ || loading_) return {};
-    // A row whose chunk is not loaded yet: "…" in grey while it is read on the
-    // owner thread (chunkForRow requested it); empty if its read failed.
+    // A cell whose chunk (or, on a windowed tab, column) is not loaded yet:
+    // "…" in grey while it is read on the owner thread; empty if its read
+    // failed.
     if (!syncReads_ && (role == Qt::DisplayRole || role == Qt::ForegroundRole ||
                         role == Qt::ToolTipRole || role == Qt::BackgroundRole)) {
         const int64_t sr = sourceRow(index.row());
-        if (!cachedChunk(sr)) {
+        const LoadedChunk* lc = cachedChunk(sr);
+        if (!lc || !lc->column(index.column())) {
             if (failedRows_.count(sr)) return {};
-            requestRow(sr);
+            if (lc) requestColumn(lc->idx, index.column());
+            else    requestRow(sr, index.column());
             if (role == Qt::DisplayRole) return QStringLiteral("\u2026");
             if (role == Qt::ForegroundRole) return QBrush(QColor(150, 150, 150));
             return {};
@@ -515,6 +643,7 @@ QVariant ArrowTableModel::data(const QModelIndex& index, int role) const {
     if (role == NumericRole)
         return cellNumber(index.row(), index.column());
     if (role == Qt::BackgroundRole && hasSearch_) {
+        if (meta_.traits.matrix_tab && index.column() != 0) return {};   // only labels are searched
         if (searchRe_.match(displayText(index.row(), index.column())).hasMatch())
             return QBrush(QColor(255, 235, 130));   // soft yellow highlight
     }
@@ -823,6 +952,26 @@ bool ArrowTableModel::findResultsValid(const QRegularExpression& re) const {
     return findValid_ && findPattern_ == re.pattern();
 }
 
+std::vector<int> ArrowTableModel::findScanColumns() const {
+    if (!meta_.traits.matrix_tab) return allColumns_;
+    if (displayCols_.empty()) return {};
+    const auto id = schema_->field(displayCols_[0])->type()->id();
+    if (id == arrow::Type::STRING || id == arrow::Type::LARGE_STRING ||
+        id == arrow::Type::STRING_VIEW || id == arrow::Type::DICTIONARY)
+        return {0};
+    return {};
+}
+
+int ArrowTableModel::findColumnName(int from, bool forward) const {
+    const int n = (int)colNames_.size();
+    if (!hasSearch_ || n == 0) return -1;
+    for (int k = 1; k <= n; ++k) {
+        const int c = (((from + (forward ? k : -k)) % n) + n) % n;
+        if (searchRe_.match(colNames_[(size_t)c]).hasMatch()) return c;
+    }
+    return -1;
+}
+
 void ArrowTableModel::invalidateFind() {
     findValid_ = false;
     findPos_.clear();
@@ -833,11 +982,15 @@ QModelIndex ArrowTableModel::findNext(const QModelIndex& from, bool forward) con
     if (!hasSearch_) return {};
     int cols = columnCount();
     if (cols == 0) return {};
+    // A matrix tab: a gene name (column) first, on the current row.
+    if (meta_.traits.matrix_tab && rowCount() > 0)
+        if (const int c = findColumnName(from.isValid() ? from.column() : -1, forward); c >= 0)
+            return index(from.isValid() ? from.row() : 0, c);
     // The synchronous fallback (self-test, or a stale list) computes the match
     // positions inline; the GUI normally primes them via findAsync first.
     if (!findResultsValid(searchRe_)) {
         const_cast<ArrowTableModel*>(this)->findPos_ = withSource([&](TabularSource& s) {
-            return computeFindPos(s, displayCols_, order_, identity_, searchRe_, nullptr);
+            return computeFindPos(s, displayCols_, findScanColumns(), order_, identity_, searchRe_, nullptr);
         });
         const_cast<ArrowTableModel*>(this)->findPattern_ = searchRe_.pattern();
         const_cast<ArrowTableModel*>(this)->findValid_ = true;
@@ -869,13 +1022,16 @@ QModelIndex ArrowTableModel::findNext(const QModelIndex& from, bool forward) con
 // hand-rolled — so it never skipped anything; the per-cell regex is the matcher.)
 std::vector<int64_t>
 ArrowTableModel::computeFindPos(TabularSource& src, std::vector<int> displayCols,
+                               std::vector<int> scan,
                                std::shared_ptr<const std::vector<int64_t>> order,
                                bool identity, QRegularExpression re,
                                std::atomic<bool>* cancel) {
     auto aborted = [&] { return cancel && cancel->load(); };
     const int cols = (int)displayCols.size();
     std::vector<int64_t> pos;
-    if (cols == 0 || re.pattern().isEmpty()) return pos;
+    if (cols == 0 || scan.empty() || re.pattern().isEmpty()) return pos;
+    std::vector<int> scanSrc;
+    for (int c : scan) scanSrc.push_back(displayCols[(size_t)c]);
 
     // Map source row -> view row (identity: view == source).
     std::unordered_map<int64_t, int64_t> inv;
@@ -891,7 +1047,7 @@ ArrowTableModel::computeFindPos(TabularSource& src, std::vector<int> displayCols
     for (int c = 0; c < nch; ++c) {
         if (aborted()) return {};
         std::shared_ptr<arrow::Table> tbl;
-        if (!src.read_chunk(c, displayCols, &tbl).ok() || !tbl) continue;
+        if (!src.read_chunk(c, scanSrc, &tbl).ok() || !tbl) continue;
         const int64_t first = src.chunk_meta(c).first_row;
         const int64_t nrows = tbl->num_rows();
 
@@ -906,11 +1062,11 @@ ArrowTableModel::computeFindPos(TabularSource& src, std::vector<int> displayCols
                 if (it == inv.end()) continue;   // filtered out of the view
                 viewRow = it->second;
             }
-            for (int j = 0; j < cols; ++j) {
+            for (int j = 0; j < (int)scan.size() && j < tbl->num_columns(); ++j) {
                 std::string raw = chunked_cell(*tbl->column(j), i);
-                raw = src.format_cell(displayCols[j], std::move(raw));
+                raw = src.format_cell(scanSrc[(size_t)j], std::move(raw));
                 if (re.match(QString::fromStdString(raw)).hasMatch())
-                    pos.push_back(viewRow * (int64_t)cols + j);
+                    pos.push_back(viewRow * (int64_t)cols + scan[(size_t)j]);
             }
         }
     }
@@ -935,10 +1091,10 @@ void ArrowTableModel::findAsync(const QRegularExpression& re) {
     const uint64_t id = ++jobId_;
     pendingJob_ = Job::Find;
     pendingRe_  = re;
-    owner_->post([this, core = core_, mail = mail_, cols = displayCols_, order = order_,
-                  identity = identity_, re, cf, id] {
+    owner_->post([this, core = core_, mail = mail_, cols = displayCols_, scan = findScanColumns(),
+                  order = order_, identity = identity_, re, cf, id] {
         if (cf->load()) return;
-        auto r = computeFindPos(*core->src, cols, order, identity, re, cf.get());
+        auto r = computeFindPos(*core->src, cols, scan, order, identity, re, cf.get());
         if (cf->load()) return;
         Meta meta = readMeta(*core->src);
         deliver(mail, [this, id, r = std::move(r), meta]() mutable {

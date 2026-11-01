@@ -14,6 +14,7 @@
 
 #include <QAbstractTableModel>
 #include <QRegularExpression>
+#include <algorithm>
 #include <atomic>
 #include <functional>
 #include <list>
@@ -21,6 +22,7 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <utility>
 #include <vector>
 
 #include "sourceowner.h"
@@ -152,24 +154,46 @@ public:
 
     // The schema has arrived (always true for a synchronous model).
     bool    isReady() const { return !loading_; }
-    // Chunks requested for the view and not yet delivered.
-    bool    hasPendingReads() const { return !wantRows_.empty() || !inflight_.empty(); }
+    // Chunks (or a chunk's columns) requested for the view and not yet delivered.
+    bool    hasPendingReads() const {
+        return !wantRows_.empty() || !inflight_.empty() || !wantMerge_.empty() || !inflightMerge_.empty();
+    }
     // Batches of rows sent to the owner thread so far (the self-test's
     // measure of a view that keeps re-reading).
     int64_t readBatches() const { return readBatches_; }
     // Rows 0..n-1 of the source, all in the chunk cache (identity view only):
     // what column autosizing may sample without asking for more.
     int64_t loadedPrefixRows() const;
+    // A tab of more than kColumnWindowMin display columns reads only the
+    // columns near the view (setColumnWindow), not every column of each
+    // chunk: a 62,710-gene matrix built and freed 62,710 Arrow arrays per
+    // 128-row block, and paging 6,000 rows took over 30 s. Narrower tabs
+    // read every column, as before.
+    static constexpr int kColumnWindowMin = 256;
+    bool columnWindowed() const { return windowed_; }
+    // The display columns on screen plus a margin (and any frozen ones):
+    // what a chunk read fetches. Ignored unless columnWindowed(); the first
+    // 64 columns until the view sets it.
+    void setColumnWindow(std::vector<int> displayCols);
+    const std::vector<int>& columnWindow() const { return window_; }
+    // The most columns any cached chunk holds (the self-test's bound).
+    int  maxHeldColumns() const;
     // While one exists, a cache miss reads the chunk on the owner and waits
     // for it, as before: for copying a selection, the selection sum, the
-    // self-test — callers that need the values now.
+    // self-test — callers that need the values now. `cols`: the display
+    // columns the caller is about to read (a selection's), which a windowed
+    // tab then reads together instead of one column per miss.
     class SyncReads {
     public:
-        explicit SyncReads(const ArrowTableModel* m) : m_(m), prev_(m->syncReads_) { m_->syncReads_ = true; }
-        ~SyncReads() { m_->syncReads_ = prev_; }
+        explicit SyncReads(const ArrowTableModel* m, std::vector<int> cols = {})
+            : m_(m), prev_(m->syncReads_), prevCols_(std::exchange(m->syncCols_, std::move(cols))) {
+            m_->syncReads_ = true;
+        }
+        ~SyncReads() { m_->syncReads_ = prev_; m_->syncCols_ = std::move(prevCols_); }
     private:
         const ArrowTableModel* m_;
         bool prev_;
+        std::vector<int> prevCols_;
     };
 
 signals:
@@ -192,6 +216,11 @@ public:
     void        setSearch(const QRegularExpression& re);
     void        clearSearch();
     QModelIndex findNext(const QModelIndex& from, bool forward) const;
+    // A matrix tab's Find matches gene names (its column names) first: the
+    // next display column after `from` (wrapping, `from` itself last) whose
+    // name matches the search, -1 when none does. Its cells are searched
+    // only in the row-label column (findScanColumns).
+    int         findColumnName(int from, bool forward) const;
 
     // Summaries of display columns over the rows the filter keeps, read from
     // this model's own source on the calling thread (summarize_columns, with
@@ -274,26 +303,48 @@ private:
         int                            idx = -1;
         int64_t                        first_row = 0;
         int64_t                        num_rows = 0;
-        std::shared_ptr<arrow::Table>  table;     // columns == displayCols_ order
+        // The display columns read, ascending, and their values: every
+        // display column, or on a windowed tab the ones near the view.
+        std::vector<int>                                  cols;
+        std::vector<std::shared_ptr<arrow::ChunkedArray>> arrays;
+        const arrow::ChunkedArray* column(int dispCol) const {
+            if (dispCol >= 0 && (size_t)dispCol < cols.size() && cols[(size_t)dispCol] == dispCol)
+                return arrays[(size_t)dispCol].get();      // a prefix of the columns: direct
+            auto it = std::lower_bound(cols.begin(), cols.end(), dispCol);
+            return it != cols.end() && *it == dispCol ? arrays[(size_t)(it - cols.begin())].get()
+                                                      : nullptr;
+        }
     };
 
-    // The cached chunk holding source row `srcRow`; on a miss, nullptr and the
-    // row is requested (or, under SyncReads, read now).
-    const LoadedChunk* chunkForRow(int64_t srcRow) const;
+    // The cached chunk holding source row `srcRow` with display column
+    // `dispCol`; on a miss, nullptr and the chunk (or the column) is
+    // requested, or, under SyncReads, read now.
+    const LoadedChunk* chunkFor(int64_t srcRow, int dispCol) const;
     const LoadedChunk* cachedChunk(int64_t srcRow) const;
+    // Insert a chunk read, or add its columns to the cached one.
     const LoadedChunk* insertChunk(LoadedChunk lc) const;
     // On the owner thread: the chunk index of source row `row` (O(log chunks)
-    // via core.chunkFirstRow), -1 if out of range; and that chunk read.
+    // via core.chunkFirstRow), -1 if out of range; and that chunk read, with
+    // display columns `disp` (source columns `src`, the same order).
     static int  coreChunkIndex(Core& core, int64_t row);
-    static bool coreLoadChunk(Core& core, int64_t row, const std::vector<int>& cols,
-                              LoadedChunk* out);
-    // Asynchronous reads: rows asked for (wantRows_) go to the owner in one
+    static bool coreLoadChunk(Core& core, int64_t row, const std::vector<int>& disp,
+                              const std::vector<int>& src, LoadedChunk* out);
+    // The display columns a read fetches: every one, or on a windowed tab
+    // the window plus the columns asked for outside it (and `also`), less
+    // the ones `held` already has.
+    std::vector<int> readColumns(const LoadedChunk* held, int also = -1) const;
+    std::vector<int> sourceColumns(const std::vector<int>& disp) const;
+    // Asynchronous reads: rows asked for (wantRows_), and cached chunks
+    // missing a column the view wants (wantMerge_), go to the owner in one
     // task per event-loop turn (flushRequests); a result for an older
     // generation (the cache was cleared since) is dropped.
-    void requestRow(int64_t srcRow) const;
+    void requestRow(int64_t srcRow, int dispCol = -1) const;
+    void requestColumn(int chunkIdx, int dispCol) const;
+    void scheduleFlush() const;
     void flushRequests();
     void onChunksLoaded(uint64_t gen, std::vector<LoadedChunk> chunks,
-                        std::vector<int64_t> asked, std::vector<int64_t> failed, Meta meta);
+                        std::vector<int64_t> asked, std::vector<int> merged,
+                        std::vector<int64_t> failed, Meta meta);
     void onInitDone(std::shared_ptr<arrow::Schema> schema, std::vector<std::string> hidden,
                     Meta meta, int64_t loadedRows, bool fullyLoaded);
     void setColumns(const std::vector<std::string>& hidden);
@@ -323,10 +374,14 @@ private:
     // `cancel`; returns {} if aborted. Runs on the worker for findAsync and
     // inline for the synchronous findNext fallback.
     static std::vector<int64_t> computeFindPos(TabularSource& src, std::vector<int> displayCols,
+                                               std::vector<int> scan,
                                                std::shared_ptr<const std::vector<int64_t>> order,
                                                bool identity, QRegularExpression re,
                                                std::atomic<bool>* cancel);
     void      invalidateFind();           // drop stale match list (view changed)
+    // The display columns Find scans: every one, or on a matrix tab only its
+    // row-label column (a text column 0; none when it has no labels).
+    std::vector<int> findScanColumns() const;
 
     std::shared_ptr<arrow::Schema> schema_;
     std::vector<int>               displayCols_;
@@ -358,6 +413,17 @@ private:
     mutable std::set<int64_t>          wantRows_;           // asked for, not yet sent
     mutable std::set<int64_t>          inflight_;           // sent, not yet delivered
     mutable std::set<int64_t>          failedRows_;         // read failed: no retry
+    // The column window (columnWindowed tabs): the display columns a read
+    // fetches, the ones asked for outside it since the last flush, the
+    // cached chunks missing a wanted column (asked for / in flight), and
+    // SyncReads' columns.
+    bool                               windowed_ = false;
+    std::vector<int>                   window_;
+    std::vector<int>                   allColumns_;          // 0 .. displayCols_.size() - 1
+    mutable std::set<int>              extraCols_;
+    mutable std::set<int>              wantMerge_;
+    mutable std::set<int>              inflightMerge_;
+    mutable std::vector<int>           syncCols_;
     mutable bool                       flushPending_ = false;
     int64_t                            readBatches_ = 0;
     mutable uint64_t                   gen_ = 0;

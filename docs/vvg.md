@@ -126,7 +126,10 @@ Command* goes the other way.
   recent-files list. A tab reads its file only when first shown, and reads
   in the background: it says *Loading…* until its columns are known, and a
   block of rows not read yet shows `…` until it arrives, so the window stays
-  responsive on slow or network storage.
+  responsive on slow or network storage. A table of more than 256 columns
+  (an expression matrix of every gene) reads only the columns on screen
+  and a screen's width on either side; scrolling to others reads them, and
+  the Row dock lists those columns with a line for the rest.
 - **Sort, filter, find** — click a header to sort (by type, not text) and
   put the cursor in that column; a second click sorts descending, a third
   restores the file's order (also *Clear Sort* in the header's right-click
@@ -136,7 +139,8 @@ Command* goes the other way.
   rank and direction in the header (▲1, ▼2), and *Copy as vv Command* and
   *Export* repeat `--sort` per key. The Filter box (*Ctrl+Shift+F*) uses vv's `--filter`
   grammar (`score > 5 and chrom == "chr1"`); the Find box (*Ctrl+F*) takes a
-  regex. All three run off the UI thread with a progress bar and *Cancel*, so
+  regex. On a matrix tab Find matches gene names first (moving to that
+  column) and row labels when no gene matches; the numbers are not searched. All three run off the UI thread with a progress bar and *Cancel*, so
   multi-GB files stay responsive. The Filter box's clock lists the filters
   applied before to files of the same kind (alignments, variants, HDF5, …),
   the saved ones (*Save Current Filter…*, *Manage Saved Filters…*), and
