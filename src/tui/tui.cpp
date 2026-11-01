@@ -880,6 +880,37 @@ class TableTUI {
 
     // ── Search ───────────────────────────────────────────────────────────────
 
+    // The source columns a row search reads: every column, or on a matrix
+    // tab only its row-label column (the cells are numbers; gene names are
+    // searched as column names by find_column_name).
+    std::vector<int> search_src_cols() const {
+        std::vector<int> cols;
+        if (src_->is_matrix_tab()) {
+            auto sch = src_->schema();
+            if (sch->num_fields() > 0) {
+                const auto id = sch->field(0)->type()->id();
+                if (id == arrow::Type::STRING || id == arrow::Type::LARGE_STRING ||
+                    id == arrow::Type::STRING_VIEW || id == arrow::Type::DICTIONARY)
+                    cols.push_back(0);
+            }
+            return cols;
+        }
+        for (int i = 0; i < src_num_cols_; ++i) cols.push_back(i);
+        return cols;
+    }
+
+    // Matrix tab: the next shown column whose name matches the search, from
+    // `from` (inclusive) in the search direction, wrapping once; -1 if none.
+    int find_column_name(int from, bool forward) const {
+        if (num_cols_ <= 0) return -1;
+        for (int k = 0; k < num_cols_; ++k) {
+            int vc = ((from + (forward ? k : -k)) % num_cols_ + num_cols_) % num_cols_;
+            if (vc < (int)col_visible_.size() && !col_visible_[vc]) continue;
+            if (cell_matches(col_names_[vc], search_query_lc_)) return vc;
+        }
+        return -1;
+    }
+
     // Search forward (forward=true) or backward through all loaded chunks.
     // Returns absolute row index of first match >= from_row (forward) or
     // <= from_row (backward), or -1 if not found.
@@ -889,8 +920,8 @@ class TableTUI {
         if (total_rows() == 0) return -1;
         const std::string& q = search_query_lc_;
 
-        std::vector<int> all_cols;
-        for (int i = 0; i < src_num_cols_; ++i) all_cols.push_back(i);
+        std::vector<int> all_cols = search_src_cols();
+        if (all_cols.empty()) return -1;
 
         // Check one row: returns true if any column matches the active search.
         auto row_matches = [&](const std::shared_ptr<arrow::Table>& tbl, int64_t local) -> bool {
@@ -990,6 +1021,20 @@ class TableTUI {
     // only the viewport did nothing: the next draw scrolled back to the cursor.
     void do_search(bool forward) {
         if (search_query_.empty()) return;
+        // A matrix tab matches gene names (its column names) first: the
+        // cursor moves to the column. Its row labels are searched only when
+        // no column name matches.
+        if (src_->is_matrix_tab()) {
+            const int from = search_row_ >= 0 ? cur_col_ + (forward ? 1 : -1) : cur_col_;
+            const int vc = find_column_name(from, forward);
+            if (vc >= 0) {
+                search_wrap_ = search_row_ >= 0 && (forward ? vc < from : vc > from);
+                search_fail_ = false;
+                search_row_  = cur_row_;
+                cur_col_     = vc;
+                return;
+            }
+        }
         PassRetention retention(*this);
         // A fresh search includes the cursor's row; n / N step past it. The
         // cursor, not the last match, is the anchor, so moving it between
@@ -1015,12 +1060,21 @@ class TableTUI {
             search_fail_ = false;
             cur_row_     = found;
             // Put the cursor on a matching cell: keep its column if that cell
-            // matches, else the first column that does.
-            auto vals = load_full_row(found);
+            // matches, else the first column that does. A matrix tab keeps
+            // the cursor's column (the match is the row label). Columns are
+            // read a window at a time, so a wide row is not read whole.
             const std::string& q = search_query_lc_;
-            if (cur_col_ < 0 || cur_col_ >= (int)vals.size() || !cell_matches(vals[cur_col_], q))
-                for (int c = 0; c < (int)vals.size(); ++c)
-                    if (cell_matches(vals[c], q)) { cur_col_ = c; break; }
+            if (!src_->is_matrix_tab() &&
+                (cur_col_ < 0 || cur_col_ >= num_cols_ ||
+                 !cell_matches(load_row_range(found, cur_col_, cur_col_ + 1)[cur_col_], q)))
+                for (int lo = 0; lo < num_cols_; lo += kRowWindowCols) {
+                    const int hi = std::min(num_cols_, lo + kRowWindowCols);
+                    auto vals = load_row_range(found, lo, hi);
+                    int hit = -1;
+                    for (int c = lo; c < hi && hit < 0; ++c)
+                        if (cell_matches(vals[c], q)) hit = c;
+                    if (hit >= 0) { cur_col_ = hit; break; }
+                }
             // Bring a match that is off screen to the top of the view.
             int dl = data_lines();
             if (found < top_row_ || found >= top_row_ + dl) {
@@ -1038,7 +1092,10 @@ class TableTUI {
     // only).
     bool cached_row_matches(const CachedRG& cr, int64_t local,
                             const std::string& q) const {
-        for (auto& arr : cr.cols) {
+        const bool matrix = src_->is_matrix_tab();
+        for (size_t sc = 0; sc < cr.cols.size(); ++sc) {
+            if (matrix && sc > 0) break;            // only the row label is searched
+            const auto& arr = cr.cols[sc];
             if (!arr) continue;
             int64_t off = local;
             for (auto& chunk : arr->chunks()) {
@@ -1325,6 +1382,10 @@ class TableTUI {
         const int64_t K = (nrows > 0) ? std::min<int64_t>(nrows, 2000) : 2000;
         std::vector<std::vector<int>> samples(num_cols_);
         bool got_data = false;
+        // The columns to sample in each cached chunk: the ones it holds (a
+        // column not read yet has no cells to measure), so a 62,710-column
+        // tab samples the few on screen, not every column of every row.
+        std::unordered_map<int, std::vector<int>> chunk_cols;
         for (int64_t r = 0; r < K; ++r) {
             int64_t srow = source_row(r);
             int     c    = chunk_for_row(srow);
@@ -1334,9 +1395,16 @@ class TableTUI {
             int64_t         local = srow - cr.first_row;
             if (local < 0 || local >= cr.num_rows) continue;
             got_data = true;
-            for (int vc = 0; vc < num_cols_; ++vc) {
-                if (is_integer_[vc]) continue;
-                if (vc < (int)width_manual_.size() && width_manual_[vc]) continue;
+            auto [cc, fresh] = chunk_cols.try_emplace(c);
+            if (fresh)
+                for (int vc = 0; vc < num_cols_; ++vc) {
+                    if (is_integer_[vc]) continue;
+                    if (vc < (int)width_manual_.size() && width_manual_[vc]) continue;
+                    const int sc = virt_src_col_[vc];
+                    if (sc < 0 || sc >= (int)cr.cols.size() || !cr.cols[sc]) continue;
+                    cc->second.push_back(vc);
+                }
+            for (int vc : cc->second) {
                 std::string val = cell_at(cr, local, vc, nullptr, nullptr, 0);
                 if (val != NULL_SYMBOL) samples[vc].push_back((int)display_width(val));
             }
@@ -2048,15 +2116,30 @@ class TableTUI {
     // Fetch all (virtual) columns of one row with FULL (untruncated) values.
     // Loads any columns not already in cache (only once: subsequent openings
     // of the detail pane on other rows in the same chunk are free).
-    std::vector<std::string> load_full_row(int64_t row) {
+    std::vector<std::string> load_full_row(int64_t row) { return load_row_range(row, 0, num_cols_); }
+
+    // Columns read at a time when a wide row is read in parts (the detail
+    // pane of a tab past this many columns, the search landing).
+    static constexpr int kRowWindowCols = 256;
+
+    // Virtual columns [lo, hi) of one row, untruncated; the other entries of
+    // the returned vector (num_cols_ long) stay empty. Reads only the source
+    // columns behind [lo, hi) that are not cached yet.
+    std::vector<std::string> load_row_range(int64_t row, int lo, int hi) {
         std::vector<std::string> out(num_cols_);
+        lo = std::max(0, lo);
+        hi = std::min(num_cols_, hi);
+        if (lo >= hi) return out;
         if (row < 0 || (total_rows() >= 0 && row >= total_rows())) return out;
         if (src_->num_chunks() == 0) return out;
         int64_t srow = source_row(row);
         int c = chunk_for_row(srow);
-        std::vector<int> all_src;
-        for (int i = 0; i < src_num_cols_; ++i) all_src.push_back(i);
-        ensure_cols(c, all_src);
+        std::vector<int> want;
+        for (int vc = lo; vc < hi; ++vc)
+            if (virt_src_col_[vc] >= 0) want.push_back(virt_src_col_[vc]);
+        std::sort(want.begin(), want.end());
+        want.erase(std::unique(want.begin(), want.end()), want.end());
+        ensure_cols(c, want);
         auto it = cache_.find(c);
         if (it == cache_.end() || !it->second.ok) return out;
         const CachedRG& cr = it->second;
@@ -2067,7 +2150,7 @@ class TableTUI {
         // Temporarily bypass via a local unwrap.
         std::unordered_map<std::string, std::string> parsed;
         int parsed_row = -1;
-        for (int vc = 0; vc < num_cols_; ++vc) {
+        for (int vc = lo; vc < hi; ++vc) {
             int sc = virt_src_col_[vc];
             auto arr = (sc >= 0 && sc < (int)cr.cols.size()) ? cr.cols[sc] : nullptr;
             if (!arr) continue;
@@ -2104,9 +2187,10 @@ class TableTUI {
     // Build the list of (label, value) lines shown in the detail pane.
     // Columns whose value looks like a k=v list are followed by indented sub-entries.
     std::vector<std::pair<std::string,std::string>>
-    build_detail_lines(const std::vector<std::string>& vals) const {
+    build_detail_lines(const std::vector<std::string>& vals, int lo = 0, int hi = -1) const {
         std::vector<std::pair<std::string,std::string>> L;
-        for (int ci = 0; ci < num_cols_; ++ci) {
+        if (hi < 0) hi = num_cols_;
+        for (int ci = lo; ci < hi; ++ci) {
             L.emplace_back(col_names_[ci], vals[ci]);
             if (looks_like_kv_list(vals[ci])) {
                 for (auto& [k, v] : parse_kv_list(vals[ci]))
@@ -3034,7 +3118,7 @@ private:
             {"←→  h l",      "move the cell cursor one column"},
             {",  .",          "narrow / widen the cursor's column"},
             {"z",            "toggle frozen first column"},
-            {"/  ?",          "search forward / backward (regex, icase)"},
+            {"/  ?",          "search forward / backward (regex, icase; matrix: genes, row labels)"},
             {"n  N",          "next / previous match (direction-aware)"},
             {"S",             "per-column stats (count/min/max/mean/distinct)"},
             {"F",             "value counts of the cursor's column; Enter filters to one"},
@@ -3117,8 +3201,18 @@ private:
 
     void draw_detail_pane() {
         if (detail_row_ < 0) return;
-        auto vals = load_full_row(detail_row_);
-        auto lines = build_detail_lines(vals);
+        // A tab past kRowWindowCols columns reads only the columns on screen:
+        // the scroll offset counts columns, and the pane lists the columns
+        // from it down (a 62,710-gene row is not read whole per frame).
+        const bool wide = num_cols_ > kRowWindowCols;
+        int wlo = 0, whi = num_cols_;
+        if (wide) {
+            detail_scroll_ = std::clamp(detail_scroll_, 0, std::max(0, num_cols_ - 1));
+            wlo = detail_scroll_;
+            whi = std::min(num_cols_, wlo + std::max(1, scr_r_ - 5));
+        }
+        auto vals = load_row_range(detail_row_, wlo, whi);
+        auto lines = build_detail_lines(vals, wlo, whi);
 
         // Compute widths
         int label_w = 0, val_w = 0;
@@ -3166,7 +3260,8 @@ private:
         }
         int pane_w = inner_w + 4;                      // +4: " | " + content + " | "
         int max_inner_h = scr_r_ - 4;
-        int inner_h     = std::min((int)lines.size() + 1, max_inner_h);  // +1 for footer hint
+        int inner_h     = wide ? max_inner_h
+                               : std::min((int)lines.size() + 1, max_inner_h);  // +1 for footer hint
         int pane_h      = inner_h + 2;                 // +2 for top/bottom border
         int y0 = (scr_r_ - pane_h) / 2;
         int x0 = (scr_c_ - pane_w) / 2;
@@ -3175,12 +3270,19 @@ private:
 
         // Clamp scroll
         int visible_rows = inner_h - 1;  // -1 for footer hint line
-        int max_scroll   = std::max(0, (int)lines.size() - visible_rows);
-        if (detail_scroll_ > max_scroll) detail_scroll_ = max_scroll;
-        if (detail_scroll_ < 0) detail_scroll_ = 0;
+        int scroll       = 0;            // lines skipped (a wide pane starts at its first column)
+        if (!wide) {
+            int max_scroll = std::max(0, (int)lines.size() - visible_rows);
+            if (detail_scroll_ > max_scroll) detail_scroll_ = max_scroll;
+            if (detail_scroll_ < 0) detail_scroll_ = 0;
+            scroll = detail_scroll_;
+        }
 
         // Borders (rounded, Unicode box-drawing)
         std::string title = " Row " + std::to_string(detail_row_) + " ";
+        if (wide)
+            title += "\xc2\xb7 columns " + digits_with_sep(std::to_string(wlo + 1)) + "\xe2\x80\x93" +
+                     digits_with_sep(std::to_string(whi)) + " of " + digits_with_sep(std::to_string(num_cols_)) + " ";
         int title_cols = (int)display_width(title);
         int title_pad  = std::max(0, inner_w - title_cols);
         // Layout: ╭ ── title ─*pad ╮   (total = 1 + 2 + title + pad + 1 = pane_w)
@@ -3194,7 +3296,7 @@ private:
         for (int r = 0; r < inner_h; ++r) {
             int sy = y0 + 1 + r;
             std::string line = std::string(BOX_VLINE) + " ";
-            int idx = r + detail_scroll_;
+            int idx = r + scroll;
             if (r == inner_h - 1) {
                 // Footer hint line
                 std::string hint = " [j/k]:scroll  [Esc/Enter]:close ";

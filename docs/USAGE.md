@@ -207,7 +207,7 @@ $ vv tests/data/tiny.lociss        # default when stdout is a terminal
 | `Space` / `PgDn` / `b` / `PgUp` | scroll one page                       |
 | `g` / `G`      | top / bottom of file                                    |
 | `Enter`        | open the detail pane for the cursor's row               |
-| `/` / `?`      | search forward / backward (case-insensitive ECMAScript regex with literal fallback) |
+| `/` / `?`      | search forward / backward (case-insensitive ECMAScript regex with literal fallback); on a matrix tab, gene (column) names, then row labels |
 | `n` / `N`      | next / previous match (direction-aware)                 |
 | `,` / `.`      | narrow / widen the column under the cursor              |
 | `z`            | toggle frozen first column                              |

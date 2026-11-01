@@ -5854,6 +5854,15 @@ if [ -n "$TUI_PTY" ]; then
     else
         FAIL=$((FAIL+1)); echo "  FAIL  tui_search_goto_cursor"
     fi
+    # `/` on a matrix tab finds a gene (moves to its column) or a row label;
+    # the detail pane of a 600-column tab reads and lists the columns from
+    # its scroll offset. Verified discriminating: the previous build searched
+    # the numeric cells (no match for a gene) and had no column-window pane.
+    if run_with_timeout 120 python3 "$HERE/tui_wide_check.py" "$VV" "$TMP" "$DATA/tiny.dense.h5ad"; then
+        PASS=$((PASS+1)); echo "  ok    tui_wide_search_detail"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_wide_search_detail"
+    fi
     if run_with_timeout 120 python3 "$HERE/tui_marks_check.py" "$VV" "$TMP"; then
         PASS=$((PASS+1)); echo "  ok    tui_marks"
     else
