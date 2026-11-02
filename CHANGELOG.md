@@ -79,6 +79,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   columns asked for at a time (stored genes x cells, read as hyperslabs of
   the genes shown; CSR entries kept for the columns shown). The tabs are
   `matrix` (was `matrix (preview)`); exports are unchanged byte for byte.
+- R sparse `Matrix` objects (dgCMatrix and the other kinds, Seurat / SCE
+  assays) and dense matrices past 4,096 columns hold every row and column
+  instead of the first 1,000 x 200 (dense: 4,096 columns), densifying a
+  block of rows for the columns asked for; exports are unchanged byte for
+  byte.
 - Find on a matrix tab (vvg's Find box, the TUI's `/`) matches gene names
   (the column names) and moves to that column, then row labels; it no
   longer searches the numbers.

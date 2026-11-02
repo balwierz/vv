@@ -106,6 +106,11 @@ user-facing summary).
 ## Format gaps
 
 ### Open
+- NumPy `.npy` / `.npz` 2-D arrays past 4,096 columns are still a preview
+  (kNpzMaxCols; build_2d_table builds the table at open). The AnnData,
+  Loom, 10x and R matrix tabs read a block of rows and the requested
+  columns instead (H5ViewportSource / H5MatrixStreamSource / RWideSource);
+  an NPY source of that kind over the memory-mapped array would lift it.
 - Sixel image protocol (xterm / mlterm / WezTerm-no-iterm) for the
   markdown viewer. Needs PNG → RGB decode + palette quantisation;
   ~500 LOC vendored (stb_image.h + sixel encoder).

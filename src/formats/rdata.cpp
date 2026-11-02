@@ -24,9 +24,7 @@ using rser::Value;
 
 namespace {
 
-constexpr int64_t kPreviewRows  = 1000;    // sparse matrix preview: rows ...
-constexpr int64_t kPreviewCols  = 200;     // ... and columns
-constexpr int64_t kMaxMatrixCols = 4096;   // dense matrix columns built
+constexpr int64_t kMaxMatrixCols = 4096;   // dense matrix columns built as a table
 constexpr size_t  kMaxTabs      = 1000;
 constexpr size_t  kMaxStructRows = 200000;
 constexpr int     kMaxWalkDepth = 24;
@@ -506,46 +504,6 @@ struct Sparse {
     }
 };
 
-arrow::Result<std::shared_ptr<arrow::Table>> sparse_preview(const Sparse& s, const std::vector<std::string>& rn,
-                                                            const std::vector<std::string>& cn) {
-    const int64_t rows = std::min(s.nr, kPreviewRows), cols = std::min(s.nc, kPreviewCols);
-    std::vector<double> dense((size_t)(rows * cols), 0.0);
-    s.each([&](int64_t r, int64_t c, int64_t k) {
-        dense[(size_t)(c * rows + r)] += s.value(k);
-        return true;
-    }, rows, cols);
-    arrow::FieldVector fields;
-    arrow::ArrayVector arrays;
-    if ((int64_t)rn.size() == s.nr && s.nr > 0) {
-        fields.push_back(arrow::field("index", arrow::utf8()));
-        ARROW_ASSIGN_OR_RAISE(auto a, strings_array(rn, (size_t)rows));
-        arrays.push_back(a);
-    }
-    for (int64_t c = 0; c < cols; ++c) {
-        std::shared_ptr<arrow::Array> a;
-        if (s.logical) {
-            arrow::BooleanBuilder b;
-            for (int64_t r = 0; r < rows; ++r) {
-                const double d = dense[(size_t)(c * rows + r)];
-                ARROW_RETURN_NOT_OK(std::isnan(d) ? b.AppendNull() : b.Append(d != 0));
-            }
-            ARROW_RETURN_NOT_OK(b.Finish(&a));
-        } else {
-            arrow::DoubleBuilder b;
-            for (int64_t r = 0; r < rows; ++r) {
-                const double d = dense[(size_t)(c * rows + r)];
-                ARROW_RETURN_NOT_OK(std::isnan(d) ? b.AppendNull() : b.Append(d));
-            }
-            ARROW_RETURN_NOT_OK(b.Finish(&a));
-        }
-        fields.push_back(arrow::field((int64_t)cn.size() == s.nc && !cn[(size_t)c].empty() ? cn[(size_t)c]
-                                                                                         : "V" + std::to_string(c + 1),
-                                      a->type()));
-        arrays.push_back(a);
-    }
-    return arrow::Table::Make(arrow::schema(fields), arrays, rows);
-}
-
 std::string shape(int64_t nr, int64_t nc) { return std::to_string(nr) + " \xc3\x97 " + std::to_string(nc); }
 
 // The table of one tab, and its footer description.
@@ -584,27 +542,21 @@ arrow::Result<std::shared_ptr<arrow::Table>> build(const State& st, const Tab& t
             std::vector<std::string> rn = t.row_names, cn = t.col_names;
             if (rn.empty() && cn.empty())
                 dimnames(t.kind == Tab::Matrix ? v->attr("dimnames") : slot(v, "Dimnames"), &rn, &cn);
-            ARROW_ASSIGN_OR_RAISE(out, matrix_table(x, nr, nc, rn, cn, &note));
+            // Past kMaxMatrixCols columns RWideSource reads the matrix in blocks.
+            if (nc <= kMaxMatrixCols) {
+                ARROW_ASSIGN_OR_RAISE(out, matrix_table(x, nr, nc, rn, cn, &note));
+            }
             *kind = (t.kind == Tab::Matrix ? std::string("matrix ") : class_label(v) + " ") + shape(nr, nc);
-            if (limit && nc > kMaxMatrixCols) *limit = PreviewLimit{nr, nr, out->num_columns(), nc};
             break;
         }
         case Tab::Sparse: {
             Sparse s;
             if (!Sparse::make(v, &s)) return arrow::Status::Invalid("not a sparse matrix");
-            std::vector<std::string> rn = t.row_names, cn = t.col_names;
-            if (rn.empty() && cn.empty()) dimnames(slot(v, "Dimnames"), &rn, &cn);
-            ARROW_ASSIGN_OR_RAISE(out, sparse_preview(s, rn, cn));
+            // RWideSource reads the matrix in blocks of rows (wide_tab).
             const double dens = s.nr && s.nc ? 100.0 * (double)s.nnz() / ((double)s.nr * (double)s.nc) : 0;
             char d[32];
             std::snprintf(d, sizeof d, "%.3g%%", dens);
             *kind = s.cls + " " + shape(s.nr, s.nc) + ", " + std::to_string(s.nnz()) + " stored (" + d + ")";
-            if (s.nr > kPreviewRows || s.nc > kPreviewCols) {
-                note = "preview: first " + std::to_string(std::min(s.nr, kPreviewRows)) + " rows \xc3\x97 " +
-                       std::to_string(std::min(s.nc, kPreviewCols)) + " columns; --matrix long lists every stored value";
-                if (limit) *limit = PreviewLimit{std::min(s.nr, kPreviewRows), s.nr,
-                                                 out->num_columns(), s.nc};
-            }
             break;
         }
         case Tab::GRanges: {
@@ -950,21 +902,50 @@ void add_object(State& st, const std::string& name, const Value* v) {
     }
 }
 
+// A sparse matrix, or a dense one past kMaxMatrixCols columns: its tab is an
+// RWideSource (every row and column, read a block of rows and the requested
+// columns at a time) rather than a table built at open.
+bool wide_tab(const Tab& t) {
+    if (t.kind == Tab::Sparse) return true;
+    if (t.kind != Tab::Matrix && t.kind != Tab::Dense4) return false;
+    int64_t nr = 0, nc = 0;
+    return dims2(t.kind == Tab::Matrix ? t.v->attr("dim") : slot(t.v, "Dim"), &nr, &nc) && nc > kMaxMatrixCols;
+}
+std::unique_ptr<TabularSource> make_wide(const std::shared_ptr<State>& st, size_t idx);
+
 class RdataSource : public WorkbookSource {
 public:
     RdataSource(std::shared_ptr<State> st, size_t idx)
         : WorkbookSource(nullptr, st->path, ""), st_(std::move(st)), idx_(idx) {}
 
     std::string tab_label() const override { return st_->tabs[idx_].label; }
-    std::shared_ptr<arrow::Schema> schema() const override { ensure(); return MemoryTableSource::schema(); }
-    int64_t total_rows() const override { ensure(); return MemoryTableSource::total_rows(); }
-    ChunkMeta chunk_meta(int i) const override { ensure(); return MemoryTableSource::chunk_meta(i); }
+    std::shared_ptr<arrow::Schema> schema() const override {
+        ensure();
+        return wide_ ? wide_->schema() : MemoryTableSource::schema();
+    }
+    int64_t total_rows() const override {
+        ensure();
+        return wide_ ? wide_->total_rows() : MemoryTableSource::total_rows();
+    }
+    int num_chunks() const override { ensure(); return wide_ ? wide_->num_chunks() : MemoryTableSource::num_chunks(); }
+    ChunkMeta chunk_meta(int i) const override {
+        ensure();
+        return wide_ ? wide_->chunk_meta(i) : MemoryTableSource::chunk_meta(i);
+    }
     arrow::Status read_chunk(int i, const std::vector<int>& cols, std::shared_ptr<arrow::Table>* out) override {
         ensure();
-        return MemoryTableSource::read_chunk(i, cols, out);
+        return wide_ ? wide_->read_chunk(i, cols, out) : MemoryTableSource::read_chunk(i, cols, out);
+    }
+    arrow::Status read_first(int64_t rows, const std::vector<int>& cols,
+                             std::shared_ptr<arrow::Table>* out) override {
+        ensure();
+        return wide_ ? wide_->read_first(rows, cols, out) : MemoryTableSource::read_first(rows, cols, out);
     }
     std::string footer() const override { ensure(); return MemoryTableSource::footer(); }
-    arrow::Status read_status() const override { ensure(); return status_; }
+    arrow::Status read_status() const override {
+        ensure();
+        return wide_ && status_.ok() ? wide_->read_status() : status_;
+    }
     PreviewLimit preview_limit() const override { ensure(); return limit_; }
     bool show_cells_in_full() const override { return st_->tabs[idx_].kind == Tab::Structure; }
     // --matrix long applies to a sparse matrix (make_tab).
@@ -979,6 +960,7 @@ private:
     mutable bool built_ = false;
     mutable arrow::Status status_;
     mutable PreviewLimit limit_;
+    mutable std::unique_ptr<TabularSource> wide_;   // wide_tab: the tab's rows and columns
 
     void ensure() const {
         if (built_) return;
@@ -988,9 +970,15 @@ private:
         std::string kind;
         auto r = build(*st_, t, &kind, &self->limit_);
         std::shared_ptr<arrow::Table> tbl;
-        if (r.ok() && *r) {
+        if (r.ok() && wide_tab(t)) {
+            // The table behind it stays empty; every read goes to wide_.
+            self->wide_ = make_wide(st_, idx_);
+            auto empty = arrow::Table::MakeEmpty(self->wide_->schema());
+            if (empty.ok()) tbl = *empty;
+        } else if (r.ok() && *r) {
             tbl = *r;
-        } else {
+        }
+        if (!tbl) {
             const std::string msg = r.ok() ? "empty" : r.status().message();
             arrow::StringBuilder b;
             ARROW_UNUSED(b.Append(msg));
@@ -1125,8 +1113,9 @@ private:
     std::shared_ptr<arrow::Schema> schema_;
 };
 
-// A whole matrix (sparse, or dense past kMaxMatrixCols) streamed in blocks of
-// rows across every column, for exports of a capped preview.
+// A whole matrix (sparse, or dense past kMaxMatrixCols) in blocks of rows,
+// reading the requested columns: the tab of such a matrix (RdataSource), and
+// what full_matrix() returns for a dense one.
 class RWideSource : public TabularSource {
 public:
     RWideSource(std::shared_ptr<State> st, size_t idx) : st_(std::move(st)), idx_(idx) {
@@ -1181,16 +1170,26 @@ public:
     arrow::Status read_status() const override {
         return ok_ ? arrow::Status::OK() : arrow::Status::IOError("unreadable matrix");
     }
+    bool random_access() const override { return true; }
     arrow::Status read_chunk(int i, const std::vector<int>& cols, std::shared_ptr<arrow::Table>* out) override {
         const ChunkMeta m = chunk_meta(i);
         const int off = rn_.empty() ? 0 : 1;
+        // A sparse matrix: the chunk's rows densified for the requested
+        // columns only (slot[c] = their place in the block, -1 = not read).
         std::vector<double> block;
-        if (sparse_) {                                      // dense block of the chunk's rows
-            block.assign((size_t)(m.num_rows * nc_), 0.0);
+        std::vector<int32_t> slot;
+        if (sparse_) {
+            slot.assign((size_t)nc_, -1);
+            int32_t k = 0;
+            for (int c : cols)
+                if (c >= off && c < schema_->num_fields() && slot[(size_t)(c - off)] < 0)
+                    slot[(size_t)(c - off)] = k++;
+            block.assign((size_t)(m.num_rows * k), 0.0);
             for (int64_t r = 0; r < m.num_rows; ++r) {
                 const size_t row = (size_t)(m.first_row + r);
                 for (int64_t e = row_ptr_[row]; e < row_ptr_[row + 1]; ++e)
-                    block[(size_t)(ent_[(size_t)e].c * m.num_rows + r)] += s_.value(ent_[(size_t)e].k);
+                    if (const int32_t j = slot[(size_t)ent_[(size_t)e].c]; j >= 0)
+                        block[(size_t)(j * m.num_rows + r)] += s_.value(ent_[(size_t)e].k);
             }
         }
         arrow::FieldVector f;
@@ -1205,7 +1204,7 @@ public:
             } else if (!sparse_) {
                 ARROW_ASSIGN_OR_RAISE(arr, to_array(x_, (int64_t)(c - off) * nr_ + m.first_row, m.num_rows));
             } else {
-                const double* col = block.data() + (size_t)(c - off) * (size_t)m.num_rows;
+                const double* col = block.data() + (size_t)slot[(size_t)(c - off)] * (size_t)m.num_rows;
                 if (s_.logical) {
                     arrow::BooleanBuilder b;
                     for (int64_t r = 0; r < m.num_rows; ++r)
@@ -1227,8 +1226,7 @@ public:
     const std::string& path() const override { return st_->path; }
     std::string tab_label() const override { return st_->tabs[idx_].label; }
     std::string footer() const override {
-        return std::string("Format: R ") + (st_->rds ? ".rds" : ".RData") + "  |  matrix " + shape(nr_, nc_) +
-               " (all rows and columns)";
+        return std::string("Format: R ") + (st_->rds ? ".rds" : ".RData") + "  |  matrix " + shape(nr_, nc_);
     }
 
 private:
@@ -1245,7 +1243,13 @@ private:
     std::shared_ptr<arrow::Schema> schema_;
 };
 
+std::unique_ptr<TabularSource> make_wide(const std::shared_ptr<State>& st, size_t idx) {
+    return std::make_unique<RWideSource>(st, idx);
+}
+
 std::unique_ptr<TabularSource> RdataSource::full_matrix() const {
+    ensure();
+    if (wide_) return nullptr;                       // the tab is the whole matrix
     const Tab::Kind k = st_->tabs[idx_].kind;
     if (k != Tab::Sparse && k != Tab::Matrix && k != Tab::Dense4) return nullptr;
     return std::make_unique<RWideSource>(st_, idx_);

@@ -1622,8 +1622,14 @@ assert_eq_file_inline "rds_ngcmatrix" "$("$VV" --tab ngc --tsv --no-header "$SP"
 assert_eq_file_inline "rds_dgematrix" "$("$VV" --tab dge --tsv "$SP" | tr '\t\n' ',;')" "V1,V2;1.5,3;2,4;"
 assert_eq_file_inline "rds_sparse_long" "$("$VV" --tab dgc --matrix long --tsv "$SP" | tr '\t\n' ',;')" \
     "row,col,value;g1,c1,1;g3,c1,2;g6,c2,3;g2,c3,4;g4,c4,5;"
-# 1200 x 250: a 1000 x 200 preview; an export streams the whole matrix
-assert_contains "rds_sparse_preview_note" "$("$VV" --tab wide -n 1 --color=never "$SP")" "preview: first 1000 rows × 200 columns"
+# 1200 x 250: the tab holds every row and column (read a block of rows and
+# the requested columns at a time); the table view prints 200 of them.
+RW="$("$VV" --tab wide -n 1 --color=never "$SP")"
+assert_contains "rds_sparse_all_cols" "$RW" "[1200 rows x 251 columns]"
+refute_contains "rds_sparse_no_preview" "$RW" "preview"
+assert_eq_file_inline "rds_sparse_select_last" \
+    "$("$VV" --tab wide --select index,C250 -n 1200 --tsv "$SP" | awk -F'\t' 'NR == 1 || $2 != 0' | tr '\t\n' ',;')" \
+    "$("$VV" --tab wide --tsv "$SP" | awk -F'\t' 'NR == 1 || $251 != 0 { print $1 "\t" $251 }' | tr '\t\n' ',;')"
 assert_eq_file_inline "rds_sparse_full_export" "$("$VV" --tab wide --tsv "$SP" | wc -l | tr -d ' ')x$("$VV" --tab wide --tsv "$SP" | head -1 | tr '\t' '\n' | wc -l | tr -d ' ')" "1201x251"
 assert_eq_file_inline "rds_sparse_long_count" "$("$VV" --tab wide --matrix long --count "$SP")" "3000"
 assert_eq_file_inline "rdata_list_prefix" "$("$VV" --tab 'lst$df' --tsv --no-header "$SP" | tr '\n' ' ')" "1 2 "
