@@ -46,6 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   claiming 2.9e11 rows grew past 40 GB with Arrow 26).
 
 ### Changed
+- Parquet: the footer (vvg's status bar, the TUI, the table view and
+  `--schema`) gives the file's row count from its metadata:
+  `Rows: 20  |  Row groups: 4  |  Compressed: 2.1 KiB`. It listed only the
+  row groups and compressed size.
 - CSV / TSV: a run that names its columns (`--select`, `--filter`,
   `--sort`, `--unique`, and `--count`, which needs none) converts only
   those. On the 28-column GENCODE CSV, `--select gene_name,start --tsv`

@@ -824,7 +824,7 @@ Score        double  yes
 MaxEndSoFar  int32   yes
 
 File: tests/data/tiny.lociss
-Format: LociSSD  |  Row groups: 3  |  Compressed: 1.7 KiB
+Format: LociSSD  |  Rows: 5  |  Row groups: 3  |  Compressed: 1.7 KiB
 Created by: parquet-cpp-arrow version 24.0.0
 Metadata:
   lociSSD_manifest = {"format_version": 2, "writer_version": "vv tests/data/generate.py", …} (470 B)

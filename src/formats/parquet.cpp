@@ -711,7 +711,8 @@ public:
             sz += meta_->RowGroup(i)->total_compressed_size();
         std::string s;
         if (is_lociss_) s += "Format: LociSSD  |  ";
-        s += "Row groups: " + std::to_string(meta_->num_row_groups()) +
+        s += "Rows: " + std::to_string(meta_->num_rows()) +
+             "  |  Row groups: " + std::to_string(meta_->num_row_groups()) +
              "  |  Compressed: " + fmt_size(sz);
         return s;
     }

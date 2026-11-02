@@ -632,7 +632,7 @@ std::string format_label_of(TabularSource& src) {
     const std::string f = src.footer();
     const std::string key = "Format: ";
     auto p = f.find(key);
-    if (p == std::string::npos)   // plain Parquet's footer starts at "Row groups:"
+    if (p == std::string::npos)   // plain Parquet's footer starts at "Rows:"
         return is_parquet_source(src) ? "Parquet" : "";
     std::string rest = f.substr(p + key.size());
     auto bar = rest.find("  |");
