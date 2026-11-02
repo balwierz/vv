@@ -673,6 +673,20 @@ int main(int argc, char** argv) {
         if (si < 0) { report(cfg.path, "--sort: unknown column '" + cfg.sort_col + "'"); return 1; }
     }
 
+    // A matrix tab holds every gene (62,710 columns): the table and vertical
+    // views print its first kMatrixViewCols data columns, as -c would, unless
+    // --select or -c chooses (print_table notes the rest). Set before --sort,
+    // which then reads only those columns.
+    if (!tui_view && src->is_matrix_tab() && cfg.select_cols.empty() && !cfg.max_cols_set &&
+        !cfg.delimiter && cfg.parquet_out.empty() && cfg.arrow_out.empty() && !cfg.json_array &&
+        !cfg.json_lines && !cfg.md && !cfg.describe && cfg.unique_cols.empty() && !cfg.count &&
+        !cfg.schema_only && !cfg.stats_only && !cfg.heatmap && !cfg.validate) {
+        const auto sch = src->schema();
+        const bool label = sch->num_fields() > 0 && sch->field(0)->type()->id() == arrow::Type::STRING;
+        if (sch->num_fields() > kMatrixViewCols + (label ? 1 : 0))
+            cfg.max_cols = kMatrixViewCols + (label ? 1 : 0);
+    }
+
     // --sort COL: materialise + stable-sort the rows, then fall through to the
     // normal view / export path (which now sees a pre-sorted MemoryTableSource).
     if (!cfg.sort_col.empty() && !tui_sorts) {

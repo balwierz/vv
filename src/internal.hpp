@@ -1472,7 +1472,11 @@ std::string shorten_reader_error(std::string msg);
 
 std::string print_describe(TabularSource& src, const Config& cfg);
 
-void print_schema_block(TabularSource& src);
+// The schema table (at most `max_cols` columns, 0 = all), then the file info.
+void print_schema_block(TabularSource& src, int max_cols = 0);
+// Data columns the table / vertical view prints of a matrix tab, unless
+// --select or -c chooses.
+constexpr int kMatrixViewCols = 200;
 
 void print_schema_metadata(const arrow::Schema& schema);
 

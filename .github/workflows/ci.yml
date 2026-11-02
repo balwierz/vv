@@ -446,12 +446,13 @@ jobs:
           # ...and a string column has no histogram.
           if VVG_WINTEST=1 VVG_COLSTATS=0 ./build-gui/gui/vvg tests/data/tiny.parquet | grep -q ' hist='; then exit 1; fi
           # An AnnData obs is summarised in full (1500 rows), as the table pages
-          # through every row; a matrix tab says it is a preview; a tab
-          # read from stdin is summarised from the table's own source.
+          # through every row, and so is a dense matrix tab (every row and
+          # column); a tab read from stdin is summarised from the table's own
+          # source.
           VVG_WINTEST=1 VVG_TAB=2 VVG_COLSTATS=2 ./build-gui/gui/vvg tests/data/tiny.bigobs.h5ad \
             | grep -qE '^colstats count=1500 nulls=0 sum=1124250 .*scope=All 1,?500 rows$'
           VVG_WINTEST=1 VVG_TAB=1 VVG_COLSTATS=1 ./build-gui/gui/vvg tests/data/tiny.dense.h5ad 2>/dev/null \
-            | grep -qF 'A preview: the first 3 rows'
+            | grep -qE ' scope=All 3 rows$'
           printf 'a\tb\n1\tx\n2\ty\n2\tz\n' | VVG_WINTEST=1 VVG_COLSTATS=0 ./build-gui/gui/vvg - \
             | grep -qF 'colstats (here) count=3 nulls=0 sum=5'
           # A click on a column header sorts by it and moves the cursor there,
@@ -698,6 +699,8 @@ jobs:
           grep -qx "wfind 'gene15' -> row=0 col=16 name=gene15 cell=15" <<<"$out"
           grep -qx "wfind 'gene15' -> row=0 col=151 name=gene150 cell=150" <<<"$out"
           grep -qx "wfind 'cell2' -> row=2 col=0 name=obs cell=cell2" <<<"$out"
+          VVG_WINTEST=1 VVG_TAB=1 VVG_WFIND='gene249' ./build-gui/gui/vvg tests/data/tiny.dense.h5ad \
+            | grep -qx "wfind 'gene249' -> row=0 col=250 name=gene249 cell=249"
           VVG_WINTEST=1 VVG_WFIND='chr2' ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -qx "wfind 'chr2' -> row=12 col=0 name=Chr cell=chr2"
           diff "$RUNNER_TEMP/sel.tsv" <(./build/vv --tsv --sort Score:desc --select Chr,Start,End,Score tests/data/tiny.parquet | sed -n '1p;5,7p')
@@ -831,15 +834,12 @@ jobs:
           # match_substring prefilter must not drop any).
           VVG_WINTEST=1 VVG_AFIND='chr1' ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -q 'afind .* matches=12'
-          # A dense AnnData X wider than the preview cap must materialise as a
-          # 200-column preview (not the full 250), so a huge dense matrix can't
-          # OOM the reader. The sibling X tab is only materialised by the GUI.
-          # cols=201 = the 200 capped gene (var) columns + the prepended obs
-          # (cell) row-label column; the footer still reports the 200-of-250
-          # value-column cap.
+          # A dense AnnData X has every gene as a column (cols=251: 250 genes
+          # and the obs row label), read a block of rows and the columns on
+          # screen at a time; the footer reports no preview.
           if [ -f tests/data/tiny.dense.h5ad ]; then
             VVG_WINTEST=1 VVG_TABDIMS=1 ./build-gui/gui/vvg tests/data/tiny.dense.h5ad \
-              | grep -qE "tab 'X' rows=3 cols=201 .*first 200 of 250 cols"
+              | grep -qxF "tab 'X' rows=3 cols=251 footer=Format: AnnData X  |  Rows: 3  |  Cols: 250  |  dense"
           fi
           if [ "$KF6" = "yes" ]; then
             # KF6 present: the Dolphin thumbnailer + KFileMetaData .so plugins
@@ -1176,12 +1176,13 @@ jobs:
           VVG_WINTEST=1 VVG_STATS_AUTO_ROWS=10 VVG_COLSTATS_COMPUTE=3 ./build/gui/vvg tests/data/tiny.parquet \
             | grep -qF 'colstats-compute count=20 nulls=0 sum=9.5 mean=0.475'
           # An AnnData obs is summarised in full (1500 rows), as the table pages
-          # through every row; a matrix tab says it is a preview; a tab
-          # read from stdin is summarised from the table's own source.
+          # through every row, and so is a dense matrix tab (every row and
+          # column); a tab read from stdin is summarised from the table's own
+          # source.
           VVG_WINTEST=1 VVG_TAB=2 VVG_COLSTATS=2 ./build/gui/vvg tests/data/tiny.bigobs.h5ad \
             | grep -qE '^colstats count=1500 nulls=0 sum=1124250 .*scope=All 1,?500 rows$'
           VVG_WINTEST=1 VVG_TAB=1 VVG_COLSTATS=1 ./build/gui/vvg tests/data/tiny.dense.h5ad 2>/dev/null \
-            | grep -qF 'A preview: the first 3 rows'
+            | grep -qE ' scope=All 3 rows$'
           printf 'a\tb\n1\tx\n2\ty\n2\tz\n' | VVG_WINTEST=1 VVG_COLSTATS=0 ./build/gui/vvg - \
             | grep -qF 'colstats (here) count=3 nulls=0 sum=5'
           # A click on a column header sorts by it and moves the cursor there,
@@ -1207,5 +1208,5 @@ jobs:
           grep -q "^cmd=vv --filter 'Score > 0.5' --sort Score:desc --select Score,Chr " <<<"$out"
           if [ -f tests/data/tiny.dense.h5ad ]; then
             VVG_WINTEST=1 VVG_TABDIMS=1 ./build/gui/vvg tests/data/tiny.dense.h5ad \
-              | grep -qE "tab 'X' rows=3 cols=201 .*first 200 of 250 cols"
+              | grep -qxF "tab 'X' rows=3 cols=251 footer=Format: AnnData X  |  Rows: 3  |  Cols: 250  |  dense"
           fi

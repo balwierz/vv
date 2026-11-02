@@ -1253,9 +1253,9 @@ echo '── MuData, FAST5, NetCDF-4 (HDF5 underneath) ────────�
 # modality's AnnData tabs prefixed "<name>:", its matrices labelled by its own
 # obs / var.
 assert_eq_file_inline "h5mu_tabs" "$("$VV" --list-tabs "$DATA/tiny.h5mu" | tr '\n' ' ')" \
-    "summary obs var prot:summary prot:X (preview) prot:obs prot:var rna:summary rna:X rna:obs rna:var "
+    "summary obs var prot:summary prot:X prot:obs prot:var rna:summary rna:X rna:obs rna:var "
 assert_contains "h5mu_summary_modalities" "$("$VV" --tab summary --tsv "$DATA/tiny.h5mu")" "$(printf 'modalities\tprot, rna')"
-assert_eq_file_inline "h5mu_modality_labels" "$("$VV" --tab 'prot:X (preview)' --tsv "$DATA/tiny.h5mu" | head -2)" \
+assert_eq_file_inline "h5mu_modality_labels" "$("$VV" --tab 'prot:X' --tsv "$DATA/tiny.h5mu" | head -2)" \
     "$(printf 'obs\tCD3\tCD19\nc0\t5\t0')"
 assert_eq_file_inline "h5mu_joint_obs" "$("$VV" --tab obs --tsv "$DATA/tiny.h5mu" | head -2)" \
     "$(printf '_index\tsample\nc0\ts1')"
@@ -1299,15 +1299,15 @@ zarr_equiv "v3_mudata" "$DATA/tiny.h5mu" "$DATA/tiny.mudata.v3.zarr.zip"
 if [ -d "$TMP/v3_tiny.dir" ]; then
     # A v3 store's zarr.json files are not a JSON dataset: a directory with
     # one at its root opens as the store whatever it is called.
-    assert_eq_file_inline "zarr_v3_dir_not_dataset" "$("$VV" --list-tabs "$TMP/v3_tiny.dir" | head -2 | tr '\n' ' ')" "summary X (preview) "
+    assert_eq_file_inline "zarr_v3_dir_not_dataset" "$("$VV" --list-tabs "$TMP/v3_tiny.dir" | head -2 | tr '\n' ' ')" "summary X "
 fi
 if [ -f "$DATA/tiny.csc.zarr.zip" ]; then
     # the whole-matrix paths: --matrix long and the full-matrix export
     assert_eq_file_inline "zarr_matrix_long" \
         "$("$VV" --matrix long --tab 'X (long)' --tsv "$DATA/tiny.csc.zarr.zip")" \
         "$("$VV" --matrix long --tab 'X (long)' --tsv "$DATA/tiny.csc.h5ad")"
-    "$VV" --tab 'X (preview)' --parquet "$TMP/zx.parquet" "$DATA/tiny.raw.zarr.zip" 2>/dev/null
-    "$VV" --tab 'X (preview)' --parquet "$TMP/hx.parquet" "$DATA/tiny.raw.h5ad" 2>/dev/null
+    "$VV" --tab X --parquet "$TMP/zx.parquet" "$DATA/tiny.raw.zarr.zip"
+    "$VV" --tab X --parquet "$TMP/hx.parquet" "$DATA/tiny.raw.h5ad"
     assert_eq_file_inline "zarr_matrix_export" "$("$VV" --tsv "$TMP/zx.parquet")" "$("$VV" --tsv "$TMP/hx.parquet")"
     assert_eq_file_inline "zarr_stdin" "$("$VV" --tab obs --tsv - < "$DATA/tiny.zarr.zip" 2>/dev/null)" \
         "$("$VV" --tab obs --tsv "$DATA/tiny.zarr.zip")"
@@ -3216,13 +3216,19 @@ if [ -f "$DATA/tiny.badlzf.h5ad" ]; then
 fi
 
 # A 2-D dataset wider than 32 columns got no tab in a generic HDF5 file; it now
-# gets one with the 1000-row x 200-column preview and a footer saying so.
+# gets one with every column. The table view prints the first 200 and says
+# how to see the rest; --select names any column.
 if [ -f "$DATA/tiny.wide2d.h5" ]; then
     W2="$DATA/tiny.wide2d.h5"
     assert_eq_file_inline "h5_wide2d_has_tab" "$("$VV" --list-tabs "$W2" | tr '\n' '|')" "hierarchy|/grp/wide|"
-    assert_contains "h5_wide2d_preview_note" "$("$VV" --tab /grp/wide -n 1 --color=never "$W2")" \
-        "preview: first 200 of 250 cols"
-    # The preview holds the right cells (row 3, column 200 = 2199)...
+    W2T="$("$VV" --tab /grp/wide -n 1 --color=never "$W2")"
+    assert_contains "h5_wide2d_cols_note" "$W2T" \
+        "... 50 more column(s) not shown (--select or -c N to choose; -c 0 for all)"
+    assert_contains "h5_wide2d_all_cols" "$W2T" "[3 rows x 250 columns]"
+    refute_contains "h5_wide2d_no_preview_note" "$W2T" "preview:"
+    assert_eq_file_inline "h5_wide2d_select_last" \
+        "$("$VV" --tab /grp/wide --select col249 --tsv "$W2" | tr '\n' ',')" "col249,249,1249,2249,"
+    # The tab holds the right cells (row 3, column 200 = 2199)...
     assert_contains "h5_wide2d_values" \
         "$("$VV" --tab /grp/wide --vertical -n 3 --color=never "$W2")" "│ col199 │ 199 │ 1_199 │ 2_199 │"
     # ...and an export streams the whole 3 × 250 dataset, not the preview.
@@ -4163,9 +4169,9 @@ if [ -f "$DATA/tiny.h5ad" ]; then
     assert_contains "h5ad_tab_obs_data"    "$TAB_OBS" "cell0"
     TAB_VAR=$("$VV" --tab var --schema "$DATA/tiny.h5ad" 2>&1)
     assert_contains "h5ad_tab_var"         "$TAB_VAR" "gene_name"
-    # 'X' matches the 'X (preview)' tab via the word-boundary prefix rule.
+    # A CSR X holds every row and column: its tab is "X", not a preview.
     TAB_X=$("$VV" --tab X --schema "$DATA/tiny.h5ad" 2>&1)
-    assert_contains "h5ad_tab_x_prefix"    "$TAB_X" "X (preview)"
+    assert_contains "h5ad_tab_x_label"     "$TAB_X" "Format: AnnData X  |  Rows: 5  |  Cols: 4"
     # X is (obs x var) = cells x genes: the preview names its value columns by
     # the var index (gene names) and prepends the obs index (cell barcodes) as
     # a row-label column, instead of generic col0/col1 and bare row numbers.
@@ -4251,9 +4257,8 @@ if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
     for RF in tiny.raw.h5ad tiny.rawdense.h5ad; do
         [ -f "$DATA/$RF" ] || continue
         RN=${RF%.h5ad}; RN=${RN#tiny.}
-        RAWX=$(if [ "$RF" = tiny.raw.h5ad ]; then echo 'raw.X (preview)'; else echo raw.X; fi)
         assert_eq_file_inline "h5ad_${RN}_tabs" "$("$VV" --list-tabs "$DATA/$RF" | tr '\n' '|')" \
-            "summary|X|obs|var|$RAWX|raw.var|"
+            "summary|X|obs|var|raw.X|raw.var|"
         assert_eq_file_inline "h5ad_${RN}_x" "$("$VV" --tab raw.X --tsv "$DATA/$RF" | tr '\t\n' ',;')" \
             "obs,g0,g1,g2,g3,g4;c0,1,0,3,0,5;c1,0,2,0,4,0;c2,6,0,0,0,7;"
         assert_eq_file_inline "h5ad_${RN}_var" "$("$VV" --tab raw.var --tsv "$DATA/$RF" | tr '\t\n' ',;')" \
@@ -4346,7 +4351,11 @@ if [ -f "$DATA/tiny.bigobs.h5ad" ]; then
         fi
         assert_eq_file_inline "h5ad_x_count_allowed" "$("$VV" --tab X --count "$DX")" "3"
         assert_contains "h5ad_x_table_view" \
-            "$("$VV" --tab X -n 1 --no-interactive --color=never "$DX")" "preview: first 200 of 250 cols"
+            "$("$VV" --tab X -n 1 --no-interactive --color=never "$DX")" \
+            "... 50 more column(s) not shown (--select or -c N to choose; -c 0 for all)"
+        assert_eq_file_inline "h5ad_x_select_gene249" \
+            "$("$VV" --tab X --select obs,gene249 -n 3 --tsv "$DX" | tr '\t\n' ',;')" \
+            "obs,gene249;cell0,249;cell1,499;cell2,749;"
     fi
     # --matrix long: the whole matrix as (obs, var, value) rows — every
     # stored entry of a sparse X (here CSR and CSC), every non-zero cell of a
@@ -5725,7 +5734,7 @@ if [ -x "$FC" ]; then
     assert_contains "features_msa_annotations" "$FOUT" "tab annotations matrix=0 slices=0 coords=0"
     assert_contains "features_parquet"     "$FOUT" "file tiny.parquet region=none by-columns"
     assert_contains "features_parquet_tab" "$FOUT" "tab tiny.parquet matrix=0 slices=0 coords=1"
-    assert_contains "features_h5ad_x"      "$FOUT" "tab X (preview) matrix=1 slices=0 coords=0"
+    assert_contains "features_h5ad_x"      "$FOUT" "tab X matrix=1 slices=0 coords=0"
     assert_contains "features_h5ad_x_long" "$FOUT" "tab X (long) matrix=1 slices=0 coords=0"
     assert_contains "features_h5ad_obs"    "$FOUT" "tab obs matrix=0 slices=0 coords=0"
     assert_contains "features_npz_slices"  "$FOUT" "tab cube_c matrix=0 slices=1 coords=0"
@@ -6544,7 +6553,7 @@ if [ -f "$DATA/tiny.h5ad" ]; then
     assert_contains    "anndata_layer_rows_are_obs"   "$LAYER" "obs"
 
     # ...and so does X itself (sparse here, a different code path).
-    XHDR=$("$VV" --tab "X (preview)" -n 2 --tsv "$DATA/tiny.h5ad" 2>/dev/null | head -1)
+    XHDR=$("$VV" --tab X -n 2 --tsv "$DATA/tiny.h5ad" 2>/dev/null | head -1)
     assert_contains    "anndata_x_cols_are_genes"     "$XHDR" "gene0"
     assert_contains    "anndata_x_rows_are_obs"       "$XHDR" "obs"
 fi

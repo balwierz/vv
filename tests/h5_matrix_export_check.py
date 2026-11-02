@@ -9,7 +9,9 @@ write every cell and gene, labelled like the preview, with values equal to
 the stored matrix transposed. An AnnData file whose X is a CSC matrix
 (1200 cells × 300 genes, written with h5py in AnnData's on-disk layout) must
 export as cells × genes equal to the dense matrix (transposed to CSR in
-memory by vv).
+memory by vv), and, having more than 1000 rows, is labelled "X (preview)".
+An AnnData CSR X of 300 genes holds all 300 as columns, a repeated gene
+name made unique with " #<index>" and named by --filter.
 
 `--matrix long` on the same tabs must give, row for row, the non-zero cells
 of the wide export as (row label, column label, value).
@@ -113,6 +115,37 @@ def main():
     if head[:3] != ["obs", "g0", "g1"] or len(head) != ng + 1 or labels[:2] != ["c0", "c1"] \
             or len(labels) != nc or not np.array_equal(vals, Y.toarray()):
         bad.append("anndata CSC X: header %r, %d rows" % (head[:3], len(labels)))
+
+    # A CSC matrix of more than 1000 rows is a row preview: "X (preview)".
+    tabs = subprocess.run([vv, "--list-tabs", h5ad], capture_output=True, text=True).stdout.split("\n")
+    if "X (preview)" not in tabs:
+        bad.append("anndata CSC X of 1200 rows: tabs %r, want 'X (preview)'" % tabs)
+
+    # A CSR X holds every gene as a column; a repeated gene name gets
+    # " #<index>", so --filter can name each copy.
+    csr = os.path.join(tmp, "csr_dup.h5ad")
+    Z = sp.random(5, 300, density=0.3, format="csr", random_state=5, dtype=np.float64)
+    names = ["g%d" % i for i in range(300)]
+    names[10] = names[250] = "gD"
+    with h5py.File(csr, "w") as f:
+        f.attrs["encoding-type"] = "anndata"
+        f.attrs["encoding-version"] = "0.1.0"
+        x = f.create_group("X")
+        x.attrs["encoding-type"] = "csr_matrix"
+        x.attrs["encoding-version"] = "0.1.0"
+        x.attrs["shape"] = np.array([5, 300])
+        x["data"] = Z.data; x["indices"] = Z.indices.astype(np.int32); x["indptr"] = Z.indptr.astype(np.int64)
+        index_frame(f.create_group("obs"), ["c%d" % i for i in range(5)])
+        index_frame(f.create_group("var"), names)
+    head, labels, vals = export(vv, "X", csr)
+    if len(head) != 301 or head[11] != "gD #10" or head[251] != "gD #250" or head[300] != "g299" \
+            or not np.array_equal(vals, Z.toarray()):
+        bad.append("anndata CSR X with a repeated gene: header %r ... %r" % (head[10:12], head[250:252]))
+    r = subprocess.run([vv, "--tab", "X", "--filter", "`gD #250` > 0", "--count", csr],
+                       capture_output=True, text=True)
+    if r.stdout.strip() != str(int((Z.toarray()[:, 250] > 0).sum())):
+        bad.append("--filter on 'gD #250': %r (%s), want %d" % (r.stdout.strip(), r.stderr.strip(),
+                                                              int((Z.toarray()[:, 250] > 0).sum())))
 
     for tab, path in (("matrix", loom), ("layers[spliced]", loom), ("matrix", tenx), ("X", h5ad)):
         why = long_matches_wide(vv, tab, path)

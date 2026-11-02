@@ -304,8 +304,9 @@ std::string packed_column_for(const std::string& path) {
 
 // Why `mode` (e.g. "--tsv") must not run on `src`, or "" when it may. A mode
 // that writes or aggregates every row would otherwise present a capped preview
-// as the whole dataset and exit 0. HDF5 matrices never get here (the callers
-// swap in full_matrix()); what remains is a NumPy array past 4096 columns. `rows_wanted`: how many rows the mode reads (-n), or -1 for all — a row
+// as the whole dataset and exit 0. HDF5 matrices never get here (they hold
+// every column, and the callers swap a CSC matrix's row-capped preview for
+// full_matrix()); what remains is a NumPy array past 4096 columns. `rows_wanted`: how many rows the mode reads (-n), or -1 for all — a row
 // cap matters only when the mode wants more rows than the preview holds.
 // `cols_matter`: false for a mode that only counts rows (--count).
 std::string preview_refusal(const TabularSource& src, const std::string& mode,

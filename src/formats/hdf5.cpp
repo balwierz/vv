@@ -177,6 +177,20 @@ static void h5_note_preview(int64_t shown_rows, int64_t full_rows,
     t_h5_preview = PreviewLimit{shown_rows, full_rows, shown_cols, full_cols};
 }
 
+// Make matrix column names unique, so every gene can be named (--select,
+// --filter, --sort look a name up, and a repeated one is ambiguous): a name
+// that repeats gets its second ID appended, " (<alt[i]>)" (Loom's Accession,
+// gene_ids), or " #<i>" when there is none. Empty names are left as they are.
+static void unique_column_names(std::vector<std::string>* names, const std::vector<std::string>& alt) {
+    std::unordered_map<std::string, int> seen;
+    for (const auto& n : *names) ++seen[n];
+    for (size_t i = 0; i < names->size(); ++i) {
+        std::string& n = (*names)[i];
+        if (n.empty() || seen[n] < 2) continue;
+        n += i < alt.size() && !alt[i].empty() ? " (" + alt[i] + ")" : " #" + std::to_string(i);
+    }
+}
+
 // Floating-point data is read as double; a float32 dataset becomes a float32
 // column again (the double holds each float exactly), so its type, its text
 // (shortest float32 form) and its memory are the stored ones.
@@ -680,14 +694,8 @@ static arrow::Result<std::shared_ptr<arrow::Table>>
 read_anndata_dataframe(const Store& store, const std::string& group, int64_t row_cap = -1,
                        int64_t* full_rows = nullptr);
 static arrow::Result<std::shared_ptr<arrow::Table>>
-read_2d_dataset_table(const Store& store, const std::string& path, int64_t row_cap,
-                      int64_t col_cap = -1, int64_t* full_rows = nullptr,
-                      int64_t* full_cols = nullptr);
-static arrow::Result<std::shared_ptr<arrow::Table>>
 read_1d_dataset_table(const Store& store, const std::string& path, int64_t row_cap = -1,
                       int64_t* full_rows = nullptr);
-static arrow::Result<std::shared_ptr<arrow::Table>>
-read_sparse_preview(const Store& store, const std::string& group, int64_t row_cap);
 static int64_t h5_len_1d(const Store& store, const std::string& path);
 static void read_shape2(const Store& store, const std::string& path, int64_t out[2]);
 static arrow::Result<std::shared_ptr<arrow::Table>>
@@ -702,7 +710,6 @@ static std::string build_loom_table(const Store& store, const OpenSpec& spec,
                                     int64_t row_cap,
                                     std::shared_ptr<arrow::Table>* out,
                                     std::string* footer);
-// Label an AnnData X preview with its obs (row) / var (column) identifiers.
 // Which AnnData axes a dense 2-D tab is indexed by. X and layers/* are
 // (n_obs x n_var), but obsm/* is (n_obs x d) and varm/* is (n_var x d), where
 // d is an embedding dimension — not a gene. Labelling all three the same way
@@ -710,9 +717,6 @@ static std::string build_loom_table(const Store& store, const OpenSpec& spec,
 enum class AnnMatrixAxes { ObsByVar, ObsByDim, VarByDim,
                            ObsByRawVar };   // raw/X: genes from raw/var
 
-static void apply_anndata_matrix_labels(const Store& store, const std::string& root,
-                                        AnnMatrixAxes axes, const std::string& key,
-                                        std::shared_ptr<arrow::Table>* tbl);
 
 // Tab specification: identifies which named object inside the HDF5 file
 // this tab should view, and how to render it.
@@ -948,86 +952,14 @@ class Hdf5Source : public WorkbookSource {
                           " entries";
                 return "";
             }
-            case OpenSpec::Kind::DataFrame: {
-                if (file_id.kind(spec.h5_path) != NodeKind::Group)
-                    return "Cannot open group " + spec.h5_path;
-                int64_t full = 0;
-                // df_row_cap is the preview cap for the TUI/table view, or -1
-                // (all rows) / an explicit -n in delimited export — see
-                // open_source. Only obs/var (DataFrame) is uncapped on export;
-                // matrix / sparse X stay bounded below.
-                auto r = read_anndata_dataframe(file_id, spec.h5_path, df_row_cap, &full);
-                if (!r.ok()) return r.status().ToString();
-                *out = *r;
-                int64_t shown = *out ? (*out)->num_rows() : 0;
-                int64_t ncol  = *out ? (*out)->num_columns() : 0;
-                *footer = "Format: AnnData " + spec.display +
-                          "  |  Cols: " + std::to_string(ncol);
-                h5_note_preview(shown, full, ncol, ncol);
-                if (shown < full)   // preview note so the cap isn't read as the real size
-                    *footer += "  |  preview: first " + std::to_string(shown) +
-                               " of " + std::to_string(full) + " rows";
-                else
-                    *footer += "  |  Rows: " + std::to_string(shown);
-                return "";
-            }
+            // Frames, 1-D datasets, dense and sparse matrices are read by
+            // H5ViewportSource (has_viewport_reader); no table is built here.
+            case OpenSpec::Kind::DataFrame:
+            case OpenSpec::Kind::Dataset1D:
             case OpenSpec::Kind::Matrix2D:
-            case OpenSpec::Kind::Dataset2D: {
-                if (file_id.kind(spec.h5_path) != NodeKind::Array)
-                    return "Cannot open dataset " + spec.h5_path;
-                int64_t fr = 0, fc = 0;
-                auto r = read_2d_dataset_table(file_id, spec.h5_path, kDense2DRowCap, kDense2DColCap,
-                                               &fr, &fc);
-                if (!r.ok()) return r.status().ToString();
-                *out = *r;
-                *footer = "Format: " + file_id.format_name() + " 2D " + spec.display;
-                // Note any preview truncation so the cap isn't mistaken for the
-                // real shape.
-                int64_t sr = *out ? (*out)->num_rows() : 0;
-                int64_t sc = *out ? (*out)->num_columns() : 0;
-                h5_note_preview(sr, fr, sc, fc);
-                if (sr < fr || sc < fc) {
-                    std::string note = "preview: ";
-                    if (sr < fr)
-                        note += "first " + std::to_string(sr) + " of " +
-                                std::to_string(fr) + " rows";
-                    if (sr < fr && sc < fc) note += ", ";
-                    if (sc < fc)
-                        note += "first " + std::to_string(sc) + " of " +
-                                std::to_string(fc) + " cols";
-                    *footer += "  |  " + note;
-                }
-                if (!spec.footer_hint.empty())
-                    *footer += "  |  " + spec.footer_hint;
-                // A dense AnnData matrix (Matrix2D, never generic Dataset2D)
-                // gets obs/var identifiers, per its own axes.
-                if (spec.kind == OpenSpec::Kind::Matrix2D)
-                    apply_anndata_matrix_labels(file_id, anndata_root(spec.h5_path), spec.axes, spec.key, out);
-                return "";
-            }
-            case OpenSpec::Kind::Dataset1D: {
-                if (file_id.kind(spec.h5_path) != NodeKind::Array)
-                    return "Cannot open dataset " + spec.h5_path;
-                // Cap the read like an obs/var column (df_row_cap): a generic
-                // HDF5 1-D dataset can be millions of elements (e.g. a per-read
-                // array), so the TUI / table view previews the head, while a
-                // mode that needs every row reads it all (see open_source).
-                int64_t full = 0;
-                auto r = read_1d_dataset_table(file_id, spec.h5_path, df_row_cap, &full);
-                if (!r.ok()) return r.status().ToString();
-                *out = *r;
-                *footer = "Format: " + file_id.format_name() + " 1D " + spec.display;
-                int64_t shown = *out ? (*out)->num_rows() : 0;
-                h5_note_preview(shown, full, 1, 1);
-                if (shown < full)   // preview note so the cap isn't read as the real size
-                    *footer += "  |  preview: first " + std::to_string(shown) +
-                               " of " + std::to_string(full) + " rows";
-                else
-                    *footer += "  |  Rows: " + std::to_string(shown);
-                if (!spec.footer_hint.empty())
-                    *footer += "  |  " + spec.footer_hint;
-                return "";
-            }
+            case OpenSpec::Kind::Dataset2D:
+            case OpenSpec::Kind::Sparse:
+                return "read by the viewport source";
             case OpenSpec::Kind::TenxMatrix:
             case OpenSpec::Kind::TenxFeatures:
             case OpenSpec::Kind::TenxBarcodes:
@@ -1037,35 +969,6 @@ class Hdf5Source : public WorkbookSource {
                 return build_loom_table(file_id, spec, df_row_cap, out, footer);
             case OpenSpec::Kind::EdgeList:   // streamed by H5EdgeListSource
                 return "graph '" + spec.h5_path + "' is read as an edge list";
-            case OpenSpec::Kind::Sparse: {
-                const std::string& g = spec.h5_path;
-                if (file_id.kind(g) != NodeKind::Group) return "Cannot open sparse group " + g;
-                auto r = read_sparse_preview(file_id, g, 1000);
-                // The full shape for preview_limit: the `shape` attribute,
-                // with the compressed axis clamped to what indptr can describe
-                // (the attribute is untrusted; the reader clamps the same way).
-                int64_t shape[2] = {0, 0};
-                read_shape2(file_id, g, shape);
-                const bool csr = file_id.attr_string(g, "encoding-type") == "csr_matrix";
-                if (file_id.kind(g + "/indptr") == NodeKind::Array) {
-                    int64_t& major = csr ? shape[0] : shape[1];
-                    major = std::min<int64_t>(major, std::max<int64_t>(0, h5_len_1d(file_id, g + "/indptr") - 1));
-                }
-                if (!r.ok()) return r.status().ToString();
-                *out = *r;
-                h5_note_preview((*out)->num_rows(), std::max<int64_t>(shape[0], (*out)->num_rows()),
-                                (*out)->num_columns(), std::max<int64_t>(shape[1], (*out)->num_columns()));
-                *footer = "Format: AnnData " + spec.display +
-                          "  |  preview: first " +
-                          std::to_string((*out)->num_rows()) + " rows";
-                if (!spec.footer_hint.empty())
-                    *footer += "  |  " + spec.footer_hint;
-                // X and layers/* are (n_obs x n_var): columns named by var
-                // (genes), obs (cells) row labels prepended. A sparse obsm /
-                // varm entry is labelled per its own axes.
-                apply_anndata_matrix_labels(file_id, anndata_root(spec.h5_path), spec.axes, spec.key, out);
-                return "";
-            }
         }
         return "Unknown OpenSpec kind";
     }
@@ -1477,61 +1380,6 @@ read_1d_dataset_table(const Store& store, const std::string& path, int64_t row_c
     return arrow::Table::Make(arrow::schema({arrow::field("value", arr->type())}), {arr});
 }
 
-// Read a 2-D numeric dataset as an Arrow table, columns col0, col1, ….
-// row_cap / col_cap < 0 mean "all"; only the first row_cap rows and col_cap
-// columns are read (the corner block), bounding memory. The full pre-cap
-// dimensions are reported through full_rows / full_cols when non-null.
-static arrow::Result<std::shared_ptr<arrow::Table>>
-read_2d_dataset_table(const Store& store, const std::string& path, int64_t row_cap,
-                      int64_t col_cap, int64_t* full_rows, int64_t* full_cols) {
-    auto ai = store.info(path);
-    if (!ai) return arrow::Status::IOError("cannot open dataset ", path);
-    if (ai->shape.size() != 2) return arrow::Status::Invalid("expected 2-D dataset");
-    int64_t n_rows = ai->shape[0];
-    int64_t n_cols = ai->shape[1];
-    if (full_rows) *full_rows = n_rows;
-    if (full_cols) *full_cols = n_cols;
-    if (row_cap > 0 && row_cap < n_rows) n_rows = row_cap;
-    if (col_cap > 0 && col_cap < n_cols) n_cols = col_cap;
-    const VClass cls = ai->cls;
-
-    std::vector<std::string> names((size_t)n_cols);
-    for (int64_t c = 0; c < n_cols; ++c) names[(size_t)c] = "col" + std::to_string(c);
-
-    arrow::FieldVector fields((size_t)n_cols);
-    std::vector<std::shared_ptr<arrow::Array>> cols((size_t)n_cols);
-    if (cls == VClass::Float) {
-        std::vector<double> buf((size_t)(n_rows * n_cols));
-        auto st = store.read_block_f64(path, 0, n_rows, 0, n_cols, buf.data());
-        if (!st.ok()) { note_read_error(st); return st; }
-        const bool f32 = is_float32(*ai);
-        for (int64_t c = 0; c < n_cols; ++c) {
-            cols[(size_t)c] = float_column(n_rows, f32,
-                [&](int64_t r) { return buf[(size_t)(r * n_cols + c)]; });
-            fields[(size_t)c] = arrow::field(names[(size_t)c], float_type(f32));
-        }
-    } else if (cls == VClass::Int) {
-        std::vector<int64_t> buf((size_t)(n_rows * n_cols));
-        auto st = store.read_block_i64(path, 0, n_rows, 0, n_cols, buf.data());
-        if (!st.ok()) { note_read_error(st); return st; }
-        for (int64_t c = 0; c < n_cols; ++c) {
-            arrow::Int64Builder b;
-            for (int64_t r = 0; r < n_rows; ++r)
-                (void)b.Append(buf[(size_t)(r * n_cols + c)]);
-            (void)b.Finish(&cols[(size_t)c]);
-            fields[(size_t)c] = arrow::field(names[(size_t)c], arrow::int64());
-        }
-    } else {
-        // String / compound 2-D: not supported in v1, emit empty.
-        for (int64_t c = 0; c < n_cols; ++c) {
-            arrow::StringBuilder b;
-            (void)b.Finish(&cols[(size_t)c]);
-            fields[(size_t)c] = arrow::field(names[(size_t)c], arrow::utf8());
-        }
-    }
-    return arrow::Table::Make(arrow::schema(fields), cols);
-}
-
 // Is the mask true (= NA) at row i? The mask is an HDF5 bool, which vv decodes
 // to its enum member name ("TRUE"/"FALSE") — so accept the string form as well
 // as a genuine Arrow boolean.
@@ -1804,23 +1652,6 @@ read_anndata_dataframe(const Store& store, const std::string& group, int64_t row
     return arrow::Table::Make(arrow::schema(fields), cols, target);
 }
 
-// Densify the first `row_cap` rows (and first 200 columns) of an AnnData sparse
-// matrix into an Arrow table (one float64 column per matrix column). Handles
-// both CSR (indptr per row, indices are columns) and CSC (indptr per column,
-// indices are rows) — the output is rows × columns either way.
-static arrow::Result<std::shared_ptr<arrow::Table>>
-read_sparse_preview(const Store& store, const std::string& group, int64_t row_cap) {
-    // shape attribute = [n_rows, n_cols]
-    int64_t shape[2] = {0, 0};
-    read_shape2(store, group, shape);
-    std::string enc = store.attr_string(group, "encoding-type");
-    bool is_csr = (enc == "csr_matrix");
-    bool is_csc = (enc == "csc_matrix");
-    if (!is_csr && !is_csc)
-        return arrow::Status::Invalid("not a CSR/CSC sparse group");
-    return read_sparse_preview_as(store, group, shape[0], shape[1], is_csr, row_cap);
-}
-
 // The same densifying reader for a group holding indptr / indices / data whose
 // shape and orientation come from elsewhere (10x Genomics HDF5 keeps the shape
 // in a dataset and has no encoding-type attribute). `n_rows` × `n_cols` is the
@@ -1942,83 +1773,6 @@ static void read_anndata_index_labels(const Store& store, const std::string& gro
     if (index_name) *index_name = idx;
     for (int64_t i = 0; i < col->length(); ++i)
         out->push_back(cell_to_string(*col, i));
-}
-
-// Label a dense AnnData 2-D preview with its obs / var identifiers.
-//
-// The three shapes are NOT interchangeable, and treating them as one put gene
-// names on UMAP coordinates:
-//
-//   X, layers/*  (n_obs x n_var)  rows <- obs (cells),  cols <- var (genes)
-//   obsm/*       (n_obs x d)      rows <- obs (cells),  cols <- dimensions
-//   varm/*       (n_var x d)      rows <- var (genes),  cols <- dimensions
-//
-// `d` is an embedding width (2 for a UMAP, 50 for a PCA), unrelated to the
-// number of genes — so the columns are named after the key that holds them,
-// 1-based: X_umap -> X_umap1, X_umap2.
-//
-// No-op for a non-AnnData file (no obs/var groups -> empty labels).
-static void apply_anndata_matrix_labels(const Store& file_id, const std::string& root,
-                                        AnnMatrixAxes axes, const std::string& key,
-                                        std::shared_ptr<arrow::Table>* tbl) {
-    if (!tbl || !*tbl) return;
-    auto t = *tbl;
-    const int64_t ncols = t->num_columns();
-    const int64_t nrows = t->num_rows();
-
-    // ── Columns ─────────────────────────────────────────────────────────────
-    std::vector<std::string> col_names;
-    if (axes == AnnMatrixAxes::ObsByVar || axes == AnnMatrixAxes::ObsByRawVar) {
-        // Gene identifiers, from the var index — raw/var's for raw/X, which
-        // usually keeps more genes than X (X is often subset to the highly
-        // variable ones).
-        std::string var_idx_name;
-        read_anndata_index_labels(file_id,
-                                  root + (axes == AnnMatrixAxes::ObsByRawVar ? "/raw/var" : "/var"),
-                                  ncols, &col_names, &var_idx_name);
-    } else {
-        // Embedding dimensions. Derived from the key so the header says where
-        // the numbers came from; falls back to the existing generated names if
-        // the key is somehow empty.
-        if (!key.empty())
-            for (int64_t i = 0; i < ncols; ++i)
-                col_names.push_back(key + std::to_string(i + 1));
-    }
-    if (!col_names.empty()) {
-        std::vector<std::string> names;
-        names.reserve((size_t)ncols);
-        for (int64_t i = 0; i < ncols; ++i)
-            names.push_back(i < (int64_t)col_names.size()
-                                ? col_names[(size_t)i]
-                                : t->field((int)i)->name());
-        auto r = t->RenameColumns(names);
-        if (r.ok()) t = *r;
-    }
-
-    // ── Rows: prepended as a leading label column ───────────────────────────
-    // varm is indexed by gene, everything else by cell.
-    const std::string row_group = root + ((axes == AnnMatrixAxes::VarByDim) ? "/var" : "/obs");
-    const char* row_default = (axes == AnnMatrixAxes::VarByDim) ? "var" : "obs";
-    std::vector<std::string> row_labels;
-    std::string row_idx_name;
-    read_anndata_index_labels(file_id, row_group, nrows, &row_labels,
-                              &row_idx_name);
-    if (!row_labels.empty()) {
-        arrow::StringBuilder b;
-        for (int64_t i = 0; i < nrows; ++i) {
-            if (i < (int64_t)row_labels.size()) (void)b.Append(row_labels[(size_t)i]);
-            else                                (void)b.AppendNull();
-        }
-        std::shared_ptr<arrow::Array> a;
-        if (b.Finish(&a).ok()) {
-            std::string header = row_idx_name.empty() || row_idx_name == "_index"
-                                     ? row_default : row_idx_name;
-            auto col = std::make_shared<arrow::ChunkedArray>(a);
-            auto r = t->AddColumn(0, arrow::field(header, arrow::utf8()), col);
-            if (r.ok()) t = *r;
-        }
-    }
-    *tbl = t;
 }
 
 // Metadata-backed views share the Store API with Zarr. Logical blocks stay
@@ -2199,8 +1953,11 @@ class H5ViewportSource final : public TabularSource {
             }
             if (full_rows_ < 0 || full_cols_ < 0)
                 return arrow::Status::Invalid(spec_.h5_path, ": negative matrix shape");
+            // Every column: a viewer reads the ones it shows (read_chunk's
+            // column list), and a CSC matrix, whose rows are read by a scan
+            // of each requested column, keeps the first kDense2DRowCap rows.
             rows_      = sparse_ && !csr_ ? std::min(full_rows_, kDense2DRowCap) : full_rows_;
-            data_cols_ = std::min(full_cols_, kDense2DColCap);
+            data_cols_ = full_cols_;
             std::vector<std::string> names;
             if (spec_.kind != K::Dataset2D) {
                 const auto root   = anndata_root(spec_.h5_path);
@@ -2227,6 +1984,7 @@ class H5ViewportSource final : public TabularSource {
                                               read_column(c, 0, std::min(data_cols_, c.length)));
                         for (int64_t i = 0; i < a->length(); ++i)
                             names.push_back(cell_to_string(*a, i));
+                        unique_column_names(&names, {});
                     }
                 } else if (!spec_.key.empty()) {
                     for (int64_t i = 0; i < data_cols_; ++i)
@@ -3408,9 +3166,10 @@ static std::vector<OpenSpec> scan_anndata(const Store& store, const std::string&
                           " \xc3\x97 " + std::to_string(x_cols) + ")");
                 defer_profile(at("X"), "X profile");
                 defer_storage(at("X"), "X");
-                // Both CSR and CSC densify to the same rows × columns preview.
+                // Every row and column of a CSR matrix; a CSC one of more
+                // than kDense2DRowCap rows shows the first ones (a preview).
                 specs.push_back({OpenSpec::Kind::Sparse, at("X"),
-                                  "X (preview)",
+                                  xenc == "csc_matrix" && x_rows > kDense2DRowCap ? "X (preview)" : "X",
                                   xenc + "  shape: " +
                                   std::to_string(x_rows) + " \xc3\x97 " +
                                   std::to_string(x_cols)});
@@ -3531,7 +3290,9 @@ static std::vector<OpenSpec> scan_anndata(const Store& store, const std::string&
                     add("raw.X", xenc + "  (" + dims + ")");
                     defer_profile(at("raw/X"), "raw.X profile");
                     defer_storage(at("raw/X"), "raw.X");
-                    specs.push_back({OpenSpec::Kind::Sparse, at("raw/X"), "raw.X (preview)",
+                    specs.push_back({OpenSpec::Kind::Sparse, at("raw/X"),
+                                     xenc == "csc_matrix" && shape[0] > kDense2DRowCap
+                                         ? "raw.X (preview)" : "raw.X",
                                      xenc + "  shape: " + dims,
                                      AnnMatrixAxes::ObsByRawVar, ""});
                 }
@@ -4219,14 +3980,10 @@ static std::unique_ptr<TabularSource> make_h5_matrix_stream(const StorePtr& file
                 alt = h5_strings(store, "/row_attrs/" + std::string(n), G);
                 break;
             }
-        std::map<std::string, int> seen;
-        for (const auto& gname : genes) ++seen[gname];
+        unique_column_names(&genes, alt);
         for (int64_t gi = 0; gi < G; ++gi) {
             std::string name = gi < (int64_t)genes.size() ? genes[(size_t)gi] : "";
             if (name.empty()) name = "gene" + std::to_string(gi);
-            else if (seen[name] > 1)
-                name += gi < (int64_t)alt.size() ? " (" + alt[(size_t)gi] + ")"
-                                                 : " #" + std::to_string(gi);
             p.col_names.push_back(std::move(name));
         }
         p.format = "Loom";
@@ -4245,6 +4002,7 @@ static std::unique_ptr<TabularSource> make_h5_matrix_stream(const StorePtr& file
             read_anndata_index_labels(store, anndata_root(spec.h5_path) +
                                           (spec.axes == AnnMatrixAxes::ObsByRawVar ? "/raw/var" : "/var"),
                                       p.cols, &p.col_names, &idx);
+            unique_column_names(&p.col_names, {});     // the matrix tab's names
             p.long_col = idx.empty() || idx == "_index" ? "var" : idx;
         } else {
             if (!spec.key.empty())

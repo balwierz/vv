@@ -8,8 +8,8 @@ no name matches. The detail pane (Enter) of a tab past 256 columns lists the
 columns from its scroll offset down and reads only those.
 
 Checks:
-  1. `/gene150` on tiny.dense.h5ad X puts the cursor on column gene150
-     (`y` copies row 0's value there, 150), and `n` stays on it (one match);
+  1. `/gene249` on tiny.dense.h5ad X puts the cursor on column gene249
+     (`y` copies row 0's value there, 249), and `n` stays on it (one match);
   2. `/cell2` (no gene matches) moves to row 2, keeping the label column
      (`y` copies "cell2");
   3. Enter on a 600-column TSV shows "columns 1–N of 600"; after paging down,
@@ -43,16 +43,16 @@ def main():
         return [bytes([c]) for c in s.encode()]
 
     # 1. A gene name moves the cursor to its column; n keeps the one match.
-    _txt, raw, hung = run(vv, [h5ad, "--tab", "X"], keys("/gene150") + [b"\r", b"y"])
+    _txt, raw, hung = run(vv, [h5ad, "--tab", "X"], keys("/gene249") + [b"\r", b"y"])
     if hung:
-        fail("hung on /gene150")
-    elif yanked(raw) != "150":
-        fail("y after /gene150 copied %r, expected row 0's gene150 value '150'" % yanked(raw))
-    _txt, raw, hung = run(vv, [h5ad, "--tab", "X"], keys("/gene150") + [b"\r", b"n", b"y"])
+        fail("hung on /gene249")
+    elif yanked(raw) != "249":
+        fail("y after /gene249 copied %r, expected row 0's gene249 value '249'" % yanked(raw))
+    _txt, raw, hung = run(vv, [h5ad, "--tab", "X"], keys("/gene249") + [b"\r", b"n", b"y"])
     if hung:
-        fail("hung on /gene150 n")
-    elif yanked(raw) != "150":
-        fail("y after /gene150 n copied %r, expected '150'" % yanked(raw))
+        fail("hung on /gene249 n")
+    elif yanked(raw) != "249":
+        fail("y after /gene249 n copied %r, expected '249'" % yanked(raw))
 
     # 2. No gene matches: the row labels are searched.
     _txt, raw, hung = run(vv, [h5ad, "--tab", "X"], keys("/cell2") + [b"\r", b"y"])

@@ -1065,9 +1065,11 @@ std::string build_sort(std::unique_ptr<TabularSource>& src,
         have_filter = true;
     }
 
-    // The columns of the result, in schema order.
+    // The columns of the result, in schema order: --select's, or a matrix
+    // tab's first columns the table view shows (cfg.max_cols set without -c,
+    // see main), plus the keys.
     std::vector<int> out_cols;
-    if (project && !cfg.select_cols.empty()) {
+    if (project && (!cfg.select_cols.empty() || (cfg.max_cols > 0 && !cfg.max_cols_set))) {
         std::vector<std::string> unknown;
         std::vector<int> sel = select_field_indices(*src, cfg, &unknown, true);
         if (unknown.empty()) {   // else keep every column; the writer reports it

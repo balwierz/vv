@@ -556,6 +556,7 @@ Config parse_args(int argc, char** argv) {
             cfg.max_col_w_set = true;
         } else if (!std::strcmp(argv[i], "-c") && i + 1 < argc) {
             cfg.max_cols = std::atoi(argv[++i]);
+            cfg.max_cols_set = true;
         } else if ((!std::strcmp(argv[i], "-r") ||
                     !std::strcmp(argv[i], "--region") ||
                     !std::strcmp(argv[i], "--window")) && i + 1 < argc) {

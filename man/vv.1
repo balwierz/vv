@@ -86,9 +86,10 @@ labelled by obs / var names; never densified), and a \fBuns\fR key/value tab (sc
 arrays; nested dicts flattened to dotted keys). \fBX\fR and each
 \fBobsm\fR / \fBvarm\fR / \fBlayers\fR entry may be dense or sparse (CSR
 or CSC); dense and CSR matrices read projected row blocks on demand and
-allow navigation to every row, with cell / gene labels. The matrix view
-keeps the first 200 data columns; CSC also keeps the first 1000 rows.
-The TUI status identifies capped rows and columns. Frames and 1-D arrays
+allow navigation to every row and column, with cell / gene labels; the
+table view prints the first 200 data columns (\fB\-\-select\fR or
+\fB\-c\fR choose others). CSC keeps the first 1000 rows, which the TUI
+status identifies. Frames and 1-D arrays
 likewise page through every row. Categoricals (\fBcodes\fR /
 \fBcategories\fR groups) decode back to string columns, and both the
 plain and the \fBnullable-string-array\fR (anndata \(>= 0.13) string
@@ -110,7 +111,7 @@ ID attributes (\fBCellID\fR / \fBGene\fR or the other writers' names) \(em plus
 \fBcells\fR and \fBgenes\fR attribute tables. Generic
 HDF5 files surface a \fBhierarchy\fR tab listing every group / dataset
 with path / kind / shape / dtype, plus one tab per 1-D or 2-D dataset
-(up to 32 datasets; all rows on demand, at most 200 columns for 2-D arrays).
+(up to 32 datasets; all rows and columns on demand).
 Specialized Loom and Cell Ranger previews retain their existing row limits;
 whole-matrix exports remain separate from the displayed preview.
 .IP \(bu 2

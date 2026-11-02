@@ -297,7 +297,7 @@ std::string print_vertical_table(TabularSource& src, const Config& cfg) {
         int n_hidden = (int)src.hidden_for_display().size();
         int n_truncated = n_fields - show_fields - n_hidden;
         if (n_truncated > 0)
-            std::printf("  ... %d more field(s) not shown (-c 0 to see all)\n",
+            std::printf("  ... %d more field(s) not shown (--select or -c N to choose; -c 0 for all)\n",
                         n_truncated);
         if (n_hidden > 0)
             std::printf("  ... %d derived field(s) hidden by file format\n",
@@ -444,7 +444,7 @@ std::string print_table(TabularSource& src, const Config& cfg,
         int n_hidden = (int)src.hidden_for_display().size();
         int n_truncated = num_cols - show_cols - n_hidden;
         if (n_truncated > 0)
-            std::printf("  ... %d more column(s) not shown (-c 0 to see all)\n",
+            std::printf("  ... %d more column(s) not shown (--select or -c N to choose; -c 0 for all)\n",
                         n_truncated);
         if (n_hidden > 0)
             std::printf("  ... %d derived column(s) hidden by file format "
@@ -457,13 +457,15 @@ std::string print_table(TabularSource& src, const Config& cfg,
                 g_color.meta_key, (long long)total, num_cols, g_color.reset,
                 (have_filter && n_display == 0) ? "  no rows match --filter" : "");
 
-    if (with_footer) print_schema_block(src);
+    // A matrix tab's schema lists 24 of its genes; --schema lists them all.
+    if (with_footer) print_schema_block(src, src.is_matrix_tab() ? 24 : 0);
     return "";
 }
 
 // Schema + file-info block. Shared by print_table's footer and the
 // stand-alone `--schema` mode.
-static void print_schema_columns(const arrow::Schema& schema, int max_rows = 0) {
+static void print_schema_columns(const arrow::Schema& schema, int max_rows = 0,
+                                 const char* more_hint = "") {
     int num_cols = schema.num_fields();
     int shown = (max_rows > 0 && num_cols > max_rows) ? max_rows : num_cols;
     int name_w = 6, type_w = 4;
@@ -489,8 +491,8 @@ static void print_schema_columns(const arrow::Schema& schema, int max_rows = 0) 
                     f->nullable() ? "yes" : "no");
     }
     if (shown < num_cols)
-        std::printf("%s... %d more column(s)%s\n",
-                    g_color.meta_key, num_cols - shown, g_color.reset);
+        std::printf("%s... %d more column(s)%s%s\n",
+                    g_color.meta_key, num_cols - shown, more_hint, g_color.reset);
 }
 
 // The schema's key-value metadata: what a Parquet or Arrow IPC writer stored
@@ -537,8 +539,8 @@ void emit_metadata_json(const arrow::Schema& schema) {
     std::printf("}");
 }
 
-void print_schema_block(TabularSource& src) {
-    print_schema_columns(*src.schema());
+void print_schema_block(TabularSource& src, int max_cols) {
+    print_schema_columns(*src.schema(), max_cols, " (--schema lists all)");
 
     // File info footer
     std::printf("\n%sFile:%s %s\n", g_color.meta_key, g_color.reset, display_path(src.path()).c_str());

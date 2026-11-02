@@ -98,12 +98,13 @@ bool check() {
     TabularSource* matrix = nullptr;
     TabularSource* obs    = nullptr;
     for (auto& t : tabs) {
-        if (t->tab_label() == "X (preview)") matrix = t.get();
+        if (t->tab_label() == "X") matrix = t.get();
         if (t->tab_label() == "obs") obs = t.get();
     }
-    if (!matrix || !obs || matrix->schema()->num_fields() != 201 ||
+    // A CSR matrix shows every row and column (300 genes + the obs label).
+    if (!matrix || !obs || matrix->schema()->num_fields() != 301 ||
         matrix->total_rows() != 100000 || obs->total_rows() != 100000 || !matrix->random_access() ||
-        matrix->preview_limit().rows_capped() || !matrix->preview_limit().cols_capped() ||
+        matrix->preview_limit().capped() ||
         store->matrix_values || store->matrix_indices)
         return false;
     std::shared_ptr<arrow::Table> table;
@@ -119,6 +120,10 @@ bool check() {
         cell_to_string(*table->column(0)->chunk(0), meta.num_rows - 1) != "999991" ||
         store->largest_read > 65536)
         return false;
+    // The last gene (index 299, field 300) is a column: row 0's third entry.
+    if (!matrix->read_first(1, {300}, &table).ok() || matrix->schema()->field(300)->name() != "gene299" ||
+        cell_to_string(*table->column(0)->chunk(0), 0) != "3")
+        return false;
     // Label-only projection must not read sparse entries.
     const auto entries = store->matrix_values;
     if (!matrix->read_first(10, {0}, &table).ok() || store->matrix_values != entries) return false;
@@ -129,7 +134,7 @@ bool check() {
     if (!open_store_source(heavy, "heavy.h5ad", &src).empty()) return false;
     auto heavy_tabs = src->expand_tabs();
     for (auto& t : heavy_tabs) {
-        if (t->tab_label() != "X (preview)") continue;
+        if (t->tab_label() != "X") continue;
         if (!t->read_first(1, {1}, &table).ok() || table->num_rows() != 1 ||
             heavy->matrix_values != 100000 || heavy->matrix_indices != 100000 ||
             heavy->largest_read > 65536)

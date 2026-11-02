@@ -63,6 +63,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and scrolling to the last column takes 0.66 s / 506 MB instead of 7.5 s /
   958 MB. The Row dock lists the columns near the view, View > Columns the
   first 500.
+- AnnData / Zarr / HDF5 matrix tabs (dense and CSR `X`, `layers`, `raw.X`,
+  generic 2-D datasets) hold every column instead of the first 200: the
+  TUI and vvg read only the columns on screen, `--select`, `--filter`,
+  `--sort` and `--value-counts` name any gene in every mode (past the 200th
+  they were "unknown column" in the table view and the TUI), and a repeated
+  gene name gets ` #<index>` so each one can be named. The table view and
+  `--vertical` print the first 200 data columns and say how to choose
+  others (`--select`, `-c`), with the first 24 in the schema footer
+  (`--schema` lists all). A CSC matrix still shows its first 1,000 rows,
+  labelled `X (preview)`; a CSR one is now `X`. Exports of dense and CSR
+  matrices read through the same source.
 - Find on a matrix tab (vvg's Find box, the TUI's `/`) matches gene names
   (the column names) and moves to that column, then row labels; it no
   longer searches the numbers.

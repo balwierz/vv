@@ -167,8 +167,9 @@ Try: `vv data.bim` · `vv expression.gct`.
 `.h5ad` `.h5mu` `.h5` `.hdf5` `.loom` `.h5seurat` `.fast5` `.nc` `.nc4`, Cell Ranger `filtered_feature_bc_matrix.h5` and
 `matrix.mtx` directories — a summary tab (shapes, storage, a per-matrix value
 profile) and one tab per component: `X`, `obs`, `var`, `obsm`, `varm`,
-`layers`, `obsp`, `uns`. Sparse matrices are previewed, not densified; `--tab X
---parquet` exports the whole matrix.
+`layers`, `obsp`, `uns`. A matrix tab has a column per gene, read a block of
+rows and the columns shown at a time (sparse matrices are never densified
+whole); `--tab X --parquet` exports the whole matrix.
 
 A MuData file (`.h5mu`) opens as a summary naming its modalities, the joint
 `obs` / `var`, then each modality's AnnData tabs prefixed with its name
@@ -204,7 +205,7 @@ fill value.
 ![vv: an AnnData Zarr store's summary, with its chunking and codecs](img/vv/zarr.svg)
 
 Try: `vv pbmc.zarr` · `vv --tab obs --tsv pbmc.zarr.zip` ·
-`vv --tab 'X (preview)' --parquet x.parquet pbmc.zarr`.
+`vv --tab X --parquet x.parquet pbmc.zarr`.
 
 ## MatrixMarket
 
