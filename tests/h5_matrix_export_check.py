@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""A capped Loom, Cell Ranger or AnnData CSC matrix exports in full.
+"""Loom, Cell Ranger and AnnData CSC matrices read and export in full.
 
 Builds, with h5py, a Loom file (250 genes × 1200 cells, int32 /matrix and a
 float32 layer; a repeated gene name gets its Accession appended) and a Cell
 Ranger v3 file (300 features × 1500 barcodes, CSC by barcode). Both are
-larger than the 1000 × 200 preview. `--tab matrix --tsv` (and the layer) must
-write every cell and gene, labelled like the preview, with values equal to
-the stored matrix transposed. An AnnData file whose X is a CSC matrix
+larger than the 1000 × 200 preview they once had: their matrix tabs hold every
+row and column, `--tab matrix --tsv` (and the layer) writes every cell and
+gene with values equal to the stored matrix transposed, and `--select` of a
+few columns (a projected read, as a viewer does) gives the same columns. An AnnData file whose X is a CSC matrix
 (1200 cells × 300 genes, written with h5py in AnnData's on-disk layout) must
 export as cells × genes equal to the dense matrix (transposed to CSR in
 memory by vv), and, having more than 1000 rows, is labelled "X (preview)".
@@ -32,6 +33,21 @@ def export(vv, tab, path):
         raise SystemExit("h5_matrix_export: %s %s: exit %d: %s" % (path, tab, r.returncode, r.stderr))
     rows = list(csv.reader(io.StringIO(r.stdout), delimiter="\t"))
     return rows[0], [row[0] for row in rows[1:]], np.array([[float(v) for v in row[1:]] for row in rows[1:]])
+
+
+def projection_matches(vv, tab, path, head, vals, seed):
+    """`--select` of a few scattered and adjacent columns reads only those
+    (the viewer's path); they must equal the same columns of the full export."""
+    r = np.random.default_rng(seed)
+    cols = sorted(set(r.choice(len(head) - 1, 6, replace=False).tolist()) | {len(head) - 2, len(head) - 3})
+    names = [head[0]] + [head[c + 1] for c in cols]
+    out = subprocess.run([vv, "--tab", tab, "--select", ",".join(names), "--tsv", path],
+                         capture_output=True, text=True)
+    rows = list(csv.reader(io.StringIO(out.stdout), delimiter="\t"))
+    if out.returncode != 0 or not rows or rows[0] != names:
+        return "exit %d, header %r (%s)" % (out.returncode, rows[0] if rows else None, out.stderr.strip())
+    got = np.array([[float(v) for v in row[1:]] for row in rows[1:]])
+    return "" if got.shape == vals[:, cols].shape and np.array_equal(got, vals[:, cols]) else "values differ"
 
 
 def long_matches_wide(vv, tab, path):
@@ -66,6 +82,8 @@ def main():
         bad.append("loom header %r ... (%d columns)" % (head[:3], len(head)))
     if labels[:2] != ["c0", "c1"] or len(labels) != C or not np.array_equal(vals, m.T):
         bad.append("loom matrix values / cell labels")
+    if why := projection_matches(vv, "matrix", loom, head, vals, 1):
+        bad.append("loom --select: " + why)
     _, _, lv = export(vv, "layers[spliced]", loom)
     if not np.allclose(lv, layer.T.astype(np.float64)):
         bad.append("loom layer values")
@@ -91,6 +109,13 @@ def main():
         bad.append("10x header %r ... (%d unique of %d)" % (head[:3], len(set(head)), len(head)))
     if labels[:2] != ["BC0", "BC1"] or len(labels) != nb or not np.array_equal(vals, X.toarray().T):
         bad.append("10x matrix values / barcodes")
+    if why := projection_matches(vv, "matrix", tenx, head, vals, 2):
+        bad.append("10x --select: " + why)
+    # The matrix tabs themselves hold every row and column.
+    for path, rows, cols in ((loom, C, G), (tenx, nb, nf)):
+        foot = subprocess.run([vv, "--tab", "matrix", "--schema", path], capture_output=True, text=True).stdout
+        if "Rows: %d  |  Cols: %d" % (rows, cols) not in foot or "preview" in foot:
+            bad.append("%s matrix tab footer: %r" % (os.path.basename(path), foot.strip().split("\n")[-1]))
 
     nc, ng = 1200, 300
     h5ad = os.path.join(tmp, "csc.h5ad")
@@ -115,6 +140,8 @@ def main():
     if head[:3] != ["obs", "g0", "g1"] or len(head) != ng + 1 or labels[:2] != ["c0", "c1"] \
             or len(labels) != nc or not np.array_equal(vals, Y.toarray()):
         bad.append("anndata CSC X: header %r, %d rows" % (head[:3], len(labels)))
+    if why := projection_matches(vv, "X", h5ad, head, vals, 3):
+        bad.append("anndata CSC X --select: " + why)
 
     # A CSC matrix of more than 1000 rows is a row preview: "X (preview)".
     tabs = subprocess.run([vv, "--list-tabs", h5ad], capture_output=True, text=True).stdout.split("\n")

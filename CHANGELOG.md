@@ -74,6 +74,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (`--schema` lists all). A CSC matrix still shows its first 1,000 rows,
   labelled `X (preview)`; a CSR one is now `X`. Exports of dense and CSR
   matrices read through the same source.
+- Loom and Cell Ranger HDF5 matrix tabs hold every row and column instead
+  of the first 1,000 cells x 200 genes, read a block of cells and the
+  columns asked for at a time (stored genes x cells, read as hyperslabs of
+  the genes shown; CSR entries kept for the columns shown). The tabs are
+  `matrix` (was `matrix (preview)`); exports are unchanged byte for byte.
 - Find on a matrix tab (vvg's Find box, the TUI's `/`) matches gene names
   (the column names) and moves to that column, then row labels; it no
   longer searches the numbers.

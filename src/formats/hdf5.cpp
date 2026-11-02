@@ -698,9 +698,6 @@ read_1d_dataset_table(const Store& store, const std::string& path, int64_t row_c
                       int64_t* full_rows = nullptr);
 static int64_t h5_len_1d(const Store& store, const std::string& path);
 static void read_shape2(const Store& store, const std::string& path, int64_t out[2]);
-static arrow::Result<std::shared_ptr<arrow::Table>>
-read_sparse_preview_as(const Store& store, const std::string& group, int64_t n_rows,
-                       int64_t n_cols, bool is_csr, int64_t row_cap);
 struct OpenSpec;
 static std::string build_tenx_table(const Store& store, const OpenSpec& spec,
                                     int64_t row_cap,
@@ -866,6 +863,14 @@ class Hdf5Source : public WorkbookSource {
                 return;
             }
             err = v.status().ToString();
+        } else if (spec_.kind == OpenSpec::Kind::TenxMatrix || spec_.kind == OpenSpec::Kind::LoomMatrix) {
+            // Every row and column, a block of rows and the requested
+            // columns at a time.
+            if (auto m = make_h5_matrix_stream(file_, path(), spec_)) {
+                viewport_ = std::move(m);
+                return;
+            }
+            err = "Cannot read matrix " + spec_.h5_path + " (not numeric)";
         } else {
             err = build_table(*file_, spec_, &tbl, &footer, df_row_cap_, &self->limit_);
         }
@@ -983,7 +988,8 @@ class Hdf5Source : public WorkbookSource {
         // A summary tab is built when it is first read, like a sibling tab:
         // its profile and storage rows read the matrices (expand_summary_rows),
         // which --list-tabs, --tab X or a export of obs never shows.
-        if (spec.kind == OpenSpec::Kind::Summary || has_viewport_reader(spec)) {
+        if (spec.kind == OpenSpec::Kind::Summary || has_viewport_reader(spec) ||
+            spec.kind == OpenSpec::Kind::TenxMatrix || spec.kind == OpenSpec::Kind::LoomMatrix) {
             std::unique_ptr<Hdf5Source> src(new Hdf5Source(path, std::move(file), std::move(spec),
                                                            std::move(all), df_row_cap));
             if (!siblings.empty())
@@ -1652,97 +1658,6 @@ read_anndata_dataframe(const Store& store, const std::string& group, int64_t row
     return arrow::Table::Make(arrow::schema(fields), cols, target);
 }
 
-// The same densifying reader for a group holding indptr / indices / data whose
-// shape and orientation come from elsewhere (10x Genomics HDF5 keeps the shape
-// in a dataset and has no encoding-type attribute). `n_rows` × `n_cols` is the
-// logical shape; `is_csr` says indptr runs over rows.
-static arrow::Result<std::shared_ptr<arrow::Table>>
-read_sparse_preview_as(const Store& store, const std::string& group, int64_t n_rows,
-                       int64_t n_cols, bool is_csr, int64_t row_cap) {
-    if (n_rows < 0) n_rows = 0;          // shape attribute is untrusted
-    if (n_cols < 0) n_cols = 0;
-    if (row_cap > 0 && row_cap < n_rows) n_rows = row_cap;
-    if (n_cols > 200) n_cols = 200;     // wide-table sanity cap
-
-    const std::string indptr_p = group + "/indptr", indices_p = group + "/indices",
-                      data_p = group + "/data";
-    if (store.kind(indptr_p) != NodeKind::Array || store.kind(indices_p) != NodeKind::Array ||
-        store.kind(data_p) != NodeKind::Array)
-        return arrow::Status::IOError("sparse: missing indptr/indices/data");
-
-    // The compressed (indptr) axis is rows for CSR and columns for CSC. The
-    // 'shape' attribute is untrusted: indptr has exactly (compressed_len + 1)
-    // entries, so clamp that axis to what indptr actually holds — otherwise the
-    // read below goes past the dataset extent.
-    int64_t indptr_len = h5_len_1d(store, indptr_p);
-    if (indptr_len < 1) return arrow::Status::Invalid("sparse: empty/!1-D indptr");
-    int64_t& n_major = is_csr ? n_rows : n_cols;   // axis the indptr indexes
-    if (n_major + 1 > indptr_len) n_major = indptr_len - 1;
-    const int64_t nnz_avail = std::min(h5_len_1d(store, indices_p), h5_len_1d(store, data_p));
-
-    // Read indptr[0 .. n_major].
-    std::vector<int64_t> indptr((size_t)(n_major + 1));
-    if (auto st = store.read_i64(indptr_p, 0, n_major + 1, indptr.data()); !st.ok()) {
-        note_read_error(st);
-        return st;
-    }
-    // indptr values are untrusted too: the read window [front, back) into
-    // indices/data must stay inside their actual extent, or the read goes
-    // out of bounds.
-    int64_t front = indptr.front();
-    if (front < 0) front = 0;
-    if (front > nnz_avail) front = nnz_avail;
-    int64_t nnz_span = indptr.back() - front;
-    if (nnz_span < 0) nnz_span = 0;
-    if (nnz_span > nnz_avail - front) nnz_span = nnz_avail - front;
-
-    std::vector<int64_t> indices((size_t)nnz_span);
-    std::vector<double>  data((size_t)nnz_span);
-    if (nnz_span > 0) {
-        auto st1 = store.read_i64(indices_p, front, nnz_span, indices.data());
-        note_read_error(st1);
-        auto st2 = store.read_f64(data_p, front, nnz_span, data.data());
-        note_read_error(st2);
-        if (!st1.ok()) return st1;
-        if (!st2.ok()) return st2;
-    }
-
-    // Densify into a column-major buffer (always rows × cols). Walk each
-    // compressed-axis slice and scatter its values: for CSR `m` is a row and
-    // the index is a column; for CSC `m` is a column and the index is a row.
-    std::vector<std::vector<double>> colbuf((size_t)n_cols,
-                                            std::vector<double>((size_t)n_rows, 0.0));
-    for (int64_t m = 0; m < n_major; ++m) {
-        // Offsets are relative to the clamped read window `front`, and bounded
-        // to [0, nnz_span] so a non-monotonic / corrupt indptr can't index the
-        // indices/data vectors out of range.
-        int64_t s = indptr[(size_t)m] - front;
-        int64_t e = indptr[(size_t)(m + 1)] - front;
-        if (s < 0) s = 0;             if (s > nnz_span) s = nnz_span;
-        if (e < s) e = s;             if (e > nnz_span) e = nnz_span;
-        for (int64_t k = s; k < e; ++k) {
-            int64_t idx = indices[(size_t)k];        // minor-axis index
-            if (is_csr) {                            // m = row, idx = column
-                if (idx >= 0 && idx < n_cols)
-                    colbuf[(size_t)idx][(size_t)m] = data[(size_t)k];
-            } else {                                 // m = column, idx = row
-                if (idx >= 0 && idx < n_rows)
-                    colbuf[(size_t)m][(size_t)idx] = data[(size_t)k];
-            }
-        }
-    }
-    arrow::FieldVector fields;
-    std::vector<std::shared_ptr<arrow::Array>> cols;
-    const auto dinfo = store.info(data_p);
-    const bool f32 = dinfo && is_float32(*dinfo);
-    for (int64_t c = 0; c < n_cols; ++c) {
-        const auto& v = colbuf[(size_t)c];
-        cols.push_back(float_column((int64_t)v.size(), f32, [&](int64_t i) { return v[(size_t)i]; }));
-        fields.push_back(arrow::field("col" + std::to_string(c), float_type(f32)));
-    }
-    return arrow::Table::Make(arrow::schema(fields), cols, n_rows);
-}
-
 // Read up to `cap` values of an AnnData component group's index dataset (the
 // dataset named by the group's `_index` attribute, e.g. obs/var cell & gene
 // identifiers) as display strings. `*index_name` receives that dataset's name
@@ -2228,6 +2143,7 @@ public:
         // index name, "dim" for an embedding, ...); row_header names the row
         // labels ("obs" when the wide view has none). Empty labels → indexes.
         std::string long_row = "row", long_col = "col";
+        std::string note;                    // the footer's last part ("" = none)
     };
 
 private:
@@ -2346,57 +2262,78 @@ public:
     arrow::Status read_status() const override { return status_; }
     const std::string& path() const override { return path_; }
     std::string tab_label() const override { return plan_.label; }
+    // Any block is computed on its own (a CSC matrix transposes once, on the
+    // first read).
+    bool random_access() const override { return true; }
+    bool is_matrix_tab() const override { return true; }
     std::string footer() const override {
-        return "Format: " + plan_.format + " " + plan_.label + " (full matrix)  |  " +
-               std::to_string(plan_.rows) + " \xc3\x97 " + std::to_string(plan_.cols);
+        return "Format: " + plan_.format + " " + plan_.label + "  |  Rows: " + std::to_string(plan_.rows) +
+               "  |  Cols: " + std::to_string(plan_.cols) + (plan_.note.empty() ? "" : "  |  " + plan_.note);
     }
 
     const Plan& plan() const { return plan_; }
     int64_t block_rows() const { return block_; }
 
-    // Block i's rows as a dense row-major n × cols buffer (iv for integer
-    // plans, dv otherwise).
-    arrow::Status fill_block(int i, std::vector<int64_t>& iv, std::vector<double>& dv) {
+    // Block i's rows as a dense row-major n × k buffer (iv for integer plans,
+    // dv otherwise) over the data columns `sel` (ascending, k = sel.size()):
+    // cell (r, sel[j]) is at r * k + j. Only those columns are read (dense
+    // hyperslabs of each run of adjacent columns) or kept (sparse entries).
+    arrow::Status fill_block(int i, const std::vector<int64_t>& sel, std::vector<int64_t>& iv,
+                             std::vector<double>& dv) {
         const int64_t r0 = (int64_t)i * block_;
         const int64_t n  = std::min(block_, plan_.rows - r0);
         const int64_t cols_ = plan_.cols;
+        const int64_t k = (int64_t)sel.size();
         const bool ints_ = plan_.ints;
         const std::string& h5_path_ = plan_.h5_path;
         if (n <= 0) return arrow::Status::IndexError("chunk ", i, " out of range");
-        (ints_ ? (void)iv.assign((size_t)(n * cols_), 0) : (void)dv.assign((size_t)(n * cols_), 0.0));
+        (ints_ ? (void)iv.assign((size_t)(n * k), 0) : (void)dv.assign((size_t)(n * k), 0.0));
+        if (k == 0) return arrow::Status::OK();
         auto fail = [&](const std::string& why) {
             status_ = arrow::Status::IOError(why);
             return status_;
+        };
+        // A sparse entry's column → its slot in sel (-1: not read).
+        auto slots = [&] {
+            std::vector<int32_t> pos((size_t)cols_, -1);
+            for (int64_t j = 0; j < k; ++j) pos[(size_t)sel[(size_t)j]] = (int32_t)j;
+            return pos;
         };
         if (plan_.layout == Layout::Csc) {
             if (!csr_built_) {
                 auto st = build_csr_from_csc();
                 if (!st.ok()) return fail(st.message());
             }
+            const auto pos = slots();
             for (int64_t r = 0; r < n; ++r)
-                for (int64_t k = csr_ptr_[(size_t)(r0 + r)]; k < csr_ptr_[(size_t)(r0 + r) + 1]; ++k)
-                    dv[(size_t)(r * cols_ + csr_col_[(size_t)k])] = csr_val_[(size_t)k];
+                for (int64_t e = csr_ptr_[(size_t)(r0 + r)]; e < csr_ptr_[(size_t)(r0 + r) + 1]; ++e)
+                    if (const int32_t j = pos[(size_t)csr_col_[(size_t)e]]; j >= 0)
+                        dv[(size_t)(r * k + j)] = csr_val_[(size_t)e];
         } else if (plan_.layout != Layout::Csr) {
-            // DenseT reads stored columns r0..r0+n of every stored row into a
-            // cols × n buffer; the cell (r, c) is then buf[c * n + r].
+            // Dense: each run of adjacent selected columns is one hyperslab.
+            // DenseT stores the columns as rows: a run reads stored rows
+            // sel[a]..sel[a]+len of stored columns r0..r0+n, a len × n buffer.
             const bool tr = plan_.layout == Layout::DenseT;
             if (file_->kind(h5_path_) != NodeKind::Array) return fail("cannot open " + h5_path_);
-            const int64_t a = tr ? 0 : r0, na = tr ? cols_ : n, b = tr ? r0 : 0, nb = tr ? n : cols_;
-            auto st = ints_ ? file_->read_block_i64(h5_path_, a, na, b, nb, iv.data())
-                            : file_->read_block_f64(h5_path_, a, na, b, nb, dv.data());
-            if (!st.ok()) return fail(st.message());
-            if (tr) {                                    // to row-major n × cols
-                if (ints_) {
-                    std::vector<int64_t> t((size_t)(n * cols_));
-                    for (int64_t c = 0; c < cols_; ++c)
-                        for (int64_t r = 0; r < n; ++r) t[(size_t)(r * cols_ + c)] = iv[(size_t)(c * n + r)];
-                    iv.swap(t);
-                } else {
-                    std::vector<double> t((size_t)(n * cols_));
-                    for (int64_t c = 0; c < cols_; ++c)
-                        for (int64_t r = 0; r < n; ++r) t[(size_t)(r * cols_ + c)] = dv[(size_t)(c * n + r)];
-                    dv.swap(t);
-                }
+            std::vector<int64_t> ib;
+            std::vector<double>  db;
+            for (int64_t a = 0; a < k;) {
+                int64_t len = 1;
+                while (a + len < k && sel[(size_t)(a + len)] == sel[(size_t)a] + len) ++len;
+                (ints_ ? ib.resize((size_t)(n * len)) : db.resize((size_t)(n * len)));
+                const int64_t c0 = sel[(size_t)a];
+                auto st = tr ? (ints_ ? file_->read_block_i64(h5_path_, c0, len, r0, n, ib.data())
+                                      : file_->read_block_f64(h5_path_, c0, len, r0, n, db.data()))
+                             : (ints_ ? file_->read_block_i64(h5_path_, r0, n, c0, len, ib.data())
+                                      : file_->read_block_f64(h5_path_, r0, n, c0, len, db.data()));
+                if (!st.ok()) return fail(st.message());
+                for (int64_t r = 0; r < n; ++r)
+                    for (int64_t g = 0; g < len; ++g) {
+                        const size_t from = (size_t)(tr ? g * n + r : r * len + g);
+                        const size_t to   = (size_t)(r * k + a + g);
+                        if (ints_) iv[to] = ib[from]; else dv[to] = db[from];
+                    }
+                a += len;
             }
         } else {
             if (file_->kind(h5_path_) != NodeKind::Group) return fail("cannot open " + h5_path_);
@@ -2413,15 +2350,23 @@ public:
                             (ints_ ? read_slice("data", a, len, ival.data(), &err)
                                    : read_slice("data", a, len, dval.data(), &err));
             if (!ok) return fail("cannot read data / indices of " + h5_path_);
+            const auto pos = slots();
             for (int64_t r = 0; r < n; ++r)
-                for (int64_t k = ip[(size_t)r] - a; k < ip[(size_t)r + 1] - a; ++k) {
-                    const int64_t c = idx[(size_t)k];
+                for (int64_t e = ip[(size_t)r] - a; e < ip[(size_t)r + 1] - a; ++e) {
+                    const int64_t c = idx[(size_t)e];
                     if (c < 0 || c >= cols_) return fail("column index out of range in " + h5_path_);
-                    if (ints_) iv[(size_t)(r * cols_ + c)] = ival[(size_t)k];
-                    else       dv[(size_t)(r * cols_ + c)] = dval[(size_t)k];
+                    const int32_t j = pos[(size_t)c];
+                    if (j < 0) continue;
+                    if (ints_) iv[(size_t)(r * k + j)] = ival[(size_t)e];
+                    else       dv[(size_t)(r * k + j)] = dval[(size_t)e];
                 }
         }
         return arrow::Status::OK();
+    }
+    std::vector<int64_t> all_columns() const {
+        std::vector<int64_t> sel((size_t)plan_.cols);
+        for (int64_t c = 0; c < plan_.cols; ++c) sel[(size_t)c] = c;
+        return sel;
     }
 
     // --matrix long: the entries of block i as (row, column, value) in row
@@ -2473,7 +2418,7 @@ public:
         }
         std::vector<int64_t> iv;
         std::vector<double>  dv;
-        ARROW_RETURN_NOT_OK(fill_block(i, iv, dv));
+        ARROW_RETURN_NOT_OK(fill_block(i, all_columns(), iv, dv));
         const int64_t C = plan_.cols;
         for (int64_t r = 0; r < n; ++r)
             for (int64_t c = 0; c < C; ++c) {
@@ -2514,17 +2459,28 @@ public:
                              std::shared_ptr<arrow::Table>* out) override {
         const int64_t r0 = (int64_t)i * block_;
         const int64_t n  = std::min(block_, plan_.rows - r0);
-        const int64_t cols_ = plan_.cols;
         const bool ints_ = plan_.ints;
         if (n <= 0) return arrow::Status::IndexError("chunk ", i, " out of range");
+        const auto& row_labels_ = plan_.row_labels;
+        const int label = plan_.row_header.empty() ? 0 : 1;
+        // Only the requested data columns are read.
+        std::vector<int64_t> sel;
+        for (int ci : col_indices) {
+            if (ci < 0 || ci >= schema_->num_fields()) return arrow::Status::IndexError("column ", ci);
+            if (ci >= label) sel.push_back(ci - label);
+        }
+        std::sort(sel.begin(), sel.end());
+        sel.erase(std::unique(sel.begin(), sel.end()), sel.end());
+        const int64_t cols_ = (int64_t)sel.size();
         std::vector<double>  dv;
         std::vector<int64_t> iv;
-        if (auto st = fill_block(i, iv, dv); !st.ok()) {
+        if (auto st = fill_block(i, sel, iv, dv); !st.ok()) {
             if (status_.ok()) status_ = st;
             return st;
         }
-        const auto& row_labels_ = plan_.row_labels;
-        const int label = plan_.row_header.empty() ? 0 : 1;
+        auto slot = [&](int ci) {
+            return std::lower_bound(sel.begin(), sel.end(), (int64_t)(ci - label)) - sel.begin();
+        };
         arrow::FieldVector fields;
         std::vector<std::shared_ptr<arrow::Array>> cols;
         for (int ci : col_indices) {
@@ -2536,12 +2492,13 @@ public:
                     (void)(r0 + r < (int64_t)row_labels_.size() ? b.Append(row_labels_[(size_t)(r0 + r)]) : b.AppendNull());
                 ARROW_RETURN_NOT_OK(b.Finish(&arr));
             } else if (ints_) {
+                const int64_t col = slot(ci);
                 arrow::Int64Builder b;
                 ARROW_RETURN_NOT_OK(b.Reserve(n));
-                for (int64_t r = 0; r < n; ++r) b.UnsafeAppend(iv[(size_t)(r * cols_ + ci - label)]);
+                for (int64_t r = 0; r < n; ++r) b.UnsafeAppend(iv[(size_t)(r * cols_ + col)]);
                 ARROW_RETURN_NOT_OK(b.Finish(&arr));
             } else {
-                const int64_t col = ci - label;
+                const int64_t col = slot(ci);
                 arr = float_column(n, plan_.f32, [&](int64_t r) { return dv[(size_t)(r * cols_ + col)]; });
             }
             cols.push_back(std::move(arr));
@@ -3570,7 +3527,7 @@ static std::vector<OpenSpec> scan_10x(const Store& store, const std::vector<std:
             for (const auto& kv : by_type)
                 add("feature_type: " + kv.first, std::to_string(kv.second));
         }
-        specs.push_back({OpenSpec::Kind::TenxMatrix, gp, "matrix" + tag + " (preview)", "",
+        specs.push_back({OpenSpec::Kind::TenxMatrix, gp, "matrix" + tag, "",
                          AnnMatrixAxes::ObsByVar, v3 ? "v3" : "v2"});
         specs.push_back({OpenSpec::Kind::TenxFeatures, gp, v3 ? "features" : "genes" + tag, "",
                          AnnMatrixAxes::ObsByVar, v3 ? "v3" : "v2"});
@@ -3591,47 +3548,9 @@ static std::string build_tenx_table(const Store& store, const OpenSpec& spec, in
     const std::string names_path = g + (v3 ? "/features/name" : "/gene_names");
     std::string err;
 
+    // A 10x matrix is read by its H5MatrixStreamSource (make_h5_matrix_stream).
     if (spec.kind == OpenSpec::Kind::TenxMatrix) {
-        int64_t nf = 0, nb = 0;
-        if (!tenx_shape(store, g, &nf, &nb)) return g + "/shape: unreadable";
-        auto r = read_sparse_preview_as(store, g, nb, nf, /*is_csr=*/true, 1000);
-        if (!r.ok()) return r.status().ToString();
-        auto t = *r;
-        const int64_t nr = t->num_rows(), nc = t->num_columns();
-        // Columns: feature names; a name that repeats among the shown columns
-        // gets its id appended so every header is unique.
-        auto ids = h5_strings(store, ids_path, nc);
-        auto names = h5_strings(store, names_path, nc);
-        std::map<std::string, int> seen;
-        for (const auto& n : names) ++seen[n];
-        std::vector<std::string> cols;
-        for (int64_t c = 0; c < nc; ++c) {
-            std::string n = c < (int64_t)names.size() ? names[(size_t)c] : "";
-            std::string id = c < (int64_t)ids.size() ? ids[(size_t)c] : "";
-            if (n.empty()) n = id.empty() ? t->field((int)c)->name() : id;
-            else if (seen[n] > 1 && !id.empty()) n += " (" + id + ")";
-            cols.push_back(n);
-        }
-        auto rn = t->RenameColumns(cols);
-        if (rn.ok()) t = *rn;
-        auto bcs = h5_strings(store, g + "/barcodes", nr);
-        arrow::StringBuilder b;
-        for (int64_t i = 0; i < nr; ++i) {
-            if (i < (int64_t)bcs.size()) (void)b.Append(bcs[(size_t)i]); else (void)b.AppendNull();
-        }
-        std::shared_ptr<arrow::Array> a;
-        if (b.Finish(&a).ok()) {
-            auto ac = t->AddColumn(0, arrow::field("barcode", arrow::utf8()),
-                                   std::make_shared<arrow::ChunkedArray>(a));
-            if (ac.ok()) t = *ac;
-        }
-        *out = t;
-        h5_note_preview(nr, nb, nc, nf);
-        *footer = "Format: 10x Genomics HDF5 matrix  |  preview: first " + std::to_string(nr) +
-                  " of " + std::to_string(nb) + " barcodes, first " + std::to_string(nc) +
-                  " of " + std::to_string(nf) + " features  |  shown cells \xc3\x97 features "
-                  "(stored features \xc3\x97 barcodes)";
-    } else if (spec.kind == OpenSpec::Kind::TenxFeatures) {
+        return "matrix '" + g + "' is read by the matrix source";    } else if (spec.kind == OpenSpec::Kind::TenxFeatures) {
         int64_t full = 0;
         std::shared_ptr<arrow::Table> t;
         if (v3) {
@@ -3764,7 +3683,7 @@ static std::vector<OpenSpec> scan_loom(const Store& store) {
         add(grp, join_names(store.children(std::string("/") + grp)));
     }
     specs.push_back({OpenSpec::Kind::Summary, "/", "summary", summary});
-    specs.push_back({OpenSpec::Kind::LoomMatrix, "/matrix", "matrix (preview)", ""});
+    specs.push_back({OpenSpec::Kind::LoomMatrix, "/matrix", "matrix", ""});
     specs.push_back({OpenSpec::Kind::LoomAttrs, "/col_attrs", "cells", ""});
     specs.push_back({OpenSpec::Kind::LoomAttrs, "/row_attrs", "genes", ""});
     for (const auto& l : layers)
@@ -3790,78 +3709,8 @@ static std::string build_loom_table(const Store& store, const OpenSpec& spec, in
         return "";
     }
 
-    // LoomMatrix: read the corner [genes 0..200) × [cells 0..1000) and emit it
-    // transposed — one column per gene, one row per cell.
-    auto ai = store.info(spec.h5_path);
-    if (!ai) return "Cannot open dataset " + spec.h5_path;
-    int64_t G = 0, C = 0;
-    loom_dims(store, spec.h5_path, &G, &C);
-    const int64_t ng = std::min<int64_t>(G, kDense2DColCap);
-    const int64_t nc = std::min<int64_t>(C, kDense2DRowCap);
-    const bool integral = ai->cls == VClass::Int;
-    std::vector<double>  dbuf;
-    std::vector<int64_t> ibuf;
-    if (ng > 0 && nc > 0) {
-        arrow::Status st;
-        if (integral) { ibuf.resize((size_t)(ng * nc));
-                        st = store.read_block_i64(spec.h5_path, 0, ng, 0, nc, ibuf.data()); }
-        else          { dbuf.resize((size_t)(ng * nc));
-                        st = store.read_block_f64(spec.h5_path, 0, ng, 0, nc, dbuf.data()); }
-        if (!st.ok()) { note_read_error(st); return st.message(); }
-    }
-
-    // Labels.
-    std::string cell_attr = loom_label_attr(store, "col_attrs", kLoomCellIds);
-    std::string gene_attr = loom_label_attr(store, "row_attrs", kLoomGeneIds);
-    std::vector<std::string> cells = cell_attr.empty() ? std::vector<std::string>{}
-        : h5_strings(store, "/col_attrs/" + cell_attr, nc);
-    std::vector<std::string> genes = gene_attr.empty() ? std::vector<std::string>{}
-        : h5_strings(store, "/row_attrs/" + gene_attr, ng);
-    // A repeated gene label gets a second ID attribute (or its index) appended.
-    std::vector<std::string> alt;
-    for (const char* n : {"Accession", "gene_ids", "var_names"})
-        if (gene_attr != n && store.kind("/row_attrs/" + std::string(n)) != NodeKind::Missing) {
-            alt = h5_strings(store, "/row_attrs/" + std::string(n), ng);
-            break;
-        }
-    std::map<std::string, int> seen;
-    for (const auto& gname : genes) ++seen[gname];
-
-    arrow::FieldVector fields;
-    std::vector<std::shared_ptr<arrow::Array>> cols;
-    arrow::StringBuilder cb;
-    for (int64_t c = 0; c < nc; ++c) {
-        if (c < (int64_t)cells.size()) (void)cb.Append(cells[(size_t)c]); else (void)cb.AppendNull();
-    }
-    std::shared_ptr<arrow::Array> ca;
-    (void)cb.Finish(&ca);
-    fields.push_back(arrow::field(cell_attr.empty() ? "cell" : cell_attr, arrow::utf8()));
-    cols.push_back(ca);
-    for (int64_t gi = 0; gi < ng; ++gi) {
-        std::string name = gi < (int64_t)genes.size() ? genes[(size_t)gi] : "";
-        if (name.empty()) name = "gene" + std::to_string(gi);
-        else if (seen[name] > 1)
-            name += gi < (int64_t)alt.size() ? " (" + alt[(size_t)gi] + ")"
-                                             : " #" + std::to_string(gi);
-        std::shared_ptr<arrow::Array> a;
-        if (integral) {
-            arrow::Int64Builder b;
-            (void)b.AppendValues(ibuf.data() + gi * nc, nc);
-            (void)b.Finish(&a);
-            fields.push_back(arrow::field(name, arrow::int64()));
-        } else {
-            const double* v = dbuf.data() + gi * nc;
-            a = float_column(nc, is_float32(*ai), [&](int64_t i) { return v[i]; });
-            fields.push_back(arrow::field(name, float_type(is_float32(*ai))));
-        }
-        cols.push_back(a);
-    }
-    *out = arrow::Table::Make(arrow::schema(fields), cols, nc);
-    h5_note_preview(nc, C, ng, G);   // shown cells × genes (stored genes × cells)
-    *footer = "Format: Loom " + spec.display + "  |  preview: first " + std::to_string(nc) +
-              " of " + std::to_string(C) + " cells, first " + std::to_string(ng) + " of " +
-              std::to_string(G) + " genes  |  shown cells \xc3\x97 genes (stored genes \xc3\x97 cells)";
-    return "";
+    // A Loom matrix is read by its H5MatrixStreamSource (make_h5_matrix_stream).
+    return "matrix '" + spec.h5_path + "' is read by the matrix source";
 }
 
 // The value type a dense dataset streams as, as its preview shows it: int64
@@ -3955,6 +3804,7 @@ static std::unique_ptr<TabularSource> make_h5_matrix_stream(const StorePtr& file
         p.row_header = "barcode";
         p.long_row = "barcode"; p.long_col = "feature";
         p.format = "10x Genomics";
+        p.note = "cells \xc3\x97 features (stored features \xc3\x97 barcodes)";
         return H5MatrixStreamSource::from_plan(file, path, std::move(p));
     }
     case OpenSpec::Kind::LoomMatrix: {             // stored genes × cells
@@ -3987,6 +3837,7 @@ static std::unique_ptr<TabularSource> make_h5_matrix_stream(const StorePtr& file
             p.col_names.push_back(std::move(name));
         }
         p.format = "Loom";
+        p.note = "cells \xc3\x97 genes (stored genes \xc3\x97 cells)";
         return H5MatrixStreamSource::from_plan(file, path, std::move(p));
     }
     default:

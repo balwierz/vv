@@ -3243,7 +3243,7 @@ fi
 if [ -f "$DATA/tiny.loom" ]; then
     LM="$DATA/tiny.loom"
     assert_eq_file_inline "loom_tabs" "$("$VV" --list-tabs "$LM" | tr '\n' '|')" \
-        "summary|matrix (preview)|cells|genes|layers[spliced]|layers[unspliced]|"
+        "summary|matrix|cells|genes|layers[spliced]|layers[unspliced]|"
     assert_eq_file_inline "loom_matrix_transposed_labelled" "$("$VV" --tab matrix --tsv "$LM")" \
         "$(printf 'CellID\tGeneA (ENS1)\tGeneA (ENS2)\tGeneC\nc0\t1\t0\t5\nc1\t0\t3\t0\nc2\t2\t0\t0\nc3\t0\t4\t6')"
     assert_eq_file_inline "loom_layer_values" \
@@ -3267,7 +3267,7 @@ fi
 if [ -f "$DATA/tiny.10x.h5" ]; then
     TXH="$DATA/tiny.10x.h5"
     assert_eq_file_inline "tenx_h5_tabs" "$("$VV" --list-tabs "$TXH" | tr '\n' '|')" \
-        "summary|matrix (preview)|features|barcodes|"
+        "summary|matrix|features|barcodes|"
     assert_eq_file_inline "tenx_h5_matrix" "$("$VV" --tab matrix --tsv "$TXH")" \
         "$(printf 'barcode\tGeneA (ENSG0A)\tGeneA (ENSG0B)\tGeneC\tCD3\nAAAC-1\t1\t0\t3\t0\nAAAG-1\t0\t2\t0\t0\nAAAT-1\t4\t0\t0\t5')"
     # _all_tag_keys (the list of optional column names) is not a feature column.
@@ -3283,7 +3283,7 @@ if [ -f "$DATA/tiny.10x.h5" ]; then
 fi
 if [ -f "$DATA/tiny.10x_v2.h5" ]; then
     assert_eq_file_inline "tenx_h5_v2_tabs" "$("$VV" --list-tabs "$DATA/tiny.10x_v2.h5" | tr '\n' '|')" \
-        "summary|matrix[GRCh38] (preview)|genes[GRCh38]|barcodes[GRCh38]|"
+        "summary|matrix[GRCh38]|genes[GRCh38]|barcodes[GRCh38]|"
     assert_eq_file_inline "tenx_h5_v2_matrix_matches_v3" \
         "$("$VV" --tab matrix --tsv "$DATA/tiny.10x_v2.h5")" "$("$VV" --tab matrix --tsv "$DATA/tiny.10x.h5")"
 fi

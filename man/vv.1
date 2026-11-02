@@ -112,8 +112,8 @@ ID attributes (\fBCellID\fR / \fBGene\fR or the other writers' names) \(em plus
 HDF5 files surface a \fBhierarchy\fR tab listing every group / dataset
 with path / kind / shape / dtype, plus one tab per 1-D or 2-D dataset
 (up to 32 datasets; all rows and columns on demand).
-Specialized Loom and Cell Ranger previews retain their existing row limits;
-whole-matrix exports remain separate from the displayed preview.
+Loom and Cell Ranger matrix tabs likewise hold every row and column, read
+in blocks; their attribute tables keep their row limits.
 .IP \(bu 2
 \fB.ods\fR, \fB.fods\fR \(en OpenDocument Spreadsheet, zipped or flat
 XML. Each sheet becomes a TUI tab. Hand-rolled parser: minizip inflates
