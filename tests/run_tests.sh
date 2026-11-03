@@ -6616,7 +6616,7 @@ if [ -f "$DATA/tiny.h5ad" ]; then
     assert_contains    "anndata_x_rows_are_obs"       "$XHDR" "obs"
 fi
 
-# ── AnnData storage layout in the summary tab ────────────────────────────────
+# ── AnnData storage layout in --info (Details ▸ File) ────────────────────────
 # How X (and each layer) is stored, from HDF5 metadata alone: encoding, stored
 # values per row, bytes on disk, and per component the chunk length / bytes
 # and the filter pipeline; for a sparse matrix, how many rows one data chunk
@@ -6625,22 +6625,25 @@ fi
 # indptr contiguous; 40 values over 10 rows.
 CK="$DATA/tiny.chunked.h5ad"
 if [ -f "$CK" ]; then
-    CKS=$("$VV" --tab summary --tsv --no-header "$CK")
-    assert_contains "h5ad_storage_file_size" "$CKS" "$(printf 'file size\t')"
-    assert_contains "h5ad_storage_x" "$CKS" "$(printf 'X storage\tcsr_matrix 0.1.0  |  40 stored values (4 per row)  |  ')"
+    CKS=$("$VV" --info --color=never "$CK")
+    assert_contains "h5ad_storage_file_size" "$CKS" "$(printf '  Size: ')"
+    assert_contains "h5ad_storage_x" "$CKS" "$(printf '  X storage: csr_matrix 0.1.0  |  40 stored values (4 per row)  |  ')"
     assert_contains "h5ad_storage_data" "$CKS" \
-        "$(printf 'X/data\tfloat64  |  chunks of 30 (240 B)  |  shuffle + gzip 5  |  ')"
+        "$(printf '  X/data: float64  |  chunks of 30 (240 B)  |  shuffle + gzip 5  |  ')"
     assert_contains "h5ad_storage_indices" "$CKS" \
-        "$(printf 'X/indices\tint32  |  chunks of 30 (120 B)  |  gzip 5  |  ')"
+        "$(printf '  X/indices: int32  |  chunks of 30 (120 B)  |  gzip 5  |  ')"
     assert_contains "h5ad_storage_indptr_contiguous" "$CKS" \
-        "$(printf 'X/indptr\tint32  |  contiguous  |  no compression  |  ')"
+        "$(printf '  X/indptr: int32  |  contiguous  |  no compression  |  ')"
     assert_contains "h5ad_storage_row_slice" "$CKS" \
-        "$(printf 'X row slice\tone data chunk \xe2\x89\x88 8 rows; a slice decompresses at least 240 B of data and 120 B of indices')"
+        "$(printf '  X row slice: one data chunk \xe2\x89\x88 8 rows; a slice decompresses at least 240 B of data and 120 B of indices')"
     # Unfiltered chunks: the size from the shape (2 chunks of 30 float64,
     # the last partial; h5py's get_storage_size gives the same 480 B), with
     # no read of the chunk index.
     assert_contains "h5ad_storage_unfiltered_chunks" "$CKS" \
-        "$(printf 'layers[counts]/data\tfloat64  |  chunks of 30 (240 B)  |  no compression  |  480 B on disk')"
+        "$(printf '  layers[counts]/data: float64  |  chunks of 30 (240 B)  |  no compression  |  480 B on disk')"
+    # The summary tab keeps what is in the file, not how it is stored.
+    refute_contains "h5ad_summary_no_storage_rows" \
+        "$("$VV" --tab summary --tsv --no-header "$CK")" "storage"
 fi
 
 # ── AnnData column types: bool vs categorical of bool vs of strings ─────────

@@ -165,8 +165,8 @@ Try: `vv data.bim` · `vv expression.gct`.
 ## AnnData / HDF5 / Loom / 10x
 
 `.h5ad` `.h5mu` `.h5` `.hdf5` `.loom` `.h5seurat` `.fast5` `.nc` `.nc4`, Cell Ranger `filtered_feature_bc_matrix.h5` and
-`matrix.mtx` directories — a summary tab (shapes, storage, a per-matrix value
-profile) and one tab per component: `X`, `obs`, `var`, `obsm`, `varm`,
+`matrix.mtx` directories — a summary tab (shapes, a per-matrix value
+profile; the storage layout is in `--info` / *Details ▸ File*) and one tab per component: `X`, `obs`, `var`, `obsm`, `varm`,
 `layers`, `obsp`, `uns`. A matrix tab has a column per gene, read a block of
 rows and the columns shown at a time (sparse matrices are never densified
 whole); `--tab X --parquet` exports the whole matrix.
@@ -193,7 +193,7 @@ More: [`--schema`](USAGE.md#--schema), [`--matrix`](USAGE.md#data-exploration).
 zipped stores (`.zarr.zip`, also on stdin). An AnnData or MuData store
 written with `write_zarr` opens with the same tabs as its `.h5ad` / `.h5mu`
 — summary, `X`, `obs`, `var`, `obsm`, `layers`, `obsp`, `raw`, `uns`,
-modalities — and the summary's storage rows show the chunking and codecs.
+modalities — and `--info` (*Details ▸ File*) shows the chunking and codecs.
 Any other store (OME-Zarr images, xarray datasets) opens as a hierarchy tab
 plus one tab per 1-D / 2-D array. Zarr v2 (compressors blosc, zstd, gzip,
 zlib, lz4, bz2; C and Fortran order) and v3 (`zarr.json`; codecs transpose,

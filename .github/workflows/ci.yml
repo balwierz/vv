@@ -694,6 +694,10 @@ jobs:
           grep -qx '    Encoding: dictionary in all 4 row groups' <<<"$out"
           grep -q '^storage: Storage Physical type BYTE_ARRAY .*Codec snappy' <<<"$out"
           grep -q '^tooltip: Chr : string | dictionary · snappy' <<<"$out"
+          # An AnnData file's storage rows: in Details ▸ File, not its summary.
+          out=$(VVG_WINTEST=1 VVG_DETAILS=1 ./build-gui/gui/vvg tests/data/tiny.chunked.h5ad)
+          echo "$out" | grep -A3 '^Storage'
+          grep -q '^  X/data: float64  |  chunks of 30 (240 B)  |  shuffle + gzip 5' <<<"$out"
           # Copy far right of it reads the cells it copies; the detail dock
           # lists the window's columns and a line for the rest.
           out=$(VVG_WINTEST=1 VVG_SELECT=0,590,1,600 VVG_COPYAS=tsvh ./build-gui/gui/vvg "$RUNNER_TEMP/wide600.tsv")

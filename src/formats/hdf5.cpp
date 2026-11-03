@@ -731,12 +731,17 @@ struct OpenSpec {
     AnnMatrixAxes axes = AnnMatrixAxes::ObsByVar;
     std::string   key;       // EdgeList: the labelled axis, "obs" or "var"
     bool          long_form = false;  // --matrix long: shown as entry rows
+    // Summary only: how the matrices are stored (file size, each matrix's
+    // encoding, chunks, filters, sizes), as summary lines, deferred ones
+    // included. Shown by Details ▸ File / --info, not the summary tab.
+    std::string   storage;
 };
 
 // A summary line starting with kSummaryDefer is a placeholder,
 // "<kSummaryDefer>profile|storage\t<path>\t<label>", for rows read from the
-// matrices only when the summary tab is built; expand_summary_rows replaces
-// each with the rows it stands for.
+// matrices only when the summary tab is built (profile) or the file's
+// details are asked for (storage); expand_summary_rows replaces each with the
+// rows it stands for.
 static constexpr const char* kSummaryDefer = "\x01";
 static std::string expand_summary_rows(const Store& store, const std::string& text);
 static std::string summary_about(const std::string& key, const std::string& format);
@@ -986,7 +991,7 @@ class Hdf5Source : public WorkbookSource {
                                   std::unique_ptr<Hdf5Source>* out,
                                   int64_t df_row_cap = kDataFrameRowCap) {
         // A summary tab is built when it is first read, like a sibling tab:
-        // its profile and storage rows read the matrices (expand_summary_rows),
+        // its profile rows read the matrices (expand_summary_rows),
         // which --list-tabs, --tab X or a export of obs never shows.
         if (spec.kind == OpenSpec::Kind::Summary || has_viewport_reader(spec) ||
             spec.kind == OpenSpec::Kind::TenxMatrix || spec.kind == OpenSpec::Kind::LoomMatrix) {
@@ -1031,6 +1036,29 @@ public:
     // tab_label() reads only the spec — no build, so the tab strip and the
     // --tab selector can list/match components without materialising them.
     std::string tab_label() const override { return spec_.display; }
+    // Details ▸ File / --info: the file's storage rows (AnnData / MuData:
+    // file size, each matrix's encoding, chunks, filters, sizes), read from
+    // the matrices' chunk indexes when asked.
+    void add_details(FileDetails& d) const override {
+        if (!all_specs_) return;
+        for (const OpenSpec& sp : *all_specs_) {
+            if (sp.kind != OpenSpec::Kind::Summary || sp.storage.empty()) continue;
+            // A file's size is in the File section already; a Zarr
+            // directory's total is not.
+            bool sized = false;
+            if (const DetailItem* f = find_detail(d, "File"))
+                for (const DetailItem& r : f->children) sized |= r.key == "Size";
+            DetailItem sec{"Storage", "", {}};
+            std::stringstream ss(expand_summary_rows(*file_, sp.storage));
+            for (std::string line; std::getline(ss, line);) {
+                const size_t tab = line.find('\t');
+                if (tab == std::string::npos || (sized && line.compare(0, tab, "file size") == 0)) continue;
+                sec.children.push_back({line.substr(0, tab), line.substr(tab + 1), {}});
+            }
+            if (!sec.children.empty()) d.push_back(std::move(sec));
+            return;
+        }
+    }
 
     arrow::Status read_status() const override {
         ensure_built();
@@ -3019,18 +3047,11 @@ static std::string summary_about(const std::string& key, const std::string& form
         const size_t n = std::strlen(suffix);
         return key.size() >= n && key.compare(key.size() - n, n, suffix) == 0;
     };
-    // Rows about a matrix's values and storage first: "X profile" is not "X".
+    // A matrix's values row first: "X profile" is not "X".
     if (ends(" profile"))
         return "value type, how many values are stored, their range; "
                "whether they look like raw counts";
-    if (ends(" storage")) return "on-disk encoding, chunking, compression and size";
-    if (ends(" row slice")) return "the least a read of one row decompresses";
-    if (ends(" column slice")) return "the least a read of one column decompresses";
-    if (ends("/data")) return "the stored (non-zero) values";
-    if (ends("/indices")) return "the column (CSR) or row (CSC) of each stored value";
-    if (ends("/indptr")) return "where each row (CSR) or column (CSC) starts in data / indices";
     if (key == "format") return "file format";
-    if (key == "file size") return "size of the file on disk";
     if (key == "root-encoding") return "anndata's on-disk encoding of the root group";
     if (format == "MuData") {
         if (key == "modalities") return "the AnnData objects inside, one per assay (rna, atac, prot, …)";
@@ -3082,9 +3103,9 @@ static std::vector<OpenSpec> scan_anndata(const Store& store, const std::string&
     auto exists = [&](const std::string& rel) { return store.kind(at(rel)) != NodeKind::Missing; };
     std::vector<OpenSpec> specs;
 
-    // Summary tab (key/value rows). The storage-layout rows are collected
-    // apart and appended last, so a preview of the summary's first rows still
-    // shows the matrix, obs / var and the other entries.
+    // Summary tab (key/value rows): what the file holds. How it is stored
+    // (file size, each matrix's layout) is collected apart into the summary
+    // spec's `storage`, for the file's details (Details ▸ File, --info).
     std::string summary, storage;
     auto add = [&](const std::string& k, const std::string& v) {
         summary += k; summary += '\t'; summary += v; summary += '\n';
@@ -3281,9 +3302,9 @@ static std::vector<OpenSpec> scan_anndata(const Store& store, const std::string&
         }
     }
 
-    // Prepend the summary tab.
-    summary += storage;
+    // Prepend the summary tab; the storage rows go to the file's details.
     OpenSpec sum_spec{OpenSpec::Kind::Summary, root.empty() ? "/" : root, "summary", summary};
+    sum_spec.storage = storage;
     specs.insert(specs.begin(), sum_spec);
     return specs;
 }
@@ -3935,9 +3956,21 @@ std::string Hdf5Source::open_store(StorePtr store, const std::string& path,
                            " columns (joint, all modalities)\n";
                 specs.push_back({OpenSpec::Kind::DataFrame, std::string("/") + df, df, "joint"});
             }
+        std::string storage;
+        if (int64_t fsz = st.total_bytes(); fsz >= 0)
+            storage += "file size\t" + h5_size_label((double)fsz) + "\n";
         for (const std::string& m : mods) {
             for (OpenSpec sp : scan_anndata(st, "/mod/" + m)) {
                 if (sp.kind == OpenSpec::Kind::Summary) {
+                    // the modality's storage rows, labelled "rna:X storage"
+                    std::stringstream ss(sp.storage);
+                    for (std::string line; std::getline(ss, line);) {
+                        const bool deferred = line.rfind(kSummaryDefer, 0) == 0;
+                        if (!deferred) continue;   // its file size: the file's, above
+                        const size_t t2 = line.find('\t', line.find('\t') + 1);
+                        if (t2 != std::string::npos) line.insert(t2 + 1, m + ":");
+                        storage += line + "\n";
+                    }
                     // the modality's X line, for the MuData summary
                     for (size_t at = 0; (at = sp.footer_hint.find("X\t", at)) != std::string::npos; ++at)
                         if (at == 0 || sp.footer_hint[at - 1] == '\n') {
@@ -3950,9 +3983,8 @@ std::string Hdf5Source::open_store(StorePtr store, const std::string& path,
                 specs.push_back(std::move(sp));
             }
         }
-        if (int64_t fsz = st.total_bytes(); fsz >= 0)
-            summary += "file size\t" + h5_size_label((double)fsz) + "\n";
         specs.insert(specs.begin(), OpenSpec{OpenSpec::Kind::Summary, "/", "summary", summary});
+        specs.front().storage = storage;
         auto all = std::make_shared<std::vector<OpenSpec>>(specs);
         OpenSpec first = specs.front();
         std::vector<OpenSpec> siblings(specs.begin() + 1, specs.end());

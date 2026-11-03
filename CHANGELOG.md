@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   file's own metadata; an ORC file's file and writer versions, software,
   codec, compression block, stripes, row index stride and user metadata.
 
+### Changed
+- AnnData / MuData: the storage rows (each matrix's encoding, chunks,
+  filters, sizes on disk; the file size) moved from the summary tab to
+  `--info` and vvg's Details ▸ File, under Storage; MuData lists each
+  modality's (`rna:X storage`). The summary tab keeps what the file holds.
+
 ## [1.34.0] - 2026-11-03
 
 ### Added
