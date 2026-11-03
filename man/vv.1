@@ -666,6 +666,16 @@ ends with a row-group table (rows, first row, sizes; the first 50 row
 groups); \fB\-\-select\fR narrows the columns and adds their per-row-group
 min / max to that table.
 .TP
+.B \-\-info
+How the file is stored, without reading its data. Every format: path,
+format, size, compression (gzip, BGZF, zstd, bzip2, xz), index files next
+to it, rows (when known without a scan), columns, the writer, and the
+key-value metadata. Parquet adds the row groups, sizes, codecs, data page
+version, page index and bloom filters, the declared sort order, and per
+column the Parquet physical and logical type, the encoding over the row
+groups (dictionary, a fallback to PLAIN), codec, sizes, nulls and min / max.
+With \fB\-\-json\fR, the same as nested objects.
+.TP
 .B \-\-contigs
 For BAM / CRAM / SAM and VCF / BCF, list the reference sequences named
 in the header \(en the \fB@SQ\fR lines of an alignment file, or the

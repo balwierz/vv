@@ -158,6 +158,7 @@ complete -c vv -c vh -l describe           -d 'Per-column statistics incl. std a
 complete -c vv -c vh -l percentiles -x     -d '--describe percentiles, comma-separated 0-100 (default 25,50,75)'
 complete -c vv -c vh -l count              -d 'Print the row count and exit'
 complete -c vv -c vh -l stats              -d 'Parquet metadata dump (no data read)'
+complete -c vv -c vh -l info               -d 'How the file is stored: compression, index, column encodings and codecs (no data read)'
 complete -c vv -c vh -l contigs            -d 'BAM/CRAM/SAM, VCF/BCF: list reference sequences + detect assembly'
 complete -c vv -c vh -l seq-stats          -d 'FASTA/FASTQ: count, lengths, N50, GC, Q20/Q30'
 complete -c vv -c vh -l flatten            -d 'struct columns as one column per leaf (st.a, st.b.c)'

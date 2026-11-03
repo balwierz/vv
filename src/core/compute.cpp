@@ -642,6 +642,7 @@ public:
     int min_col_width(int col_idx) const override {
         return col_idx < n_inner_ ? inner_->min_col_width(col_idx) : 4;
     }
+    void add_details(FileDetails& d) const override { inner_->add_details(d); }
     std::string footer() const override {
         std::string s = inner_->footer() + "  |  computed: ";
         for (size_t k = 0; k < specs_.size(); ++k) s += (k ? ", " : "") + specs_[k].name;

@@ -1175,6 +1175,7 @@ public:
     std::string tab_label() const override { Lock l(hdf5_mutex()); return in_->tab_label(); }
     std::string footer() const override { Lock l(hdf5_mutex()); return in_->footer(); }
     std::string created_by() const override { Lock l(hdf5_mutex()); return in_->created_by(); }
+    void add_details(FileDetails& d) const override { Lock l(hdf5_mutex()); in_->add_details(d); }
     std::vector<std::string> preamble_above() const override { Lock l(hdf5_mutex()); return in_->preamble_above(); }
     std::string top_banner() const override { Lock l(hdf5_mutex()); return in_->top_banner(); }
     std::vector<std::string> preamble_below() const override { Lock l(hdf5_mutex()); return in_->preamble_below(); }

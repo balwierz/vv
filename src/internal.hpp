@@ -1483,6 +1483,11 @@ void print_schema_metadata(const arrow::Schema& schema);
 void emit_metadata_json(const arrow::Schema& schema);
 
 std::string format_label_of(TabularSource& src);
+// File details (src/core/details.cpp): a size as "2.1 KiB", a ratio as
+// "1.62×" ("" when either side is 0), and --info's text / JSON output.
+std::string detail_size(int64_t bytes);
+std::string detail_ratio(int64_t raw, int64_t stored);
+void print_details(const FileDetails& d, bool json);
 
 std::string print_stats_only(TabularSource& src, const Config& cfg);
 

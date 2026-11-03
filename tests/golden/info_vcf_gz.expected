@@ -1,0 +1,7 @@
+File
+  Path: /home/piotr/Sources/ParquetViewer/tests/data/tiny.vcf.gz
+  Format: VCF
+  Size: N bytes
+  Compression: gzip (BGZF)
+  Index: tiny.vcf.gz.tbi
+  Columns: 8

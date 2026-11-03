@@ -381,6 +381,7 @@ public:
     int min_col_width(int col_idx) const override {
         return (col_idx < n_inner_) ? inner_->min_col_width(col_idx) : 4;
     }
+    void add_details(FileDetails& d) const override { inner_->add_details(d); }
     std::string footer() const override {
         return inner_->footer() + "  |  expanded " +
                schema_->field(src_col_)->name() + " → " +
@@ -501,6 +502,7 @@ public:
         const Flat& fl = flat_[(size_t)col_idx];
         return fl.path.empty() ? inner_->min_col_width(fl.inner) : 4;
     }
+    void add_details(FileDetails& d) const override { inner_->add_details(d); }
     std::string footer() const override {
         return inner_->footer() + "  |  structs flattened \xe2\x86\x92 " +
                std::to_string(schema_->num_fields()) + " columns";
@@ -836,6 +838,7 @@ public:
         return (col_idx < n_inner_) ? inner_->format_cell(col_idx, std::move(val))
                                      : val;
     }
+    void add_details(FileDetails& d) const override { inner_->add_details(d); }
     std::string footer() const override {
         return inner_->footer() + "  |  +genotype stats";
     }
@@ -1345,6 +1348,7 @@ public:
         const OutCol& oc = out_[(size_t)col_idx];
         return oc.kind == OutCol::Pass ? inner_->min_col_width(oc.inner) : 4;
     }
+    void add_details(FileDetails& d) const override { inner_->add_details(d); }
     std::string footer() const override {
         return inner_->footer() + (long_ ? "  |  one row per record \xc3\x97 sample"
                                          : "  |  sample columns typed from ##FORMAT");

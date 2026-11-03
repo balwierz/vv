@@ -1,0 +1,74 @@
+File
+  Path: /home/piotr/Sources/ParquetViewer/tests/data/tiny.parquet
+  Format: Parquet
+  Size: N bytes (N)
+  Rows: 20
+  Columns: 5
+  Created by: parquet-cpp-arrow version 24.0.0
+Parquet
+  Row groups: 4 (5 rows each)
+  Compressed: N KiB
+  Uncompressed: N KiB (R×)
+  Codecs: snappy
+  Data pages: v1
+  Column index: none
+  Offset index: none
+  Bloom filters: none
+Columns
+  Chr: string · dictionary · snappy · N B
+    Arrow type: string
+    Physical type: BYTE_ARRAY
+    Logical type: String
+    Encoding: dictionary in all 4 row groups
+    Page encodings: PLAIN, RLE, RLE_DICTIONARY
+    Codec: snappy
+    Compressed: N B
+    Uncompressed: N B (R×)
+    Nulls: 0
+    Min: chr1
+    Max: chr2
+  Start: int64 · dictionary · snappy · N B
+    Arrow type: int64
+    Physical type: INT64
+    Encoding: dictionary in all 4 row groups
+    Page encodings: PLAIN, RLE, RLE_DICTIONARY
+    Codec: snappy
+    Compressed: N B
+    Uncompressed: N B (R×)
+    Nulls: 0
+    Min: 100
+    Max: 11100
+  End: int64 · dictionary · snappy · N B
+    Arrow type: int64
+    Physical type: INT64
+    Encoding: dictionary in all 4 row groups
+    Page encodings: PLAIN, RLE, RLE_DICTIONARY
+    Codec: snappy
+    Compressed: N B
+    Uncompressed: N B (R×)
+    Nulls: 0
+    Min: 200
+    Max: 11200
+  Score: float · dictionary · snappy · N B
+    Arrow type: float
+    Physical type: FLOAT
+    Encoding: dictionary in all 4 row groups
+    Page encodings: PLAIN, RLE, RLE_DICTIONARY
+    Codec: snappy
+    Compressed: N B
+    Uncompressed: N B (R×)
+    Nulls: 0
+    Min: 0
+    Max: 0.95
+  Tags: list<element: string> · dictionary · snappy · N B
+    Arrow type: list<element: string>
+    Physical type: BYTE_ARRAY
+    Logical type: String
+    Encoding: dictionary in all 4 row groups
+    Page encodings: PLAIN, RLE, RLE_DICTIONARY
+    Codec: snappy
+    Compressed: N B
+    Uncompressed: N B (R×)
+    Nulls: 4
+    Min: TF
+    Max: promoter

@@ -861,6 +861,8 @@ public:
     arrow::Status read_status() const override { return inner_->read_status(); }
     const std::string& path() const override { return inner_->path(); }
     std::string footer() const override { return inner_->footer() + "  |  " + note_; }
+    std::string created_by() const override { return inner_->created_by(); }
+    void add_details(FileDetails& d) const override { inner_->add_details(d); }
 
     std::vector<std::unique_ptr<TabularSource>> expand_tabs() const override {
         std::vector<std::unique_ptr<TabularSource>> out;
@@ -1119,7 +1121,7 @@ static bool vcf_sites_only_run(const Config& cfg) {
                           cfg.head_rows_set || cfg.tail_rows_set;
     if (!scripted || cfg.interactive) return false;
     if (cfg.schema_only || cfg.list_columns || cfg.list_tabs || cfg.gt_stats || cfg.flatten ||
-        cfg.contigs || cfg.heatmap || cfg.validate || cfg.stats_only || cfg.samples == "long" ||
+        cfg.contigs || cfg.heatmap || cfg.validate || cfg.stats_only || cfg.info || cfg.samples == "long" ||
         !cfg.compute.empty())
         return false;
     if (!cfg.expand_col.empty() && cfg.expand_col != "INFO") return false;
@@ -1191,7 +1193,7 @@ static ColumnNeed csv_column_need(const Config& cfg) {
                           cfg.describe || !cfg.unique_cols.empty() || cfg.distinct;
     if (!scripted || cfg.interactive) return n;
     if (cfg.schema_only || cfg.list_columns || cfg.list_tabs || cfg.flatten || !cfg.expand_col.empty() ||
-        cfg.heatmap || cfg.validate || cfg.stats_only || cfg.contigs || cfg.sample_n > 0 ||
+        cfg.heatmap || cfg.validate || cfg.stats_only || cfg.info || cfg.contigs || cfg.sample_n > 0 ||
         cfg.tail_rows_set)
         return n;
     auto plain = [](std::string t, std::string* out) {

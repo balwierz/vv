@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `--info`: how a file is stored, for every format, without reading its
+  data. Lists size, compression (gzip / BGZF / zstd / bzip2 / xz), index
+  files next to it, rows when known, columns, the writer and the key-value
+  metadata. For Parquet it adds the row groups, codecs, data page version,
+  page index, bloom filters and declared sort order. Per column it adds the
+  physical / logical type, the encoding over the row groups (`dictionary in
+  all 4 row groups`, `falls back to PLAIN in 2 of them`), codec, sizes,
+  nulls and min / max. A dictionary-encoded column reads back as `string`,
+  so this is where its encoding shows. `--info --json` writes it as nested
+  objects.
+
 ## [1.34.0] - 2026-11-03
 
 ### Added

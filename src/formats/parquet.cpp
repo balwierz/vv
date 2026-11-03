@@ -29,6 +29,64 @@ static std::shared_ptr<parquet::Statistics> chunk_stats(const parquet::RowGroupM
     }
 }
 
+// ── File details (--info, vvg's Details ▸ File) ─────────────────────────────
+
+static const char* pq_codec_name(parquet::Compression::type c) {
+    switch (c) {
+        case parquet::Compression::UNCOMPRESSED: return "none";
+        case parquet::Compression::SNAPPY:       return "snappy";
+        case parquet::Compression::GZIP:         return "gzip";
+        case parquet::Compression::LZO:          return "lzo";
+        case parquet::Compression::BROTLI:       return "brotli";
+        case parquet::Compression::LZ4:          return "lz4";
+        case parquet::Compression::ZSTD:         return "zstd";
+        case parquet::Compression::LZ4_FRAME:    return "lz4_frame";
+        case parquet::Compression::LZ4_HADOOP:   return "lz4_hadoop";
+        default:                                  return "?";
+    }
+}
+
+static bool is_dictionary_encoding(parquet::Encoding::type e) {
+    return e == parquet::Encoding::PLAIN_DICTIONARY || e == parquet::Encoding::RLE_DICTIONARY;
+}
+
+// Every row group's statistics of one leaf merged into one: the column's
+// overall min / max and null count. Null for INT96, which has no order.
+template <class DType>
+static std::shared_ptr<parquet::Statistics> merge_typed_stats(
+        const std::vector<std::shared_ptr<parquet::Statistics>>& v) {
+    auto acc = std::static_pointer_cast<parquet::TypedStatistics<DType>>(
+        parquet::Statistics::Make(v[0]->descr()));
+    for (const auto& s : v) acc->Merge(static_cast<const parquet::TypedStatistics<DType>&>(*s));
+    return acc;
+}
+static std::shared_ptr<parquet::Statistics> merge_stats(
+        const std::vector<std::shared_ptr<parquet::Statistics>>& v) {
+    switch (v[0]->physical_type()) {
+        case parquet::Type::BOOLEAN:    return merge_typed_stats<parquet::BooleanType>(v);
+        case parquet::Type::INT32:      return merge_typed_stats<parquet::Int32Type>(v);
+        case parquet::Type::INT64:      return merge_typed_stats<parquet::Int64Type>(v);
+        case parquet::Type::FLOAT:      return merge_typed_stats<parquet::FloatType>(v);
+        case parquet::Type::DOUBLE:     return merge_typed_stats<parquet::DoubleType>(v);
+        case parquet::Type::BYTE_ARRAY: return merge_typed_stats<parquet::ByteArrayType>(v);
+        case parquet::Type::FIXED_LEN_BYTE_ARRAY: return merge_typed_stats<parquet::FLBAType>(v);
+        default:                        return nullptr;
+    }
+}
+
+static std::string join_names(const std::set<std::string>& s) {
+    std::string out;
+    for (const auto& x : s) out += (out.empty() ? "" : ", ") + x;
+    return out;
+}
+
+// "in all 12 row groups", "in 3 of 12 row groups"; "" for a single group.
+static std::string of_row_groups(int k, int n) {
+    if (n <= 1) return "";
+    if (k == n) return n == 2 ? " in both row groups" : " in all " + std::to_string(n) + " row groups";
+    return " in " + std::to_string(k) + " of " + std::to_string(n) + " row groups";
+}
+
 static GenomicCoordCols detect_coord_columns(const arrow::Schema& schema,
                                              const std::string& override_cols) {
     GenomicCoordCols r;
@@ -737,6 +795,196 @@ public:
         return b.empty() ? std::vector<std::string>{} : std::vector<std::string>{b};
     }
     std::string created_by() const override { return meta_->created_by(); }
+
+    // One leaf column's storage over all row groups: its Parquet types,
+    // encodings, codecs, sizes, nulls and min / max. `summary` gets the line
+    // shown beside the column: "string · dictionary · zstd · 1.2 KiB".
+    std::vector<DetailItem> leaf_details(int leaf, const std::string& arrow_type,
+                                         std::string* summary) const {
+        const parquet::ColumnDescriptor* desc = meta_->schema()->Column(leaf);
+        std::vector<DetailItem> rows;
+        auto add = [&](std::string k, std::string v) { rows.push_back({std::move(k), std::move(v), {}}); };
+        if (!arrow_type.empty()) add("Arrow type", arrow_type);
+        add("Physical type", parquet::TypeToString(desc->physical_type(), desc->type_length()));
+        const auto& lt = desc->logical_type();
+        if (lt && lt->is_valid() && !lt->is_none())
+            add("Logical type", lt->ToString());
+        else if (desc->converted_type() != parquet::ConvertedType::NONE)
+            add("Converted type", parquet::ConvertedTypeToString(desc->converted_type()));
+
+        const int n_rg = meta_->num_row_groups();
+        int64_t comp = 0, raw = 0, nulls = 0;
+        bool nulls_known = true, minmax = n_rg > 0;
+        std::set<std::string> codecs, encodings, plain;   // plain: non-dictionary data pages
+        int rg_dict = 0, rg_mixed = 0, rg_plain = 0;
+        std::vector<std::shared_ptr<parquet::Statistics>> stats;
+        for (int g = 0; g < n_rg; ++g) {
+            auto cc = meta_->RowGroup(g)->ColumnChunk(leaf);
+            comp += cc->total_compressed_size();
+            raw  += cc->total_uncompressed_size();
+            codecs.insert(pq_codec_name(cc->compression()));
+            for (auto e : cc->encodings()) encodings.insert(parquet::EncodingToString(e));
+            bool dict = false, other = false;
+            if (const auto& es = cc->encoding_stats(); !es.empty()) {
+                for (const auto& p : es) {
+                    if (p.page_type == parquet::PageType::DICTIONARY_PAGE) continue;
+                    if (is_dictionary_encoding(p.encoding)) dict = true;
+                    else { other = true; plain.insert(parquet::EncodingToString(p.encoding)); }
+                }
+            } else {
+                // A writer that stored no page encoding stats: the chunk's
+                // encodings, less the levels' RLE / BIT_PACKED, say which.
+                dict = cc->has_dictionary_page();
+                if (!dict)
+                    for (auto e : cc->encodings())
+                        if (e != parquet::Encoding::RLE && e != parquet::Encoding::BIT_PACKED) {
+                            other = true;
+                            plain.insert(parquet::EncodingToString(e));
+                        }
+            }
+            if (dict && other) ++rg_mixed;
+            else if (dict)     ++rg_dict;
+            else               ++rg_plain;
+            auto st = cc->is_stats_set() ? cc->statistics() : nullptr;
+            if (st && st->HasNullCount()) nulls += st->null_count();
+            else if (desc->max_definition_level() > 0) nulls_known = false;
+            if (st && st->HasMinMax()) stats.push_back(st);
+            else minmax = false;
+        }
+        const std::string others = plain.empty() ? std::string("PLAIN") : join_names(plain);
+        std::string enc, enc_short;
+        if (rg_plain == n_rg) {
+            enc = enc_short = others;
+        } else {
+            enc = "dictionary" + of_row_groups(rg_dict + rg_mixed, n_rg);
+            enc_short = rg_mixed || rg_plain ? "dictionary + " + others : "dictionary";
+            if (rg_mixed)
+                enc += ", falls back to " + others +
+                       (n_rg > 1 ? " in " + std::to_string(rg_mixed) + " of them" : std::string());
+            if (rg_plain) enc += "; " + others + " in the other " + std::to_string(rg_plain);
+        }
+        add("Encoding", enc);
+        add("Page encodings", join_names(encodings));
+        add("Codec", join_names(codecs));
+        add("Compressed", detail_size(comp));
+        const std::string ratio = detail_ratio(raw, comp);
+        add("Uncompressed", detail_size(raw) + (ratio.empty() ? "" : " (" + ratio + ")"));
+        add("Nulls", nulls_known ? digits_with_sep(std::to_string(nulls)) : "not recorded");
+        if (minmax && !stats.empty())
+            if (auto merged = merge_stats(stats); merged && merged->HasMinMax()) {
+                std::shared_ptr<arrow::Scalar> a, b;
+                if (parquet::arrow::StatisticsAsScalars(*merged, &a, &b).ok() && a && b) {
+                    std::string mn = a->ToString(), mx = b->ToString();
+                    if (mn == "-0") mn = "0";   // a zero minimum is stored as -0.0
+                    if (mx == "-0") mx = "0";
+                    add("Min", mn);
+                    add("Max", mx);
+                }
+            }
+        *summary = (arrow_type.empty() ? std::string() : arrow_type + " \xc2\xb7 ") + enc_short +
+                   " \xc2\xb7 " + join_names(codecs) + " \xc2\xb7 " + detail_size(comp);
+        return rows;
+    }
+
+    void add_details(FileDetails& d) const override {
+        const parquet::FileMetaData& m = *meta_;
+        DetailItem pq{"Parquet", "", {}}, cols{"Columns", "", {}};
+        auto add = [](DetailItem& s, std::string k, std::string v) {
+            s.children.push_back({std::move(k), std::move(v), {}});
+        };
+        try {
+            const int n_rg = m.num_row_groups();
+            std::vector<int64_t> rows;
+            int64_t comp = 0, raw = 0;
+            int chunks = 0, col_index = 0, off_index = 0;
+            std::map<std::string, int> codec_chunks;
+            std::set<std::string> bloom, page_versions;
+            for (int g = 0; g < n_rg; ++g) {
+                auto rg = m.RowGroup(g);
+                rows.push_back(rg->num_rows());
+                comp += rg->total_compressed_size();
+                raw  += rg->total_byte_size();
+                for (int c = 0; c < rg->num_columns(); ++c) {
+                    auto cc = rg->ColumnChunk(c);
+                    ++chunks;
+                    ++codec_chunks[pq_codec_name(cc->compression())];
+                    if (cc->GetColumnIndexLocation()) ++col_index;
+                    if (cc->GetOffsetIndexLocation()) ++off_index;
+                    if (cc->bloom_filter_offset()) bloom.insert(cc->path_in_schema()->ToDotString());
+                    for (const auto& p : cc->encoding_stats())
+                        if (p.page_type == parquet::PageType::DATA_PAGE) page_versions.insert("v1");
+                        else if (p.page_type == parquet::PageType::DATA_PAGE_V2) page_versions.insert("v2");
+                }
+            }
+            std::string rg_text = std::to_string(n_rg);
+            if (n_rg > 1) {
+                std::vector<int64_t> sorted = rows;
+                std::sort(sorted.begin(), sorted.end());
+                if (sorted.front() == sorted.back())
+                    rg_text += " (" + digits_with_sep(std::to_string(sorted.front())) + " rows each)";
+                else
+                    rg_text += " (rows per group: " + digits_with_sep(std::to_string(sorted.front())) +
+                               " to " + digits_with_sep(std::to_string(sorted.back())) + ", median " +
+                               digits_with_sep(std::to_string(sorted[sorted.size() / 2])) + ")";
+            }
+            add(pq, "Row groups", rg_text);
+            add(pq, "Compressed", detail_size(comp));
+            const std::string ratio = detail_ratio(raw, comp);
+            add(pq, "Uncompressed", detail_size(raw) + (ratio.empty() ? "" : " (" + ratio + ")"));
+            std::string codecs;
+            for (const auto& [name, n] : codec_chunks)
+                codecs += (codecs.empty() ? "" : ", ") + name +
+                          (codec_chunks.size() > 1 ? " (" + std::to_string(n) + " column chunks)" : "");
+            if (!codecs.empty()) add(pq, "Codecs", codecs);
+            if (!page_versions.empty()) add(pq, "Data pages", join_names(page_versions));
+            auto coverage = [&](int k) {
+                return k == 0 ? std::string("none")
+                     : k == chunks ? std::string("every column chunk")
+                     : std::to_string(k) + " of " + std::to_string(chunks) + " column chunks";
+            };
+            add(pq, "Column index", coverage(col_index));
+            add(pq, "Offset index", coverage(off_index));
+            add(pq, "Bloom filters", bloom.empty() ? std::string("none") : join_names(bloom));
+            if (n_rg > 0) {
+                std::string sorting;
+                for (const auto& sc : m.RowGroup(0)->sorting_columns())
+                    if (sc.column_idx >= 0 && sc.column_idx < m.num_columns())
+                        sorting += (sorting.empty() ? "" : ", ") +
+                                   m.schema()->Column(sc.column_idx)->path()->ToDotString() +
+                                   (sc.descending ? " descending" : " ascending");
+                if (!sorting.empty()) add(pq, "Sorted by", sorting);
+            }
+            if (is_lociss_) {
+                if (!lociss_assembly_.empty()) add(pq, "LociSSD assembly", lociss_assembly_);
+                if (!lociss_species_.empty())  add(pq, "LociSSD species", lociss_species_);
+            }
+
+            for (int i = 0; i < schema_->num_fields(); ++i) {
+                const auto& f = schema_->field(i);
+                const std::vector<int> leaves = arrow_to_leaf_indices({i});
+                const std::string type = type_label(*f->type());
+                if (leaves.size() == 1) {
+                    DetailItem it{f->name(), "", {}};
+                    it.children = leaf_details(leaves[0], type, &it.value);
+                    cols.children.push_back(std::move(it));
+                } else if (!leaves.empty()) {
+                    DetailItem it{f->name(), type + " \xc2\xb7 " + std::to_string(leaves.size()) +
+                                  " Parquet columns", {}};
+                    it.children.push_back({"Arrow type", type, {}});
+                    for (int leaf : leaves) {
+                        DetailItem l{m.schema()->Column(leaf)->path()->ToDotString(), "", {}};
+                        l.children = leaf_details(leaf, "", &l.value);
+                        it.children.push_back(std::move(l));
+                    }
+                    cols.children.push_back(std::move(it));
+                }
+            }
+        } catch (const std::exception& e) {
+            add(pq, "Error", std::string("Not a valid Parquet file: ") + e.what());
+        }
+        d.push_back(std::move(pq));
+        if (!cols.children.empty()) d.push_back(std::move(cols));
+    }
     // Accessors used by --stats to walk per-row-group and per-column metadata
     // without re-opening the file.
     std::shared_ptr<parquet::FileMetaData> parquet_meta() const { return meta_; }
@@ -819,20 +1067,6 @@ std::string print_stats_only(TabularSource& src, const Config& cfg) {
         else                            std::snprintf(buf,sizeof(buf),"%.2f GiB",sz/(1024.0*1024*1024));
         return std::string(buf);
     };
-    auto codec_name = [](parquet::Compression::type c) -> const char* {
-        switch (c) {
-            case parquet::Compression::UNCOMPRESSED: return "none";
-            case parquet::Compression::SNAPPY:       return "snappy";
-            case parquet::Compression::GZIP:         return "gzip";
-            case parquet::Compression::LZO:          return "lzo";
-            case parquet::Compression::BROTLI:       return "brotli";
-            case parquet::Compression::LZ4:          return "lz4";
-            case parquet::Compression::ZSTD:         return "zstd";
-            case parquet::Compression::LZ4_FRAME:    return "lz4_frame";
-            case parquet::Compression::LZ4_HADOOP:   return "lz4_hadoop";
-            default:                                  return "?";
-        }
-    };
 
 
     // Per-column rollup: sum (compressed, uncompressed) across all row groups.
@@ -881,7 +1115,7 @@ std::string print_stats_only(TabularSource& src, const Config& cfg) {
 
     auto codecs_of = [&](const ColAgg& c) {
         std::vector<std::string> names;
-        for (auto k : c.codecs) names.push_back(codec_name(k));
+        for (auto k : c.codecs) names.push_back(pq_codec_name(k));
         return names;
     };
     // --select narrows the columns reported (all of them otherwise).

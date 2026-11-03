@@ -3618,6 +3618,46 @@ print(d["row_groups"], len(g), [(r["rows"], r["first_row"]) for r in g][:2], g[2
         "4 4 [(5, 0), (5, 5)] {'name': 'Chr', 'nulls': 0, 'min': 'chr1', 'max': 'chr2'} 0"
 fi
 
+# --info: how a file is stored, for any format, from footers, headers and the
+# file system. Sizes depend on the pyarrow that wrote the fixture (CI writes
+# them anew), so the goldens hold N for each size; parquet_info_check.py
+# compares the exact sizes, types, codecs and encodings with pyarrow.
+info_case() {
+    local name="$1"; shift
+    "$VV" --info --color=never "$@" 2>&1 |
+        sed -E 's/[0-9][0-9_.]* (bytes|KiB|MiB|GiB|B)/N \1/g; s/\(N (B|KiB|MiB|GiB)\)/(N)/g; s/[0-9.]+×/R×/g' \
+        > "$TMP/$name.out"
+    if [ -f "$GOLDEN/$name.expected" ]; then
+        assert_eq_file "$name" "$TMP/$name.out" "$GOLDEN/$name.expected"
+    else
+        missing_golden "$name" "$TMP/$name.out"
+    fi
+}
+info_case info_parquet "$DATA/tiny.parquet"
+info_case info_lociss  "$DATA/tiny.lociss"
+info_case info_vcf_gz  "$DATA/tiny.vcf.gz"
+info_case info_tsv     "$DATA/tiny.tsv"
+[ -f "$DATA/tiny.kvmeta.parquet" ] && info_case info_kvmeta "$DATA/tiny.kvmeta.parquet"
+assert_exit_code "info_markdown_rejected" 1 "$VV" --info "$DATA/tiny.md"
+if command -v python3 >/dev/null 2>&1; then
+    assert_eq_file_inline "info_json_sections" "$("$VV" --info --json "$DATA/tiny.parquet" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+c = d["Columns"]["Chr"]
+print(list(d), c["Physical type"], c["Logical type"], c["Encoding"], c["value"].split(" · ")[:3])')" \
+        "['File', 'Parquet', 'Columns'] BYTE_ARRAY String dictionary in all 4 row groups ['string', 'dictionary', 'snappy']"
+fi
+if python3 -c 'import pyarrow.parquet' 2>/dev/null; then
+    mkdir -p "$TMP/pqinfo"
+    if python3 "$HERE/parquet_info_check.py" "$VV" "$TMP/pqinfo"; then
+        PASS=$((PASS+1)); echo "  ok    parquet_info_matches_pyarrow"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  parquet_info_matches_pyarrow"
+    fi
+else
+    echo "  skip  parquet_info_matches_pyarrow (needs: python3 pyarrow)"
+fi
+
 # --stats on a file without a Parquet footer: the text form notes it (naming
 # the format, not pasting the whole footer); --json is an error.
 assert_contains "stats_nonparquet_note" "$("$VV" --stats --color=never "$DATA/tiny.bam")" \

@@ -1,0 +1,44 @@
+File
+  Path: /home/piotr/Sources/ParquetViewer/tests/data/tiny.kvmeta.parquet
+  Format: Parquet
+  Size: N bytes (N)
+  Rows: 4
+  Columns: 2
+  Created by: parquet-cpp-arrow version 22.0.0
+Parquet
+  Row groups: 2 (2 rows each)
+  Compressed: N B
+  Uncompressed: N B (R×)
+  Codecs: snappy (2 column chunks), zstd (2 column chunks)
+  Data pages: v1
+  Column index: none
+  Offset index: none
+  Bloom filters: none
+Columns
+  id: int64 · dictionary · snappy · N B
+    Arrow type: int64
+    Physical type: INT64
+    Encoding: dictionary in both row groups
+    Page encodings: PLAIN, RLE, RLE_DICTIONARY
+    Codec: snappy
+    Compressed: N B
+    Uncompressed: N B (R×)
+    Nulls: 0
+    Min: 1
+    Max: 4
+  name: string · dictionary · zstd · N B
+    Arrow type: string
+    Physical type: BYTE_ARRAY
+    Logical type: String
+    Encoding: dictionary in both row groups
+    Page encodings: PLAIN, RLE, RLE_DICTIONARY
+    Codec: zstd
+    Compressed: N B
+    Uncompressed: N B (R×)
+    Nulls: 1
+    Min: a
+    Max: d
+Metadata
+  genome: GRCh38
+  note: line one\nline two
+  long: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx… (N)

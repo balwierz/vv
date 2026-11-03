@@ -90,7 +90,7 @@ int main(int argc, char** argv) {
         const bool doc = !cfg.force_text &&
                         (fends_ci(cfg.path, ".md")    || fends_ci(cfg.path, ".markdown") ||
                          fends_ci(cfg.path, ".mdown") || fends_ci(cfg.path, ".mkd"));
-        bool scripted = doc || cfg.schema_only || cfg.stats_only || cfg.describe ||
+        bool scripted = doc || cfg.schema_only || cfg.stats_only || cfg.info || cfg.describe ||
                         cfg.count || cfg.heatmap || !cfg.unique_cols.empty() ||
                         cfg.json_array || cfg.json_lines || cfg.md ||
                         cfg.delimiter || !cfg.parquet_out.empty() ||
@@ -213,6 +213,7 @@ int main(int argc, char** argv) {
                           && !cfg.schema_only
                           && !cfg.describe
                           && !cfg.stats_only
+                          && !cfg.info
                           && cfg.parquet_out.empty()
                           && cfg.arrow_out.empty();
         // On a terminal the document opens in the TUI: its rendered lines as a
@@ -341,7 +342,7 @@ int main(int argc, char** argv) {
     // The viewer shows a file with a malformed row (skipping it, with a note);
     // a scripted run stops at it unless told otherwise.
     if (cfg.on_bad_row.empty() && tui_wanted(cfg) &&
-        !(cfg.count || cfg.describe || cfg.schema_only || cfg.stats_only || cfg.heatmap ||
+        !(cfg.count || cfg.describe || cfg.schema_only || cfg.stats_only || cfg.info || cfg.heatmap ||
           !cfg.unique_cols.empty() || cfg.json_array || cfg.json_lines || cfg.md || cfg.distinct ||
           cfg.sample_n > 0 || cfg.tail_rows_set || cfg.list_columns || cfg.list_tabs))
         cfg.on_bad_row = "skip";
@@ -524,6 +525,12 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // --info: how the file is stored, from its footer / header (no data read).
+    if (cfg.info) {
+        print_details(file_details(*src), cfg.json_array || cfg.json_lines);
+        return 0;
+    }
+
     // --stats: Parquet metadata footer dump (no data read).
     if (cfg.stats_only) {
         std::string err = print_stats_only(*src, cfg);
@@ -680,7 +687,7 @@ int main(int argc, char** argv) {
     if (!tui_view && src->is_matrix_tab() && cfg.select_cols.empty() && !cfg.max_cols_set &&
         !cfg.delimiter && cfg.parquet_out.empty() && cfg.arrow_out.empty() && !cfg.json_array &&
         !cfg.json_lines && !cfg.md && !cfg.describe && cfg.unique_cols.empty() && !cfg.count &&
-        !cfg.schema_only && !cfg.stats_only && !cfg.heatmap && !cfg.validate) {
+        !cfg.schema_only && !cfg.stats_only && !cfg.info && !cfg.heatmap && !cfg.validate) {
         const auto sch = src->schema();
         const bool label = sch->num_fields() > 0 && sch->field(0)->type()->id() == arrow::Type::STRING;
         if (sch->num_fields() > kMatrixViewCols + (label ? 1 : 0))

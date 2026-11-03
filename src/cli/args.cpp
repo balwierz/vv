@@ -305,6 +305,12 @@ static void print_usage(const char* prog) {
         "  --stats             print Parquet metadata footer (row groups, codecs,\n"
         "                      per-column sizes, key-value metadata) without\n"
         "                      reading data; exit (add --json for JSON)\n"
+        "  --info              how the file is stored, for any format: size,\n"
+        "                      compression, index files, rows, the writer; for\n"
+        "                      Parquet each column's physical / logical type,\n"
+        "                      encoding (dictionary or not), codec and sizes;\n"
+        "                      the key-value metadata. Reads no data; exit (add\n"
+        "                      --json for JSON)\n"
         "  --contigs           BAM/CRAM/SAM, VCF/BCF: list the reference sequences\n"
         "                      (name, length) from the header and name the assembly\n"
         "                      (GRCh38, mm10, …). Reads no records; composes with\n"
@@ -640,6 +646,8 @@ Config parse_args(int argc, char** argv) {
             cfg.count = true;
         } else if (!std::strcmp(argv[i], "--stats")) {
             cfg.stats_only = true;
+        } else if (!std::strcmp(argv[i], "--info")) {
+            cfg.info = true;
         } else if (!std::strcmp(argv[i], "--contigs")) {
             cfg.contigs = true;
         } else if (!std::strcmp(argv[i], "--seq-stats")) {

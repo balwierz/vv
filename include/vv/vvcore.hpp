@@ -72,6 +72,7 @@ struct Config {
     std::vector<double> percentiles{25, 50, 75};  // --percentiles: --describe's
                                          // quantile columns (0-100, ascending)
     bool        stats_only     = false;  // --stats: Parquet metadata dump (no data read)
+    bool        info           = false;  // --info: how the file is stored (no data read)
     bool        count          = false;  // --count: print row count and exit
     std::string unique_cols;             // --value-counts / --unique COL[,COL,...]
     bool        distinct       = false;  // --distinct: drop duplicate rows (SQL
@@ -364,6 +365,29 @@ struct PreviewLimit {
     bool capped() const { return rows_capped() || cols_capped(); }
 };
 
+// ── File details ─────────────────────────────────────────────────────────────
+// How a file is stored, as a tree of labelled values: sections at the top
+// ("File", "Parquet", "Columns", "Metadata"), their rows below, and a row may
+// hold rows of its own (a column's storage). Read from footers, headers and
+// the file system only; never from the data. Backs `--info` and vvg's
+// Details ▸ File.
+struct DetailItem {
+    std::string key, value;
+    std::vector<DetailItem> children;
+};
+using FileDetails = std::vector<DetailItem>;
+
+// The common "File" section (path, format, size, compression, index files,
+// rows, columns, writer), the source's own sections (add_details), then
+// "Metadata" (the schema's key-value pairs, full values).
+FileDetails file_details(TabularSource& src);
+// The rows of `d` as text: "Section" lines, then "  key: value" indented two
+// spaces a level. `max_value` > 0 cuts a Metadata value to that many
+// columns, with its size; newlines and tabs are shown as \n / \t.
+std::string details_text(const FileDetails& d, int max_value = 0);
+// The section named `key`, or nullptr.
+const DetailItem* find_detail(const FileDetails& d, const std::string& key);
+
 // Abstract interface over every supported format. Frontends drive it
 // chunk-by-chunk: total_rows() (−1 while a streaming source is not fully
 // scanned), num_chunks()/chunk_meta(i), read_chunk(i, cols, &out) for lazy
@@ -473,6 +497,9 @@ public:
     // One-line footer shown after the table / in the TUI status bar.
     virtual std::string footer() const = 0;
     virtual std::string created_by() const { return ""; }
+    // Append this format's sections to file_details(): how the file is
+    // stored (a Parquet file's codecs and encodings, a dataset's chunks).
+    virtual void add_details(FileDetails& /*d*/) const {}
     // Header lines shown before the table (BED track/browser lines).
     virtual std::vector<std::string> preamble_above() const { return {}; }
     // One-line banner shown prominently on top (non-interactive: above the

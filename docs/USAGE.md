@@ -68,7 +68,7 @@ tables that would need horizontal scrolling.
 | `--tab NAME` | a sheet, table or component of a multi-table file |
 | `--tsv` `--csv` `--json` `--ndjson` `--md` | text output |
 | `--parquet OUT` / `--arrow OUT` | convert (`-` for stdout) |
-| `--schema` `--describe` `--stats` `--value-counts` `--distinct` `--sample N` `--contigs` `--seq-stats` `--gt-stats` | data exploration |
+| `--schema` `--info` `--describe` `--stats` `--value-counts` `--distinct` `--sample N` `--contigs` `--seq-stats` `--gt-stats` | data exploration |
 | `--heatmap` | numeric columns as a terminal image |
 | `--vertical` | transposed (`vh`) preview |
 | `--theme NAME` / `--box unicode\|ascii` / `--color auto\|always\|never` | appearance |
@@ -914,6 +914,60 @@ Group  Rows  First row  Compressed  Uncompressed  Start min  Start max
 count), and `row_group_stats`: per row group `index`, `rows`, `first_row`,
 sizes and each column's `nulls` / `min` / `max`. On a file that is not Parquet it is an error; `--schema --json`
 gives that file's columns.
+
+## `--info` (how a file is stored)
+
+```sh
+$ vv --info tests/data/tiny.parquet
+File
+  Path: tests/data/tiny.parquet
+  Format: Parquet
+  Size: 4_756 bytes (4.6 KiB)
+  Rows: 20
+  Columns: 5
+  Created by: parquet-cpp-arrow version 24.0.0
+Parquet
+  Row groups: 4 (5 rows each)
+  Compressed: 2.1 KiB
+  Uncompressed: 2.0 KiB (0.99×)
+  Codecs: snappy
+  Data pages: v1
+  Column index: none
+  Offset index: none
+  Bloom filters: none
+Columns
+  Chr: string · dictionary · snappy · 288 B
+    Arrow type: string
+    Physical type: BYTE_ARRAY
+    Logical type: String
+    Encoding: dictionary in all 4 row groups
+    Page encodings: PLAIN, RLE, RLE_DICTIONARY
+    Codec: snappy
+    Compressed: 288 B
+    Uncompressed: 272 B (0.94×)
+    Nulls: 0
+    Min: chr1
+    Max: chr2
+…
+```
+
+Reads no data: the file system, the footer and the header only.
+
+**Every format** has the File section:
+- size;
+- compression (gzip, BGZF, zstd, bzip2, xz);
+- index files found next to the file (`.tbi`, `.csi`, `.bai`, `.crai`, `.fai`, `.gzi`, `.idx`);
+- rows, when the count is known without reading the data;
+- columns and the writer.
+
+**Metadata** follows: the key-value pairs the writer stored, cut to one line of 100 characters (`--json` holds them whole).
+
+**Parquet** adds:
+- *Parquet section:* the row groups, sizes, codecs, data page version, page index and bloom filter coverage, and the declared sort order.
+- *Columns section:* one entry per column. Its line reads Arrow type · encoding · codec · compressed size. Its rows give the Parquet physical and logical type and the encoding over the row groups, e.g. `dictionary in all 4 row groups`, or `…, falls back to PLAIN in 2 of them` when the dictionary page outgrew its limit. Then the codec, sizes, null count, and min / max merged from the row-group statistics.
+- *Dictionary encoding:* a column stored with a dictionary reads back as plain `string`, so `--info` is where that encoding shows.
+
+`--info --json` writes the same tree as nested objects. A row is `"key": "value"`. A row with rows of its own (a column) is an object, its line under `"value"`.
 
 ## `--seq-stats` (FASTA / FASTQ summary)
 
