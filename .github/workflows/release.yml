@@ -189,6 +189,11 @@ jobs:
     # the Dolphin thumbnailer / KFileMetaData plugins. CI runs the same
     # scripts on every push.
     name: Build vv-gui deb (${{ matrix.image }}, ${{ matrix.arch }})
+    # debian:testing breaks whenever its library names move ahead of the
+    # Arrow apt repository (e.g. libthrift-0.23.0, which testing no longer
+    # has). A failed testing build leaves its .deb out of the release instead
+    # of stopping the release; debian:13 still has to pass.
+    continue-on-error: ${{ matrix.image == 'debian:testing' }}
     strategy:
       fail-fast: false
       matrix:

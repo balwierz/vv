@@ -12,7 +12,7 @@ Every tagged release publishes, for **x86_64** and **aarch64**:
 | `vv_<ver>-1_<deb-arch>.deb` | Debian package (same static binary) |
 | `vv-gui_<ver>-1+ubuntu24.04_<deb-arch>.deb` | Qt6 GUI (`vvg`) for Ubuntu 24.04 |
 | `vv-gui_<ver>-1+debian13_<deb-arch>.deb` | Qt6 GUI for Debian 13 — **with the KF6 Dolphin plugins** |
-| `vv-gui_<ver>-1+debianforky_<deb-arch>.deb` | Qt6 GUI for Debian testing/sid (rebuilt against current testing at every release) |
+| `vv-gui_<ver>-1+debianforky_<deb-arch>.deb` | Qt6 GUI for Debian testing/sid (rebuilt against current testing at every release; missing from a release whose testing build failed) |
 | `vv-<ver>-1.fc<NN>.<arch>.rpm` | Fedora package — CLI, deps from the Fedora repos |
 | `vv-gui-<ver>-1.fc<NN>.<arch>.rpm` | Fedora package — Qt6 GUI **with the KF6 Dolphin plugins** |
 | `vv-<ver>-macos-arm64.tar.gz` | Apple Silicon `vv` + `vvg`; **not** static — needs the Homebrew deps |
