@@ -323,6 +323,49 @@ public:
         return std::string("Format: ") + (is_bb_ ? "bigBed" : "bigWig") +
                "  |  Chromosomes: " + std::to_string(fp_ ? fp_->cl->nKeys : 0);
     }
+    // The header: version, zoom levels, compression, the chromosome list's
+    // size, and the file-wide summary it stores (bases covered; a bigWig's
+    // min / max / mean / standard deviation of the values).
+    void add_details(FileDetails& d) const override {
+        if (!fp_ || !fp_->hdr) return;
+        const bigWigHdr_t& h = *fp_->hdr;
+        DetailItem sec{is_bb_ ? "bigBed" : "bigWig", "", {}};
+        auto add = [&](std::string k, std::string v) { sec.children.push_back({std::move(k), std::move(v), {}}); };
+        auto num = [](double v) {
+            char b[32];
+            std::snprintf(b, sizeof(b), "%.6g", v);
+            return std::string(b);
+        };
+        add("Version", std::to_string(h.version));
+        std::string zoom = std::to_string(h.nLevels);
+        if (h.nLevels > 0 && h.zoomHdrs && h.zoomHdrs->level) {
+            zoom += " (reduction";
+            for (int i = 0; i < h.nLevels; ++i)
+                zoom += (i ? ", " : " ") + digits_with_sep(std::to_string(h.zoomHdrs->level[i]));
+            zoom += ")";
+        }
+        add("Zoom levels", zoom);
+        add("Compression", h.bufSize > 0 ? "zlib (blocks up to " + detail_size(h.bufSize) + ")"
+                                         : std::string("none"));
+        int64_t genome = 0;
+        for (uint64_t i = 0; i < fp_->cl->nKeys; ++i) genome += fp_->cl->len[i];
+        add("Chromosomes", digits_with_sep(std::to_string(fp_->cl->nKeys)) + " (" +
+                           digits_with_sep(std::to_string(genome)) + " bases)");
+        if (is_bb_)
+            add("Fields", std::to_string(h.fieldCount) + " (BED" + std::to_string(h.definedFieldCount) +
+                          (h.fieldCount > h.definedFieldCount
+                               ? " + " + std::to_string(h.fieldCount - h.definedFieldCount) : std::string()) + ")");
+        add("Bases covered", digits_with_sep(std::to_string(h.nBasesCovered)));
+        // A bigBed's summary counts how deep its features stack, not values.
+        if (!is_bb_ && h.nBasesCovered > 0) {
+            const double n = (double)h.nBasesCovered, mean = h.sumData / n;
+            add("Min", num(h.minVal));
+            add("Max", num(h.maxVal));
+            add("Mean", num(mean));
+            add("Std", num(std::sqrt(std::max(0.0, h.sumSquared / n - mean * mean))));
+        }
+        d.push_back(std::move(sec));
+    }
     int min_col_width(int col_idx) const override {
         if (col_idx == 0) return 6;   // chrom
         if (col_idx == 1 || col_idx == 2) return 9;  // start / end

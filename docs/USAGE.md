@@ -974,6 +974,8 @@ Reads no data: the file system, the footer and the header only.
 - *VCF / BCF:* the header (file format, reference sequences, assembly, samples) and every INFO / FORMAT / FILTER definition (Number · Type · Description).
 - *BAM / CRAM / SAM:* the header (version, sort order, reference sequences, assembly), each read group and program line, and a CRAM's reference (its UR and whether decoding needs `-f`).
 - *FASTA with a `.fai`:* its sequence count, total and longest length.
+- *bigWig / bigBed:* the version, zoom levels, compression, chromosomes, bases covered; a bigWig's min / max / mean / standard deviation; a bigBed's fields.
+- *SQLite:* pages, text encoding, user version, and the tables and views by name. *DuckDB:* the tables and views.
 - *CSV / TSV and other text tables:* the separator, the header row, preamble lines and malformed rows.
 
 `--info --json` writes the same tree as nested objects. A row is `"key": "value"`. A row with rows of its own (a column) is an object, its line under `"value"`.

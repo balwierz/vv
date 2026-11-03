@@ -1411,6 +1411,9 @@ then
             "$("$VV" --tab big --filter 'n >= 199998' --select label --tsv --no-header "$DDB" | tr '\n' ' ')" "r199998 r199999 "
         assert_eq_file_inline "duckdb_view" "$("$VV" --tab happy --tsv --no-header "$DDB")" "$(printf '1\talpha')"
         assert_eq_file_inline "duckdb_schema_table" "$("$VV" --tab lab.runs --count "$DDB")" "2"
+        INFO_D=$("$VV" --info --color=never "$DDB")
+        assert_contains "duckdb_info_table" "$INFO_D" "  lab.runs: table"
+        assert_contains "duckdb_info_view"  "$INFO_D" "  happy: view"
         # Opened with external access off: a view over another file is an
         # error in its own tab (exit 1), the other tabs unaffected.
         assert_exit_code "duckdb_external_access_off" 1 "$VV" --tab leak --tsv "$DDB"
@@ -3662,6 +3665,15 @@ INFO_V=$("$VV" --info --color=never "$DATA/tiny.bcf" 2>&1)
 assert_contains "info_bcf_info_def" "$INFO_V" "  AF: Number=A · Float · Allele frequency"
 assert_contains "info_bcf_filter"   "$INFO_V" "  PASS: All filters passed"
 refute_contains "info_bcf_no_htslib_warning" "$INFO_V" "[W::"
+# SQLite: its pages and tables by name; bigWig / bigBed: the header and the
+# summary a bigWig stores (tiny.bw: 1_100 bases covered, values 0.1 .. 0.9).
+INFO_SQ=$("$VV" --info --color=never "$DATA/tiny.sqlite")
+assert_contains "info_sqlite_encoding" "$INFO_SQ" "  Encoding: UTF-8"
+assert_contains "info_sqlite_tables"   "$INFO_SQ" "  samples: table"
+INFO_BW=$("$VV" --info --color=never "$DATA/tiny.bw")
+assert_contains "info_bigwig_covered" "$INFO_BW" "  Bases covered: 1_100"
+assert_contains "info_bigwig_max"     "$INFO_BW" "  Max: 0.9"
+assert_contains "info_bigbed_fields"  "$("$VV" --info --color=never "$DATA/tiny.bb")" "  Fields: 9 (BED6 + 3)"
 INFO_FA=$("$VV" --info --color=never "$DATA/tiny.fa")
 assert_contains "info_fasta_fai_sequences" "$INFO_FA" "  Sequences: 3"
 assert_contains "info_fasta_fai_length"    "$INFO_FA" "  Total length: 63"

@@ -201,6 +201,12 @@ public:
     }
     const std::string& path() const override { return path_; }
     std::string tab_label() const override { return label(spec()); }
+    // The database's tables and views, as listed at open.
+    void add_details(FileDetails& d) const override {
+        DetailItem objs{"Tables and views", std::to_string(tabs_->size()), {}};
+        for (const TabSpec& t : *tabs_) objs.children.push_back({label(t), t.kind, {}});
+        if (!objs.children.empty()) d.push_back(std::move(objs));
+    }
     std::string footer() const override {
         std::string s = "Format: DuckDB  |  " + std::string(spec().kind == "view" ? "View: " : "Table: ") +
                         label(spec());

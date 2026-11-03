@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   reference (UR, whether decoding needs one); a FASTA's .fai totals
   (sequences, total and longest length); a text table's separator,
   header row, preamble lines and malformed rows.
+- `--info` / Details ▸ File: a bigWig / bigBed header (version, zoom
+  levels, compression, chromosomes, bases covered; a bigWig's stored min /
+  max / mean / standard deviation; a bigBed's fields), a SQLite database's
+  pages, encoding, user version and tables / views, a DuckDB database's
+  tables and views.
 
 ### Changed
 - AnnData / MuData: the storage rows (each matrix's encoding, chunks,

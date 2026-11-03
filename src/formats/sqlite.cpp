@@ -352,6 +352,40 @@ public:
     }
     const std::string& path() const override { return path_; }
     std::string tab_label() const override { return table_; }
+    // The database's page size, pages, text encoding and user version
+    // (PRAGMAs) and its tables and views by name (sqlite_master), no
+    // COUNT(*) of each.
+    void add_details(FileDetails& d) const override {
+        DetailItem sec{"SQLite", "", {}}, objs{"Tables and views", "", {}};
+        auto query = [&](const char* sql, auto&& row) {
+            sqlite3_stmt* st = nullptr;
+            if (sqlite3_prepare_v2(db_.get(), sql, -1, &st, nullptr) != SQLITE_OK) return;
+            while (sqlite3_step(st) == SQLITE_ROW) row(st);
+            sqlite3_finalize(st);
+        };
+        auto text = [](sqlite3_stmt* st, int c) {
+            const unsigned char* t = sqlite3_column_text(st, c);
+            return t ? std::string((const char*)t) : std::string();
+        };
+        int64_t page = 0, pages = 0;
+        query("PRAGMA page_size", [&](sqlite3_stmt* st) { page = sqlite3_column_int64(st, 0); });
+        query("PRAGMA page_count", [&](sqlite3_stmt* st) { pages = sqlite3_column_int64(st, 0); });
+        sec.children.push_back({"Pages", digits_with_sep(std::to_string(pages)) + " of " +
+                                             detail_size(page), {}});
+        query("PRAGMA encoding", [&](sqlite3_stmt* st) { sec.children.push_back({"Encoding", text(st, 0), {}}); });
+        query("PRAGMA user_version", [&](sqlite3_stmt* st) {
+            if (const int64_t v = sqlite3_column_int64(st, 0))
+                sec.children.push_back({"User version", std::to_string(v), {}});
+        });
+        query("SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') "
+              "AND name NOT LIKE 'sqlite_%' ORDER BY name",
+              [&](sqlite3_stmt* st) { objs.children.push_back({text(st, 0), text(st, 1), {}}); });
+        d.push_back(std::move(sec));
+        if (!objs.children.empty()) {
+            objs.value = std::to_string(objs.children.size());
+            d.push_back(std::move(objs));
+        }
+    }
     std::string footer() const override {
         std::string s = "Format: SQLite  |  Table: " + table_;
         // total_rows() runs the lazy COUNT(*); the footer is a "real" view
