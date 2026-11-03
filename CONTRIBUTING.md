@@ -137,7 +137,18 @@ the script plus a reference from `docs/formats.md`.
    vv is on Bioconda, its bot usually opens the version bump in
    bioconda-recipes by itself; otherwise copy `packaging/bioconda/` to
    `recipes/vv/` there with the new `version` and `sha256`, `number: 0`.
-8. Check `vv --version` in a downloaded artifact matches the tag.
+8. Commit the pinned checksums, then publish the PKGBUILD to the AUR (needs
+   the maintainer's SSH key registered on aur.archlinux.org):
+
+   ```sh
+   git clone ssh://aur@aur.archlinux.org/vv.git aur-vv
+   cp packaging/arch/PKGBUILD packaging/arch/vv.install aur-vv/
+   cd aur-vv && makepkg --printsrcinfo > .SRCINFO
+   git commit -am "upgpkg: vv X.Y.Z-1" && git push
+   ```
+
+   `yay -S vv vv-gui` afterwards confirms it builds from the AUR.
+9. Check `vv --version` in a downloaded artifact matches the tag.
 
 `packaging/bioconda/` is the recipe submitted to bioconda-recipes (built and
 tested in a conda environment: conda-forge's Arrow, Bioconda's htslib, xlsxio

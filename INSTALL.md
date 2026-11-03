@@ -121,31 +121,25 @@ builds against a system htslib do (`vv --formats` shows which).
 
 ### Arch Linux
 
-A split PKGBUILD ships in the repository — `vv` (CLI/TUI) and `vv-gui` (the
-Qt6 desktop viewer plus the Dolphin thumbnailer and metadata plugins). One
-build produces both. It is **not** in the AUR.
-
-Two dependencies are **not in the official repositories**: `htslib` and
-`xlsxio` are AUR-only. `makepkg -s` cannot install them — it resolves
-dependencies with `pacman -S`, which never looks at the AUR — so install
-them first:
+The [`vv`](https://aur.archlinux.org/pkgbase/vv) package base in the AUR is a
+split package: `vv` (CLI/TUI) and `vv-gui` (the Qt6 desktop viewer plus the
+Dolphin thumbnailer and metadata plugins). One build produces both. With an
+AUR helper, which also builds the AUR-only dependencies `htslib` and `xlsxio`:
 
 ```sh
-paru -S htslib xlsxio          # or: yay -S htslib xlsxio
-
-# …or without an AUR helper:
-for p in htslib xlsxio; do
-  git clone https://aur.archlinux.org/$p.git
-  (cd $p && makepkg -si)
-done
+yay -S vv                      # CLI only
+yay -S vv vv-gui               # CLI + GUI (paru -S works the same)
 ```
 
-Then:
+Without a helper, build the two dependencies first — `makepkg -s` resolves
+dependencies with `pacman -S`, which never looks at the AUR — then `vv`:
 
 ```sh
-git clone https://github.com/balwierz/vv.git
-cd vv/packaging/arch
-makepkg -s                                       # one build, both packages
+for p in htslib xlsxio vv; do
+  git clone https://aur.archlinux.org/$p.git
+done
+(cd htslib && makepkg -si) && (cd xlsxio && makepkg -si)
+cd vv && makepkg -s                              # one build, both packages
 sudo pacman -U vv-*.pkg.tar.zst                  # CLI only
 sudo pacman -U vv-*.pkg.tar.zst vv-gui-*.pkg.tar.zst   # CLI + GUI
 ```
@@ -154,9 +148,13 @@ sudo pacman -U vv-*.pkg.tar.zst vv-gui-*.pkg.tar.zst   # CLI + GUI
 and there is no flag to pick one, so install the built package files
 directly if you only want the CLI.
 
-The PKGBUILD builds the **tagged release tarball it pins**, not your working
-tree. To package local changes, bump `pkgver` and re-run `updpkgsums`
-(from `pacman-contrib`), or use the source build below.
+The AUR name `vv` belonged to a terminal image viewer up to its 3.2-1; that
+project is now `moderncore`. Upgrading from it prints a warning.
+
+The AUR copy is `packaging/arch/PKGBUILD` from this repository. It builds the
+**tagged release tarball it pins**, not your working tree. To package local
+changes, bump `pkgver` there and re-run `updpkgsums` (from `pacman-contrib`),
+or use the source build below.
 
 ### Windows
 

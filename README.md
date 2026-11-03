@@ -83,11 +83,11 @@ sudo dnf install ./vv-*.rpm
 curl -L https://github.com/balwierz/vv/releases/download/v1.34.0/vv-1.34.0-linux-x86_64.tar.gz | tar -xz
 sudo install vv-1.34.0-linux-x86_64/vv /usr/local/bin/
 
-# Arch Linux (vv + vv-gui)
-git clone https://github.com/balwierz/vv.git && cd vv/packaging/arch && makepkg -si
+# Arch Linux: AUR (vv-gui adds vvg)
+yay -S vv vv-gui
 ```
 
-macOS tarball, Windows (installer or portable zip), building from source and the GUI build:
+macOS tarball, Windows (installer or portable zip), the AUR without a helper, building from source and the GUI build:
 [INSTALL.md](INSTALL.md).
 
 ## Quick start

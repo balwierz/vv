@@ -1766,10 +1766,11 @@ vv --tsv --sample 1000 huge.parquet | head    # head of a random sample
 # Building and installing
 
 See `INSTALL.md` for the complete matrix (`.deb`, `.rpm`, static binary,
-macOS tarball, Windows `.msi`, Arch PKGBUILD, source build). The Windows
+macOS tarball, Windows `.msi`, the AUR, source build). The Windows
 build has no interactive terminal viewer (`-i` is ignored with a note); `vvg`
-takes its place there. vv is **not** published on Bioconda, Homebrew or
-the AUR — those recipes exist in `packaging/` but have not been submitted.
+takes its place there. On Arch Linux, `yay -S vv vv-gui` installs from the
+AUR. vv is **not** published on Bioconda or Homebrew — those recipes exist in
+`packaging/` but have not been submitted.
 Quick start:
 
 ```sh
