@@ -3620,12 +3620,13 @@ fi
 
 # --info: how a file is stored, for any format, from footers, headers and the
 # file system. Sizes depend on the pyarrow that wrote the fixture (CI writes
-# them anew), so the goldens hold N for each size; parquet_info_check.py
+# them anew), so the goldens hold N for each size, and the path starts at
+# tests/data/ (a Windows checkout's is D:/…); parquet_info_check.py
 # compares the exact sizes, types, codecs and encodings with pyarrow.
 info_case() {
     local name="$1"; shift
     "$VV" --info --color=never "$@" 2>&1 |
-        sed -E 's/[0-9][0-9_.]* (bytes|KiB|MiB|GiB|B)/N \1/g; s/\(N (B|KiB|MiB|GiB)\)/(N)/g; s/[0-9.]+×/R×/g' \
+        sed -E 's@^(  Path: ).*tests/data/@\1tests/data/@; s/[0-9][0-9_.]* (bytes|KiB|MiB|GiB|B)/N \1/g; s/\(N (B|KiB|MiB|GiB)\)/(N)/g; s/[0-9.]+×/R×/g' \
         > "$TMP/$name.out"
     if [ -f "$GOLDEN/$name.expected" ]; then
         assert_eq_file "$name" "$TMP/$name.out" "$GOLDEN/$name.expected"

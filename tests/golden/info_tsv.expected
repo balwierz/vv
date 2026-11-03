@@ -1,5 +1,5 @@
 File
-  Path: /home/piotr/Sources/ParquetViewer/tests/data/tiny.tsv
+  Path: tests/data/tiny.tsv
   Format: delimited (separator: tab)
   Size: N bytes
   Columns: 3

@@ -1,5 +1,5 @@
 File
-  Path: /home/piotr/Sources/ParquetViewer/tests/data/tiny.kvmeta.parquet
+  Path: tests/data/tiny.kvmeta.parquet
   Format: Parquet
   Size: N bytes (N)
   Rows: 4

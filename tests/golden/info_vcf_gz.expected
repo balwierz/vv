@@ -1,5 +1,5 @@
 File
-  Path: /home/piotr/Sources/ParquetViewer/tests/data/tiny.vcf.gz
+  Path: tests/data/tiny.vcf.gz
   Format: VCF
   Size: N bytes
   Compression: gzip (BGZF)

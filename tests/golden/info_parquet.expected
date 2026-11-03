@@ -1,5 +1,5 @@
 File
-  Path: /home/piotr/Sources/ParquetViewer/tests/data/tiny.parquet
+  Path: tests/data/tiny.parquet
   Format: Parquet
   Size: N bytes (N)
   Rows: 20
