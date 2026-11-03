@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   version, record batches, their rows (from the batch headers) and the
   file's own metadata; an ORC file's file and writer versions, software,
   codec, compression block, stripes, row index stride and user metadata.
+- `--info` / Details ▸ File: a VCF / BCF header (file format, reference
+  sequences, assembly, samples) with its INFO / FORMAT / FILTER
+  definitions; a BAM / CRAM / SAM header (version, sort order, reference
+  sequences) with each read group and program line, and a CRAM's
+  reference (UR, whether decoding needs one); a FASTA's .fai totals
+  (sequences, total and longest length); a text table's separator,
+  header row, preamble lines and malformed rows.
 
 ### Changed
 - AnnData / MuData: the storage rows (each matrix's encoding, chunks,

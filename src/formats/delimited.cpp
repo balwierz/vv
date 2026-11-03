@@ -2342,6 +2342,25 @@ private:
         }
     }
 
+    // --info / Details ▸ File: the text layout (separator, header row,
+    // preamble lines, malformed rows), then a VCF's or SAM's header.
+    void add_details(FileDetails& d) const override {
+        DetailItem text{"Text", "", {}};
+        auto add = [&](std::string k, std::string v) { text.children.push_back({std::move(k), std::move(v), {}}); };
+        add("Separator", delimiter_ == '\t' ? std::string("tab")
+                         : delimiter_ == ',' ? std::string("comma") : std::string(1, delimiter_));
+        if (kind_ == DelimKind::CSV || kind_ == DelimKind::TSV)
+            add("Header row", auto_headerless_ ? "none detected (columns auto-named)" : "yes");
+        if (!preamble_lines_.empty())
+            add("Preamble lines", digits_with_sep(std::to_string(preamble_lines_.size())));
+        if (bad_log_)
+            if (const auto [n, first] = bad_log_->counts(); n > 0)
+                add("Malformed rows", std::to_string(n) + (on_bad_row_ == "null" ? " padded / cut" : " skipped") +
+                                      (first > 0 ? " (first: line " + std::to_string(first) + ")" : ""));
+        d.push_back(std::move(text));
+        if (kind_ == DelimKind::VCF || kind_ == DelimKind::SAM) header_details(path_, d);
+    }
+
     // BED track/browser lines are shown above the table; all other format
     // preambles (VCF ##INFO/##FILTER, SAM @SQ/@PG, GFF ##) go below the schema.
     std::vector<std::string> preamble_above() const override {

@@ -3,3 +3,6 @@ File
   Format: delimited (separator: tab)
   Size: N bytes
   Columns: 3
+Text
+  Separator: tab
+  Header row: yes

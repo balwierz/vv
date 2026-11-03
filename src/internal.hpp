@@ -1488,6 +1488,10 @@ std::string format_label_of(TabularSource& src);
 std::string detail_size(int64_t bytes);
 std::string detail_ratio(int64_t raw, int64_t stored);
 void print_details(const FileDetails& d, bool json);
+// A VCF / BCF or SAM / BAM / CRAM header's sections (src/formats/htslib.cpp):
+// what the header states, its INFO / FORMAT / FILTER definitions or read
+// groups and programs; nothing for another file.
+void header_details(const std::string& path, FileDetails& d);
 
 std::string print_stats_only(TabularSource& src, const Config& cfg);
 

@@ -967,6 +967,15 @@ Reads no data: the file system, the footer and the header only.
 - *Columns section:* one entry per column. Its line reads Arrow type · encoding · codec · compressed size. Its rows give the Parquet physical and logical type and the encoding over the row groups, e.g. `dictionary in all 4 row groups`, or `…, falls back to PLAIN in 2 of them` when the dictionary page outgrew its limit. Then the codec, sizes, null count, and min / max merged from the row-group statistics.
 - *Dictionary encoding:* a column stored with a dictionary reads back as plain `string`, so `--info` is where that encoding shows.
 
+**Other formats** add what their footer or header holds:
+- *Arrow IPC / Feather v2:* the metadata version, record batches, rows and the file's own metadata.
+- *ORC:* the file and writer versions, codec, stripes and user metadata.
+- *AnnData / MuData:* the Storage section: each matrix's encoding, chunks, filters and bytes on disk.
+- *VCF / BCF:* the header (file format, reference sequences, assembly, samples) and every INFO / FORMAT / FILTER definition (Number · Type · Description).
+- *BAM / CRAM / SAM:* the header (version, sort order, reference sequences, assembly), each read group and program line, and a CRAM's reference (its UR and whether decoding needs `-f`).
+- *FASTA with a `.fai`:* its sequence count, total and longest length.
+- *CSV / TSV and other text tables:* the separator, the header row, preamble lines and malformed rows.
+
 `--info --json` writes the same tree as nested objects. A row is `"key": "value"`. A row with rows of its own (a column) is an object, its line under `"value"`.
 
 ## `--seq-stats` (FASTA / FASTQ summary)

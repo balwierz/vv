@@ -5,6 +5,10 @@
 
 #include "internal.hpp"
 
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+
 // ── BAM aux-tag support (--tags) ──────────────────────────────────────────────
 //
 // SAM/BAM optional fields (`NM:i:2`, `AS:i:100`, `RG:Z:grp`, `MD:Z:…`) are
@@ -539,6 +543,7 @@ public:
     std::string footer() const override {
         return "Format: " + fmt_name_ + "  |  References: " + std::to_string(num_refs_);
     }
+    void add_details(FileDetails& d) const override { header_details(path_, d); }
     std::vector<std::string> preamble_below() const override { return preamble_lines_; }
     std::string format_cell(int col_idx, std::string val) const override {
         if (col_idx == 3 || col_idx == 7) return digits_with_sep(val);  // POS, PNEXT
@@ -1343,6 +1348,7 @@ public:
     std::string footer() const override {
         return "Format: BCF  |  Samples: " + std::to_string(n_samples_);
     }
+    void add_details(FileDetails& d) const override { header_details(path_, d); }
     std::vector<std::string> preamble_below() const override { return preamble_lines_; }
     std::string format_cell(int col_idx, std::string val) const override {
         if (col_idx == 1) return digits_with_sep(val);  // POS
@@ -1556,6 +1562,27 @@ public:
     const std::string& path() const override { return path_; }
     std::string footer() const override {
         return std::string("Format: ") + (is_fastq_ ? "FASTQ" : "FASTA");
+    }
+    // A FASTA's .fai: its sequences and their total length, no read of the
+    // sequence file.
+    void add_details(FileDetails& d) const override {
+        if (is_fastq_) return;
+        std::ifstream fai(std::filesystem::path(path_ + ".fai"));
+        if (!fai) return;
+        int64_t n = 0, total = 0, longest = 0;
+        for (std::string line; std::getline(fai, line);) {
+            const size_t t1 = line.find('\t');
+            if (t1 == std::string::npos) continue;
+            const int64_t len = std::strtoll(line.c_str() + t1 + 1, nullptr, 10);
+            ++n;
+            total += len;
+            longest = std::max(longest, len);
+        }
+        DetailItem sec{"FASTA index", "", {}};
+        sec.children.push_back({"Sequences", digits_with_sep(std::to_string(n)), {}});
+        sec.children.push_back({"Total length", digits_with_sep(std::to_string(total)), {}});
+        sec.children.push_back({"Longest", digits_with_sep(std::to_string(longest)), {}});
+        d.push_back(std::move(sec));
     }
     int min_col_width(int col_idx) const override {
         switch (col_idx) {
@@ -2055,6 +2082,107 @@ static std::string detect(const std::vector<std::string>& names,
 static void push_distinct(std::vector<std::string>& v, std::string x) {
     if (!x.empty() && std::find(v.begin(), v.end(), x) == v.end())
         v.push_back(std::move(x));
+}
+
+// ── File details (--info, Details ▸ File) ───────────────────────────────────
+
+// A VCF / BCF or SAM / BAM / CRAM header as file-details sections: a
+// "Header" summary (genomic_header_fields, plus the VCF version or @HD),
+// then the definitions it carries: INFO / FORMAT / FILTER lines (ID, then
+// Number · Type · Description), or the read groups and programs. A CRAM
+// adds the reference it was written against. Nothing when `path` has no
+// such header.
+void header_details(const std::string& path, FileDetails& d) {
+    // htslib's header checks warn on stderr ("AF should be declared as
+    // Number=A"); reading the file for the table already said so.
+    const int level = hts_get_log_level();
+    hts_set_log_level(HTS_LOG_OFF);
+    struct Restore { int l; ~Restore() { hts_set_log_level((htsLogLevel)l); } } restore{level};
+    GenomicHeader g;
+    if (!read_genomic_header(path, "", &g).empty()) return;
+    htsFile* fp = hts_open(path.c_str(), "r");
+    if (!fp) return;
+    DetailItem head{"Header", "", {}};
+    auto add = [](DetailItem& s, std::string k, std::string v) {
+        s.children.push_back({std::move(k), std::move(v), {}});
+    };
+    std::vector<DetailItem> defs;
+    const htsFormat* fmt = hts_get_format(fp);
+    if (fmt && fmt->category == variant_data) {
+        if (bcf_hdr_t* h = bcf_hdr_read(fp)) {
+            if (const char* v = bcf_hdr_get_version(h)) add(head, "File format", v);
+            DetailItem info{"INFO fields", "", {}}, format{"FORMAT fields", "", {}},
+                filter{"FILTERs", "", {}};
+            for (int i = 0; i < h->nhrec; ++i) {
+                bcf_hrec_t* r = h->hrec[i];
+                DetailItem* sec = r->type == BCF_HL_INFO ? &info
+                                : r->type == BCF_HL_FMT  ? &format
+                                : r->type == BCF_HL_FLT  ? &filter : nullptr;
+                if (!sec) continue;
+                auto val = [&](const char* key) {
+                    const int k = bcf_hrec_find_key(r, key);
+                    std::string v = k >= 0 && r->vals[k] ? r->vals[k] : "";
+                    if (v.size() >= 2 && v.front() == '"' && v.back() == '"') v = v.substr(1, v.size() - 2);
+                    return v;
+                };
+                std::string v;
+                if (sec != &filter) v = "Number=" + val("Number") + " \xc2\xb7 " + val("Type") + " \xc2\xb7 ";
+                v += val("Description");
+                add(*sec, val("ID"), v);
+            }
+            for (DetailItem* sec : {&info, &format, &filter})
+                if (!sec->children.empty()) {
+                    sec->value = std::to_string(sec->children.size());
+                    defs.push_back(std::move(*sec));
+                }
+            bcf_hdr_destroy(h);
+        }
+    } else if (sam_hdr_t* h = sam_hdr_read(fp)) {
+        kstring_t ks = KS_INITIALIZE;
+        if (sam_hdr_find_tag_hd(h, "VN", &ks) == 0) add(head, "SAM version", ks.s);
+        if (sam_hdr_find_tag_hd(h, "GO", &ks) == 0) add(head, "Grouped", ks.s);
+        // A line's tags other than ID, as "SM=x · PL=ILLUMINA".
+        auto line_tags = [&](const char* type, int pos) {
+            std::string v;
+            if (sam_hdr_find_line_pos(h, type, pos, &ks) != 0) return v;
+            std::stringstream ss(ks.s);
+            std::string field;
+            std::getline(ss, field, '\t');   // @RG
+            while (std::getline(ss, field, '\t'))
+                if (field.rfind("ID:", 0) != 0 && field.size() > 3)
+                    v += (v.empty() ? "" : " \xc2\xb7 ") + field.substr(0, 2) + "=" + field.substr(3);
+            return v;
+        };
+        for (const char* type : {"RG", "PG"}) {
+            DetailItem sec{type[0] == 'R' ? "Read groups" : "Programs", "", {}};
+            const int n = sam_hdr_count_lines(h, type);
+            for (int i = 0; i < n; ++i) {
+                std::string id = sam_hdr_find_tag_pos(h, type, i, "ID", &ks) == 0 ? ks.s : "";
+                add(sec, id, line_tags(type, i));
+            }
+            if (!sec.children.empty()) {
+                sec.value = std::to_string(sec.children.size());
+                defs.push_back(std::move(sec));
+            }
+        }
+        ks_free(&ks);
+        sam_hdr_destroy(h);
+    }
+    hts_close(fp);
+    // Read groups and programs listed in full below need no count here.
+    auto listed = [&](const std::string& k) {
+        for (const auto& sec : defs) if (sec.key == k) return true;
+        return false;
+    };
+    for (auto& [k, v] : genomic_header_fields(g))
+        if (!listed(k)) add(head, k, v);
+    if (const CramReference cr = cram_reference_status(path); cr.cram) {
+        if (!cr.recorded.empty()) add(head, "Reference (UR)", cr.recorded);
+        add(head, "Reference needed", cr.needed ? "yes: decoding the reads needs it (-f)"
+                                                : "no: found, or in the local cache");
+    }
+    d.push_back(std::move(head));
+    for (auto& sec : defs) d.push_back(std::move(sec));
 }
 
 std::string read_genomic_header(const std::string& path, const std::string& reference,

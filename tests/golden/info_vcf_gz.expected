@@ -5,3 +5,13 @@ File
   Compression: gzip (BGZF)
   Index: tiny.vcf.gz.tbi
   Columns: 8
+Text
+  Separator: tab
+  Preamble lines: 2
+Header
+  File format: VCFv4.2
+  Reference sequences: 2
+INFO fields  1
+  AF: Number=1 · Float · Allele frequency
+FILTERs  1
+  PASS: All filters passed

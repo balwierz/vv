@@ -3651,6 +3651,19 @@ if [ -f "$DATA/tiny.orc" ] && "$VV" --schema "$DATA/tiny.orc" >/dev/null 2>&1; t
     assert_contains "info_orc_codec"   "$INFO_O" "  Codec: zstd"
     assert_contains "info_orc_version" "$INFO_O" "  File version: 0.12"
 fi
+# Headers: a BAM's @HD and reference sequences, a BCF's INFO / FILTER
+# definitions, a FASTA's .fai totals (tiny.fa: 3 sequences, 63 bases).
+INFO_B=$("$VV" --info --color=never "$DATA/tiny.bam")
+assert_contains "info_bam_sorted" "$INFO_B" "  Sorted: coordinate"
+assert_contains "info_bam_refs"   "$INFO_B" "  Reference sequences: 2"
+assert_contains "info_bam_index"  "$INFO_B" "  Index: tiny.bam.bai"
+INFO_V=$("$VV" --info --color=never "$DATA/tiny.bcf" 2>&1)
+assert_contains "info_bcf_info_def" "$INFO_V" "  AF: Number=A · Float · Allele frequency"
+assert_contains "info_bcf_filter"   "$INFO_V" "  PASS: All filters passed"
+refute_contains "info_bcf_no_htslib_warning" "$INFO_V" "[W::"
+INFO_FA=$("$VV" --info --color=never "$DATA/tiny.fa")
+assert_contains "info_fasta_fai_sequences" "$INFO_FA" "  Sequences: 3"
+assert_contains "info_fasta_fai_length"    "$INFO_FA" "  Total length: 63"
 if command -v python3 >/dev/null 2>&1; then
     assert_eq_file_inline "info_json_sections" "$("$VV" --info --json "$DATA/tiny.parquet" | python3 -c '
 import json, sys
