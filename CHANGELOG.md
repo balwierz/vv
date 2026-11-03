@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.34.0] - 2026-11-03
+
 ### Added
 - Windows: a portable zip, `vv-<ver>-windows-x86_64.zip`, next to the MSI:
   the same `vv.exe`, `vvg.exe` and DLLs, run from wherever it is unzipped,
@@ -44,6 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   past its dictionary (`--sort` read beyond the buffer and crashed), and a
   row group claiming more rows than its column chunks hold (an 8.6 kB file
   claiming 2.9e11 rows grew past 40 GB with Arrow 26).
+- A Parquet column chunk whose metadata Arrow cannot decode (e.g.
+  "Definition level histogram size mismatch") ended the process with exit
+  134 at open, in `--stats` and in `-r` pruning; it now fails with "Not a
+  valid Parquet file: <message>", exit 1.
 
 ### Changed
 - Parquet: the footer (vvg's status bar, the TUI, the table view and
@@ -91,6 +97,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Find on a matrix tab (vvg's Find box, the TUI's `/`) matches gene names
   (the column names) and moves to that column, then row labels; it no
   longer searches the numbers.
+- vvg's filter reads only the columns it names: on a 20,000-row x
+  2,001-column Parquet, `g1999 > 0.999` takes 0.30 s / 295 MB instead of
+  0.59 s / 428 MB.
+- TUI: on a tab of more than 256 columns the detail pane (Enter) reads only
+  the columns it shows (titled "columns A–B of N"), and landing on a search
+  match no longer reads the whole row.
+- Release: a failed Debian testing build of the vv-gui `.deb` leaves the
+  `+debianforky` package out of the release instead of stopping it.
 
 ## [1.33.0] - 2026-10-24
 

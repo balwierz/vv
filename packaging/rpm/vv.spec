@@ -22,7 +22,7 @@
 %global xlsxio_version 0.2.36
 
 Name:           vv
-Version:        1.33.0
+Version:        1.34.0
 Release:        1%{?dist}
 Summary:        Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)
 License:        MIT
@@ -133,6 +133,11 @@ XLSXIO_A="$(echo $PWD/xlsxio-local/lib*/libxlsxio_read.a)"
 %{_datadir}/icons/hicolor/scalable/apps/vv.svg
 
 %changelog
+* Tue Nov 03 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.34.0-1
+- Update to 1.34.0: --compute row-wise columns; --on-bad-row and
+  --bad-rows for text tables; matrix tabs (AnnData, Zarr, HDF5, Loom, 10x,
+  R sparse) hold every row and column; vvg reads only the columns near the
+  view on wide tables; Parquet footer row count; corrupt Parquet rejected.
 * Sat Oct 24 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.33.0-1
 - Update to 1.33.0: multiple sequence alignments (Stockholm, Clustal,
   PHYLIP, NEXUS, MSF, A2M / A3M, aligned FASTA, UCSC MAF); repeated --sort;
