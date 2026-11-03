@@ -176,6 +176,25 @@ public:
         return std::string("Format: ") +
                (feather_v1_ ? "Feather v1" : is_feather_ ? "Feather v2" : "Arrow IPC");
     }
+    // The IPC footer: format version, record batches, their rows (each
+    // batch's message header, not its body) and the file's own metadata.
+    void add_details(FileDetails& d) const override {
+        if (!rdr_) return;   // Feather v1: one table, no footer to describe
+        DetailItem ipc{"Arrow IPC", "", {}};
+        auto add = [](DetailItem& s, std::string k, std::string v) {
+            s.children.push_back({std::move(k), std::move(v), {}});
+        };
+        add(ipc, "Metadata version", "V" + std::to_string((int)rdr_->version() + 1));
+        add(ipc, "Record batches", digits_with_sep(std::to_string(num_record_batches_)));
+        if (auto n = rdr_->CountRows(); n.ok())
+            add(ipc, "Rows", digits_with_sep(std::to_string(*n)));
+        d.push_back(std::move(ipc));
+        if (auto kv = rdr_->metadata(); kv && kv->size() > 0) {
+            DetailItem fm{"File metadata", "", {}};
+            for (int64_t i = 0; i < kv->size(); ++i) add(fm, kv->key(i), kv->value(i));
+            d.push_back(std::move(fm));
+        }
+    }
 
     arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
                               std::shared_ptr<arrow::Table>* out) override {
@@ -441,6 +460,30 @@ public:
     }
     const std::string& path() const override { return path_; }
     bool random_access() const override { return true; }
+    void add_details(FileDetails& d) const override {
+        DetailItem orc{"ORC", "", {}};
+        auto add = [](DetailItem& s, std::string k, std::string v) {
+            s.children.push_back({std::move(k), std::move(v), {}});
+        };
+        add(orc, "File version", reader_->GetFileVersion().ToString());
+        if (std::string sw = reader_->GetSoftwareVersion(); !sw.empty()) add(orc, "Software", sw);
+        // The fix the writer includes, as ORC names it (WriterVersion).
+        static const char* const kWriter[] = {"original", "HIVE-8732", "HIVE-4243", "HIVE-12055",
+                                              "HIVE-13083", "ORC-101", "ORC-135", "ORC-517",
+                                              "ORC-203", "ORC-14"};
+        const int wv = (int)reader_->GetWriterVersion();
+        add(orc, "Writer version", wv >= 0 && wv < (int)std::size(kWriter) ? kWriter[wv] : std::to_string(wv));
+        add(orc, "Codec", codec_name(compression_));
+        add(orc, "Compression block", detail_size(reader_->GetCompressionSize()));
+        add(orc, "Stripes", digits_with_sep(std::to_string(num_stripes_)));
+        add(orc, "Row index stride", digits_with_sep(std::to_string(reader_->GetRowIndexStride())));
+        d.push_back(std::move(orc));
+        if (auto kv = reader_->ReadMetadata(); kv.ok() && *kv && (*kv)->size() > 0) {
+            DetailItem um{"User metadata", "", {}};
+            for (int64_t i = 0; i < (*kv)->size(); ++i) add(um, (*kv)->key(i), (*kv)->value(i));
+            d.push_back(std::move(um));
+        }
+    }
     std::string footer() const override {
         std::string s = "Format: ORC  |  Stripes: " +
             std::to_string(num_stripes_);

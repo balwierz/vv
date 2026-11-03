@@ -3639,6 +3639,18 @@ info_case info_vcf_gz  "$DATA/tiny.vcf.gz"
 info_case info_tsv     "$DATA/tiny.tsv"
 [ -f "$DATA/tiny.kvmeta.parquet" ] && info_case info_kvmeta "$DATA/tiny.kvmeta.parquet"
 assert_exit_code "info_markdown_rejected" 1 "$VV" --info "$DATA/tiny.md"
+# Arrow IPC: its footer's version and batches, rows from the batch headers
+# (tiny.feather: written in chunks of 7, so 3 batches for 20 rows); ORC: the
+# file's codec and stripes; the file's own key-value metadata.
+INFO_F=$("$VV" --info --color=never "$DATA/tiny.feather")
+assert_contains "info_ipc_version" "$INFO_F" "  Metadata version: V5"
+assert_contains "info_ipc_batches" "$INFO_F" "  Record batches: 3"
+assert_contains "info_ipc_rows"    "$INFO_F" "  Rows: 20"
+if [ -f "$DATA/tiny.orc" ] && "$VV" --schema "$DATA/tiny.orc" >/dev/null 2>&1; then
+    INFO_O=$("$VV" --info --color=never "$DATA/tiny.orc")
+    assert_contains "info_orc_codec"   "$INFO_O" "  Codec: zstd"
+    assert_contains "info_orc_version" "$INFO_O" "  File version: 0.12"
+fi
 if command -v python3 >/dev/null 2>&1; then
     assert_eq_file_inline "info_json_sections" "$("$VV" --info --json "$DATA/tiny.parquet" | python3 -c '
 import json, sys

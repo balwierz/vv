@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   cursor column's Storage block (physical / logical type, encoding, codec,
   sizes), and a column header's tooltip adds its storage line
   (`dictionary · snappy · 288 B`).
+- `--info` / Details ▸ File: an Arrow IPC / Feather v2 file's metadata
+  version, record batches, their rows (from the batch headers) and the
+  file's own metadata; an ORC file's file and writer versions, software,
+  codec, compression block, stripes, row index stride and user metadata.
 
 ## [1.34.0] - 2026-11-03
 
