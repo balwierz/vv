@@ -39,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   max / mean / standard deviation; a bigBed's fields), a SQLite database's
   pages, encoding, user version and tables / views, a DuckDB database's
   tables and views.
+- Dolphin: a Format page in a data file's Properties dialog, before the
+  Table page, shows the `--info` tree (as vvg's Details ▸ File). It is read
+  on a worker thread when the page is first selected; *Ctrl+C* and the
+  context menu copy rows or the whole text.
 
 ### Changed
 - AnnData / MuData: the storage rows (each matrix's encoding, chunks,

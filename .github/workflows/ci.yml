@@ -886,6 +886,11 @@ jobs:
               echo "$out"
               grep -qx 'before=0' <<<"$out" && grep -qx 'page=Table' <<<"$out" && grep -qx 'rows=3 cols=11' <<<"$out"
               ! grep -qx 'mimetypes=0' <<<"$out"
+              # The Format page: read only when shown, then file_details().
+              grep -qx 'format_before=0' <<<"$out" && grep -qx 'format=File Header physical=0' <<<"$out"
+              out=$(./build-gui/gui/kde/vvplugintest --props build-gui/gui/kde/vvproperties.so tests/data/tiny.parquet)
+              echo "$out"
+              grep -qx 'format=File Parquet Columns physical=1' <<<"$out"
               # Over vvg's Memory Limits a header click does not sort in a
               # host's window; the pane says why.
               lim="$RUNNER_TEMP/vvgcfg-limits"; mkdir -p "$lim/vv"

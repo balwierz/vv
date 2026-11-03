@@ -269,9 +269,13 @@ The `vv-gui` package also integrates with Dolphin:
 - **Information Panel** — row and column counts, schema, codec, writer; for
   BAM / SAM / VCF / BCF the reference count, assembly, sort order, read groups
   and samples;
-- **Properties ▸ Table** — the file's *Properties* dialog has a *Table* page
-  with the file as tables (every tab, a header click sorts), read when the
-  page is first selected;
+- **Properties ▸ Format** — how the file is stored, the tree of
+  Details ▸ File (above) and `vv --info`: compression, index files,
+  Parquet row groups and each column's encoding and codec, a VCF / BAM
+  header, AnnData storage. *Ctrl+C* copies the selected rows, the context
+  menu's *Copy All* the `--info` text;
+- **Properties ▸ Table** — the file as tables (every tab, a header click
+  sorts). Both pages read the file when first selected;
 - **in Konqueror and Ark** — a KPart shows the file as tables, with a
   Filter box, where the host embeds a viewer (Konqueror: *Settings ▸
   Configure ▸ File Types* or `embed-application` for `application/*`; Ark: a
@@ -283,6 +287,8 @@ The `vv-gui` package also integrates with Dolphin:
   DuckDB and R data.
 
 ![Dolphin thumbnails: Parquet, VCF, AnnData, BAM](img/vvg/kde-thumbnails.png)
+
+![Dolphin Properties ▸ Format of a Parquet file](img/vvg/kde-properties.png)
 
 CRAM and FASTA get no thumbnail or panel entry: a CRAM may fetch its reference
 over the network, and a FASTA's first record can be a whole chromosome. Nor do

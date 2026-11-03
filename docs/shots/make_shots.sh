@@ -14,6 +14,8 @@ VV=$(realpath "${1:-$root/build/vv}")
 VVG=${2:-$root/build-gui/gui/vvg}
 [ -x "$VVG" ] && VVG=$(realpath "$VVG")
 KDETEST=$root/build-gui/gui/kde/vvkdetest     # Dolphin thumbnail renderer
+# The Properties plugins need a KF6 (shared-deps) build.
+PLUGDIR=${PLUGDIR:-$root/build-gui/gui/kde}
 out_vv=$root/docs/img/vv
 out_vvg=$root/docs/img/vvg
 mkdir -p "$out_vv" "$out_vvg"
@@ -135,4 +137,13 @@ if want kde-thumbnails && [ -x "$KDETEST" ]; then
     MAGICK_THREAD_LIMIT=1 magick "$work/thumbs.png" -strip +dither -colors 256 \
         "PNG8:$out_vvg/kde-thumbnails.png"
     echo "vvg/kde-thumbnails.png"
+fi
+
+# ── Dolphin Properties ▸ Format (when the KF6 Properties plugin was built) ────
+if want kde-properties && [ -x "$PLUGDIR/vvplugintest" ] && [ -f "$PLUGDIR/vvproperties.so" ]; then
+    QT_QPA_PLATFORM=offscreen VVPLUGINTEST_SHOT_FORMAT="$work/props.png" \
+        "$PLUGDIR/vvplugintest" --props "$PLUGDIR/vvproperties.so" atac_peaks.parquet >/dev/null
+    MAGICK_THREAD_LIMIT=1 magick "$work/props.png" -strip +dither -colors 256 \
+        "PNG8:$out_vvg/kde-properties.png"
+    echo "vvg/kde-properties.png"
 fi
