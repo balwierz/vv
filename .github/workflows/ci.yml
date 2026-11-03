@@ -136,8 +136,27 @@ jobs:
           ./build-fuzz/fuzz_hts      -max_total_time=40 -seed=1 -max_len=65536 "$RUNNER_TEMP/hts-corpus"
           mkdir -p "$RUNNER_TEMP/parquet-corpus"
           find tests/data -name '*.parquet' -size -64k -exec cp {} "$RUNNER_TEMP/parquet-corpus/" \;
-          # tests/fuzz/regress (read-only second dir) replays the files earlier runs found
-          ./build-fuzz/fuzz_parquet  -max_total_time=40 -seed=1 -max_len=65536 "$RUNNER_TEMP/parquet-corpus" tests/fuzz/regress
+          # tests/fuzz/regress (read-only second dir) replays the files earlier runs found.
+          # Arrow sizes a dictionary buffer from the page header's value count (int32)
+          # before decoding, so a corrupt header reserves gigabytes that are never
+          # written; libFuzzer reports any malloc over 2 GB as out-of-memory. With
+          # allocations over 2 GB returning null, Arrow raises OutOfMemory instead, as it
+          # does under ulimit -v; -rss_limit_mb still catches memory actually used.
+          ASAN_OPTIONS="$ASAN_OPTIONS:allocator_may_return_null=1:max_allocation_size_mb=2048" \
+            ./build-fuzz/fuzz_parquet  -max_total_time=40 -seed=1 -max_len=65536 "$RUNNER_TEMP/parquet-corpus" tests/fuzz/regress
+
+      - name: Upload fuzz findings
+        if: failure() && matrix.os == '24.04'
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-findings
+          path: |
+            crash-*
+            oom-*
+            leak-*
+            timeout-*
+            slow-unit-*
+          if-no-files-found: ignore
 
       # ── Qt6/KDE GUI (24.04 only) ─────────────────────────────────────────
       # Reuses the shared Arrow / htslib / hdf5 / sqlite / xlsxio stack

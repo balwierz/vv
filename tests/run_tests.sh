@@ -2293,9 +2293,13 @@ assert_eq_file_inline "parquet_dict_valid_sort" "$("$VV" --sort dc --select id,d
 # open: Arrow 26's reader trusted the count and grew past 40 GB. The runs
 # are capped so a regression fails instead of exhausting memory: ulimit -v,
 # or under ASan (which reserves terabytes of shadow address space at start,
-# so ulimit -v stops it before main) its own RSS limit.
+# so ulimit -v stops it before main) its own RSS limit, with allocations
+# over 4 GB returning null as they fail under ulimit -v.
 if LC_ALL=C grep -qa __asan_init "$VV"; then
-    capped_vv() { ASAN_OPTIONS="${ASAN_OPTIONS:+$ASAN_OPTIONS:}hard_rss_limit_mb=4000" "$VV" "$@"; }
+    capped_vv() {
+        ASAN_OPTIONS="${ASAN_OPTIONS:+$ASAN_OPTIONS:}hard_rss_limit_mb=4000:allocator_may_return_null=1:max_allocation_size_mb=4000" \
+            "$VV" "$@"
+    }
 else
     capped_vv() { (ulimit -v 4000000 2>/dev/null; exec "$VV" "$@"); }
 fi
@@ -2318,6 +2322,15 @@ assert_exit_code "parquet_chunk_meta_stats_exit1" 1 capped_vv --stats "$REG/parq
 assert_contains "parquet_chunk_meta_region" \
     "$(capped_vv -r chr1:1-1000 --tsv "$REG/parquet-chunk-meta-end.parquet" 2>&1 >/dev/null)" "$HIST"
 assert_exit_code "parquet_chunk_meta_region_exit1" 1 capped_vv -r chr1:1-1000 --tsv "$REG/parquet-chunk-meta-end.parquet"
+# A dictionary page header claiming 1.5e9 INT64 / 1.1e9 DOUBLE values in a
+# few bytes (found by fuzz_parquet): Arrow sizes the dictionary buffer from
+# the count before decoding, an 8.7-11.8 GB request. Under the 4 GB cap it
+# fails as an OutOfMemory read error; without it, the decoder runs out of
+# bytes. Neither aborts.
+for t in int64 double; do
+    rc=0; capped_vv --tsv "$REG/parquet-dict-count-$t.parquet" >/dev/null 2>&1 || rc=$?
+    assert_eq_file_inline "parquet_dict_count_$t" "exit $([ "$rc" -le 1 ] && echo '<= 1' || echo "$rc")" "exit <= 1"
+done
 # --compute 'name=expr': a column per spec, appended in order. int64 when
 # every operand is an integer and no / or log takes part, else float64;
 # null operands, a division by zero, log of x <= 0 and an int64 overflow
