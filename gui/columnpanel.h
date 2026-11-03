@@ -35,6 +35,11 @@ public:
     // col < 0: no column. While set, the column name in the title is a link
     // that asks for the column to be shown (showColumnRequested).
     void setLocation(int col, int count, bool outOfView, bool hidden = false);
+    // How the column is stored (its file_details Columns entry: a Parquet
+    // column's physical / logical type, encoding, codec, sizes), shown under
+    // the title whatever the statistics show; null hides it.
+    void setStorage(const DetailItem* d);
+    QString storageForTest() const;
 
     const ColumnSummary* summary() const { return has_ ? &sum_ : nullptr; }
     // The selected cells of the focused table as TSV (all of it when nothing
@@ -64,6 +69,7 @@ private:
     QLabel*       title_   = nullptr;
     QLabel*       scope_   = nullptr;
     QLabel*       where_   = nullptr;
+    QLabel*       storage_ = nullptr;
     QTableWidget* stats_   = nullptr;
     HistogramBar* hist_    = nullptr;  // a numeric column's distribution
     QLabel*       topHead_ = nullptr;

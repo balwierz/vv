@@ -169,6 +169,31 @@ int64_t ArrowTableModel::heldBytes(TabularSource& s) {
     return n;
 }
 
+std::shared_ptr<const FileDetails> ArrowTableModel::fileDetails() const {
+    if (!details_ && !detailsAsked_ && !loading_) {
+        detailsAsked_ = true;
+        auto* self = const_cast<ArrowTableModel*>(this);
+        owner_->post([self, core = core_, mail = mail_] {
+            auto d = std::make_shared<const FileDetails>(file_details(*core->src));
+            deliver(mail, [self, d] {
+                self->details_ = d;
+                emit self->fileDetailsReady();
+            });
+        });
+    }
+    return details_;
+}
+
+const DetailItem* ArrowTableModel::columnDetails(int c) const {
+    if (!details_ || c < 0 || c >= (int)displayCols_.size()) return nullptr;
+    const DetailItem* cols = find_detail(*details_, "Columns");
+    if (!cols) return nullptr;
+    const std::string name = schema_->field(displayCols_[(size_t)c])->name();
+    for (const DetailItem& it : cols->children)
+        if (it.key == name) return &it;
+    return nullptr;
+}
+
 void ArrowTableModel::refreshMeta() {
     meta_ = withSource([](TabularSource& s) { return readMeta(s); });
 }
@@ -661,8 +686,20 @@ QVariant ArrowTableModel::headerData(int section, Qt::Orientation o, int role) c
             const QString& t = colTypes_[section];
             return t.size() > 32 ? t.left(31) + QChar(0x2026) : t;
         }
-        if (role == Qt::ToolTipRole)
-            return colNames_[section] + " : " + colTypes_[section];
+        if (role == Qt::ToolTipRole) {
+            // The storage line (Parquet: encoding, codec, size) once the
+            // file's details are read; asking starts that read.
+            QString tip = colNames_[section] + " : " + colTypes_[section];
+            fileDetails();
+            if (const DetailItem* d = columnDetails(section); d && !d->value.empty()) {
+                // The line starts with the Arrow type the tip already gives.
+                QString line = QString::fromStdString(d->value);
+                const QString lead = colTypes_[section] + QString::fromUtf8(" \xc2\xb7 ");
+                if (line.startsWith(lead)) line = line.mid(lead.size());
+                tip += "\n" + line;
+            }
+            return tip;
+        }
         if (role == SortMarkRole && sortKeys_.size() > 1) {
             for (size_t k = 0; k < sortKeys_.size(); ++k)
                 if (sortKeys_[k].col == section)
@@ -1129,6 +1166,8 @@ bool ArrowTableModel::stepSlice(int delta) {
     beginResetModel();
     clearChunkCache();
     owner_->runSync([core = core_] { core->chunkFirstRow.clear(); });   // source rebuilt
+    details_.reset();
+    detailsAsked_ = false;
     order_ = std::make_shared<std::vector<int64_t>>(); identity_ = true; sortKeys_.clear();
     hasFilter_ = false; filter_ = FilterExpr{};
     invalidateFind();

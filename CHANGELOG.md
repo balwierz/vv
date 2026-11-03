@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   nulls and min / max. A dictionary-encoded column reads back as `string`,
   so this is where its encoding shows. `--info --json` writes it as nested
   objects.
+- vvg: Details ▸ File shows the same tree for the active tab. Sections are
+  expanded, each column's rows open on click, *Ctrl+C* copies the selected
+  rows and *Copy All* copies the `--info` text. The Column tab shows the
+  cursor column's Storage block (physical / logical type, encoding, codec,
+  sizes), and a column header's tooltip adds its storage line
+  (`dictionary · snappy · 288 B`).
 
 ## [1.34.0] - 2026-11-03
 

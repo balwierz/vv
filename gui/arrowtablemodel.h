@@ -206,6 +206,7 @@ signals:
     // the view had read (what the job read on is kept; a re-open lets it go).
     void    heldAfterCancel(qint64 bytes);
     void    findReady(qint64 matches);
+    void    fileDetailsReady();
 
 public:
 
@@ -254,6 +255,13 @@ public:
     // What this tab offers beyond its file's format options (read with the
     // schema, on the owner thread).
     const TabTraits& tabTraits() const { return meta_.traits; }
+    // How the file is stored (file_details: Details ▸ File), read once on
+    // the owner thread. Null until it arrives: the first call asks for it
+    // and fileDetailsReady() follows.
+    std::shared_ptr<const FileDetails> fileDetails() const;
+    // The Columns entry of display column `c` (its storage line and rows),
+    // or null: not read yet, or the format lists no columns.
+    const DetailItem* columnDetails(int c) const;
     // --select resolved against the source (select_columns), on its owner.
     std::vector<int> selectColumns(const std::string& spec,
                                    std::vector<std::string>* unknown) const;
@@ -295,6 +303,8 @@ private:
         int64_t      loadedBytes = 0; // the stream's batches in memory (chunk_bytes)
     };
     Meta meta_;
+    std::shared_ptr<const FileDetails> details_;
+    mutable bool                       detailsAsked_ = false;
     static Meta readMeta(TabularSource& s);
     static int64_t heldBytes(TabularSource& s);   // a stream's batches (chunk_bytes)
     void refreshMeta();

@@ -25,7 +25,7 @@ Command* goes the other way.
 
 - **Toolbar** — one row: *Open* (its ▾ lists the recent files), *Open
   Directory*, *Copy* and *Copy Row*, the *Filter* and *Find* boxes, then on the right
-  *Details* (*Ctrl+B*, the Row / Column panel), *Export…* (*Ctrl+E*; its ▾ has
+  *Details* (*Ctrl+B*, the Row / Column / File panel), *Export…* (*Ctrl+E*; its ▾ has
   *Copy as vv Command* and *Open Export Directory*) and **≡**, the menu (*F10*, or
   right-click the toolbar): open, recent files, close, *Edit ▸*, *View ▸*,
   *Help ▸*, quit. The classic File / Edit / View / Help menu bar holds the
@@ -196,7 +196,8 @@ Command* goes the other way.
   scroll (about 70–90 million, by row height) shows the first ones and says
   so; filter and export see them all.
 - **Details** (*Ctrl+B*) — the right panel's *Row* tab lists every field of the
-  current row; its *Column* tab summarises the cursor's column (below).
+  current row; its *Column* tab summarises the cursor's column, and its
+  *File* tab says how the file is stored (both below).
   *View ▸ Columns* shows / hides columns; go to row (*Ctrl+G*); *Ctrl+C* copies
   the selection as TSV. *View ▸ Smooth Scrolling* (on by default) scrolls by
   pixels; off, by whole rows and columns.
@@ -228,6 +229,14 @@ Command* goes the other way.
   selected ones as TSV; right-click for *Copy All as TSV* and *Copy as vv
   Command* (`vv … --describe --select col`). Double-click a value to filter
   the table to it.
+- **File tab** (*Details ▸ File*) — how the file is stored, as `vv --info`
+  prints it, read from the file system and the footer or header only:
+  - *File*: size, compression, index files beside it, rows, columns, the writer;
+  - *Parquet*: row groups, sizes, codecs, page index, bloom filters, sort order;
+  - *Columns*: one line per column (`string · dictionary · zstd · 1.2 MiB`); its rows give the physical and logical type, the encoding over the row groups (a dictionary, or one that falls back to PLAIN), codec, sizes, nulls and min / max;
+  - *Metadata*: the key-value pairs the writer stored.
+
+  *Ctrl+C* copies the selected rows; *Copy All* (right-click) copies the text `vv --info` prints. The Column tab shows the cursor column's *Storage* block, and a header's tooltip adds its storage line.
 - **Copy as vv command** (*Ctrl+Alt+C*, or *Export… ▾*) — the `vv` command
   line that reproduces the tab: file, `--tab`, the file's format options,
   `--filter`, `--sort`, `--select`.

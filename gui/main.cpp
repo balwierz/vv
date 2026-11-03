@@ -87,6 +87,7 @@
 #include <QDesktopServices>
 #include <QPolygonF>
 #include <QTreeView>
+#include <QTreeWidget>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -681,6 +682,7 @@ private:
         syncFileControls();
         refreshStatus();
         refreshColumnsMenu();
+        refreshFileTab();
         if (activeJsonTab())
             updateDetail({});
         else if (auto* v = activeView())
@@ -810,6 +812,11 @@ private:
             refreshStatus();
             refreshColumnsMenu();
             if (colTimer_) colTimer_->start();
+        });
+        connect(model, &ArrowTableModel::fileDetailsReady, this, [this, model] {
+            if (model != activeModel()) return;
+            updateColumnLocation();
+            refreshFileTab();
         });
         connect(model, &ArrowTableModel::chunksLoaded, this, [this, view, model] {
             if (model != activeModel()) return;
@@ -2444,22 +2451,26 @@ private:
         detail_->verticalHeader()->setVisible(false);
         detail_->setEditTriggers(QAbstractItemView::NoEditTriggers);
         colPanel_ = new ColumnPanel(detailTabs_);
+        buildFilePanel();
         detailTabs_->addTab(detail_, tr("Row"));
         detailTabs_->addTab(colPanel_, tr("Column"));
+        detailTabs_->addTab(filePanel_, tr("File"));
         detailsDock_->setWidget(detailTabs_);
         addDockWidget(Qt::RightDockWidgetArea, detailsDock_);
-        // Column statistics run while the Column tab is on screen.
+        // Column statistics run while the Column tab is on screen; the File
+        // tab reads the file's details when it is shown.
         auto columnTabShown = [this] {
             if (detailsDock_->isVisible() && detailTabs_->currentWidget() == colPanel_) colTimer_->start();
             else cancelColumnStats();
+            refreshFileTab();
         };
         connect(detailsDock_, &QDockWidget::visibilityChanged, this, columnTabShown);
         connect(detailTabs_, &QTabWidget::currentChanged, this, columnTabShown);
         QAction* details = detailsDock_->toggleViewAction();
         details->setText(tr("&Details"));
         details->setShortcut(QKeySequence(QStringLiteral("Ctrl+B")));
-        details->setToolTip(tr("Show or hide the Details panel: the cursor row and the "
-                               "cursor column's statistics (Ctrl+B)"));
+        details->setToolTip(tr("Show or hide the Details panel: the cursor row, the "
+                               "cursor column's statistics and how the file is stored (Ctrl+B)"));
         detailsAct_ = details;
         setActionIcon(details, "view-right-new", Glyph::Details);
         connect(colPanel_, &ColumnPanel::cancelRequested, this, [this] {
@@ -2630,6 +2641,73 @@ private:
         sizeWindowColumns(v, m);
     }
 
+    // Details ▸ File: file_details() as a tree, sections expanded. Ctrl+C
+    // copies the selected rows as "key<TAB>value"; Copy All the indented
+    // text `vv --info` prints.
+    void buildFilePanel() {
+        filePanel_ = new QTreeWidget(detailTabs_);
+        filePanel_->setColumnCount(2);
+        filePanel_->setHeaderLabels({tr("Item"), tr("Value")});
+        filePanel_->setSelectionMode(QAbstractItemView::ExtendedSelection);
+        filePanel_->setWordWrap(true);
+        filePanel_->setUniformRowHeights(false);
+        filePanel_->setContextMenuPolicy(Qt::CustomContextMenu);
+        // Ctrl+C reaches copyFileRows() through the window's Copy (focus here).
+        auto* copy = new QAction(tr("&Copy"), filePanel_);
+        connect(copy, &QAction::triggered, this, [this] { copyFileRows(); });
+        auto* copyAll = new QAction(tr("Copy &All"), filePanel_);
+        connect(copyAll, &QAction::triggered, this, [this] {
+            if (auto* m = activeModel())
+                if (auto d = m->fileDetails())
+                    QApplication::clipboard()->setText(QString::fromStdString(details_text(*d)));
+        });
+        connect(filePanel_, &QWidget::customContextMenuRequested, this, [this, copy, copyAll](const QPoint& p) {
+            QMenu menu(filePanel_);
+            menu.addAction(copy);
+            menu.addAction(copyAll);
+            menu.exec(filePanel_->viewport()->mapToGlobal(p));
+        });
+    }
+    // Fill the File tab from the active tab's details (asking for them the
+    // first time; fileDetailsReady calls back). `force`: also when hidden.
+    void refreshFileTab(bool force = false) {
+        if (!filePanel_ || (!force && !(detailsDock_->isVisible() &&
+                                        detailTabs_->currentWidget() == filePanel_)))
+            return;
+        filePanel_->clear();
+        auto* m = activeModel();
+        if (!m) {
+            new QTreeWidgetItem(filePanel_, {activeJsonTab() ? tr("A JSON document") : tr("No file"), {}});
+            return;
+        }
+        const auto d = m->fileDetails();
+        if (!d) { new QTreeWidgetItem(filePanel_, {tr("Reading…"), {}}); return; }
+        std::function<void(QTreeWidgetItem*, const DetailItem&, int)> add =
+            [&](QTreeWidgetItem* parent, const DetailItem& it, int depth) {
+                const QString value = QString::fromStdString(it.value);
+                // A value shows on one line (a writer's JSON runs to KB); the
+                // tooltip and Copy have it whole.
+                QString shown = value;
+                shown.replace(QLatin1Char('\n'), QStringLiteral("\\n"));
+                if (shown.size() > 300) shown = shown.left(299) + QChar(0x2026);
+                auto* item = parent ? new QTreeWidgetItem(parent, {QString::fromStdString(it.key), shown})
+                                    : new QTreeWidgetItem(filePanel_, {QString::fromStdString(it.key), shown});
+                item->setData(1, Qt::UserRole, value);
+                if (!value.isEmpty()) item->setToolTip(1, value.size() > 4000 ? value.left(4000) + QChar(0x2026) : value);
+                if (depth == 0) {
+                    QFont f = item->font(0);
+                    f.setBold(true);
+                    item->setFont(0, f);
+                }
+                for (const DetailItem& c : it.children) add(item, c, depth + 1);
+                // Sections open; a column's rows open on click, all of them
+                // when there are few.
+                const bool many = it.key == "Columns" && it.children.size() > 50;
+                item->setExpanded(depth == 0 && !many);
+            };
+        for (const DetailItem& sec : *d) add(nullptr, sec, 0);
+        filePanel_->resizeColumnToContents(0);
+    }
     // Tell the Column tab where its column is: its position, and whether it
     // is hidden or scrolled out of the view.
     void updateColumnLocation() {
@@ -2642,6 +2720,8 @@ private:
         const int x = v->columnViewportPosition(col);
         const bool out = hidden || x + v->columnWidth(col) <= 0 || x >= v->viewport()->width();
         colPanel_->setLocation(col, m->displayColumnCount(), out, hidden);
+        if (colPanel_->isVisible()) m->fileDetails();   // the storage block below
+        colPanel_->setStorage(m->columnDetails(col));
     }
     // Scroll the Column tab's column into view (keeping the rows in view)
     // and flash it.
@@ -3451,7 +3531,21 @@ private:
         detailModel_ = m; detailRow_ = cur.row(); detailCols_ = std::move(show);
     }
 
+    // The File tab's selected rows as "key<TAB>value" lines, values whole.
+    bool copyFileRows() {
+        QStringList lines;
+        for (QTreeWidgetItem* it : filePanel_->selectedItems())
+            lines << it->text(0) + QLatin1Char('\t') + it->data(1, Qt::UserRole).toString();
+        if (lines.isEmpty()) return false;
+        QApplication::clipboard()->setText(lines.join(QLatin1Char('\n')) + "\n");
+        return true;
+    }
+
     void copySelection() {
+        if (filePanel_ && filePanel_->isAncestorOf(QApplication::focusWidget())) {
+            if (copyFileRows()) statusBar()->showMessage(tr("Copied"), 2000);
+            return;
+        }
         if (colPanel_ && colPanel_->isAncestorOf(QApplication::focusWidget())) {
             if (colPanel_->copySelection())
                 statusBar()->showMessage(tr("Copied"), 2000);
@@ -3801,6 +3895,33 @@ public:
         return QStringLiteral("row=%1 col=%2 name=%3 cell=%4")
             .arg(cur.row()).arg(cur.column()).arg(m->columnName(cur.column()),
                                                   m->data(cur, Qt::DisplayRole).toString());
+    }
+    // Window self-test: the File tab's rows (indented two spaces a level,
+    // "key: value"), the Column tab's storage block for the cursor column
+    // and its header tooltip, once the details have arrived.
+    QString fileDetailsForTest() {
+        waitIdleForTest();
+        auto* m = activeModel();
+        if (!m) return QStringLiteral("no table");
+        m->fileDetails();
+        QElapsedTimer t;
+        t.start();
+        while (!m->fileDetails() && t.elapsed() < 30000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        detailsDock_->show();   // as a user opens it (and a VVG_SCREENSHOT shows it)
+        detailTabs_->setCurrentWidget(filePanel_);
+        refreshFileTab(/*force=*/true);
+        QString out;
+        std::function<void(QTreeWidgetItem*, int)> walk = [&](QTreeWidgetItem* it, int depth) {
+            out += QString(2 * depth, QLatin1Char(' ')) + it->text(0) +
+                   (it->text(1).isEmpty() ? QString() : QStringLiteral(": ") + it->text(1)) + "\n";
+            for (int k = 0; k < it->childCount(); ++k) walk(it->child(k), depth + 1);
+        };
+        for (int k = 0; k < filePanel_->topLevelItemCount(); ++k) walk(filePanel_->topLevelItem(k), 0);
+        updateColumnLocation();
+        out += "storage: " + colPanel_->storageForTest() + "\n";
+        out += "tooltip: " + m->headerData(0, Qt::Horizontal, Qt::ToolTipRole).toString().replace('\n', " | ") + "\n";
+        return out;
     }
     // Window self-test: the active tab shown at 1600 x 1000, scrolled to its
     // last column, and let read. Whether it reads a column window, its
@@ -4793,6 +4914,7 @@ private:
     QDockWidget*                          detailsDock_ = nullptr;
     QTabWidget*                           detailTabs_  = nullptr;   // Row | Column
     ColumnPanel*                          colPanel_  = nullptr;
+    QTreeWidget*                          filePanel_ = nullptr;   // Details ▸ File
     QTimer*                               colTimer_  = nullptr;   // debounces cursor moves
     QHash<ArrowTableModel*, int>          keepCol_;   // cursor column across a model reset
     QTimer*                               statsPoll_ = nullptr;   // progress of a scan
@@ -5502,6 +5624,9 @@ int main(int argc, char** argv) {
             std::printf("goto %s\n", win.gotoForTest(p.value(0).toInt(), p.value(1).toInt())
                                           .toStdString().c_str());
         }
+        // Optional file details check: VVG_DETAILS=1 (fileDetailsForTest).
+        if (const char* fd = std::getenv("VVG_DETAILS"); fd && *fd && *fd != '0')
+            std::printf("details\n%s", win.fileDetailsForTest().toUtf8().constData());
         // Optional column-window check: VVG_HWINDOW=1 (columnWindowForTest).
         if (const char* hw = std::getenv("VVG_HWINDOW"); hw && *hw && *hw != '0')
             std::printf("hwindow %s\n", win.columnWindowForTest().toUtf8().constData());

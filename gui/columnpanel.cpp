@@ -13,6 +13,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QTableWidget>
+#include <QTextDocument>
 #include <QVBoxLayout>
 
 #include <cmath>
@@ -160,6 +161,11 @@ ColumnPanel::ColumnPanel(QWidget* parent) : QWidget(parent) {
     where_->setTextFormat(Qt::RichText);
     where_->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse);
     connect(where_, &QLabel::linkActivated, this, [this] { emit showColumnRequested(); });
+    storage_ = new QLabel(this);
+    storage_->setTextFormat(Qt::RichText);
+    storage_->setWordWrap(true);
+    storage_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    storage_->setVisible(false);
     scope_ = new QLabel(this);
     scope_->setWordWrap(true);
     scope_->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -203,6 +209,7 @@ ColumnPanel::ColumnPanel(QWidget* parent) : QWidget(parent) {
 
     lay->addWidget(title_);
     lay->addWidget(where_);
+    lay->addWidget(storage_);
     lay->addWidget(scope_);
     lay->addWidget(stats_);
     lay->addWidget(hist_);
@@ -214,6 +221,35 @@ ColumnPanel::ColumnPanel(QWidget* parent) : QWidget(parent) {
     lay->addStretch(1);
     lay_ = lay;
     showNote(tr("Column"), tr("Put the cursor in a table column to summarise it."));
+}
+
+void ColumnPanel::setStorage(const DetailItem* d) {
+    if (!d) { storage_->clear(); storage_->setVisible(false); return; }
+    // The statistics below give nulls and min / max, and the title the Arrow
+    // type; the rest says how the column is stored.
+    static const QStringList kSkip = {QStringLiteral("Arrow type"), QStringLiteral("Nulls"),
+                                      QStringLiteral("Min"), QStringLiteral("Max"),
+                                      QStringLiteral("Page encodings")};
+    QString rows;
+    auto row = [&](const std::string& k, const std::string& v) {
+        rows += QStringLiteral("<tr><td style=\"padding-right:8px\">%1</td><td>%2</td></tr>")
+                    .arg(QString::fromStdString(k).toHtmlEscaped(),
+                         QString::fromStdString(v).toHtmlEscaped());
+    };
+    for (const DetailItem& c : d->children) {
+        if (kSkip.contains(QString::fromStdString(c.key))) continue;
+        row(c.key, c.value);   // a nested column's leaf: its storage line
+    }
+    storage_->setText(QStringLiteral("<b>%1</b><table>%2</table>").arg(tr("Storage"), rows));
+    storage_->setToolTip(QString::fromStdString(d->value));
+    storage_->setVisible(true);
+}
+
+QString ColumnPanel::storageForTest() const {
+    if (storage_->isHidden()) return {};
+    QTextDocument doc;
+    doc.setHtml(storage_->text());
+    return doc.toPlainText().simplified();
 }
 
 void ColumnPanel::showTables(bool on) {
