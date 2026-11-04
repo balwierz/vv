@@ -1763,6 +1763,48 @@ vv --sample 100 huge.lociss      # 100 random rows in the TUI
 vv --tsv --sample 1000 huge.parquet | head    # head of a random sample
 ```
 
+## Diffs of data files in git
+
+git shows a changed Parquet or BAM file as `Bin 4756 -> 5377 bytes`. A
+textconv driver makes `git diff`, `git log -p` and `git show` compare the
+rows instead. In the repository (or `~/.config/git/attributes` for every
+repository):
+
+```sh
+printf '%s diff=vv\n' '*.parquet' '*.arrow' '*.bam' '*.h5ad' '*.sqlite' '*.xlsx' >> .gitattributes
+git config diff.vv.textconv 'vv --tsv'
+git config diff.vv.cachetextconv true      # convert each version once
+```
+
+`vv --tsv` writes the first tab of a file with several: for AnnData its
+summary (matrix shape and encoding, obs / var sizes), for a database or
+workbook its first table or sheet. With the driver set, `git diff --stat`
+still counts the files as binary; `git diff` prints the changed rows.
+
+## Data files in `less`
+
+`less` runs an input filter set in `LESSOPEN`. A `~/.lessfilter` script
+(lesspipe.sh and Debian's lesspipe run it first, and fall back to their own
+handling when it prints nothing) can hand data files to vv:
+
+```sh
+#!/bin/sh
+# ~/.lessfilter (chmod +x): data files as a vv table, the first 1000 rows
+case "$1" in
+    *.parquet|*.arrow|*.feather|*.orc|*.h5ad|*.h5|*.hdf5|*.loom|*.bam|*.cram|\
+    *.bcf|*.bw|*.bigWig|*.bb|*.bigBed|*.sqlite|*.duckdb|*.xlsx|*.ods|*.npz|*.rds|*.RData|*.pod5)
+        exec vv -t -n 1000 --color=always "$1" ;;
+esac
+exit 1
+```
+
+Without lesspipe, `export LESSOPEN='|~/.lessfilter %s'`. Add `-R` to
+`LESS` for the colours. The bound matters: the table view lays out the rows
+it prints, so `-n 0` (every row) holds the whole table in memory (5 GB for
+2.2 million GENCODE rows, against 37 MB for `-n 100`). For the whole file
+page `vv --tsv FILE | less -S`, which streams, or open it in `vv`'s
+interactive viewer.
+
 # Building and installing
 
 See `INSTALL.md` for the complete matrix (`.deb`, `.rpm`, static binary,
