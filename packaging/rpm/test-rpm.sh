@@ -24,6 +24,9 @@ rpm -ql vv-gui | grep 'thumbcreator/vvthumbnail.so' >/dev/null
 rpm -ql vv-gui | grep 'kfilemetadata/vvextractor.so' >/dev/null
 rpm -ql vv-gui | grep 'parts/vvpart.so' >/dev/null
 rpm -ql vv-gui | grep 'propertiesdialog/vvproperties.so' >/dev/null
+# Convert with vv: the service menu and the script it runs.
+rpm -ql vv-gui | grep 'kio/servicemenus/vv-convert.desktop' >/dev/null
+test -x /usr/bin/vv-convert
 
 # CLI end-to-end: version, and an actual read through the Arrow reader core.
 vv --version

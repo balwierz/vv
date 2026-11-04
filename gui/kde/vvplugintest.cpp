@@ -7,9 +7,18 @@
 //                                         sections), then its Table page, the same
 //   VVPLUGINTEST_SORT=1                   then click the first header: whether
 //                                         it sorted, and the pane's message
-// Both first print the plugin's MIME type count (0 means KF6 will never
-// offer it, as with a thumbnailer whose MimeTypes sat outside KPlugin).
+//   vvplugintest --servicemenu ACTION FILE
+//                                         FILE's context-menu service actions
+//                                         as Dolphin builds them (from
+//                                         XDG_DATA_DIRS/kio/servicemenus), one
+//                                         "menu/…/action" line each; then trigger
+//                                         the one named ACTION ("-": none)
+// --part and --props first print the plugin's MIME type count (0 means KF6
+// will never offer it, as with a thumbnailer whose MimeTypes sat outside
+// KPlugin).
 #include <KFileItem>
+#include <KFileItemActions>
+#include <KFileItemListProperties>
 #include <KPageWidgetModel>
 #include <KParts/PartLoader>
 #include <KParts/ReadOnlyPart>
@@ -21,6 +30,7 @@
 #include <QApplication>
 #include <QHeaderView>
 #include <QLabel>
+#include <QMenu>
 #include <QTabBar>
 #include <QTableView>
 #include <QTreeWidget>
@@ -124,10 +134,46 @@ static int report(QWidget* pane) {
     return m->rowCount() > 0 ? 0 : 1;
 }
 
+// Print every action under `menu` as "path/text", and return the one whose
+// text is `want`.
+static QAction* listActions(QMenu* menu, const QString& path, const QString& want) {
+    QAction* found = nullptr;
+    for (QAction* a : menu->actions()) {
+        if (a->isSeparator()) continue;
+        const QString text = a->text().remove(QLatin1Char('&'));
+        if (QMenu* sub = a->menu()) {
+            if (QAction* f = listActions(sub, path + text + "/", want)) found = f;
+        } else {
+            std::printf("action=%s%s\n", path.toUtf8().constData(), text.toUtf8().constData());
+            if (text == want) found = a;
+        }
+    }
+    return found;
+}
+
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
-    if (argc != 4) { std::fprintf(stderr, "usage: vvplugintest --part|--props PLUGIN.so FILE\n"); return 2; }
+    if (argc != 4) {
+        std::fprintf(stderr, "usage: vvplugintest --part|--props PLUGIN.so FILE | --servicemenu ACTION FILE\n");
+        return 2;
+    }
     const QString mode = QString::fromLocal8Bit(argv[1]);
+    if (mode == QLatin1String("--servicemenu")) {
+        const QString want = QString::fromLocal8Bit(argv[2]);
+        KFileItem item(QUrl::fromLocalFile(QFileInfo(QString::fromLocal8Bit(argv[3])).absoluteFilePath()));
+        item.determineMimeType();
+        std::printf("mimetype=%s\n", item.mimetype().toUtf8().constData());
+        KFileItemActions actions;
+        actions.setItemListProperties(KFileItemListProperties(KFileItemList{item}));
+        QMenu menu;
+        actions.addActionsTo(&menu, KFileItemActions::MenuActionSource::Services);
+        QAction* a = listActions(&menu, QString(), want);
+        if (want == QLatin1String("-")) return 0;
+        if (!a) { std::printf("no action %s\n", want.toUtf8().constData()); return 1; }
+        a->trigger();
+        pump(5000);          // the command runs detached; let it finish
+        return 0;
+    }
     const KPluginMetaData md(QFileInfo(QString::fromLocal8Bit(argv[2])).absoluteFilePath());
     const QString file = QString::fromLocal8Bit(argv[3]);
     std::printf("mimetypes=%d\n", (int)md.mimeTypes().size());

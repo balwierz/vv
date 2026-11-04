@@ -43,6 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Table page, shows the `--info` tree (as vvg's Details ▸ File). It is read
   on a worker thread when the page is first selected; *Ctrl+C* and the
   context menu copy rows or the whole text.
+- Dolphin: *Actions ▸ Convert with vv ▸ To Parquet / To CSV / To TSV* on
+  the files vvg opens. Each file is written beside its input as
+  `<stem>.<format>` (compression and format suffixes dropped, `-1`, `-2`
+  for a taken name) through a temporary file, so a failure leaves nothing;
+  a read error vv reports as a warning fails the file. One notification
+  lists the results. The script is also the `vv-convert` command.
 
 ### Changed
 - AnnData / MuData: the storage rows (each matrix's encoding, chunks,

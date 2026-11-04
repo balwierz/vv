@@ -70,6 +70,11 @@ install -Dm644 "$REPO/gui/kde/vv-formats.xml" \
         "$root/usr/share/mime/packages/vv-formats.xml"
 install -Dm644 "$REPO/gui/kde/icons/vv.svg" \
         "$root/usr/share/icons/hicolor/scalable/apps/vv.svg"
+# Dolphin's Convert with vv menu and the script it runs (a service menu is
+# data: shipped with or without the KF6 plugins).
+install -Dm755 "$REPO/gui/kde/vv-convert" "$root/usr/bin/vv-convert"
+install -Dm644 "$BLD/gui/kde/vv-convert.desktop" \
+        "$root/usr/share/kio/servicemenus/vv-convert.desktop"
 
 # KF6 plugins, when the build produced them. They need the KF6 dev packages
 # (Debian 13+ / Ubuntu 25.10+); on Ubuntu 24.04 CMake skips them and so do

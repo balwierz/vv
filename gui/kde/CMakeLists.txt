@@ -117,3 +117,18 @@ if(NOT APPLE)
   install(FILES icons/vv.svg
           DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
 endif()
+
+# ── Dolphin context menu: Convert with vv ▸ Parquet / CSV / TSV ─────────────
+# A KIO service menu (data, no KF6 needed to install it) running vv-convert,
+# a POSIX shell script in the bin directory (also a command of its own), on
+# the selected files. It offers the types vvg opens (org.vv.Viewer.desktop's
+# MimeType line).
+if(NOT APPLE AND NOT WIN32)
+  file(READ ${CMAKE_CURRENT_SOURCE_DIR}/org.vv.Viewer.desktop _vv_desktop)
+  string(REGEX MATCH "\nMimeType=[^\n]*" _vv_desktop_mime "${_vv_desktop}")
+  string(REGEX REPLACE "^\nMimeType=" "" VV_DESKTOP_MIME_TYPES "${_vv_desktop_mime}")
+  configure_file(vv-convert.desktop.in ${CMAKE_CURRENT_BINARY_DIR}/vv-convert.desktop @ONLY)
+  install(PROGRAMS vv-convert DESTINATION ${CMAKE_INSTALL_BINDIR})
+  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/vv-convert.desktop
+          DESTINATION ${CMAKE_INSTALL_DATADIR}/kio/servicemenus)
+endif()

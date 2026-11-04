@@ -1,0 +1,81 @@
+#!/bin/sh
+# vv-convert FORMAT FILE... — the "Convert with vv" actions of Dolphin's
+# context menu (vv-convert.desktop), and a command of its own (installed
+# beside vvg): each FILE converted by vv to FORMAT
+# (parquet, csv or tsv), written beside it as <stem>.<format>, its
+# compression and format suffixes dropped (reads.vcf.gz → reads.parquet). A
+# name already taken becomes <stem>-1.<format>, -2, …. A file with several
+# tabs converts its first, as vv does.
+#
+# The output is written to a hidden temporary file in the same directory and
+# renamed when complete, so a failed conversion leaves nothing behind. A read
+# error vv reports as a warning ("error reading chunk") fails the file too:
+# vv would skip that part of it.
+#
+# One report at the end: kdialog, else notify-send, else stderr
+# (VV_CONVERT_REPORT=stderr forces stderr). VV overrides the vv binary.
+# Exit status 1 when any file failed, 2 on a usage error.
+set -u
+
+VV=${VV:-vv}
+fmt=${1:-}
+case $fmt in
+    parquet) label=Parquet ;;
+    csv)     label=CSV ;;
+    tsv)     label=TSV ;;
+    *) echo "usage: vv-convert parquet|csv|tsv FILE..." >&2; exit 2 ;;
+esac
+shift
+[ $# -gt 0 ] || { echo "usage: vv-convert parquet|csv|tsv FILE..." >&2; exit 2; }
+
+done_list=
+fail_list=
+nl='
+'
+errf=$(mktemp) || exit 1
+trap 'rm -f "$errf"' EXIT
+
+for f in "$@"; do
+    dir=$(dirname -- "$f")
+    base=$(basename -- "$f")
+    stem=$base
+    case $stem in *.gz|*.bgz|*.zst|*.bz2|*.xz) stem=${stem%.*} ;; esac
+    case $stem in ?*.*) stem=${stem%.*} ;; esac
+    out=$dir/$stem.$fmt
+    n=1
+    while [ -e "$out" ]; do
+        out=$dir/$stem-$n.$fmt
+        n=$((n + 1))
+    done
+    if ! tmp=$(mktemp "$dir/.vv-convert.XXXXXX" 2>"$errf"); then
+        fail_list="$fail_list$base: $(head -n 1 "$errf")$nl"
+        continue
+    fi
+    if [ "$fmt" = parquet ]; then
+        "$VV" --parquet "$tmp" "$f" >/dev/null 2>"$errf"
+    else
+        "$VV" "--$fmt" "$f" >"$tmp" 2>"$errf"
+    fi
+    rc=$?
+    if [ $rc -eq 0 ] && ! grep -q 'error reading' "$errf" && mv -f -- "$tmp" "$out"; then
+        done_list="$done_list$(basename -- "$out")$nl"
+    else
+        rm -f -- "$tmp"
+        why=$(grep -m 1 -i 'error' "$errf" || head -n 1 "$errf")
+        fail_list="$fail_list$base: ${why:-vv exited with status $rc}$nl"
+    fi
+done
+
+msg=
+[ -n "$done_list" ] && msg="Converted to $label:$nl$done_list"
+[ -n "$fail_list" ] && msg="$msg${msg:+$nl}Not converted:$nl$fail_list"
+title="Convert with vv"
+if [ "${VV_CONVERT_REPORT:-}" != stderr ] && command -v kdialog >/dev/null 2>&1; then
+    if [ -n "$fail_list" ]; then kdialog --title "$title" --error "$msg"
+    else kdialog --title "$title" --passivepopup "$msg" 5; fi
+elif [ "${VV_CONVERT_REPORT:-}" != stderr ] && command -v notify-send >/dev/null 2>&1; then
+    notify-send ${fail_list:+--urgency=critical} "$title" "$msg"
+else
+    printf '%s' "$msg" >&2
+fi
+[ -z "$fail_list" ]

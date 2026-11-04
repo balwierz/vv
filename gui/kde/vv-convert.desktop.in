@@ -1,0 +1,22 @@
+[Desktop Entry]
+Type=Service
+Name=Convert with vv
+MimeType=@VV_DESKTOP_MIME_TYPES@
+Actions=toParquet;toCsv;toTsv;
+X-KDE-Submenu=Convert with vv
+Icon=vv
+
+[Desktop Action toParquet]
+Name=To Parquet
+Icon=vv
+Exec=vv-convert parquet %F
+
+[Desktop Action toCsv]
+Name=To CSV
+Icon=text-csv
+Exec=vv-convert csv %F
+
+[Desktop Action toTsv]
+Name=To TSV
+Icon=text-csv
+Exec=vv-convert tsv %F

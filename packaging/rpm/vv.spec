@@ -123,6 +123,7 @@ XLSXIO_A="$(echo $PWD/xlsxio-local/lib*/libxlsxio_read.a)"
 %files gui
 %license LICENSE
 %{_bindir}/vvg
+%{_bindir}/vv-convert
 %{_libdir}/qt6/plugins/kf6/thumbcreator/vvthumbnail.so
 %{_libdir}/qt6/plugins/kf6/kfilemetadata/vvextractor.so
 %{_libdir}/qt6/plugins/kf6/parts/vvpart.so
@@ -131,6 +132,7 @@ XLSXIO_A="$(echo $PWD/xlsxio-local/lib*/libxlsxio_read.a)"
 %{_metainfodir}/org.vv.Viewer.metainfo.xml
 %{_datadir}/mime/packages/vv-formats.xml
 %{_datadir}/icons/hicolor/scalable/apps/vv.svg
+%{_datadir}/kio/servicemenus/vv-convert.desktop
 
 %changelog
 * Tue Nov 03 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.34.0-1

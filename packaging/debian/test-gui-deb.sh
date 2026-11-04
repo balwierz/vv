@@ -33,6 +33,10 @@ if dpkg-deb -c "$deb" | grep 'thumbcreator/vvthumbnail.so' >/dev/null; then
     done
 fi
 
+# Convert with vv: the service menu and the script it runs.
+test -x /usr/bin/vv-convert
+test -f /usr/share/kio/servicemenus/vv-convert.desktop
+
 # Nothing may be left dangling after install, and the bundled Arrow — not a
 # system copy — must be the one in use (a pristine container has no other).
 ldd /usr/bin/vvg

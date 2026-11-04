@@ -276,6 +276,12 @@ The `vv-gui` package also integrates with Dolphin:
   menu's *Copy All* the `--info` text;
 - **Properties ▸ Table** — the file as tables (every tab, a header click
   sorts). Both pages read the file when first selected;
+- **Actions ▸ Convert with vv** — the right-click menu converts the
+  selected files to Parquet, CSV or TSV, each written beside its input as
+  `<name>.parquet` (`reads.vcf.gz` → `reads.parquet`; a taken name gets
+  `-1`, `-2`). A file with several tabs converts its first. A file vv cannot
+  read whole is reported and leaves nothing behind. The same script is the
+  `vv-convert` command: `vv-convert parquet *.vcf.gz`;
 - **in Konqueror and Ark** — a KPart shows the file as tables, with a
   Filter box, where the host embeds a viewer (Konqueror: *Settings ▸
   Configure ▸ File Types* or `embed-application` for `application/*`; Ark: a

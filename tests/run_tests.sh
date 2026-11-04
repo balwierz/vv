@@ -6771,6 +6771,32 @@ if command -v python3 >/dev/null 2>&1; then
     assert_contains "bench_comparators_usage" "$(python3 "$ROOT/scripts/bench/comparators.py" 2>&1)" "parquet_head"
 fi
 
+# ── vv-convert: Dolphin's "Convert with vv" actions ─────────────────────────
+# The script behind the service menu (gui/kde/vv-convert; not installed on
+# Windows). Output beside the input as <stem>.<format>, compression and
+# format suffixes dropped; a taken name gets -1, -2; a failed file leaves no
+# output or temporary file and makes the exit status 1.
+if [ -z "$WINDOWS" ]; then
+    CONV="$ROOT/gui/kde/vv-convert"
+    C="$TMP/convert"; mkdir -p "$C"
+    cp "$DATA/tiny.parquet" "$DATA/tiny.vcf.gz" "$C/"
+    cp "$HERE/fuzz/regress/parquet-row-count.parquet" "$C/corrupt.parquet"
+    conv() { VV="$VV" VV_CONVERT_REPORT=stderr sh "$CONV" "$@"; }
+    assert_exit_code "convert_csv_exit0" 0 conv csv "$C/tiny.parquet"
+    assert_eq_file_inline "convert_csv_matches_vv" "$(cat "$C/tiny.csv")" "$("$VV" --csv "$DATA/tiny.parquet")"
+    conv tsv "$C/tiny.parquet" 2>/dev/null
+    assert_eq_file_inline "convert_tsv_matches_vv" "$(cat "$C/tiny.tsv")" "$("$VV" --tsv "$DATA/tiny.parquet")"
+    assert_contains "convert_taken_name" "$(conv csv "$C/tiny.parquet" 2>&1)" "tiny-1.csv"
+    rm "$C/tiny.parquet"
+    assert_contains "convert_suffixes_dropped" "$(conv parquet "$C/tiny.vcf.gz" 2>&1)" "tiny.parquet"
+    assert_eq_file_inline "convert_parquet_rows" "$("$VV" --count "$C/tiny.parquet")" "$("$VV" --count "$DATA/tiny.vcf.gz")"
+    before=$(ls -A "$C")
+    assert_exit_code "convert_failure_exit1" 1 conv csv "$C/corrupt.parquet"
+    assert_contains "convert_failure_named" "$(conv csv "$C/corrupt.parquet" 2>&1)" "Not converted:"
+    assert_eq_file_inline "convert_failure_leaves_nothing" "$(ls -A "$C")" "$before"
+    assert_exit_code "convert_usage_exit2" 2 conv xlsx "$C/tiny.parquet"
+fi
+
 # ── Remote URLs: https:// / s3:// / gs:// through htslib's hFILE layer ───────
 # A build whose htslib has libcurl reads a URL like a local file: htslib's own
 # readers (BAM, VCF.gz + tabix, FASTA) take it as it is, the Arrow readers read

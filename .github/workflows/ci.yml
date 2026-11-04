@@ -899,6 +899,19 @@ jobs:
                 | grep -q '^sorted=0 said=Sorting would read all'
               VVPLUGINTEST_SORT=1 ./build-gui/gui/kde/vvplugintest --part build-gui/gui/kde/vvpart.so tests/data/tiny.bam \
                 | grep -qx 'sorted=1 said=-'
+              # Convert with vv: Dolphin's menu for a Parquet file has the
+              # submenu, and its To CSV runs vv-convert. A service menu outside
+              # the system data dirs must be executable to run.
+              sm="$RUNNER_TEMP/sm"; mkdir -p "$sm/kio/servicemenus" "$sm/files"
+              mkdir -p "$sm/bin"; cp gui/kde/vv-convert "$sm/bin/"
+              cp build-gui/gui/kde/vv-convert.desktop "$sm/kio/servicemenus/"
+              chmod +x "$sm/kio/servicemenus/vv-convert.desktop"
+              cp tests/data/tiny.parquet "$sm/files/"
+              out=$(PATH="$sm/bin:$PATH" XDG_DATA_DIRS="$sm:/usr/share" VV="$PWD/build-gui/vv" VV_CONVERT_REPORT=stderr \
+                    ./build-gui/gui/kde/vvplugintest --servicemenu "To CSV" "$sm/files/tiny.parquet")
+              echo "$out"
+              for a in "To Parquet" "To CSV" "To TSV"; do grep -qx "action=Actions/Convert with vv/$a" <<<"$out"; done
+              cmp "$sm/files/tiny.csv" <(./build-gui/vv --csv tests/data/tiny.parquet)
             fi
           else
             echo "Skipping KF6 .so plugin checks (KF6 not installed)."
