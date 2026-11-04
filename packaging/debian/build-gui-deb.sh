@@ -59,6 +59,10 @@ bundle_dir="/usr/lib/vv-gui"
 
 install -Dm755 "$VVG" "$root/usr/bin/vvg"
 strip --strip-unneeded "$root/usr/bin/vvg"
+# Thumbnails in GNOME / Xfce / Cinnamon / MATE file managers.
+install -Dm755 "$BLD/gui/kde/vv-thumbnailer" "$root/usr/bin/vv-thumbnailer"
+strip --strip-unneeded "$root/usr/bin/vv-thumbnailer"
+install -Dm644 "$BLD/gui/kde/vv.thumbnailer" "$root/usr/share/thumbnailers/vv.thumbnailer"
 
 # Desktop integration — mirrors gui/kde/CMakeLists.txt's install rules and
 # the Arch split package.
@@ -82,7 +86,7 @@ install -Dm644 "$BLD/gui/kde/vv-convert.desktop" \
 # when the builder distro gains KF6: the files appear and get packaged.
 multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || gcc -print-multiarch)"
 qt_plugdir="/usr/lib/$multiarch/qt6/plugins"
-payloads=("$root/usr/bin/vvg")
+payloads=("$root/usr/bin/vvg" "$root/usr/bin/vv-thumbnailer")
 for plug in kf6/thumbcreator/vvthumbnail.so kf6/kfilemetadata/vvextractor.so \
             kf6/parts/vvpart.so kf6/propertiesdialog/vvproperties.so; do
     built="$BLD/gui/kde/$(basename "$plug")"

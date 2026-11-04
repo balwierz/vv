@@ -66,6 +66,9 @@ package_vv-gui() {
              'kparts' 'hicolor-icon-theme')
     cd "$pkgbase-$pkgver"
     install -Dm755 ../build/gui/vvg "$pkgdir/usr/bin/vvg"
+    # Thumbnails in GNOME / Xfce / Cinnamon / MATE file managers.
+    install -Dm755 ../build/gui/kde/vv-thumbnailer "$pkgdir/usr/bin/vv-thumbnailer"
+    install -Dm644 ../build/gui/kde/vv.thumbnailer "$pkgdir/usr/share/thumbnailers/vv.thumbnailer"
     # KF6 plugins.
     install -Dm755 ../build/gui/kde/vvthumbnail.so \
         "$pkgdir/usr/lib/qt6/plugins/kf6/thumbcreator/vvthumbnail.so"

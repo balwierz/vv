@@ -1,0 +1,4 @@
+[Thumbnailer Entry]
+TryExec=vv-thumbnailer
+Exec=vv-thumbnailer -s %s %i %o
+MimeType=@VV_THUMB_MIME_TYPES@

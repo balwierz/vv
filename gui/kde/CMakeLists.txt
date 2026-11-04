@@ -132,3 +132,20 @@ if(NOT APPLE AND NOT WIN32)
   install(FILES ${CMAKE_CURRENT_BINARY_DIR}/vv-convert.desktop
           DESTINATION ${CMAKE_INSTALL_DATADIR}/kio/servicemenus)
 endif()
+
+# ── Thumbnails in GNOME / Xfce / Cinnamon / MATE file managers ───────────────
+# vv-thumbnailer, an executable on the KF6-free core (so it also builds in
+# the static configuration), and the freedesktop .thumbnailer entry that
+# Nautilus, Nemo, Caja and tumbler (Thunar) read. Same MIME types as the
+# Dolphin thumbnailer.
+if(NOT APPLE AND NOT WIN32)
+  add_executable(vv-thumbnailer vvthumbnailer.cpp)
+  target_link_libraries(vv-thumbnailer PRIVATE vvkde_core Qt6::Gui)
+  install(TARGETS vv-thumbnailer RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  # "[\"a\", \"b\"]" -> a;b;
+  string(REGEX REPLACE "[][\" \n]" "" _vv_thumb_list "${VV_MIME_TYPES}")
+  string(REPLACE "," ";" VV_THUMB_MIME_TYPES "${_vv_thumb_list};")
+  configure_file(vv.thumbnailer.in ${CMAKE_CURRENT_BINARY_DIR}/vv.thumbnailer @ONLY)
+  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/vv.thumbnailer
+          DESTINATION ${CMAKE_INSTALL_DATADIR}/thumbnailers)
+endif()

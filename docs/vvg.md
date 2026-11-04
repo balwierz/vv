@@ -303,6 +303,16 @@ indexed) or compressed GenBank / EMBL. Formats read whole at open get a
 thumbnail only up to a size limit: xlsx 16 MB, ods 8 MB, npz 256 MB, R data
 32 MB, GenBank / EMBL 96 MB, alignments 64 MB.
 
+## GNOME, Xfce, Cinnamon, MATE
+
+`vv-gui` also installs a freedesktop thumbnailer (`vv-thumbnailer`,
+registered in `/usr/share/thumbnailers/vv.thumbnailer`). Nautilus, Nemo,
+Caja and Thunar (through tumbler) show the same table thumbnails as
+Dolphin, for the same file types and within the same size limits. It needs
+no KDE libraries. A file manager keeps thumbnails it made before; to
+redo them, remove `~/.cache/thumbnails` (and, for a file that had none,
+`~/.cache/thumbnails/fail`).
+
 ## Install
 
 Packages: `vv-gui` for Debian / Ubuntu, Fedora and Arch, the macOS tarball,

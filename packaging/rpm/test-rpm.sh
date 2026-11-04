@@ -27,6 +27,9 @@ rpm -ql vv-gui | grep 'propertiesdialog/vvproperties.so' >/dev/null
 # Convert with vv: the service menu and the script it runs.
 rpm -ql vv-gui | grep 'kio/servicemenus/vv-convert.desktop' >/dev/null
 test -x /usr/bin/vv-convert
+# The freedesktop thumbnailer renders a PNG.
+rpm -ql vv-gui | grep 'thumbnailers/vv.thumbnailer' >/dev/null
+vv-thumbnailer -s 128 "$fixture" /tmp/vv-thumb.png && test -s /tmp/vv-thumb.png
 
 # CLI end-to-end: version, and an actual read through the Arrow reader core.
 vv --version

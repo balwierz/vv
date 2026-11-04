@@ -49,6 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   for a taken name) through a temporary file, so a failure leaves nothing;
   a read error vv reports as a warning fails the file. One notification
   lists the results. The script is also the `vv-convert` command.
+- Table thumbnails in GNOME Files (Nautilus), Nemo, Caja and Thunar: a
+  freedesktop thumbnailer, `vv-thumbnailer` with
+  `/usr/share/thumbnailers/vv.thumbnailer`, renders the image Dolphin's
+  plugin shows, for the same MIME types and size limits, without KDE
+  libraries. It runs in GNOME's bubblewrap sandbox (no display).
 
 ### Changed
 - AnnData / MuData: the storage rows (each matrix's encoding, chunks,

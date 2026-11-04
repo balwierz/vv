@@ -36,6 +36,13 @@ fi
 # Convert with vv: the service menu and the script it runs.
 test -x /usr/bin/vv-convert
 test -f /usr/share/kio/servicemenus/vv-convert.desktop
+# The freedesktop thumbnailer resolves its libraries and renders a PNG.
+test -f /usr/share/thumbnailers/vv.thumbnailer
+if ldd /usr/bin/vv-thumbnailer | grep 'not found'; then
+    echo "error: unresolved libraries in vv-thumbnailer" >&2
+    exit 1
+fi
+vv-thumbnailer -s 128 "$fixture" /tmp/vv-thumb.png && test -s /tmp/vv-thumb.png
 
 # Nothing may be left dangling after install, and the bundled Arrow — not a
 # system copy — must be the one in use (a pristine container has no other).

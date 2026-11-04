@@ -242,6 +242,24 @@ jobs:
           ./build-gui/gui/kde/vvkdetest tests/data/tiny.xlsx >/dev/null
           out=$(./build-gui/gui/kde/vvkdetest --allow-empty "$RUNNER_TEMP/padded.xlsx")
           grep -q '^thumbnail: NULL' <<<"$out" && grep -q '^meta: ok=0' <<<"$out"
+          # vv-thumbnailer (GNOME / Xfce / Cinnamon / MATE): a PNG within SIZE
+          # for a data file; exit 1 and no file for junk or an over-budget file.
+          th=./build-gui/gui/kde/vv-thumbnailer
+          $th -s 128 tests/data/tiny.parquet "$RUNNER_TEMP/t.png"
+          python3 -c 'import struct,sys; d=open(sys.argv[1],"rb").read(24); w,h=struct.unpack(">II",d[16:24]); assert d[:8]==b"\x89PNG\r\n\x1a\n" and 0<w<=128 and 0<h<=128, (w,h)' "$RUNNER_TEMP/t.png"
+          printf junk > "$RUNNER_TEMP/junk.parquet"
+          ! $th -s 128 "$RUNNER_TEMP/junk.parquet" "$RUNNER_TEMP/junk.png" && test ! -e "$RUNNER_TEMP/junk.png"
+          ! $th -s 128 "$RUNNER_TEMP/padded.xlsx" "$RUNNER_TEMP/padded.png" && test ! -e "$RUNNER_TEMP/padded.png"
+          grep -qx 'Exec=vv-thumbnailer -s %s %i %o' build-gui/gui/kde/vv.thumbnailer
+          grep -q '^MimeType=application/vnd.apache.parquet;' build-gui/gui/kde/vv.thumbnailer
+          # GNOME runs it in bubblewrap: no display, no environment.
+          if command -v bwrap >/dev/null && bwrap --ro-bind / / true 2>/dev/null; then
+            mkdir -p "$RUNNER_TEMP/bw"
+            bwrap --ro-bind / / --tmpfs /tmp --bind "$RUNNER_TEMP/bw" /tmp/out --proc /proc --dev /dev \
+              --unshare-all --die-with-parent --clearenv \
+              "$PWD/$th" -s 128 "$PWD/tests/data/tiny.parquet" /tmp/out/t.png
+            test -s "$RUNNER_TEMP/bw/t.png"
+          fi
           # Information panel for alignment / variant files: the header summary
           # (reference, assembly, sort order, read groups, samples) and the
           # producing programs (@PG PN+VN / ##source) as the generator.
