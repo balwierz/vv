@@ -22,7 +22,7 @@
 %global xlsxio_version 0.2.36
 
 Name:           vv
-Version:        1.34.0
+Version:        1.35.0
 Release:        1%{?dist}
 Summary:        Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)
 License:        MIT
@@ -137,6 +137,11 @@ XLSXIO_A="$(echo $PWD/xlsxio-local/lib*/libxlsxio_read.a)"
 %{_datadir}/thumbnailers/vv.thumbnailer
 
 %changelog
+* Wed Nov 04 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.35.0-1
+- Update to 1.35.0: --info file details for every format (Parquet row
+  groups, encodings, codecs; VCF / BAM headers; HDF5 storage; ...); vvg
+  Details > File; Dolphin Properties Format page and Convert with vv
+  service menu (vv-convert); vv-thumbnailer for GNOME, Nemo, Caja, Thunar.
 * Tue Nov 03 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.34.0-1
 - Update to 1.34.0: --compute row-wise columns; --on-bad-row and
   --bad-rows for text tables; matrix tabs (AnnData, Zarr, HDF5, Loom, 10x,

@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.35.0] - 2026-11-04
+
 ### Added
 - `--info`: how a file is stored, for every format, without reading its
   data. Lists size, compression (gzip / BGZF / zstd / bzip2 / xz), index
@@ -64,6 +66,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   filters, sizes on disk; the file size) moved from the summary tab to
   `--info` and vvg's Details ▸ File, under Storage; MuData lists each
   modality's (`rna:X storage`). The summary tab keeps what the file holds.
+
+### Docs
+- Arch Linux: install `vv` and `vv-gui` from the AUR (`yay -S vv vv-gui`).
+- USAGE: a git `textconv` driver (`vv --tsv`) for readable `git diff` of
+  Parquet, BAM, h5ad, SQLite and xlsx files, and a `~/.lessfilter` that
+  shows a data file as a table in `less`.
 
 ## [1.34.0] - 2026-11-03
 

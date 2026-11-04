@@ -1,5 +1,5 @@
 {% set name = "vv" %}
-{% set version = "1.34.0" %}
+{% set version = "1.35.0" %}
 {% set xlsxio_version = "0.2.36" %}
 
 package:

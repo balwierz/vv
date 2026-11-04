@@ -73,15 +73,15 @@ Linux and macOS packages for x86_64 and aarch64, and for Windows an installer
 
 ```sh
 # Debian / Ubuntu (arm64: replace amd64; vv-gui_*.deb adds vvg)
-curl -LO https://github.com/balwierz/vv/releases/download/v1.34.0/vv_1.34.0-1_amd64.deb
-sudo apt install ./vv_1.34.0-1_amd64.deb
+curl -LO https://github.com/balwierz/vv/releases/download/v1.35.0/vv_1.35.0-1_amd64.deb
+sudo apt install ./vv_1.35.0-1_amd64.deb
 
 # Fedora (vv-gui-*.rpm adds vvg)
 sudo dnf install ./vv-*.rpm
 
 # Any Linux, glibc ≥ 2.28: static binary
-curl -L https://github.com/balwierz/vv/releases/download/v1.34.0/vv-1.34.0-linux-x86_64.tar.gz | tar -xz
-sudo install vv-1.34.0-linux-x86_64/vv /usr/local/bin/
+curl -L https://github.com/balwierz/vv/releases/download/v1.35.0/vv-1.35.0-linux-x86_64.tar.gz | tar -xz
+sudo install vv-1.35.0-linux-x86_64/vv /usr/local/bin/
 
 # Arch Linux: AUR (vv-gui adds vvg)
 yay -S vv vv-gui
