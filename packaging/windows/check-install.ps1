@@ -2,8 +2,9 @@
 # only Windows itself on PATH, so a DLL missing from the package cannot be
 # found elsewhere on the machine. Run from the repository root (the test
 # files are tests\data\*). Used by .github/actions/windows-build for the MSI
-# (C:\Program Files\vv) and the portable zip (its unzipped folder).
-param([Parameter(Mandatory)] [string] $Dir)
+# (C:\Program Files\vv) and the portable zip (its unzipped folder). -Msi:
+# also the installer's file-type registration (filetypes.wxs).
+param([Parameter(Mandatory)] [string] $Dir, [switch] $Msi)
 $ErrorActionPreference = 'Stop'
 
 function Expect($what, $out, $want) {
@@ -35,4 +36,19 @@ try {
     Remove-Item Env:VVG_SELFTEST -ErrorAction SilentlyContinue
     Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue
     $env:PATH = $savedPath
+}
+
+if ($Msi) {
+    # vvg under "Open with" for vv's types: the ProgId opens a file in the
+    # installed vvg.exe, and .parquet / .h5ad / .bam list it.
+    $cmd = (Get-ItemProperty 'HKLM:\Software\Classes\vv.DataFile\shell\open\command').'(default)'
+    Expect 'vv.DataFile opens vvg' $cmd ([regex]::Escape("`"$Dir\vvg.exe`" `"%1`""))
+    foreach ($ext in '.parquet', '.h5ad', '.bam') {
+        $owp = Get-ItemProperty "HKLM:\Software\Classes\$ext\OpenWithProgids"
+        Expect "$ext lists vv.DataFile" ([bool]$owp.PSObject.Properties['vv.DataFile']) '^True$'
+    }
+    $app = Get-ItemProperty 'HKLM:\Software\Classes\Applications\vvg.exe'
+    Expect 'vvg.exe FriendlyAppName' $app.FriendlyAppName '^vv Viewer$'
+    # No extension's default program is set.
+    Expect '.parquet default untouched' ((Get-ItemProperty 'HKLM:\Software\Classes\.parquet').'(default)') '^$'
 }

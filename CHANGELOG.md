@@ -54,6 +54,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `/usr/share/thumbnailers/vv.thumbnailer`, renders the image Dolphin's
   plugin shows, for the same MIME types and size limits, without KDE
   libraries. It runs in GNOME's bubblewrap sandbox (no display).
+- Windows: the MSI lists *vv Viewer* under Explorer's *Open with* for the
+  108 extensions vv reads (one ProgId, `vv.DataFile`, in each extension's
+  `OpenWithProgids` and in `vvg.exe`'s `SupportedTypes`). No extension's
+  default program changes. Uninstalling removes the entries.
 
 ### Changed
 - AnnData / MuData: the storage rows (each matrix's encoding, chunks,

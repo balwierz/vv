@@ -55,7 +55,7 @@ runs:
         dotnet tool install --global wix --version 5.0.2
         $v = '${{ steps.stage.outputs.version }}'
         $msi = "vv-$v-windows-x86_64.msi"
-        wix build packaging/windows/vv.wxs -arch x64 -d "Version=$v" -d "StageDir=$PWD\stage" -o $msi
+        wix build packaging/windows/vv.wxs packaging/windows/filetypes.wxs -arch x64 -d "Version=$v" -d "StageDir=$PWD\stage" -o $msi
         if ($LASTEXITCODE) { exit 1 }
         Get-Item $msi | Format-Table Name, Length
         "msi=$msi" >> $env:GITHUB_OUTPUT
@@ -100,7 +100,10 @@ runs:
         $syspath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
         if (-not ($syspath -match [regex]::Escape($dir))) { throw "install dir not on the system PATH: $syspath" }
         Write-Output 'ok  install dir on the system PATH'
-        & packaging\windows\check-install.ps1 -Dir $dir
+        & packaging\windows\check-install.ps1 -Dir $dir -Msi
         Msi "/x `"$msi`" /qn /l*v msi.log"
         if (Test-Path "$dir\vv.exe") { throw 'uninstall left vv.exe behind' }
+        if (Test-Path 'HKLM:\Software\Classes\vv.DataFile') { throw 'uninstall left the vv.DataFile ProgId behind' }
+        $owp = Get-ItemProperty 'HKLM:\Software\Classes\.parquet\OpenWithProgids' -ErrorAction SilentlyContinue
+        if ($owp -and $owp.PSObject.Properties['vv.DataFile']) { throw 'uninstall left .parquet\OpenWithProgids\vv.DataFile behind' }
         Write-Output 'ok  uninstall'

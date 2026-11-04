@@ -2834,6 +2834,11 @@ PYEOF
     else
         FAIL=$((FAIL+1)); echo "  FAIL  formats_readme_no_drift"
     fi
+    # The MSI's "Open with" registration lists every registered extension:
+    # filetypes.wxs is what gen-filetypes.py writes from this binary.
+    assert_eq_file_inline "formats_windows_filetypes_no_drift" \
+        "$(python3 "$ROOT/packaging/windows/gen-filetypes.py" "$VV" | tr -d '\r')" \
+        "$(tr -d '\r' < "$ROOT/packaging/windows/filetypes.wxs")"
     # Relative links, images and #anchors in the Markdown docs resolve.
     if python3 "$HERE/check_doc_links.py" "$HERE/.."; then
         PASS=$((PASS+1)); echo "  ok    doc_links_resolve"

@@ -166,6 +166,12 @@ Qt or Python. The package is **not code-signed**, so SmartScreen shows
 "Windows protected your PC" on the first run: *More info ▸ Run anyway*. Check
 it against `SHA256SUMS` first (`Get-FileHash vv-*.msi` in PowerShell).
 
+The installer also lists *vv Viewer* under Explorer's *Open with* for the
+file types vv reads (`.parquet`, `.h5ad`, `.bam`, `.vcf`, `.csv`, …). It
+does not change any type's default program: a `.csv` still opens in Excel on
+double-click. For a type no program owns, such as `.parquet`, Windows asks
+once which program to use. Uninstalling removes the entries.
+
 Without installing — no administrator rights, a locked-down machine, a USB
 stick — use `vv-<ver>-windows-x86_64.zip` instead: unzip it anywhere and run
 `vvg.exe` or `vv.exe` from the folder (add it to your user `PATH` to type
