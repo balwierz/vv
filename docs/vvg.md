@@ -252,6 +252,8 @@ keep their limits.
 
 ![vvg: the Column tab summarising an AnnData obs column](img/vvg/column-stats.png)
 
+![vvg: Details ▸ File for a Parquet file](img/vvg/file-details.png)
+
 ![vvg: a VCF with INFO expanded](img/vvg/vcf.png)
 
 ![vvg: an SQLite database, one tab per table](img/vvg/sqlite.png)

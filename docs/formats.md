@@ -202,7 +202,7 @@ sharded arrays, reading only the shard index and the inner chunks needed)
 are read, with vlen-utf8 and fixed-width strings; missing chunks read as the
 fill value.
 
-![vv: an AnnData Zarr store's summary, with its chunking and codecs](img/vv/zarr.svg)
+![vv --info: an AnnData Zarr store's chunking and codecs](img/vv/zarr.svg)
 
 Try: `vv pbmc.zarr` · `vv --tab obs --tsv pbmc.zarr.zip` ·
 `vv --tab X --parquet x.parquet pbmc.zarr`.
@@ -354,18 +354,22 @@ Try: `vv results.rds` · `vv --tab counts --tsv session.RData` ·
 `.parquet` `.lociss` `.arrow` `.feather` `.arrows` `.orc` — the first screen
 decodes only the row groups it needs; nested, temporal, decimal and dictionary
 columns are shown as values. `S` opens column statistics; `--schema` and
-`--describe` print them.
+`--describe` print them. `--info` shows how the file is stored, from the
+footer alone: row groups, codecs, and each column's physical type, encoding,
+sizes and min / max (a dictionary-encoded column reads back as `string`;
+`--info` shows the dictionary).
 
 ![vv: an ATAC peak Parquet](img/vv/parquet.svg)
 ![vv: column statistics (S)](img/vv/parquet-stats.svg)
 ![vv --schema](img/vv/schema.svg)
 ![vv --describe](img/vv/describe.svg)
+![vv --info: row groups, codecs and each column's encoding](img/vv/parquet-info.svg)
 
 ![vvg: filtered and sorted Parquet](img/vvg/parquet.png)
 
 Try: `vv peaks.parquet` · `vv --filter 'signal > 10' --sort signal:desc peaks.parquet` ·
 `vv -r chr1:1000000-2000000 peaks.parquet`.
-More: [`--describe`](USAGE.md#--describe), [`--stats`](USAGE.md#--stats-parquet-only),
+More: [`--info`](USAGE.md#--info-how-a-file-is-stored), [`--describe`](USAGE.md#--describe), [`--stats`](USAGE.md#--stats-parquet-only),
 [LociSSD](USAGE.md#locissd-specifics).
 
 ## TSV / CSV

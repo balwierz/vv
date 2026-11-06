@@ -27,7 +27,7 @@ More screenshots, one per format: **[docs/formats.md](docs/formats.md)**.
 - **Filter, select, sort, compute** — `--filter 'QUAL > 30 and FILTER == "PASS"'`, `--select 'chr*,@numeric'`, `--sort POS:desc`, `--compute 'len=end-start'`.
 - **Convert** — `--tsv`, `--csv`, `--json`, `--ndjson`, `--md`, `--parquet out.parquet`, `--arrow out.arrow`.
 - **Large files** — reads only what the screen needs, so big Parquet, BAM and JSON files open without a full scan ([benchmarks](docs/BENCHMARKS.md)).
-- **Summaries** — `--schema`, `--describe`, `--seq-stats`, `--gt-stats`, `--contigs`, `--value-counts`.
+- **Summaries** — [`--info`](docs/USAGE.md#--info-how-a-file-is-stored) (how a file is stored: row groups, codecs, encodings, headers), `--schema`, `--describe`, `--seq-stats`, `--gt-stats`, `--contigs`, `--value-counts`.
 
 ## Formats
 

@@ -49,11 +49,12 @@ tui() {
 
 # cli NAME COLS ARGS... — a non-interactive command's output on a TTY
 # (a tall pane, so nothing scrolls off; trailing blank lines are trimmed).
-# MAXL=N before the call keeps the first N lines (the cut is marked).
+# MAXL=N before the call keeps the first N lines (the cut is marked); ROWS=N
+# sets the pane height for output longer than 120 lines.
 cli() {
     local name=$1 cols=$2; shift 2
     want "$name" || return 0
-    tmux -L vvshots -f /dev/null new-session -d -s s -x "$cols" -y 120 \
+    tmux -L vvshots -f /dev/null new-session -d -s s -x "$cols" -y "${ROWS:-120}" \
         "env TERM=xterm-256color $(printf '%q ' "$VV" "$@"); sleep 60"
     sleep 1.5
     tmux -L vvshots capture-pane -e -p -t s > "$work/$name.ansi"
@@ -91,7 +92,7 @@ tui sqlite         110 16 ""            lab.sqlite
 tui log            110 16 ""            pipeline.log
 
 # ── Terminal: non-interactive output ─────────────────────────────────────────
-cli markdown       90  README.md
+cli markdown       90  --no-interactive README.md
 cli table          110 -n 8 samples.tsv
 cli xlsx           110 -n 6 samples.xlsx
 cli bigwig         110 -n 6 coverage.bw
@@ -104,6 +105,7 @@ MAXL=13 cli gt-stats 110 --gt-stats --select CHROM,POS,REF,ALT,n_het,n_hom_alt,n
 MAXL=11 cli region 110 -n 8 -r chr17:43044295-43060000 --select CHROM,POS,REF,ALT,NA12878,NA12891 cohort.vcf.gz
 cli schema         110 --schema atac_peaks.parquet
 cli describe       110 --describe --select signal,pvalue,qvalue,summit atac_peaks.parquet
+ROWS=160 MAXL=30 cli parquet-info 110 --info atac_peaks.parquet
 MAXL=22 cli json-paths 110 --json-paths run.json
 cli ndjson         110 -n 6 events.ndjson
 MAXL=11 cli rds     110 -n 6 --sort padj deseq2.rds
@@ -113,12 +115,13 @@ MAXL=12 cli genbank 118 --tab features --select type,start,end,strand,gene,produ
 MAXL=13 cli msa     118 --select name,length,gaps,identity,sequence homeodomain.sto
 MAXL=11 cli pod5    110 --tab reads --select read_id,channel,num_samples,end_reason,median_before -n 6 run.pod5
 MAXL=11 cli blast   118 -n 6 hits.m8
-MAXL=20 cli zarr    118 --tab summary -n 16 -w 80 pbmc.zarr
+cli zarr            130 --info pbmc.zarr
 MAXL=11 cli duckdb  118 -n 6 lab.duckdb          # needs a vv linked with libduckdb
 
 # ── GUI ──────────────────────────────────────────────────────────────────────
 gui anndata    "VVG_DETAIL=3,0"  --tab obs pbmc.h5ad
 gui column-stats "VVG_COLSTATS=1" --tab obs pbmc.h5ad
+gui file-details "VVG_DETAILS=1"  atac_peaks.parquet
 gui vcf        "VVG_DETAIL=2,1"  cohort.vcf.gz
 gui parquet    "VVG_DETAIL=0,0"  --filter "signal > 10" --sort signal:desc atac_peaks.parquet
 gui bam        "VVG_DETAIL=0,0"  reads.bam
