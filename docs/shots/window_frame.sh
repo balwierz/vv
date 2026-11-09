@@ -44,7 +44,7 @@ magick -size "${W}x${H}" "xc:$edge" \
     -fill "$bar" -draw "rectangle $b,$b $((W - b - 1)),$((b + tb - 1))" \
     "$in" -gravity northwest -geometry "+$b+$((b + tb))" -composite \
     "${icon_args[@]}" \
-    -font "$font" -pointsize $((13 * s)) -fill "$ink" \
+    -density 72 -font "$font" -pointsize $((13 * s)) -fill "$ink" \
     -gravity north -annotate "+0+$((b + (tb - 17 * s) / 2))" "$title" \
     -gravity northwest -fill none -stroke "$ink" -strokewidth "$(awk "BEGIN{print 1.2 * $s}")" \
     -draw "$glyphs" -stroke none \
