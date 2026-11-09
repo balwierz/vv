@@ -3323,6 +3323,10 @@ private:
                           lines[idx].first[0] == ' ';
             nc_str(sy, x0, line, (r == inner_h - 1) ? A_DIM :
                                  (is_sub ? A_NORMAL : A_BOLD));
+            // The frame keeps the weight of its top and bottom edges on
+            // every row, whatever attribute the row's text has.
+            nc_str(sy, x0, BOX_VLINE, A_BOLD);
+            nc_str(sy, x0 + pane_w - 1, BOX_VLINE, A_BOLD);
         }
         std::string bot_border = std::string(BOX_BL)
                                  + repeat_utf8(BOX_HLINE, pane_w - 2)
