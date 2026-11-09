@@ -6,7 +6,8 @@
 #   docs/shots/make_shots.sh [VV] [VVG]     (defaults: build/vv, build-gui/gui/vvg)
 #
 # Needs tmux, python3 with rich (+ pyarrow, pysam, anndata, openpyxl for the
-# data), and ImageMagick for the PNG8 step. ONLY=name1,name2 limits the run.
+# data), and ImageMagick for the window frames and the indexed PNGs.
+# ONLY=name1,name2 limits the run.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
@@ -63,7 +64,21 @@ cli() {
     echo "vv/$name.svg"
 }
 
-# gui NAME "ENV=… …" ARGS... — vvg window (1100×700) after ARGS / VVG_* setup.
+# framed IN OUT TITLE — the grab IN inside a window frame (window_frame.sh: the
+# offscreen platform has no window manager to draw one), as an indexed PNG
+# whose palette holds the alpha of the frame's rounded corners.
+framed() {
+    local fw fh
+    "$here/window_frame.sh" "$1" "$work/framed.png" "$3"
+    read -r fw fh < <(magick identify -format '%w %h\n' "$work/framed.png")
+    MAGICK_THREAD_LIMIT=1 magick "$work/framed.png" -alpha extract "$work/framed-mask.png"
+    MAGICK_THREAD_LIMIT=1 magick "$work/framed.png" -alpha off -strip +dither -colors 224 \
+        "$work/framed-mask.png" -compose CopyOpacity -composite -depth 8 RGBA:- |
+        python3 "$here/palette_png.py" "$fw" "$fh" "$2"
+}
+
+# gui NAME "ENV=… …" ARGS... — vvg window (1100×700 inside the frame) after
+# ARGS / VVG_* setup. The last argument is the file, which titles the window.
 gui() {
     local name=$1 envs=$2; shift 2
     want "$name" || return 0
@@ -71,7 +86,7 @@ gui() {
     # shellcheck disable=SC2086
     env QT_QPA_PLATFORM=offscreen VVG_WINTEST=1 VVG_SCREENSHOT="$work/$name.png" $envs \
         "$VVG" "$@" >/dev/null
-    MAGICK_THREAD_LIMIT=1 magick "$work/$name.png" -strip +dither -colors 256 "PNG8:$out_vvg/$name.png"
+    framed "$work/$name.png" "$out_vvg/$name.png" "${*: -1} — vv"
     echo "vvg/$name.png"
 }
 
@@ -146,7 +161,9 @@ fi
 if want kde-properties && [ -x "$PLUGDIR/vvplugintest" ] && [ -f "$PLUGDIR/vvproperties.so" ]; then
     QT_QPA_PLATFORM=offscreen VVPLUGINTEST_SHOT_FORMAT="$work/props.png" \
         "$PLUGDIR/vvplugintest" --props "$PLUGDIR/vvproperties.so" atac_peaks.parquet >/dev/null
-    MAGICK_THREAD_LIMIT=1 magick "$work/props.png" -strip +dither -colors 256 \
-        "PNG8:$out_vvg/kde-properties.png"
+    props_icon=/usr/share/icons/breeze/actions/22/document-properties.svg
+    [ -f "$props_icon" ] || props_icon=
+    FRAME_ICON=$props_icon framed "$work/props.png" "$out_vvg/kde-properties.png" \
+        "Properties for atac_peaks.parquet — Dolphin"
     echo "vvg/kde-properties.png"
 fi
