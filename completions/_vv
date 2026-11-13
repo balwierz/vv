@@ -24,7 +24,7 @@ _vv_file_arg() {
     valopts=(-n -w -c -@ --threads --decode-threads --delimiter --in-delimiter -d --header --color --theme --box
              -r --region --window --regions-file --region-cols --slop --coords
              --tail --sort --tags --expand --parquet --arrow --feather --compression
-             --on-bad-row --bad-rows --compute --types --image-mode --samples --matrix -f --fasta --index --select --cols --filter --tab --unique --value-counts --percentiles
+             --on-bad-row --bad-rows --compute --types --bins --image-mode --samples --matrix -f --fasta --index --select --cols --filter --tab --unique --value-counts --percentiles
              --sample --exclude-flags --ff --require-flags --rf --min-mapq --min-bq)
     local i tok
     for (( i = 2; i < CURRENT; i++ )); do
@@ -180,6 +180,7 @@ _vv() {
         '--check[Do the files agree on their reference sequences? (the first is the reference)]' \
         '--diff[Compare two tables: columns, row counts, differing cells]' \
         '--seq-stats[FASTA/FASTQ summary: count, lengths, N50, GC, Q20/Q30]' \
+        '--bins+[bigWig: N bins per window with mean, min, max, coverage]:bins: ' \
         '--flatten[Struct columns as one column per leaf (st.a, st.b.c)]' \
         '--tree[JSON: open the tree viewer]' \
         '--pretty[JSON: print the document re-indented]' \

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `--bins N` for bigWig: each `-r` window (or chromosome) in N equal bins
+  with the mean, min and max of the bases that have a value and their
+  share (`coverage`), taken from the file's zoom levels when one suits the
+  bin size. The result is an ordinary table.
 - The table viewer's command line: `:w FILE` writes the view (filter, sort,
   shown columns) in the format of FILE's extension, as vvg's Export does
   (`:w!` replaces an existing file); `:region R` reads the tab's file again

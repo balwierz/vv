@@ -109,6 +109,7 @@ struct Config {
     bool        check          = false;  // --check A B …: do the files agree on
                                          // their reference sequences?
     bool        diff           = false;  // --diff A B: compare two tables' values
+    int64_t     bins           = 0;      // --bins N: bigWig summary, N bins per window
     bool        contigs        = false;  // --contigs: list a file's reference
                                          // sequences (name, length) and detect
                                          // the assembly (BAM/CRAM/SAM, VCF/BCF)

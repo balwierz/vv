@@ -895,6 +895,16 @@ if [ -f "$DATA/tiny.bw" ]; then
     assert_eq_file_inline "bigwig_tsv_returns_five_rows" "$BW_TSV" "5"
     BW_REGION=$("$VV" --tsv --no-header -r chr1:300-1100 "$DATA/tiny.bw" | wc -l | tr -d ' ')
     assert_eq_file_inline "bigwig_region_returns_two_rows" "$BW_REGION" "2"
+    # --bins N: mean / min / max / coverage per bin (bwStats), N bins per
+    # -r window or per chromosome; min / max stay float32 as stored.
+    assert_eq_file_inline "bigwig_bins_window" "$("$VV" --bins 2 -r chr1:0-1000 --tsv "$DATA/tiny.bw" 2>&1)" \
+        "$(printf 'chrom\tstart\tend\tmean\tmin\tmax\tcoverage\nchr1\t0\t500\t0.5\t0.5\t0.5\t0.2\nchr1\t500\t1000\t0.699999988079071\t0.7\t0.7\t0.6')"
+    assert_eq_file_inline "bigwig_bins_per_chrom" "$("$VV" --bins 4 --count "$DATA/tiny.bw")" "8"
+    assert_eq_file_inline "bigwig_bins_empty_is_null" \
+        "$("$VV" --bins 4 --tsv --no-header "$DATA/tiny.bw" | sed -n 2p)" "$(printf 'chr1\t12500\t25000\t\t\t\t')"
+    assert_eq_file_inline "bigwig_bins_filter" "$("$VV" --bins 4 --filter 'coverage > 0' --count "$DATA/tiny.bw")" "2"
+    assert_exit_code "bigwig_bins_not_bigwig" 1 "$VV" --bins 3 "$DATA/tiny.bed"
+    assert_exit_code "bigwig_bins_bad_count" 2 "$VV" --bins 0 "$DATA/tiny.bw"
 fi
 
 # Batch-boundary resume: a single chromosome holding more than BATCH_SIZE

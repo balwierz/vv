@@ -591,3 +591,91 @@ bool big_chrom_list(const std::string& path, std::vector<std::string>* names,
     bwClose(fp);
     return ok;
 }
+
+// bwStatsType's enumerators (mean, min, max, ...) are unscoped C names;
+// these say which one is meant.
+static bwStatsType mean_stat() { return (bwStatsType)0; }
+static bwStatsType max_stat()  { return (bwStatsType)2; }
+static bwStatsType min_stat()  { return (bwStatsType)3; }
+static bwStatsType cov_stat()  { return (bwStatsType)4; }
+
+std::string open_bigwig_bins(const Config& cfg, std::unique_ptr<TabularSource>* out) {
+    const std::string& path = cfg.path;
+    if (cfg.bins <= 0) return "--bins needs a positive number of bins";
+    if (bwInit(1 << 17) != 0) return "libBigWig init failed";
+    if (!bwIsBigWig(path.c_str(), nullptr))
+        return "--bins summarises a bigWig file; this is not one";
+    bigWigFile_t* fp = bwOpen(path.c_str(), nullptr, "r");
+    if (!fp || !fp->cl) {
+        if (fp) bwClose(fp);
+        return "cannot open '" + path + "' as bigWig";
+    }
+    struct Window { std::string chrom; uint32_t start, end; };
+    std::vector<Window> windows;
+    auto chrom_len = [&](const std::string& c) -> int64_t {
+        for (int64_t i = 0; i < (int64_t)fp->cl->nKeys; ++i)
+            if (c == fp->cl->chrom[i]) return fp->cl->len[i];
+        return -1;
+    };
+    if (!cfg.region.empty()) {
+        for (const auto& w : parse_region_list(cfg.region, cfg.coords_one_based)) {
+            const int64_t len = chrom_len(w.chrom);
+            if (len < 0) continue;                       // a chromosome the file lacks
+            const int64_t s = w.start == INT64_MIN ? 0 : std::max<int64_t>(0, w.start);
+            const int64_t e = w.end == INT64_MAX ? len : std::min<int64_t>(w.end, len);
+            if (s < e) windows.push_back({w.chrom, (uint32_t)s, (uint32_t)e});
+        }
+    } else {
+        for (int64_t i = 0; i < (int64_t)fp->cl->nKeys; ++i)
+            windows.push_back({fp->cl->chrom[i], 0, fp->cl->len[i]});
+    }
+    arrow::StringBuilder chrom;
+    arrow::Int64Builder start, end;
+    arrow::DoubleBuilder b_mean, b_cov;
+    arrow::FloatBuilder  b_min, b_max;      // the file stores 32-bit values
+    auto put = [](auto& b, const double* v, uint32_t i) {
+        using T = typename std::decay_t<decltype(b)>::value_type;
+        if (!v || std::isnan(v[i])) return b.AppendNull();
+        return b.Append((T)v[i]);
+    };
+    for (const auto& w : windows) {
+        // bwStats takes its bins from the zoom level whose resolution suits
+        // them, else from the full data; it splits [start, end) as below.
+        const uint32_t n = (uint32_t)std::min<int64_t>(cfg.bins, (int64_t)(w.end - w.start));
+        double* v_mean = bwStats(fp, w.chrom.c_str(), w.start, w.end, n, mean_stat());
+        double* v_min  = bwStats(fp, w.chrom.c_str(), w.start, w.end, n, min_stat());
+        double* v_max  = bwStats(fp, w.chrom.c_str(), w.start, w.end, n, max_stat());
+        double* v_cov  = bwStats(fp, w.chrom.c_str(), w.start, w.end, n, cov_stat());
+        uint32_t pos = w.start;
+        for (uint32_t i = 0; i < n; ++i) {
+            const uint32_t e = w.start + (uint32_t)(((double)(w.end - w.start) * (i + 1)) / (int)n);
+            (void)chrom.Append(w.chrom);
+            (void)start.Append(pos);
+            (void)end.Append(e);
+            (void)put(b_mean, v_mean, i);
+            (void)put(b_min, v_min, i);
+            (void)put(b_max, v_max, i);
+            (void)put(b_cov, v_cov, i);
+            pos = e;
+        }
+        free(v_mean); free(v_min); free(v_max); free(v_cov);
+    }
+    bwClose(fp);
+    std::shared_ptr<arrow::Array> a[7];
+    if (!chrom.Finish(&a[0]).ok() || !start.Finish(&a[1]).ok() || !end.Finish(&a[2]).ok() ||
+        !b_mean.Finish(&a[3]).ok() || !b_min.Finish(&a[4]).ok() || !b_max.Finish(&a[5]).ok() ||
+        !b_cov.Finish(&a[6]).ok())
+        return "--bins: building the table failed";
+    auto schema = arrow::schema({arrow::field("chrom", arrow::utf8()), arrow::field("start", arrow::int64()),
+                                 arrow::field("end", arrow::int64()), arrow::field("mean", arrow::float64()),
+                                 arrow::field("min", arrow::float32()), arrow::field("max", arrow::float32()),
+                                 arrow::field("coverage", arrow::float64())});
+    auto table = arrow::Table::Make(schema, {a[0], a[1], a[2], a[3], a[4], a[5], a[6]});
+    auto src = std::make_unique<MemoryTableSource>(
+        table, path, "Format: bigWig  |  " + std::to_string(cfg.bins) + " bins per " +
+                         (cfg.region.empty() ? "chromosome" : "window") +
+                         "  |  mean / min / max of the covered bases; coverage: their share");
+    if (!cfg.region.empty()) src->mark_region_applied();
+    *out = std::move(src);
+    return "";
+}

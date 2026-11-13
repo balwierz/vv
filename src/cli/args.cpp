@@ -340,6 +340,10 @@ static void print_usage(const char* prog) {
         "                      order changes are noted).\n"
         "                      --select / --filter / -r apply to both. Exit 1\n"
         "                      when they differ; --json for the machine form\n"
+        "  --bins <N>          bigWig: N bins per -r window (else per chromosome)\n"
+        "                      with mean, min, max and coverage (the share of\n"
+        "                      bases with a value), from the file's zoom levels\n"
+        "                      when one suits; composes with --tsv / --json\n"
         "  --seq-stats         FASTA/FASTQ: one-row summary — record count, total /\n"
         "                      min / mean / max length, N50, GC %%, and for FASTQ\n"
         "                      Q20 / Q30 %%; composes with --tsv / --json\n"
@@ -684,6 +688,14 @@ Config parse_args(int argc, char** argv) {
             cfg.check = true;
         } else if (!std::strcmp(argv[i], "--diff")) {
             cfg.diff = true;
+        } else if (!std::strcmp(argv[i], "--bins") && i + 1 < argc) {
+            char* end = nullptr;
+            const long long n = std::strtoll(argv[++i], &end, 10);
+            if (!end || *end || n < 1 || n > 10000000) {
+                std::fprintf(stderr, "--bins: '%s' is not a number of bins (1 to 10000000)\n", argv[i]);
+                std::exit(2);
+            }
+            cfg.bins = n;
         } else if (!std::strcmp(argv[i], "--seq-stats")) {
             cfg.seq_stats = true;
         } else if (!std::strcmp(argv[i], "--flatten")) {
@@ -870,7 +882,7 @@ Config parse_args(int argc, char** argv) {
                 "--compression", "--unique", "--value-counts", "--percentiles", "--sample", "--filter",
                 "--select", "--cols", "--image-mode", "--tab", "--theme",
                 "--expand", "--samples", "--matrix", "--on-bad-row", "--bad-rows", "--compute", "--types",
-                "--delimiter", "--in-delimiter", "-d", "--header",
+                "--delimiter", "--in-delimiter", "-d", "--header", "--bins",
                 "-f", "--fasta", "--box", "--index",
                 "--exclude-flags", "--ff", "--require-flags", "--rf",
                 "--min-mapq", "--min-bq",

@@ -1413,6 +1413,11 @@ std::string open_source(const std::string& path, const Config& cfg,
     // --contigs replaces the data view with the header's reference-sequence
     // table (BAM/CRAM/SAM, VCF/BCF), reading no records.
     std::string err;
+    if (cfg.bins > 0) {
+        err = open_bigwig_bins(cfg, out);
+        if (!err.empty() || !*out) return err;
+        return apply_compute(cfg, out);
+    }
     if (cfg.contigs || cfg.seq_stats) {
         // Header / summary tables: --compute applies to them as to a file.
         err = cfg.contigs ? build_contigs(cfg, out) : build_seq_stats(cfg, out);

@@ -15,7 +15,7 @@ end
 function __vv_file
     set -l valopts n w c @ threads decode-threads delimiter in-delimiter d header color theme box r region \
         window regions-file region-cols slop coords tail sort tags expand parquet arrow \
-        feather compression on-bad-row bad-rows compute types image-mode samples matrix f fasta index select cols filter tab unique value-counts percentiles sample \
+        feather compression on-bad-row bad-rows compute types bins image-mode samples matrix f fasta index select cols filter tab unique value-counts percentiles sample \
         exclude-flags ff require-flags rf min-mapq min-bq
     set -l toks (commandline -opc)
     set -l i 2
@@ -164,6 +164,7 @@ complete -c vv -c vh -l contigs            -d 'BAM/CRAM/SAM, VCF/BCF: list refer
 complete -c vv -c vh -l check              -d 'Do the files agree on their reference sequences?'
 complete -c vv -c vh -l diff               -d 'Compare two tables: columns, row counts, differing cells'
 complete -c vv -c vh -l seq-stats          -d 'FASTA/FASTQ: count, lengths, N50, GC, Q20/Q30'
+complete -c vv -c vh -l bins -x            -d 'bigWig: N bins per window with mean, min, max, coverage'
 complete -c vv -c vh -l flatten            -d 'struct columns as one column per leaf (st.a, st.b.c)'
 complete -c vv -c vh -l tree               -d 'JSON: open the tree viewer'
 complete -c vv -c vh -l pretty             -d 'JSON: print the document re-indented'

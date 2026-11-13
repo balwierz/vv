@@ -712,6 +712,13 @@ CSV and its Parquet conversion are the same; type and column-order changes
 are noted. \fB\-\-select\fR, \fB\-\-filter\fR, \fB\-r\fR and \fB\-\-tab\fR
 apply to both. Exit 1 when they differ; \fB\-\-json\fR for JSON.
 .TP
+.BI \-\-bins " N"
+For a bigWig file: split each \fB\-r\fR window (or each chromosome) into
+\fIN\fR equal bins and give each the \fBmean\fR, \fBmin\fR and \fBmax\fR of
+the bases with a value and \fBcoverage\fR, the share of bases with one, from
+the file's zoom levels when one suits the bin size. The result is a table
+(\fB\-\-tsv\fR, \fB\-\-filter\fR, \fB\-\-sort\fR apply).
+.TP
 .B \-\-contigs
 For BAM / CRAM / SAM and VCF / BCF, list the reference sequences named
 in the header \(en the \fB@SQ\fR lines of an alignment file, or the

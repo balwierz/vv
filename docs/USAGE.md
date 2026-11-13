@@ -1822,6 +1822,18 @@ $ vv -r chr1:0-1000 tests/data/tiny.bw
 
 bigWig schema is fixed: `chrom`, `start`, `end`, `value`.
 
+`--bins N` summarises a bigWig instead of listing its intervals: each `-r`
+window (or, without one, each chromosome) is split into N equal bins, and
+each bin gets the `mean`, `min` and `max` of the bases that have a value and
+`coverage`, the share of its bases that do (an empty bin: nulls). The values
+come from the file's zoom levels when one is fine enough for the bin size,
+so a genome-wide summary of a large track reads a few megabytes:
+
+```sh
+$ vv --bins 100 -r chr17:43000000-43200000 signal.bw --tsv
+$ vv --bins 1 signal.bw --sort mean:desc        # one row per chromosome
+```
+
 # Examples by workflow
 
 ## Look at an inherited file first

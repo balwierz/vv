@@ -1231,6 +1231,7 @@ protected:
     std::string                       footer_str_;
     std::vector<std::string>          hidden_;
     bool                              is_text_ = false;
+    bool                              region_applied_ = false;
 
 public:
     // Set when this table was derived from a plain-text source (--tail on a
@@ -1238,6 +1239,9 @@ public:
     // one-column table.
     void mark_text() { is_text_ = true; }
     bool is_text() const override { return is_text_; }
+    // Set when the table was built for Config::region (a --bins summary).
+    void mark_region_applied() { region_applied_ = true; }
+    bool region_applied() const override { return region_applied_; }
 protected:
     // For slice navigation: swap the underlying table without
     // re-creating the source (preserves identity for the TUI).
@@ -1717,6 +1721,9 @@ std::string detect_assembly(const std::vector<std::string>& names,
 // The sequence names a tabix index (.tbi / .csi beside `path`) lists; false
 // when there is no index.
 bool tabix_seqnames(const std::string& path, std::vector<std::string>* out);
+// --bins N: a bigWig's mean / min / max / coverage in N bins per -r window
+// (else per chromosome), from its zoom levels when one suits.
+std::string open_bigwig_bins(const Config& cfg, std::unique_ptr<TabularSource>* out);
 // A bigWig / bigBed file's chromosomes and their lengths.
 bool big_chrom_list(const std::string& path, std::vector<std::string>* names,
                     std::vector<int64_t>* lengths);
