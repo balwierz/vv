@@ -765,9 +765,13 @@ std::string open_view_source(Config cfg, std::unique_ptr<TabularSource>* out);
 bool export_format_for_path(const std::string& path, ExportFormat* f);
 // The vv command line that reproduces `cfg`'s view: the file, --tab, the
 // format options (-r, --index, -f, --pileup, --tags, --gt-stats, --expand,
-// --samples, --matrix, --types), --filter, --sort and --select, each
-// argument shell-quoted when it needs it.
+// --samples, --matrix, --types), --filter, one --sort per key, --select and
+// --describe, each argument shell-quoted when it needs it. The viewer's `Y`
+// and vvg's Copy as vv Command both print it.
 std::string view_command_line(const Config& cfg);
+// POSIX shell quoting: the word unchanged when it holds only characters no
+// shell treats specially, otherwise in single quotes ('\'' for a quote).
+std::string shell_quote(const std::string& word);
 std::string export_view(const Config& cfg, const std::string& out_path,
                         ExportFormat format, ExportProgress* progress);
 

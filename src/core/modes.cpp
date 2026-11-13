@@ -378,7 +378,7 @@ std::string open_view_source(Config cfg, std::unique_ptr<TabularSource>* out) {
     return "";
 }
 
-static std::string shell_quote(const std::string& s) {
+std::string shell_quote(const std::string& s) {
     if (!s.empty() && s.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
                                           "0123456789_./:=,@%+-") == std::string::npos)
         return s;
@@ -415,12 +415,18 @@ std::string view_command_line(const Config& cfg) {
         opt("--types", t);
     }
     if (!cfg.filter_expr.empty()) opt("--filter", cfg.filter_expr);
+    // --sort reads a trailing :asc / :desc as the direction, so a name that
+    // contains a colon always gets an explicit one. One --sort per key.
+    auto sort_key = [&](const std::string& col, bool desc) {
+        const bool colon = col.find(':') != std::string::npos;
+        opt("--sort", col + (desc ? ":desc" : colon ? ":asc" : ""));
+    };
     if (!cfg.sort_col.empty()) {
-        // --sort reads a trailing :asc / :desc as the direction.
-        const bool colon = cfg.sort_col.find(':') != std::string::npos;
-        opt("--sort", cfg.sort_col + (cfg.sort_desc ? ":desc" : colon ? ":asc" : ""));
+        sort_key(cfg.sort_col, cfg.sort_desc);
+        for (const auto& k : cfg.sort_then) sort_key(k.col, k.desc);
     }
     if (!cfg.select_cols.empty()) opt("--select", cfg.select_cols);
+    if (cfg.describe) w += " --describe";
     return w + " " + shell_quote(cfg.path);
 }
 
