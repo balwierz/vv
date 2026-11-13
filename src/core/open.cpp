@@ -48,7 +48,7 @@ static void spool_signal(int sig) {
     signal(sig, SIG_DFL);
     raise(sig);
 }
-static void spool_register(const std::string& path) {
+void spool_register(const std::string& path) {
     if (g_n_spooled == 0) {
         std::atexit(remove_spooled_files);
 #ifdef SIGHUP

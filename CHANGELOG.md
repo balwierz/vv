@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `--distinct` reports a read that failed part-way (a value a column's type
   cannot hold, an I/O error) and exits 1. It printed the distinct rows read
   before the failure and exited 0.
+- `--parquet FILE` / `--arrow FILE` leave no file when the read fails
+  part-way. The rows before the error were written as a valid file and the
+  `[N rows → FILE]` line printed before the error and exit 1. The output is
+  now written as `FILE.part` and renamed once the input was read whole; an
+  existing `FILE` is kept on failure, and `-` writes nothing to stdout. The
+  input file named as the output is refused, as vvg's export already did.
 
 ## [1.35.0] - 2026-11-04
 

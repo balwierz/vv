@@ -819,6 +819,10 @@ int main(int argc, char** argv) {
 
     // Parquet output
     if (!cfg.parquet_out.empty()) {
+        if (auto e = output_conflict(cfg.path, cfg.parquet_out); !e.empty()) {
+            report(cfg.path, "--parquet: " + e);
+            return 1;
+        }
         Config pcfg = cfg;
         if (!pcfg.head_rows_set) pcfg.head_rows = 0;  // default to "all rows"
         std::string err = write_parquet(*src, pcfg);
@@ -836,6 +840,10 @@ int main(int argc, char** argv) {
 
     // Arrow IPC / Feather output
     if (!cfg.arrow_out.empty()) {
+        if (auto e = output_conflict(cfg.path, cfg.arrow_out); !e.empty()) {
+            report(cfg.path, "--arrow: " + e);
+            return 1;
+        }
         Config acfg = cfg;
         if (!acfg.head_rows_set) acfg.head_rows = 0;  // default to "all rows"
         std::string err = write_arrow(*src, acfg);

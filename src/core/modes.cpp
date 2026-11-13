@@ -377,13 +377,11 @@ std::string open_view_source(Config cfg, std::unique_ptr<TabularSource>* out) {
     return "";
 }
 
-std::string export_view(const Config& cfg_in, const std::string& out_path,
-                        ExportFormat format, ExportProgress* progress) {
+std::string output_conflict(const std::string& in_path, const std::string& out_path) {
     namespace fs = std::filesystem;
-    Config cfg = cfg_in;
-    if (out_path.empty()) return "no output file";
+    if (out_path.empty() || out_path == "-" || in_path.empty() || in_path == "-") return "";
     std::error_code ec;
-    const fs::path in_p(cfg.path), out_p(out_path);
+    const fs::path in_p(in_path), out_p(out_path);
     if (fs::exists(out_p, ec) && fs::equivalent(in_p, out_p, ec))
         return "'" + out_path + "' is the input file; choose another name";
     if (fs::is_directory(in_p, ec)) {
@@ -397,15 +395,27 @@ std::string export_view(const Config& cfg_in, const std::string& out_path,
             return "'" + out_path + "' is inside the input dataset directory; "
                    "choose another location";
     }
+    return "";
+}
+
+std::string export_view(const Config& cfg_in, const std::string& out_path,
+                        ExportFormat format, ExportProgress* progress) {
+    namespace fs = std::filesystem;
+    Config cfg = cfg_in;
+    if (out_path.empty()) return "no output file";
+    if (auto e = output_conflict(cfg.path, out_path); !e.empty()) return e;
+    std::error_code ec;
+    const fs::path out_p(out_path);
 
     // The output mode is set before the source opens: readers size their
     // previews by it (an AnnData obs / var is read in full only when every row
-    // will be written).
+    // will be written). The Parquet / Arrow writers write <out_path>.part and
+    // rename it themselves; the text formats are written to it here.
     const std::string part = out_path + ".part";
     const char* mode = "";
     switch (format) {
-        case ExportFormat::Parquet: cfg.parquet_out = part; mode = "a Parquet export"; break;
-        case ExportFormat::Arrow:   cfg.arrow_out   = part; mode = "an Arrow export";  break;
+        case ExportFormat::Parquet: cfg.parquet_out = out_path; mode = "a Parquet export"; break;
+        case ExportFormat::Arrow:   cfg.arrow_out   = out_path; mode = "an Arrow export";  break;
         case ExportFormat::Tsv:     cfg.delimiter = '\t';   mode = "a TSV export";     break;
         case ExportFormat::Csv:     cfg.delimiter = ',';    mode = "a CSV export";     break;
         case ExportFormat::Json:    cfg.json_array = true;  mode = "a JSON export";    break;
@@ -449,6 +459,7 @@ std::string export_view(const Config& cfg_in, const std::string& out_path,
         if (std::fclose(f) != 0 || bad)
             if (err.empty()) err = "write to '" + part + "' failed: " + std::strerror(errno);
     }
+    if (!f) return err;          // Parquet / Arrow: written and renamed, or removed
     if (err.empty() && !run_read_status(*src).ok())
         err = shorten_reader_error(run_read_status(*src).ToString());
     if (err.empty() && progress && progress->cancel.load()) err = kExportCanceled;

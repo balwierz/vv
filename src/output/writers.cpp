@@ -7,6 +7,7 @@
 
 #include <condition_variable>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <mutex>
 
@@ -446,6 +447,101 @@ static std::string spool_template(const char* name) {
     return temp_dir() + "/" + name;
 }
 
+// The file a Parquet / Arrow writer writes into. A file target is written as
+// "<target>.part" and renamed over the target only once the whole input was
+// read, so a failed or interrupted conversion leaves no file that looks
+// complete (and an existing target as it was). `-` is spooled to a temporary
+// file (the footer needs seeks) and copied to stdout under the same rule. A
+// target that exists and is not a regular file (/dev/stdout redirected to a
+// file, a FIFO) is written in place. The temporary file is removed on every
+// path out, and on SIGINT / SIGTERM / SIGHUP.
+class OutputTarget {
+public:
+    // "" or the reason the file cannot be created.
+    std::string open(const std::string& target, const char* spool_name, int suffix_len) {
+        namespace fs = std::filesystem;
+        target_ = target;
+        to_stdout_ = target == "-";
+        if (to_stdout_) {
+            tmp_ = spool_template(spool_name);
+            int fd = make_temp_file(&tmp_, suffix_len);
+            if (fd < 0) {
+                tmp_.clear();
+                return std::string("Cannot create temp file for ") + spool_name + ": " +
+                       std::strerror(errno);
+            }
+            ::close(fd);              // the writer opens the path by name
+            spool_register(tmp_);
+            path_ = tmp_;
+            return "";
+        }
+        // A device, FIFO or /dev/stdout-style name is written in place; a
+        // symlink to a file keeps its link (the file it names is replaced).
+        std::error_code ec, sec;
+        fs::path real = target;
+        if (fs::is_symlink(fs::symlink_status(real, sec))) real = fs::canonical(real, ec);
+        const auto st = fs::status(real, sec);
+        const bool missing = st.type() == fs::file_type::not_found;   // a new file
+        const std::string rs = real.generic_string();
+        if (ec || (sec && !missing) || (!missing && !fs::is_regular_file(st)) ||
+            target.rfind("/dev/", 0) == 0 || target.rfind("/proc/", 0) == 0 ||
+            rs.rfind("/dev/", 0) == 0 || rs.rfind("/proc/", 0) == 0) {
+            path_ = target;
+            return "";
+        }
+        target_ = rs;
+        tmp_ = rs + ".part";
+        spool_register(tmp_);
+        path_ = tmp_;
+        return "";
+    }
+    const std::string& path() const { return path_; }
+    // Move the finished file into place: copy the spool to stdout, or rename
+    // the .part over the target. "" or the reason it failed.
+    std::string commit() {
+        if (tmp_.empty()) return "";
+        if (to_stdout_) {
+            FILE* in = std::fopen(tmp_.c_str(), "rb");
+            if (!in) return std::string("cannot read back temp file: ") + std::strerror(errno);
+            constexpr size_t BUF = 64 * 1024;
+            std::vector<char> buf(BUF);
+            std::fflush(stdout);
+            while (size_t n = std::fread(buf.data(), 1, BUF, in)) {
+                if (std::fwrite(buf.data(), 1, n, stdout) != n) {
+                    std::fclose(in);
+                    return std::string("write to stdout failed: ") + std::strerror(errno);
+                }
+            }
+            std::fclose(in);
+            std::fflush(stdout);
+            abort();
+            return "";
+        }
+        std::error_code ec;
+        std::filesystem::rename(tmp_, target_, ec);   // replaces the target, also on Windows
+        if (ec) return "cannot rename '" + tmp_ + "' to '" + target_ + "': " + ec.message();
+        tmp_.clear();
+        return "";
+    }
+    void abort() {
+        if (!tmp_.empty()) ::unlink(tmp_.c_str());
+        tmp_.clear();
+    }
+    ~OutputTarget() { abort(); }
+
+private:
+    std::string target_, tmp_, path_;
+    bool to_stdout_ = false;
+};
+
+// After the writer closed its file: "" when the input was read whole and the
+// export was not canceled, else the error to return (the file is not kept).
+static std::string output_read_check(const TabularSource& src) {
+    if (auto st = run_read_status(src); !st.ok()) return shorten_reader_error(st.ToString());
+    if (export_canceled()) return kExportCanceled;
+    return "";
+}
+
 // Stream the source's chunks into a Parquet file at cfg.parquet_out.
 // Returns "" on success, an error message otherwise. Writes an
 // "[N rows -> path]" summary to stderr on success.
@@ -476,30 +572,17 @@ std::string write_parquet(TabularSource& src, const Config& cfg) {
     for (int i : requested) fields.push_back(src.schema()->field(i));
     auto out_schema = arrow::schema(fields);
 
-    // `--parquet -`: Parquet's footer-at-end requires seekable writes, so we
-    // can't stream directly to stdout. Spool to a temp file, then copy it to
-    // stdout after the writer closes. unlink() up front so the file
-    // disappears on crash and isn't left behind.
-    bool to_stdout = (cfg.parquet_out == "-");
-    std::string out_path = cfg.parquet_out;
-    int tmp_fd = -1;
-    if (to_stdout) {
-        out_path = spool_template("vv-parquet-XXXXXX.parquet");
-        tmp_fd = make_temp_file(&out_path, 8);  // suffix length = ".parquet" = 8
-        if (tmp_fd < 0)
-            return std::string("Cannot create temp file for --parquet -: ") +
-                   std::strerror(errno);
-        // Keep fd open (Arrow opens the path by name); we'll clean up below.
-        ::close(tmp_fd);
-        tmp_fd = -1;
-    }
+    // Parquet's footer-at-end needs seekable writes: `-` is spooled, a file
+    // is written as <file>.part and renamed once complete (OutputTarget).
+    const bool to_stdout = (cfg.parquet_out == "-");
+    OutputTarget target;
+    if (auto e = target.open(cfg.parquet_out, "vv-parquet-XXXXXX.parquet", 8); !e.empty()) return e;
+    const std::string& out_path = target.path();
 
     auto sink_or = arrow::io::FileOutputStream::Open(out_path);
-    if (!sink_or.ok()) {
-        if (to_stdout) ::unlink(out_path.c_str());
-        return "Cannot open '" + out_path + "' for write: " +
+    if (!sink_or.ok())
+        return "Cannot open '" + std::string(to_stdout ? out_path : cfg.parquet_out) + "' for write: " +
                sink_or.status().ToString();
-    }
     auto sink = sink_or.ValueOrDie();
 
     auto wprops = parquet::WriterProperties::Builder()
@@ -512,8 +595,10 @@ std::string write_parquet(TabularSource& src, const Config& cfg) {
 
     auto writer_or = parquet::arrow::FileWriter::Open(
         *out_schema, arrow::default_memory_pool(), sink, wprops, aprops);
-    if (!writer_or.ok())
+    if (!writer_or.ok()) {
+        (void)sink->Close();
         return "Parquet writer init failed: " + writer_or.status().ToString();
+    }
     auto writer = std::move(writer_or).ValueOrDie();
 
     int64_t rows_left = (cfg.head_rows <= 0) ? INT64_MAX : (int64_t)cfg.head_rows;
@@ -522,7 +607,6 @@ std::string write_parquet(TabularSource& src, const Config& cfg) {
         if (export_canceled()) {
             (void)writer->Close();
             (void)sink->Close();
-            if (to_stdout) ::unlink(out_path.c_str());
             return kExportCanceled;
         }
         src.ensure(c);
@@ -542,46 +626,24 @@ std::string write_parquet(TabularSource& src, const Config& cfg) {
         // Project down to user-requested columns (drop filter-only loads).
         table = project_to_requested(table, col_indices, requested);
         st = writer->WriteTable(*table, table->num_rows());
-        if (!st.ok()) return "WriteTable failed: " + st.ToString();
+        if (!st.ok()) {
+            (void)writer->Close();
+            (void)sink->Close();
+            return "WriteTable failed: " + st.ToString();
+        }
         total += take;
         rows_left -= take;
         export_count(take);
     }
 
     auto cs = writer->Close();
-    if (!cs.ok()) {
-        if (to_stdout) ::unlink(out_path.c_str());
-        return "Parquet Close failed: " + cs.ToString();
-    }
+    if (!cs.ok()) return "Parquet Close failed: " + cs.ToString();
     auto fc = sink->Close();
-    if (!fc.ok()) {
-        if (to_stdout) ::unlink(out_path.c_str());
-        return "File close failed: " + fc.ToString();
-    }
+    if (!fc.ok()) return "File close failed: " + fc.ToString();
+    if (auto e = output_read_check(src); !e.empty()) return e;
+    if (auto e = target.commit(); !e.empty()) return e;
 
     if (to_stdout) {
-        // Stream the temp file to stdout.
-        FILE* in = std::fopen(out_path.c_str(), "rb");
-        if (!in) {
-            std::string err = std::string("cannot read back temp file: ") +
-                              std::strerror(errno);
-            ::unlink(out_path.c_str());
-            return err;
-        }
-        constexpr size_t BUF = 64 * 1024;
-        std::vector<char> buf(BUF);
-        std::fflush(stdout);
-        while (true) {
-            size_t n = std::fread(buf.data(), 1, BUF, in);
-            if (n == 0) break;
-            if (std::fwrite(buf.data(), 1, n, stdout) != n) {
-                std::fclose(in);
-                ::unlink(out_path.c_str());
-                return std::string("write to stdout failed: ") + std::strerror(errno);
-            }
-        }
-        std::fclose(in);
-        ::unlink(out_path.c_str());
         std::fprintf(stderr, "%s[%lld rows → stdout, %s]%s\n",
                      g_color.meta_key, (long long)total,
                      cfg.compression.c_str(), g_color.reset);
@@ -630,32 +692,24 @@ std::string write_arrow(TabularSource& src, const Config& cfg) {
     for (int i : requested) fields.push_back(src.schema()->field(i));
     auto out_schema = arrow::schema(fields);
 
-    // `--arrow -`: spool to a temp file, then copy to stdout after close (matches
-    // --parquet -). unlink() up front so it disappears on crash.
-    bool to_stdout = (cfg.arrow_out == "-");
-    std::string out_path = cfg.arrow_out;
-    if (to_stdout) {
-        out_path = spool_template("vv-arrow-XXXXXX.arrow");
-        int fd = make_temp_file(&out_path, 6);   // suffix ".arrow" = 6
-        if (fd < 0)
-            return std::string("Cannot create temp file for --arrow -: ") +
-                   std::strerror(errno);
-        ::close(fd);
-    }
+    // `-` is spooled, a file is written as <file>.part and renamed once
+    // complete (OutputTarget), as for --parquet.
+    const bool to_stdout = (cfg.arrow_out == "-");
+    OutputTarget target;
+    if (auto e = target.open(cfg.arrow_out, "vv-arrow-XXXXXX.arrow", 6); !e.empty()) return e;
+    const std::string& out_path = target.path();
 
     auto sink_or = arrow::io::FileOutputStream::Open(out_path);
-    if (!sink_or.ok()) {
-        if (to_stdout) ::unlink(out_path.c_str());
-        return "Cannot open '" + out_path + "' for write: " +
+    if (!sink_or.ok())
+        return "Cannot open '" + std::string(to_stdout ? out_path : cfg.arrow_out) + "' for write: " +
                sink_or.status().ToString();
-    }
     auto sink = sink_or.ValueOrDie();
 
     auto wopts = arrow::ipc::IpcWriteOptions::Defaults();
     if (ipc_codec) wopts.codec = ipc_codec;
     auto writer_or = arrow::ipc::MakeFileWriter(sink, out_schema, wopts);
     if (!writer_or.ok()) {
-        if (to_stdout) ::unlink(out_path.c_str());
+        (void)sink->Close();
         return "Arrow IPC writer init failed: " + writer_or.status().ToString();
     }
     auto writer = std::move(writer_or).ValueOrDie();
@@ -666,7 +720,6 @@ std::string write_arrow(TabularSource& src, const Config& cfg) {
         if (export_canceled()) {
             (void)writer->Close();
             (void)sink->Close();
-            if (to_stdout) ::unlink(out_path.c_str());
             return kExportCanceled;
         }
         src.ensure(c);
@@ -686,7 +739,8 @@ std::string write_arrow(TabularSource& src, const Config& cfg) {
         table = project_to_requested(table, col_indices, requested);
         st = writer->WriteTable(*table);
         if (!st.ok()) {
-            if (to_stdout) ::unlink(out_path.c_str());
+            (void)writer->Close();
+            (void)sink->Close();
             return "WriteTable failed: " + st.ToString();
         }
         total += take;
@@ -695,39 +749,14 @@ std::string write_arrow(TabularSource& src, const Config& cfg) {
     }
 
     auto cs = writer->Close();
-    if (!cs.ok()) {
-        if (to_stdout) ::unlink(out_path.c_str());
-        return "Arrow Close failed: " + cs.ToString();
-    }
+    if (!cs.ok()) return "Arrow Close failed: " + cs.ToString();
     auto fc = sink->Close();
-    if (!fc.ok()) {
-        if (to_stdout) ::unlink(out_path.c_str());
-        return "File close failed: " + fc.ToString();
-    }
+    if (!fc.ok()) return "File close failed: " + fc.ToString();
+    if (auto e = output_read_check(src); !e.empty()) return e;
+    if (auto e = target.commit(); !e.empty()) return e;
 
     const char* clabel = ipc_codec ? comp.c_str() : "none";
     if (to_stdout) {
-        FILE* in = std::fopen(out_path.c_str(), "rb");
-        if (!in) {
-            std::string err = std::string("cannot read back temp file: ") +
-                              std::strerror(errno);
-            ::unlink(out_path.c_str());
-            return err;
-        }
-        constexpr size_t BUF = 64 * 1024;
-        std::vector<char> buf(BUF);
-        std::fflush(stdout);
-        while (true) {
-            size_t n = std::fread(buf.data(), 1, BUF, in);
-            if (n == 0) break;
-            if (std::fwrite(buf.data(), 1, n, stdout) != n) {
-                std::fclose(in);
-                ::unlink(out_path.c_str());
-                return std::string("write to stdout failed: ") + std::strerror(errno);
-            }
-        }
-        std::fclose(in);
-        ::unlink(out_path.c_str());
         std::fprintf(stderr, "%s[%lld rows → stdout, %s]%s\n",
                      g_color.meta_key, (long long)total, clabel, g_color.reset);
     } else if (!t_export) {

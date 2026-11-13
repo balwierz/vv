@@ -1139,6 +1139,9 @@ std::string open_orc_source(const std::string& path, std::unique_ptr<TabularSour
 #endif
 
 void remove_spooled_files();
+// Remove `path` when vv exits, normally or on SIGINT / SIGTERM / SIGHUP (a
+// temporary file; unlinking one that is gone already is harmless).
+void spool_register(const std::string& path);
 
 std::string human_bytes(int64_t sz);
 
@@ -1460,6 +1463,12 @@ std::string write_delimited(TabularSource& src, const Config& cfg);
 
 std::string write_markdown(TabularSource& src, const Config& cfg);
 
+// "" when writing `out_path` cannot overwrite or join the input `in_path`
+// (the same file, or a file inside an input dataset directory); else why.
+std::string output_conflict(const std::string& in_path, const std::string& out_path);
+// Parquet / Arrow to cfg.parquet_out / cfg.arrow_out: a file is written as
+// <file>.part and renamed once the input was read whole (an existing file is
+// kept on failure); `-` is spooled and copied to stdout under the same rule.
 std::string write_parquet(TabularSource& src, const Config& cfg);
 
 std::string write_arrow(TabularSource& src, const Config& cfg);

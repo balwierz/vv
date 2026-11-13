@@ -2469,6 +2469,30 @@ PYBLK
     assert_exit_code "distinct_late_read_error_exit" 1 "$VV" --distinct --count "$TMP/blk_typelater.tsv"
     assert_contains "distinct_late_read_error_message" \
         "$("$VV" --distinct --count "$TMP/blk_typelater.tsv" 2>&1 >/dev/null)" "line 2000002: In CSV column #1"
+    # A conversion that fails part-way leaves no file: --parquet / --arrow
+    # write <file>.part and rename it only once the input was read whole, so
+    # no complete-looking file of the rows before the error is left, no
+    # "[N rows → file]" line is printed, and an existing file is kept.
+    for fmt in parquet arrow; do
+        rm -f "$TMP/partial.$fmt" "$TMP/partial.$fmt.part"
+        PERR=$("$VV" --select val "--$fmt" "$TMP/partial.$fmt" "$TMP/blk_typelater.tsv" 2>&1)
+        assert_eq_file_inline "partial_${fmt}_exit" "$?" "1"
+        refute_contains "partial_${fmt}_no_summary" "$PERR" "rows →"
+        assert_eq_file_inline "partial_${fmt}_no_file" \
+            "$(ls "$TMP/partial.$fmt" "$TMP/partial.$fmt.part" 2>/dev/null | wc -l)" "0"
+        "$VV" "--$fmt" "$TMP/partial.$fmt" "$DATA/tiny.parquet" 2>/dev/null
+        KEEP=$(md5sum < "$TMP/partial.$fmt")
+        "$VV" --select val "--$fmt" "$TMP/partial.$fmt" "$TMP/blk_typelater.tsv" 2>/dev/null
+        assert_eq_file_inline "partial_${fmt}_keeps_existing" "$(md5sum < "$TMP/partial.$fmt")" "$KEEP"
+        assert_eq_file_inline "partial_${fmt}_stdout_empty" \
+            "$("$VV" --select val "--$fmt" - "$TMP/blk_typelater.tsv" 2>/dev/null | wc -c)" "0"
+    done
+    # The output named as the input is refused before anything is written.
+    cp "$DATA/tiny.parquet" "$TMP/self.parquet"
+    assert_exit_code "parquet_out_is_input_exit" 1 "$VV" "$TMP/self.parquet" --parquet "$TMP/./self.parquet"
+    assert_contains "parquet_out_is_input_message" \
+        "$("$VV" "$TMP/self.parquet" --parquet "$TMP/self.parquet" 2>&1)" "is the input file; choose another name"
+    assert_eq_file_inline "parquet_out_is_input_kept" "$("$VV" --count "$TMP/self.parquet")" "20"
     # A short row after the first 16 MiB: skip drops it, stop names its line.
     { cat "$TMP/blk_typelater.tsv" | head -n 2000001; printf '5
 '; printf '6	6

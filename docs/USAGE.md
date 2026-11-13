@@ -438,7 +438,12 @@ $ vv --parquet peaks.parquet --compression zstd tests/data/tiny.bed
 * Streams chunk-by-chunk; multi-GB conversions don't need to fit in RAM.
 * `--compression {zstd, snappy, gzip, lz4, none}`, default `zstd`.
 * Honours `--select` (column subset) and `--filter` (row predicate).
-* `--parquet -` writes to stdout. Parquet's footer-at-end requires
+* The file is written as `<file>.part` and renamed once the whole input was
+  read. A read that fails part-way (a malformed row, a value a column's type
+  cannot hold) leaves no file, keeps an existing one as it was, and exits 1.
+  The same holds for `--arrow`. Naming the input file as the output is
+  refused.
+* `--parquet -` writes to stdout, only once the whole input was read. Parquet's footer-at-end requires
   seekable writes, so the data is spooled to a temp file under
   `/tmp` first and then streamed out — the result is
   bit-identical to writing to a file path:
