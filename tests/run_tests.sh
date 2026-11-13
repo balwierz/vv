@@ -2538,13 +2538,13 @@ PYBLK
         assert_eq_file_inline "partial_${fmt}_exit" "$?" "1"
         refute_contains "partial_${fmt}_no_summary" "$PERR" "rows →"
         assert_eq_file_inline "partial_${fmt}_no_file" \
-            "$(ls "$TMP/partial.$fmt" "$TMP/partial.$fmt.part" 2>/dev/null | wc -l)" "0"
+            "$(ls "$TMP/partial.$fmt" "$TMP/partial.$fmt.part" 2>/dev/null | wc -l | tr -d ' ')" "0"
         "$VV" "--$fmt" "$TMP/partial.$fmt" "$DATA/tiny.parquet" 2>/dev/null
         KEEP=$(md5sum < "$TMP/partial.$fmt")
         "$VV" --select val "--$fmt" "$TMP/partial.$fmt" "$TMP/blk_typelater.tsv" 2>/dev/null
         assert_eq_file_inline "partial_${fmt}_keeps_existing" "$(md5sum < "$TMP/partial.$fmt")" "$KEEP"
         assert_eq_file_inline "partial_${fmt}_stdout_empty" \
-            "$("$VV" --select val "--$fmt" - "$TMP/blk_typelater.tsv" 2>/dev/null | wc -c)" "0"
+            "$("$VV" --select val "--$fmt" - "$TMP/blk_typelater.tsv" 2>/dev/null | wc -c | tr -d ' ')" "0"
     done
     # A header naming two columns alike: types are pinned by name, so the
     # second `a` (text) took the first one's int64 and the read failed at
