@@ -454,7 +454,8 @@ $ vv --parquet peaks.parquet --compression zstd tests/data/tiny.bed
   `vv.tab`, `vv.region`, `vv.filter`, `vv.select`, `vv.sort` and `vv.types`
   (`--info` lists them). `--no-provenance` leaves them out — for files
   that must be byte-identical across runs or must not name their source.
-  The same holds for `--arrow`.
+  The same holds for `--arrow`, for the viewer's `:w` and for vvg's
+  Export, which record the view's filter, sort and shown columns.
 * `--parquet -` writes to stdout, only once the whole input was read. Parquet's footer-at-end requires
   seekable writes, so the data is spooled to a temp file under
   `/tmp` first and then streamed out — the result is

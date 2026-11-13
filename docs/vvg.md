@@ -178,7 +178,10 @@ Command* goes the other way.
   in on-screen order, hidden ones left out. *Export Selection As…* (File, the
   *Export* button's ▾, or a cell's right-click menu) writes the selected rows
   — and columns, when the selection does not span all — to Parquet, Arrow,
-  TSV, CSV or JSON, typed, in the view's order.
+  TSV, CSV or JSON, typed, in the view's order. A Parquet or Arrow export
+  (of the view or of a selection) carries the `vv.*` keys the CLI's
+  `--parquet` writes — source, filter, sort, shown columns — and
+  `vv.selection: N rows` for a selection.
 - **JSON tree** — a JSON document (`.json`, `.geojson`, `.ipynb`, `.har`, also
   compressed) opens as a tree: keys, values and types, children loaded as you
   expand, the jq path and validation in the status bar, the value in the detail

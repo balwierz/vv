@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   made them as key-value metadata: `vv.version`, `vv.source` (the input's
   file name), `vv.source_bytes`, and the `vv.tab`, `vv.region`,
   `vv.filter`, `vv.select`, `vv.sort` and `vv.types` given. `--info` lists
-  them; `--no-provenance` writes none.
+  them; `--no-provenance` writes none. The viewer's `:w` and vvg's Export
+  write the same keys for the view (its filter, sort and shown columns).
 - `--bins N` for bigWig: each `-r` window (or chromosome) in N equal bins
   with the mean, min and max of the bases that have a value and their
   share (`coverage`), taken from the file's zoom levels when one suits the

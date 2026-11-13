@@ -395,6 +395,11 @@ jobs:
           eval "./build-gui/vv ${cmd#vv } --tsv" | cmp - "$x/v.tsv"
           env "${view[@]}" VVG_EXPORT="$x/v.parquet" ./build-gui/gui/vvg tests/data/tiny.parquet >/dev/null
           cmp <(./build-gui/vv --tsv -n 0 "$x/v.parquet") "$x/v.tsv"
+          # ... and carries the view's vv.* keys, as the CLI's --parquet does.
+          info=$(./build-gui/vv --info "$x/v.parquet")
+          grep -q '^ *vv.filter: Score > 0.2$' <<<"$info"
+          grep -q '^ *vv.sort: Score:desc$' <<<"$info"
+          grep -q '^ *vv.source: tiny.parquet$' <<<"$info"
           cp tests/data/tiny.parquet "$x/in.parquet"
           VVG_WINTEST=1 VVG_EXPORT="$x/in.parquet" ./build-gui/gui/vvg "$x/in.parquet" 2>/dev/null \
             | grep -q 'is the input file'
@@ -735,6 +740,9 @@ jobs:
           grep -qxP 'Chr\tEnd\tScore\tTags' <<<"$out" && grep -qxP 'chr2\t7200\t0.95\t\[promoter, TF\]' <<<"$out"
           VVG_WINTEST=1 VVG_SORT=Score:desc VVG_SELECT=3,0,5,3 VVG_EXPORT_SEL="$RUNNER_TEMP/sel.tsv" ./build-gui/gui/vvg tests/data/tiny.parquet \
             | grep -qx 'export-selection -> rows=3'
+          VVG_WINTEST=1 VVG_SORT=Score:desc VVG_SELECT=3,0,5,3 VVG_EXPORT_SEL="$RUNNER_TEMP/sel.parquet" ./build-gui/gui/vvg tests/data/tiny.parquet >/dev/null
+          info=$(./build-gui/vv --info "$RUNNER_TEMP/sel.parquet")
+          grep -q '^ *vv.selection: 3 rows$' <<<"$info" && grep -q '^ *vv.sort: Score:desc$' <<<"$info"
           # A table of more than 256 columns reads a column window: scrolled
           # to its last column, every visible cell is read (none left at "…"),
           # and no cached chunk holds more than three windows of columns.

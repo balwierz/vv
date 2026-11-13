@@ -17,7 +17,8 @@ Checks, on a 300-row file (id r0..r299, name n0..n299, score = id):
   9. `50%` goes to row 149 of 300 (vim's (N*rows+99)/100);
  10. `*` on g1 finds the next whole-cell g1 (row 13), not g10 / g11;
  11. `>` moves the cursor's column right; `Y` then writes the new order;
- 12. Enter, `J J K`, Enter: the cursor ends on row 1.
+ 12. Enter, `J J K`, Enter: the cursor ends on row 1;
+ 13. `:w` to a .parquet file writes the view's vv.* keys.
 
 Usage: tui_commands_check.py <vv-binary> <scratch-dir>
 Exit 0 on success, 1 on failure.
@@ -168,8 +169,19 @@ def main():
     if hung or yanked(raw) != "r1":
         fail("Enter J J K Enter y copied %r, expected r1" % yanked(raw))
 
+    # 13. :w FILE.parquet carries the view's vv.* keys.
+    pq = "cmds_out.parquet"
+    if os.path.exists(pq):
+        os.remove(pq)
+    _txt, _raw, hung = run(vv, [path], budget=25.0, keys=view + keys(":w " + pq + "\r"))
+    info = subprocess.run([vv, "--info", pq], capture_output=True, text=True).stdout
+    for want_kv in ("vv.source: " + path, "vv.filter: score > 250", "vv.sort: score:desc",
+                    "vv.select: id,score"):
+        if want_kv not in info:
+            fail(":w to Parquet: %r missing from --info (%r)" % (want_kv, info[-300:]))
+
     if rc == 0:
-        print("tui_commands: 12 checks passed")
+        print("tui_commands: 13 checks passed")
     return rc
 
 

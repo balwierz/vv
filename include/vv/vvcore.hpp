@@ -767,6 +767,12 @@ std::string open_view_source(Config cfg, std::unique_ptr<TabularSource>* out);
 // .feather / .ipc, .tsv / .tab / .txt, .csv, .json, .ndjson / .jsonl (any
 // case); false for any other.
 bool export_format_for_path(const std::string& path, ExportFormat* f);
+// Fill cfg.provenance with the vv.* keys of what `cfg` asks for: vv.version,
+// vv.source (file name, or "standard input"), vv.source_bytes, and vv.tab,
+// vv.region, vv.filter, vv.select, vv.sort, vv.types when set, and
+// vv.selection ("N rows") for a row subset (vvg's Export Selection). Nothing with
+// cfg.no_provenance. Call before a sort clears the filter it applies.
+void fill_provenance(Config& cfg);
 // The vv command line that reproduces `cfg`'s view: the file, --tab, the
 // format options (-r, --index, -f, --pileup, --tags, --gt-stats, --expand,
 // --samples, --matrix, --types), --filter, one --sort per key, --select and

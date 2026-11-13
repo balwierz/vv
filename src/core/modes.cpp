@@ -378,6 +378,38 @@ std::string open_view_source(Config cfg, std::unique_ptr<TabularSource>* out) {
     return "";
 }
 
+void fill_provenance(Config& cfg) {
+    auto& p = cfg.provenance;
+    p.clear();
+    if (cfg.no_provenance) return;
+    p.emplace_back("vv.version", kVersion);
+    if (cfg.path != "-") {
+        p.emplace_back("vv.source", display_basename(cfg.path));
+        std::error_code ec;
+        const auto size = std::filesystem::file_size(cfg.path, ec);
+        if (!ec) p.emplace_back("vv.source_bytes", std::to_string(size));
+    } else {
+        p.emplace_back("vv.source", "standard input");
+    }
+    if (!cfg.tab.empty())         p.emplace_back("vv.tab", cfg.tab);
+    if (!cfg.region.empty())      p.emplace_back("vv.region", cfg.region);
+    if (!cfg.filter_expr.empty()) p.emplace_back("vv.filter", cfg.filter_expr);
+    if (!cfg.select_cols.empty()) p.emplace_back("vv.select", cfg.select_cols);
+    if (!cfg.sort_col.empty()) {
+        std::string s = cfg.sort_col + (cfg.sort_desc ? ":desc" : "");
+        for (const auto& k : cfg.sort_then) s += "," + k.col + (k.desc ? ":desc" : "");
+        p.emplace_back("vv.sort", s);
+    }
+    if (!cfg.col_types.empty()) {
+        std::string t;
+        for (const auto& [c, ty] : cfg.col_types) t += (t.empty() ? "" : ",") + c + ":" + ty;
+        p.emplace_back("vv.types", t);
+    }
+    // vvg's Export Selection: these rows of the view only.
+    if (!cfg.row_subset.empty())
+        p.emplace_back("vv.selection", std::to_string(cfg.row_subset.size()) + " rows");
+}
+
 std::string shell_quote(const std::string& s) {
     if (!s.empty() && s.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
                                           "0123456789_./:=,@%+-") == std::string::npos)
@@ -489,6 +521,10 @@ std::string export_view(const Config& cfg_in, const std::string& out_path,
         case ExportFormat::Json:    cfg.json_array = true;  mode = "a JSON export";    break;
         case ExportFormat::Ndjson:  cfg.json_lines = true;  mode = "an NDJSON export"; break;
     }
+    // The view's vv.* keys, as the CLI's --parquet / --arrow write them;
+    // taken before the sort below clears the filter.
+    if (format == ExportFormat::Parquet || format == ExportFormat::Arrow) fill_provenance(cfg);
+    else cfg.provenance.clear();
     std::unique_ptr<TabularSource> src;
     if (auto err = open_view_source(cfg, &src); !err.empty()) return err;
     if (src->preview_limit().capped())                 // stream a whole matrix

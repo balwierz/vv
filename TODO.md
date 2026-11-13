@@ -106,8 +106,6 @@ Deferred until a file needs them (owner's decision, 2026-10-07).
 - **`--fingerprint`, and a source's own provenance.** The `vv.*` keys are
   written; carrying a BAM's `@PG` / a VCF's `##source` forward, and a
   content fingerprint of the input, are not.
-- **vvg's Export and the viewer's `:w` write no `vv.*` keys** (the CLI's
-  `--parquet` / `--arrow` do).
 
 ## Windows
 
