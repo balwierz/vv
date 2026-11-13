@@ -25,3 +25,8 @@ packaging/arch/src/
 packaging/arch/pkg/
 packaging/arch/*.pkg.tar.*
 packaging/arch/*.tar.gz
+
+# Python bytecode caches (tests/, tests/data/) and core dumps
+__pycache__/
+vgcore.*
+core.[0-9]*
