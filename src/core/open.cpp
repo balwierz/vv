@@ -512,9 +512,17 @@ class DatasetSource : public TabularSource {
                  it(dir, fs::directory_options::skip_permission_denied, ec), end;
              it != end; it.increment(ec)) {
             if (ec) break;
-            if (!it->is_regular_file(ec)) continue;
             std::string base = it->path().filename().string();
-            if (base.empty() || base[0] == '.' || base[0] == '_') continue;  // hidden / _SUCCESS
+            // Hidden and bookkeeping entries: _SUCCESS, .crc files, and whole
+            // directories such as _temporary/ (a Spark job's unfinished
+            // parts) or .ipynb_checkpoints/.
+            const bool skip = base.empty() || base[0] == '.' || base[0] == '_';
+            if (it->is_directory(ec)) {
+                if (skip) it.disable_recursion_pending();
+                continue;
+            }
+            if (!it->is_regular_file(ec)) continue;
+            if (skip) continue;
             std::string g = dataset::format_group(base);
             if (g.empty()) continue;                       // sidecar / non-data file
             if (group_.empty()) group_ = g;
@@ -1358,6 +1366,14 @@ static std::string dispatch_by_kind(const std::string& path, const Config& cfg,
             TenxDirFiles tenx;
             if (find_tenx_dir(path, &tenx))
                 return TenxDirSource::open(tenx, cfg, out);
+            // A Delta Lake table: which of its Parquet files are live is in
+            // the transaction log (added, then removed by later commits), so
+            // concatenating the files would repeat or resurrect rows.
+            if (std::filesystem::is_directory(std::filesystem::path(path) / "_delta_log", ec))
+                return "a Delta Lake table: which of its Parquet files hold the current rows "
+                       "is in _delta_log/, which vv does not read; export a snapshot and open "
+                       "that, e.g. duckdb -c \"COPY (FROM delta_scan('" + path +
+                       "')) TO 'table.parquet'\"";
             std::unique_ptr<DatasetSource> src;
             std::string err = DatasetSource::open(path, cfg, &src);
             if (!err.empty()) return err;

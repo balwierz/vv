@@ -1939,6 +1939,22 @@ assert_eq_file_inline "dataset_plain_count" "$("$VV" --count "$DS")" "4"
 DS_OUT=$("$VV" --tsv --no-header "$DS")
 assert_eq_file_inline "dataset_plain_concat" "$DS_OUT" \
     "$(printf '1\talice\n2\tbob\n3\tcarol\n4\tdave')"
+# Directories named _… or .… are skipped whole: a Spark job's _temporary/
+# parts (unfinished, or duplicates of the committed ones) are not rows, and
+# a JSON log in them no longer makes the directory "mix" formats.
+mkdir -p "$DS/_temporary/0" "$DS/.ipynb_checkpoints"
+printf 'id,name\n9,zed\n' > "$DS/_temporary/0/part-00.csv"
+printf '{"a": 1}\n' > "$DS/_temporary/0/log.json"
+printf 'id,name\n8,yan\n' > "$DS/.ipynb_checkpoints/part-02.csv"
+assert_eq_file_inline "dataset_skips_hidden_dirs" "$("$VV" --count "$DS")" "4"
+# A Delta Lake table is named as one, not concatenated (its log says which
+# Parquet files are live) nor refused as a json / parquet mix.
+DDL="$TMP/ds_delta"; rm -rf "$DDL"; mkdir -p "$DDL/_delta_log"
+cp "$DATA/tiny.parquet" "$DDL/part-00000.snappy.parquet"
+printf '{"add": {"path": "part-00000.snappy.parquet"}}\n' > "$DDL/_delta_log/00000000000000000000.json"
+assert_exit_code "dataset_delta_refused" 1 "$VV" --count "$DDL"
+assert_contains "dataset_delta_message" "$("$VV" --count "$DDL" 2>&1)" \
+    "a Delta Lake table: which of its Parquet files hold the current rows is in _delta_log/"
 
 # Hive key=value directories become columns, constant within each file. An
 # all-integer key (year) is an int64 column — so it filters numerically; a value

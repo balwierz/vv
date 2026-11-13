@@ -51,6 +51,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   column's own type. Types are pinned by name after the type sample, so the
   second column took the first one's type and the read failed
   (`In CSV column #1: CSV conversion error to int64`).
+- A dataset directory skips subdirectories named `_…` or `.…` as it skipped
+  such files: a Spark job's `_temporary/` parts were read as rows (and a log
+  file in them made the directory "mix" formats). A Delta Lake table
+  (`_delta_log/`) is named as one instead of failing as "directory mixes
+  json and parquet files"; its log, which says which files are live, is not
+  read.
 - `-d` / `--in-delimiter` honours `--on-bad-row skip|null` and `--bad-rows`;
   a malformed row stopped the read whatever the policy.
 

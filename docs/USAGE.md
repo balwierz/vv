@@ -1505,10 +1505,14 @@ directories.
   mixes, say, Parquet and CSV is an error. The genomics formats (BAM, VCF,
   BED, …), which carry per-file headers and indexes, are not treated as
   datasets.
-* **What is skipped.** Files whose name starts with `.` or `_` (Spark's
-  `_SUCCESS` marker, `.crc` checksums) and any non-data file (a `README`, a
-  sidecar index) are ignored, so a real Spark/Hive output directory reads
-  cleanly.
+* **What is skipped.** Files and directories whose name starts with `.` or
+  `_` (Spark's `_SUCCESS` marker and `_temporary/` parts, `.crc` checksums,
+  `.ipynb_checkpoints/`) and any non-data file (a `README`, a sidecar index)
+  are ignored, so a real Spark/Hive output directory reads cleanly.
+* **Delta Lake.** A directory with a `_delta_log/` is a Delta table, whose
+  log decides which of its Parquet files hold the current rows; vv does not
+  replay the log and says so, rather than concatenating every file. Export a
+  snapshot first (DuckDB's `delta_scan`, Spark, `deltalake` in Python).
 * **Partition columns.** Each `key=value` component of a file's path becomes a
   column, constant within that file. A key whose values are all canonical
   integers (`year=2024`) becomes an `int64` column, so `--filter 'year ==
