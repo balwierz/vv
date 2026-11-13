@@ -126,7 +126,7 @@ _vv() {
         '(-@ --threads)'{-@,--threads}'+[Worker threads]:n:' \
         '--decode-threads+[Arrow CPU pool size for Parquet/CSV decode]:n:' \
         '--color=-[Color mode]:mode:(auto always never)' \
-        '--theme+[Color palette]:name:(default dark light solarized-dark solarized-light)' \
+        '--theme+[Color palette]:name:(default dark light solarized-dark solarized-light colorblind mono)' \
         '--box+[Table frame style]:style:(unicode ascii)' \
         '--tsv[Write tab-separated values]' \
         '--csv[Write comma-separated values]' \

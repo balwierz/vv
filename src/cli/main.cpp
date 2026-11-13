@@ -83,11 +83,10 @@ int main(int argc, char** argv) {
     // the built-in default.
     if (cfg.theme.empty()) cfg.theme = "default";
     if (auto* t = find_theme(cfg.theme)) {
-        g_theme = t;
+        g_theme = themed(t);
     } else {
-        std::fprintf(stderr,
-            "vv: unknown --theme '%s'. Available: default, dark, light, "
-            "solarized-dark, solarized-light.\n", cfg.theme.c_str());
+        std::fprintf(stderr, "vv: unknown --theme '%s'. Available: %s.\n", cfg.theme.c_str(),
+                     theme_names().c_str());
         return 2;
     }
 

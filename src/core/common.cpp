@@ -5,6 +5,8 @@
 
 #include "internal.hpp"
 
+#include <deque>
+
 #include <arrow/util/utf8.h>
 
 // ── Colors ────────────────────────────────────────────────────────────────────
@@ -110,6 +112,80 @@ const Theme* find_theme(const std::string& name) {
     // Accept a few synonyms for muscle memory.
     if (name == "solarized") return &kThemeSolarizedDark;
     return nullptr;
+}
+
+std::string theme_names() {
+    std::string s;
+    for (auto* t : kAllThemes) s += std::string(s.empty() ? "" : ", ") + t->name;
+    return s;
+}
+
+namespace {
+// The config file's theme.* lines, in order, and where themed() keeps the
+// strings of the theme it builds.
+std::vector<std::pair<std::string, std::string>> g_theme_overrides;
+Theme                                            g_themed;
+std::deque<std::string>                          g_themed_strings;
+
+struct AnsiField { const char* name; const char* Theme::*member; };
+const AnsiField kAnsiFields[] = {
+    {"border", &Theme::border},       {"header", &Theme::header},
+    {"row_index", &Theme::row_idx},   {"null", &Theme::null_val},
+    {"number", &Theme::number},       {"true", &Theme::bool_true},
+    {"false", &Theme::bool_false},    {"ellipsis", &Theme::trunc},
+    {"type_int", &Theme::type_int},   {"type_float", &Theme::type_float},
+    {"type_string", &Theme::type_str}, {"type_time", &Theme::type_time},
+    {"type_bool", &Theme::type_bool}, {"type_other", &Theme::type_other},
+    {"footer_key", &Theme::meta_key},
+};
+struct TuiField { const char* name; int Theme::*member; };
+const TuiField kTuiFields[] = {
+    {"tui.header", &Theme::nc_fg_header}, {"tui.row_index", &Theme::nc_fg_index},
+    {"tui.null", &Theme::nc_fg_null},     {"tui.number", &Theme::nc_fg_number},
+    {"tui.true", &Theme::nc_fg_boolt},    {"tui.false", &Theme::nc_fg_boolf},
+    {"tui.border", &Theme::nc_fg_sep},    {"tui.search_fg", &Theme::nc_fg_search},
+    {"tui.search_bg", &Theme::nc_bg_search}, {"tui.zebra", &Theme::nc_bg_zebra},
+};
+}  // namespace
+
+std::string add_theme_override(const std::string& field, const std::string& value) {
+    for (const auto& f : kAnsiFields)
+        if (field == f.name) {
+            for (char c : value)
+                if (!std::isdigit((unsigned char)c) && c != ';')
+                    return "theme." + field + ": '" + value + "' is not an SGR code (e.g. 38;5;238, 1;34)";
+            g_theme_overrides.emplace_back(field, value);
+            return "";
+        }
+    for (const auto& f : kTuiFields)
+        if (field == f.name) {
+            char* end = nullptr;
+            const long v = std::strtol(value.c_str(), &end, 10);
+            if (value.empty() || *end || v < -1 || v > 255)
+                return "theme." + field + ": '" + value + "' is not a colour index (0-255, -1 for the default)";
+            g_theme_overrides.emplace_back(field, value);
+            return "";
+        }
+    std::string known;
+    for (const auto& f : kAnsiFields) known += std::string(known.empty() ? "" : ", ") + f.name;
+    for (const auto& f : kTuiFields) known += std::string(", ") + f.name;
+    return "unknown theme field '" + field + "' (fields: " + known + ")";
+}
+
+const Theme* themed(const Theme* base) {
+    if (g_theme_overrides.empty() || !base) return base;
+    g_themed = *base;
+    g_themed_strings.clear();
+    for (const auto& [field, value] : g_theme_overrides) {
+        for (const auto& f : kAnsiFields)
+            if (field == f.name) {
+                g_themed_strings.push_back(value.empty() ? std::string() : "\033[" + value + "m");
+                g_themed.*(f.member) = g_themed_strings.back().c_str();
+            }
+        for (const auto& f : kTuiFields)
+            if (field == f.name) g_themed.*(f.member) = (int)std::strtol(value.c_str(), nullptr, 10);
+    }
+    return &g_themed;
 }
 
 void init_colors() {
@@ -294,6 +370,10 @@ void load_user_config(Config& cfg) {
         strip_ws_inplace(key);
         strip_ws_inplace(val);
         if (key == "theme" && cfg.theme.empty()) cfg.theme = val;
+        else if (key.rfind("theme.", 0) == 0) {
+            if (auto e = add_theme_override(key.substr(6), val); !e.empty())
+                std::fprintf(stderr, "vv: %s/config: %s\n", xdg_config_dir().c_str(), e.c_str());
+        }
         else if (key == "reference" && !val.empty()) cfg.references.push_back(val);
         else if (key == "scrolloff") {
             // Rows kept between the cell cursor and the viewport edge.

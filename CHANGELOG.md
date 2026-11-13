@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Themes `colorblind` (the Okabe–Ito palette; true / false are blue-green /
+  vermillion rather than green / red) and `mono` (bold, dim and grey only,
+  no colour), in `--theme`, the config file and the viewer's picker.
+- `theme.ROLE = VALUE` lines in `~/.config/vv/config` adjust one role of
+  the chosen theme: an SGR code for the table output (`theme.border =
+  38;5;238`; `header`, `null`, `number`, `true`, `false`, the type colours,
+  …) or a 256-colour index for the viewer (`theme.tui.zebra = -1`). A role
+  or value vv does not know is reported on stderr with the roles it does.
 - `--check A B …`: do genomic files agree on their reference sequences? The
   first file is the reference; each other file is checked for its naming
   style (`chr1` / `1`), sequences the reference lacks (`chr1` and `1`,

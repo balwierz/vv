@@ -2694,7 +2694,7 @@ class TableTUI {
     // re-paints automatically.
     void apply_theme(int idx) {
         if (idx < 0 || idx >= kNumThemes) return;
-        g_theme = kAllThemes[idx];
+        g_theme = themed(kAllThemes[idx]);
         // Wipe any RGB pairs allocated dynamically for BED itemRgb — those
         // were sized to fit between the static pairs and the zebra range,
         // which both shift on theme change.
@@ -5136,7 +5136,7 @@ private:
             case 'g': case KEY_HOME: theme_cur_ = 0; break;
             case 'G': case KEY_END: theme_cur_ = kNumThemes - 1; break;
             case ' ': case '\n': case '\r': case KEY_ENTER: {
-                g_theme = kAllThemes[theme_cur_];
+                g_theme = themed(kAllThemes[theme_cur_]);
                 init_pairs();
                 const bool saved = save_user_setting("theme", g_theme->name);
                 flash_ = std::string("theme: ") + g_theme->name + (saved ? "" : "  (couldn't save)");

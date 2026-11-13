@@ -86,7 +86,7 @@ _vv() {
             return
             ;;
         --theme)
-            COMPREPLY=( $(compgen -W 'default dark light solarized-dark solarized-light' -- "$cur") )
+            COMPREPLY=( $(compgen -W 'default dark light solarized-dark solarized-light colorblind mono' -- "$cur") )
             return
             ;;
         --box)

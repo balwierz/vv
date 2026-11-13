@@ -851,6 +851,13 @@ table reads cleanly on white.
 \fBsolarized-dark\fR / \fBsolarized-light\fR \(en Ethan Schoonover's
 Solarized palette. \fBsolarized\fR is accepted as a synonym for
 \fBsolarized-dark\fR.
+.IP \(bu 2
+\fBcolorblind\fR \(en the Okabe\(enIto palette, whose hues stay apart
+under the common colour-vision deficiencies (true / false are blue-green /
+vermillion, not green / red).
+.IP \(bu 2
+\fBmono\fR \(en no colour: bold headers, dim borders, indexes and
+nulls, grey search matches.
 .RE
 .IP
 Affects both the non-interactive ASCII table (via ANSI escapes) and
@@ -1373,8 +1380,18 @@ win over the config file.
 Recognised keys:
 .IP \(bu 2
 \fBtheme\fR \(en one of \fBdefault\fR / \fBdark\fR / \fBlight\fR /
-\fBsolarized-dark\fR / \fBsolarized-light\fR. Written by the
-in-TUI theme picker (\fBT\fR key).
+\fBsolarized-dark\fR / \fBsolarized-light\fR / \fBcolorblind\fR /
+\fBmono\fR. Written by the in-TUI theme picker (\fBT\fR key).
+.IP \(bu 2
+\fBtheme.\fIrole\fR \(en one role of the theme: \fBborder\fR,
+\fBheader\fR, \fBrow_index\fR, \fBnull\fR, \fBnumber\fR, \fBtrue\fR,
+\fBfalse\fR, \fBellipsis\fR, \fBtype_int\fR, \fBtype_float\fR,
+\fBtype_string\fR, \fBtype_time\fR, \fBtype_bool\fR, \fBtype_other\fR,
+\fBfooter_key\fR take an SGR code (\fBtheme.border = 38;5;238\fR); in the
+viewer \fBtui.header\fR, \fBtui.row_index\fR, \fBtui.null\fR,
+\fBtui.number\fR, \fBtui.true\fR, \fBtui.false\fR, \fBtui.border\fR,
+\fBtui.search_fg\fR, \fBtui.search_bg\fR, \fBtui.zebra\fR take a 256-colour
+index (\-1: the terminal's). An unknown role or value is reported on stderr.
 .IP \(bu 2
 \fBbackground\fR \(en \fBdark\fR or \fBlight\fR; what
 \fBVV_BACKGROUND\fR sets, permanently. Also skips the OSC 11

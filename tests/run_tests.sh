@@ -4228,7 +4228,7 @@ echo
 # --theme: every built-in name parses cleanly; unknown names get a
 # clear error and exit 2. Color output is exercised via --color=always
 # so the ANSI escape strings show up in the captured output.
-for theme in default dark light solarized-dark solarized-light solarized; do
+for theme in default dark light solarized-dark solarized-light solarized colorblind mono; do
     OUT=$("$VV" --theme "$theme" --color=always -n 1 --no-interactive "$DATA/tiny.parquet" 2>&1)
     RC=$?
     if [ $RC -eq 0 ] && printf '%s' "$OUT" | grep -q $'\033\['; then
@@ -4239,6 +4239,28 @@ for theme in default dark light solarized-dark solarized-light solarized; do
 done
 BAD_THEME=$("$VV" --theme bogus "$DATA/tiny.parquet" 2>&1 || true)
 assert_contains "theme_unknown_lists_choices" "$BAD_THEME" "default, dark, light"
+assert_contains "theme_unknown_lists_new" "$BAD_THEME" "solarized-light, colorblind, mono."
+# colorblind: Okabe–Ito orange headers, vermillion false (no red / green pair);
+# mono: attributes only, no colour escape at all.
+assert_contains "theme_colorblind_header" \
+    "$("$VV" --theme colorblind --color=always -n 1 "$DATA/tiny.parquet")" $'\033[1;38;5;214mChr'
+assert_eq_file_inline "theme_mono_no_colour" \
+    "$("$VV" --theme mono --color=always -n 3 "$DATA/tiny.parquet" | grep -c $'\033\[[0-9;]*3[0-8][;m]')" "0"
+assert_contains "theme_mono_bold_header" "$("$VV" --theme mono --color=always -n 1 "$DATA/tiny.parquet")" $'\033[1mChr'
+# theme.ROLE lines in the config file adjust one role of the theme chosen.
+TOV=$(mktemp -d); mkdir -p "$TOV/vv"
+[ -n "$WINDOWS" ] && TOV=$(cygpath -m "$TOV")
+printf 'theme = mono\ntheme.header = 1;35\ntheme.tui.zebra = -1\n' > "$TOV/vv/config"
+assert_contains "theme_override_applied" \
+    "$(XDG_CONFIG_HOME="$TOV" "$VV" --color=always -n 1 "$DATA/tiny.parquet")" $'\033[1;35mChr'
+assert_contains "theme_override_other_theme" \
+    "$(XDG_CONFIG_HOME="$TOV" "$VV" --theme dark --color=always -n 1 "$DATA/tiny.parquet")" $'\033[1;35mChr'
+printf 'theme.bogus = 3\ntheme.number = red\ntheme.tui.zebra = 300\n' > "$TOV/vv/config"
+TOV_ERR=$(XDG_CONFIG_HOME="$TOV" "$VV" -n 1 "$DATA/tiny.parquet" 2>&1 >/dev/null)
+assert_contains "theme_override_unknown_field" "$TOV_ERR" "unknown theme field 'bogus' (fields: border, header"
+assert_contains "theme_override_bad_sgr" "$TOV_ERR" "theme.number: 'red' is not an SGR code"
+assert_contains "theme_override_bad_index" "$TOV_ERR" "theme.tui.zebra: '300' is not a colour index"
+rm -rf "$TOV"
 
 # Config-file persistence: a theme set in ~/.config/vv/config (XDG) is
 # picked up when --theme isn't passed; explicit --theme overrides.

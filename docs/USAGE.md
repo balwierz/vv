@@ -1597,6 +1597,8 @@ $ vv --theme light --color=always huge.parquet | less -R
 | `light`            | mid-saturation accents for light terminals; disables zebra stripes so the table reads cleanly on white |
 | `solarized-dark`   | Solarized palette on a dark background           |
 | `solarized-light`  | Solarized palette on a light background          |
+| `colorblind`       | Okabe–Ito hues, distinct under the common colour-vision deficiencies; true / false are blue-green / vermillion, not green / red |
+| `mono`             | no colour: bold headers, dim borders, indexes and nulls, grey search matches |
 
 `--theme solarized` is accepted as a synonym for `solarized-dark`.
 The flag affects both the non-interactive ASCII table (via ANSI
@@ -1646,6 +1648,8 @@ older one.
 ```ini
 # ~/.config/vv/config
 theme = solarized-light
+theme.border = 38;5;238 # one role of the theme, as an SGR code
+theme.tui.zebra = -1    # the viewer's colours: 256-colour indexes
 background = light      # what VV_BACKGROUND=light sets, permanently
 max_col_width = 48      # like -w
 threads = 4             # like -@
@@ -1658,7 +1662,8 @@ Recognised keys:
 
 | Key             | Values                                        | CLI/env equivalent |
 |-----------------|-----------------------------------------------|--------------------|
-| `theme`         | `default`, `dark`, `light`, `solarized-dark`, `solarized-light` | `--theme` |
+| `theme`         | `default`, `dark`, `light`, `solarized-dark`, `solarized-light`, `colorblind`, `mono` | `--theme` |
+| `theme.ROLE`    | an SGR code (`38;5;238`, `1;34`) for `border`, `header`, `row_index`, `null`, `number`, `true`, `false`, `ellipsis`, `type_int`, `type_float`, `type_string`, `type_time`, `type_bool`, `type_other`, `footer_key`; a 256-colour index (-1: the terminal's) for `tui.header`, `tui.row_index`, `tui.null`, `tui.number`, `tui.true`, `tui.false`, `tui.border`, `tui.search_fg`, `tui.search_bg`, `tui.zebra` | (config only) |
 | `background`    | `dark`, `light`                               | `VV_BACKGROUND`    |
 | `max_col_width` | integer ≥ 4                                   | `-w`               |
 | `threads`       | integer ≥ 1                                   | `-@`               |

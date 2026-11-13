@@ -306,6 +306,35 @@ inline const Theme kThemeSolarizedLight = {
              COLOR_GREEN, COLOR_RED, COLOR_BLACK, COLOR_WHITE, COLOR_YELLOW,
 };
 
+// "colorblind" — the Okabe–Ito palette (orange, sky blue, bluish green,
+// yellow, blue, vermillion, reddish purple), whose hues stay apart under the
+// common colour-vision deficiencies; true / false are blue-green / vermillion
+// rather than green / red. Mid tones, for dark or light backgrounds.
+inline const Theme kThemeColorblind = {
+    "colorblind",
+    "\033[0m", "\033[38;5;244m", "\033[1;38;5;214m", "\033[38;5;244m",
+    "\033[2;3;38;5;243m", "\033[38;5;74m", "\033[38;5;36m", "\033[38;5;166m",
+    "\033[38;5;244m",
+    "\033[38;5;74m", "\033[38;5;175m", "\033[38;5;36m", "\033[38;5;178m",
+    "\033[38;5;214m", "\033[38;5;246m", "\033[1m",
+    /*nc*/  214, 244, 243, 74, 36, 166, 240, 232, 178, 235,
+    /*nc16*/ COLOR_YELLOW, COLOR_WHITE, COLOR_WHITE, COLOR_CYAN,
+             COLOR_BLUE, COLOR_YELLOW, COLOR_WHITE, COLOR_BLACK, COLOR_YELLOW,
+};
+
+// "mono" — no colour: bold headers, dim indexes / nulls / borders, search
+// matches in grey. For monochrome terminals, screenshots for print, and
+// readers who find colour distracting.
+inline const Theme kThemeMono = {
+    "mono",
+    "\033[0m", "\033[2m", "\033[1m", "\033[2m",
+    "\033[2;3m", "", "", "",
+    "\033[2m",
+    "", "", "", "", "", "", "\033[1m",
+    /*nc*/  -1, -1, -1, -1, -1, -1, -1, 232, 250, -1,
+    /*nc16*/ -1, -1, -1, -1, -1, -1, -1, COLOR_BLACK, COLOR_WHITE,
+};
+
 inline const Theme* g_theme = &kThemeDefault;
 
 // ── Terminal background detection (for zebra-stripe contrast) ─────────────────
@@ -323,11 +352,20 @@ void detect_term_bg();
 inline const Theme* const kAllThemes[] = {
     &kThemeDefault, &kThemeDark, &kThemeLight,
     &kThemeSolarizedDark, &kThemeSolarizedLight,
+    &kThemeColorblind, &kThemeMono,
 };
 
 inline constexpr int kNumThemes = (int)(sizeof(kAllThemes) / sizeof(kAllThemes[0]));
 
 const Theme* find_theme(const std::string& name);
+// The theme names, comma-separated, in picker order.
+std::string theme_names();
+// A config-file `theme.FIELD = VALUE` line: FIELD is an output role (border,
+// header, number, …; VALUE an SGR code such as 38;5;238) or tui.ROLE (VALUE a
+// 256-colour index, -1 for the terminal's). "" or why it is not taken.
+std::string add_theme_override(const std::string& field, const std::string& value);
+// `base` with the config file's overrides applied (base itself without any).
+const Theme* themed(const Theme* base);
 
 void init_colors();
 
