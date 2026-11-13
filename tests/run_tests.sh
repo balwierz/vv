@@ -166,7 +166,17 @@ assert_eq_file_inline "in_delimiter_stdin_pipe" \
 # --in-delimiter long form + single-char value
 assert_eq_file_inline "in_delimiter_long_char" \
     "$(printf 'p:q\n5:6\n' | "$VV" --tsv --in-delimiter ':' - 2>&1 | sed -n '2p')" "$(printf '5\t6')"
-rm -f "$IND" "$INS"
+# --on-bad-row / --bad-rows apply with -d as with a .csv / .tsv (the short
+# row stopped the read whatever the policy).
+INB="$TMP/ind_badrow.txt"
+printf 'a b c\n1 2 3\n4 5\n6 7 8\n' > "$INB"
+assert_eq_file_inline "in_delimiter_bad_row_skip" \
+    "$("$VV" --tsv --no-header -d space --on-bad-row skip --bad-rows "$TMP/ind_badrow.log" "$INB" | tr '\t\n' ', ')" "1,2,3 6,7,8 "
+assert_eq_file_inline "in_delimiter_bad_rows_log" "$(cat "$TMP/ind_badrow.log")" "$(printf '3\t4 5')"
+assert_eq_file_inline "in_delimiter_bad_row_null" \
+    "$("$VV" --tsv --no-header -d space --on-bad-row null "$INB" | sed -n 2p | tr '\t' ',')" "4,5,"
+assert_exit_code "in_delimiter_bad_row_stop" 1 "$VV" --tsv -d space "$INB"
+rm -f "$IND" "$INS" "$INB"
 
 # Header detection: without an explicit header, decide whether CSV/TSV row 0 is
 # a header or the first data row by testing it against the types of the rows

@@ -1372,8 +1372,12 @@ static std::string dispatch_by_kind(const std::string& path, const Config& cfg,
     if (cfg.in_delimiter != 0 && path != "-") {
         DelimKind dk2 = (cfg.in_delimiter == ',') ? DelimKind::CSV : DelimKind::TSV;
         std::unique_ptr<TabularSource> src;
+        DelimitedHints dh;                 // the malformed-row policy, as for .csv / .tsv
+        dh.on_bad_row    = cfg.on_bad_row;
+        dh.bad_rows_path = cfg.bad_rows_path;
         std::string err = open_delimited_source(path, dk2, cfg.region, &src,
-                                                cfg.in_delimiter, cfg.header);
+                                                cfg.in_delimiter, cfg.header,
+                                                TsvDialect::None, {}, dh);
         if (!err.empty()) return err;
         *out = std::move(src);
         return "";

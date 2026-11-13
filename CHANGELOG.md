@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   column's own type. Types are pinned by name after the type sample, so the
   second column took the first one's type and the read failed
   (`In CSV column #1: CSV conversion error to int64`).
+- `-d` / `--in-delimiter` honours `--on-bad-row skip|null` and `--bad-rows`;
+  a malformed row stopped the read whatever the policy.
 
 ## [1.35.0] - 2026-11-04
 
