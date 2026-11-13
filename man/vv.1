@@ -524,7 +524,12 @@ CSV / TSV column types instead of the ones inferred from the first 16 MiB:
 e.g. \fB\-\-types CHR:string,P:float\fR or \fB\-\-types '*:string'\fR.
 Repeatable. Names follow the header (\fBf0\fR, \fBf1\fR, ... without one); a
 name the file lacks is an error. Plain CSV / TSV only, also with \fB\-d\fR and
-on standard input.
+on standard input. Without it, a run that writes its result only at the end
+(\fB\-\-parquet\fR, \fB\-\-arrow\fR, \fB\-\-count\fR, \fB\-\-sort\fR,
+\fB\-\-describe\fR, \fB\-\-value\-counts\fR, \fB\-\-distinct\fR,
+\fB\-\-sample\fR, \fB\-\-tail\fR) reads a local file again with such a
+column widened, up to four times, with a note on stderr; streamed output and
+standard input stop with an error naming the \fB\-\-types\fR to give.
 .TP
 .BI \-\-bad\-rows " file"
 With \fB\-\-on\-bad\-row skip\fR or \fBnull\fR: write each such row to

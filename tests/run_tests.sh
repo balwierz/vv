@@ -2473,8 +2473,8 @@ assert_eq_file_inline "bad_row_headerless_log_once" "$(cat "$TMP/badrow_nohdr.tx
 # parsed in smaller blocks with every column pinned to those types (GENCODE
 # CSV.gz --count 1.59 s / 2.5 GB -> 0.92 s / 0.46 GB). Results equal the
 # single-block read (VV_CSV_NO_SMALL_BLOCKS=1): a type change inside the
-# first 16 MiB keeps the column text; one after them fails as before; a
-# 3 MB line after them still reads.
+# first 16 MiB keeps the column text; one after them is read again with the
+# column widened, the same way in both; a 3 MB line after them still reads.
 if command -v python3 >/dev/null 2>&1; then
     python3 - "$TMP" <<'PYBLK'
 import sys
@@ -2525,27 +2525,53 @@ PYBLK
         "$("$VV" --types '*:string' --filter 'val == "notanumber"' --count "$TMP/blk_typelater.tsv")" "1"
     # --distinct replaces the source with its result, so it checks the read
     # itself: a stream that fails part-way is an error, not a shorter count.
-    assert_exit_code "distinct_late_read_error_exit" 1 "$VV" --distinct --count "$TMP/blk_typelater.tsv"
+    # (On standard input: a file would be read again with the column widened.)
+    assert_exit_code "distinct_late_read_error_exit" 1 "$VV" --distinct --count - < "$TMP/blk_typelater.tsv"
     assert_contains "distinct_late_read_error_message" \
-        "$("$VV" --distinct --count "$TMP/blk_typelater.tsv" 2>&1 >/dev/null)" "line 2000002: column 'val'"
+        "$("$VV" --distinct --count - < "$TMP/blk_typelater.tsv" 2>&1 >/dev/null)" "column 'val' holds 'notanumber'"
     # A conversion that fails part-way leaves no file: --parquet / --arrow
     # write <file>.part and rename it only once the input was read whole, so
     # no complete-looking file of the rows before the error is left, no
-    # "[N rows → file]" line is printed, and an existing file is kept.
+    # "[N rows → file]" line is printed, and an existing file is kept. (On
+    # standard input, which cannot be read again with the column widened.)
     for fmt in parquet arrow; do
         rm -f "$TMP/partial.$fmt" "$TMP/partial.$fmt.part"
-        PERR=$("$VV" --select val "--$fmt" "$TMP/partial.$fmt" "$TMP/blk_typelater.tsv" 2>&1)
+        PERR=$("$VV" --select val "--$fmt" "$TMP/partial.$fmt" - < "$TMP/blk_typelater.tsv" 2>&1)
         assert_eq_file_inline "partial_${fmt}_exit" "$?" "1"
         refute_contains "partial_${fmt}_no_summary" "$PERR" "rows →"
         assert_eq_file_inline "partial_${fmt}_no_file" \
             "$(ls "$TMP/partial.$fmt" "$TMP/partial.$fmt.part" 2>/dev/null | wc -l | tr -d ' ')" "0"
         "$VV" "--$fmt" "$TMP/partial.$fmt" "$DATA/tiny.parquet" 2>/dev/null
         KEEP=$(md5sum < "$TMP/partial.$fmt")
-        "$VV" --select val "--$fmt" "$TMP/partial.$fmt" "$TMP/blk_typelater.tsv" 2>/dev/null
+        "$VV" --select val "--$fmt" "$TMP/partial.$fmt" - < "$TMP/blk_typelater.tsv" 2>/dev/null
         assert_eq_file_inline "partial_${fmt}_keeps_existing" "$(md5sum < "$TMP/partial.$fmt")" "$KEEP"
         assert_eq_file_inline "partial_${fmt}_stdout_empty" \
-            "$("$VV" --select val "--$fmt" - "$TMP/blk_typelater.tsv" 2>/dev/null | wc -c | tr -d ' ')" "0"
+            "$("$VV" --select val "--$fmt" - - < "$TMP/blk_typelater.tsv" 2>/dev/null | wc -c | tr -d ' ')" "0"
     done
+    # A file read to a result that is written only at the end (a file
+    # output, --count, --sort, --describe, --value-counts, ...) is read again
+    # with the column widened when a value stops it, with a note naming the
+    # line; a stream to stdout (--tsv) has written rows and still stops.
+    REREAD=$("$VV" --select val --parquet "$TMP/reread.parquet" "$TMP/blk_typelater.tsv" 2>&1)
+    assert_eq_file_inline "reread_parquet_exit" "$?" "0"
+    assert_contains "reread_parquet_note" "$(sed "s|$TMP/||" <<<"$REREAD")" \
+        "blk_typelater.tsv: line 2000002: column 'val' holds 'notanumber'; reading it again with --types val:string"
+    assert_eq_file_inline "reread_parquet_rows" "$("$VV" --count "$TMP/reread.parquet")" "2000001"
+    assert_eq_file_inline "reread_parquet_type" \
+        "$("$VV" --schema "$TMP/reread.parquet" | awk '$1 == "val" {print $2}')" "string"
+    assert_eq_file_inline "reread_sort_float" \
+        "$("$VV" --sort val:desc -n 1 --tsv --no-header --select val "$TMP/blk_floatlater.tsv" 2>/dev/null)" "1999999"
+    assert_contains "reread_sort_float_note" \
+        "$("$VV" --sort val:desc -n 1 --tsv --select val "$TMP/blk_floatlater.tsv" 2>&1 >/dev/null)" "reading it again with --types val:float"
+    assert_eq_file_inline "reread_value_counts" \
+        "$("$VV" --value-counts val --tsv "$TMP/blk_typelater.tsv" 2>/dev/null | grep -c notanumber)" "1"
+    assert_exit_code "reread_not_for_stream" 1 "$VV" --select val --tsv "$TMP/blk_typelater.tsv"
+    # One column after another, each with its note.
+    { printf 'a\tb\n'; awk 'BEGIN { for (i = 0; i < 1500000; i++) print i "\t" i; print "x\t0.5" }'; } > "$TMP/reread_two.tsv"
+    REREAD2=$("$VV" --distinct --count "$TMP/reread_two.tsv" 2>&1)
+    assert_eq_file_inline "reread_two_columns" "$(tail -n 1 <<<"$REREAD2")" "1500001"
+    assert_eq_file_inline "reread_two_columns_notes" "$(grep -o 'with --types [a-z]*:[a-z]*' <<<"$REREAD2" | tr '\n' ' ')" \
+        "with --types a:string with --types b:float "
     # A header naming two columns alike: types are pinned by name, so the
     # second `a` (text) took the first one's int64 and the read failed at
     # line 2. Each column keeps its own type.

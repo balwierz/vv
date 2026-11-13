@@ -8,7 +8,46 @@
 
 #include "internal.hpp"
 
+#include <functional>
+
 #ifndef VV_CORE_LIB   // CLI entry point — excluded from libvvcore
+// What run_modes() takes from main(): the stderr reporter and its colours.
+struct ModeCtx {
+    std::function<void(const std::string&, const std::string&)> report;
+    const char* bold;
+    const char* dim;
+    const char* rst;
+};
+
+// A CSV / TSV read that stopped at a value its column's inferred type cannot
+// hold, to run again with the column widened (the reader's error names the
+// --types that reads it). run_modes() returns kReread for it.
+constexpr int kReread = -1;
+struct Reread {
+    int         attempts = 0;
+    std::string col, type, note;   // the --types to add; "line N: column 'C' holds 'V'"
+};
+// Before an error is reported where nothing was written yet: true when the
+// read can run again with a wider type (a local file, at most 4 times, a
+// --types not given yet), with what to add in `rr`.
+static bool reread_wanted(const TabularSource& src, const Config& cfg, Reread* rr) {
+    const arrow::Status st = run_read_status(src);
+    if (st.ok() || rr->attempts >= 4) return false;
+    std::string col, type;
+    if (!parse_widen_hint(st.message(), &col, &type)) return false;
+    std::error_code ec;
+    if (is_remote_url(cfg.path) || !std::filesystem::is_regular_file(cfg.path, ec)) return false;
+    for (const auto& [c, t] : cfg.col_types)
+        if (c == col) return false;
+    rr->col  = col;
+    rr->type = type;
+    const std::string& m = st.message();
+    rr->note = m.substr(0, m.find(", which is not"));
+    return true;
+}
+
+static int run_modes(Config cfg, const ModeCtx& ctx, Reread* rr);
+
 int main(int argc, char** argv) {
     init_console();
     Config cfg = parse_args(argc, argv);
@@ -339,6 +378,32 @@ int main(int argc, char** argv) {
         cfg.json_document = json_stdin && one_file && !json_tflag && !cfg.force_text;
     }
 
+    // The modes, again with a column widened when a CSV / TSV read stopped at
+    // a value its inferred type cannot hold (nothing was written yet).
+    const ModeCtx ctx{report, C_BOLD, C_DIM, C_RST};
+    Reread rr;
+    for (;;) {
+        const int rc = run_modes(cfg, ctx, &rr);
+        if (rc != kReread) return rc;
+        cfg.col_types.emplace_back(rr.col, rr.type);
+        ++rr.attempts;
+        reset_chunk_error();
+        std::fprintf(stderr, "%svv:%s %s%s%s: %s; reading it again with --types %s:%s\n",
+                     C_BOLD, C_RST, C_DIM, cfg.path.c_str(), C_RST, rr.note.c_str(),
+                     rr.col.c_str(), rr.type.c_str());
+    }
+}
+
+// Open the input and run the mode the flags ask for. Takes `cfg` by value:
+// the modes adjust it as they go (a sort clears the filter it applied), and
+// a re-read starts again from main()'s.
+static int run_modes(Config cfg, const ModeCtx& ctx, Reread* rr) {
+    const auto& report = ctx.report;
+    const char* C_BOLD = ctx.bold;
+    const char* C_DIM  = ctx.dim;
+    const char* C_RST  = ctx.rst;
+    auto reread = [&](const TabularSource& s) { return reread_wanted(s, cfg, rr); };
+
     // The viewer shows a file with a malformed row (skipping it, with a note);
     // a scripted run stops at it unless told otherwise.
     if (cfg.on_bad_row.empty() && tui_wanted(cfg) &&
@@ -541,8 +606,10 @@ int main(int argc, char** argv) {
     // --describe: per-column statistics.
     if (cfg.describe) {
         std::string err = print_describe(*src, cfg);
+        if (!err.empty() && reread(*src)) return kReread;
         if (!err.empty()) { report(cfg.path, err); return 1; }
         if (!run_read_status(*src).ok()) {
+            if (reread(*src)) return kReread;
             report(cfg.path, shorten_reader_error(run_read_status(*src).ToString()));
             return 1;
         }
@@ -556,6 +623,7 @@ int main(int argc, char** argv) {
     // --sort; it bakes in --select / --filter, so those are cleared inside.
     if (cfg.distinct) {
         std::string derr = build_distinct(src, cfg);
+        if (!derr.empty() && reread(*src)) return kReread;
         if (!derr.empty()) { report(cfg.path, derr); return 1; }
     }
 
@@ -589,6 +657,7 @@ int main(int argc, char** argv) {
             }
         }
         if (!run_read_status(*src).ok()) {
+            if (reread(*src)) return kReread;
             report(cfg.path, shorten_reader_error(run_read_status(*src).ToString()));
             return 1;
         }
@@ -613,8 +682,10 @@ int main(int argc, char** argv) {
     // --value-counts (--unique): distinct value counts per column.
     if (!cfg.unique_cols.empty()) {
         std::string err = print_unique(*src, cfg);
+        if (!err.empty() && reread(*src)) return kReread;
         if (!err.empty()) { report(cfg.path, err); return 1; }
         if (!run_read_status(*src).ok()) {
+            if (reread(*src)) return kReread;
             report(cfg.path, shorten_reader_error(run_read_status(*src).ToString()));
             return 1;
         }
@@ -626,6 +697,7 @@ int main(int argc, char** argv) {
     // the rendering layer doesn't redo the work.
     if (cfg.sample_n > 0) {
         std::string err = build_sample(src, cfg);
+        if (!err.empty() && reread(*src)) return kReread;
         if (!err.empty()) { report(cfg.path, err); return 1; }
         cfg.filter_expr.clear();
         cfg.head_rows = 0; cfg.head_rows_set = false;  // sample IS the row set
@@ -644,6 +716,7 @@ int main(int argc, char** argv) {
     if (cfg.tail_rows > 0 && !text_tail_streams) {
         bool was_text = src->is_text();
         std::string err = build_tail(src, cfg);
+        if (!err.empty() && reread(*src)) return kReread;
         if (!err.empty()) { report(cfg.path, err); return 1; }
         if (was_text)
             if (auto* m = dynamic_cast<MemoryTableSource*>(src.get())) m->mark_text();
@@ -698,6 +771,7 @@ int main(int argc, char** argv) {
     // normal view / export path (which now sees a pre-sorted MemoryTableSource).
     if (!cfg.sort_col.empty() && !tui_sorts) {
         std::string err = build_sort(src, cfg, /*project=*/!tui_view);
+        if (!err.empty() && reread(*src)) return kReread;
         if (!err.empty()) { report(cfg.path, err); return 1; }
         cfg.filter_expr.clear();   // applied during the sort's materialisation
     }
@@ -826,6 +900,7 @@ int main(int argc, char** argv) {
         Config pcfg = cfg;
         if (!pcfg.head_rows_set) pcfg.head_rows = 0;  // default to "all rows"
         std::string err = write_parquet(*src, pcfg);
+        if (!err.empty() && reread(*src)) return kReread;
         if (!err.empty()) {
             report(cfg.path, err);
             return 1;
@@ -847,6 +922,7 @@ int main(int argc, char** argv) {
         Config acfg = cfg;
         if (!acfg.head_rows_set) acfg.head_rows = 0;  // default to "all rows"
         std::string err = write_arrow(*src, acfg);
+        if (!err.empty() && reread(*src)) return kReread;
         if (!err.empty()) {
             report(cfg.path, err);
             return 1;

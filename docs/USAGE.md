@@ -618,6 +618,22 @@ $ vv --types CHR:string --value-counts CHR gwas.tsv.gz
   the other text formats have fixed columns, and `--types` on them is an
   error.
 
+A run that writes its result only at the end — `--parquet`, `--arrow`,
+`--count`, `--sort`, `--describe`, `--value-counts`, `--distinct`,
+`--sample`, `--tail` — reads a local file again with the column widened (a
+whole-number column to `float` for a number, else to `string`), up to four
+times, and says so:
+
+```
+$ vv --parquet gwas.parquet gwas.tsv.gz
+vv: gwas.tsv.gz: line 1320002: column 'CHR' holds 'X'; reading it again with --types CHR:string
+[1320010 rows → gwas.parquet, zstd]
+```
+
+Output that streams (`--tsv`, `--json`, the table) has written rows by then,
+and standard input cannot be read twice: those stop with the error, which
+names the `--types` to add.
+
 # Range queries (`-r`, `--regions-file`, `--slop`)
 
 ```sh

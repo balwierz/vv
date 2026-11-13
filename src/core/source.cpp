@@ -357,6 +357,11 @@ std::string unknown_columns_error(const TabularSource& src,
 static std::mutex       g_chunk_error_mutex;
 static arrow::Status    g_chunk_error;
 
+void reset_chunk_error() {
+    std::lock_guard<std::mutex> lock(g_chunk_error_mutex);
+    g_chunk_error = arrow::Status::OK();
+}
+
 void note_chunk_error(const arrow::Status& st) {
     if (st.ok()) return;
     std::lock_guard<std::mutex> lock(g_chunk_error_mutex);

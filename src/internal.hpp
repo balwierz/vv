@@ -867,6 +867,8 @@ static void close_stream_reader(std::shared_ptr<Reader>& reader,
 // that error — so the run still ends in an error (exit 1) instead of a short
 // output that looks complete.
 void note_chunk_error(const arrow::Status& st);
+// Forget the noted chunk error (a CLI run that reads the input again).
+void reset_chunk_error();
 arrow::Status run_read_status(const TabularSource& src);
 
 std::vector<int> select_field_indices(

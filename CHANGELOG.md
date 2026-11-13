@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   it. Works with `-d` and on standard input; vvg takes it on its command line
   and repeats it in *Copy as vv Command*. A column the file lacks, a type
   other than the three, or `--types` on a non-CSV / TSV input is an error.
+- A local CSV / TSV whose value a column's inferred type cannot hold is read
+  again with that column widened (whole numbers to float for a number, else
+  to text) by the modes that write only at the end: `--parquet`, `--arrow`,
+  `--count`, `--sort`, `--describe`, `--value-counts`, `--distinct`,
+  `--sample`, `--tail`. A note on stderr names the line and the `--types`
+  used; up to four columns. Streamed output and standard input stop with the
+  error, as before.
 
 ### Changed
 - A value its column's type cannot hold names the column and, for a CSV /
