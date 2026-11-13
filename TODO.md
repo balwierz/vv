@@ -125,9 +125,17 @@ Deferred until a file needs them (owner's decision, 2026-10-07).
 
 ## Quality / signal
 
-- libFuzzer harnesses still missing: HDF5 (AnnData, Loom, 10x), Cooler and
-  DuckDB. Every other reader has one; a new one needs only a harness file
-  over `source_fuzz_one()` (src/core/open.cpp) and its CI corpus.
+- **HDF5 / Cooler fuzzing stops in libhdf5.** `tests/fuzz/fuzz_hdf5.cpp`
+  (h5ad, loom, h5, hdf5, cool, mcool, scool) builds with the other
+  harnesses but is not in CI's fuzz smoke run: against libhdf5 2.2.0 (Arch),
+  a mutated seed makes `H5Aread` of a variable-length string attribute
+  (`read_string_attr`, src/formats/hdf5.cpp) loop in the global-heap code,
+  so a run stops at its first timeout within seconds, and `H5Lexists`
+  (cooler.cpp `exists`) can fail an assertion in `H5G__stab_lookup`. 96
+  restarted runs (37,105 inputs, `-timeout=4`) found nothing in vv's own
+  code. Both are library faults: an upstream report, or a CI run that
+  restarts past timeouts. DuckDB has no harness: the file is parsed by
+  libduckdb, and the CI fuzz build has no libduckdb.
 - **ORC aborts on a malformed footer** inside the ORC library (protobuf's
   has-bits check destroying `orc.proto.Footer` in `orc::createReader`;
   apache-orc 2.3.1 / protobuf 36.1 on Arch), before Arrow returns a status:
