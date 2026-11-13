@@ -158,8 +158,10 @@ jobs:
                    tiny.pileup:9 tiny.paf:10; do seed text "${f#*:}" "${f%%:*}"; done
           for f in tiny.xlsx:0 tiny.ods:1; do seed workbook "${f#*:}" "${f%%:*}"; done
           for f in tiny.sqlite:0; do seed sqlite "${f#*:}" "${f%%:*}"; done
+          # As for Parquet, an allocation a header asks for (an IPC message body
+          # of exactly 2 GiB) returns null below libFuzzer's 2 GB malloc limit.
           for fz in arrow ucsc text workbook sqlite; do
-            ASAN_OPTIONS="$ASAN_OPTIONS:allocator_may_return_null=1:max_allocation_size_mb=2048" \
+            ASAN_OPTIONS="$ASAN_OPTIONS:allocator_may_return_null=1:max_allocation_size_mb=2047" \
               ./build-fuzz/fuzz_$fz -max_total_time=40 -seed=1 -max_len=65536 "$RUNNER_TEMP/$fz-corpus"
           done
 
