@@ -426,6 +426,9 @@ static void print_usage(const char* prog) {
         "                      (or `-` for stdout)\n"
         "  --compression <c>   Parquet: zstd (default), snappy, gzip, lz4, none;\n"
         "                      Arrow/Feather: zstd (default), lz4, none\n"
+        "  --no-provenance     write no vv.* metadata (vv.version, vv.source,\n"
+        "                      vv.region, vv.filter, vv.select, vv.sort) into\n"
+        "                      the Parquet / Arrow file\n"
         "\nRange queries:\n"
         "  -r / --region <REGION>   e.g. chr1:1000-2000  (multiple comma-separated)\n"
         "  --window <REGION>        alias of -r for LociSSD readers' muscle memory\n"
@@ -688,6 +691,8 @@ Config parse_args(int argc, char** argv) {
             cfg.check = true;
         } else if (!std::strcmp(argv[i], "--diff")) {
             cfg.diff = true;
+        } else if (!std::strcmp(argv[i], "--no-provenance")) {
+            cfg.no_provenance = true;
         } else if (!std::strcmp(argv[i], "--bins") && i + 1 < argc) {
             char* end = nullptr;
             const long long n = std::strtoll(argv[++i], &end, 10);

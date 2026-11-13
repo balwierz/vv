@@ -446,6 +446,12 @@ $ vv --parquet peaks.parquet --compression zstd tests/data/tiny.bed
   cannot hold) leaves no file, keeps an existing one as it was, and exits 1.
   The same holds for `--arrow`. Naming the input file as the output is
   refused.
+* The file carries what made it as key-value metadata: `vv.version`,
+  `vv.source` (the input's file name) and `vv.source_bytes`, and when given
+  `vv.tab`, `vv.region`, `vv.filter`, `vv.select`, `vv.sort` and `vv.types`
+  (`--info` lists them). `--no-provenance` leaves them out — for files
+  that must be byte-identical across runs or must not name their source.
+  The same holds for `--arrow`.
 * `--parquet -` writes to stdout, only once the whole input was read. Parquet's footer-at-end requires
   seekable writes, so the data is spooled to a temp file under
   `/tmp` first and then streamed out — the result is

@@ -110,6 +110,11 @@ struct Config {
                                          // their reference sequences?
     bool        diff           = false;  // --diff A B: compare two tables' values
     int64_t     bins           = 0;      // --bins N: bigWig summary, N bins per window
+    bool        no_provenance  = false;  // --no-provenance: no vv.* keys in output files
+    // vv.* key-value metadata a Parquet / Arrow file is written with (what
+    // made it: version, source, region, filter, columns, sort); filled by
+    // the CLI from the command line, empty elsewhere.
+    std::vector<std::pair<std::string, std::string>> provenance;
     bool        contigs        = false;  // --contigs: list a file's reference
                                          // sequences (name, length) and detect
                                          // the assembly (BAM/CRAM/SAM, VCF/BCF)

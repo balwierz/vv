@@ -905,7 +905,12 @@ temp file first because Parquet's footer-at-end needs seekable writes.
 The file is written as \fIFILE\fR\fB.part\fR and renamed once the whole
 input was read: a read that fails part-way leaves no file (an existing
 \fIFILE\fR is kept), writes nothing to stdout for \fB-\fR, and exits 1.
-Naming the input file as \fIFILE\fR is refused.
+Naming the input file as \fIFILE\fR is refused. The file's key-value
+metadata records what made it: \fBvv.version\fR, \fBvv.source\fR (the
+input's name), \fBvv.source_bytes\fR and, when given, \fBvv.tab\fR,
+\fBvv.region\fR, \fBvv.filter\fR, \fBvv.select\fR, \fBvv.sort\fR,
+\fBvv.types\fR; \fB\-\-no\-provenance\fR leaves them out (also for
+\fB\-\-arrow\fR).
 .TP
 .BI \-\-arrow " FILE" \fR, \fB\-\-feather\fR " FILE"
 Stream the input into an Arrow IPC file (a.k.a. Feather v2) at

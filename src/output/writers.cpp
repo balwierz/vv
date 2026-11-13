@@ -445,6 +445,14 @@ static bool resolve_compression(const std::string& name,
 // temporary directory). The `--parquet -` / `--arrow -` spools need a
 // seekable file; hardcoding /tmp breaks containers whose /tmp is tiny or
 // read-only.
+// cfg.provenance as Arrow key-value metadata (Parquet stores it in its
+// footer's key_value_metadata).
+static std::shared_ptr<const arrow::KeyValueMetadata> provenance_metadata(const Config& cfg) {
+    std::vector<std::string> keys, values;
+    for (const auto& [k, v] : cfg.provenance) { keys.push_back(k); values.push_back(v); }
+    return arrow::key_value_metadata(keys, values);
+}
+
 static std::string spool_template(const char* name) {
     return temp_dir() + "/" + name;
 }
@@ -573,6 +581,7 @@ std::string write_parquet(TabularSource& src, const Config& cfg) {
     arrow::FieldVector fields;
     for (int i : requested) fields.push_back(src.schema()->field(i));
     auto out_schema = arrow::schema(fields);
+    if (!cfg.provenance.empty()) out_schema = out_schema->WithMetadata(provenance_metadata(cfg));
 
     // Parquet's footer-at-end needs seekable writes: `-` is spooled, a file
     // is written as <file>.part and renamed once complete (OutputTarget).
@@ -694,6 +703,7 @@ std::string write_arrow(TabularSource& src, const Config& cfg) {
     arrow::FieldVector fields;
     for (int i : requested) fields.push_back(src.schema()->field(i));
     auto out_schema = arrow::schema(fields);
+    if (!cfg.provenance.empty()) out_schema = out_schema->WithMetadata(provenance_metadata(cfg));
 
     // `-` is spooled, a file is written as <file>.part and renamed once
     // complete (OutputTarget), as for --parquet.

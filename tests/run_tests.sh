@@ -3705,7 +3705,21 @@ assert_contains "select_exclude_view_keeps_rest" "$LOC_VIEW" "Score"
     >/dev/null 2>&1
 RT=$("$VV" --schema "$TMP/selhidden.parquet" 2>/dev/null)
 assert_contains "select_exclude_parquet_keeps_hidden" "$RT" "MaxEndSoFar"
-refute_contains "select_exclude_parquet_dropped_chrom" "$RT" "Chromosome"
+# A Parquet / Arrow file vv writes says what made it: vv.* key-value
+# metadata with the version, the source, and the filter / sort / columns
+# (the filter as given, though --sort applies it first). --no-provenance
+# writes none.
+"$VV" "$DATA/tiny.csv" --filter 'count > 100' --sort ratio:desc --select name,ratio \
+    --parquet "$TMP/prov.parquet" 2>/dev/null
+PROV=$("$VV" --info "$TMP/prov.parquet" | sed -n '/^Metadata/,$p')
+assert_eq_file_inline "provenance_parquet" "$(grep -o 'vv\.[a-z_]*: .*' <<<"$PROV" | tr '\n' '|')" \
+    "vv.version: $("$VV" --version | awk '{print $2}')|vv.source: tiny.csv|vv.source_bytes: 55|vv.filter: count > 100|vv.select: name,ratio|vv.sort: ratio:desc|"
+"$VV" "$DATA/tiny.csv" --arrow "$TMP/prov.arrow" 2>/dev/null
+assert_contains "provenance_arrow" "$("$VV" --info "$TMP/prov.arrow")" "vv.source: tiny.csv"
+"$VV" "$DATA/tiny.csv" --no-provenance --parquet "$TMP/noprov.parquet" 2>/dev/null
+refute_contains "provenance_off" "$("$VV" --info "$TMP/noprov.parquet")" "vv."
+# (column names only: the file's vv.select metadata names it)
+refute_contains "select_exclude_parquet_dropped_chrom" "$(awk '{print $1}' <<<"$RT")" "Chromosome"
 
 # An exact field name ALWAYS wins over pattern interpretation, so columns whose
 # names collide with the syntax stay addressable. Genomics headers really do

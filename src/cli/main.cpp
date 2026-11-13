@@ -423,6 +423,35 @@ static int run_modes(Config cfg, const ModeCtx& ctx, Reread* rr) {
     const char* C_RST  = ctx.rst;
     auto reread = [&](const TabularSource& s) { return reread_wanted(s, cfg, rr); };
 
+    // What made a Parquet / Arrow output, taken before the modes below
+    // adjust cfg (a sort clears the filter it applied).
+    if (!cfg.no_provenance && (!cfg.parquet_out.empty() || !cfg.arrow_out.empty())) {
+        auto& p = cfg.provenance;
+        p.emplace_back("vv.version", kVersion);
+        if (cfg.path != "-") {
+            p.emplace_back("vv.source", display_basename(cfg.path));
+            std::error_code ec;
+            const auto size = std::filesystem::file_size(cfg.path, ec);
+            if (!ec) p.emplace_back("vv.source_bytes", std::to_string(size));
+        } else {
+            p.emplace_back("vv.source", "standard input");
+        }
+        if (!cfg.tab.empty())         p.emplace_back("vv.tab", cfg.tab);
+        if (!cfg.region.empty())      p.emplace_back("vv.region", cfg.region);
+        if (!cfg.filter_expr.empty()) p.emplace_back("vv.filter", cfg.filter_expr);
+        if (!cfg.select_cols.empty()) p.emplace_back("vv.select", cfg.select_cols);
+        if (!cfg.sort_col.empty()) {
+            std::string s = cfg.sort_col + (cfg.sort_desc ? ":desc" : "");
+            for (const auto& k : cfg.sort_then) s += "," + k.col + (k.desc ? ":desc" : "");
+            p.emplace_back("vv.sort", s);
+        }
+        if (!cfg.col_types.empty()) {
+            std::string t;
+            for (const auto& [c, ty] : cfg.col_types) t += (t.empty() ? "" : ",") + c + ":" + ty;
+            p.emplace_back("vv.types", t);
+        }
+    }
+
     // The viewer shows a file with a malformed row (skipping it, with a note);
     // a scripted run stops at it unless told otherwise.
     if (cfg.on_bad_row.empty() && tui_wanted(cfg) &&
