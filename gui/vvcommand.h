@@ -18,6 +18,7 @@ struct VvCommandSpec {
     int         slop     = 0;
     bool        pileup   = false;
     QString     tags;                 // BAM aux tags, comma-separated
+    QString     types;                // --types COL:TYPE,…
     bool        gtStats  = false;
     bool        contigs  = false;
     QString     expand;               // --expand column (attributes / INFO); empty = none

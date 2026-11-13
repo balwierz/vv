@@ -369,3 +369,33 @@ arrow::Status run_read_status(const TabularSource& src) {
     std::lock_guard<std::mutex> lock(g_chunk_error_mutex);
     return g_chunk_error;
 }
+
+std::string parse_col_types(const std::string& spec,
+                            std::vector<std::pair<std::string, std::string>>* out) {
+    size_t start = 0;
+    while (start <= spec.size()) {
+        size_t comma = spec.find(',', start);
+        if (comma == std::string::npos) comma = spec.size();
+        const std::string item = spec.substr(start, comma - start);
+        start = comma + 1;
+        if (item.empty()) {
+            if (comma == spec.size()) break;
+            continue;
+        }
+        const size_t colon = item.rfind(':');
+        if (colon == std::string::npos || colon == 0 || colon + 1 == item.size())
+            return "'" + item + "' is not COLUMN:TYPE (TYPE: string, int or float)";
+        std::string name = item.substr(0, colon);
+        std::string type = item.substr(colon + 1);
+        for (auto& ch : type) ch = (char)std::tolower((unsigned char)ch);
+        if (type == "str" || type == "text" || type == "utf8") type = "string";
+        else if (type == "integer" || type == "int64") type = "int";
+        else if (type == "double" || type == "float64") type = "float";
+        if (type != "string" && type != "int" && type != "float")
+            return "unknown type '" + item.substr(colon + 1) + "' for '" + name +
+                   "' (use string, int or float)";
+        out->emplace_back(std::move(name), std::move(type));
+    }
+    if (out->empty()) return "no COLUMN:TYPE given";
+    return "";
+}

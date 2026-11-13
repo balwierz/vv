@@ -10,7 +10,8 @@
 
 // The format options of one open file — vv's --region / --coords / --slop /
 // --pileup / --tags / --gt-stats / --contigs / --expand / --samples /
-// --matrix. Each file has its own: a change re-opens only that file's tabs.
+// --matrix / --types. Each file has its own: a change re-opens only that
+// file's tabs.
 struct FileOptions {
     std::string region;
     bool        ncbi = false;           // the region is NCBI 1-based
@@ -22,6 +23,7 @@ struct FileOptions {
     bool        expand = true;          // unpack GFF/GTF attributes, VCF/BCF INFO
     std::string samples = "struct";
     std::string matrix = "wide";
+    std::string types;                  // --types COL:TYPE,… (CSV / TSV)
     // --index: the file's index when it is not beside it (one vvg built in
     // its cache). Looked up when the file opens, not kept in the session.
     std::string index;
@@ -38,7 +40,8 @@ struct FileOptions {
                            {QStringLiteral("tags"), q(tags)}, {QStringLiteral("gtStats"), gtStats},
                            {QStringLiteral("contigs"), contigs}, {QStringLiteral("expand"), expand},
                            {QStringLiteral("samples"), q(samples)}, {QStringLiteral("matrix"), q(matrix)},
-                           {QStringLiteral("reference"), q(reference)}};
+                           {QStringLiteral("reference"), q(reference)},
+                           {QStringLiteral("types"), q(types)}};
     }
     static FileOptions fromJson(const QJsonObject& o) {
         FileOptions f;
@@ -57,6 +60,7 @@ struct FileOptions {
         f.samples = str("samples", f.samples);
         f.matrix  = str("matrix", f.matrix);
         f.reference = str("reference", f.reference);
+        f.types   = str("types", f.types);
         return f;
     }
 
@@ -73,6 +77,7 @@ struct FileOptions {
         c.matrix           = matrix;
         c.index_path       = index;
         c.pileup_ref       = reference;
+        if (!types.empty()) (void)parse_col_types(types, &c.col_types);   // checked when given
         c.on_bad_row       = "skip";       // a viewer shows the file; the footer counts the rest
         return c;
     }

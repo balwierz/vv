@@ -158,6 +158,9 @@ struct Config {
                                          // row with the wrong number of fields ("":
                                          // stop, the TUI and vvg skip)
     std::string bad_rows_path;           // --bad-rows FILE: those rows, "line<TAB>text"
+    // --types COL:TYPE,…: CSV / TSV column types instead of inferred ones;
+    // TYPE is string, int or float; COL `*` is every column not named.
+    std::vector<std::pair<std::string, std::string>> col_types;
     std::vector<std::string> compute;    // --compute NAME=EXPR (repeatable): row-wise
                                          // derived columns, appended in order
     std::string expand_col;              // --expand COL: unpack a packed
@@ -566,6 +569,13 @@ std::string open_json_records(std::shared_ptr<arrow::io::InputStream> in,
 // are coordinate-agnostic. A frontend offering region queries calls this once
 // before open_source(). Returns "" on success or a human-readable error.
 std::string apply_region_modifiers(Config& cfg);
+
+// `--types` spec "COL:TYPE[,COL:TYPE…]" appended to `out` as (column, type),
+// TYPE normalised to string / int / float (also str, text, integer, int64,
+// double, float64). The last ':' separates the type, so a name may hold ':'.
+// "" or the reason the spec is malformed.
+std::string parse_col_types(const std::string& spec,
+                            std::vector<std::pair<std::string, std::string>>* out);
 
 // The packed key=value column a file of this kind carries, for --expand:
 // "attributes" for GFF / GTF, "INFO" for VCF / BCF, "" for anything else.

@@ -259,9 +259,16 @@ static void print_usage(const char* prog) {
         "                      stop (default: an error naming its line), skip\n"
         "                      it, or null (pad a short row with empty fields,\n"
         "                      cut a long one); the viewer skips by default.\n"
-        "                      A value a column cannot convert still stops.\n"
+        "                      A value a column cannot convert still stops\n"
+        "                      (see --types).\n"
         "  --bad-rows <file>   write the skipped / padded rows there, one\n"
         "                      \"line<TAB>text\" per row\n"
+        "  --types <col:type,…>  CSV / TSV column types instead of the ones\n"
+        "                      inferred from the first 16 MiB: string, int or\n"
+        "                      float; `*` is every column not named, e.g.\n"
+        "                        --types CHR:string,P:float   --types '*:string'\n"
+        "                      Repeatable. A name follows the header (f0, f1, …\n"
+        "                      without one)\n"
         "  --expand <col>      unpack a packed key=value column into real\n"
         "                      columns, appended to the schema — VCF INFO,\n"
         "                      GFF/GTF attributes. The keys then work with\n"
@@ -632,6 +639,11 @@ Config parse_args(int argc, char** argv) {
             cfg.on_bad_row = argv[++i];
         } else if (!std::strcmp(argv[i], "--bad-rows") && i + 1 < argc) {
             cfg.bad_rows_path = argv[++i];
+        } else if (!std::strcmp(argv[i], "--types") && i + 1 < argc) {
+            if (auto e = parse_col_types(argv[++i], &cfg.col_types); !e.empty()) {
+                std::fprintf(stderr, "--types: %s\n", e.c_str());
+                std::exit(2);
+            }
         } else if (!std::strcmp(argv[i], "--list-columns")) {
             cfg.list_columns = true;
         } else if (!std::strcmp(argv[i], "--list-tabs")) {
@@ -835,7 +847,7 @@ Config parse_args(int argc, char** argv) {
                 "--arrow", "--feather",
                 "--compression", "--unique", "--value-counts", "--percentiles", "--sample", "--filter",
                 "--select", "--cols", "--image-mode", "--tab", "--theme",
-                "--expand", "--samples", "--matrix", "--on-bad-row", "--bad-rows", "--compute",
+                "--expand", "--samples", "--matrix", "--on-bad-row", "--bad-rows", "--compute", "--types",
                 "--delimiter", "--in-delimiter", "-d", "--header",
                 "-f", "--fasta", "--box", "--index",
                 "--exclude-flags", "--ff", "--require-flags", "--rf",

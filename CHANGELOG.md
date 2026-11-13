@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `--types COL:TYPE[,…]`: a CSV / TSV column's type (`string`, `int`,
+  `float`) instead of the one inferred from the first 16 MiB; `*` is every
+  column not named. A file sorted by chromosome whose `CHR` column holds
+  1 … 22 and then `X` stopped at the first `X`; `--types CHR:string` reads
+  it. Works with `-d` and on standard input; vvg takes it on its command line
+  and repeats it in *Copy as vv Command*. A column the file lacks, a type
+  other than the three, or `--types` on a non-CSV / TSV input is an error.
+
 ### Fixed
 - `--filter` (and the viewer's `&` bar and vvg's Filter box): a literal
   compares in the column's kind. A bare number against a text column, as in

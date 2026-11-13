@@ -39,6 +39,7 @@ QString vvCommandLine(const VvCommandSpec& s) {
     }
     if (!s.samples.isEmpty() && s.samples != QLatin1String("struct")) opt("--samples", s.samples);
     if (!s.matrix.isEmpty() && s.matrix != QLatin1String("wide"))     opt("--matrix", s.matrix);
+    if (!s.types.isEmpty())      opt("--types", s.types);
     if (!s.filter.isEmpty())     opt("--filter", s.filter);
     // --sort reads a trailing :asc / :desc as the direction, so a name that
     // contains a colon always gets an explicit one. One --sort per key.
@@ -72,6 +73,7 @@ Config vvCommandConfig(const VvCommandSpec& s) {
     }
     if (!s.samples.isEmpty()) cfg.samples = s.samples.toStdString();
     if (!s.matrix.isEmpty())  cfg.matrix  = s.matrix.toStdString();
+    if (!s.types.isEmpty()) (void)parse_col_types(s.types.toStdString(), &cfg.col_types);
     cfg.filter_expr = s.filter.toStdString();
     for (const auto& [col, desc] : s.sort) {
         if (cfg.sort_col.empty()) { cfg.sort_col = col.toStdString(); cfg.sort_desc = desc; }

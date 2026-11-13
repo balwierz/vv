@@ -1248,6 +1248,7 @@ static DelimitedHints delimited_hints(const Config& cfg, DelimKind dk) {
     DelimitedHints h;
     h.on_bad_row = cfg.on_bad_row;
     h.bad_rows_path = cfg.bad_rows_path;
+    if (dk == DelimKind::CSV || dk == DelimKind::TSV) h.col_types = cfg.col_types;
     h.vcf_sites_only = dk == DelimKind::VCF && vcf_sites_only_run(cfg);
     const char* ser = std::getenv("VV_CSV_SERIAL");
     if (delimited_full_scan_run(cfg) && !(ser && *ser && *ser != '0'))
@@ -1271,6 +1272,17 @@ std::string open_source_dispatch(const std::string& path, const Config& cfg,
                    "remote file needs; download the file and its index first";
         out->reset();
         return open_remote_copy(path, cfg, out);
+    }
+    // --types sets CSV / TSV column types; any other input would ignore it.
+    // A directory's parts are checked as each opens.
+    if (err.empty() && *out && !cfg.col_types.empty() && !delimited_took_types(**out)) {
+        std::error_code ec;
+        if (!std::filesystem::is_directory(path, ec)) {
+            out->reset();
+            return "--types sets CSV / TSV column types; this input is not read as "
+                   "CSV / TSV (BED, VCF, GFF, SAM and the other text formats have "
+                   "fixed columns)";
+        }
     }
     return err;
 }
@@ -1375,6 +1387,7 @@ static std::string dispatch_by_kind(const std::string& path, const Config& cfg,
         DelimitedHints dh;                 // the malformed-row policy, as for .csv / .tsv
         dh.on_bad_row    = cfg.on_bad_row;
         dh.bad_rows_path = cfg.bad_rows_path;
+        dh.col_types     = cfg.col_types;
         std::string err = open_delimited_source(path, dk2, cfg.region, &src,
                                                 cfg.in_delimiter, cfg.header,
                                                 TsvDialect::None, {}, dh);
@@ -1536,9 +1549,11 @@ static std::string dispatch_by_kind(const std::string& path, const Config& cfg,
         if (cfg.in_delimiter == ',' ||
             (cfg.in_delimiter == 0 && cfg.delimiter == ',')) kind = DelimKind::CSV;
         std::unique_ptr<TabularSource> src;
+        DelimitedHints sh;
+        sh.col_types = cfg.col_types;
         std::string e = open_delimited_stream(
             std::move(input), path, kind, /*is_gz=*/is_gz, cfg.region, &src,
-            cfg.in_delimiter, cfg.header);
+            cfg.in_delimiter, cfg.header, sh);
         if (!e.empty()) return e;
         *out = std::move(src);
         return "";
@@ -1927,6 +1942,8 @@ static std::string dispatch_by_kind(const std::string& path, const Config& cfg,
     if ((dk == DelimKind::CSV || dk == DelimKind::TSV) && dialect == TsvDialect::None && !tenx &&
         !named_headerless)
         hints.columns = csv_column_need(cfg);
+    else
+        hints.col_types.clear();     // named by position after the open: refused below
     std::string err = open_delimited_source(path, dk, cfg.region, &src, delim_override,
                                             headerless ? HeaderMode::Off : cfg.header, dialect,
                                             paf_tags, hints);

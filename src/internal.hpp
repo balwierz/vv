@@ -1022,6 +1022,8 @@ struct DelimitedHints {
     // error naming its line. --bad-rows: where the skipped / padded rows go.
     std::string on_bad_row;
     std::string bad_rows_path;
+    // --types: (column, string|int|float); plain CSV / TSV only.
+    std::vector<std::pair<std::string, std::string>> col_types;
 };
 std::string open_delimited_source(const std::string& path, DelimKind kind, const std::string& region,
                                   std::unique_ptr<TabularSource>* out, char delim_override = 0,
@@ -1033,7 +1035,11 @@ std::string open_delimited_source(const std::string& path, DelimKind kind, const
 std::string open_delimited_stream(std::shared_ptr<arrow::io::InputStream> input,
                                   const std::string& path_label, DelimKind kind, bool is_gz,
                                   const std::string& region, std::unique_ptr<TabularSource>* out,
-                                  char delim_override = 0, HeaderMode header_mode = HeaderMode::Auto);
+                                  char delim_override = 0, HeaderMode header_mode = HeaderMode::Auto,
+                                  DelimitedHints hints = {});
+
+// True when `src` is a CSV / TSV reader that applied --types.
+bool delimited_took_types(const TabularSource& src);
 
 void delimited_apply_column_names(TabularSource& src, const std::vector<std::string>& names,
                                   std::string note);

@@ -15,7 +15,7 @@ end
 function __vv_file
     set -l valopts n w c @ threads decode-threads delimiter in-delimiter d header color theme box r region \
         window regions-file region-cols slop coords tail sort tags expand parquet arrow \
-        feather compression on-bad-row bad-rows compute image-mode samples matrix f fasta index select cols filter tab unique value-counts percentiles sample \
+        feather compression on-bad-row bad-rows compute types image-mode samples matrix f fasta index select cols filter tab unique value-counts percentiles sample \
         exclude-flags ff require-flags rf min-mapq min-bq
     set -l toks (commandline -opc)
     set -l i 2
@@ -122,6 +122,7 @@ complete -c vv -c vh -l compression -r -a 'zstd snappy gzip lz4 none' -d 'Parque
 complete -c vv -c vh -l compute -x -d 'Add a column computed from each row (name=expr)'
 complete -c vv -c vh -l on-bad-row -x -a 'stop skip null' -d 'A text row with the wrong number of fields'
 complete -c vv -c vh -l bad-rows -r -F -d 'Write the skipped / padded rows to this file'
+complete -c vv -c vh -l types -x -d 'CSV / TSV column types (COL:string|int|float,…)'
 
 # JSON output / projection / filter / describe / schema
 complete -c vv -c vh -l json               -d 'Write JSON array of row objects'

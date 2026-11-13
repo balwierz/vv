@@ -3624,6 +3624,7 @@ public:
         s.expand  = o.expand;
         s.samples = QString::fromStdString(fo.samples);
         s.matrix  = QString::fromStdString(fo.matrix);
+        s.types   = QString::fromStdString(fo.types);
         if (m->hasFilter()) s.filter = filterText_.value(m);
         for (const auto& k : m->sortKeys())
             s.sort.append({m->columnName(k.col), k.order == Qt::DescendingOrder});
@@ -3901,13 +3902,13 @@ public:
 
     // vv's view flags on vvg's command line (vvg --filter … --sort … file).
     struct ViewOptions {
-        QString filter, select, tab, region, tags, samples, matrix;
+        QString filter, select, tab, region, tags, samples, matrix, types;
         QStringList sort;   // one --sort per key, "COL[:asc|:desc]"
         bool ncbi = false, pileup = false, gtStats = false, contigs = false;
         int  slop = 0;
         bool session() const {
             return !region.isEmpty() || !tags.isEmpty() || pileup || gtStats || contigs || slop ||
-                   !samples.isEmpty() || !matrix.isEmpty();
+                   !samples.isEmpty() || !matrix.isEmpty() || !types.isEmpty();
         }
     };
     // Apply them after the files open, in vv's order: region / session options
@@ -3924,9 +3925,12 @@ public:
             std::vector<int> ids;
             for (const auto& f : files_) if (!f.jsonTree) ids.push_back(f.id);
             for (int id : ids)
-                if (const OpenFile* f = fileById(id))
-                    reopenFile(id, withQuery(f->opts, o.region, o.ncbi, o.slop, o.pileup, o.tags,
-                                             o.gtStats, o.contigs, o.samples, o.matrix));
+                if (const OpenFile* f = fileById(id)) {
+                    FileOptions fo = withQuery(f->opts, o.region, o.ncbi, o.slop, o.pileup, o.tags,
+                                               o.gtStats, o.contigs, o.samples, o.matrix);
+                    if (!o.types.isEmpty()) fo.types = o.types.toStdString();
+                    reopenFile(id, fo);
+                }
         }
         if (!o.tab.isEmpty()) {
             int found = -1;
@@ -5351,6 +5355,14 @@ int main(int argc, char** argv) {
         else if (a == "--tab")                    value(&view.tab);
         else if (a == "-r" || a == "--region")    value(&view.region);
         else if (a == "--tags")                   value(&view.tags);
+        else if (a == "--types") {
+            value(&view.types);
+            std::vector<std::pair<std::string, std::string>> parsed;
+            if (auto e = parse_col_types(view.types.toStdString(), &parsed); !e.empty()) {
+                std::fprintf(stderr, "vvg: --types: %s\n", e.c_str());
+                return 2;
+            }
+        }
         else if (a == "--samples") {
             value(&view.samples);
             if (view.samples != "struct" && view.samples != "long" && view.samples != "text") {
@@ -5381,6 +5393,7 @@ int main(int argc, char** argv) {
                         "  -r, --region R    region query (UCSC coordinates; --coords NCBI)\n"
                         "  --samples struct|long|text   VCF/BCF sample columns (as in vv)\n"
                         "  --matrix wide|long           HDF5 / AnnData matrix tabs (as in vv)\n"
+                        "  --types COL:TYPE,…           CSV / TSV column types (as in vv)\n"
                         "  --slop N, --tags LIST, --pileup, --gt-stats, --contigs\n"
                         "                    as in vv\n");
             return 0;

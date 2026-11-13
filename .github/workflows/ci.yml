@@ -361,6 +361,9 @@ jobs:
           test "$(eval "./build-gui/vv ${cmd#vv } --tsv" | head -2 | tr '\t\n' ',;')" = 'Chr,Start,Score;chr2,7100,0.95;'
           out=$(VVG_WINTEST=1 VVG_COPYCMD=1 VVG_TAB=2 ./build-gui/gui/vvg tests/data/tiny.dense.h5ad)
           grep -q "^cmd=vv --tab obs $PWD/tests/data/tiny.dense.h5ad\$" <<<"$out"
+          # --types reaches the file's options and the copied command.
+          out=$(VVG_WINTEST=1 VVG_COPYCMD=1 ./build-gui/gui/vvg --types count:string tests/data/tiny.csv)
+          grep -q "^cmd=vv --types count:string $PWD/tests/data/tiny.csv\$" <<<"$out"
           # Export View As… writes what the copied command writes (TSV byte for
           # byte; Parquet by content), refuses to overwrite its input, and a
           # canceled export leaves the existing target and no .part file.

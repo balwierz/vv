@@ -1014,6 +1014,45 @@ class DelimitedSource : public TabularSource {
     ColumnNeed need_;              // the columns the run uses (CSV / TSV; see make_reader)
     std::shared_ptr<arrow::Schema> full_schema_;   // every column, when only some are converted
     mutable arrow::Status                 read_status_;   // sticky stream error
+    // --types (plain CSV / TSV): the named columns' types, keyed by the
+    // reader's names, and the type of every other column (`*`, else inferred).
+    std::vector<std::pair<std::string, std::shared_ptr<arrow::DataType>>> user_types_;
+    std::vector<std::string>              user_type_names_;   // as given, for checking
+    std::shared_ptr<arrow::DataType>      user_default_;
+    bool                                  took_types_ = false;
+
+    std::string set_user_types(const std::vector<std::pair<std::string, std::string>>& spec,
+                               DelimKind kind) {
+        if (spec.empty()) return "";
+        if ((kind != DelimKind::CSV && kind != DelimKind::TSV) || dialect_ != TsvDialect::None)
+            return "--types applies to CSV / TSV input";
+        for (const auto& [name, type] : spec) {
+            auto t = type == "int" ? arrow::int64() : type == "float" ? arrow::float64()
+                                                                      : arrow::utf8();
+            if (name == "*") { user_default_ = t; continue; }
+            user_types_.push_back({name, t});
+            user_type_names_.push_back(name);
+            // R write.csv()'s unnamed index column is shown as `index`.
+            if (name == kRowIndexColName) user_types_.push_back({"", t});
+        }
+        took_types_ = true;
+        return "";
+    }
+    // "" when every column --types names exists (by the names shown), once,
+    // among `names` (the reader's, with R's unnamed index column as `index`).
+    std::string check_user_types(const std::vector<std::string>& names) const {
+        for (const auto& want : user_type_names_) {
+            const auto n = std::count(names.begin(), names.end(), want);
+            if (n == 1) continue;
+            if (n > 1) return "--types: " + std::to_string(n) + " columns are named '" + want + "'";
+            std::string list;
+            for (size_t i = 0; i < names.size() && i < 12; ++i)
+                list += (i ? ", " : "") + names[i];
+            if (names.size() > 12) list += ", …";
+            return "--types: no column '" + want + "' (columns: " + list + ")";
+        }
+        return "";
+    }
 
     // Append a freshly-decoded batch via the shared bounded-window helper.
     void retain_(std::shared_ptr<arrow::RecordBatch> batch) const {
@@ -1156,7 +1195,10 @@ class DelimitedSource : public TabularSource {
                 const std::vector<std::string>& extra_nulls = {},
                 int parse_threads = 1, int cut_to_fields = 0,
                 const ColumnNeed* need = nullptr,
-                std::shared_ptr<arrow::Schema>* full_out = nullptr) {
+                std::shared_ptr<arrow::Schema>* full_out = nullptr,
+                const std::vector<std::pair<std::string, std::shared_ptr<arrow::DataType>>>*
+                    user_types = nullptr,
+                std::shared_ptr<arrow::DataType> default_type = nullptr) {
         if (gate_out) {
             *gate_out = std::make_shared<ReadGate>();
             input = std::make_shared<GatedInputStream>(std::move(input), *gate_out);
@@ -1194,6 +1236,17 @@ class DelimitedSource : public TabularSource {
         for (const auto& ct : column_types) copts.column_types[ct.first] = ct.second;
         for (const auto& name : force_string_cols)
             copts.column_types[name] = arrow::utf8();
+        // --types wins over everything above.
+        if (user_types)
+            for (const auto& ut : *user_types) copts.column_types[ut.first] = ut.second;
+        // `--types '*:T'`: every column not typed above, once the names are
+        // known (from the type probe below, else from a peek at the head).
+        bool default_done = !default_type;
+        auto type_the_rest = [&](const arrow::Schema& names) {
+            for (const auto& f : names.fields())
+                if (!copts.column_types.count(f->name())) copts.column_types[f->name()] = default_type;
+            default_done = true;
+        };
         // Extra missing-value tokens (VCF's "."). They null numeric columns
         // only, unless strings_nullable: a string column keeps the literal.
         for (const auto& n : extra_nulls) copts.null_values.push_back(n);
@@ -1246,6 +1299,7 @@ class DelimitedSource : public TabularSource {
                         for (const auto& f : (*probe)->schema()->fields())
                             repeated = repeated || !names.insert(f->name()).second;
                     }
+                    if (probe.ok() && default_type) type_the_rest(*(*probe)->schema());
                     if (probe.ok() && !repeated) {
                         for (const auto& f : (*probe)->schema()->fields())
                             if (!copts.column_types.count(f->name()))
@@ -1273,12 +1327,36 @@ class DelimitedSource : public TabularSource {
                 if (typed && parse_threads > 1 && !eof) {
                     input = std::make_shared<PrependInputStream>(std::move(buf), std::move(input));
                     const bool header = col_names.empty() && !autogen_names;
+                    // The parse types: `typed` holds the probe's inferred ones,
+                    // copts every pinned one (--types '*' included).
+                    arrow::FieldVector pinned_fields;
+                    for (const auto& f : typed->fields()) {
+                        auto it = copts.column_types.find(f->name());
+                        pinned_fields.push_back(it == copts.column_types.end() ? f : f->WithType(it->second));
+                    }
                     return std::shared_ptr<arrow::RecordBatchReader>(std::make_shared<ParallelCsvReader>(
-                        std::move(input), typed, ropts, popts, copts, small, parse_threads, header,
-                        cut_to_fields));
+                        std::move(input), arrow::schema(std::move(pinned_fields)), ropts, popts, copts,
+                        small, parse_threads, header, cut_to_fields));
                 }
             }
             input = std::make_shared<PrependInputStream>(std::move(buf), std::move(input));
+        }
+        if (!default_done) {
+            // No probe ran (one block size throughout): the names come from a
+            // reader over the head of the stream, which is then put back.
+            std::string head;
+            while (head.size() < ((size_t)1 << 20)) {
+                ARROW_ASSIGN_OR_RAISE(auto b, input->Read(1 << 20));
+                if (b->size() == 0) break;
+                head.append(reinterpret_cast<const char*>(b->data()), (size_t)b->size());
+            }
+            const size_t nl = head.rfind('\n');
+            auto peek_in = std::make_shared<arrow::io::BufferReader>(arrow::Buffer::FromString(
+                head.substr(0, nl == std::string::npos ? head.size() : nl + 1)));
+            auto peek = arrow::csv::StreamingReader::Make(arrow::io::default_io_context(),
+                                                          peek_in, ropts, popts, copts);
+            if (peek.ok()) type_the_rest(*(*peek)->schema());
+            input = std::make_shared<PrependInputStream>(std::move(head), std::move(input));
         }
         // Lines to cut and no parallel parse to do it: cut them in the stream.
         if (cut_to_fields > 0)
@@ -1439,6 +1517,7 @@ public:
     }
     // Give the leading columns of a file read headerless their names (the
     // rest keep f<i>) and note in the footer what the file is.
+    bool took_types() const { return took_types_; }
     void apply_column_names(const std::vector<std::string>& names, std::string note) {
         arrow::FieldVector fields = schema_->fields();
         for (size_t i = 0; i < fields.size() && i < names.size(); ++i)
@@ -1456,11 +1535,12 @@ public:
         const std::string& path_label, DelimKind kind, bool is_gz,
         const std::string& region,
         std::unique_ptr<DelimitedSource>* out, char delim_override = 0,
-        HeaderMode header_mode = HeaderMode::Auto) {
+        HeaderMode header_mode = HeaderMode::Auto, DelimitedHints hints = {}) {
         auto self = std::make_unique<DelimitedSource>();
         self->path_      = path_label;
         self->kind_      = kind;
         self->header_mode_ = header_mode;
+        if (auto e = self->set_user_types(hints.col_types, kind); !e.empty()) return e;
         self->delimiter_ = delim_override ? delim_override
                                           : (kind == DelimKind::CSV ? ',' : kind == DelimKind::Mtx ? ' ' : '\t');
         return continue_open(std::move(self), std::move(input),
@@ -1513,6 +1593,7 @@ public:
             if (!err.empty()) return err;
         }
         self->dialect_   = dialect;
+        if (auto e = self->set_user_types(hints.col_types, kind); !e.empty()) return e;
         self->paf_tags_  = paf_tags;
         if (!paf_tags.empty()) self->paf_tag_types_ = paf_tag_types(path, paf_tags);
         self->header_mode_ = header_mode;
@@ -2010,7 +2091,8 @@ private:
         auto r = make_reader(input, self->delimiter_, autogen, col_names,
                              force_string, strings_nullable, col_types, &self->gate_,
                              extra_nulls, self->parse_threads_, self->cut_fields_,
-                             self->need_.active ? &self->need_ : nullptr, &self->full_schema_);
+                             self->need_.active ? &self->need_ : nullptr, &self->full_schema_,
+                             &self->user_types_, self->user_default_);
         if (!r.ok()) {
             // A region query whose window overlaps no records leaves the tabix
             // stream empty, and Arrow's CSV reader rejects empty input with
@@ -2067,6 +2149,10 @@ private:
                 for (int i = 0; i < all->num_fields(); ++i) {
                     auto id = all->field(i)->type()->id();
                     const std::string& nm = all->field(i)->name();
+                    // A type given by --types says nothing about row 0.
+                    if (std::any_of(self->user_types_.begin(), self->user_types_.end(),
+                                    [&](const auto& ut) { return ut.first == nm; }))
+                        continue;
                     bool numeric =
                         id == arrow::Type::INT8   || id == arrow::Type::INT16  ||
                         id == arrow::Type::INT32  || id == arrow::Type::INT64  ||
@@ -2107,7 +2193,8 @@ private:
                     auto r2 = make_reader(input2, self->delimiter_,
                                           /*autogen=*/true, {}, force2,
                                           /*strings_nullable=*/true, {}, &gate2, {}, 1, 0,
-                                          self->need_.active ? &self->need_ : nullptr, &self->full_schema_);
+                                          self->need_.active ? &self->need_ : nullptr, &self->full_schema_,
+                                          &self->user_types_, self->user_default_);
                     if (r2.ok()) {
                         close_stream_reader(self->reader_, self->gate_);
                         self->gate_ = std::move(gate2);
@@ -2132,6 +2219,16 @@ private:
             auto fields = self->schema_->fields();
             fields[0] = fields[0]->WithName(kRowIndexColName);
             self->schema_ = arrow::schema(fields);
+        }
+
+        // --types names columns as they are shown.
+        if (!self->user_type_names_.empty()) {
+            const auto& all = self->full_schema_ ? self->full_schema_ : self->schema_;
+            std::vector<std::string> names;
+            for (int i = 0; i < all->num_fields(); ++i)
+                names.push_back(i == 0 && all->field(0)->name().empty() ? kRowIndexColName
+                                                                        : all->field(i)->name());
+            if (auto e = self->check_user_types(names); !e.empty()) return e;
         }
 
         // Eagerly read first batch so schema + first rows are immediately available.
@@ -2458,12 +2555,18 @@ std::string open_delimited_source(const std::string& path, DelimKind kind, const
 std::string open_delimited_stream(std::shared_ptr<arrow::io::InputStream> input,
                                   const std::string& path_label, DelimKind kind, bool is_gz,
                                   const std::string& region, std::unique_ptr<TabularSource>* out,
-                                  char delim_override, HeaderMode header_mode) {
+                                  char delim_override, HeaderMode header_mode,
+                                  DelimitedHints hints) {
     std::unique_ptr<DelimitedSource> s;
     std::string e = DelimitedSource::open_from_stream(std::move(input), path_label, kind, is_gz,
-                                                        region, &s, delim_override, header_mode);
+                                                        region, &s, delim_override, header_mode,
+                                                        hints);
     if (e.empty()) *out = std::move(s);
     return e;
+}
+bool delimited_took_types(const TabularSource& src) {
+    auto* d = dynamic_cast<const DelimitedSource*>(&src);
+    return d && d->took_types();
 }
 // Post-open adjustments of a DelimitedSource made by the dispatcher; no-ops
 // on any other source.

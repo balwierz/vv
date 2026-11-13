@@ -145,6 +145,34 @@ fi
 run_case paf_tsv      --tsv --no-header "$DATA/tiny.paf"
 run_case paf_gz_tsv   --tsv --no-header "$DATA/tiny.paf.gz"
 
+# --types COL:TYPE: a CSV / TSV column's type instead of the inferred one.
+types_of() { "$VV" --schema "$@" | awk 'NR>3 && NF==3 {printf "%s:%s ", $1, $2}'; }
+assert_eq_file_inline "types_named" "$(types_of --types count:string "$DATA/tiny.csv")" \
+    "name:string count:string ratio:double "
+assert_eq_file_inline "types_named_float" "$(types_of --types count:float "$DATA/tiny.csv")" \
+    "name:string count:double ratio:double "
+assert_eq_file_inline "types_star" "$(types_of --types '*:string,count:float' "$DATA/tiny.csv")" \
+    "name:string count:double ratio:string "
+assert_eq_file_inline "types_repeatable" "$(types_of --types count:string --types ratio:string "$DATA/tiny.csv")" \
+    "name:string count:string ratio:string "
+assert_eq_file_inline "types_stdin" \
+    "$(printf 'id\tv\n1\t2\n' | "$VV" --types id:string --schema - | awk '$1 == "id" {print $2}')" "string"
+assert_eq_file_inline "types_in_delimiter" \
+    "$(printf 'a b\n1 x\n' | "$VV" -d space --types a:float --schema - | awk '$1 == "a" {print $2}')" "double"
+assert_eq_file_inline "types_headerless" \
+    "$(printf '1\t2\n3\t4\n' > "$TMP/types_nohdr.tsv"; types_of --types f0:float "$TMP/types_nohdr.tsv")" \
+    "f0:double f1:int64 "
+# The type given wins over the leading-zero guard (which keeps "007" text).
+assert_eq_file_inline "types_over_leading_zero" \
+    "$(printf 'id,v\n007,1\n010,2\n' > "$TMP/types_lz.csv"; "$VV" --types id:int --tsv --no-header "$TMP/types_lz.csv" | cut -f1 | tr '\n' ' ')" "7 10 "
+assert_exit_code "types_unknown_column" 1 "$VV" --types nope:int --count "$DATA/tiny.csv"
+assert_contains "types_unknown_column_message" \
+    "$("$VV" --types nope:int --count "$DATA/tiny.csv" 2>&1)" "--types: no column 'nope' (columns: name, count, ratio)"
+assert_exit_code "types_bad_type" 2 "$VV" --types count:date "$DATA/tiny.csv"
+assert_exit_code "types_bad_spec" 2 "$VV" --types count "$DATA/tiny.csv"
+assert_exit_code "types_not_csv" 1 "$VV" --types chrom:string -n 1 "$DATA/tiny.bed"
+assert_contains "types_not_csv_message" \
+    "$("$VV" --types Chr:string -n 1 "$DATA/tiny.parquet" 2>&1)" "--types sets CSV / TSV column types"
 # -d/--in-delimiter: read a file with an explicit input field separator,
 # overriding the extension. Opens space-, semicolon- and pipe-separated data
 # that no extension identifies (e.g. R's default write.table() output). Input
@@ -2474,6 +2502,17 @@ PYBLK
     # A value the column's type cannot hold, after the type sample: its file line.
     assert_contains "bad_row_conversion_line" "$("$VV" --select val --tsv "$TMP/blk_typelater.tsv" 2>&1 >/dev/null)" \
         "line 2000002: In CSV column #1: CSV conversion error to int64: invalid value 'notanumber'"
+    # --types sets a column's type instead of the one inferred from the first
+    # 16 MiB: the late "notanumber" reads as text, through the small-block
+    # reader, the parallel one (-@ 4, a full scan) and the projected one.
+    assert_eq_file_inline "types_late_value_reads" \
+        "$("$VV" --types val:string --select val --tsv "$TMP/blk_typelater.tsv" | tail -n 1)" "notanumber"
+    assert_eq_file_inline "types_late_value_parallel" \
+        "$(VV_NO_PROJECTION=1 "$VV" -@ 4 --types val:string --tsv "$TMP/blk_typelater.tsv" | tail -n 1 | tr '\t' ,)" "9,notanumber"
+    assert_eq_file_inline "types_late_value_count" \
+        "$(VV_NO_PROJECTION=1 "$VV" --types val:string --count "$TMP/blk_typelater.tsv")" "2000001"
+    assert_eq_file_inline "types_star_late_value" \
+        "$("$VV" --types '*:string' --filter 'val == "notanumber"' --count "$TMP/blk_typelater.tsv")" "1"
     # --distinct replaces the source with its result, so it checks the read
     # itself: a stream that fails part-way is an error, not a shorter count.
     assert_exit_code "distinct_late_read_error_exit" 1 "$VV" --distinct --count "$TMP/blk_typelater.tsv"

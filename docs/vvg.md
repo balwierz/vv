@@ -16,7 +16,7 @@ vvg -r chr17:43044295-43125483 calls.vcf.gz
 
 vvg takes vv's view flags — `--filter`, `--select`, `--sort`, `--tab`,
 `-r` / `--region` (with `--coords`, `--slop`), `--tags`, `--pileup`,
-`--gt-stats`, `--contigs`, `--samples`, `--matrix` — and *Edit ▸ Copy as vv
+`--gt-stats`, `--contigs`, `--samples`, `--matrix`, `--types` — and *Edit ▸ Copy as vv
 Command* goes the other way.
 
 ![vvg: a Parquet file filtered and sorted](img/vvg/parquet.png)

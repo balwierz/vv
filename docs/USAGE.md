@@ -591,8 +591,32 @@ columns (optional fields, a FASTA section). The table view's footer and
 
 A value its column's type cannot hold (a word in an integer column after the
 first 16 MiB, which the types come from) is not a malformed row: it stops the
-run under every policy, with its line. A `-r` region query reads records, not
-file lines: its rows are not checked.
+run under every policy, with its line; `--types` (below) sets that column's
+type. A `-r` region query reads records, not file lines: its rows are not
+checked.
+
+# Column types (`--types`)
+
+A CSV / TSV column's type is inferred from the first 16 MiB of the file. A
+column that changes kind later — chromosomes `1` … `22` and then `X` in a file
+sorted by chromosome, whole numbers and then `0.5` — fails the read at that
+line. `--types` gives the type instead:
+
+```
+$ vv --tsv gwas.tsv.gz
+vv: gwas.tsv.gz: Invalid: line 1320002: In CSV column #1: CSV conversion error to int64: invalid value 'X'
+$ vv --types CHR:string --value-counts CHR gwas.tsv.gz
+```
+
+* `COL:TYPE`, comma-separated or repeated; `TYPE` is `string`, `int` or
+  `float`. `*` stands for every column not named: `--types '*:string'` reads
+  everything as text.
+* Names are the header's (`f0`, `f1`, … for a file without one; `index` for
+  R's unnamed row-names column). A name the file lacks is an error.
+* The given type wins over vv's own choices, such as keeping `007` as text.
+* Plain CSV / TSV only (also `-d` and standard input); BED, VCF, GFF, SAM and
+  the other text formats have fixed columns, and `--types` on them is an
+  error.
 
 # Range queries (`-r`, `--regions-file`, `--slop`)
 

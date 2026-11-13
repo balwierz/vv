@@ -515,7 +515,16 @@ VCF read without its samples accept more fields than their columns. The
 interactive viewer and \fBvvg\fR skip, and their footer counts the rows
 skipped and names the first one's line. A value a typed column cannot hold
 (a word in an integer column, past the first 16 MiB the types are taken
-from) stops the run under every policy, with its line.
+from) stops the run under every policy, with its line; \fB\-\-types\fR sets
+that column's type.
+.TP
+.BI \-\-types " col:type\fR[\fB,\fIcol:type\fR...]"
+CSV / TSV column types instead of the ones inferred from the first 16 MiB:
+\fBstring\fR, \fBint\fR or \fBfloat\fR. \fB*\fR is every column not named,
+e.g. \fB\-\-types CHR:string,P:float\fR or \fB\-\-types '*:string'\fR.
+Repeatable. Names follow the header (\fBf0\fR, \fBf1\fR, ... without one); a
+name the file lacks is an error. Plain CSV / TSV only, also with \fB\-d\fR and
+on standard input.
 .TP
 .BI \-\-bad\-rows " file"
 With \fB\-\-on\-bad\-row skip\fR or \fBnull\fR: write each such row to
