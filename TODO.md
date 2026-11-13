@@ -146,10 +146,14 @@ Deferred until a file needs them (owner's decision, 2026-10-07).
 
 ## Quality / signal
 
-- libFuzzer harness — extend to the remaining binary parsers (FASTA/FASTQ, HDF5,
-  2bit, ODS). BAM / SAM / BCF / VCF (`fuzz_hts`) and Parquet (`fuzz_parquet`)
-  go through `source_fuzz_one()` (src/core/open.cpp), which opens any extension
-  the way vv does; a new reader needs only a harness file and its CI corpus.
+- libFuzzer harnesses still missing: HDF5 (AnnData, Loom, 10x), Cooler and
+  DuckDB. Every other reader has one; a new one needs only a harness file
+  over `source_fuzz_one()` (src/core/open.cpp) and its CI corpus.
+- **ORC aborts on a malformed footer** inside the ORC library (protobuf's
+  has-bits check destroying `orc.proto.Footer` in `orc::createReader`;
+  apache-orc 2.3.1 / protobuf 36.1 on Arch), before Arrow returns a status:
+  `vv bad.orc` exits 134. Not fuzzed for that reason; an upstream report,
+  or a footer check of vv's own before handing the file to ORC.
 - Code coverage badge.
 - Reproducible builds.
 

@@ -96,7 +96,7 @@ jobs:
       # read / overflow / misaligned load / null memcpy fails here. Needs clang
       # (libFuzzer). Deterministic seed; a clean tree survives far more than this
       # budget's iterations, so it is not flaky.
-      - name: Fuzz smoke (colblock, npy, lzf, json, rdata, pod5, zarr, msa, hts, parquet)
+      - name: Fuzz smoke (colblock, npy, lzf, json, rdata, pod5, zarr, msa, hts, parquet, arrow, ucsc, text, workbook, sqlite)
         if: matrix.os == '24.04'
         env:
           ARROW_DEFAULT_MEMORY_POOL: system
@@ -107,7 +107,7 @@ jobs:
           cmake -S . -B build-fuzz -DVV_BUILD_FUZZERS=ON -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
           cmake --build build-fuzz -j"$(nproc)" --target fuzz_colblock fuzz_npy fuzz_lzf fuzz_json fuzz_rdata fuzz_pod5 fuzz_zarr fuzz_msa \
-            fuzz_hts fuzz_parquet
+            fuzz_hts fuzz_parquet fuzz_arrow fuzz_ucsc fuzz_text fuzz_workbook fuzz_sqlite
           ./build-fuzz/fuzz_colblock -max_total_time=40 -seed=1
           ./build-fuzz/fuzz_npy      -max_total_time=40 -seed=1
           ./build-fuzz/fuzz_lzf      -max_total_time=30 -seed=1
@@ -125,9 +125,10 @@ jobs:
           cp tests/data/tiny.sto tests/data/tiny.aln tests/data/tiny*.phy tests/data/tiny.nex tests/data/tiny.msf \
              tests/data/tiny.a3m tests/data/tiny.afa "$RUNNER_TEMP/msa-corpus/"
           ./build-fuzz/fuzz_msa      -max_total_time=40 -seed=1 "$RUNNER_TEMP/msa-corpus"
-          # A seed is the file behind its extension's index byte: 0 bam, 1 sam, 2 bcf, 3 vcf.
+          # A seed is the file behind its extension's index byte: 0 bam, 1 sam, 2 bcf, 3 vcf,
+          # 4 fa, 5 fq.
           mkdir -p "$RUNNER_TEMP/hts-corpus"
-          for f in tiny.bam:0 tiny.splice.bam:0 tiny.bcf:2 tiny.samples.bcf:2 tiny.vcf:3; do
+          for f in tiny.bam:0 tiny.splice.bam:0 tiny.bcf:2 tiny.samples.bcf:2 tiny.vcf:3 tiny.fa:4 tiny.fq:5; do
             n=${f%%:*}; b=${f#*:}
             { printf "\\x0$b"; cat "tests/data/$n"; } > "$RUNNER_TEMP/hts-corpus/$n"
           done
@@ -144,6 +145,23 @@ jobs:
           # does under ulimit -v; -rss_limit_mb still catches memory actually used.
           ASAN_OPTIONS="$ASAN_OPTIONS:allocator_may_return_null=1:max_allocation_size_mb=2048" \
             ./build-fuzz/fuzz_parquet  -max_total_time=40 -seed=1 -max_len=65536 "$RUNNER_TEMP/parquet-corpus" tests/fuzz/regress
+          # The harnesses that take several formats: each seed is a fixture behind its
+          # extension's index byte (the list at the top of each harness file).
+          seed() {  # corpus index fixture
+            mkdir -p "$RUNNER_TEMP/$1-corpus"
+            [ -f "tests/data/$3" ] || return 0
+            { printf "\\x$(printf %02x "$2")"; head -c 60000 "tests/data/$3"; } > "$RUNNER_TEMP/$1-corpus/$3"
+          }
+          for f in tiny.arrow:0 tiny.feather:0 tiny.arrows:1; do seed arrow "${f#*:}" "${f%%:*}"; done
+          for f in tiny.bw:0 tiny.bb:1 tiny.2bit:2 tiny.oobchrom.bw:0 tiny.unterminated.bb:1; do seed ucsc "${f#*:}" "${f%%:*}"; done
+          for f in tiny.gb:0 tiny.embl:1 tiny.maf:2 tiny.wig:3 tiny.mtx:4 tiny.csv:5 tiny.tsv:6 tiny.bed:7 tiny.gff:8 \
+                   tiny.pileup:9 tiny.paf:10; do seed text "${f#*:}" "${f%%:*}"; done
+          for f in tiny.xlsx:0 tiny.ods:1; do seed workbook "${f#*:}" "${f%%:*}"; done
+          for f in tiny.sqlite:0; do seed sqlite "${f#*:}" "${f%%:*}"; done
+          for fz in arrow ucsc text workbook sqlite; do
+            ASAN_OPTIONS="$ASAN_OPTIONS:allocator_may_return_null=1:max_allocation_size_mb=2048" \
+              ./build-fuzz/fuzz_$fz -max_total_time=40 -seed=1 -max_len=65536 "$RUNNER_TEMP/$fz-corpus"
+          done
 
       - name: Upload fuzz findings
         if: failure() && matrix.os == '24.04'
