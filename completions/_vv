@@ -177,6 +177,8 @@ _vv() {
         '--stats[Parquet metadata dump]' \
         '--info[how the file is stored: compression, index, column encodings and codecs]' \
         '--contigs[List reference sequences (name, length) and detect the assembly]' \
+        '--check[Do the files agree on their reference sequences? (the first is the reference)]' \
+        '--diff[Compare two tables: columns, row counts, differing cells]' \
         '--seq-stats[FASTA/FASTQ summary: count, lengths, N50, GC, Q20/Q30]' \
         '--flatten[Struct columns as one column per leaf (st.a, st.b.c)]' \
         '--tree[JSON: open the tree viewer]' \

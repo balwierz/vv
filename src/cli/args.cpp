@@ -324,6 +324,22 @@ static void print_usage(const char* prog) {
         "                      --tsv / --json / --sort / --filter. With an index:\n"
         "                      mapped / unmapped reads (BAM) or records (VCF / BCF)\n"
         "                      per sequence, as samtools idxstats\n"
+        "  --check A B …       do the files agree on their reference sequences? The\n"
+        "                      first is the reference; each other file is checked\n"
+        "                      for naming (chr1 vs 1), sequences the reference\n"
+        "                      lacks, lengths and assembly. Names come from a\n"
+        "                      header (BAM / CRAM / SAM, VCF / BCF, bigWig /\n"
+        "                      bigBed, 2bit), an index (.fai, tabix) or the\n"
+        "                      chromosome column (BED, GFF, a table). Exit 1 on a\n"
+        "                      mismatch; --json for the machine-readable form\n"
+        "  --diff A B          compare two tables in any formats: columns only in\n"
+        "                      one, row counts, and the first -n differing cells\n"
+        "                      (default 10), row by row in file order (no key).\n"
+        "                      Values compare as exported, so a CSV and its\n"
+        "                      Parquet conversion are the same (type and column\n"
+        "                      order changes are noted).\n"
+        "                      --select / --filter / -r apply to both. Exit 1\n"
+        "                      when they differ; --json for the machine form\n"
         "  --seq-stats         FASTA/FASTQ: one-row summary — record count, total /\n"
         "                      min / mean / max length, N50, GC %%, and for FASTQ\n"
         "                      Q20 / Q30 %%; composes with --tsv / --json\n"
@@ -662,6 +678,10 @@ Config parse_args(int argc, char** argv) {
             cfg.info = true;
         } else if (!std::strcmp(argv[i], "--contigs")) {
             cfg.contigs = true;
+        } else if (!std::strcmp(argv[i], "--check")) {
+            cfg.check = true;
+        } else if (!std::strcmp(argv[i], "--diff")) {
+            cfg.diff = true;
         } else if (!std::strcmp(argv[i], "--seq-stats")) {
             cfg.seq_stats = true;
         } else if (!std::strcmp(argv[i], "--flatten")) {

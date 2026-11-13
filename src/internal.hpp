@@ -1665,6 +1665,24 @@ std::string select_tab(std::unique_ptr<TabularSource>& src,
 // `bcftools index --stats` print, read without touching the records. A CRAM
 // index (.crai) holds none. `names` is the index's own sequence order (a
 // tabix index lists only sequences that have records).
+// --check: compare cfg.paths' reference sequences with the first one's,
+// printing a report; "" or the error, `compatible` false on a mismatch.
+std::string run_check(const Config& cfg, bool* compatible);
+// --diff: compare cfg.paths' two tables (schema, row count, cells in file
+// order), printing a report; "" or the error, `same` false when they differ.
+std::string run_diff(const Config& cfg, bool* same);
+
+// The assembly a contig table belongs to ("GRCh38 / hg38 (Homo sapiens)"),
+// by its chr1 / 1 length; "" when none is known.
+std::string detect_assembly(const std::vector<std::string>& names,
+                            const std::vector<int64_t>& lengths);
+// The sequence names a tabix index (.tbi / .csi beside `path`) lists; false
+// when there is no index.
+bool tabix_seqnames(const std::string& path, std::vector<std::string>* out);
+// A bigWig / bigBed file's chromosomes and their lengths.
+bool big_chrom_list(const std::string& path, std::vector<std::string>* names,
+                    std::vector<int64_t>* lengths);
+
 struct IndexStats {
     bool                     variant = false;
     std::vector<std::string> names;

@@ -696,6 +696,22 @@ column the Parquet physical and logical type, the encoding over the row
 groups (dictionary, a fallback to PLAIN), codec, sizes, nulls and min / max.
 With \fB\-\-json\fR, the same as nested objects.
 .TP
+.B \-\-check
+With two or more files: do they agree on their reference sequences? The
+first is the reference; each other file is checked for its naming style
+(\fBchr1\fR / \fB1\fR), sequences the reference lacks, lengths and
+assembly. Names come from a header (BAM / CRAM / SAM, VCF / BCF, bigWig /
+bigBed, 2bit), an index (\fB.fai\fR, tabix) or the chromosome column (BED,
+GFF, a table). Exit 1 on a mismatch; \fB\-\-json\fR for JSON.
+.TP
+.B \-\-diff
+With two files: compare their tables by value \(en the columns only one
+has, the row counts and the first \fB\-n\fR differing cells (10 by default),
+row by row in file order, without a key. Cells compare as exported, so a
+CSV and its Parquet conversion are the same; type and column-order changes
+are noted. \fB\-\-select\fR, \fB\-\-filter\fR, \fB\-r\fR and \fB\-\-tab\fR
+apply to both. Exit 1 when they differ; \fB\-\-json\fR for JSON.
+.TP
 .B \-\-contigs
 For BAM / CRAM / SAM and VCF / BCF, list the reference sequences named
 in the header \(en the \fB@SQ\fR lines of an alignment file, or the

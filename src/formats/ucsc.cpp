@@ -575,3 +575,19 @@ std::string open_twobit_source(const std::string& path, const Config& cfg, std::
     if (e.empty()) *out = std::move(s);
     return e;
 }
+
+bool big_chrom_list(const std::string& path, std::vector<std::string>* names,
+                    std::vector<int64_t>* lengths) {
+    if (bwInit(1 << 17) != 0) return false;
+    bigWigFile_t* fp = bwIsBigWig(path.c_str(), nullptr) ? bwOpen(path.c_str(), nullptr, "r")
+                                                         : bbOpen(path.c_str(), nullptr);
+    if (!fp) return false;
+    const bool ok = fp->cl != nullptr;
+    if (ok)
+        for (int64_t i = 0; i < (int64_t)fp->cl->nKeys; ++i) {
+            names->push_back(fp->cl->chrom[i]);
+            lengths->push_back((int64_t)fp->cl->len[i]);
+        }
+    bwClose(fp);
+    return ok;
+}

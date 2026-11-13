@@ -1927,6 +1927,62 @@ JTEXT=$("$VV" --text --no-header "$TMP/j.json")
 assert_contains "json_text_shows_raw_source" "$JTEXT" '[{"id":1,"name":"alice"}'
 
 echo
+echo '── --check / --diff ───────────────────────────────────'
+# --check: the first file is the reference; the others are checked for
+# naming, sequences the reference lacks, lengths and assembly.
+CK="$TMP/check"; mkdir -p "$CK"
+printf '@SQ\tSN:chr1\tLN:248956422\n@SQ\tSN:chr2\tLN:242193529\n' > "$CK/hg38.sam"
+printf '@SQ\tSN:chr1\tLN:249250621\n@SQ\tSN:chr2\tLN:243199373\n' > "$CK/hg19.sam"
+printf 'chr1\t10\t20\nchr2\t5\t9\n' > "$CK/ok.bed"
+printf '1\t10\t20\n2\t5\t9\n' > "$CK/plain.bed"
+printf 'chr1\t10\t20\nchrUn_x\t5\t9\n' > "$CK/extra.bed"
+printf 'chr1\t248956422\t6\t60\t61\nchr2\t242193529\t0\t60\t61\n' > "$CK/ref.fa.fai"; : > "$CK/ref.fa"
+assert_exit_code "check_compatible_exit" 0 "$VV" --check "$CK/hg38.sam" "$CK/ok.bed" "$CK/ref.fa"
+CHECK_OUT=$("$VV" --check "$CK/hg38.sam" "$CK/ok.bed" "$CK/ref.fa")
+assert_contains "check_reference_line" "$CHECK_OUT" \
+    "hg38.sam  2 sequences from the header, chr1 naming, GRCh38 / hg38 (Homo sapiens)  (the reference)"
+assert_contains "check_bed_from_data" "$CHECK_OUT" "ok.bed    2 sequences from the data (column 'Chr'), chr1 naming  ok"
+assert_contains "check_fai" "$CHECK_OUT" "ref.fa    2 sequences from the index (.fai), chr1 naming, GRCh38 / hg38 (Homo sapiens)  ok"
+assert_exit_code "check_mismatch_exit" 1 "$VV" --check "$CK/hg38.sam" "$CK/hg19.sam" "$CK/plain.bed" "$CK/extra.bed"
+CHECK_BAD=$("$VV" --check "$CK/hg38.sam" "$CK/hg19.sam" "$CK/plain.bed" "$CK/extra.bed")
+assert_contains "check_lengths" "$CHECK_BAD" "2 of another length: chr1 249250621 vs 248956422, chr2 243199373 vs 242193529"
+assert_contains "check_assembly" "$CHECK_BAD" "assembly: GRCh37 / hg19 (Homo sapiens), hg38.sam GRCh38 / hg38 (Homo sapiens)"
+assert_contains "check_naming" "$CHECK_BAD" "naming: plain.bed writes 1, hg38.sam chr1"
+assert_contains "check_missing" "$CHECK_BAD" "1 not in hg38.sam: chrUn_x"
+refute_contains "check_alias_not_missing" "$CHECK_BAD" "not in hg38.sam: 1"
+CHECK_FMT=$("$VV" --check "$DATA/tiny.bam" "$DATA/tiny.vcf.gz" "$DATA/tiny.bed" "$DATA/tiny.bw" "$DATA/tiny.2bit" 2>&1)
+assert_contains "check_vcf_header" "$CHECK_FMT" "tiny.vcf.gz  2 sequences from the header, chr1 naming  ok"
+assert_contains "check_bigwig" "$CHECK_FMT" "tiny.bw      2 sequences from the header, chr1 naming  MISMATCH"
+assert_contains "check_2bit" "$CHECK_FMT" "tiny.2bit    "
+assert_contains "check_tabix_names" "$("$VV" --check "$DATA/tiny.bam" "$DATA/tiny.ens.bed.gz" 2>&1)" \
+    "tiny.ens.bed.gz  2 sequences from the index (tabix), 1 naming  MISMATCH"
+assert_contains "check_json" "$("$VV" --check --json "$CK/hg38.sam" "$CK/plain.bed")" \
+    "\"compatible\": false, \"files\": [{\"path\": \"$CK/hg38.sam\", \"source\": \"header\", \"contigs\": 2, \"naming\": \"chr\""
+assert_exit_code "check_one_file" 2 "$VV" --check "$CK/hg38.sam"
+assert_exit_code "check_no_chrom" 1 "$VV" --check "$CK/hg38.sam" "$DATA/tiny.csv"
+
+# --diff: two tables by value, in any formats.
+DF="$TMP/diff"; mkdir -p "$DF"
+"$VV" --csv "$DATA/tiny.parquet" > "$DF/a.csv"
+sed 's/^chr1,1100,/chr1,1101,/' "$DF/a.csv" > "$DF/b.csv"
+head -n 15 "$DF/a.csv" > "$DF/short.csv"
+assert_eq_file_inline "diff_conversion_same" "$("$VV" --diff "$DATA/tiny.parquet" "$DF/a.csv" | head -n 1)" "same: 20 rows, 5 columns"
+assert_exit_code "diff_conversion_same_exit" 0 "$VV" --diff "$DATA/tiny.parquet" "$DF/a.csv"
+assert_contains "diff_type_noted" "$("$VV" --diff "$DATA/tiny.parquet" "$DF/a.csv")" \
+    "note: type of Score: float in tiny.parquet, double in a.csv"
+assert_eq_file_inline "diff_cell" "$("$VV" --diff "$DF/a.csv" "$DF/b.csv")" \
+    "$(printf 'rows that differ: 1 of 20 compared (1 cells)\nrow\tcolumn\ta.csv\tb.csv\n2\tStart\t1100\t1101')"
+assert_exit_code "diff_cell_exit" 1 "$VV" --diff "$DF/a.csv" "$DF/b.csv"
+assert_contains "diff_rows" "$("$VV" --diff "$DF/a.csv" "$DF/short.csv")" "rows: 20 in a.csv, 14 in short.csv"
+assert_contains "diff_columns" "$("$VV" --select Chr,Start --diff "$DF/a.csv" "$DATA/tiny.parquet"; "$VV" --diff "$DATA/tiny.parquet" "$DF/a.csv" --select Chr,Start,Tags)" "same: 20 rows, 2 columns"
+"$VV" --select Chr,Start,End --parquet "$DF/three.parquet" "$DATA/tiny.parquet" 2>/dev/null
+assert_contains "diff_only_in" "$("$VV" --diff "$DATA/tiny.parquet" "$DF/three.parquet")" "columns only in tiny.parquet: Score, Tags"
+assert_eq_file_inline "diff_filter_both" "$("$VV" --diff --filter 'Chr == "chr1"' "$DF/a.csv" "$DF/b.csv" | head -n 1)" "rows that differ: 1 of 12 compared (1 cells)"
+assert_eq_file_inline "diff_filter_hides" "$("$VV" --diff --filter 'Chr == "chr2"' "$DF/a.csv" "$DF/b.csv" | head -n 1)" "same: 8 rows, 5 columns"
+assert_contains "diff_json" "$("$VV" --diff --json "$DF/a.csv" "$DF/b.csv")" \
+    "\"rows_differing\": 1, \"cells_differing\": 1, \"first_differences\": [{\"row\": 2, \"column\": \"Start\", \"a\": \"1100\", \"b\": \"1101\"}]"
+assert_exit_code "diff_one_file" 2 "$VV" --diff "$DF/a.csv"
+
 echo '── Directory / partitioned-dataset input ──────────────'
 # A directory concatenates its data files (recursively, filename order), skipping
 # Spark noise (_SUCCESS, .crc) and hidden files.

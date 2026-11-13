@@ -1116,6 +1116,45 @@ Reference sequences: 25  |  Assembly: GRCh38 / hg38 (Homo sapiens)
   interactive viewer all work on it. `-r`, `--pileup`, `--tags`, and
   `--expand` — which read the file's records — are rejected in combination.
 
+## `--check` (do files agree on the reference?)
+
+```
+$ vv --check aln.bam calls.vcf.gz peaks.bed hg19.fa
+aln.bam       25 sequences from the header, chr1 naming, GRCh38 / hg38 (Homo sapiens)  (the reference)
+calls.vcf.gz  25 sequences from the header, chr1 naming, GRCh38 / hg38 (Homo sapiens)  ok
+peaks.bed     23 sequences from the data (column 'chrom'), 1 naming  MISMATCH
+    naming: peaks.bed writes 1, aln.bam chr1
+hg19.fa       25 sequences from the index (.fai), chr1 naming, GRCh37 / hg19 (Homo sapiens)  MISMATCH
+    25 of another length: chr1 249250621 vs 248956422, …
+    assembly: GRCh37 / hg19 (Homo sapiens), aln.bam GRCh38 / hg38 (Homo sapiens)
+```
+
+The first file is the reference. Each other file is checked for a naming
+style (`chr1` / `1`) other than the reference's, sequences the reference does
+not have (`chr1` and `1`, `chrM` and `MT` count as one), lengths that differ,
+and another assembly. The names come from a header (BAM / CRAM / SAM, VCF /
+BCF, bigWig / bigBed, 2bit), an index (a FASTA's `.fai`, a tabix index), or
+else the file's chromosome column (BED, GFF, a CSV or Parquet table, which
+is read whole). Exit 1 on any mismatch; `--json` gives the report as JSON.
+
+## `--diff` (compare two tables)
+
+```
+$ vv --diff before.parquet after.csv
+rows that differ: 1 of 20 compared (1 cells)
+row	column	before.parquet	after.csv
+2	Start	1100	1101
+```
+
+Two files of any formats, compared by value: the columns only one has, the
+row counts, and the first `-n` differing cells (10 by default), row by row in
+file order — there is no key and no join. Cells compare as the exporters
+write them, so a CSV and the Parquet file made from it are the same; a
+column of another type or the columns in another order are noted without
+making the files differ. `--select`, `--filter`, `-r` and `--tab` apply to
+both. Exit 0 when the tables are the same, 1 when they differ; `--json` gives
+the counts and differences as JSON.
+
 ## JSON documents
 
 A `.json` / `.ndjson` / `.jsonl` file — or GeoJSON, a Jupyter notebook

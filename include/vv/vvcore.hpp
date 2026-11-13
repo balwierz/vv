@@ -106,6 +106,9 @@ struct Config {
     std::string bam_tags;                // --tags LIST: BAM/CRAM/SAM only — add
                                          // one typed column per named aux tag
                                          // (comma-separated 2-char SAM tags)
+    bool        check          = false;  // --check A B …: do the files agree on
+                                         // their reference sequences?
+    bool        diff           = false;  // --diff A B: compare two tables' values
     bool        contigs        = false;  // --contigs: list a file's reference
                                          // sequences (name, length) and detect
                                          // the assembly (BAM/CRAM/SAM, VCF/BCF)

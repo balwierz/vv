@@ -129,7 +129,7 @@ int main(int argc, char** argv) {
         const bool doc = !cfg.force_text &&
                         (fends_ci(cfg.path, ".md")    || fends_ci(cfg.path, ".markdown") ||
                          fends_ci(cfg.path, ".mdown") || fends_ci(cfg.path, ".mkd"));
-        bool scripted = doc || cfg.schema_only || cfg.stats_only || cfg.info || cfg.describe ||
+        bool scripted = doc || cfg.check || cfg.diff || cfg.schema_only || cfg.stats_only || cfg.info || cfg.describe ||
                         cfg.count || cfg.heatmap || !cfg.unique_cols.empty() ||
                         cfg.json_array || cfg.json_lines || cfg.md ||
                         cfg.delimiter || !cfg.parquet_out.empty() ||
@@ -138,13 +138,33 @@ int main(int argc, char** argv) {
                    (cfg.interactive ||
                     (!cfg.no_interactive && !cfg.head_rows_set &&
                      isatty(STDOUT_FILENO) && isatty(STDIN_FILENO)));
-        if (!tui) {
+        if (!tui && !cfg.check && !cfg.diff) {
             report(cfg.path,
                    "multiple input files (" + std::to_string(cfg.paths.size()) +
                    " given) are only supported in the interactive viewer; "
                    "this mode reads just the first");
             return 1;
         }
+    }
+
+    // --check: do the files agree on their reference sequences?
+    if (cfg.check) {
+        bool compatible = true;
+        if (auto e = run_check(cfg, &compatible); !e.empty()) {
+            std::fprintf(stderr, "%svv:%s %s%s%s\n", C_BOLD, C_RST, C_RED, e.c_str(), C_RST);
+            return cfg.paths.size() < 2 ? 2 : 1;
+        }
+        return compatible ? 0 : 1;
+    }
+
+    // --diff A B: compare two tables' values.
+    if (cfg.diff) {
+        bool same = true;
+        if (auto e = run_diff(cfg, &same); !e.empty()) {
+            std::fprintf(stderr, "%svv:%s %s%s%s\n", C_BOLD, C_RST, C_RED, e.c_str(), C_RST);
+            return cfg.paths.size() != 2 ? 2 : 1;
+        }
+        return same ? 0 : 1;
     }
 
     // --validate: LociSSD invariants check. Doesn't go through open_source —

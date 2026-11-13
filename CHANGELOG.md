@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `--check A B …`: do genomic files agree on their reference sequences? The
+  first file is the reference; each other file is checked for its naming
+  style (`chr1` / `1`), sequences the reference lacks (`chr1` and `1`,
+  `chrM` and `MT` count as one), lengths and assembly. Names come from a
+  header (BAM / CRAM / SAM, VCF / BCF, bigWig / bigBed, 2bit), an index
+  (`.fai`, tabix) or the chromosome column (BED, GFF, a table). Exit 1 on a
+  mismatch; `--json`.
+- `--diff A B`: compare two tables of any formats by value — columns only
+  one has, row counts, and the first `-n` differing cells, row by row in
+  file order. Cells compare as exported, so a CSV and its Parquet
+  conversion are the same; type and column-order changes are noted.
+  `--select`, `--filter`, `-r`, `--tab` apply to both. Exit 1 when they
+  differ; `--json`.
 - `--types COL:TYPE[,…]`: a CSV / TSV column's type (`string`, `int`,
   `float`) instead of the one inferred from the first 16 MiB; `*` is every
   column not named. A file sorted by chromosome whose `CHR` column holds

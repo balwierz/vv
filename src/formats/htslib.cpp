@@ -2697,3 +2697,22 @@ std::string build_seq_stats(const Config& cfg, std::unique_ptr<TabularSource>* o
         (fastq ? "; Q20 / Q30 = share of bases at Phred >= 20 / 30 (Phred+33)" : ""));
     return "";
 }
+
+std::string detect_assembly(const std::vector<std::string>& names,
+                            const std::vector<int64_t>& lengths) {
+    return contigs::detect(names, lengths);
+}
+
+bool tabix_seqnames(const std::string& path, std::vector<std::string>* out) {
+    const int level = hts_get_log_level();
+    hts_set_log_level(HTS_LOG_OFF);       // a file without an index is not an error here
+    tbx_t* tbx = vv_tbx_index_load(path.c_str());
+    hts_set_log_level((htsLogLevel)level);
+    if (!tbx) return false;
+    int n = 0;
+    const char** seqs = tbx_seqnames(tbx, &n);
+    for (int i = 0; i < n; ++i) out->push_back(seqs[i]);
+    free(seqs);
+    tbx_destroy(tbx);
+    return true;
+}

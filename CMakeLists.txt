@@ -411,6 +411,7 @@ set(VV_CORE_SOURCES
     src/formats/text.cpp      src/formats/ucsc.cpp      src/formats/wig.cpp
     src/formats/zarr.cpp
     src/formats/workbook.cpp
+    src/output/compare.cpp
     src/output/reports.cpp    src/output/table.cpp      src/output/writers.cpp
     src/render/image.cpp      src/render/markdown.cpp
 )
