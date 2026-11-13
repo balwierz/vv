@@ -575,7 +575,9 @@ class TableTUI {
     // à la vim's 'scrolloff'. Overridable from the config file.
     int     scrolloff_ = 3;
     int     scr_r_ = 24, scr_c_ = 80;
-    bool    freeze_first_col_ = false;   // toggle with `z` — keep col 0 pinned left
+    // Columns 0 .. frozen_-1 stay at the left while the rest scrolls: `z`
+    // toggles the first one, `Z` freezes the columns through the cursor.
+    int     frozen_ = 0;
     bool    help_open_        = false;   // overlay shown via `?` / F1 / H
 
     // ── Stats popup (`S` over the column under the cursor) ───────────────────
@@ -655,7 +657,7 @@ class TableTUI {
         int                             left_col = 0;
         int64_t                         cur_row = 0;    // cell cursor
         int                             cur_col = 0;
-        bool                            freeze_first_col = false;
+        int                             frozen = 0;
         // Chunk LRU cache
         std::map<int, CachedRG>         cache;
         std::list<int>                  lru;
@@ -1524,25 +1526,30 @@ class TableTUI {
         return c >= 0 && c < (int)col_visible_.size() ? col_visible_[c] : true;
     }
 
+    bool frozen_pinned() const { return frozen_ > 0 && left_col_ >= frozen_; }
+
     std::vector<ColVis> visible_cols() const {
         std::vector<ColVis> v;
         int x = no_index_ ? 0 : (idx_w_ + 2);
-        // Frozen first column: pin col 0 at the left edge whenever the user
-        // has scrolled past it. Skipped when col 0 is already in the natural
-        // window (left_col_ == 0) — that path renders column 0 normally.
-        int start = left_col_;
-        if (freeze_first_col_ && num_cols_ > 0 && left_col_ > 0 && col_is_visible(0)) {
-            int w0 = col_widths_[0];
-            if (x + w0 + 2 <= scr_c_) {
-                v.push_back({0, x, w0});
-                x += w0 + 2;
+        // Frozen columns: pin columns 0 .. frozen_-1 at the left edge and
+        // scroll the rest from left_col_. While left_col_ is inside the
+        // frozen block the table draws from column 0, which shows them in
+        // place. Frozen columns after the first stop at two thirds of the
+        // screen, so the scrolled part keeps room for the cursor's column.
+        const bool pinned = frozen_pinned();
+        int start = frozen_ > 0 && !pinned ? 0 : left_col_;
+        if (pinned) {
+            for (int c = 0; c < frozen_ && c < num_cols_; ++c) {
+                if (!col_is_visible(c)) continue;
+                const int w = col_widths_[c];
+                const int limit = v.empty() ? scr_c_ : scr_c_ * 2 / 3;
+                if (x + w + 2 > limit) break;
+                v.push_back({c, x, w});
+                x += w + 2;
             }
-            // Avoid showing the frozen column twice if scrolling places it
-            // back into view (defensive — left_col_ > 0 means it's not).
-            if (start == 0) start = 1;
         }
         for (int c = start; c < num_cols_; ++c) {
-            if (freeze_first_col_ && c == 0) continue;   // already shown
+            if (pinned && c < frozen_) continue;         // already shown
             if (!col_is_visible(c)) continue;            // hidden by user (`c` picker)
             int w = col_widths_[c];
             if (x + w + 2 > scr_c_) {
@@ -1567,7 +1574,7 @@ class TableTUI {
         // first column, clamped to the remaining width, so there's always content.
         if (v.empty()) {
             for (int c = start; c < num_cols_; ++c) {
-                if (freeze_first_col_ && c == 0) continue;
+                if (pinned && c < frozen_) continue;
                 if (!col_is_visible(c)) continue;
                 int avail = scr_c_ - x - 2;
                 if (avail < 1) avail = 1;
@@ -1617,7 +1624,9 @@ class TableTUI {
         if (cur_col_ < 0) cur_col_ = 0;
         if (cur_col_ >= num_cols_) cur_col_ = num_cols_ - 1;
         if (!col_is_visible(cur_col_)) cur_col_ = next_visible_col(cur_col_, +1);
-        if (cur_col_ < left_col_) left_col_ = cur_col_;
+        // A frozen column stays on screen however far the view scrolls, so
+        // the cursor moving onto one does not scroll back to it.
+        if (cur_col_ < left_col_ && cur_col_ >= frozen_) left_col_ = cur_col_;
         // Scroll right until the cursor column is in the rendered set. The
         // bound is what makes this safe: visible_cols() special-cases the
         // frozen column and can force-emit a single clamped column when
@@ -1629,6 +1638,13 @@ class TableTUI {
                 if (cv.col == cur_col_ && cv.full_w == 0) { on_screen = true; break; }
             if (on_screen || left_col_ >= cur_col_) break;
             ++left_col_;
+        }
+        // A frozen column past the two-thirds cut is drawn only in place.
+        if (cur_col_ < frozen_ && frozen_pinned()) {
+            bool on_screen = false;
+            for (const auto& cv : visible_cols())
+                if (cv.col == cur_col_) { on_screen = true; break; }
+            if (!on_screen) left_col_ = 0;
         }
     }
 
@@ -1660,7 +1676,7 @@ class TableTUI {
     bool more_cols_right(const std::vector<ColVis>& vc) const {
         if (vc.empty() || vc.back().full_w > 0) return false;
         for (int c = vc.back().col + 1; c < num_cols_; ++c)
-            if (col_is_visible(c) && !(freeze_first_col_ && c == 0)) return true;
+            if (col_is_visible(c) && !(c < frozen_ && frozen_pinned())) return true;
         return false;
     }
     // The right edge of the drawn table: where a row's background ends.
@@ -2766,7 +2782,7 @@ class TableTUI {
         t.col_visible    = col_visible_;
         t.top_row        = top_row_;
         t.left_col       = left_col_;
-        t.freeze_first_col = freeze_first_col_;
+        t.frozen = frozen_;
         t.cache          = std::move(cache_);
         t.lru            = std::move(lru_);
         t.search_mode    = search_mode_;
@@ -2808,7 +2824,7 @@ class TableTUI {
         col_visible_     = t.col_visible;
         top_row_         = t.top_row;
         left_col_        = t.left_col;
-        freeze_first_col_ = t.freeze_first_col;
+        frozen_ = t.frozen;
         cache_           = std::move(t.cache);
         lru_             = std::move(t.lru);
         search_mode_     = t.search_mode;
@@ -2862,7 +2878,7 @@ private:
         if (!tabs_[active_tab_].initialised) {
             setup_for_active_source();   // lazy init the column metadata
             // Default view state: top, no filter, no sort.
-            top_row_ = 0; left_col_ = 0; freeze_first_col_ = false;
+            top_row_ = 0; left_col_ = 0; frozen_ = 0;
             cur_row_ = 0; cur_col_ = 0;
             cache_.clear(); lru_.clear();
             sort_col_ = -1; sort_desc_ = false; sort_order_.clear();
@@ -3004,7 +3020,7 @@ private:
             hscroll_ = 0;
             detail_row_ = -1;
             setup_for_active_source();
-            top_row_ = 0; left_col_ = 0; freeze_first_col_ = false;
+            top_row_ = 0; left_col_ = 0; frozen_ = 0;
             cur_row_ = 0; cur_col_ = 0;
             cache_.clear(); lru_.clear();
             sort_col_ = -1; sort_desc_ = false; sort_order_.clear();
@@ -3304,7 +3320,7 @@ private:
             {"g  G  Home End","first / last row"},
             {"←→  h l",      "move the cell cursor one column"},
             {",  .",          "narrow / widen the cursor's column"},
-            {"z",            "toggle frozen first column"},
+            {"z  Z",          "freeze the first column / the columns through the cursor"},
             {"/  ?",          "search forward / backward (regex, icase; matrix: genes, row labels)"},
             {"n  N",          "next / previous match (direction-aware)"},
             {"S",             "per-column stats (count/min/max/mean/distinct)"},
@@ -4247,7 +4263,16 @@ public:
                     break;
                 case 'z':
                     if (text_view_) { copy_status_ = TEXT_NA("z"); break; }
-                    freeze_first_col_ = !freeze_first_col_; break;
+                    frozen_ = frozen_ > 0 ? 0 : 1; break;
+                case 'Z':
+                    if (text_view_) { copy_status_ = TEXT_NA("Z"); break; }
+                    // Freeze the columns through the cursor; on the last
+                    // frozen column, unfreeze.
+                    frozen_ = frozen_ == cur_col_ + 1 ? 0 : cur_col_ + 1;
+                    copy_status_ = frozen_ > 0
+                        ? "frozen: " + std::to_string(frozen_) + (frozen_ == 1 ? " column" : " columns")
+                        : std::string("columns unfrozen");
+                    break;
                 case 'H': case KEY_F(1):
                     help_open_ = true; break;
                 case 'S':

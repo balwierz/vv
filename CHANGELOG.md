@@ -22,7 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   for another region. `Y` copies the `vv` command that reproduces the view.
 - Viewer keys: a count before a move (`12j`, `5l`, `3` Space; `100G` goes
   to row 100), Ctrl-D / Ctrl-U for half a page, and Up / Down in the `/`,
-  `&` and `:` bars for the lines entered there this session.
+  `&` and `:` bars for the lines entered there this session. `Z` freezes
+  the columns through the cursor at the left (`z` freezes the first one).
 - Themes `colorblind` (the Okabe–Ito palette; true / false are blue-green /
   vermillion rather than green / red) and `mono` (bold, dim and grey only,
   no colour), in `--theme`, the config file and the viewer's picker.

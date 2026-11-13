@@ -100,10 +100,9 @@ Deferred until a file needs them (owner's decision, 2026-10-07).
   bakes row-height=1 into chunk caching, search highlighting, sort
   indirection, and scroll math. Inline expansion (this iteration)
   takes the easy win.
-- **Vim keys still missing:** `50%`, `<` / `>` to move a column, `Z` to
-  freeze the columns through the cursor (`z` freezes the first one), `*` to
+- **Vim keys still missing:** `50%`, `<` / `>` to move a column, `*` to
   search the cursor's value, `J` / `K` to step records in the detail pane.
-  Counts, Ctrl-D / Ctrl-U and bar history shipped.
+  Counts, Ctrl-D / Ctrl-U, bar history and `Z` shipped.
 - **One command builder.** The viewer's `Y` uses `view_command_line()` in
   the core; vvg's *Copy as vv Command* still builds its line in
   `gui/vvcommand.cpp`. Moving vvg onto the core function keeps the two

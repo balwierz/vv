@@ -10,7 +10,9 @@ Checks, on a 300-row file (id r0..r299, name n0..n299, score = id):
   4. `:region chr1:100-200` on a sorted BED re-reads that window;
   5. `12j y` copies row 12's cell; `3l` moves three columns; `100G` goes to
      row 100; Ctrl-D moves half a page;
-  6. `&` then Up recalls the filter entered before.
+  6. `&` then Up recalls the filter entered before;
+  7. `Z` on a 30-column file keeps the columns through the cursor at the
+     left when the view scrolls right; `Z` again unfreezes them.
 
 Usage: tui_commands_check.py <vv-binary> <scratch-dir>
 Exit 0 on success, 1 on failure.
@@ -106,8 +108,26 @@ def main():
     if hung or "score > 290" not in txt or "9/9" not in txt.replace("_", ""):
         fail("Up in the & bar did not bring back the filter (screen tail: %r)" % txt[-200:])
 
+    # 7. Z freezes the columns through the cursor.
+    wide = "cmds_wide.tsv"
+    with open(wide, "w") as f:
+        f.write("\t".join("k%02d" % c for c in range(30)) + "\n")
+        for r in range(20):
+            f.write("\t".join("v%02d_%02d" % (c, r) for c in range(30)) + "\n")
+    txt, raw, hung = run(vv, [wide], budget=20.0, keys=keys("lZ") + keys("25l") + [b"y"])
+    # The screen text holds every frame; row 19 of the last one sits near the end.
+    pinned = re.findall(r"v00_19\s+v01_19\s+v(\d\d)_19", txt[-500:])
+    if hung or yanked(raw) != "v26_00" or not pinned or int(pinned[-1]) < 10:
+        fail("Z did not keep k00 and k01 at the left (copied %r, screen tail %r)" % (yanked(raw), txt[-300:]))
+    txt, raw, hung = run(vv, [wide], budget=20.0, keys=keys("lZZ") + keys("25l") + [b"y"])
+    if hung or yanked(raw) != "v26_00" or "v00_19" in txt[-500:] or "v26_19" not in txt[-500:]:
+        fail("Z twice did not unfreeze (screen tail %r)" % txt[-300:])
+    txt, raw, hung = run(vv, [wide], budget=20.0, keys=keys("lZ") + keys("25l") + keys("25h") + [b"y"])
+    if hung or yanked(raw) != "v01_00":
+        fail("h back onto a frozen column copied %r, expected v01_00" % yanked(raw))
+
     if rc == 0:
-        print("tui_commands: 6 checks passed")
+        print("tui_commands: 7 checks passed")
     return rc
 
 
