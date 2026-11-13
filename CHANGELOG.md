@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   quoted value. A quoted number against a number column (`POS == "100"`)
   compares as the number instead of matching nothing; other quoted text
   there is an error.
+- `--distinct` reports a read that failed part-way (a value a column's type
+  cannot hold, an I/O error) and exits 1. It printed the distinct rows read
+  before the failure and exited 0.
 
 ## [1.35.0] - 2026-11-04
 

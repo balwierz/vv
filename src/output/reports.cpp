@@ -1281,6 +1281,10 @@ std::string build_distinct(std::unique_ptr<TabularSource>& src,
         M += (int64_t)keep.size();
         pieces.push_back(arrow::Table::Make(proj_schema, out, (int64_t)keep.size()));
     }
+    // A stream that failed part-way is an error, not fewer distinct rows: the
+    // source is replaced below, so no later check would see its status.
+    if (auto st = run_read_status(*src); !st.ok())
+        return shorten_reader_error(st.ToString());
     std::string old_path = src->path();
 
     std::shared_ptr<arrow::Table> distinct = empty_table(proj_schema);

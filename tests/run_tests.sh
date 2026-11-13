@@ -2464,6 +2464,11 @@ PYBLK
     # A value the column's type cannot hold, after the type sample: its file line.
     assert_contains "bad_row_conversion_line" "$("$VV" --select val --tsv "$TMP/blk_typelater.tsv" 2>&1 >/dev/null)" \
         "line 2000002: In CSV column #1: CSV conversion error to int64: invalid value 'notanumber'"
+    # --distinct replaces the source with its result, so it checks the read
+    # itself: a stream that fails part-way is an error, not a shorter count.
+    assert_exit_code "distinct_late_read_error_exit" 1 "$VV" --distinct --count "$TMP/blk_typelater.tsv"
+    assert_contains "distinct_late_read_error_message" \
+        "$("$VV" --distinct --count "$TMP/blk_typelater.tsv" 2>&1 >/dev/null)" "line 2000002: In CSV column #1"
     # A short row after the first 16 MiB: skip drops it, stop names its line.
     { cat "$TMP/blk_typelater.tsv" | head -n 2000001; printf '5
 '; printf '6	6
