@@ -569,7 +569,10 @@ number, text, date and timestamp columns, and a partition column of a
 directory; `!=`, `not in`, regular expressions and text tests always read.
 The result is the same as reading every row group, except that a corrupt
 row group the statistics rule out is not read, so its error is not seen.
-`VV_NO_PUSHDOWN=1` reads every row group.
+A row group that is read has its filter columns decoded first and the other
+columns only when some row matches, so `gene_name == "BRCA1"` decodes the
+gene names of every group but the 27 other columns of one.
+`VV_NO_PUSHDOWN=1` reads every row group whole.
 
 # Malformed rows (`--on-bad-row`, `--bad-rows`)
 

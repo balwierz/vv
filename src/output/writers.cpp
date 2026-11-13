@@ -286,21 +286,21 @@ std::string write_delimited(TabularSource& src, const Config& cfg) {
         // Fall through to streaming path on error.
     }
 
+    LateReadTally tally;      // read_filtered_chunk: split reads while matches are sparse
     for (int c = 0; rows_left > 0; ++c) {
         if (export_canceled()) return kExportCanceled;
         src.ensure(c);
         if (c >= src.num_chunks()) break;
 
-        if (have_filter && !chunk_may_match(src, c, fx)) continue;   // its bounds rule it out
         std::shared_ptr<arrow::Table> table;
-        auto st = src.read_chunk(c, col_indices, &table);
+        auto st = have_filter ? read_filtered_chunk(src, c, col_indices, fx, &table, &tally)
+                              : src.read_chunk(c, col_indices, &table);
         if (!st.ok()) {
             std::fprintf(stderr, "Warning: error reading chunk %d: %s\n",
                          c, st.ToString().c_str());
             note_chunk_error(st);
             continue;
         }
-        if (have_filter) table = apply_filter(table, fx, col_indices);
         if (!table || table->num_rows() == 0) continue;
 
         int64_t rg_rows = std::min(table->num_rows(), rows_left);
@@ -405,19 +405,19 @@ std::string write_markdown(TabularSource& src, const Config& cfg) {
         }
     }
 
+    LateReadTally tally;      // read_filtered_chunk: split reads while matches are sparse
     for (int c = 0; rows_left > 0; ++c) {
         src.ensure(c);
         if (c >= src.num_chunks()) break;
-        if (have_filter && !chunk_may_match(src, c, fx)) continue;   // its bounds rule it out
         std::shared_ptr<arrow::Table> table;
-        auto st = src.read_chunk(c, col_indices, &table);
+        auto st = have_filter ? read_filtered_chunk(src, c, col_indices, fx, &table, &tally)
+                              : src.read_chunk(c, col_indices, &table);
         if (!st.ok()) {
             std::fprintf(stderr, "Warning: error reading chunk %d: %s\n",
                          c, st.ToString().c_str());
             note_chunk_error(st);
             continue;
         }
-        if (have_filter) table = apply_filter(table, fx, col_indices);
         if (!table || table->num_rows() == 0) continue;
         int64_t take = std::min(table->num_rows(), rows_left);
         rows_left -= take;
@@ -605,6 +605,7 @@ std::string write_parquet(TabularSource& src, const Config& cfg) {
 
     int64_t rows_left = (cfg.head_rows <= 0) ? INT64_MAX : (int64_t)cfg.head_rows;
     int64_t total = 0;
+    LateReadTally tally;      // read_filtered_chunk: split reads while matches are sparse
     for (int c = 0; rows_left > 0; ++c) {
         if (export_canceled()) {
             (void)writer->Close();
@@ -613,16 +614,15 @@ std::string write_parquet(TabularSource& src, const Config& cfg) {
         }
         src.ensure(c);
         if (c >= src.num_chunks()) break;
-        if (have_filter && !chunk_may_match(src, c, fx)) continue;   // its bounds rule it out
         std::shared_ptr<arrow::Table> table;
-        auto st = src.read_chunk(c, col_indices, &table);
+        auto st = have_filter ? read_filtered_chunk(src, c, col_indices, fx, &table, &tally)
+                              : src.read_chunk(c, col_indices, &table);
         if (!st.ok()) {
             std::fprintf(stderr, "Warning: error reading chunk %d: %s\n",
                          c, st.ToString().c_str());
             note_chunk_error(st);
             continue;
         }
-        if (have_filter) table = apply_filter(table, fx, col_indices);
         if (!table || table->num_rows() == 0) continue;
         int64_t take = std::min(table->num_rows(), rows_left);
         if (take < table->num_rows()) table = table->Slice(0, take);
@@ -719,6 +719,7 @@ std::string write_arrow(TabularSource& src, const Config& cfg) {
 
     int64_t rows_left = (cfg.head_rows <= 0) ? INT64_MAX : (int64_t)cfg.head_rows;
     int64_t total = 0;
+    LateReadTally tally;      // read_filtered_chunk: split reads while matches are sparse
     for (int c = 0; rows_left > 0; ++c) {
         if (export_canceled()) {
             (void)writer->Close();
@@ -727,16 +728,15 @@ std::string write_arrow(TabularSource& src, const Config& cfg) {
         }
         src.ensure(c);
         if (c >= src.num_chunks()) break;
-        if (have_filter && !chunk_may_match(src, c, fx)) continue;   // its bounds rule it out
         std::shared_ptr<arrow::Table> table;
-        auto st = src.read_chunk(c, col_indices, &table);
+        auto st = have_filter ? read_filtered_chunk(src, c, col_indices, fx, &table, &tally)
+                              : src.read_chunk(c, col_indices, &table);
         if (!st.ok()) {
             std::fprintf(stderr, "Warning: error reading chunk %d: %s\n",
                          c, st.ToString().c_str());
             note_chunk_error(st);
             continue;
         }
-        if (have_filter) table = apply_filter(table, fx, col_indices);
         if (!table || table->num_rows() == 0) continue;
         int64_t take = std::min(table->num_rows(), rows_left);
         if (take < table->num_rows()) table = table->Slice(0, take);
@@ -937,14 +937,15 @@ std::string write_json(TabularSource& src, const Config& cfg) {
     auto shared_keys = std::make_shared<const std::vector<std::string>>(std::move(keys));
     if (cfg.json_array) std::fputc('[', out);
 
+    LateReadTally tally;      // read_filtered_chunk: split reads while matches are sparse
     for (int c = 0; rows_left > 0; ++c) {
         if (export_canceled()) return kExportCanceled;
         src.ensure(c);
         if (c >= src.num_chunks()) break;
-        if (have_filter && !chunk_may_match(src, c, fx)) continue;   // its bounds rule it out
         std::shared_ptr<arrow::Table> chunk;
-        if (auto st = src.read_chunk(c, read_set, &chunk); !st.ok()) { note_chunk_error(st); continue; }
-        if (have_filter) chunk = apply_filter(chunk, fx, read_set);
+        if (auto st = have_filter ? read_filtered_chunk(src, c, read_set, fx, &chunk, &tally)
+                                  : src.read_chunk(c, read_set, &chunk);
+            !st.ok()) { note_chunk_error(st); continue; }
         if (!chunk || chunk->num_rows() == 0) continue;
         const int64_t take = std::min(chunk->num_rows(), rows_left);
         auto proto = std::make_shared<std::vector<ColCursor>>(requested.size());

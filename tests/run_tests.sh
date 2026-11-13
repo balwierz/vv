@@ -2358,6 +2358,24 @@ for pf in 'Start > 7000' 'Chr == "chr2"' 'Score < 0.1' 'Score == 0.05' 'Start in
         "$("$VV" --tsv --filter "$pf" -r chr1:0-20000 "$DATA/tiny.parquet" 2>&1)" \
         "$(VV_NO_PUSHDOWN=1 "$VV" --tsv --filter "$pf" -r chr1:0-20000 "$DATA/tiny.parquet" 2>&1)"
 done
+# The writers read a row group's filter columns first and the rest only when
+# rows match, then put the columns back in the order asked for: every writer,
+# a filter column before / between / after the shown ones, and one not shown.
+for ps in 's,i' 'f32,i,s' 'i' 'd,ts,cat,u64' 's,nul'; do
+    for pw in --tsv --json --ndjson --md --csv; do
+        assert_eq_file_inline "pushdown_late_same: $ps $pw" \
+            "$("$VV" "$pw" --select "$ps" --filter 'i > 2 AND s < "j"' "$PD" 2>&1)" \
+            "$(VV_NO_PUSHDOWN=1 "$VV" "$pw" --select "$ps" --filter 'i > 2 AND s < "j"' "$PD" 2>&1)"
+    done
+    for pw in --parquet --arrow; do
+        assert_eq_file_inline "pushdown_late_same: $ps $pw" \
+            "$("$VV" "$pw" - --select "$ps" --filter 'nul > 2 OR cat == "x"' "$PD" 2>/dev/null | "$VV" --tsv - 2>/dev/null)" \
+            "$(VV_NO_PUSHDOWN=1 "$VV" --tsv --select "$ps" --filter 'nul > 2 OR cat == "x"' "$PD" 2>&1)"
+    done
+done
+assert_eq_file_inline "pushdown_late_sort" \
+    "$("$VV" --tsv --sort f32:desc --select s,f32 --filter 'i > 2' "$PD")" \
+    "$(VV_NO_PUSHDOWN=1 "$VV" --tsv --sort f32:desc --select s,f32 --filter 'i > 2' "$PD")"
 pd_skipped() { VV_DEBUG_PUSHDOWN=1 "$VV" --count --filter "$1" "$2" 2>&1 >/dev/null | grep -c '^pushdown: chunk'; }
 for pk in 'i > 7|2' 'nul is not null|1' 'nul is null|1' 'u64 < 3|2' 'cat == "w"|3' 'i != 4|0' \
           's ~ "^[ab]"|0' 'i > 7 OR s == "a"|1' 'f32 > 0.45|3'; do

@@ -709,11 +709,11 @@ gather_table(const arrow::Table& t, const std::vector<int64_t>& idx) {
 // when it cannot be read or nothing is left.
 static std::shared_ptr<arrow::Table> read_filtered(TabularSource& src, int c,
                                                    const std::vector<int>& cols,
-                                                   const FilterExpr& fx, bool have_filter) {
-    if (have_filter && !chunk_may_match(src, c, fx)) return nullptr;   // its bounds rule it out
+                                                   const FilterExpr& fx, bool have_filter,
+                                                   LateReadTally* tally = nullptr) {
     std::shared_ptr<arrow::Table> tbl;
-    if (auto st = src.read_chunk(c, cols, &tbl); !st.ok() || !tbl) { note_chunk_error(st); return nullptr; }
-    if (have_filter) tbl = apply_filter(tbl, fx, cols);
+    if (auto st = have_filter ? read_filtered_chunk(src, c, cols, fx, &tbl, tally) : src.read_chunk(c, cols, &tbl);
+        !st.ok() || !tbl) { note_chunk_error(st); return nullptr; }
     if (!tbl || tbl->num_rows() == 0) return nullptr;
     return tbl;
 }
@@ -750,10 +750,11 @@ std::string build_sample(std::unique_ptr<TabularSource>& src,
     int64_t piece_rows = 0;
     std::mt19937_64 rng(std::random_device{}());
     int64_t M = 0;
+    LateReadTally tally;
     for (int c = 0; ; ++c) {
         src->ensure(c);
         if (c >= src->num_chunks()) break;
-        auto tbl = read_filtered(*src, c, all_cols, fx, have_filter);
+        auto tbl = read_filtered(*src, c, all_cols, fx, have_filter, &tally);
         if (!tbl) continue;
         for (int64_t r = 0; r < tbl->num_rows(); ++r, ++M) {
             if (M < N) { res.push_back({M, -1, r}); continue; }
@@ -852,8 +853,9 @@ std::string build_tail(std::unique_ptr<TabularSource>& src,
     int64_t kept_rows = 0, M = 0;   // M: every row the filter keeps
     if (src->random_access()) {
         int c = src->num_chunks() - 1;
+        LateReadTally tally;
         for (; c >= 0 && kept_rows < N; --c) {
-            auto tbl = read_filtered(*src, c, all_cols, fx, have_filter);
+            auto tbl = read_filtered(*src, c, all_cols, fx, have_filter, &tally);
             if (!tbl) continue;
             kept_rows += tbl->num_rows();
             kept.push_front(std::move(tbl));
@@ -868,10 +870,11 @@ std::string build_tail(std::unique_ptr<TabularSource>& src,
             else note_chunk_error(st);
         }
     } else {
+        LateReadTally tally;
         for (int c = 0; ; ++c) {
             src->ensure(c);
             if (c >= src->num_chunks()) break;
-            auto tbl = read_filtered(*src, c, all_cols, fx, have_filter);
+            auto tbl = read_filtered(*src, c, all_cols, fx, have_filter, &tally);
             if (!tbl) continue;
             kept_rows += tbl->num_rows();
             M += tbl->num_rows();
@@ -1091,10 +1094,11 @@ std::string build_sort(std::unique_ptr<TabularSource>& src,
     // Each result column's chunks, as read.
     std::vector<arrow::ArrayVector> cols(out_cols.size());
     int64_t N = 0;
+    LateReadTally tally;
     for (int c = 0; ; ++c) {
         src->ensure(c);
         if (c >= src->num_chunks()) break;
-        auto tbl = read_filtered(*src, c, read_set, fx, have_filter);
+        auto tbl = read_filtered(*src, c, read_set, fx, have_filter, &tally);
         if (!tbl) continue;
         N += tbl->num_rows();
         for (size_t k = 0; k < out_cols.size(); ++k)
@@ -1246,10 +1250,11 @@ std::string build_distinct(std::unique_ptr<TabularSource>& src,
     std::string key;
     std::vector<std::shared_ptr<arrow::Table>> pieces;
     int64_t N = 0, M = 0;
+    LateReadTally tally;
     for (int c = 0; ; ++c) {
         src->ensure(c);
         if (c >= src->num_chunks()) break;
-        auto tbl = read_filtered(*src, c, read_set, fx, have_filter);
+        auto tbl = read_filtered(*src, c, read_set, fx, have_filter, &tally);
         if (!tbl) continue;
         const int64_t n = tbl->num_rows();
         N += n;

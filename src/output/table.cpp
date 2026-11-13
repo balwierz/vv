@@ -164,10 +164,10 @@ std::string print_vertical_table(TabularSource& src, const Config& cfg) {
         for (int c = 0; need > 0; ++c) {
             src.ensure(c);
             if (c >= src.num_chunks()) break;
-            if (have_filter && !chunk_may_match(src, c, fx)) continue;   // its bounds rule it out
             std::shared_ptr<arrow::Table> chunk;
-            if (auto st = src.read_chunk(c, read_indices, &chunk); !st.ok()) { note_chunk_error(st); continue; }
-            if (have_filter) chunk = apply_filter(chunk, fx, read_indices);
+            if (auto st = have_filter ? read_filtered_chunk(src, c, read_indices, fx, &chunk)
+                                      : src.read_chunk(c, read_indices, &chunk);
+                !st.ok()) { note_chunk_error(st); continue; }
             if (!chunk || chunk->num_rows() == 0) continue;
             if (chunk->num_rows() > need) chunk = chunk->Slice(0, need);
             need -= chunk->num_rows();
@@ -348,10 +348,10 @@ std::string print_table(TabularSource& src, const Config& cfg,
         for (int c = 0; need > 0; ++c) {
             src.ensure(c);
             if (c >= src.num_chunks()) break;
-            if (have_filter && !chunk_may_match(src, c, fx)) continue;   // its bounds rule it out
             std::shared_ptr<arrow::Table> chunk;
-            if (auto st = src.read_chunk(c, read_indices, &chunk); !st.ok()) { note_chunk_error(st); continue; }
-            if (have_filter) chunk = apply_filter(chunk, fx, read_indices);
+            if (auto st = have_filter ? read_filtered_chunk(src, c, read_indices, fx, &chunk)
+                                      : src.read_chunk(c, read_indices, &chunk);
+                !st.ok()) { note_chunk_error(st); continue; }
             if (!chunk || chunk->num_rows() == 0) continue;
             if (chunk->num_rows() > need) chunk = chunk->Slice(0, need);
             need -= chunk->num_rows();

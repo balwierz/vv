@@ -766,6 +766,17 @@ bool eval_atom(const arrow::Table& tbl, int64_t row, const FilterAtom& a,
 // VV_DEBUG_PUSHDOWN=1 notes each skipped chunk on stderr.
 bool chunk_may_match(TabularSource& src, int chunk, const FilterExpr& fx);
 
+// Chunk `c`'s rows that match `fx`, columns `cols` (which hold the filter's),
+// as read_chunk + apply_filter give them; null when none. A chunk its bounds
+// rule out is not read; on a random-access source the filter's columns are
+// read first and the others only for a chunk with matches.
+// `tally` (one per pass over a source) turns the split read off once most
+// chunks read so far had matches, where it would read for nothing twice.
+struct LateReadTally { int chunks = 0, with_matches = 0; };
+arrow::Status read_filtered_chunk(TabularSource& src, int c, const std::vector<int>& cols,
+                                  const FilterExpr& fx, std::shared_ptr<arrow::Table>* out,
+                                  LateReadTally* tally = nullptr);
+
 std::shared_ptr<arrow::Table> apply_filter(
  const std::shared_ptr<arrow::Table>& tbl, const FilterExpr& expr,
  const std::vector<int>& read_indices);

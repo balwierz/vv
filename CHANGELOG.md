@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   unchanged; a corrupt row group ruled out this way is not read.
   `VV_NO_PUSHDOWN=1` reads every group. The same applies to `--count`,
   `--sort`, `--describe`, the table, the viewer's `&` filter and vvg.
+- Exports with `--filter` (`--tsv`, `--csv`, `--json`, `--md`, `--parquet`,
+  `--arrow`), the table and `--sort` / `--sample` / `--tail` / `--distinct`
+  read a Parquet / ORC / HDF5 chunk's filter columns first and the other
+  columns only when rows match. GENCODE basic `--filter 'gene_name ==
+  "BRCA1"' --tsv`: 0.31 s → 0.056 s; a filter that matches in most row
+  groups goes back to one read per chunk (within 5% of before).
 - A value its column's type cannot hold names the column and, for a CSV /
   TSV column whose type was inferred, the `--types` that reads it: `line
   1320002: column 'CHR' holds 'X', which is not int64; the column types come

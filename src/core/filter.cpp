@@ -1215,16 +1215,34 @@ copy_runs(const arrow::ChunkedArray& ca, const std::vector<std::pair<int64_t, in
 // are copied into one array per column, so a filter that keeps scattered rows
 // does not leave a table of millions of one-row chunks behind (4.9 M rows in
 // 2.1 M runs: 2.1 M Table slices, each a ChunkedArray per column).
+using RowRuns = std::vector<std::pair<int64_t, int64_t>>;   // [start, start + length)
+
+// The rows of `tbl` matching `expr`, as ascending runs; returns their count.
+static int64_t filter_runs(const arrow::Table& tbl, const FilterExpr& expr,
+                           const std::vector<int>& read_indices, RowRuns* runs) {
+    int64_t kept = 0;
+    for_each_match(tbl, expr, read_indices, [&](int64_t r) {
+        ++kept;
+        if (!runs->empty() && runs->back().first + runs->back().second == r) { ++runs->back().second; return; }
+        runs->push_back({r, 1});
+    });
+    return kept;
+}
+
+// The rows of `tbl` in `runs` (`kept` of them).
+static std::shared_ptr<arrow::Table> take_runs(const std::shared_ptr<arrow::Table>& tbl,
+                                               const RowRuns& runs, int64_t kept);
+
 std::shared_ptr<arrow::Table> apply_filter(
  const std::shared_ptr<arrow::Table>& tbl, const FilterExpr& expr,
  const std::vector<int>& read_indices) {
-    std::vector<std::pair<int64_t, int64_t>> runs;
-    int64_t kept = 0;
-    for_each_match(*tbl, expr, read_indices, [&](int64_t r) {
-        ++kept;
-        if (!runs.empty() && runs.back().first + runs.back().second == r) { ++runs.back().second; return; }
-        runs.push_back({r, 1});
-    });
+    RowRuns runs;
+    const int64_t kept = filter_runs(*tbl, expr, read_indices, &runs);
+    return take_runs(tbl, runs, kept);
+}
+
+static std::shared_ptr<arrow::Table> take_runs(const std::shared_ptr<arrow::Table>& tbl,
+                                               const RowRuns& runs, int64_t kept) {
     if (runs.empty())
         return tbl->Slice(0, 0);
     if (runs.size() == 1) return tbl->Slice(runs[0].first, runs[0].second);
@@ -1243,6 +1261,63 @@ std::shared_ptr<arrow::Table> apply_filter(
     for (auto [start, len] : runs) slices.push_back(tbl->Slice(start, len));
     auto cr = arrow::ConcatenateTables(slices);
     return cr.ok() ? cr.ValueOrDie() : tbl;
+}
+
+arrow::Status read_filtered_chunk(TabularSource& src, int c, const std::vector<int>& cols,
+                                  const FilterExpr& fx, std::shared_ptr<arrow::Table>* out,
+                                  LateReadTally* tally) {
+    *out = nullptr;
+    if (!chunk_may_match(src, c, fx)) return arrow::Status::OK();
+    auto count = [&](bool matched) {
+        if (!tally) return;
+        ++tally->chunks;
+        if (matched) ++tally->with_matches;
+    };
+    const std::vector<int> fcols = union_with_filter({}, fx);
+    std::vector<int> rest;
+    for (int col : cols)
+        if (!std::binary_search(fcols.begin(), fcols.end(), col)) rest.push_back(col);
+    // A split read decodes nothing twice but costs a second read call per
+    // chunk: past 4 chunks, three quarters of them with matches, one read.
+    const bool mostly_matching = tally && tally->chunks >= 4 &&
+                                 tally->with_matches * 4 >= tally->chunks * 3;
+    bool late = src.random_access() && !src.region_applied() && !rest.empty() && !pushdown_off() &&
+                !mostly_matching;
+    for (int f : fcols)
+        late = late && std::find(cols.begin(), cols.end(), f) != cols.end();
+    std::shared_ptr<arrow::Table> full;
+    if (late) {
+        // The filter's columns first; the rest only for a chunk with matches.
+        std::shared_ptr<arrow::Table> ft;
+        ARROW_RETURN_NOT_OK(src.read_chunk(c, fcols, &ft));
+        if (!ft) return arrow::Status::OK();
+        RowRuns runs;
+        const int64_t kept = filter_runs(*ft, fx, fcols, &runs);
+        count(kept > 0);
+        if (kept == 0) return arrow::Status::OK();
+        std::shared_ptr<arrow::Table> rt;
+        ARROW_RETURN_NOT_OK(src.read_chunk(c, rest, &rt));
+        if (rt && rt->num_rows() == ft->num_rows()) {
+            arrow::FieldVector fields;
+            std::vector<std::shared_ptr<arrow::ChunkedArray>> columns;
+            for (int col : cols) {
+                const bool in_f = std::binary_search(fcols.begin(), fcols.end(), col);
+                const auto& from = in_f ? fcols : rest;
+                const auto& t    = in_f ? ft : rt;
+                const int pos = (int)(std::find(from.begin(), from.end(), col) - from.begin());
+                fields.push_back(t->schema()->field(pos));
+                columns.push_back(t->column(pos));
+            }
+            *out = take_runs(arrow::Table::Make(arrow::schema(fields), columns, ft->num_rows()),
+                             runs, kept);
+            return arrow::Status::OK();
+        }
+        // The two reads disagree on the rows: read the chunk whole.
+    }
+    ARROW_RETURN_NOT_OK(src.read_chunk(c, cols, &full));
+    if (full) *out = apply_filter(full, fx, cols);
+    if (!late) count(*out && (*out)->num_rows() > 0);
+    return arrow::Status::OK();
 }
 
 int64_t count_filter_matches(const arrow::Table& tbl, const FilterExpr& expr,
