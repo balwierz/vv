@@ -87,6 +87,10 @@ struct Config {
     bool        md             = false;  // --md (GitHub-flavored markdown table)
     bool        validate       = false;  // --validate (LociSSD invariants check)
     bool        coords_one_based = false; // --coords NCBI (1-based inclusive)
+    // --coords NCBI was given. apply_region_modifiers converts the region and
+    // clears coords_one_based; this keeps the convention for regions typed
+    // later (the viewer's :region).
+    bool        coords_ncbi_given = false;
     std::string theme;                    // --theme NAME (empty = "use config-file value or default")
     int         scrolloff  = -1;         // TUI: rows kept between the cell
                                          // cursor and the top/bottom edge.

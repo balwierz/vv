@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The table viewer's command line: `:w FILE` writes the view (filter, sort,
   shown columns) in the format of FILE's extension, as vvg's Export does
   (`:w!` replaces an existing file); `:region R` reads the tab's file again
-  for another region. `Y` copies the `vv` command that reproduces the view.
+  for another region, in NCBI coordinates after `--coords NCBI`. `Y` copies the `vv` command that reproduces the view.
 - Viewer keys: a count before a move (`12j`, `5l`, `3` Space; `100G` goes
   to row 100), Ctrl-D / Ctrl-U for half a page, and Up / Down in the `/`,
   `&` and `:` bars for the lines entered there this session. `Z` freezes

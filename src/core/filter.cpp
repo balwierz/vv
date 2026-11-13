@@ -1423,6 +1423,7 @@ std::string apply_region_modifiers(Config& cfg) {
     // to -r / --region inputs; --regions-file entries are always BED (UCSC)
     // per the spec. After this, cfg.region is guaranteed UCSC convention
     // and downstream call sites can ignore cfg.coords_one_based.
+    if (cfg.coords_one_based) cfg.coords_ncbi_given = true;
     if (cfg.coords_one_based && !cfg.region.empty()) {
         auto regs = parse_region_list(cfg.region, /*one_based=*/true);
         std::string acc;

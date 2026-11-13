@@ -2972,9 +2972,10 @@ private:
 
         if (c == "q" || c == "quit") return true;
 
-        // region R — open the tab's file again for region R (UCSC
-        // coordinates, as -r takes them); `:region` alone shows the whole
-        // file. The view starts afresh; on an error the tab stays as it was.
+        // region R — open the tab's file again for region R, in the
+        // convention -r took (UCSC, or NCBI after --coords NCBI); `:region`
+        // alone shows the whole file. The view starts afresh; on an error
+        // the tab stays as it was.
         if (c == "region" || c.rfind("region ", 0) == 0 || c.rfind("region\t", 0) == 0) {
             std::string r = c.size() > 7 ? c.substr(7) : std::string();
             strip_ws_inplace(r);
@@ -2994,7 +2995,7 @@ private:
             e.region = r;
             e.regions_file.clear();
             e.slop = 0;
-            e.coords_one_based = false;
+            e.coords_one_based = base_cfg_.coords_ncbi_given;
             e.tab.clear();
             e.filter_expr.clear();
             e.sort_col.clear();
@@ -3031,7 +3032,8 @@ private:
             search_mode_ = SearchMode::None; search_query_.clear(); search_query_lc_.clear(); search_row_ = -1;
             tabs_[(size_t)active_tab_].initialised = true;
             const int64_t n = src_->total_rows();
-            copy_status_ = (r.empty() ? std::string("whole file") : "region " + e.region) +
+            copy_status_ = (r.empty() ? std::string("whole file")
+                            : "region " + r + (base_cfg_.coords_ncbi_given ? " (NCBI)" : "")) +
                            (n >= 0 ? ": " + digits_with_sep(std::to_string(n)) + " rows" : std::string());
             return false;
         }

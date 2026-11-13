@@ -12,7 +12,8 @@ Checks, on a 300-row file (id r0..r299, name n0..n299, score = id):
      row 100; Ctrl-D moves half a page;
   6. `&` then Up recalls the filter entered before;
   7. `Z` on a 30-column file keeps the columns through the cursor at the
-     left when the view scrolls right; `Z` again unfreezes them.
+     left when the view scrolls right; `Z` again unfreezes them;
+  8. after `--coords NCBI`, `:region chr1:95-125` is 1-based (UCSC 94-125).
 
 Usage: tui_commands_check.py <vv-binary> <scratch-dir>
 Exit 0 on success, 1 on failure.
@@ -126,8 +127,14 @@ def main():
     if hung or yanked(raw) != "v01_00":
         fail("h back onto a frozen column copied %r, expected v01_00" % yanked(raw))
 
+    # 8. :region in the convention --coords gave.
+    _txt, raw, hung = run(vv, ["--coords", "NCBI", bed], budget=20.0,
+                          keys=keys(":region chr1:95-125\r") + keys("ll") + [b"y"])
+    if hung or yanked(raw) != "95":
+        fail(":region after --coords NCBI: first row ends at %r, expected 95 (row 90-95)" % yanked(raw))
+
     if rc == 0:
-        print("tui_commands: 7 checks passed")
+        print("tui_commands: 8 checks passed")
     return rc
 
 

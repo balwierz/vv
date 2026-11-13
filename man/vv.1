@@ -1238,8 +1238,9 @@ out-of-range values clamp to the last page).
 \fIFILE\fR, in the format its extension names (.parquet, .arrow, .tsv,
 .csv, .json, .ndjson); \fB:w! FILE\fR replaces an existing file.
 .IP \(bu 2
-\fB:region R\fR \(en read the tab's file again for region \fIR\fR (UCSC
-coordinates, as \fB\-r\fR takes them); \fB:region\fR alone shows the whole
+\fB:region R\fR \(en read the tab's file again for region \fIR\fR, in
+the convention \fB\-r\fR takes (UCSC, or NCBI after \fB\-\-coords NCBI\fR);
+\fB:region\fR alone shows the whole
 file. Not for a file of several tabs.
 .RE
 .IP

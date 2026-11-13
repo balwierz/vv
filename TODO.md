@@ -103,8 +103,6 @@ Deferred until a file needs them (owner's decision, 2026-10-07).
 - **Vim keys still missing:** `50%`, `<` / `>` to move a column, `*` to
   search the cursor's value, `J` / `K` to step records in the detail pane.
   Counts, Ctrl-D / Ctrl-U, bar history and `Z` shipped.
-- **`:region` in NCBI coordinates.** `:region` takes UCSC coordinates; a run
-  started with `--coords NCBI` does not carry the convention into it.
 
 ## Output
 
