@@ -50,6 +50,30 @@ table = pa.table({
 # exercise row-group pruning (otherwise everything fits in row group 0).
 pq.write_table(table, HERE / "tiny.parquet", compression="snappy", row_group_size=5)
 
+# tiny.pushdown.parquet: 4 row groups of 3 rows whose statistics a --filter
+# can skip by — and the types where a statistic must not be trusted to:
+# flat nulls (and an all-null group), float32 (compared at float32
+# precision), NaN in a float64 group, dictionary strings, uint64 past
+# int64, a decimal, dates and timestamps. Row groups: g0 rows 0-2, ...
+import datetime as _pd_dt
+import decimal as _pd_dec
+_pd_n = 12
+pq.write_table(pa.table({
+    "i":    pa.array(list(range(_pd_n)), pa.int64()),
+    "f32":  pa.array([0.05 * k for k in range(_pd_n)], pa.float32()),
+    "f64":  pa.array([1.0, 2.0, float("nan"), 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+                     pa.float64()),
+    "s":    pa.array(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"]),
+    "cat":  pa.array(["x", "x", "y", "y", "y", "z", "z", "z", "z", "w", "w", "w"]).dictionary_encode(),
+    "u64":  pa.array([1, 2, 3, 4, 5, 6, 2**63, 2**63 + 1, 2**64 - 1, 7, 8, 9], pa.uint64()),
+    "dec":  pa.array([_pd_dec.Decimal(f"{k}.50") for k in range(_pd_n)], pa.decimal128(5, 2)),
+    "d":    pa.array([_pd_dt.date(2024, 1, 1) + _pd_dt.timedelta(days=30 * k) for k in range(_pd_n)],
+                     pa.date32()),
+    "ts":   pa.array([_pd_dt.datetime(2024, 1, 1) + _pd_dt.timedelta(hours=k) for k in range(_pd_n)],
+                     pa.timestamp("ms")),
+    "nul":  pa.array([None, None, None, 1, None, 2, 3, 4, 5, 6, 7, None], pa.int64()),
+}), HERE / "tiny.pushdown.parquet", row_group_size=3)
+
 # tiny.uint32.parquet: Start/End stored as UInt32 (a common compact encoding
 # for genomic positions). The region predicate used to read only Int32/Int64
 # and returned 0 for any other width, silently emptying the result.

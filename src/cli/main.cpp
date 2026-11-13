@@ -651,6 +651,7 @@ static int run_modes(Config cfg, const ModeCtx& ctx, Reread* rr) {
             for (int c = 0; ; ++c) {
                 src->ensure(c);
                 if (c >= src->num_chunks()) break;
+                if (!chunk_may_match(*src, c, fx)) continue;   // its bounds rule it out
                 std::shared_ptr<arrow::Table> tbl;
                 if (auto st = src->read_chunk(c, read_set, &tbl); !st.ok() || !tbl) { note_chunk_error(st); continue; }
                 total += count_filter_matches(*tbl, fx, read_set);

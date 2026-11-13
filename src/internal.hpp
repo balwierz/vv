@@ -760,6 +760,12 @@ bool cell_as_double(const arrow::Table& tbl, int col, int64_t row,
 bool eval_atom(const arrow::Table& tbl, int64_t row, const FilterAtom& a,
                 const std::vector<int>& read_indices);
 
+// False when chunk `chunk` of `src` holds no row `fx` can match, judged from
+// the source's ChunkBounds alone (no data read); true when it may, when the
+// source keeps no bounds, for an empty filter, and under VV_NO_PUSHDOWN=1.
+// VV_DEBUG_PUSHDOWN=1 notes each skipped chunk on stderr.
+bool chunk_may_match(TabularSource& src, int chunk, const FilterExpr& fx);
+
 std::shared_ptr<arrow::Table> apply_filter(
  const std::shared_ptr<arrow::Table>& tbl, const FilterExpr& expr,
  const std::vector<int>& read_indices);

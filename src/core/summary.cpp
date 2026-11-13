@@ -124,6 +124,10 @@ std::string summarize_columns(TabularSource& src, const SummaryOptions& opt,
         if (opt.cancel && opt.cancel->load()) return kExportCanceled;
         src.ensure(c);
         if (c >= src.num_chunks()) break;
+        if (have_filter && !chunk_may_match(src, c, *opt.filter)) {   // its bounds rule it out
+            if (opt.rows_done) *opt.rows_done += src.chunk_meta(c).num_rows;
+            continue;
+        }
         std::shared_ptr<arrow::Table> tbl;
         if (auto st = src.read_chunk(c, read_set, &tbl); !st.ok()) { note_chunk_error(st); continue; }
         if (opt.rows_done && tbl) *opt.rows_done += tbl->num_rows();

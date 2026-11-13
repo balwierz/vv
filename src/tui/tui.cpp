@@ -2311,6 +2311,7 @@ class TableTUI {
         for (int c = 0; ensure_source_chunk(c); ++c) {
             mvprintw(scr_r_ - 1, 0, " Counting values… chunk %d ", c + 1);
             clrtoeol(); refresh();
+            if (filter_active_ && !chunk_may_match(*src_, c, filter_fx_)) continue;   // bounds rule it out
             std::shared_ptr<arrow::Table> tbl;
             if (!read_pass_chunk(c, need, &tbl)) continue;
             auto col = tbl->column(0);
@@ -3015,6 +3016,7 @@ private:
         for (int c = 0; ensure_source_chunk(c); ++c) {
             mvprintw(scr_r_ - 1, 0, " %s… chunk %d ", what, c + 1);
             clrtoeol(); refresh();
+            if (filter_active_ && !chunk_may_match(*src_, c, filter_fx_)) continue;   // bounds rule it out
             std::shared_ptr<arrow::Table> tbl;
             if (!read_pass_chunk(c, need, &tbl)) continue;
             auto meta = src_->chunk_meta(c);

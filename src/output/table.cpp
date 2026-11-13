@@ -164,6 +164,7 @@ std::string print_vertical_table(TabularSource& src, const Config& cfg) {
         for (int c = 0; need > 0; ++c) {
             src.ensure(c);
             if (c >= src.num_chunks()) break;
+            if (have_filter && !chunk_may_match(src, c, fx)) continue;   // its bounds rule it out
             std::shared_ptr<arrow::Table> chunk;
             if (auto st = src.read_chunk(c, read_indices, &chunk); !st.ok()) { note_chunk_error(st); continue; }
             if (have_filter) chunk = apply_filter(chunk, fx, read_indices);
@@ -347,6 +348,7 @@ std::string print_table(TabularSource& src, const Config& cfg,
         for (int c = 0; need > 0; ++c) {
             src.ensure(c);
             if (c >= src.num_chunks()) break;
+            if (have_filter && !chunk_may_match(src, c, fx)) continue;   // its bounds rule it out
             std::shared_ptr<arrow::Table> chunk;
             if (auto st = src.read_chunk(c, read_indices, &chunk); !st.ok()) { note_chunk_error(st); continue; }
             if (have_filter) chunk = apply_filter(chunk, fx, read_indices);

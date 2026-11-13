@@ -348,6 +348,10 @@ public:
     int64_t total_rows()      const override { return inner_->total_rows(); }
     int     num_chunks()      const override { return inner_->num_chunks(); }
     ChunkMeta chunk_meta(int i) const override { return inner_->chunk_meta(i); }
+    // The inner source's columns keep their indices; the added ones have no bounds.
+    bool chunk_bounds(int i, int col, ChunkBounds* out) override {
+        return col < n_inner_ && inner_->chunk_bounds(i, col, out);
+    }
     void    ensure(int i)           override { inner_->ensure(i); }
     void    set_retain_all(bool b)  override { inner_->set_retain_all(b); }
     bool    random_access() const   override { return inner_->random_access(); }
@@ -475,6 +479,11 @@ public:
     int64_t total_rows()      const override { return inner_->total_rows(); }
     int     num_chunks()      const override { return inner_->num_chunks(); }
     ChunkMeta chunk_meta(int i) const override { return inner_->chunk_meta(i); }
+    // A column passed through has its inner bounds; a struct's leaf has none.
+    bool chunk_bounds(int i, int col, ChunkBounds* out) override {
+        if (col < 0 || col >= (int)flat_.size() || !flat_[(size_t)col].path.empty()) return false;
+        return inner_->chunk_bounds(i, flat_[(size_t)col].inner, out);
+    }
     void    ensure(int i)           override { inner_->ensure(i); }
     void    set_retain_all(bool b)  override { inner_->set_retain_all(b); }
     bool    random_access() const   override { return inner_->random_access(); }
@@ -814,6 +823,10 @@ public:
     int64_t total_rows()      const override { return inner_->total_rows(); }
     int     num_chunks()      const override { return inner_->num_chunks(); }
     ChunkMeta chunk_meta(int i) const override { return inner_->chunk_meta(i); }
+    // The inner source's columns keep their indices; the added ones have no bounds.
+    bool chunk_bounds(int i, int col, ChunkBounds* out) override {
+        return col < n_inner_ && inner_->chunk_bounds(i, col, out);
+    }
     void    ensure(int i)           override { inner_->ensure(i); }
     void    set_retain_all(bool b)  override { inner_->set_retain_all(b); }
     bool    random_access() const   override { return inner_->random_access(); }

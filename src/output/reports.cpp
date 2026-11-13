@@ -710,6 +710,7 @@ gather_table(const arrow::Table& t, const std::vector<int64_t>& idx) {
 static std::shared_ptr<arrow::Table> read_filtered(TabularSource& src, int c,
                                                    const std::vector<int>& cols,
                                                    const FilterExpr& fx, bool have_filter) {
+    if (have_filter && !chunk_may_match(src, c, fx)) return nullptr;   // its bounds rule it out
     std::shared_ptr<arrow::Table> tbl;
     if (auto st = src.read_chunk(c, cols, &tbl); !st.ok() || !tbl) { note_chunk_error(st); return nullptr; }
     if (have_filter) tbl = apply_filter(tbl, fx, cols);
@@ -861,6 +862,7 @@ std::string build_tail(std::unique_ptr<TabularSource>& src,
         const std::vector<int> fcols = union_with_filter({}, fx);
         for (int i = 0; i <= c; ++i) {
             if (!have_filter) { M += src->chunk_meta(i).num_rows; continue; }
+            if (!chunk_may_match(*src, i, fx)) continue;
             std::shared_ptr<arrow::Table> t;
             if (auto st = src->read_chunk(i, fcols, &t); st.ok() && t) M += count_filter_matches(*t, fx, fcols);
             else note_chunk_error(st);

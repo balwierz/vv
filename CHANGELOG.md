@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   error, as before.
 
 ### Changed
+- `--filter` on Parquet (a file or a directory of them) skips the row groups
+  whose column statistics rule out every row, for `==`, `<`, `<=`, `>`,
+  `>=`, `in (…)`, `is null` and `is not null` on number, text, date and
+  timestamp columns and partition columns. GENCODE basic (62 row groups),
+  `--filter 'start > 248000000' --tsv`: 0.29 s → 0.018 s. Results are
+  unchanged; a corrupt row group ruled out this way is not read.
+  `VV_NO_PUSHDOWN=1` reads every group. The same applies to `--count`,
+  `--sort`, `--describe`, the table, the viewer's `&` filter and vvg.
 - A value its column's type cannot hold names the column and, for a CSV /
   TSV column whose type was inferred, the `--types` that reads it: `line
   1320002: column 'CHR' holds 'X', which is not int64; the column types come

@@ -480,6 +480,36 @@ public:
         if (region_mode_) return {slice_first_row_[i], slice_count_[i]};
         return {chunk_start_[i], meta_->RowGroup(i)->num_rows()};
     }
+    // A flat column's row-group statistics, as typed Arrow min / max
+    // (StatisticsAsScalars reads the logical type: unsigned, dates, units).
+    // A chunk in region mode is a slice of a row group, whose statistics
+    // still bound it. Nested columns have no statistics of their own.
+    bool chunk_bounds(int chunk, int col, ChunkBounds* out) override {
+        if (chunk < 0 || chunk >= num_chunks() || col < 0) return false;
+        const auto& manifest = reader_->manifest();
+        if (col >= (int)manifest.schema_fields.size() || !manifest.schema_fields[col].is_leaf())
+            return false;
+        const int rg = region_mode_ ? slices_[chunk].row_group : chunk;
+        std::shared_ptr<parquet::RowGroupMetaData> rgm;
+        try { rgm = meta_->RowGroup(rg); } catch (const std::exception&) { return false; }
+        auto st = chunk_stats(*rgm, manifest.schema_fields[col].column_index);
+        if (!st) return false;
+        out->num_rows = rgm->num_rows();
+        if (st->HasNullCount()) out->null_count = st->null_count();
+        if (st->HasMinMax()) {
+            std::shared_ptr<arrow::Scalar> lo, hi;
+            if (parquet::arrow::StatisticsAsScalars(*st, &lo, &hi).ok() && lo && hi &&
+                lo->type->Equals(*hi->type)) {
+                std::unique_ptr<arrow::ArrayBuilder> b;
+                if (arrow::MakeBuilder(arrow::default_memory_pool(), lo->type, &b).ok() &&
+                    b->AppendScalar(*lo).ok() && b->AppendScalar(*hi).ok()) {
+                    std::shared_ptr<arrow::Array> a;
+                    if (b->Finish(&a).ok()) out->minmax = std::move(a);
+                }
+            }
+        }
+        return out->minmax || out->null_count >= 0;
+    }
     // ReadRowGroups / GetRecordBatchReader take Parquet *leaf* column indices,
     // not Arrow top-level field indices. For nested types (struct/list/map)
     // a single Arrow field may span multiple leaves — passing the wrong index

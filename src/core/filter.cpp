@@ -939,6 +939,149 @@ static const std::regex* regex_of(const FilterAtom& a) {
         ? filter_regex_for(a.s_lit) : nullptr;
 }
 
+// ── Skipping chunks by their bounds ──────────────────────────────────────────
+//
+// A chunk whose ChunkBounds show that no row can satisfy the filter is not
+// read. The test runs eval_cell itself on the bounds' min / max cells, so a
+// skip agrees with what evaluating every row would give: for an ordering,
+// `x > L` matches nothing when max > L is false; `x == L` nothing when
+// min <= L or max >= L is false; `in (...)` nothing when no member could
+// equal; `is null` nothing without nulls; anything but `is null` nothing in
+// an all-null chunk. Other operators (!=, not in, regex, text tests, bits)
+// and bounds of another type than the column's are never used to skip.
+
+namespace {
+
+// `a`'s literal kind is one the bounds compare by: text against text,
+// numbers against numbers, dates and timestamps.
+bool bounds_comparable(const FilterAtom& a, const arrow::DataType& value_type) {
+    const auto id = value_type.id();
+    if (a.kind == FilterAtom::K_String)
+        return id == arrow::Type::STRING || id == arrow::Type::LARGE_STRING;
+    if (a.kind == FilterAtom::K_Int || a.kind == FilterAtom::K_Double)
+        return arrow::is_integer(id) || arrow::is_floating(id) ||
+               id == arrow::Type::DATE32 || id == arrow::Type::DATE64 ||
+               id == arrow::Type::TIMESTAMP;
+    return false;
+}
+
+// True when no value in [min, max] satisfies the ordering / equality atom `a`.
+bool range_excludes(const FilterAtom& a, const arrow::Array& mm, bool col_float) {
+    FilterAtom t = a;
+    auto holds = [&](FilterAtom::Op op, int64_t row) {
+        t.op = op;
+        return eval_cell(t, mm, row, col_float, nullptr);
+    };
+    switch (a.op) {
+        case FilterAtom::Lt: return !holds(FilterAtom::Lt, 0);
+        case FilterAtom::Le: return !holds(FilterAtom::Le, 0);
+        case FilterAtom::Gt: return !holds(FilterAtom::Gt, 1);
+        case FilterAtom::Ge: return !holds(FilterAtom::Ge, 1);
+        case FilterAtom::Eq: return !(holds(FilterAtom::Le, 0) && holds(FilterAtom::Ge, 1));
+        default:             return false;
+    }
+}
+
+// True when `a` matches no row of the chunk `b` describes.
+bool atom_excludes(const FilterAtom& a, const arrow::Field& field, const ChunkBounds& b) {
+    if (a.op == FilterAtom::IsNull) return b.null_count == 0;
+    if (a.op == FilterAtom::NotNull)
+        return b.num_rows >= 0 && b.null_count == b.num_rows;
+    const bool ordering = a.op == FilterAtom::Eq || a.op == FilterAtom::Lt ||
+                          a.op == FilterAtom::Le || a.op == FilterAtom::Gt ||
+                          a.op == FilterAtom::Ge || a.op == FilterAtom::In;
+    if (!ordering) return false;
+    // Every other operator is false on a null cell.
+    if (b.num_rows > 0 && b.null_count == b.num_rows) return true;
+    if (!b.minmax || b.minmax->length() != 2 || b.minmax->null_count() != 0) return false;
+    auto vt = field.type();
+    if (vt->id() == arrow::Type::DICTIONARY)
+        vt = static_cast<const arrow::DictionaryType&>(*vt).value_type();
+    if (!b.minmax->type()->Equals(*vt)) return false;
+    // NaN bounds order nothing.
+    for (int64_t r = 0; r < 2; ++r) {
+        double d;
+        if (arrow::is_floating(vt->id()) && array_value_as_double(*b.minmax, r, &d) && std::isnan(d))
+            return false;
+    }
+    // A uint64 past int64 compares as a double in eval_cell; keep to the
+    // range where both readings agree.
+    if (vt->id() == arrow::Type::UINT64) {
+        int64_t v;
+        if (!array_value_as_int64(*b.minmax, 1, &v)) return false;
+    }
+    const bool col_float = field.type()->id() == arrow::Type::FLOAT;
+    if (a.op != FilterAtom::In) {
+        if (!bounds_comparable(a, *vt)) return false;
+        return range_excludes(a, *b.minmax, col_float);
+    }
+    // in (...): each member as an == atom, read as eval_cell reads the set: a
+    // text column by the members' text, any other by their numbers
+    // (set_num: dates as their stored counts, float32 rounded).
+    const bool text = vt->id() == arrow::Type::STRING || vt->id() == arrow::Type::LARGE_STRING;
+    FilterAtom eq;
+    eq.col_idx = a.col_idx;
+    eq.op = FilterAtom::Eq;
+    if (text) {
+        eq.kind = FilterAtom::K_String;
+        for (const std::string& m : a.set_lits) {
+            eq.s_lit = m;
+            if (!range_excludes(eq, *b.minmax, col_float)) return false;
+        }
+        return true;
+    }
+    if (!a.set_num) return false;
+    eq.kind = FilterAtom::K_Double;
+    if (!bounds_comparable(eq, *vt)) return false;
+    for (double v : *a.set_num) {
+        eq.f_lit = v;
+        if (!range_excludes(eq, *b.minmax, col_float)) return false;
+    }
+    return true;
+}
+
+bool pushdown_off() {
+    static const bool off = [] {
+        const char* e = std::getenv("VV_NO_PUSHDOWN");
+        return e && *e && *e != '0';
+    }();
+    return off;
+}
+
+}  // namespace
+
+bool chunk_may_match(TabularSource& src, int chunk, const FilterExpr& fx) {
+    if (fx.groups.empty() || pushdown_off()) return true;
+    const auto schema = src.schema();
+    std::map<int, ChunkBounds> bounds;      // per column, asked once
+    std::set<int> unknown;
+    auto bounds_of = [&](int col) -> const ChunkBounds* {
+        if (unknown.count(col)) return nullptr;
+        auto it = bounds.find(col);
+        if (it != bounds.end()) return &it->second;
+        ChunkBounds b;
+        if (col < 0 || col >= schema->num_fields() || !src.chunk_bounds(chunk, col, &b)) {
+            unknown.insert(col);
+            return nullptr;
+        }
+        return &bounds.emplace(col, std::move(b)).first->second;
+    };
+    for (const auto& group : fx.groups) {
+        bool group_excluded = false;           // an AND group: one atom suffices
+        for (const auto& a : group) {
+            const ChunkBounds* b = bounds_of(a.col_idx);
+            if (b && atom_excludes(a, *schema->field(a.col_idx), *b)) { group_excluded = true; break; }
+        }
+        if (!group_excluded) return true;      // an OR of groups: any may match
+    }
+    static const bool debug = [] {
+        const char* e = std::getenv("VV_DEBUG_PUSHDOWN");
+        return e && *e && *e != '0';
+    }();
+    if (debug) std::fprintf(stderr, "pushdown: chunk %d skipped\n", chunk);
+    return false;
+}
+
 bool eval_atom(const arrow::Table& tbl, int64_t row, const FilterAtom& a,
                 const std::vector<int>& read_indices) {
     int tcol = filter_col_in_table(a, read_indices);
@@ -1145,6 +1288,7 @@ std::vector<int64_t> filter_rows(TabularSource& src, const FilterExpr& expr,
     }
     for (int c = 0; c < src.num_chunks(); ++c) {
         if (cancelled()) return {};
+        if (!chunk_may_match(src, c, expr)) continue;   // its bounds rule it out
         ChunkMeta m = src.chunk_meta(c);
         std::shared_ptr<arrow::Table> tbl;
         if (auto st = src.read_chunk(c, all, &tbl); !st.ok() || !tbl) { note_chunk_error(st); continue; }

@@ -184,6 +184,7 @@ int emit_text_stream(TabularSource& src, const Config& cfg) {
     for (int c = 0; !truncated; ++c) {
         src.ensure(c);
         if (c >= src.num_chunks()) break;
+        if (have_filter && !chunk_may_match(src, c, fx)) continue;   // its bounds rule it out
         std::shared_ptr<arrow::Table> tbl;
         if (auto st = src.read_chunk(c, col, &tbl); !st.ok() || !tbl) { note_chunk_error(st); continue; }
         if (have_filter) {

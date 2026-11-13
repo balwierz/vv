@@ -615,7 +615,9 @@ written (\fBCHROM == 1\fR), and an ordering needs quotes
 and other quoted text is an error. Example:
 \fB\-\-filter 'Chromosome == "chr1" AND Score > 0.5'\fR. Evaluated
 per row after the source's own pruning (tabix region, LociSSD
-row-group stats) so combining with \fB\-r\fR is fine.
+row-group stats) so combining with \fB\-r\fR is fine. On Parquet, a row
+group whose column statistics rule out every row for \fB== < <= > >= in\fR,
+\fBis null\fR or \fBis not null\fR is not read (see \fBVV_NO_PUSHDOWN\fR).
 .TP
 .B \-\-schema
 Print column names, Arrow types, nullability, and the file-info
@@ -1400,6 +1402,11 @@ Read-block size in MiB for delimited text and JSON (default 16). A record
 must fit in one block; vv retries with larger blocks when the first block
 fails, and a longer record later in the file is reported with this setting
 named.
+.TP
+.B VV_NO_PUSHDOWN
+When set to 1, \fB\-\-filter\fR reads every Parquet row group, also those its
+statistics rule out. The result is the same; a corrupt row group the
+statistics rule out is then read and reported.
 .TP
 .B VV_CATEGORY_DICT_CAP
 Maximum number of categories an AnnData categorical \fIobs\fR/\fIvar\fR column

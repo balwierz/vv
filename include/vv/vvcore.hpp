@@ -403,6 +403,16 @@ std::string display_path(const std::string& path);
 // The last component of display_path(path), without a URL's ?query.
 std::string display_basename(const std::string& path);
 
+// What a source knows about one column of one chunk without reading it (a
+// Parquet row group's statistics): its smallest and largest value, as a
+// two-row array of the column's value type, and its null and row counts.
+// Unknown parts are null / -1.
+struct ChunkBounds {
+    std::shared_ptr<arrow::Array> minmax;
+    int64_t null_count = -1;
+    int64_t num_rows   = -1;
+};
+
 class TabularSource {
 public:
     virtual ~TabularSource() = default;
@@ -462,6 +472,10 @@ public:
     // A whole-source pass (--tail) may then read only the chunks it needs.
     // Default: false (a forward-only stream).
     virtual bool random_access() const { return false; }
+    // Column `col`'s bounds in chunk `chunk` (ChunkBounds), from metadata only;
+    // false when the source keeps none. A filter skips a chunk its bounds
+    // rule out (chunk_may_match). Default: false.
+    virtual bool chunk_bounds(int /*chunk*/, int /*col*/, ChunkBounds* /*out*/) { return false; }
     // True when this source actually restricted its scan to Config::region.
     // Only some formats carry an index vv can query (tabix'd text, indexed
     // BAM/CRAM/BCF, bigBed/bigWig, LociSSD, sorted Parquet with chrom/start/

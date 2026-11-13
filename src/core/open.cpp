@@ -657,6 +657,21 @@ public:
         return {batch_first_row_[i], batch_num_rows_[i]};
     }
     bool random_access() const override { return indexed_; }
+    // A data column's bounds come from the part's own chunk; a partition
+    // column is one value throughout the part.
+    bool chunk_bounds(int i, int col, ChunkBounds* out) override {
+        if (!indexed_ || i < 0 || i >= (int)index_.size() || col < 0 || col >= schema_->num_fields())
+            return false;
+        const auto& e = index_[(size_t)i];
+        if (!select_child(e.file).ok()) return false;
+        if (col < ndata_) return child_->chunk_bounds(e.local, col, out);
+        auto a = partition_array((size_t)(col - ndata_), 2);
+        if (!a.ok()) return false;
+        out->minmax     = *a;
+        out->null_count = 0;
+        out->num_rows   = e.meta.num_rows;
+        return true;
+    }
     void set_retain_all(bool b) override { retain_all_ = b; }
     bool evicted_any() const override { return evicted_any_; }
     int64_t chunk_bytes(int i) const override { return stream_chunk_bytes(batches_, i); }

@@ -291,6 +291,7 @@ std::string write_delimited(TabularSource& src, const Config& cfg) {
         src.ensure(c);
         if (c >= src.num_chunks()) break;
 
+        if (have_filter && !chunk_may_match(src, c, fx)) continue;   // its bounds rule it out
         std::shared_ptr<arrow::Table> table;
         auto st = src.read_chunk(c, col_indices, &table);
         if (!st.ok()) {
@@ -407,6 +408,7 @@ std::string write_markdown(TabularSource& src, const Config& cfg) {
     for (int c = 0; rows_left > 0; ++c) {
         src.ensure(c);
         if (c >= src.num_chunks()) break;
+        if (have_filter && !chunk_may_match(src, c, fx)) continue;   // its bounds rule it out
         std::shared_ptr<arrow::Table> table;
         auto st = src.read_chunk(c, col_indices, &table);
         if (!st.ok()) {
@@ -611,6 +613,7 @@ std::string write_parquet(TabularSource& src, const Config& cfg) {
         }
         src.ensure(c);
         if (c >= src.num_chunks()) break;
+        if (have_filter && !chunk_may_match(src, c, fx)) continue;   // its bounds rule it out
         std::shared_ptr<arrow::Table> table;
         auto st = src.read_chunk(c, col_indices, &table);
         if (!st.ok()) {
@@ -724,6 +727,7 @@ std::string write_arrow(TabularSource& src, const Config& cfg) {
         }
         src.ensure(c);
         if (c >= src.num_chunks()) break;
+        if (have_filter && !chunk_may_match(src, c, fx)) continue;   // its bounds rule it out
         std::shared_ptr<arrow::Table> table;
         auto st = src.read_chunk(c, col_indices, &table);
         if (!st.ok()) {
@@ -937,6 +941,7 @@ std::string write_json(TabularSource& src, const Config& cfg) {
         if (export_canceled()) return kExportCanceled;
         src.ensure(c);
         if (c >= src.num_chunks()) break;
+        if (have_filter && !chunk_may_match(src, c, fx)) continue;   // its bounds rule it out
         std::shared_ptr<arrow::Table> chunk;
         if (auto st = src.read_chunk(c, read_set, &chunk); !st.ok()) { note_chunk_error(st); continue; }
         if (have_filter) chunk = apply_filter(chunk, fx, read_set);

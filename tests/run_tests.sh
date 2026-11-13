@@ -2332,6 +2332,44 @@ assert_eq_file_inline "csv_projection_none_for_pattern" \
     "$(VV_DEBUG_PROJECTION=1 "$VV" --select 'c*' --tsv "$TMP/wide.csv" 2>&1 >/dev/null)" ""
 assert_eq_file_inline "csv_projection_none_for_table_view" \
     "$(VV_DEBUG_PROJECTION=1 "$VV" -n 3 --select name "$TMP/wide.csv" 2>&1 >/dev/null)" ""
+# --filter skips a Parquet row group whose statistics rule out every row,
+# without changing a result: each case equals the run that reads every group
+# (VV_NO_PUSHDOWN=1), in an export, a count and the table view, also through
+# --compute and a dataset directory. tiny.pushdown.parquet holds the types
+# whose statistics must not be over-trusted (float32, NaN, uint64 past int64,
+# decimal, dictionary strings, an all-null group).
+PD="$DATA/tiny.pushdown.parquet"
+for pf in 'i > 7' 'i == 4' 'i in (1, 10)' 'i < 0' 'i >= 11' 'f32 == 0.05' 'f32 > 0.45' 'f32 >= 0.5' \
+          'f64 > 3' 'f64 < 1.5' 'f64 == 2' 's == "e"' 's > "h"' 's in ("a", "l")' 'cat == "w"' \
+          'cat in ("x")' 'u64 > 5' 'u64 < 3' 'u64 == 9' 'dec > 5.5' 'dec == 3.5' 'd > "2024-06-01"' \
+          'ts < "2024-01-01 02:00"' 'nul is null' 'nul is not null' 'nul > 4' 'nul == 1' \
+          'i > 7 OR s == "a"' 'i > 7 AND f32 < 0.1' 'i != 4' 's ~ "^[ab]"' 'cat not in ("z")' \
+          'd in ("2024-01-01", "2024-07-29")' 'ts in ("2024-01-01 05:00")' 'f32 in (0.05, 0.5)' \
+          'u64 in (2, 9)' 'i in (3, "x")'; do
+    assert_eq_file_inline "pushdown_same: $pf" \
+        "$("$VV" --tsv --filter "$pf" "$PD" 2>&1; "$VV" --count --filter "$pf" "$PD" 2>&1; "$VV" -n 0 --filter "$pf" "$PD" 2>&1)" \
+        "$(export VV_NO_PUSHDOWN=1; "$VV" --tsv --filter "$pf" "$PD" 2>&1; "$VV" --count --filter "$pf" "$PD" 2>&1; "$VV" -n 0 --filter "$pf" "$PD" 2>&1)"
+done
+for pf in 'Start > 7000' 'Chr == "chr2"' 'Score < 0.1' 'Score == 0.05' 'Start in (100, 9100)' 'Chr ~ "2"'; do
+    assert_eq_file_inline "pushdown_same_tiny: $pf" \
+        "$("$VV" --tsv --filter "$pf" --compute 'w=End-Start' "$DATA/tiny.parquet" 2>&1)" \
+        "$(VV_NO_PUSHDOWN=1 "$VV" --tsv --filter "$pf" --compute 'w=End-Start' "$DATA/tiny.parquet" 2>&1)"
+    assert_eq_file_inline "pushdown_same_region: $pf" \
+        "$("$VV" --tsv --filter "$pf" -r chr1:0-20000 "$DATA/tiny.parquet" 2>&1)" \
+        "$(VV_NO_PUSHDOWN=1 "$VV" --tsv --filter "$pf" -r chr1:0-20000 "$DATA/tiny.parquet" 2>&1)"
+done
+pd_skipped() { VV_DEBUG_PUSHDOWN=1 "$VV" --count --filter "$1" "$2" 2>&1 >/dev/null | grep -c '^pushdown: chunk'; }
+for pk in 'i > 7|2' 'nul is not null|1' 'nul is null|1' 'u64 < 3|2' 'cat == "w"|3' 'i != 4|0' \
+          's ~ "^[ab]"|0' 'i > 7 OR s == "a"|1' 'f32 > 0.45|3'; do
+    assert_eq_file_inline "pushdown_skips: ${pk%|*}" "$(pd_skipped "${pk%|*}" "$PD")" "${pk##*|}"
+done
+assert_eq_file_inline "pushdown_off_skips_none" \
+    "$(VV_NO_PUSHDOWN=1 VV_DEBUG_PUSHDOWN=1 "$VV" --count --filter 'i > 7' "$PD" 2>&1 >/dev/null | grep -c '^pushdown')" "0"
+PDD="$TMP/pushdown_ds"; rm -rf "$PDD"; mkdir -p "$PDD/k=1" "$PDD/k=2"
+cp "$PD" "$PDD/k=1/a.parquet"; cp "$PD" "$PDD/k=2/b.parquet"
+assert_eq_file_inline "pushdown_dataset_same" \
+    "$("$VV" --tsv --filter 'k == 2 AND i > 7' "$PDD")" "$(VV_NO_PUSHDOWN=1 "$VV" --tsv --filter 'k == 2 AND i > 7' "$PDD")"
+assert_eq_file_inline "pushdown_dataset_skips" "$(pd_skipped 'k == 2 AND i > 7' "$PDD")" "6"
 # Parquet dictionary indices are checked against the dictionary: a corrupt
 # file (tests/fuzz/regress, found by fuzz_parquet) with index 3 into three
 # values ended --sort in a SEGV inside the gather; it is now a read error.

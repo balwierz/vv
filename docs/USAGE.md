@@ -561,6 +561,16 @@ Filter is evaluated per row in C++ after the source's own pruning
 (tabix iterator / LociSSD row-group stats / BCF iterator), so
 combining with `-r` is fine and fast.
 
+On Parquet (and a directory of Parquet files) a row group whose column
+statistics show that no row can match is not read at all: `start >
+248000000` on a 62-row-group GENCODE file reads one group. That takes `==`,
+`<`, `<=`, `>`, `>=`, `in (…)`, `is null` and `is not null` on plain
+number, text, date and timestamp columns, and a partition column of a
+directory; `!=`, `not in`, regular expressions and text tests always read.
+The result is the same as reading every row group, except that a corrupt
+row group the statistics rule out is not read, so its error is not seen.
+`VV_NO_PUSHDOWN=1` reads every row group.
+
 # Malformed rows (`--on-bad-row`, `--bad-rows`)
 
 A text table row with another number of fields than the header (or, with
