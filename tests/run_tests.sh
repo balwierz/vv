@@ -2680,6 +2680,38 @@ PYBLK
         "$(VV_NO_PROJECTION=1 "$VV" --types val:string --count "$TMP/blk_typelater.tsv")" "2000001"
     assert_eq_file_inline "types_star_late_value" \
         "$("$VV" --types '*:string' --filter 'val == "notanumber"' --count "$TMP/blk_typelater.tsv")" "1"
+    # The text columns of the fixed-column formats are text whatever the
+    # first 16 MiB hold: chromosomes 1 ... 22 there and an X after them
+    # stopped BED, SAM, PAF and mpileup (VCF CHROM and GFF seqname were
+    # pinned already). SAM read names and quality strings can be all digits.
+    python3 - "$TMP" <<'PYPIN'
+import sys
+d = sys.argv[1]; N = 1_200_000
+with open(f"{d}/pin.bed", "w") as f:
+    for i in range(N): f.write(f"{1 + i % 22}\t{i * 10}\t{i * 10 + 5}\n")
+    f.write("X\t5\t9\n")
+with open(f"{d}/pin.sam", "w") as f:
+    f.write("@HD\tVN:1.6\n")
+    for i in range(N // 2): f.write(f"{i}\t0\t{1 + i % 22}\t{i + 1}\t60\t4M\t*\t0\t0\tACGT\t5555\n")
+    f.write("rX\t0\tX\t5\t60\t4M\t*\t0\t0\tACGT\tIIII\n")
+with open(f"{d}/pin.paf", "w") as f:
+    for i in range(N // 2): f.write(f"{i}\t100\t0\t100\t+\t{1 + i % 22}\t1000\t0\t100\t90\t100\t60\n")
+    f.write("qX\t100\t0\t100\t+\tX\t1000\t0\t100\t90\t100\t60\n")
+with open(f"{d}/pin.mpileup", "w") as f:
+    for i in range(N): f.write(f"{1 + i % 22}\t{i + 1}\tA\t3\t...\t555\n")
+    f.write("X\t1\tA\t3\t...\tIII\n")
+PYPIN
+    for pin in "pin.bed|X 5 9" "pin.sam|rX 0 X 5 60 4M * 0 0 ACGT IIII" \
+               "pin.paf|qX 100 0 100 + X 1000 0 100 90 100 60" "pin.mpileup|X 1 A 3 ... III"; do
+        pf=${pin%%|*}
+        assert_eq_file_inline "pinned_text_late_x: $pf" \
+            "$("$VV" --tail 1 --tsv --no-header "$TMP/$pf" 2>&1 | tr '\t' ' ')" "${pin#*|}"
+    done
+    assert_eq_file_inline "pinned_text_bed_names" \
+        "$("$VV" --schema "$TMP/pin.bed" | awk 'NR>3 && NF==3 {printf "%s:%s ", $1, $2}')" "Chr:string [Beg:int64 End):int64 "
+    assert_eq_file_inline "pinned_text_sam_qual" \
+        "$("$VV" --schema "$TMP/pin.sam" | awk '$1 == "QNAME" || $1 == "QUAL" {printf "%s:%s ", $1, $2}')" "QNAME:string QUAL:string "
+    rm -f "$TMP"/pin.*
     # --distinct replaces the source with its result, so it checks the read
     # itself: a stream that fails part-way is an error, not a shorter count.
     # (On standard input: a file would be read again with the column widened.)

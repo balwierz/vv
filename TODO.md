@@ -42,17 +42,6 @@ Deferred until a file needs them (owner's decision, 2026-10-07).
   as tabs.
 - Galaxy `.dat` / Galaxy archive — niche but visible.
 
-## CSV / TSV typing
-
-- **Text columns of the headerless formats.** BED `chrom`, SAM `RNAME` /
-  `RNEXT` / `QNAME`, PAF names and mpileup `chrom` are typed from the first
-  16 MiB like any column, so a file whose first 16 MiB hold only numeric
-  chromosome names (Ensembl `1` … `22`) stops at the first `X`; `--types`
-  refuses these formats (their columns are named by position after the
-  open). VCF `CHROM` and GFF `seqname` are pinned as text already. Pinning
-  the others as text changes an all-numeric `chrom` from int64 to string
-  (text sort order) — a decision for the owner.
-
 ## Performance / build
 
 - **Bioconda Arrow pin** — revisit `packaging/bioconda/conda_build_config.yaml`

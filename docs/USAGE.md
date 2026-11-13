@@ -638,7 +638,11 @@ $ vv --types CHR:string --value-counts CHR gwas.tsv.gz
 * The given type wins over vv's own choices, such as keeping `007` as text.
 * Plain CSV / TSV only (also `-d` and standard input); BED, VCF, GFF, SAM and
   the other text formats have fixed columns, and `--types` on them is an
-  error.
+  error. Their chromosome and name columns are always text, whatever the
+  first 16 MiB hold: BED `Chr`, VCF `CHROM`, GFF `seqname`, SAM `QNAME` /
+  `RNAME` / `RNEXT` (and `CIGAR`, `SEQ`, `QUAL`), PAF `qname` / `tname`,
+  mpileup `chrom` and bases / qualities, and the chromosome columns of BEDPE,
+  4DN pairs and mutation MAF files.
 
 A run that writes its result only at the end — `--parquet`, `--arrow`,
 `--count`, `--sort`, `--describe`, `--value-counts`, `--distinct`,

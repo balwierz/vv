@@ -2135,6 +2135,30 @@ private:
         // happens to hold only whole numbers ("259" before "45.8").
         if (self->dialect_ == TsvDialect::Blast)
             for (const char* f : {"f2", "f10", "f11"}) col_types.push_back({f, arrow::float64()});
+        // The other formats' names and sequences are text too, as CHROM and
+        // seqname above: typed from the first 16 MiB, a file whose chromosomes
+        // there are 1 ... 22 failed at the first X (and --types does not
+        // reach these formats, whose columns are named by position). Read
+        // names, CIGAR and quality strings can be all digits as well. BED's
+        // later columns stay inferred: its level detection reads their types.
+        auto pin_text = [&](std::initializer_list<const char*> names) {
+            for (const char* n : names) col_types.push_back({n, arrow::utf8()});
+        };
+        if (kind == DelimKind::BED) pin_text({"f0"});                    // chrom
+        if (kind == DelimKind::SAM) pin_text({"QNAME", "RNAME", "CIGAR", "RNEXT", "SEQ", "QUAL"});
+        if (kind == DelimKind::PAF) pin_text({"qname", "strand", "tname"});
+        if (kind == DelimKind::Mpileup) {
+            // chrom, ref, then bases / quals of each sample: f4 f5, f7 f8, ...
+            pin_text({"f0", "f2"});
+            for (int s = 0; s < 256; ++s) {
+                col_types.push_back({"f" + std::to_string(4 + 3 * s), arrow::utf8()});
+                col_types.push_back({"f" + std::to_string(5 + 3 * s), arrow::utf8()});
+            }
+        }
+        if (self->dialect_ == TsvDialect::Bedpe) pin_text({"f0", "f3", "chrom1", "chrom2", "#chrom1"});
+        if (self->dialect_ == TsvDialect::Pairs) pin_text({"readID", "chr1", "chr2"});
+        if (self->dialect_ == TsvDialect::Maf)   pin_text({"Chromosome", "Hugo_Symbol", "Tumor_Sample_Barcode"});
+        if (self->dialect_ == TsvDialect::Blast) pin_text({"f0", "f1"});   // qseqid, sseqid
         if (kind == DelimKind::Mtx) {
             col_types = {{"row", arrow::int64()}, {"col", arrow::int64()}};
             if (self->mtx_field_ == "integer") col_types.push_back({"value", arrow::int64()});

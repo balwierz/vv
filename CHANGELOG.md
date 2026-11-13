@@ -82,6 +82,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   same text shows in the viewer's status line and vvg's footer.
 
 ### Fixed
+- The chromosome and name columns of BED, SAM, PAF and mpileup files (and of
+  BEDPE, 4DN pairs, mutation MAF and BLAST tables) are read as text, as VCF
+  `CHROM` and GFF `seqname` were. Typed from the first 16 MiB, a file
+  sorted by chromosome whose first 16 MiB held only `1` … `22` stopped at
+  the first `X` (`column 'Chr' holds 'X', which is not int64`), and
+  `--types` does not reach these formats. SAM `QNAME`, `CIGAR`, `SEQ` and
+  `QUAL` are text too: a quality string can be all digits. An all-numeric
+  chromosome column is now text, sorted and compared as text.
 - Arrow IPC files and streams are checked before vv reads their values. The
   IPC reader checks buffer sizes only, so a corrupt or crafted file whose
   list offsets ran backwards was read out of bounds by the cell formatters
