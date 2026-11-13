@@ -753,6 +753,15 @@ struct ExportProgress {
 // tab read on a worker thread while the window keeps its own copy. The output
 // modes set in cfg size an AnnData frame's preview as for the CLI.
 std::string open_view_source(Config cfg, std::unique_ptr<TabularSource>* out);
+// The export format a file name's extension names: .parquet / .pq, .arrow /
+// .feather / .ipc, .tsv / .tab / .txt, .csv, .json, .ndjson / .jsonl (any
+// case); false for any other.
+bool export_format_for_path(const std::string& path, ExportFormat* f);
+// The vv command line that reproduces `cfg`'s view: the file, --tab, the
+// format options (-r, --index, -f, --pileup, --tags, --gt-stats, --expand,
+// --samples, --matrix, --types), --filter, --sort and --select, each
+// argument shell-quoted when it needs it.
+std::string view_command_line(const Config& cfg);
 std::string export_view(const Config& cfg, const std::string& out_path,
                         ExportFormat format, ExportProgress* progress);
 

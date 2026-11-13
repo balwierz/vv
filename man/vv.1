@@ -1217,10 +1217,29 @@ out-of-range values clamp to the last page).
 \fB:theme NAME\fR \(en switch to a named theme (same names as
 \fB\-\-theme\fR / the \fBT\fR overlay); the choice is persisted to
 \fI~/.config/vv/config\fR.
+.IP \(bu 2
+\fB:w FILE\fR \(en write the view (filter, sort, shown columns) to
+\fIFILE\fR, in the format its extension names (.parquet, .arrow, .tsv,
+.csv, .json, .ndjson); \fB:w! FILE\fR replaces an existing file.
+.IP \(bu 2
+\fB:region R\fR \(en read the tab's file again for region \fIR\fR (UCSC
+coordinates, as \fB\-r\fR takes them); \fB:region\fR alone shows the whole
+file. Not for a file of several tabs.
 .RE
+.IP
+Up / Down in the \fB/\fR, \fB&\fR and \fB:\fR bars recall the lines
+entered in that bar this session.
 .IP
 Errors stay in the input bar so the line can be edited and
 re-submitted. \fBEsc\fR cancels.
+.TP
+.B Y
+Copy the \fBvv\fR command that reproduces the view (file, tab, region,
+filter, sort, shown columns) to the clipboard (OSC 52).
+.TP
+.B "Ctrl-D, Ctrl-U"
+Half a page down / up. A count before a move repeats it: \fB12j\fR,
+\fB5l\fR; \fB100G\fR goes to row 100.
 .TP
 .B H, F1
 Open / close the help overlay listing every keybinding.

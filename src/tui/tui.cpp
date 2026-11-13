@@ -418,6 +418,37 @@ static bool line_edit_key(std::string& text, size_t& cur, int ch) {
     return false;
 }
 
+// The lines entered in one input bar (/ & :) this session, recalled with
+// Up / Down; Down past the newest brings back what was being typed.
+struct BarHistory {
+    std::vector<std::string> items;
+    size_t                   pos = 0;
+    std::string              draft;
+    void open() { pos = items.size(); draft.clear(); }
+    void add(const std::string& s) {
+        if (!s.empty() && (items.empty() || items.back() != s)) items.push_back(s);
+        if (items.size() > 100) items.erase(items.begin());
+        pos = items.size();
+    }
+    // Up / Down: replace `text` and keep the cursor at its end. False for
+    // any other key.
+    bool key(int ch, std::string& text, size_t& cur) {
+        if (ch == KEY_UP) {
+            if (pos == 0) return true;
+            if (pos == items.size()) draft = text;
+            text = items[--pos];
+        } else if (ch == KEY_DOWN) {
+            if (pos >= items.size()) return true;
+            ++pos;
+            text = pos == items.size() ? draft : items[pos];
+        } else {
+            return false;
+        }
+        cur = std::string::npos;
+        return true;
+    }
+};
+
 class TableTUI {
     // Multiple files become tabs. `src_` always points at the currently
     // active tab's source; `sources_` owns them. The snapshot vector
@@ -430,6 +461,13 @@ class TableTUI {
     int   max_col_w_;
     bool  no_index_;
     int   max_cols_cfg_;          // remembered from cfg.max_cols
+    // The run's Config (region modifiers applied by main), the base of the
+    // view a :w export or a copied command reproduces; a tab :region opened
+    // again has its region here.
+    Config base_cfg_;
+    std::map<int, std::string> region_of_tab_;
+    BarHistory search_hist_, filter_hist_, cmd_hist_;
+    int64_t    count_ = 0;      // a count typed before a motion (12j, 3G)
 
     // SearchMode lives at the top of the class so per-tab snapshots (and
     // FilterMode below) can reference it. The state fields themselves are
@@ -2861,12 +2899,157 @@ private:
         return true;
     }
 
+    // The active tab's view as a Config: its file (and tab, for a sheet or
+    // table of a file of several), the committed filter, the sort and the
+    // shown columns. "" or why it cannot be (a stream read once); `note`
+    // names a part of the view that is left out.
+    std::string view_config(Config* out, std::string* note) const {
+        const TabState& t = tabs_[(size_t)active_tab_];
+        if (t.path.empty() || t.path == "-" || path_is_pipe(t.path))
+            return "standard input was read once; save it to a file first";
+        Config e = base_cfg_;
+        e.path  = t.path;
+        e.paths = {t.path};
+        // main applied --regions-file and --slop to the region already.
+        e.regions_file.clear();
+        e.slop = 0;
+        e.coords_one_based = false;
+        if (auto it = region_of_tab_.find(active_tab_); it != region_of_tab_.end()) e.region = it->second;
+        e.tab.clear();
+        for (int i = 0; i < active_tab_; ++i)
+            if (tabs_[(size_t)i].path == t.path) { e.tab = t.label; break; }   // not the file's first tab
+        e.filter_expr = filter_active_ ? filter_expr_str_ : std::string();
+        e.sort_col.clear();
+        e.sort_then.clear();
+        e.sort_desc = false;
+        const auto sch = src_->schema();
+        auto src_name = [&](int virt) -> std::string {
+            if (virt < 0 || virt >= (int)virt_src_col_.size()) return "";
+            if (!virt_info_key_[(size_t)virt].empty()) return "";
+            const int sc = virt_src_col_[(size_t)virt];
+            return sc >= 0 && sc < sch->num_fields() ? sch->field(sc)->name() : "";
+        };
+        if (sort_col_ >= 0) {
+            e.sort_col = src_name(sort_col_);
+            e.sort_desc = sort_desc_;
+            if (e.sort_col.empty()) *note = "the sort by an INFO key is left out";
+        }
+        std::vector<std::string> shown;
+        bool all = true;
+        for (size_t v = 0; v < col_visible_.size() && v < virt_src_col_.size(); ++v) {
+            if (!virt_info_key_[v].empty()) continue;     // the INFO column carries them
+            if (!col_visible_[v]) { all = false; continue; }
+            const std::string n = src_name((int)v);
+            if (!n.empty() && std::find(shown.begin(), shown.end(), n) == shown.end()) shown.push_back(n);
+        }
+        e.select_cols.clear();
+        if (!all)
+            for (const auto& n : shown) e.select_cols += (e.select_cols.empty() ? "" : ",") + n;
+        *out = std::move(e);
+        return "";
+    }
+
     bool execute_cmd(const std::string& raw) {
         std::string c = raw;
         strip_ws_inplace(c);
         if (c.empty()) return false;
 
         if (c == "q" || c == "quit") return true;
+
+        // region R — open the tab's file again for region R (UCSC
+        // coordinates, as -r takes them); `:region` alone shows the whole
+        // file. The view starts afresh; on an error the tab stays as it was.
+        if (c == "region" || c.rfind("region ", 0) == 0 || c.rfind("region\t", 0) == 0) {
+            std::string r = c.size() > 7 ? c.substr(7) : std::string();
+            strip_ws_inplace(r);
+            const TabState& t = tabs_[(size_t)active_tab_];
+            if (t.path.empty() || t.path == "-" || path_is_pipe(t.path)) {
+                cmd_err_ = "standard input was read once; :region needs a file";
+                return false;
+            }
+            for (size_t i = 0; i < tabs_.size(); ++i)
+                if ((int)i != active_tab_ && tabs_[i].path == t.path) {
+                    cmd_err_ = "a file of several tabs keeps the region it was opened with";
+                    return false;
+                }
+            Config e = base_cfg_;
+            e.path = t.path;
+            e.paths = {t.path};
+            e.region = r;
+            e.regions_file.clear();
+            e.slop = 0;
+            e.coords_one_based = false;
+            e.tab.clear();
+            e.filter_expr.clear();
+            e.sort_col.clear();
+            e.select_cols.clear();
+            if (auto err = apply_region_modifiers(e); !err.empty()) { cmd_err_ = err; return false; }
+            std::unique_ptr<TabularSource> ns;
+            if (auto err = open_source(e.path, e, &ns); !err.empty() || !ns) {
+                cmd_err_ = shorten_reader_error(err.empty() ? "cannot open the file" : err);
+                return false;
+            }
+            if (!r.empty() && !ns->region_applied()) {
+                cmd_err_ = "this format has no region index";
+                return false;
+            }
+            sources_[(size_t)active_tab_] = std::move(ns);
+            src_ = sources_[(size_t)active_tab_].get();
+            region_of_tab_[active_tab_] = e.region;
+            TabState fresh;
+            fresh.path  = t.path;
+            fresh.label = src_->tab_label();
+            tabs_[(size_t)active_tab_] = std::move(fresh);
+            text_view_ = src_->is_text();
+            hscroll_ = 0;
+            detail_row_ = -1;
+            setup_for_active_source();
+            top_row_ = 0; left_col_ = 0; freeze_first_col_ = false;
+            cur_row_ = 0; cur_col_ = 0;
+            cache_.clear(); lru_.clear();
+            sort_col_ = -1; sort_desc_ = false; sort_order_.clear();
+            order_materialized_ = false;
+            partial_pass_ = false;
+            read_error_.clear();
+            filter_active_ = false; filter_expr_str_.clear(); filter_total_ = 0;
+            search_mode_ = SearchMode::None; search_query_.clear(); search_query_lc_.clear(); search_row_ = -1;
+            tabs_[(size_t)active_tab_].initialised = true;
+            const int64_t n = src_->total_rows();
+            copy_status_ = (r.empty() ? std::string("whole file") : "region " + e.region) +
+                           (n >= 0 ? ": " + digits_with_sep(std::to_string(n)) + " rows" : std::string());
+            return false;
+        }
+
+        // w FILE / w! FILE — write the view (filter, sort, shown columns) to
+        // FILE, its format from the extension, as vvg's Export does.
+        if (c.rfind("w ", 0) == 0 || c.rfind("w! ", 0) == 0 || c == "w" || c == "w!") {
+            const bool force = c.size() > 1 && c[1] == '!';
+            std::string out = c.substr(std::min(c.size(), (size_t)(force ? 2 : 1)));
+            strip_ws_inplace(out);
+            ExportFormat fmt;
+            if (out.empty() || !export_format_for_path(out, &fmt)) {
+                cmd_err_ = "usage: :w FILE.parquet | .arrow | .tsv | .csv | .json | .ndjson";
+                return false;
+            }
+            std::error_code ec;
+            if (!force && std::filesystem::exists(out, ec)) {
+                cmd_err_ = "'" + out + "' exists; :w! " + out + " replaces it";
+                return false;
+            }
+            Config e;
+            std::string note;
+            if (auto err = view_config(&e, &note); !err.empty()) { cmd_err_ = err; return false; }
+            mvprintw(scr_r_ - 1, 0, " Writing %s… ", out.c_str());
+            clrtoeol(); refresh();
+            ExportProgress prog;
+            if (auto err = export_view(e, out, fmt, &prog); !err.empty()) {
+                cmd_err_ = err;
+                return false;
+            }
+            copy_status_ = "wrote " + std::to_string((long long)prog.rows.load()) + " rows to " + out +
+                           (note.empty() ? "" : " (" + note + ")");
+            return false;
+        }
 
         // slice N — jump to a specific slice index in NPZ 3-D+ arrays.
         if (c.rfind("slice ", 0) == 0 || c.rfind("slice\t", 0) == 0) {
@@ -3116,6 +3299,8 @@ private:
             {"q  Esc",       "quit  (Esc clears search / closes overlays)"},
             {"↑↓  j k",      "move the cell cursor one row"},
             {"PgUp PgDn  ␣ b","move the cell cursor one page"},
+            {"^D  ^U",        "half a page down / up"},
+            {"N then j k h l","a count repeats a move: 12j, 5l, 3␣; 100G goes to row 100"},
             {"g  G  Home End","first / last row"},
             {"←→  h l",      "move the cell cursor one column"},
             {",  .",          "narrow / widen the cursor's column"},
@@ -3128,11 +3313,14 @@ private:
             {"&",             "live filter: hide non-matching rows; empty input clears"},
             {"c",             "show / hide columns (overlay)"},
             {"y",             "copy the cursor's cell to the clipboard (OSC52)"},
+            {"Y",             "copy the vv command that reproduces this view"},
             {"T",             "pick a color theme (saved to ~/.config/vv/config)"},
             {"t",             "JSON: the tree view of the file (t there comes back)"},
-            {":",             "command line: :N (jump), :q, :theme NAME, :slice N"},
+            {":",             "command line: :N (jump), :q, :theme NAME, :slice N,"},
+            {"",              "  :w FILE (write the view; :w! replaces), :region R (re-query)"},
             {"m{a-z}  '{a-z}","mark the cursor's row / jump to a mark ('' jumps back)"},
             {"in / & : bars", "←→ ^B ^F  Home End ^A ^E  Del ^D  ^U ^K ^W (word); UTF-8"},
+            {"",              "↑ ↓ earlier / later lines entered in that bar"},
             {"Tab  Shift-Tab","next / previous tab (with multiple files)"},
             {"[  ]",          "step slice axis (NPZ 3-D+ arrays only)"},
             {"Enter",         "open detail pane for the cursor's row"},
@@ -3447,7 +3635,8 @@ public:
           tui_cap_(cfg.max_col_w_set ? cfg.max_col_w : std::max(cfg.max_col_w, 50)),
           w_set_(cfg.max_col_w_set),
           no_index_(cfg.no_index),
-          max_cols_cfg_(cfg.max_cols)
+          max_cols_cfg_(cfg.max_cols),
+          base_cfg_(cfg)
     {
         if (cfg.scrolloff >= 0) scrolloff_ = cfg.scrolloff;
         // Build per-tab snapshot slots up front. We materialise the active
@@ -3827,6 +4016,7 @@ public:
             // ── Search input mode ────────────────────────────────────────────
             if (search_mode_ == SearchMode::Input) {
                 if (ch == '\n' || ch == KEY_ENTER) {
+                    search_hist_.add(search_input_);
                     if (!search_input_.empty()) {
                         search_query_ = search_input_;
                         search_query_lc_ = search_query_;
@@ -3846,7 +4036,7 @@ public:
                 } else if (ch == 27) {    // Esc — cancel
                     search_mode_  = SearchMode::None;
                     search_input_.clear();
-                } else {
+                } else if (!search_hist_.key(ch, search_input_, search_cur_)) {
                     line_edit_key(search_input_, search_cur_, ch);
                 }
                 continue;
@@ -3855,6 +4045,7 @@ public:
             // ── Live-filter input mode ──────────────────────────────────────
             if (filter_mode_ == FilterMode::Input) {
                 if (ch == '\n' || ch == KEY_ENTER) {
+                    filter_hist_.add(filter_input_);
                     if (filter_input_.empty()) {
                         // Empty commit = clear the filter.
                         filter_mode_   = FilterMode::None;
@@ -3885,7 +4076,8 @@ public:
                     filter_mode_ = FilterMode::None;
                     filter_input_.clear();
                     filter_err_.clear();
-                } else if (line_edit_key(filter_input_, filter_cur_, ch)) {
+                } else if (filter_hist_.key(ch, filter_input_, filter_cur_) ||
+                           line_edit_key(filter_input_, filter_cur_, ch)) {
                     filter_err_.clear();
                 }
                 continue;
@@ -3894,6 +4086,7 @@ public:
             // ── Command-line input mode (`:`) ───────────────────────────────
             if (cmd_mode_ == CmdMode::Input) {
                 if (ch == '\n' || ch == KEY_ENTER) {
+                    cmd_hist_.add(cmd_input_);
                     if (execute_cmd(cmd_input_)) quit = true;
                     if (cmd_err_.empty()) {
                         cmd_mode_ = CmdMode::None;
@@ -3904,7 +4097,8 @@ public:
                     cmd_mode_ = CmdMode::None;
                     cmd_input_.clear();
                     cmd_err_.clear();
-                } else if (line_edit_key(cmd_input_, cmd_cur_, ch)) {
+                } else if (cmd_hist_.key(ch, cmd_input_, cmd_cur_) ||
+                           line_edit_key(cmd_input_, cmd_cur_, ch)) {
                     cmd_err_.clear();
                 }
                 continue;
@@ -3951,7 +4145,17 @@ public:
 
             // The "copied: …" indicator stays on the status bar until the
             // next non-`y` key.
-            if (ch != 'y' && ch != KEY_RESIZE) copy_status_.clear();
+            if (ch != 'y' && ch != 'Y' && ch != KEY_RESIZE) copy_status_.clear();
+
+            // A count before a motion: 12j, 5l, 3 PgDn, 100G (row 100, as :100).
+            if ((ch >= '1' && ch <= '9') || (ch == '0' && count_ > 0)) {
+                count_ = std::min<int64_t>(count_ * 10 + (ch - '0'), 1000000000);
+                copy_status_ = "count " + std::to_string(count_);
+                continue;
+            }
+            const bool    counted = count_ > 0;
+            const int64_t reps    = counted ? count_ : 1;
+            if (ch != KEY_RESIZE) count_ = 0;
 
             switch (ch) {
                 case 'q': case 'Q': quit = true; break;
@@ -3984,18 +4188,29 @@ public:
                 case KEY_DOWN: case 'j':
                     // Moving the cursor past the last loaded row is what pulls
                     // more of a streaming source in, so allow it while tr < 0.
-                    if (tr < 0 || cur_row_ + 1 < tr) ++cur_row_; break;
-                case KEY_UP: case 'k':
-                    if (cur_row_ > 0) --cur_row_; break;
-                case KEY_NPAGE: case ' ':
-                    cur_row_ = (tr >= 0) ? std::min(cur_row_ + dl, tr - 1)
-                                         : cur_row_ + dl;
+                    cur_row_ = (tr >= 0) ? std::min(cur_row_ + reps, tr - 1) : cur_row_ + reps;
                     if (cur_row_ < 0) cur_row_ = 0;
                     break;
+                case KEY_UP: case 'k':
+                    cur_row_ = std::max<int64_t>(0, cur_row_ - reps); break;
+                case 4:      // Ctrl-D: half a page down
+                case KEY_NPAGE: case ' ': {
+                    const int64_t step = (ch == 4 ? std::max(1, dl / 2) : dl) * reps;
+                    cur_row_ = (tr >= 0) ? std::min(cur_row_ + step, tr - 1)
+                                         : cur_row_ + step;
+                    if (cur_row_ < 0) cur_row_ = 0;
+                    break;
+                }
+                case 21:     // Ctrl-U: half a page up
                 case KEY_PPAGE: case 'b':
-                    cur_row_ = std::max<int64_t>(0, cur_row_ - dl); break;
+                    cur_row_ = std::max<int64_t>(0, cur_row_ - (ch == 21 ? std::max(1, dl / 2) : dl) * reps);
+                    break;
                 case 'g': case KEY_HOME: cur_row_ = 0; top_row_ = 0; break;
                 case 'G': case KEY_END:
+                    if (counted && ch == 'G') {     // 100G: row 100, as :100
+                        execute_cmd(std::to_string(reps));
+                        break;
+                    }
                     // For streaming sources we must read to EOF before we know
                     // the last row.
                     if (!order_materialized_) {
@@ -4009,20 +4224,22 @@ public:
                     // Text: there is one column, so h/l scroll the line
                     // sideways instead (less -S). Half a screen per press,
                     // which is what makes a wide log navigable at all.
-                    if (text_view_) { hscroll_ += std::max(1, text_hstep()); break; }
-                    if (cur_col_ + 1 < num_cols_) {
+                    if (text_view_) { hscroll_ += std::max(1, text_hstep()) * (int)reps; break; }
+                    for (int64_t k = 0; k < reps && cur_col_ + 1 < num_cols_; ++k) {
                         int n = next_visible_col(cur_col_ + 1, +1);
-                        if (n > cur_col_) cur_col_ = n;
+                        if (n <= cur_col_) break;
+                        cur_col_ = n;
                     }
                     break;
                 case KEY_LEFT: case 'h':
                     if (text_view_) {
-                        hscroll_ = std::max(0, hscroll_ - std::max(1, text_hstep()));
+                        hscroll_ = std::max(0, hscroll_ - std::max(1, text_hstep()) * (int)reps);
                         break;
                     }
-                    if (cur_col_ > 0) {
+                    for (int64_t k = 0; k < reps && cur_col_ > 0; ++k) {
                         int n = next_visible_col(cur_col_ - 1, -1);
-                        if (n < cur_col_) cur_col_ = n;
+                        if (n >= cur_col_) break;
+                        cur_col_ = n;
                     }
                     break;
                 case '0':
@@ -4108,6 +4325,7 @@ public:
                     // search input bar: collect into filter_input_, commit
                     // on Enter, abort with Esc.
                     filter_mode_   = FilterMode::Input;
+                    filter_hist_.open();
                     filter_input_  = filter_expr_str_;  // pre-fill with current
                     filter_cur_    = std::string::npos;
                     filter_err_.clear();
@@ -4117,6 +4335,7 @@ public:
                     // :<N> (jump to row), :q / :quit, :theme NAME. Errors
                     // stay in the bar so the user can edit and retry.
                     cmd_mode_  = CmdMode::Input;
+                    cmd_hist_.open();
                     cmd_input_.clear();
                     cmd_cur_   = std::string::npos;
                     cmd_err_.clear();
@@ -4139,6 +4358,17 @@ public:
                     copy_status_ = "copied: " + preview;
                     break;
                 }
+                case 'Y': {
+                    // The vv command that reproduces this view (file, tab,
+                    // region, filter, sort, shown columns), to the clipboard.
+                    Config e;
+                    std::string note;
+                    if (auto err = view_config(&e, &note); !err.empty()) { copy_status_ = err; break; }
+                    const std::string line = view_command_line(e);
+                    osc52_copy(line);
+                    copy_status_ = "copied: " + line + (note.empty() ? "" : " (" + note + ")");
+                    break;
+                }
                 case '.':
                     col_widths_[cur_col_] = std::min(256, col_widths_[cur_col_] + 4);
                     if (cur_col_ < (int)width_manual_.size()) width_manual_[cur_col_] = true;
@@ -4149,12 +4379,14 @@ public:
                     break;
                 case '/':
                     search_mode_  = SearchMode::Input;
+                    search_hist_.open();
                     search_input_.clear();
                     search_cur_   = std::string::npos;
                     search_dir_forward_ = true;
                     break;
                 case '?':
                     search_mode_  = SearchMode::Input;
+                    search_hist_.open();
                     search_input_.clear();
                     search_cur_   = std::string::npos;
                     search_dir_forward_ = false;

@@ -207,6 +207,8 @@ $ vv tests/data/tiny.lociss        # default when stdout is a terminal
 | `h j k l` / ←↓↑→ | move the cell cursor (the viewport follows it)      |
 | `Space` / `PgDn` / `b` / `PgUp` | scroll one page                       |
 | `g` / `G`      | top / bottom of file                                    |
+| Ctrl-D / Ctrl-U | half a page down / up                                  |
+| *count* + move | `12j`, `5l`, `3` Space repeat the move; `100G` goes to row 100 |
 | `Enter`        | open the detail pane for the cursor's row               |
 | `/` / `?`      | search forward / backward (case-insensitive ECMAScript regex with literal fallback); on a matrix tab, gene (column) names, then row labels |
 | `n` / `N`      | next / previous match (direction-aware)                 |
@@ -214,7 +216,7 @@ $ vv tests/data/tiny.lociss        # default when stdout is a terminal
 | `z`            | toggle frozen first column                              |
 | `S`            | per-column stats popup (count, nulls, min, max, mean, histogram / distinct) |
 | `F`            | value counts of the cursor's column over the filtered rows; Enter filters to the value |
-| editing in `/ ? & :` | ←/→ (Ctrl-B/F), Home/End (Ctrl-A/E), Backspace, Delete (Ctrl-D), Ctrl-U / Ctrl-K (to start / end), Ctrl-W (word); UTF-8 text |
+| editing in `/ ? & :` | ←/→ (Ctrl-B/F), Home/End (Ctrl-A/E), Backspace, Delete (Ctrl-D), Ctrl-U / Ctrl-K (to start / end), Ctrl-W (word); UTF-8 text; ↑ / ↓ recall the lines entered in that bar this session |
 | `s`            | sort by the cursor's column (toggle asc / desc)         |
 | `u`            | undo / clear the active sort                            |
 | `&`            | live filter: hide non-matching rows (empty input clears)|
@@ -224,7 +226,8 @@ $ vv tests/data/tiny.lociss        # default when stdout is a terminal
 | mouse click    | column header → sort by column; data row → scroll to top|
 | mouse 2-click  | data row → open detail pane (same as `Enter`)           |
 | Shift + drag   | select text for the OS clipboard (terminal-side)        |
-| `:`            | command line — `:N` (jump to row), `:q` (quit), `:theme NAME` |
+| `:`            | command line — `:N` (jump to row), `:q` (quit), `:theme NAME`, `:w FILE` (write the view — filter, sort, shown columns — in the format of FILE's extension; `:w!` replaces an existing file), `:region R` (read the file again for region R, UCSC coordinates; `:region` alone: the whole file) |
+| `Y`            | copy the `vv` command that reproduces the view (file, tab, region, filter, sort, shown columns) |
 | `m` *letter* / `'` *letter* | mark the cursor's row and column / jump back to it, per tab (marks follow their row through a sort or filter); `''` returns to where the last jump came from |
 | Tab / Shift+Tab| next / previous file tab (when multiple files are opened) |
 | `t`            | on a JSON file's tab: its tree view (`t` there on the document comes back) |

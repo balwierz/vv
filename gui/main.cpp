@@ -4226,17 +4226,7 @@ private:
     // Output format from the file extension (.parquet/.pq, .arrow/.feather/
     // .ipc, .tsv/.tab/.txt, .csv, .json, .ndjson/.jsonl).
     static bool exportFormatForPath(const QString& path, ExportFormat* f) {
-        const QString ext = QFileInfo(path).suffix().toLower();
-        if (ext == QLatin1String("parquet") || ext == QLatin1String("pq")) *f = ExportFormat::Parquet;
-        else if (ext == QLatin1String("arrow") || ext == QLatin1String("feather") ||
-                 ext == QLatin1String("ipc"))                            *f = ExportFormat::Arrow;
-        else if (ext == QLatin1String("tsv") || ext == QLatin1String("tab") ||
-                 ext == QLatin1String("txt"))                            *f = ExportFormat::Tsv;
-        else if (ext == QLatin1String("csv"))                             *f = ExportFormat::Csv;
-        else if (ext == QLatin1String("json"))                            *f = ExportFormat::Json;
-        else if (ext == QLatin1String("ndjson") || ext == QLatin1String("jsonl")) *f = ExportFormat::Ndjson;
-        else return false;
-        return true;
+        return export_format_for_path(path.toStdString(), f);
     }
 
     void exportViewDialog(bool selection = false) {

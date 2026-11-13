@@ -6274,6 +6274,12 @@ if [ -n "$TUI_PTY" ]; then
     else
         FAIL=$((FAIL+1)); echo "  FAIL  tui_marks"
     fi
+    mkdir -p "$TMP/tui_commands"
+    if run_with_timeout 300 python3 "$HERE/tui_commands_check.py" "$VV" "$TMP/tui_commands"; then
+        PASS=$((PASS+1)); echo "  ok    tui_commands"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  tui_commands"
+    fi
     if run_with_timeout 120 python3 "$HERE/tui_markdown_check.py" "$VV" "$DATA/tiny.md"; then
         PASS=$((PASS+1)); echo "  ok    tui_markdown"
     else

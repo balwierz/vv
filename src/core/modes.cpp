@@ -378,6 +378,67 @@ std::string open_view_source(Config cfg, std::unique_ptr<TabularSource>* out) {
     return "";
 }
 
+static std::string shell_quote(const std::string& s) {
+    if (!s.empty() && s.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+                                          "0123456789_./:=,@%+-") == std::string::npos)
+        return s;
+    std::string o = "'";
+    for (char c : s) o += c == '\'' ? std::string("'\\''") : std::string(1, c);
+    return o + "'";
+}
+
+std::string view_command_line(const Config& cfg) {
+    std::string w = "vv";
+    auto opt = [&](const char* flag, const std::string& v) { w += std::string(" ") + flag + " " + shell_quote(v); };
+    if (!cfg.tab.empty()) opt("--tab", cfg.tab);
+    if (cfg.contigs) {
+        w += " --contigs";
+    } else {
+        if (!cfg.region.empty()) {
+            opt("-r", cfg.region);
+            if (cfg.coords_one_based) opt("--coords", "NCBI");
+            if (cfg.slop > 0) opt("--slop", std::to_string(cfg.slop));
+            if (!cfg.regions_file.empty()) opt("--regions-file", cfg.regions_file);
+            if (!cfg.index_path.empty()) opt("--index", cfg.index_path);
+        }
+        if (!cfg.pileup_ref.empty()) opt("-f", cfg.pileup_ref);
+        if (cfg.pileup) w += " --pileup";
+        if (!cfg.bam_tags.empty()) opt("--tags", cfg.bam_tags);
+        if (cfg.gt_stats) w += " --gt-stats";
+        if (!cfg.expand_col.empty()) opt("--expand", cfg.expand_col);
+    }
+    if (!cfg.samples.empty() && cfg.samples != "struct") opt("--samples", cfg.samples);
+    if (!cfg.matrix.empty() && cfg.matrix != "wide") opt("--matrix", cfg.matrix);
+    if (!cfg.col_types.empty()) {
+        std::string t;
+        for (const auto& [c, ty] : cfg.col_types) t += (t.empty() ? "" : ",") + c + ":" + ty;
+        opt("--types", t);
+    }
+    if (!cfg.filter_expr.empty()) opt("--filter", cfg.filter_expr);
+    if (!cfg.sort_col.empty()) {
+        // --sort reads a trailing :asc / :desc as the direction.
+        const bool colon = cfg.sort_col.find(':') != std::string::npos;
+        opt("--sort", cfg.sort_col + (cfg.sort_desc ? ":desc" : colon ? ":asc" : ""));
+    }
+    if (!cfg.select_cols.empty()) opt("--select", cfg.select_cols);
+    return w + " " + shell_quote(cfg.path);
+}
+
+bool export_format_for_path(const std::string& path, ExportFormat* f) {
+    const size_t dot = path.find_last_of("./\\");
+    if (dot == std::string::npos || path[dot] != '.') return false;
+    std::string ext = path.substr(dot + 1);
+    for (auto& c : ext) c = (char)std::tolower((unsigned char)c);
+    if (ext == "parquet" || ext == "pq")                        *f = ExportFormat::Parquet;
+    else if (ext == "arrow" || ext == "feather" || ext == "ipc") *f = ExportFormat::Arrow;
+    else if (ext == "tsv" || ext == "tab" || ext == "txt")      *f = ExportFormat::Tsv;
+    else if (ext == "csv")                                      *f = ExportFormat::Csv;
+    else if (ext == "json")                                     *f = ExportFormat::Json;
+    else if (ext == "ndjson" || ext == "jsonl")                 *f = ExportFormat::Ndjson;
+    else return false;
+    return true;
+}
+
 std::string output_conflict(const std::string& in_path, const std::string& out_path) {
     namespace fs = std::filesystem;
     if (out_path.empty() || out_path == "-" || in_path.empty() || in_path == "-") return "";

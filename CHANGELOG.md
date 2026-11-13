@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- The table viewer's command line: `:w FILE` writes the view (filter, sort,
+  shown columns) in the format of FILE's extension, as vvg's Export does
+  (`:w!` replaces an existing file); `:region R` reads the tab's file again
+  for another region. `Y` copies the `vv` command that reproduces the view.
+- Viewer keys: a count before a move (`12j`, `5l`, `3` Space; `100G` goes
+  to row 100), Ctrl-D / Ctrl-U for half a page, and Up / Down in the `/`,
+  `&` and `:` bars for the lines entered there this session.
 - Themes `colorblind` (the Okabe–Ito palette; true / false are blue-green /
   vermillion rather than green / red) and `mono` (bold, dim and grey only,
   no colour), in `--theme`, the config file and the viewer's picker.
