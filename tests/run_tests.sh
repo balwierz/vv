@@ -3732,7 +3732,7 @@ assert_contains "select_exclude_parquet_keeps_hidden" "$RT" "MaxEndSoFar"
     --parquet "$TMP/prov.parquet" 2>/dev/null
 PROV=$("$VV" --info "$TMP/prov.parquet" | sed -n '/^Metadata/,$p')
 assert_eq_file_inline "provenance_parquet" "$(grep -o 'vv\.[a-z_]*: .*' <<<"$PROV" | tr '\n' '|')" \
-    "vv.version: $("$VV" --version | awk '{print $2}')|vv.source: tiny.csv|vv.source_bytes: 55|vv.filter: count > 100|vv.select: name,ratio|vv.sort: ratio:desc|"
+    "vv.version: $("$VV" --version | awk '{print $2}')|vv.source: tiny.csv|vv.source_bytes: $(wc -c < "$DATA/tiny.csv" | tr -d ' ')|vv.filter: count > 100|vv.select: name,ratio|vv.sort: ratio:desc|"
 "$VV" "$DATA/tiny.csv" --arrow "$TMP/prov.arrow" 2>/dev/null
 assert_contains "provenance_arrow" "$("$VV" --info "$TMP/prov.arrow")" "vv.source: tiny.csv"
 "$VV" "$DATA/tiny.csv" --no-provenance --parquet "$TMP/noprov.parquet" 2>/dev/null
