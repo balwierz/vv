@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and repeats it in *Copy as vv Command*. A column the file lacks, a type
   other than the three, or `--types` on a non-CSV / TSV input is an error.
 
+### Changed
+- A value its column's type cannot hold names the column and, for a CSV /
+  TSV column whose type was inferred, the `--types` that reads it: `line
+  1320002: column 'CHR' holds 'X', which is not int64; the column types come
+  from the first 16 MiB, and --types CHR:string reads it`. Arrow's text was
+  `In CSV column #1: CSV conversion error to int64: invalid value 'X'`. The
+  same text shows in the viewer's status line and vvg's footer.
+
 ### Fixed
 - `--filter` (and the viewer's `&` bar and vvg's Filter box): a literal
   compares in the column's kind. A bare number against a text column, as in

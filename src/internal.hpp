@@ -1038,6 +1038,10 @@ std::string open_delimited_stream(std::shared_ptr<arrow::io::InputStream> input,
                                   char delim_override = 0, HeaderMode header_mode = HeaderMode::Auto,
                                   DelimitedHints hints = {});
 
+// A CSV / TSV read error that names a --types to read the file with ("…, and
+// --types CHR:string reads it"): the column and the type. False otherwise.
+bool parse_widen_hint(const std::string& msg, std::string* col, std::string* type);
+
 // True when `src` is a CSV / TSV reader that applied --types.
 bool delimited_took_types(const TabularSource& src);
 

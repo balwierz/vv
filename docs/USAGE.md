@@ -604,7 +604,7 @@ line. `--types` gives the type instead:
 
 ```
 $ vv --tsv gwas.tsv.gz
-vv: gwas.tsv.gz: Invalid: line 1320002: In CSV column #1: CSV conversion error to int64: invalid value 'X'
+vv: gwas.tsv.gz: Invalid: line 1320002: column 'CHR' holds 'X', which is not int64; the column types come from the first 16 MiB, and --types CHR:string reads it
 $ vv --types CHR:string --value-counts CHR gwas.tsv.gz
 ```
 

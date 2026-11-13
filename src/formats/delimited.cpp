@@ -1673,9 +1673,61 @@ public:
             if (!ok) return 0;
         }
     }
+    // A read error with the file line it happened at, and a value its column's
+    // type cannot hold named by column: Arrow says "In CSV column #K: CSV
+    // conversion error to int64: invalid value 'X'"; this says "column 'CHR'
+    // holds 'X', which is not int64", and, for a plain CSV / TSV column whose
+    // type was inferred, the --types that reads it (parse_widen_hint).
     arrow::Status with_line(const arrow::Status& st) const {
-        const int64_t n = st.ok() ? 0 : error_line(st);
-        return n > 0 ? st.WithMessage("line ", n, ": ", st.message()) : st;
+        if (st.ok()) return st;
+        const int64_t n = error_line(st);
+        std::string msg = conversion_message(st.message());
+        if (msg.empty()) msg = st.message();
+        return n > 0 ? st.WithMessage("line ", n, ": ", msg) : st.WithMessage(msg);
+    }
+
+    std::string conversion_message(const std::string& m) const {
+        const size_t k = m.find("In CSV column #");
+        const size_t t = m.find(": CSV conversion error to ");
+        const size_t v = m.find(": invalid value '");
+        if (k == std::string::npos || t == std::string::npos || v == std::string::npos || v < t ||
+            m.back() != '\'')
+            return "";
+        const int col = std::atoi(m.c_str() + k + 15);
+        const std::string type = m.substr(t + 26, v - t - 26);
+        const std::string value = m.substr(v + 17, m.size() - v - 18);
+        // Arrow's K is the column's index in the file: the shown schema holds
+        // every column unless only some are converted (full_schema_ has them).
+        std::string name;
+        bool known = false;
+        if (need_.active) {
+            if (full_schema_ && col >= 0 && col < full_schema_->num_fields()) {
+                name = full_schema_->field(col)->name();
+                known = true;
+                if (name.empty() && col == 0) name = kRowIndexColName;   // as shown
+            }
+        } else if (schema_ && col >= 0 && col < schema_->num_fields()) {
+            name = schema_->field(col)->name();
+            known = true;
+        }
+        if (!known) return "";
+        std::string out = "column '" + name + "' holds '" + value + "', which is not " + type;
+        const bool given = user_default_ ||
+            std::find(user_type_names_.begin(), user_type_names_.end(), name) != user_type_names_.end();
+        if (given) return out + " (the type --types gives it)";
+        if ((kind_ == DelimKind::CSV || kind_ == DelimKind::TSV) && dialect_ == TsvDialect::None) {
+            // int -> float when the value is a number, anything else -> text.
+            const bool integral = type.rfind("int", 0) == 0 || type.rfind("uint", 0) == 0;
+            char* end = nullptr;
+            const double d = value.empty() ? 0 : std::strtod(value.c_str(), &end);
+            (void)d;
+            const bool number = !value.empty() && end == value.c_str() + value.size();
+            const char* widened = (integral || type == "null") && number ? "float" : "string";
+            out += "; the column types come from the first " +
+                   std::to_string(std::max<int64_t>(1, csv_block_bytes() >> 20)) +
+                   " MiB, and --types " + name + ":" + widened + " reads it";
+        }
+        return out;
     }
 
     std::string new_bad_log() {
@@ -2563,6 +2615,19 @@ std::string open_delimited_stream(std::shared_ptr<arrow::io::InputStream> input,
                                                         hints);
     if (e.empty()) *out = std::move(s);
     return e;
+}
+bool parse_widen_hint(const std::string& msg, std::string* col, std::string* type) {
+    static const std::string kAnd = " MiB, and --types ", kEnd = " reads it";
+    const size_t a = msg.rfind(kAnd);
+    if (a == std::string::npos) return false;
+    const size_t b = msg.find(kEnd, a + kAnd.size());
+    if (b == std::string::npos) return false;
+    const std::string spec = msg.substr(a + kAnd.size(), b - a - kAnd.size());
+    const size_t c = spec.rfind(':');
+    if (c == std::string::npos || c == 0) return false;
+    *col = spec.substr(0, c);
+    *type = spec.substr(c + 1);
+    return *type == "float" || *type == "string";
 }
 bool delimited_took_types(const TabularSource& src) {
     auto* d = dynamic_cast<const DelimitedSource*>(&src);

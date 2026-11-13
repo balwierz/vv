@@ -2499,9 +2499,19 @@ PYBLK
     # it; a run that reads that column still fails.
     assert_eq_file_inline "csv_projection_count_skips_unused_column" "$("$VV" --count "$TMP/blk_typelater.tsv" 2>&1)" "2000001"
     assert_exit_code "csv_projection_used_column_still_fails" 1 "$VV" --select val --tsv "$TMP/blk_typelater.tsv"
-    # A value the column's type cannot hold, after the type sample: its file line.
+    # A value the column's type cannot hold, after the type sample: its file
+    # line, the column by name and the --types that reads it (Arrow says only
+    # "In CSV column #1: CSV conversion error to int64").
     assert_contains "bad_row_conversion_line" "$("$VV" --select val --tsv "$TMP/blk_typelater.tsv" 2>&1 >/dev/null)" \
-        "line 2000002: In CSV column #1: CSV conversion error to int64: invalid value 'notanumber'"
+        "line 2000002: column 'val' holds 'notanumber', which is not int64; the column types come from the first 16 MiB, and --types val:string reads it"
+    assert_contains "conversion_error_parallel_names_column" \
+        "$(VV_NO_PROJECTION=1 "$VV" -@ 4 --tsv "$TMP/blk_typelater.tsv" 2>&1 >/dev/null)" "line 2000002: column 'val' holds 'notanumber'"
+    assert_contains "conversion_error_stdin_names_column" \
+        "$("$VV" --select val --tsv - < "$TMP/blk_typelater.tsv" 2>&1 >/dev/null)" "column 'val' holds 'notanumber', which is not int64"
+    # A number where an integer was inferred: --types reads it as float.
+    { head -n 2000001 "$TMP/blk_typelater.tsv"; printf '9\t0.5\n'; } > "$TMP/blk_floatlater.tsv"
+    assert_contains "conversion_error_widens_to_float" \
+        "$("$VV" --select val --tsv "$TMP/blk_floatlater.tsv" 2>&1 >/dev/null)" "--types val:float reads it"
     # --types sets a column's type instead of the one inferred from the first
     # 16 MiB: the late "notanumber" reads as text, through the small-block
     # reader, the parallel one (-@ 4, a full scan) and the projected one.
@@ -2517,7 +2527,7 @@ PYBLK
     # itself: a stream that fails part-way is an error, not a shorter count.
     assert_exit_code "distinct_late_read_error_exit" 1 "$VV" --distinct --count "$TMP/blk_typelater.tsv"
     assert_contains "distinct_late_read_error_message" \
-        "$("$VV" --distinct --count "$TMP/blk_typelater.tsv" 2>&1 >/dev/null)" "line 2000002: In CSV column #1"
+        "$("$VV" --distinct --count "$TMP/blk_typelater.tsv" 2>&1 >/dev/null)" "line 2000002: column 'val'"
     # A conversion that fails part-way leaves no file: --parquet / --arrow
     # write <file>.part and rename it only once the input was read whole, so
     # no complete-looking file of the rows before the error is left, no
