@@ -456,6 +456,14 @@ $ vv --parquet peaks.parquet --compression zstd tests/data/tiny.bed
   that must be byte-identical across runs or must not name their source.
   The same holds for `--arrow`, for the viewer's `:w` and for vvg's
   Export, which record the view's filter, sort and shown columns.
+* `vv.source_header` carries the input's own record of where it came from,
+  one line per header line: a BAM / CRAM / SAM's `@PG` lines; a VCF / BCF's
+  `##` lines other than the `INFO`, `FORMAT`, `FILTER`, `ALT`, `contig`,
+  `fileformat`, `SAMPLE`, `PEDIGREE` and `META` definitions (`##source`,
+  `##reference`, `##bcftools_viewCommand`, `##GATKCommandLine`); a GFF /
+  GTF's `#!` and `##` pragmas other than `##gff-version` and
+  `##sequence-region`. Converting a file vv wrote passes its
+  `vv.source_header` on. The value is cut at 64 KiB.
 * `--parquet -` writes to stdout, only once the whole input was read. Parquet's footer-at-end requires
   seekable writes, so the data is spooled to a temp file under
   `/tmp` first and then streamed out — the result is

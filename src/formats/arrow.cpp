@@ -233,6 +233,13 @@ public:
         }
     }
 
+    // A file vv wrote: the header it carried from its own source.
+    std::vector<std::string> source_header() const override {
+        auto kv = schema_ ? schema_->metadata() : nullptr;
+        auto v = kv ? kv->Get("vv.source_header") : arrow::Result<std::string>(arrow::Status::KeyError(""));
+        return v.ok() ? split_lines(*v) : std::vector<std::string>{};
+    }
+
     arrow::Status read_chunk(int i, const std::vector<int>& col_indices,
                               std::shared_ptr<arrow::Table>* out) override {
         ensure(i);

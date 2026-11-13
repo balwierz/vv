@@ -109,6 +109,7 @@ class BamSource : public TabularSource {
     std::string                           path_;
     std::shared_ptr<arrow::Schema>        schema_;
     std::vector<std::string>              preamble_lines_;
+    std::vector<std::string>              source_header_;
     int                                   num_refs_   = 0;
     std::string                           fmt_name_;   // "BAM", "CRAM", or "SAM"
     std::vector<std::string>              tag_names_;  // --tags: aux tag columns
@@ -418,14 +419,17 @@ public:
             std::istringstream ss(std::string(self->hdr_->text,
                                               (size_t)self->hdr_->l_text));
             std::string line;
+            std::vector<std::string> all;
             while (std::getline(ss, line)) {
                 if (line.empty()) continue;
                 ++total;
                 if (total <= 20) self->preamble_lines_.push_back(line);
+                if (line.rfind("@PG", 0) == 0) all.push_back(line);
             }
             if (total > 20)
                 self->preamble_lines_.push_back(
                     "... (" + std::to_string(total - 20) + " more header lines)");
+            self->source_header_ = lineage_header_lines('@', all);
         }
 
         arrow::FieldVector fields = {
@@ -545,6 +549,7 @@ public:
     }
     void add_details(FileDetails& d) const override { header_details(path_, d); }
     std::vector<std::string> preamble_below() const override { return preamble_lines_; }
+    std::vector<std::string> source_header() const override { return source_header_; }
     std::string format_cell(int col_idx, std::string val) const override {
         if (col_idx == 3 || col_idx == 7) return digits_with_sep(val);  // POS, PNEXT
         return val;
@@ -1053,6 +1058,7 @@ class BcfSource : public TabularSource {
     std::string                              path_;
     std::shared_ptr<arrow::Schema>           schema_;
     std::vector<std::string>                 preamble_lines_;
+    std::vector<std::string>                 source_header_;
     int                                      n_samples_ = 0;
 
     mutable htsFile*    fp_  = nullptr;
@@ -1250,14 +1256,17 @@ public:
                 std::istringstream iss(std::string(hs.s, hs.l));
                 std::string line;
                 int total = 0;
+                std::vector<std::string> all;
                 while (std::getline(iss, line)) {
                     if (line.empty()) continue;
                     ++total;
                     if (total <= 20) self->preamble_lines_.push_back(line);
+                    if (line.rfind("##", 0) == 0) all.push_back(line);
                 }
                 if (total > 20)
                     self->preamble_lines_.push_back(
                         "... (" + std::to_string(total - 20) + " more header lines)");
+                self->source_header_ = lineage_header_lines('V', all);
             }
             free(hs.s);
             (void)hdr_text; (void)n_lines;
@@ -1350,6 +1359,7 @@ public:
     }
     void add_details(FileDetails& d) const override { header_details(path_, d); }
     std::vector<std::string> preamble_below() const override { return preamble_lines_; }
+    std::vector<std::string> source_header() const override { return source_header_; }
     std::string format_cell(int col_idx, std::string val) const override {
         if (col_idx == 1) return digits_with_sep(val);  // POS
         return val;

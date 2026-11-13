@@ -454,6 +454,7 @@ static int run_modes(Config cfg, const ModeCtx& ctx, Reread* rr) {
         report(cfg.path, shorten_reader_error(std::move(detail)));
         return 1;
     }
+    add_source_header(cfg, *src);
 
     // JSON on stdin, wanted as a document: print it from the decoded stream.
     if (auto json_doc = json_document_stream(src.get())) {

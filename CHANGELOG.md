@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `vv.filter`, `vv.select`, `vv.sort` and `vv.types` given. `--info` lists
   them; `--no-provenance` writes none. The viewer's `:w` and vvg's Export
   write the same keys for the view (its filter, sort and shown columns).
+  `vv.source_header` carries the input's own origin lines: a BAM / CRAM /
+  SAM's `@PG`, a VCF / BCF's `##source`, `##reference` and `##…Command`
+  lines, a GFF / GTF's `#!` / `##` pragmas, or a vv-written file's
+  `vv.source_header` when it is converted again.
 - `--bins N` for bigWig: each `-r` window (or chromosome) in N equal bins
   with the mean, min and max of the bases that have a value and their
   share (`coverage`), taken from the file's zoom levels when one suits the

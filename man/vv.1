@@ -911,6 +911,10 @@ input's name), \fBvv.source_bytes\fR and, when given, \fBvv.tab\fR,
 \fBvv.region\fR, \fBvv.filter\fR, \fBvv.select\fR, \fBvv.sort\fR,
 \fBvv.types\fR; \fB\-\-no\-provenance\fR leaves them out (also for
 \fB\-\-arrow\fR). The viewer's \fB:w\fR writes the same keys for its view.
+\fBvv.source_header\fR carries the input's own origin lines: a BAM / CRAM /
+SAM's \fB@PG\fR lines, a VCF / BCF's \fB##\fR lines other than the field,
+contig and fileformat definitions, a GFF / GTF's \fB#!\fR and \fB##\fR
+pragmas, or a vv-written file's \fBvv.source_header\fR (cut at 64 KiB).
 .TP
 .BI \-\-arrow " FILE" \fR, \fB\-\-feather\fR " FILE"
 Stream the input into an Arrow IPC file (a.k.a. Feather v2) at

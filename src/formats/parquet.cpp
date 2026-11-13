@@ -825,6 +825,12 @@ public:
         return b.empty() ? std::vector<std::string>{} : std::vector<std::string>{b};
     }
     std::string created_by() const override { return meta_->created_by(); }
+    // A file vv wrote: the header it carried from its own source.
+    std::vector<std::string> source_header() const override {
+        auto kv = meta_->key_value_metadata();
+        auto v = kv ? kv->Get("vv.source_header") : arrow::Result<std::string>(arrow::Status::KeyError(""));
+        return v.ok() ? split_lines(*v) : std::vector<std::string>{};
+    }
 
     // One leaf column's storage over all row groups: its Parquet types,
     // encodings, codecs, sizes, nulls and min / max. `summary` gets the line

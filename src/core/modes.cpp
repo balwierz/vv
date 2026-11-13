@@ -410,6 +410,61 @@ void fill_provenance(Config& cfg) {
         p.emplace_back("vv.selection", std::to_string(cfg.row_subset.size()) + " rows");
 }
 
+void add_source_header(Config& cfg, const TabularSource& src) {
+    auto& p = cfg.provenance;
+    if (p.empty()) return;
+    const auto lines = src.source_header();
+    if (lines.empty()) return;
+    constexpr size_t kCap = 64 * 1024;
+    std::string v;
+    size_t used = 0;
+    for (const auto& l : lines) {
+        if (v.size() + l.size() + 1 > kCap) break;
+        if (!v.empty()) v += '\n';
+        v += l;
+        ++used;
+    }
+    if (used < lines.size())
+        v += (v.empty() ? "" : "\n") + std::string("… (") + std::to_string(lines.size() - used) +
+             " more lines)";
+    auto at = p.begin();
+    for (auto it = p.begin(); it != p.end(); ++it)
+        if (it->first == "vv.source" || it->first == "vv.source_bytes") at = it + 1;
+    p.insert(at, {"vv.source_header", std::move(v)});
+}
+
+// Which header lines are a file's record of its origin (see
+// TabularSource::source_header). family: '@' SAM, 'V' VCF, 'G' GFF / GTF.
+std::vector<std::string> lineage_header_lines(char family, const std::vector<std::string>& lines) {
+    std::vector<std::string> out;
+    auto starts = [](const std::string& s, const char* p) { return s.rfind(p, 0) == 0; };
+    for (const auto& l : lines) {
+        bool keep = false;
+        if (family == '@') {
+            keep = starts(l, "@PG\t");
+        } else if (family == 'V') {
+            if (starts(l, "##")) {
+                static const char* const kDefs[] = {"INFO", "FORMAT", "FILTER", "ALT", "contig",
+                                                    "fileformat", "SAMPLE", "PEDIGREE", "META"};
+                const auto eq = l.find('=');
+                const std::string key = l.substr(2, eq == std::string::npos ? std::string::npos : eq - 2);
+                keep = std::none_of(std::begin(kDefs), std::end(kDefs),
+                                    [&](const char* d) { return key == d; });
+            }
+        } else if (family == 'G') {
+            keep = starts(l, "#!") || (starts(l, "##") && !starts(l, "###") &&
+                                       !starts(l, "##gff-version") && !starts(l, "##sequence-region") &&
+                                       !starts(l, "##FASTA"));
+        }
+        if (keep) {
+            std::string t = l;
+            while (!t.empty() && (t.back() == '\r' || t.back() == '\n')) t.pop_back();
+            out.push_back(std::move(t));
+        }
+    }
+    return out;
+}
+
 std::string shell_quote(const std::string& s) {
     if (!s.empty() && s.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
                                           "0123456789_./:=,@%+-") == std::string::npos)
@@ -527,6 +582,7 @@ std::string export_view(const Config& cfg_in, const std::string& out_path,
     else cfg.provenance.clear();
     std::unique_ptr<TabularSource> src;
     if (auto err = open_view_source(cfg, &src); !err.empty()) return err;
+    add_source_header(cfg, *src);
     if (src->preview_limit().capped())                 // stream a whole matrix
         if (auto full = src->full_matrix()) src = std::move(full);
     if (auto err = preview_refusal(*src, mode); !err.empty()) return err;

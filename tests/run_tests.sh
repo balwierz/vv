@@ -3769,6 +3769,25 @@ assert_eq_file_inline "provenance_parquet" "$(grep -o 'vv\.[a-z_]*: .*' <<<"$PRO
 assert_contains "provenance_arrow" "$("$VV" --info "$TMP/prov.arrow")" "vv.source: tiny.csv"
 "$VV" "$DATA/tiny.csv" --no-provenance --parquet "$TMP/noprov.parquet" 2>/dev/null
 refute_contains "provenance_off" "$("$VV" --info "$TMP/noprov.parquet")" "vv."
+# The source's own record of origin goes along as vv.source_header: a VCF's
+# ## lines other than the field / contig definitions (kept through --sort,
+# which replaces the source with its sorted rows), a SAM's @PG lines, and a
+# vv-written file's vv.source_header when it is converted again.
+printf '##fileformat=VCFv4.2\n##source=gen\n##INFO=<ID=AF,Number=1,Type=Float,Description="x">\n##contig=<ID=chr1>\n##x_viewCommand=view a.vcf\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\nchr1\t5\t.\tA\tG\t1\tPASS\tAF=1\n' \
+    > "$TMP/lineage.vcf"
+"$VV" "$TMP/lineage.vcf" --sort POS --parquet "$TMP/lineage.parquet" 2>/dev/null
+assert_contains "source_header_vcf" "$("$VV" --info "$TMP/lineage.parquet")" \
+    'vv.source_header: ##source=gen\n##x_viewCommand=view a.vcf'
+"$VV" "$TMP/lineage.parquet" --arrow "$TMP/lineage.arrow" 2>/dev/null
+assert_contains "source_header_chained" "$("$VV" --info "$TMP/lineage.arrow")" \
+    'vv.source_header: ##source=gen\n##x_viewCommand=view a.vcf'
+printf '@HD\tVN:1.6\n@SQ\tSN:c\tLN:9\n@PG\tID:bwa\tPN:bwa\tCL:bwa mem r.fa\n' > "$TMP/lineage.sam"
+printf 'q\t0\tc\t1\t60\t2M\t*\t0\t0\tAC\tII\n' >> "$TMP/lineage.sam"
+"$VV" "$TMP/lineage.sam" --parquet "$TMP/lineage_sam.parquet" 2>/dev/null
+assert_contains "source_header_sam" "$("$VV" --info "$TMP/lineage_sam.parquet")" \
+    'vv.source_header: @PG\tID:bwa\tPN:bwa\tCL:bwa mem r.fa'
+"$VV" "$TMP/lineage.vcf" --no-provenance --parquet "$TMP/lineage_off.parquet" 2>/dev/null
+refute_contains "source_header_off" "$("$VV" --info "$TMP/lineage_off.parquet")" "vv."
 # (column names only: the file's vv.select metadata names it)
 refute_contains "select_exclude_parquet_dropped_chrom" "$(awk '{print $1}' <<<"$RT")" "Chromosome"
 

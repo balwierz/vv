@@ -2552,6 +2552,14 @@ private:
         if (kind_ == DelimKind::BED) return {};
         return preamble_lines_;
     }
+    std::vector<std::string> source_header() const override {
+        switch (kind_) {
+            case DelimKind::SAM: return lineage_header_lines('@', preamble_lines_);
+            case DelimKind::VCF: return lineage_header_lines('V', preamble_lines_);
+            case DelimKind::GFF: return lineage_header_lines('G', preamble_lines_);
+            default:             return {};
+        }
+    }
 
     // Per-format: display coordinate columns with '_' digit grouping.
     std::string format_cell(int col_idx, std::string val) const override {

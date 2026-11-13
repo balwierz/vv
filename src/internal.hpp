@@ -1558,6 +1558,26 @@ std::string validate_lociss(const std::string& path);
 
 std::string shorten_reader_error(std::string msg);
 
+// The lines of a format's header that are its record of origin, for
+// TabularSource::source_header() (core/modes.cpp). family: '@' a SAM header
+// (@PG), 'V' a VCF header (## other than the field / contig definitions), 'G'
+// a GFF / GTF preamble (#! and ## pragmas other than ##gff-version /
+// ##sequence-region).
+std::vector<std::string> lineage_header_lines(char family, const std::vector<std::string>& lines);
+
+// `s` cut at each '\n' (no empty last line for a trailing newline).
+inline std::vector<std::string> split_lines(const std::string& s) {
+    std::vector<std::string> out;
+    size_t a = 0;
+    while (a < s.size()) {
+        size_t b = s.find('\n', a);
+        if (b == std::string::npos) b = s.size();
+        out.push_back(s.substr(a, b - a));
+        a = b + 1;
+    }
+    return out;
+}
+
 std::string print_describe(TabularSource& src, const Config& cfg);
 
 // The schema table (at most `max_cols` columns, 0 = all), then the file info.

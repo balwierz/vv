@@ -1207,6 +1207,7 @@ public:
     std::vector<std::string> preamble_above() const override { Lock l(hdf5_mutex()); return in_->preamble_above(); }
     std::string top_banner() const override { Lock l(hdf5_mutex()); return in_->top_banner(); }
     std::vector<std::string> preamble_below() const override { Lock l(hdf5_mutex()); return in_->preamble_below(); }
+    std::vector<std::string> source_header() const override { Lock l(hdf5_mutex()); return in_->source_header(); }
     std::string format_cell(int col, std::string val) const override {
         Lock l(hdf5_mutex()); return in_->format_cell(col, std::move(val));
     }

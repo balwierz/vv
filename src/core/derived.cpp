@@ -374,6 +374,7 @@ public:
     std::vector<std::string> preamble_below() const override {
         return inner_->preamble_below();
     }
+    std::vector<std::string> source_header() const override { return inner_->source_header(); }
     std::vector<std::string> hidden_for_display() const override {
         return inner_->hidden_for_display();
     }
@@ -499,6 +500,7 @@ public:
     std::string top_banner()  const override { return inner_->top_banner(); }
     std::vector<std::string> preamble_above() const override { return inner_->preamble_above(); }
     std::vector<std::string> preamble_below() const override { return inner_->preamble_below(); }
+    std::vector<std::string> source_header() const override { return inner_->source_header(); }
     std::vector<std::string> hidden_for_display() const override {
         return inner_->hidden_for_display();
     }
@@ -843,6 +845,7 @@ public:
     std::vector<std::string> preamble_below() const override {
         return inner_->preamble_below();
     }
+    std::vector<std::string> source_header() const override { return inner_->source_header(); }
     std::vector<std::string> hidden_for_display() const override {
         return inner_->hidden_for_display();
     }
@@ -1349,6 +1352,7 @@ public:
     std::string top_banner()  const override { return inner_->top_banner(); }
     std::vector<std::string> preamble_above() const override { return inner_->preamble_above(); }
     std::vector<std::string> preamble_below() const override { return inner_->preamble_below(); }
+    std::vector<std::string> source_header() const override { return inner_->source_header(); }
     std::vector<std::string> hidden_for_display() const override {
         return inner_->hidden_for_display();
     }

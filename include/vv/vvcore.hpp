@@ -538,6 +538,14 @@ public:
     virtual std::string top_banner() const { return ""; }
     // Meta header lines shown after the schema (VCF/BAM/SAM/GFF).
     virtual std::vector<std::string> preamble_below() const { return {}; }
+    // The input's own record of where it came from, in full: a BAM / CRAM /
+    // SAM's @PG lines; a VCF / BCF's ## lines other than the INFO / FORMAT /
+    // FILTER / ALT / contig / fileformat / SAMPLE / PEDIGREE / META
+    // definitions (##source, ##reference, ##…Command); a GFF / GTF's #! and
+    // ## pragmas other than ##gff-version and ##sequence-region; for a
+    // Parquet / Arrow file vv wrote, its vv.source_header. Parquet / Arrow
+    // output carries it as vv.source_header.
+    virtual std::vector<std::string> source_header() const { return {}; }
     // Post-process a cell value for human-readable display (table view and TUI).
     // NOT called for delimited (--csv/--tsv) output.
     virtual std::string format_cell(int /*col_idx*/, std::string val) const { return val; }
@@ -773,6 +781,11 @@ bool export_format_for_path(const std::string& path, ExportFormat* f);
 // vv.selection ("N rows") for a row subset (vvg's Export Selection). Nothing with
 // cfg.no_provenance. Call before a sort clears the filter it applies.
 void fill_provenance(Config& cfg);
+// Add the opened source's source_header() to a filled cfg.provenance as
+// vv.source_header (its lines joined by "\n", cut at 64 KiB), after
+// vv.source_bytes. Nothing when cfg.provenance is empty. Call with the
+// source as opened, before a sort or sample replaces it.
+void add_source_header(Config& cfg, const TabularSource& src);
 // The vv command line that reproduces `cfg`'s view: the file, --tab, the
 // format options (-r, --index, -f, --pileup, --tags, --gt-stats, --expand,
 // --samples, --matrix, --types), --filter, one --sort per key, --select and
