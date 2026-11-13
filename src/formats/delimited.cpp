@@ -1237,7 +1237,16 @@ class DelimitedSource : public TabularSource {
                         arrow::Buffer::FromString(buf.substr(0, eof ? buf.size() : cut + 1)));
                     auto probe = arrow::csv::StreamingReader::Make(arrow::io::default_io_context(),
                                                                    probe_in, ropts, popts, copts);
+                    // Types are pinned by name: a header naming two columns
+                    // alike would give both the type of one of them. Such a
+                    // file is read in one-size blocks, as before.
+                    bool repeated = false;
                     if (probe.ok()) {
+                        std::set<std::string> names;
+                        for (const auto& f : (*probe)->schema()->fields())
+                            repeated = repeated || !names.insert(f->name()).second;
+                    }
+                    if (probe.ok() && !repeated) {
                         for (const auto& f : (*probe)->schema()->fields())
                             if (!copts.column_types.count(f->name()))
                                 copts.column_types[f->name()] = f->type();

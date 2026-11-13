@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   now written as `FILE.part` and renamed once the input was read whole; an
   existing `FILE` is kept on failure, and `-` writes nothing to stdout. The
   input file named as the output is refused, as vvg's export already did.
+- A CSV / TSV whose header names two columns alike (`a,a,b`) reads with each
+  column's own type. Types are pinned by name after the type sample, so the
+  second column took the first one's type and the read failed
+  (`In CSV column #1: CSV conversion error to int64`).
 
 ## [1.35.0] - 2026-11-04
 

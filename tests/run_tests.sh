@@ -2487,6 +2487,14 @@ PYBLK
         assert_eq_file_inline "partial_${fmt}_stdout_empty" \
             "$("$VV" --select val "--$fmt" - "$TMP/blk_typelater.tsv" 2>/dev/null | wc -c)" "0"
     done
+    # A header naming two columns alike: types are pinned by name, so the
+    # second `a` (text) took the first one's int64 and the read failed at
+    # line 2. Each column keeps its own type.
+    printf 'a,a,b\n1,x,3\n2,y,4\n' > "$TMP/dupname.csv"
+    assert_eq_file_inline "csv_repeated_header_name_reads" \
+        "$("$VV" --tsv --no-header "$TMP/dupname.csv" 2>&1 | tr '\t\n' ', ')" "1,x,3 2,y,4 "
+    assert_eq_file_inline "csv_repeated_header_name_types" \
+        "$("$VV" --schema "$TMP/dupname.csv" | awk 'NR>3 && NF==3 {printf "%s:%s ", $1, $2}')" "a:int64 a:string b:int64 "
     # The output named as the input is refused before anything is written.
     cp "$DATA/tiny.parquet" "$TMP/self.parquet"
     assert_exit_code "parquet_out_is_input_exit" 1 "$VV" "$TMP/self.parquet" --parquet "$TMP/./self.parquet"
