@@ -212,7 +212,7 @@ _vv() {
                 --parquet --arrow --feather --compression
                 --json --ndjson --md --markdown
                 --select --cols --filter
-                --schema --describe --count --stats --info --contigs --check --diff --no-provenance --seq-stats --flatten --tree --pretty --json-paths --no-tree --gt-stats --validate --decode-pileup --pileup --text
+                --schema --describe --count --stats --info --contigs --check --diff --no-provenance --fingerprint --seq-stats --flatten --tree --pretty --json-paths --no-tree --gt-stats --validate --decode-pileup --pileup --text
                 --exclude-flags --ff --require-flags --rf --min-mapq --min-bq --count-orphans --ignore-overlaps
                 --in-delimiter --header
                 --expand --formats --list-columns --list-tabs --on-bad-row --bad-rows --compute --types

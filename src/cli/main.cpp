@@ -47,6 +47,9 @@ static bool reread_wanted(const TabularSource& src, const Config& cfg, Reread* r
 }
 
 static int run_modes(Config cfg, const ModeCtx& ctx, Reread* rr);
+static int run_rereading(Config cfg, const ModeCtx& ctx);
+static int run_fingerprint(const Config& cfg, const ModeCtx& ctx);
+static const char* fingerprint_clash(const Config& cfg);
 
 int main(int argc, char** argv) {
     init_console();
@@ -128,7 +131,7 @@ int main(int argc, char** argv) {
         const bool doc = !cfg.force_text &&
                         (fends_ci(cfg.path, ".md")    || fends_ci(cfg.path, ".markdown") ||
                          fends_ci(cfg.path, ".mdown") || fends_ci(cfg.path, ".mkd"));
-        bool scripted = doc || cfg.check || cfg.diff || cfg.schema_only || cfg.stats_only || cfg.info || cfg.describe ||
+        bool scripted = doc || cfg.check || cfg.diff || cfg.fingerprint || cfg.schema_only || cfg.stats_only || cfg.info || cfg.describe ||
                         cfg.count || cfg.heatmap || !cfg.unique_cols.empty() ||
                         cfg.json_array || cfg.json_lines || cfg.md ||
                         cfg.delimiter || !cfg.parquet_out.empty() ||
@@ -137,7 +140,7 @@ int main(int argc, char** argv) {
                    (cfg.interactive ||
                     (!cfg.no_interactive && !cfg.head_rows_set &&
                      isatty(STDOUT_FILENO) && isatty(STDIN_FILENO)));
-        if (!tui && !cfg.check && !cfg.diff) {
+        if (!tui && !cfg.check && !cfg.diff && !(cfg.fingerprint && cfg.parquet_out.empty())) {
             report(cfg.path,
                    "multiple input files (" + std::to_string(cfg.paths.size()) +
                    " given) are only supported in the interactive viewer; "
@@ -164,6 +167,15 @@ int main(int argc, char** argv) {
             return cfg.paths.size() != 2 ? 2 : 1;
         }
         return same ? 0 : 1;
+    }
+
+    // --fingerprint: print each file's; with --parquet, record it (write_parquet).
+    if (cfg.fingerprint) {
+        if (const char* clash = fingerprint_clash(cfg)) {
+            std::fprintf(stderr, "vv: --fingerprint cannot be combined with %s\n", clash);
+            return 2;
+        }
+        if (cfg.parquet_out.empty()) return run_fingerprint(cfg, ModeCtx{report, C_BOLD, C_DIM, C_RST});
     }
 
     // --validate: LociSSD invariants check. Doesn't go through open_source —
@@ -397,9 +409,12 @@ int main(int argc, char** argv) {
         cfg.json_document = json_stdin && one_file && !json_tflag && !cfg.force_text;
     }
 
-    // The modes, again with a column widened when a CSV / TSV read stopped at
-    // a value its inferred type cannot hold (nothing was written yet).
-    const ModeCtx ctx{report, C_BOLD, C_DIM, C_RST};
+    return run_rereading(cfg, ModeCtx{report, C_BOLD, C_DIM, C_RST});
+}
+
+// The modes, again with a column widened when a CSV / TSV read stopped at a
+// value its inferred type cannot hold (nothing was written yet).
+static int run_rereading(Config cfg, const ModeCtx& ctx) {
     Reread rr;
     for (;;) {
         const int rc = run_modes(cfg, ctx, &rr);
@@ -408,9 +423,94 @@ int main(int argc, char** argv) {
         ++rr.attempts;
         reset_chunk_error();
         std::fprintf(stderr, "%svv:%s %s%s%s: %s; reading it again with --types %s:%s\n",
-                     C_BOLD, C_RST, C_DIM, cfg.path.c_str(), C_RST, rr.note.c_str(),
+                     ctx.bold, ctx.rst, ctx.dim, cfg.path.c_str(), ctx.rst, rr.note.c_str(),
                      rr.col.c_str(), rr.type.c_str());
     }
+}
+
+// --fingerprint: for each file, the SHA-256 of the text --tsv writes with the
+// same options, as `sha256sum` prints it.
+static const char* fingerprint_clash(const Config& cfg) {
+    return cfg.delimiter ? "--tsv / --csv / --delimiter"
+         : (cfg.json_array || cfg.json_lines) ? "--json"
+         : cfg.md ? "--md"
+         : !cfg.arrow_out.empty() ? "--arrow (it is recorded in Parquet output only)"
+         : cfg.describe ? "--describe"
+         : cfg.count ? "--count"
+         : cfg.info ? "--info"
+         : cfg.schema_only ? "--schema"
+         : cfg.stats_only ? "--stats"
+         : !cfg.unique_cols.empty() ? "--value-counts"
+         : cfg.heatmap ? "--heatmap"
+         : cfg.validate ? "--validate"
+         : cfg.vertical ? "--vertical"
+         : nullptr;
+}
+
+// The vv.fingerprint a Parquet file at `path` records, or "".
+static std::string recorded_fingerprint(const std::string& path, const Config& cfg) {
+    if (path == "-" || is_remote_url(path)) return "";
+    unsigned char magic[4] = {0, 0, 0, 0};
+    size_t got = 0;
+    if (std::FILE* f = std::fopen(path.c_str(), "rb")) {
+        got = std::fread(magic, 1, 4, f);
+        std::fclose(f);
+    }
+    if (got != 4 || std::memcmp(magic, "PAR1", 4) != 0) return "";
+    std::unique_ptr<TabularSource> src;
+    if (!open_source(path, cfg, &src).empty() || !src) return "";
+    auto md = src->schema()->metadata();
+    auto v = md ? md->Get("vv.fingerprint") : arrow::Result<std::string>(arrow::Status::KeyError(""));
+    return v.ok() ? *v : "";
+}
+
+// The view is the file as written: no option picks rows or columns.
+static bool view_is_whole_file(const Config& c) {
+    return c.select_cols.empty() && c.filter_expr.empty() && c.region.empty() && !c.head_rows_set &&
+           c.sort_col.empty() && c.sample_n == 0 && !c.tail_rows_set && !c.distinct && !c.no_header &&
+           c.col_types.empty() && c.tab.empty();
+}
+
+static int run_fingerprint(const Config& cfg, const ModeCtx& ctx) {
+    int worst = 0;
+    const std::vector<std::string> paths = cfg.paths.empty() ? std::vector<std::string>{cfg.path} : cfg.paths;
+    for (const auto& p : paths) {
+        if (auto why = preflight_path(p); !why.empty()) { ctx.report(p, why); worst = 1; continue; }
+        if (!cfg.force_text && (fends_ci(p, ".md") || fends_ci(p, ".markdown") ||
+                                fends_ci(p, ".mdown") || fends_ci(p, ".mkd"))) {
+            ctx.report(p, "--fingerprint: a Markdown document is not one table (--text reads it as text)");
+            worst = 1;
+            continue;
+        }
+        Config c = cfg;
+        c.path = p;
+        c.paths = {p};
+        c.delimiter = '\t';
+        Sha256 h;
+        ExportSink sink;
+        sink.hash = &h;
+        ExportSink* const prev = t_export;
+        t_export = &sink;
+        const int rc = run_rereading(c, ctx);
+        t_export = prev;
+        if (rc != 0) { worst = std::max(worst, rc); continue; }
+        const std::string hex = h.hex();
+        std::printf("%s  %s\n", hex.c_str(), p.c_str());
+        std::fflush(stdout);
+        // A file written with --parquet --fingerprint: check it against the
+        // value it records.
+        if (view_is_whole_file(cfg)) {
+            const std::string rec = recorded_fingerprint(p, cfg);
+            if (rec == "sha256:" + hex) {
+                std::fprintf(stderr, "%svv:%s %s%s%s: matches the vv.fingerprint it records\n",
+                             ctx.bold, ctx.rst, ctx.dim, p.c_str(), ctx.rst);
+            } else if (!rec.empty()) {
+                ctx.report(p, "differs from the vv.fingerprint it records (" + rec + ")");
+                worst = std::max(worst, 1);
+            }
+        }
+    }
+    return worst;
 }
 
 // Open the input and run the mode the flags ask for. Takes `cfg` by value:

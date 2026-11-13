@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   SAM's `@PG`, a VCF / BCF's `##source`, `##reference` and `##…Command`
   lines, a GFF / GTF's `#!` / `##` pragmas, or a vv-written file's
   `vv.source_header` when it is converted again.
+- `--fingerprint FILE...` prints the SHA-256 of the text `--tsv` writes for
+  each file, with the same options: one value for the same table in CSV,
+  Parquet, Arrow or any other format. With `--parquet` the file records it
+  as `vv.fingerprint`, and `vv --fingerprint` on that file checks it (exit 1
+  when it differs).
 - `--bins N` for bigWig: each `-r` window (or chromosome) in N equal bins
   with the mean, min and max of the bases that have a value and their
   share (`coverage`), taken from the file's zoom levels when one suits the

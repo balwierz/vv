@@ -166,6 +166,7 @@ complete -c vv -c vh -l diff               -d 'Compare two tables: columns, row 
 complete -c vv -c vh -l seq-stats          -d 'FASTA/FASTQ: count, lengths, N50, GC, Q20/Q30'
 complete -c vv -c vh -l bins -x            -d 'bigWig: N bins per window with mean, min, max, coverage'
 complete -c vv -c vh -l no-provenance      -d 'Write no vv.* metadata into Parquet / Arrow output'
+complete -c vv -c vh -l fingerprint        -d 'Print the SHA-256 of the --tsv text; record it with --parquet'
 complete -c vv -c vh -l flatten            -d 'struct columns as one column per leaf (st.a, st.b.c)'
 complete -c vv -c vh -l tree               -d 'JSON: open the tree viewer'
 complete -c vv -c vh -l pretty             -d 'JSON: print the document re-indented'

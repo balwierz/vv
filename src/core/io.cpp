@@ -17,22 +17,29 @@ void export_count(int64_t rows) {
     if (t_export && t_export->progress) t_export->progress->rows += rows;
 }
 
-void write_csv_field(const std::string& val, char sep) {
-    FILE* out = out_stream();
+void out_write(const char* p, size_t n) {
+    if (t_export && t_export->hash) t_export->hash->update(p, n);
+    else std::fwrite(p, 1, n, out_stream());
+}
+
+std::string csv_field_text(const std::string& val, char sep) {
     bool needs_quote = val.find(sep)  != std::string::npos ||
                        val.find('"')  != std::string::npos ||
                        val.find('\n') != std::string::npos ||
                        val.find('\r') != std::string::npos;
-    if (!needs_quote) {
-        std::fputs(val.c_str(), out);
-        return;
-    }
-    std::fputc('"', out);
+    if (!needs_quote) return val;
+    std::string q = "\"";
     for (char c : val) {
-        if (c == '"') std::fputc('"', out);   // double the quote
-        std::fputc(c, out);
+        if (c == '"') q += '"';   // double the quote
+        q += c;
     }
-    std::fputc('"', out);
+    q += '"';
+    return q;
+}
+
+void write_csv_field(const std::string& val, char sep) {
+    const std::string t = csv_field_text(val, sep);
+    out_write(t.data(), t.size());
 }
 
 // Suffix-match helper shared by DelimitedSource::open and open_source.

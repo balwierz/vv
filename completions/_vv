@@ -182,6 +182,7 @@ _vv() {
         '--seq-stats[FASTA/FASTQ summary: count, lengths, N50, GC, Q20/Q30]' \
         '--bins+[bigWig: N bins per window with mean, min, max, coverage]:bins: ' \
         '--no-provenance[Write no vv.* metadata into Parquet / Arrow output]' \
+        '--fingerprint[Print the SHA-256 of the --tsv text; record it with --parquet]' \
         '--flatten[Struct columns as one column per leaf (st.a, st.b.c)]' \
         '--tree[JSON: open the tree viewer]' \
         '--pretty[JSON: print the document re-indented]' \

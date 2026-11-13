@@ -1180,6 +1180,32 @@ making the files differ. `--select`, `--filter`, `-r` and `--tab` apply to
 both. Exit 0 when the tables are the same, 1 when they differ; `--json` gives
 the counts and differences as JSON.
 
+## `--fingerprint` (a checksum of the values)
+
+```
+$ vv --fingerprint genes.csv genes.parquet
+3d56d1a6b087714904b7aa99936130be23f827879de8a735e4aa3b2b2b9dc1e3  genes.csv
+3d56d1a6b087714904b7aa99936130be23f827879de8a735e4aa3b2b2b9dc1e3  genes.parquet
+```
+
+For each file, the SHA-256 of the text `--tsv` writes with the same options
+(`vv FILE --tsv | sha256sum` gives the same value). It depends on the column
+names and the values as text, in file order, not on the format or the
+compression, so a CSV and the Parquet file made from it agree. `--select`,
+`--filter`, `-r`, `-n`, `--sort`, `--sample`, `--tail`, `--distinct` and
+`--no-header` apply as they do to `--tsv`. A file that fails to read prints
+no line and makes the exit status 1. A Markdown document, which holds several
+tables, is refused.
+
+With `--parquet OUT`, the value of the rows written is stored in OUT as
+`vv.fingerprint` (`sha256:…`). Parquet holds second-resolution times and
+timestamps in milliseconds and `date64` as `date32`; the value is taken from
+the rows as stored, so it is what `vv --fingerprint OUT` computes. Given such
+a file and none of the options above, `vv --fingerprint` compares the two and
+reports `matches the vv.fingerprint it records` on stderr, or that it
+differs, with exit status 1. Arrow output cannot take the key after its data
+(the schema is written first), so `--fingerprint --arrow` is refused.
+
 ## JSON documents
 
 A `.json` / `.ndjson` / `.jsonl` file — or GeoJSON, a Jupyter notebook

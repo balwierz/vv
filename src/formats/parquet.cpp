@@ -254,6 +254,18 @@ public:
             return "Not a valid Parquet file: " + e;
         st = self->reader_->GetSchema(&self->schema_);
         if (!st.ok()) return "Error reading schema: " + st.ToString();
+        // The Arrow schema's metadata comes from the stored ARROW:schema, which
+        // a writer serialises before keys added at the end (vv.fingerprint):
+        // add the file's keys it lacks.
+        if (auto kv = self->meta_->key_value_metadata(); kv && kv->size() > 0) {
+            auto merged = self->schema_->metadata() ? self->schema_->metadata()->Copy()
+                                                    : std::make_shared<arrow::KeyValueMetadata>();
+            const int64_t before = merged->size();
+            for (int64_t i = 0; i < kv->size(); ++i)
+                if (kv->key(i) != "ARROW:schema" && merged->FindKey(kv->key(i)) < 0)
+                    merged->Append(kv->key(i), kv->value(i));
+            if (merged->size() != before) self->schema_ = self->schema_->WithMetadata(merged);
+        }
 
         // LociSSD detection: file-level KV metadata key `lociSSD_manifest`.
         // The derived `MaxEndSoFar` column is then hidden from display.

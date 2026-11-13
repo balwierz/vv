@@ -3788,6 +3788,47 @@ assert_contains "source_header_sam" "$("$VV" --info "$TMP/lineage_sam.parquet")"
     'vv.source_header: @PG\tID:bwa\tPN:bwa\tCL:bwa mem r.fa'
 "$VV" "$TMP/lineage.vcf" --no-provenance --parquet "$TMP/lineage_off.parquet" 2>/dev/null
 refute_contains "source_header_off" "$("$VV" --info "$TMP/lineage_off.parquet")" "vv."
+# --fingerprint prints the SHA-256 of the text --tsv writes with the same
+# options: one value for the same table as CSV, TSV and Arrow. With --parquet
+# the file records it as vv.fingerprint (seconds and date64 columns hashed as
+# Parquet stores them) and `vv --fingerprint FILE` checks the file against it.
+sha256_of() { python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'; }
+"$VV" "$DATA/tiny.csv" --arrow "$TMP/fp.arrow" 2>/dev/null
+assert_eq_file_inline "fingerprint_formats" \
+    "$("$VV" --fingerprint "$DATA/tiny.csv" "$DATA/tiny.tsv" "$TMP/fp.arrow" | awk '{print $1}' | sort -u)" \
+    "$("$VV" "$DATA/tiny.csv" --tsv | sha256_of)"
+assert_eq_file_inline "fingerprint_view_options" \
+    "$("$VV" --fingerprint --select name,ratio --filter 'count > 100' --sort ratio:desc "$DATA/tiny.csv" | awk '{print $1}')" \
+    "$("$VV" --select name,ratio --filter 'count > 100' --sort ratio:desc "$DATA/tiny.csv" --tsv | sha256_of)"
+"$VV" "$DATA/tiny.alltypes.arrow" --fingerprint --parquet "$TMP/fp.parquet" 2>/dev/null
+FPC=$("$VV" --fingerprint "$TMP/fp.parquet" 2>&1)
+assert_contains "fingerprint_recorded_matches" "$FPC" "matches the vv.fingerprint it records"
+assert_contains "fingerprint_recorded_info" "$("$VV" --info "$TMP/fp.parquet")" \
+    "vv.fingerprint: sha256:$(awk 'NR==1 {print $1}' <<<"$FPC")"
+"$VV" --fingerprint --count "$DATA/tiny.csv" >/dev/null 2>&1
+assert_eq_file_inline "fingerprint_clash_exit" "$?" "2"
+"$VV" --fingerprint "$DATA/tiny.csv" --arrow "$TMP/fp2.arrow" >/dev/null 2>&1
+assert_eq_file_inline "fingerprint_arrow_exit" "$?" "2"
+FPM=$("$VV" --fingerprint "$DATA/tiny.md" "$DATA/tiny.csv" 2>&1); FPM_RC=$?
+assert_contains "fingerprint_markdown_refused" "$FPM" "a Markdown document is not one table"
+assert_contains "fingerprint_markdown_others_printed" "$FPM" "  $DATA/tiny.csv"
+assert_eq_file_inline "fingerprint_markdown_exit" "$FPM_RC" "1"
+if python3 -c "import pyarrow.parquet" 2>/dev/null; then
+    # Values changed under the recorded key: the check fails.
+    python3 - "$TMP/fp_tiny.parquet" "$DATA/tiny.csv" "$VV" <<'PYEOF'
+import subprocess, sys, pyarrow as pa, pyarrow.parquet as pq
+out, src, vv = sys.argv[1:]
+subprocess.run([vv, src, "--fingerprint", "--parquet", out], check=True, capture_output=True)
+f = pq.ParquetFile(out)
+meta = {k: v for k, v in f.metadata.metadata.items() if k != b"ARROW:schema"}
+t = f.read()
+t = t.set_column(1, "count", pa.array([1, 2, 3], type=t.column(1).type))
+pq.write_table(t.replace_schema_metadata(meta), out)
+PYEOF
+    FPT=$("$VV" --fingerprint "$TMP/fp_tiny.parquet" 2>&1); FPT_RC=$?
+    assert_contains "fingerprint_recorded_differs" "$FPT" "differs from the vv.fingerprint it records"
+    assert_eq_file_inline "fingerprint_recorded_differs_exit" "$FPT_RC" "1"
+fi
 # (column names only: the file's vv.select metadata names it)
 refute_contains "select_exclude_parquet_dropped_chrom" "$(awk '{print $1}' <<<"$RT")" "Chromosome"
 

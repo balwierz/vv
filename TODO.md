@@ -103,9 +103,11 @@ Deferred until a file needs them (owner's decision, 2026-10-07).
 
 ## Output
 
-- **`--fingerprint`, and a source's own provenance.** The `vv.*` keys are
-  written; carrying a BAM's `@PG` / a VCF's `##source` forward, and a
-  content fingerprint of the input, are not.
+- **A Parquet file written from `tiny.jsonvals.arrow` does not read back.**
+  `vv tests/data/tiny.jsonvals.arrow --parquet x.parquet` succeeds; reading
+  `x.parquet` fails with "Expected all lists to be of size=2 but index 2 had
+  size=0". The column is `fl` (`fixed_size_list<double>[2]`, a null in row
+  2); `--select id,fl` alone reproduces it.
 
 ## Windows
 

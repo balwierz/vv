@@ -81,8 +81,10 @@ class OrderedWriter {
 public:
     using Job = std::function<void(std::string&)>;
 
-    OrderedWriter(FILE* out, int threads)
-        : out_(out), window_((size_t)std::max(1, threads) * 4), exact_(t_exact_floats) {
+    // hash: the text goes into it instead of `out` (null: the export sink's).
+    OrderedWriter(FILE* out, int threads, Sha256* hash = nullptr)
+        : out_(out), hash_(hash ? hash : t_export ? t_export->hash : nullptr),
+          window_((size_t)std::max(1, threads) * 4), exact_(t_exact_floats) {
         for (int t = 0; t < threads && threads > 1; ++t)
             pool_.emplace_back([this] { work(); });
     }
@@ -99,7 +101,7 @@ public:
         if (pool_.empty()) {
             buf_.clear();
             job(buf_);
-            std::fwrite(buf_.data(), 1, buf_.size(), out_);
+            emit(buf_);
             return;
         }
         std::unique_lock<std::mutex> lk(m_);
@@ -160,13 +162,20 @@ private:
             q_.pop_front();
             ++head_;
             lk.unlock();
-            std::fwrite(text.data(), 1, text.size(), out_);
+            emit(text);
             std::string().swap(text);          // free it outside the lock
             lk.lock();
         }
     }
 
+    // Writes happen on the thread that made the writer (in submit / finish).
+    void emit(const std::string& t) {
+        if (hash_) hash_->update(t.data(), t.size());
+        else std::fwrite(t.data(), 1, t.size(), out_);
+    }
+
     FILE* out_;
+    Sha256* hash_;
     size_t window_;
     bool exact_;
     std::vector<std::thread> pool_;
@@ -190,6 +199,42 @@ void submit_rows(OrderedWriter& w, int64_t n, int64_t cols,
         const int64_t r1 = std::min(n, r0 + range);
         w.submit([fmt, r0, r1](std::string& buf) { fmt(r0, r1, buf); });
     }
+}
+
+// Queue rows [0, n_rows) of `table` as delimited text: the columns at
+// `cols` (indices into the table), in that order, each field quoted as
+// write_csv_field quotes it.
+void submit_delimited(OrderedWriter& writer, const std::shared_ptr<arrow::Table>& table,
+                      const std::vector<int>& cols, int64_t n_rows, char sep, int threads) {
+    const int show_cols = (int)cols.size();
+    const bool check = format_check();
+    auto proto = std::make_shared<std::vector<ColCursor>>((size_t)show_cols);
+    for (int ci = 0; ci < show_cols; ++ci) {
+        (*proto)[ci].col = table->column(cols[ci]).get();
+        (*proto)[ci].app = pick_appender(*(*proto)[ci].col->type());
+    }
+    if (threads > 1) prepare_columns(*table, cols);
+    auto fmt = [table, proto, show_cols, sep, check](int64_t r0, int64_t r1,
+                                                     std::string& buf) {
+        thread_local std::vector<ColCursor> cur;   // no allocation per range
+        cur.assign(proto->begin(), proto->end());
+        for (auto& c : cur) c.seek(r0);
+        for (int64_t r = r0; r < r1; ++r) {
+            for (int ci = 0; ci < show_cols; ++ci) {
+                if (ci) buf += sep;
+                ColCursor& c = cur[ci];
+                if (!c.arr->IsNull(c.off)) {
+                    const size_t start = buf.size();
+                    c.app(*c.arr, c.off, buf);
+                    if (check) check_field(buf, start, *c.arr, c.off);
+                    finish_csv_field(buf, start, sep);
+                }
+                c.next();
+            }
+            buf += '\n';
+        }
+    };
+    submit_rows(writer, n_rows, show_cols, fmt);
 }
 
 }  // namespace
@@ -231,44 +276,17 @@ std::string write_delimited(TabularSource& src, const Config& cfg) {
 
     if (!cfg.no_header) {
         for (int ci = 0; ci < show_cols; ++ci) {
-            if (ci) std::fputc(sep, out);
+            if (ci) out_putc(sep);
             write_csv_field(src.schema()->field(requested[ci])->name(), sep);
         }
-        std::fputc('\n', out);
+        out_putc('\n');
     }
 
     const int threads = format_threads(*src.schema(), requested, effective_threads(cfg));
-    const bool check = format_check();
     OrderedWriter writer(out, threads);
-    auto print_rows = [&](std::shared_ptr<arrow::Table> table, int64_t n_rows) {
-        // Read from the read projection, emit in the user's column order.
-        auto proto = std::make_shared<std::vector<ColCursor>>((size_t)show_cols);
-        for (int ci = 0; ci < show_cols; ++ci) {
-            (*proto)[ci].col = table->column(req_in_read[ci]).get();
-            (*proto)[ci].app = pick_appender(*(*proto)[ci].col->type());
-        }
-        if (threads > 1) prepare_columns(*table, req_in_read);
-        auto fmt = [table, proto, show_cols, sep, check](int64_t r0, int64_t r1,
-                                                         std::string& buf) {
-            thread_local std::vector<ColCursor> cur;   // no allocation per range
-            cur.assign(proto->begin(), proto->end());
-            for (auto& c : cur) c.seek(r0);
-            for (int64_t r = r0; r < r1; ++r) {
-                for (int ci = 0; ci < show_cols; ++ci) {
-                    if (ci) buf += sep;
-                    ColCursor& c = cur[ci];
-                    if (!c.arr->IsNull(c.off)) {
-                        const size_t start = buf.size();
-                        c.app(*c.arr, c.off, buf);
-                        if (check) check_field(buf, start, *c.arr, c.off);
-                        finish_csv_field(buf, start, sep);
-                    }
-                    c.next();
-                }
-                buf += '\n';
-            }
-        };
-        submit_rows(writer, n_rows, show_cols, fmt);
+    // Read from the read projection, emit in the user's column order.
+    auto print_rows = [&](const std::shared_ptr<arrow::Table>& table, int64_t n_rows) {
+        submit_delimited(writer, table, req_in_read, n_rows, sep, threads);
     };
 
     // -n on Parquet: ask the source for just `head_rows` rows. ParquetSource's
@@ -544,6 +562,74 @@ private:
     bool to_stdout_ = false;
 };
 
+// A column as a Parquet file returns it: Parquet has no second-resolution
+// times or timestamps and no date64, so the writer stores timestamp[s] /
+// time32[s] in milliseconds and date64 as date32 (whole days, truncated). The
+// --fingerprint vv.fingerprint records is the text of the values as stored.
+static std::shared_ptr<arrow::Array> as_parquet_stores(const std::shared_ptr<arrow::Array>& a) {
+    using namespace arrow;
+    const auto& t = *a->type();
+    auto finish = [](auto& b) { return b.Finish().ValueOr(nullptr); };
+    if (t.id() == Type::TIMESTAMP && static_cast<const TimestampType&>(t).unit() == TimeUnit::SECOND) {
+        const auto& arr = static_cast<const TimestampArray&>(*a);
+        TimestampBuilder b(timestamp(TimeUnit::MILLI, static_cast<const TimestampType&>(t).timezone()),
+                           default_memory_pool());
+        if (!b.Reserve(arr.length()).ok()) return a;
+        for (int64_t i = 0; i < arr.length(); ++i)
+            arr.IsNull(i) ? b.UnsafeAppendNull() : b.UnsafeAppend((int64_t)((uint64_t)arr.Value(i) * 1000u));
+        auto out = finish(b);
+        return out ? out : a;
+    }
+    if (t.id() == Type::TIME32 && static_cast<const Time32Type&>(t).unit() == TimeUnit::SECOND) {
+        const auto& arr = static_cast<const Time32Array&>(*a);
+        Time32Builder b(time32(TimeUnit::MILLI), default_memory_pool());
+        if (!b.Reserve(arr.length()).ok()) return a;
+        for (int64_t i = 0; i < arr.length(); ++i)
+            arr.IsNull(i) ? b.UnsafeAppendNull() : b.UnsafeAppend((int32_t)((uint32_t)arr.Value(i) * 1000u));
+        auto out = finish(b);
+        return out ? out : a;
+    }
+    if (t.id() == Type::DATE64) {
+        const auto& arr = static_cast<const Date64Array&>(*a);
+        Date32Builder b(default_memory_pool());
+        if (!b.Reserve(arr.length()).ok()) return a;
+        for (int64_t i = 0; i < arr.length(); ++i)
+            arr.IsNull(i) ? b.UnsafeAppendNull() : b.UnsafeAppend((int32_t)(arr.Value(i) / 86400000));
+        auto out = finish(b);
+        return out ? out : a;
+    }
+    return a;
+}
+
+static bool parquet_changes_type(const arrow::DataType& t) {
+    using namespace arrow;
+    return (t.id() == Type::TIMESTAMP && static_cast<const TimestampType&>(t).unit() == TimeUnit::SECOND) ||
+           (t.id() == Type::TIME32 && static_cast<const Time32Type&>(t).unit() == TimeUnit::SECOND) ||
+           t.id() == Type::DATE64;
+}
+
+static std::shared_ptr<arrow::Table> as_parquet_stores(const std::shared_ptr<arrow::Table>& table) {
+    bool any = false;
+    for (const auto& f : table->schema()->fields()) any = any || parquet_changes_type(*f->type());
+    if (!any) return table;
+    std::vector<std::shared_ptr<arrow::ChunkedArray>> cols;
+    arrow::FieldVector fields;
+    for (int c = 0; c < table->num_columns(); ++c) {
+        auto col = table->column(c);
+        if (!parquet_changes_type(*col->type())) {
+            cols.push_back(col);
+            fields.push_back(table->schema()->field(c));
+            continue;
+        }
+        arrow::ArrayVector chunks;
+        for (const auto& ch : col->chunks()) chunks.push_back(as_parquet_stores(ch));
+        auto type = chunks.empty() ? col->type() : chunks.front()->type();
+        cols.push_back(std::make_shared<arrow::ChunkedArray>(chunks, type));
+        fields.push_back(table->schema()->field(c)->WithType(type));
+    }
+    return arrow::Table::Make(arrow::schema(fields), cols, table->num_rows());
+}
+
 // After the writer closed its file: "" when the input was read whole and the
 // export was not canceled, else the error to return (the file is not kept).
 static std::string output_read_check(const TabularSource& src) {
@@ -612,6 +698,27 @@ std::string write_parquet(TabularSource& src, const Config& cfg) {
     }
     auto writer = std::move(writer_or).ValueOrDie();
 
+    // --fingerprint: the SHA-256 of the text --tsv would write for the rows
+    // written (header included), recorded as vv.fingerprint, so that
+    // `vv --fingerprint FILE` on the result gives the same value.
+    Sha256 fp_hash;
+    std::optional<ExactFloats> fp_exact;
+    std::optional<OrderedWriter> fp_writer;
+    std::vector<int> fp_cols(requested.size());
+    for (size_t k = 0; k < fp_cols.size(); ++k) fp_cols[k] = (int)k;
+    const int fp_threads = format_threads(*out_schema, fp_cols, effective_threads(cfg));
+    if (cfg.fingerprint) {
+        fp_exact.emplace();
+        std::string head;
+        for (size_t k = 0; k < fp_cols.size(); ++k) {
+            if (k) head += '\t';
+            head += csv_field_text(out_schema->field((int)k)->name(), '\t');
+        }
+        head += '\n';
+        fp_hash.update(head.data(), head.size());
+        fp_writer.emplace(nullptr, fp_threads, &fp_hash);
+    }
+
     int64_t rows_left = (cfg.head_rows <= 0) ? INT64_MAX : (int64_t)cfg.head_rows;
     int64_t total = 0;
     LateReadTally tally;      // read_filtered_chunk: split reads while matches are sparse
@@ -643,9 +750,22 @@ std::string write_parquet(TabularSource& src, const Config& cfg) {
             (void)sink->Close();
             return "WriteTable failed: " + st.ToString();
         }
+        if (fp_writer)
+            submit_delimited(*fp_writer, as_parquet_stores(table), fp_cols, table->num_rows(), '\t', fp_threads);
         total += take;
         rows_left -= take;
         export_count(take);
+    }
+    if (fp_writer) {
+        fp_writer->finish();
+        fp_writer.reset();
+        if (auto ks = writer->AddKeyValueMetadata(
+                arrow::key_value_metadata({"vv.fingerprint"}, {"sha256:" + fp_hash.hex()}));
+            !ks.ok()) {
+            (void)writer->Close();
+            (void)sink->Close();
+            return "Parquet metadata failed: " + ks.ToString();
+        }
     }
 
     auto cs = writer->Close();

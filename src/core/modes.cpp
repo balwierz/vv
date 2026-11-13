@@ -203,8 +203,8 @@ int emit_text_stream(TabularSource& src, const Config& cfg) {
                         ring.pop_front();
                     continue;
                 }
-                if (emitted > 0) std::fputc('\n', stdout);
-                std::fwrite(v.data(), 1, v.size(), stdout);
+                if (emitted > 0) out_putc('\n');
+                out_write(v.data(), v.size());
                 if (++emitted >= limit) { truncated = true; break; }
             }
             if (truncated) break;
@@ -212,14 +212,14 @@ int emit_text_stream(TabularSource& src, const Config& cfg) {
     }
     if (tail) {
         for (size_t i = 0; i < ring.size(); ++i) {
-            std::fwrite(ring[i].data(), 1, ring[i].size(), stdout);
-            if (i + 1 < ring.size()) std::fputc('\n', stdout);
+            out_write(ring[i].data(), ring[i].size());
+            if (i + 1 < ring.size()) out_putc('\n');
         }
-        if (!ring.empty() && final_newline) std::fputc('\n', stdout);
+        if (!ring.empty() && final_newline) out_putc('\n');
     } else if (emitted > 0) {
         // The newline after the final line: present unless the file itself
         // ended without one AND we printed all the way to the end.
-        if (truncated || final_newline) std::fputc('\n', stdout);
+        if (truncated || final_newline) out_putc('\n');
     }
     if (!run_read_status(src).ok()) {
         std::fprintf(stderr, "vv: %s: %s\n", cfg.path.c_str(),

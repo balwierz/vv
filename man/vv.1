@@ -712,6 +712,15 @@ CSV and its Parquet conversion are the same; type and column-order changes
 are noted. \fB\-\-select\fR, \fB\-\-filter\fR, \fB\-r\fR and \fB\-\-tab\fR
 apply to both. Exit 1 when they differ; \fB\-\-json\fR for JSON.
 .TP
+.B \-\-fingerprint
+For each file, print the SHA-256 of the text \fB\-\-tsv\fR writes with the
+same options (\fB\-\-select\fR, \fB\-\-filter\fR, \fB\-r\fR, \fB\-n\fR,
+\fB\-\-sort\fR, ...), as \fBsha256sum\fR prints it: the same value for the
+same names and values in any format. With \fB\-\-parquet\fR \fIOUT\fR, store
+the value of the rows written in \fIOUT\fR as \fBvv.fingerprint\fR; given such
+a file and no row or column option, check it against that value (exit 1 when
+it differs). Not with \fB\-\-arrow\fR or the other output modes.
+.TP
 .BI \-\-bins " N"
 For a bigWig file: split each \fB\-r\fR window (or each chromosome) into
 \fIN\fR equal bins and give each the \fBmean\fR, \fBmin\fR and \fBmax\fR of

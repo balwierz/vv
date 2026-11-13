@@ -115,6 +115,7 @@ struct Config {
     bool        diff           = false;  // --diff A B: compare two tables' values
     int64_t     bins           = 0;      // --bins N: bigWig summary, N bins per window
     bool        no_provenance  = false;  // --no-provenance: no vv.* keys in output files
+    bool        fingerprint    = false;  // --fingerprint: SHA-256 of the --tsv text per file
     // vv.* key-value metadata a Parquet / Arrow file is written with (what
     // made it: version, source, region, filter, columns, sort); filled by
     // the CLI from the command line, empty elsewhere.

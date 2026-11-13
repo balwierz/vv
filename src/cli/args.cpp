@@ -429,6 +429,11 @@ static void print_usage(const char* prog) {
         "  --no-provenance     write no vv.* metadata (vv.version, vv.source,\n"
         "                      vv.region, vv.filter, vv.select, vv.sort) into\n"
         "                      the Parquet / Arrow file\n"
+        "  --fingerprint FILE...\n"
+        "                      print the SHA-256 of the text --tsv writes for each\n"
+        "                      FILE (same for the same values in any format);\n"
+        "                      honours --select, --filter, -r, -n, --sort, ...;\n"
+        "                      with --parquet, records it as vv.fingerprint\n"
         "\nRange queries:\n"
         "  -r / --region <REGION>   e.g. chr1:1000-2000  (multiple comma-separated)\n"
         "  --window <REGION>        alias of -r for LociSSD readers' muscle memory\n"
@@ -693,6 +698,8 @@ Config parse_args(int argc, char** argv) {
             cfg.diff = true;
         } else if (!std::strcmp(argv[i], "--no-provenance")) {
             cfg.no_provenance = true;
+        } else if (!std::strcmp(argv[i], "--fingerprint")) {
+            cfg.fingerprint = true;
         } else if (!std::strcmp(argv[i], "--bins") && i + 1 < argc) {
             char* end = nullptr;
             const long long n = std::strtoll(argv[++i], &end, 10);

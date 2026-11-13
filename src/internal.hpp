@@ -534,14 +534,32 @@ struct ExactFloats {
 // progress->rows and stops between chunks once progress->cancel is set, and
 // the CLI's "[N rows → path]" stderr summary is left out. With no sink (the
 // CLI), the writers behave exactly as before.
+// SHA-256 (core/sha256.cpp). hex() finishes the digest: call it once.
+class Sha256 {
+public:
+    Sha256();
+    void update(const void* data, size_t n);
+    std::string hex();
+private:
+    void block(const unsigned char* p);
+    uint32_t      h_[8];
+    unsigned char buf_[64];
+    size_t        fill_  = 0;
+    uint64_t      bytes_ = 0;
+};
+
 struct ExportSink {
     FILE*           out      = nullptr;   // text writers' output; null = stdout
     ExportProgress* progress = nullptr;
+    Sha256*         hash     = nullptr;   // set: the text is hashed, not written (--fingerprint)
 };
 
 inline thread_local ExportSink* t_export = nullptr;
 
 FILE* out_stream();
+// Write text to the current export sink: out_stream(), or its hash.
+void out_write(const char* p, size_t n);
+inline void out_putc(char c) { out_write(&c, 1); }
 
 bool export_canceled();
 
@@ -549,6 +567,9 @@ void export_count(int64_t rows);
 
 inline constexpr const char kExportCanceled[] = "canceled";
 
+// A header field as the delimited writers write it: quoted when it holds
+// the separator, a double quote or a line break.
+std::string csv_field_text(const std::string& val, char sep);
 void write_csv_field(const std::string& val, char sep);
 
 // ── Cell text for the exporters (core/format_fast.cpp) ───────────────────────

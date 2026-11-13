@@ -400,6 +400,7 @@ set(VV_CORE_SOURCES
     src/core/io.cpp       src/core/modes.cpp    src/core/open.cpp
     src/core/platform.cpp src/core/remote.cpp
     src/core/region.cpp   src/core/source.cpp   src/core/summary.cpp
+    src/core/sha256.cpp
     src/formats/arrow.cpp     src/formats/cooler.cpp    src/formats/delimited.cpp
     src/formats/duckdb.cpp
     src/formats/genbank.cpp   src/formats/hdf5.cpp
