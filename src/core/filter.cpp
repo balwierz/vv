@@ -5,6 +5,11 @@
 
 #include "internal.hpp"
 
+#include <cctype>
+#include <cerrno>
+#include <cmath>
+#include <cstdlib>
+
 // ── Simple value-predicate filter (--filter) ─────────────────────────────────
 //
 // Grammar:
@@ -310,6 +315,44 @@ bool is_date_or_timestamp(const arrow::DataType& t) {
            t.id() == arrow::Type::TIMESTAMP;
 }
 
+// A column whose cells (dictionary values included) are text.
+static bool filter_text_column(const arrow::Field& f) {
+    const auto id = display_type(f);
+    return id == arrow::Type::STRING || id == arrow::Type::LARGE_STRING;
+}
+
+// A column whose cells are plain numbers: integers, floats, decimals.
+static bool filter_number_column(const arrow::Field& f) {
+    const auto id = display_type(f);
+    return arrow::is_integer(id) || arrow::is_floating(id) || arrow::is_decimal(id);
+}
+
+// The whole of `s` as a number literal: an integer as K_Int, anything with a
+// '.', 'e' or 'E' (or past int64) as K_Double. False when `s` holds anything
+// else, leading / trailing spaces included.
+static bool filter_parse_number(const std::string& s, FilterAtom* a) {
+    if (s.empty() || std::isspace((unsigned char)s.front()) ||
+        std::isspace((unsigned char)s.back()))
+        return false;
+    const char* b = s.c_str();
+    char* e = nullptr;
+    if (s.find_first_of(".eEnNiI") == std::string::npos) {
+        errno = 0;
+        const long long v = std::strtoll(b, &e, 10);
+        if (e == b + s.size() && errno == 0) {
+            a->kind = FilterAtom::K_Int;
+            a->i_lit = v;
+            return true;
+        }
+    }
+    errno = 0;
+    const double d = std::strtod(b, &e);
+    if (e != b + s.size() || errno == ERANGE || !std::isfinite(d)) return false;
+    a->kind = FilterAtom::K_Double;
+    a->f_lit = d;
+    return true;
+}
+
 // Hash an In / NotIn atom's members once, so a row costs one lookup instead
 // of a scan of the list (and, on a numeric column, a stod per member).
 static void hash_filter_set(FilterAtom* a, const arrow::DataType* col_type = nullptr) {
@@ -546,15 +589,38 @@ bool parse_filter_expr(const std::string& expr,
                     }
                     a.kind  = FilterAtom::K_Int;
                     a.i_lit = t;
+                } else if (filter_number_column(*schema.field(a.col_idx))) {
+                    // Quoted text against a number column never matched a
+                    // cell; a quoted number compares as the number.
+                    if (!filter_parse_number(a.s_lit, &a)) {
+                        *err = "'" + a.s_lit + "' is not a number; column '" + col + "' is " +
+                               type_label(ct);
+                        return false;
+                    }
                 }
-            } else if (lit.find_first_of(".eE") != std::string::npos) {
-                try { a.f_lit = std::stod(lit); }
-                catch (...) { *err = "bad number '" + lit + "'"; return false; }
-                a.kind = FilterAtom::K_Double;
             } else {
-                try { a.i_lit = std::stoll(lit); }
-                catch (...) { *err = "bad integer '" + lit + "'"; return false; }
-                a.kind = FilterAtom::K_Int;
+                if (lit.find_first_of(".eE") != std::string::npos) {
+                    try { a.f_lit = std::stod(lit); }
+                    catch (...) { *err = "bad number '" + lit + "'"; return false; }
+                    a.kind = FilterAtom::K_Double;
+                } else {
+                    try { a.i_lit = std::stoll(lit); }
+                    catch (...) { *err = "bad integer '" + lit + "'"; return false; }
+                    a.kind = FilterAtom::K_Int;
+                }
+                // A bare number against a text column never matched a cell
+                // (`CHROM == 1` against "1"): == / != compare it as the text
+                // written; an ordering would compare text, so it is asked
+                // for explicitly with quotes.
+                if (filter_text_column(*schema.field(a.col_idx))) {
+                    if (a.op != FilterAtom::Eq && a.op != FilterAtom::Ne) {
+                        *err = "column '" + col + "' holds text; quote the value to compare it "
+                               "as text: " + filter_quote_name(col) + " " + opt + " \"" + lit + "\"";
+                        return false;
+                    }
+                    a.kind  = FilterAtom::K_String;
+                    a.s_lit = lit;
+                }
             }
             next = i + 3;
         } else {

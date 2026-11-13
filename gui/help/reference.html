@@ -41,7 +41,7 @@ match.</p>
 <code>column operator value</code>, joined by <code>and</code> / <code>or</code>
 (<code>and</code> binds tighter). Words are case-insensitive.</p>
 <table>
-<tr><td class="k">== != &lt; &lt;= &gt; &gt;=</td><td>Compare. Numbers compare as numbers; text in quotes, <code>"chr1"</code> or <code>'chr1'</code>; a date or timestamp column takes a quoted date: <code>day &gt; "2024-01-01"</code>, <code>ts &lt; "2024-06-15 12:30Z"</code>; a boolean column takes <code>true</code> / <code>false</code>.</td></tr>
+<tr><td class="k">== != &lt; &lt;= &gt; &gt;=</td><td>Compare. Numbers compare as numbers; text in quotes, <code>"chr1"</code> or <code>'chr1'</code>; a date or timestamp column takes a quoted date: <code>day &gt; "2024-01-01"</code>, <code>ts &lt; "2024-06-15 12:30Z"</code>; a boolean column takes <code>true</code> / <code>false</code>. A value compares in the column's kind: against a text column a bare number is the text written (<code>CHROM == 1</code>) and an ordering needs quotes (<code>CHROM &gt; "1"</code>); against a number column a quoted number is the number.</td></tr>
 <tr><td class="k">~ !~</td><td>Matches / does not match a regular expression (ECMAScript), anywhere in the text: <code>Gene ~ "^BRCA"</code>.</td></tr>
 <tr><td class="k">contains, startswith, endswith</td><td>Text tests without a regular expression: <code>name contains "kinase"</code>.</td></tr>
 <tr><td class="k">in, not in</td><td>Set membership: <code>chrom in ("chr1", "chr2")</code>; <code>in @ids.txt</code> reads the members from a file, one per line (its first tab-separated field).</td></tr>

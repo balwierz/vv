@@ -517,6 +517,11 @@ Value-predicate filter. Grammar:
   `false` against a boolean column; a quoted date or time against a date /
   timestamp column (`day >= "2024-01-01"`, `ts < "2024-06-15 12:30:00Z"`, a
   zone offset converted to UTC).
+* A literal compares in the column's kind. Against a text column a bare
+  number is the text written: `CHROM == 1` matches the cell `1`; an
+  ordering compares text and needs quotes (`CHROM > "1"`). Against a number
+  column a quoted number is the number (`POS == "100"`), and other quoted
+  text is an error.
 * A column name with spaces or operator characters goes in backticks:
   `` `Sample ID` == "S1" ``, `` `End)` > 100 ``.
 * `AND` / `OR` case-insensitive.

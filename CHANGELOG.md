@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- `--filter` (and the viewer's `&` bar and vvg's Filter box): a literal
+  compares in the column's kind. A bare number against a text column, as in
+  `CHROM == 1` on a VCF, matched no row and `CHROM != 1` matched none either;
+  `==` / `!=` now compare it as the text written, and an ordering asks for a
+  quoted value. A quoted number against a number column (`POS == "100"`)
+  compares as the number instead of matching nothing; other quoted text
+  there is an error.
+
 ## [1.35.0] - 2026-11-04
 
 ### Added

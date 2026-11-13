@@ -5341,6 +5341,29 @@ for fc in 'Score > 0|19' 'Score > 0.0|19' 'Score == 0|1' 'Score != 0|19' 'Score 
         "$("$VV" --count --filter "$fe" "$DATA/tiny.parquet")" "$fw"
 done
 
+# A literal's kind follows the column. A bare number against a text column
+# (VCF CHROM is always text) compares as the text written for == / !=; it
+# matched no row, so `CHROM != 1` matched nothing either. An ordering against
+# text asks for quotes. A quoted number against a number column compares as
+# the number; other quoted text there is an error, not an empty match.
+LK="$TMP/literal_kind.vcf"
+printf '##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n1\t5\t.\tA\tG\t.\t.\t.\n10\t7\t.\tA\tG\t.\t.\t.\n2\t9\t.\tA\tG\t.\t.\t.\n' > "$LK"
+for lk in 'CHROM == 1|1' 'CHROM != 1|2' 'CHROM == 10 OR CHROM == 2|2' 'CHROM > "1"|2' \
+          'POS == "7"|1' 'POS < "8.5"|2' 'POS != "7"|2'; do
+    le=${lk%|*}; lw=${lk##*|}
+    assert_eq_file_inline "filter_literal_kind: $le" "$("$VV" --count --filter "$le" "$LK")" "$lw"
+done
+for lk in 'Start == "100"|2' 'Start != "100"|18' 'Score == "0.05"|1'; do
+    le=${lk%|*}; lw=${lk##*|}
+    assert_eq_file_inline "filter_literal_kind: $le" "$("$VV" --count --filter "$le" "$DATA/tiny.parquet")" "$lw"
+done
+assert_exit_code "filter_literal_text_order_exit" 1 "$VV" --count --filter 'CHROM > 1' "$LK"
+assert_contains "filter_literal_text_order_message" \
+    "$("$VV" --count --filter 'CHROM > 1' "$LK" 2>&1)" "quote the value to compare it as text: CHROM > \"1\""
+assert_exit_code "filter_literal_not_number_exit" 1 "$VV" --count --filter 'POS == "x"' "$LK"
+assert_contains "filter_literal_not_number_message" \
+    "$("$VV" --count --filter 'POS == "x"' "$LK" 2>&1)" "'x' is not a number; column 'POS' is int64"
+
 # Floats in exports and identity keys are lossless: the shortest text that
 # reads back as the same value, not the 6-digit display form. `%.6g` wrote
 # 1234567.891 and .892 both as 1.23457e+06 in --tsv / --csv / --json / --md

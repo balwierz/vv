@@ -594,7 +594,11 @@ A boolean column compares with \fBtrue\fR / \fBfalse\fR (bare or quoted).
 A number against a float32 column is rounded to float32 first, so
 \fBScore == 0.05\fR matches the cell shown as 0.05 and \fBScore > 0.05\fR
 does not; a decimal column compares by its value as written.
-Values: integer, float, single- or double-quoted string. Example:
+Values: integer, float, single- or double-quoted string. A value compares
+in the column's kind: against a text column a bare number is the text
+written (\fBCHROM == 1\fR), and an ordering needs quotes
+(\fBCHROM > "1"\fR); against a number column a quoted number is the number,
+and other quoted text is an error. Example:
 \fB\-\-filter 'Chromosome == "chr1" AND Score > 0.5'\fR. Evaluated
 per row after the source's own pruning (tabix region, LociSSD
 row-group stats) so combining with \fB\-r\fR is fine.
