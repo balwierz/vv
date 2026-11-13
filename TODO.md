@@ -100,9 +100,6 @@ Deferred until a file needs them (owner's decision, 2026-10-07).
   bakes row-height=1 into chunk caching, search highlighting, sort
   indirection, and scroll math. Inline expansion (this iteration)
   takes the easy win.
-- **Vim keys still missing:** `50%`, `<` / `>` to move a column, `*` to
-  search the cursor's value, `J` / `K` to step records in the detail pane.
-  Counts, Ctrl-D / Ctrl-U, bar history and `Z` shipped.
 
 ## Output
 

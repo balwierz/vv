@@ -13,7 +13,11 @@ Checks, on a 300-row file (id r0..r299, name n0..n299, score = id):
   6. `&` then Up recalls the filter entered before;
   7. `Z` on a 30-column file keeps the columns through the cursor at the
      left when the view scrolls right; `Z` again unfreezes them;
-  8. after `--coords NCBI`, `:region chr1:95-125` is 1-based (UCSC 94-125).
+  8. after `--coords NCBI`, `:region chr1:95-125` is 1-based (UCSC 94-125);
+  9. `50%` goes to row 149 of 300 (vim's (N*rows+99)/100);
+ 10. `*` on g1 finds the next whole-cell g1 (row 13), not g10 / g11;
+ 11. `>` moves the cursor's column right; `Y` then writes the new order;
+ 12. Enter, `J J K`, Enter: the cursor ends on row 1.
 
 Usage: tui_commands_check.py <vv-binary> <scratch-dir>
 Exit 0 on success, 1 on failure.
@@ -133,8 +137,39 @@ def main():
     if hung or yanked(raw) != "95":
         fail(":region after --coords NCBI: first row ends at %r, expected 95 (row 90-95)" % yanked(raw))
 
+    # 9. N% goes to that share of the rows.
+    _txt, raw, hung = run(vv, [path], budget=20.0, keys=keys("50%") + [b"y"])
+    if hung or yanked(raw) != "r149":
+        fail("50%% y copied %r, expected r149" % yanked(raw))
+
+    # 10. * searches the whole cell.
+    grp = "cmds_grp.tsv"
+    with open(grp, "w") as f:
+        f.write("id\tgrp\n")
+        for i in range(40):
+            f.write("r%d\tg%d\n" % (i, i % 12))
+    _txt, raw, hung = run(vv, [grp], budget=20.0, keys=keys("jl*") + keys("h") + [b"y"])
+    if hung or yanked(raw) != "r13":
+        fail("* on g1 landed on %r, expected r13" % yanked(raw))
+
+    # 11. > moves a column; Y keeps the order.
+    _txt, raw, hung = run(vv, [path], budget=20.0, keys=keys(">h") + [b"y"])
+    if hung or yanked(raw) != "n0":
+        fail("> then h y copied %r, expected n0 (name now first)" % yanked(raw))
+    _txt, raw, hung = run(vv, [path], budget=20.0, keys=keys(">") + [b"Y"])
+    if hung or yanked(raw) != "vv --select name,id,score " + path:
+        fail("Y after > copied %r" % yanked(raw))
+    _txt, raw, hung = run(vv, ["--select", "id,score", path], budget=20.0, keys=[b"Y"])
+    if hung or yanked(raw) != "vv --select id,score " + path:
+        fail("Y after --select id,score copied %r" % yanked(raw))
+
+    # 12. J / K step records in the detail pane.
+    _txt, raw, hung = run(vv, [path], budget=20.0, keys=keys("\r") + keys("J") + keys("J") + keys("K") + keys("\r") + [b"y"])
+    if hung or yanked(raw) != "r1":
+        fail("Enter J J K Enter y copied %r, expected r1" % yanked(raw))
+
     if rc == 0:
-        print("tui_commands: 8 checks passed")
+        print("tui_commands: 12 checks passed")
     return rc
 
 

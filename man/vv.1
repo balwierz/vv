@@ -1121,7 +1121,15 @@ are highlighted; the n/N target is rendered with reverse video.
 \fBEsc\fR clears.
 .TP
 .B Enter
-Open the detail pane for the highlighted row.
+Open the detail pane for the highlighted row; in it, \fBJ\fR / \fBK\fR
+step to the next / previous row.
+.TP
+.BI N %
+Go to N percent of the rows (\fB50%\fR: half way).
+.TP
+.B *
+Search the cursor's value as a whole cell (for a VCF INFO key, its
+KEY=VALUE item); \fBn\fR / \fBN\fR repeat.
 .TP
 .B "," / "."
 Narrow / widen the column under the cursor.
@@ -1133,6 +1141,10 @@ scrolling sideways).
 .B Z
 Freeze the columns from the first through the cursor's; pressed on the
 last frozen column, unfreeze them.
+.TP
+.B "<" / ">"
+Move the cursor's column left / right; \fBY\fR and \fB:w\fR keep the
+new order.
 .TP
 .B S
 Per-column stats popup for the column under the cursor: count,

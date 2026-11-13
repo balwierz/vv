@@ -2172,6 +2172,62 @@ class TableTUI {
     // of the detail pane on other rows in the same chunk are free).
     std::vector<std::string> load_full_row(int64_t row) { return load_row_range(row, 0, num_cols_); }
 
+    // The text a search compares for one cell: cell_to_string of the source
+    // column (no digit grouping), as cached_row_matches sees it. False when
+    // the cell cannot be read; *null is set for a null cell.
+    bool search_text_at(int64_t row, int vc, std::string* out, bool* null) {
+        *null = false;
+        if (vc < 0 || vc >= num_cols_ || src_->num_chunks() == 0) return false;
+        if (row < 0 || (total_rows() >= 0 && row >= total_rows())) return false;
+        const int sc = virt_src_col_[vc];
+        if (sc < 0) return false;
+        const int64_t srow = source_row(row);
+        const int c = chunk_for_row(srow);
+        ensure_cols(c, {sc});
+        auto it = cache_.find(c);
+        if (it == cache_.end() || !it->second.ok) return false;
+        const CachedRG& cr = it->second;
+        int64_t off = srow - cr.first_row;
+        if (off < 0 || off >= cr.num_rows || sc >= (int)cr.cols.size() || !cr.cols[sc]) return false;
+        for (auto& chunk : cr.cols[sc]->chunks()) {
+            if (off < chunk->length()) {
+                *null = chunk->IsNull(off);
+                *out = cell_to_string(*chunk, off);
+                return true;
+            }
+            off -= chunk->length();
+        }
+        return false;
+    }
+
+    static std::string regex_escape(const std::string& s) {
+        std::string o;
+        for (char ch : s) {
+            if (std::strchr("\\^$.|?*+()[]{}/", ch) && ch != '\0') o += '\\';
+            o += ch;
+        }
+        return o;
+    }
+
+    // Exchange virtual columns a and b: every per-column array, and the
+    // indices that name a column (cursor, sort, overlays, marks).
+    void swap_cols(int a, int b) {
+        if (a == b || a < 0 || b < 0 || a >= num_cols_ || b >= num_cols_) return;
+        auto sw = [&](auto& v) {
+            if (a >= (int)v.size() || b >= (int)v.size()) return;
+            // The value type, not auto: vector<bool>'s element is a proxy.
+            typename std::decay_t<decltype(v)>::value_type t = v[(size_t)a];
+            v[(size_t)a] = v[(size_t)b];
+            v[(size_t)b] = t;
+        };
+        sw(col_names_); sw(col_types_str_); sw(col_widths_); sw(width_manual_);
+        sw(right_align_); sw(is_bool_); sw(is_rgb_); sw(is_integer_);
+        sw(virt_src_col_); sw(virt_info_key_); sw(col_visible_);
+        auto remap = [&](int& c) { if (c == a) c = b; else if (c == b) c = a; };
+        remap(cur_col_); remap(sort_col_); remap(stats_col_); remap(freq_col_);
+        for (auto& [k, m] : tabs_[(size_t)active_tab_].marks) remap(m.second);
+    }
+
     // Columns read at a time when a wide row is read in parts (the detail
     // pane of a tab past this many columns, the search landing).
     static constexpr int kRowWindowCols = 256;
@@ -2950,16 +3006,26 @@ private:
             e.sort_desc = sort_desc_;
             if (e.sort_col.empty()) *note = "the sort by an INFO key is left out";
         }
+        // The shown columns in their on-screen order (moved with < / >);
+        // --select is written unless they are the file's columns in its order.
         std::vector<std::string> shown;
-        bool all = true;
         for (size_t v = 0; v < col_visible_.size() && v < virt_src_col_.size(); ++v) {
-            if (!virt_info_key_[v].empty()) continue;     // the INFO column carries them
-            if (!col_visible_[v]) { all = false; continue; }
-            const std::string n = src_name((int)v);
+            if (!col_visible_[v]) continue;
+            const int sc = virt_src_col_[v];
+            // An INFO key's column stands for the INFO column.
+            const std::string n = !virt_info_key_[v].empty()
+                ? (sc >= 0 && sc < sch->num_fields() ? sch->field(sc)->name() : std::string())
+                : src_name((int)v);
             if (!n.empty() && std::find(shown.begin(), shown.end(), n) == shown.end()) shown.push_back(n);
         }
+        const auto hidden_v = src_->hidden_for_display();
+        std::vector<std::string> full;
+        for (int sc = 0; sc < sch->num_fields(); ++sc) {
+            const std::string& n = sch->field(sc)->name();
+            if (std::find(hidden_v.begin(), hidden_v.end(), n) == hidden_v.end()) full.push_back(n);
+        }
         e.select_cols.clear();
-        if (!all)
+        if (shown != full)
             for (const auto& n : shown) e.select_cols += (e.select_cols.empty() ? "" : ",") + n;
         *out = std::move(e);
         return "";
@@ -3323,6 +3389,9 @@ private:
             {"←→  h l",      "move the cell cursor one column"},
             {",  .",          "narrow / widen the cursor's column"},
             {"z  Z",          "freeze the first column / the columns through the cursor"},
+            {"<  >",          "move the cursor's column left / right"},
+            {"N%",            "go to N percent of the rows (50% = half way)"},
+            {"*",             "search the cursor's value (the whole cell); n / N repeat"},
             {"/  ?",          "search forward / backward (regex, icase; matrix: genes, row labels)"},
             {"n  N",          "next / previous match (direction-aware)"},
             {"S",             "per-column stats (count/min/max/mean/distinct)"},
@@ -3341,7 +3410,7 @@ private:
             {"",              "↑ ↓ earlier / later lines entered in that bar"},
             {"Tab  Shift-Tab","next / previous tab (with multiple files)"},
             {"[  ]",          "step slice axis (NPZ 3-D+ arrays only)"},
-            {"Enter",         "open detail pane for the cursor's row"},
+            {"Enter",         "open detail pane for the cursor's row (J / K: next / previous row)"},
             {"mouse wheel",   "scroll rows"},
             {"mouse click",   "header → sort by column; cell → move the cursor there"},
             {"mouse 2-click", "row → open detail pane"},
@@ -4136,6 +4205,21 @@ public:
                     case KEY_PPAGE: case 'b':
                         detail_scroll_ = std::max(0, detail_scroll_ - std::max(1, dl - 2)); break;
                     case 'g': case KEY_HOME: detail_scroll_ = 0; break;
+                    case 'J': case 'K': {
+                        // The next / previous record; the cursor follows,
+                        // so closing the pane lands on it.
+                        const int64_t trows = total_rows();
+                        const int64_t to = detail_row_ + (ch == 'J' ? 1 : -1);
+                        if (to < 0 || (trows >= 0 && to >= trows)) break;
+                        if (trows < 0) {              // a stream: is there a row `to`?
+                            const auto vals = load_full_row(to);
+                            if (std::all_of(vals.begin(), vals.end(),
+                                            [](const std::string& x) { return x.empty(); })) break;
+                        }
+                        detail_row_ = cur_row_ = to;
+                        detail_scroll_ = 0;
+                        break;
+                    }
                     case 'q': case 'Q': quit = true; detail_row_ = -1; break;
                     default: break;
                 }
@@ -4263,6 +4347,51 @@ public:
                 case '0':
                     if (text_view_) hscroll_ = 0;
                     break;
+                case '%': {          // 50%: the row half way down, as vim's N%
+                    if (!counted) { copy_status_ = "a percentage goes first: 50%"; break; }
+                    if (!order_materialized_) { drain_to_eof(); tr = total_rows(); }
+                    if (tr <= 0) break;
+                    const int64_t pct = std::min<int64_t>(reps, 100);
+                    cur_row_ = std::clamp<int64_t>((pct * tr + 99) / 100 - 1, 0, tr - 1);
+                    break;
+                }
+                case '*': {          // search the cursor's value (the whole cell)
+                    if (text_view_) { copy_status_ = TEXT_NA("*"); break; }
+                    std::string v;
+                    bool null = false;
+                    if (!search_text_at(cur_row_, cur_col_, &v, &null)) break;
+                    if (null) { copy_status_ = "the cell is null"; break; }
+                    const std::string& key = virt_info_key_[(size_t)cur_col_];
+                    if (!key.empty()) {
+                        // An INFO key: its KEY=VALUE item inside the INFO text.
+                        const auto vals = load_full_row(cur_row_);
+                        const std::string& kv = vals[(size_t)cur_col_];
+                        if (kv == NULL_SYMBOL) { copy_status_ = "the row has no " + key; break; }
+                        search_query_ = "(^|;)" + regex_escape(key) +
+                                        (kv == "true" ? std::string() : "=" + regex_escape(kv)) + "(;|$)";
+                    } else {
+                        search_query_ = "^" + regex_escape(v) + "$";
+                    }
+                    search_query_lc_ = search_query_;
+                    for (auto& c : search_query_lc_) c = (char)std::tolower((unsigned char)c);
+                    search_hist_.add(search_query_);
+                    compile_search();
+                    search_mode_ = SearchMode::Active;
+                    search_dir_forward_ = true;
+                    search_row_ = cur_row_;        // from the row after the cursor's
+                    do_search(true);
+                    break;
+                }
+                case '<': case '>': {  // move the cursor's column left / right
+                    if (text_view_) { copy_status_ = TEXT_NA(ch == '<' ? "<" : ">"); break; }
+                    const int dir = ch == '>' ? 1 : -1;
+                    for (int64_t k = 0; k < reps; ++k) {
+                        const int n = next_visible_col(cur_col_ + dir, dir);
+                        if (n == cur_col_ || (n - cur_col_) * dir <= 0 || !col_is_visible(n)) break;
+                        swap_cols(cur_col_, n);
+                    }
+                    break;
+                }
                 case 'z':
                     if (text_view_) { copy_status_ = TEXT_NA("z"); break; }
                     frozen_ = frozen_ > 0 ? 0 : 1; break;

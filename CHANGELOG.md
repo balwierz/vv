@@ -23,7 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Viewer keys: a count before a move (`12j`, `5l`, `3` Space; `100G` goes
   to row 100), Ctrl-D / Ctrl-U for half a page, and Up / Down in the `/`,
   `&` and `:` bars for the lines entered there this session. `Z` freezes
-  the columns through the cursor at the left (`z` freezes the first one).
+  the columns through the cursor at the left (`z` freezes the first one),
+  `<` / `>` move the cursor's column, `50%` goes half way down, `*`
+  searches the cursor's value as a whole cell, and `J` / `K` step rows in
+  the detail pane.
 - Themes `colorblind` (the Okabe–Ito palette; true / false are blue-green /
   vermillion rather than green / red) and `mono` (bold, dim and grey only,
   no colour), in `--theme`, the config file and the viewer's picker.
@@ -83,6 +86,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   same text shows in the viewer's status line and vvg's footer.
 
 ### Fixed
+- The viewer's `Y` and `:w` left out `--select` when every shown column was
+  visible, so a run started with `--select id,score` copied `vv FILE` and
+  wrote every column. They now write `--select` whenever the shown columns
+  are not the file's own, in the file's order.
 - The chromosome and name columns of BED, SAM, PAF and mpileup files (and of
   BEDPE, 4DN pairs, mutation MAF and BLAST tables) are read as text, as VCF
   `CHROM` and GFF `seqname` were. Typed from the first 16 MiB, a file

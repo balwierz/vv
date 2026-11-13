@@ -209,11 +209,14 @@ $ vv tests/data/tiny.lociss        # default when stdout is a terminal
 | `g` / `G`      | top / bottom of file                                    |
 | Ctrl-D / Ctrl-U | half a page down / up                                  |
 | *count* + move | `12j`, `5l`, `3` Space repeat the move; `100G` goes to row 100 |
-| `Enter`        | open the detail pane for the cursor's row               |
+| *N* `%`        | go to N percent of the rows (`50%`: half way)           |
+| `Enter`        | open the detail pane for the cursor's row; in it, `J` / `K` step to the next / previous row |
 | `/` / `?`      | search forward / backward (case-insensitive ECMAScript regex with literal fallback); on a matrix tab, gene (column) names, then row labels |
 | `n` / `N`      | next / previous match (direction-aware)                 |
+| `*`            | search the cursor's value as a whole cell (for an INFO key, its `KEY=VALUE` item) |
 | `,` / `.`      | narrow / widen the column under the cursor              |
 | `z` / `Z`      | freeze the first column / the columns through the cursor (again: unfreeze) |
+| `<` / `>`      | move the cursor's column left / right (`Y` and `:w` keep the new order) |
 | `S`            | per-column stats popup (count, nulls, min, max, mean, histogram / distinct) |
 | `F`            | value counts of the cursor's column over the filtered rows; Enter filters to the value |
 | editing in `/ ? & :` | ←/→ (Ctrl-B/F), Home/End (Ctrl-A/E), Backspace, Delete (Ctrl-D), Ctrl-U / Ctrl-K (to start / end), Ctrl-W (word); UTF-8 text; ↑ / ↓ recall the lines entered in that bar this session |
