@@ -2458,6 +2458,25 @@ assert_eq_file_inline "pushdown_dataset_skips" "$(pd_skipped 'k == 2 AND i > 7' 
 # file (tests/fuzz/regress, found by fuzz_parquet) with index 3 into three
 # values ended --sort in a SEGV inside the gather; it is now a read error.
 REG="$HERE/fuzz/regress"
+# Arrow IPC files fuzz_arrow found. The IPC reader checks buffer sizes only:
+# a list whose offsets run backwards reached the formatters, which read out
+# of bounds; a stream batch claiming 2^63 rows overflowed the row count; a
+# struct whose null child miscounts its nulls; a zero-batch file whose
+# empty seed batch was built as text for every column. Each column read is
+# now checked in full the first time (not UTF-8), each batch's length before
+# it is counted, and the seed batch has each column's own type.
+assert_exit_code "ipc_list_offsets_exit" 1 "$VV" --tsv "$REG/arrow-list-offsets.arrow"
+assert_contains "ipc_list_offsets_message" "$("$VV" --tsv "$REG/arrow-list-offsets.arrow" 2>&1 >/dev/null)" \
+    "column 'Tags': List child array invalid: Invalid: Offset invariant failure: non-monotonic offset at slot 1: -8 < 0 (a corrupt file)"
+assert_contains "ipc_stream_rows" "$("$VV" --tsv "$REG/arrow-stream-rows.arrows" 2>&1 >/dev/null)" \
+    "a record batch claims 9223372036854775806 rows (a corrupt file)"
+assert_exit_code "ipc_stream_null_count" 1 "$VV" --tsv "$REG/arrow-null-count.arrows"
+assert_exit_code "ipc_zero_batch_union" 0 "$VV" --tsv "$REG/arrow-union-codes.arrow"
+"$VV" --filter 'Start < 0' --arrow "$TMP/zero.arrow" "$DATA/tiny.parquet" 2>/dev/null
+"$VV" --parquet "$TMP/zero.parquet" "$TMP/zero.arrow" 2>/dev/null
+assert_eq_file_inline "ipc_zero_batch_types" \
+    "$("$VV" --schema "$TMP/zero.parquet" | sed -n '/^------/,/^$/p' | awk 'NR>1 && NF {printf "%s:%s ", $1, $2}')" \
+    "Chr:string Start:int64 End:int64 Score:float Tags:list<element: "
 assert_contains "parquet_dict_index_sort" "$("$VV" --sort dc --tsv "$REG/parquet-dict-index.parquet" 2>&1 >/dev/null)" \
     "column 'dc': dictionary index 3 outside its 3 values (a corrupt file)"
 assert_exit_code "parquet_dict_index_sort_exit1" 1 "$VV" --sort dc --tsv "$REG/parquet-dict-index.parquet"

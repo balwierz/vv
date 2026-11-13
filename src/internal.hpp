@@ -1209,6 +1209,14 @@ void remove_spooled_files();
 // Remove `path` when vv exits, normally or on SIGINT / SIGTERM / SIGHUP (a
 // temporary file; unlinking one that is gone already is harmless).
 void spool_register(const std::string& path);
+// `t` with text as binary, decimals as fixed-width binary and temporal types
+// as their integers, nested types included: the type to View a column as for
+// a full structural check.
+std::shared_ptr<arrow::DataType> structural_twin(const std::shared_ptr<arrow::DataType>& t);
+// Column `a` (named `name`) checked in full — offsets, lengths, child arrays,
+// dictionary indices — but not UTF-8 or decimal precision. "OK" or an
+// Invalid naming the column, for a corrupt file.
+arrow::Status check_column_structure(const arrow::Array& a, const std::string& name);
 
 std::string human_bytes(int64_t sz);
 

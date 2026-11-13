@@ -82,6 +82,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   same text shows in the viewer's status line and vvg's footer.
 
 ### Fixed
+- Arrow IPC files and streams are checked before vv reads their values. The
+  IPC reader checks buffer sizes only, so a corrupt or crafted file whose
+  list offsets ran backwards was read out of bounds by the cell formatters
+  and writers. Each column is checked in full the first time a read asks
+  for it (offsets, lengths, children, dictionary indices; not UTF-8 or
+  out-of-range dates, which vv shows), each batch's length before its rows
+  are counted (a stream batch claiming 2^63 rows overflowed the count), and
+  the result is reported per column, exit 1. An IPC file with no record
+  batches gets an empty batch of each column's own type (it was text for
+  every column).
 - `--filter` (and the viewer's `&` bar and vvg's Filter box): a literal
   compares in the column's kind. A bare number against a text column, as in
   `CHROM == 1` on a VCF, matched no row and `CHROM != 1` matched none either;

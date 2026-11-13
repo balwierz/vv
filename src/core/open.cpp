@@ -2014,56 +2014,76 @@ static std::string dispatch_by_kind(const std::string& path, const Config& cfg,
     return "";
 }
 
-#ifdef VV_FUZZ
-// `t` with text as binary and decimals as their fixed-width storage, nested
-// types included. A file's strings and decimals are passed through as
-// stored: Arrow's Parquet reader checks neither UTF-8 nor a decimal's
-// precision, and vv prints both as they are. The check covers every other
-// invariant.
-static std::shared_ptr<arrow::DataType> fuzz_binary_twin(const std::shared_ptr<arrow::DataType>& t) {
+// `t` with text as binary, decimals as their fixed-width storage and dates,
+// times, timestamps and durations as their integers, nested types included:
+// a full validation of a column viewed as it checks every invariant of its
+// memory, not the values (UTF-8, a decimal's precision, a date64 of a whole
+// day), which a file may break and vv prints as stored or as out of range.
+std::shared_ptr<arrow::DataType> structural_twin(const std::shared_ptr<arrow::DataType>& t) {
     switch (t->id()) {
         case arrow::Type::DECIMAL32:
         case arrow::Type::DECIMAL64:
         case arrow::Type::DECIMAL128:
         case arrow::Type::DECIMAL256:
             return arrow::fixed_size_binary(static_cast<const arrow::FixedSizeBinaryType&>(*t).byte_width());
+        // Temporal values as their integer storage: a date64 that is not a
+        // whole day or a time past 24 h is shown as "<value out of range>".
+        case arrow::Type::DATE32:
+        case arrow::Type::TIME32:       return arrow::int32();
+        case arrow::Type::DATE64:
+        case arrow::Type::TIME64:
+        case arrow::Type::TIMESTAMP:
+        case arrow::Type::DURATION:     return arrow::int64();
         case arrow::Type::STRING:       return arrow::binary();
         case arrow::Type::LARGE_STRING: return arrow::large_binary();
         case arrow::Type::STRING_VIEW:  return arrow::binary_view();
         case arrow::Type::LIST: {
             const auto& l = static_cast<const arrow::ListType&>(*t);
-            return arrow::list(l.value_field()->WithType(fuzz_binary_twin(l.value_type())));
+            return arrow::list(l.value_field()->WithType(structural_twin(l.value_type())));
         }
         case arrow::Type::LARGE_LIST: {
             const auto& l = static_cast<const arrow::LargeListType&>(*t);
-            return arrow::large_list(l.value_field()->WithType(fuzz_binary_twin(l.value_type())));
+            return arrow::large_list(l.value_field()->WithType(structural_twin(l.value_type())));
         }
         case arrow::Type::FIXED_SIZE_LIST: {
             const auto& l = static_cast<const arrow::FixedSizeListType&>(*t);
-            return arrow::fixed_size_list(l.value_field()->WithType(fuzz_binary_twin(l.value_type())),
+            return arrow::fixed_size_list(l.value_field()->WithType(structural_twin(l.value_type())),
                                           l.list_size());
         }
         case arrow::Type::MAP: {
             const auto& m = static_cast<const arrow::MapType&>(*t);
-            return std::make_shared<arrow::MapType>(m.key_field()->WithType(fuzz_binary_twin(m.key_type())),
-                                                    m.item_field()->WithType(fuzz_binary_twin(m.item_type())),
+            return std::make_shared<arrow::MapType>(m.key_field()->WithType(structural_twin(m.key_type())),
+                                                    m.item_field()->WithType(structural_twin(m.item_type())),
                                                     m.keys_sorted());
         }
         case arrow::Type::STRUCT: {
             arrow::FieldVector f;
-            for (const auto& c : t->fields()) f.push_back(c->WithType(fuzz_binary_twin(c->type())));
+            for (const auto& c : t->fields()) f.push_back(c->WithType(structural_twin(c->type())));
             return arrow::struct_(f);
         }
         case arrow::Type::DICTIONARY: {
             const auto& d = static_cast<const arrow::DictionaryType&>(*t);
-            return arrow::dictionary(d.index_type(), fuzz_binary_twin(d.value_type()), d.ordered());
+            return arrow::dictionary(d.index_type(), structural_twin(d.value_type()), d.ordered());
         }
         case arrow::Type::EXTENSION:     // arrow.json, …: checked as their storage
-            return fuzz_binary_twin(static_cast<const arrow::ExtensionType&>(*t).storage_type());
+            return structural_twin(static_cast<const arrow::ExtensionType&>(*t).storage_type());
         default: return t;
     }
 }
 
+arrow::Status check_column_structure(const arrow::Array& a, const std::string& name) {
+    // The column as stored first (its own null counts and lengths: a view
+    // recomputes some), then in full through the view.
+    arrow::Status st = a.Validate();
+    if (st.ok()) {
+        auto v = a.View(structural_twin(a.type()));
+        st = v.ok() ? (*v)->ValidateFull() : a.ValidateFull();
+    }
+    if (st.ok()) return st;
+    return arrow::Status::Invalid("column '", name, "': ", st.message(), " (a corrupt file)");
+}
+
+#ifdef VV_FUZZ
 // Write an untrusted buffer to a file named *.<ext> (one per process, reused)
 // and open it the way vv does: open_source() with the default options, then
 // read the head and every chunk; abort when a built table is not valid.
@@ -2101,7 +2121,7 @@ void source_fuzz_one(const char* ext, const uint8_t* buf, size_t n) {
         }
         for (const auto& col : t->columns())
             for (const auto& ch : col->chunks()) {
-                auto v = ch->View(fuzz_binary_twin(ch->type()));
+                auto v = ch->View(structural_twin(ch->type()));
                 arrow::Status s = v.ok() ? (*v)->ValidateFull() : v.status();
                 if (!s.ok()) {
                     std::fprintf(stderr, "invalid: %s\n", s.ToString().c_str());

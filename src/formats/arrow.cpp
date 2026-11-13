@@ -8,6 +8,33 @@
 
 // ── Arrow IPC / Feather source ────────────────────────────────────────────────
 
+// The IPC reader checks a record batch's buffer sizes only: offsets that run
+// backwards or past their data (a corrupt or crafted file) reached the cell
+// formatters and the writers, which read out of bounds. Each column a read
+// asks for is checked in full the first time (check_column_structure: not
+// UTF-8, which vv shows as stored); `checked` remembers which were.
+static arrow::Status check_ipc_columns(const arrow::RecordBatch& b, const std::vector<int>& cols,
+                                       std::vector<char>* checked) {
+    checked->resize((size_t)b.num_columns(), 0);
+    for (int c : cols) {
+        if (c < 0 || c >= b.num_columns() || (*checked)[(size_t)c]) continue;
+        ARROW_RETURN_NOT_OK(check_column_structure(*b.column(c), b.schema()->field(c)->name()));
+        (*checked)[(size_t)c] = 1;
+    }
+    return arrow::Status::OK();
+}
+
+// A decoded record batch, before its rows are counted: its columns agree
+// with its length and buffers (RecordBatch::Validate), and the length keeps
+// the running row count in range — a batch without columns can claim any
+// length, and a claimed 2^63 overflowed the count.
+static arrow::Status check_ipc_batch(const arrow::RecordBatch& b, int64_t rows_before) {
+    ARROW_RETURN_NOT_OK(b.Validate());
+    if (b.num_rows() < 0 || rows_before > INT64_MAX - b.num_rows())
+        return arrow::Status::Invalid("a record batch claims ", b.num_rows(), " rows (a corrupt file)");
+    return arrow::Status::OK();
+}
+
 class IpcSource : public TabularSource {
     std::string                                       path_;
     bool                                              is_feather_ = false;
@@ -23,6 +50,8 @@ class IpcSource : public TabularSource {
     mutable int64_t                                   total_rows_ = 0;
     mutable bool                                      all_read_   = false;
     mutable arrow::Status                             read_status_;  // sticky error
+    // The columns of each batch checked in full (check_ipc_columns).
+    mutable std::map<int, std::vector<char>>          checked_;
 
     static constexpr int64_t BATCH_ROWS = 65536;
 
@@ -73,6 +102,11 @@ class IpcSource : public TabularSource {
             return maybe_b.status();
         }
         auto b = maybe_b.ValueOrDie();
+        if (auto st = check_ipc_batch(*b, total_rows_); !st.ok()) {
+            read_status_ = st;
+            all_read_ = true;
+            return st;
+        }
         batch_first_row_.push_back(total_rows_);
         batch_num_rows_.push_back(b->num_rows());
         total_rows_ += b->num_rows();
@@ -127,13 +161,16 @@ public:
 
         if (self->batches_.empty() && self->all_read_) {
             // Empty file (Feather with 0 rows, or 0-batch IPC): seed a zero-row
-            // batch so the schema can still render.
+            // batch so the schema can still render, each column of its own type.
+            std::vector<std::shared_ptr<arrow::Array>> empty;
+            for (const auto& f : self->schema_->fields()) {
+                auto a = arrow::MakeEmptyArray(f->type());
+                if (!a.ok()) return "Cannot read '" + path + "': " + a.status().ToString();
+                empty.push_back(*a);
+            }
             self->batch_first_row_.push_back(0);
             self->batch_num_rows_.push_back(0);
-            self->batches_.push_back(arrow::RecordBatch::Make(
-                self->schema_, 0, std::vector<std::shared_ptr<arrow::Array>>(
-                    self->schema_->num_fields(),
-                    arrow::MakeArrayOfNull(arrow::utf8(), 0).ValueOrDie())));
+            self->batches_.push_back(arrow::RecordBatch::Make(self->schema_, 0, std::move(empty)));
         }
 
         *out = std::move(self);
@@ -205,12 +242,15 @@ public:
             if (!batches_[(size_t)i]) {
                 auto b = rdr_->ReadRecordBatch(i);
                 if (!b.ok()) return read_status_ = b.status();
+                if (auto st = (*b)->Validate(); !st.ok()) return read_status_ = st;
                 cache_batch(i, *b);
             } else {
                 lru_.remove(i);
                 lru_.push_front(i);
             }
         }
+        if (auto st = check_ipc_columns(*batches_[(size_t)i], col_indices, &checked_[i]); !st.ok())
+            return read_status_ = st;
         *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
         return arrow::Status::OK();
     }
@@ -251,6 +291,7 @@ class IpcStreamSource : public TabularSource {
     mutable bool                                         retain_all_  = false;
     mutable bool                                         evicted_any_ = false;
     mutable arrow::Status                                read_status_;
+    mutable std::map<int, std::vector<char>>             checked_;   // check_ipc_columns
 
     void advance() const {
         if (all_read_) return;
@@ -258,6 +299,7 @@ class IpcStreamSource : public TabularSource {
         auto st = reader_->ReadNext(&b);
         if (!st.ok()) { read_status_ = st; all_read_ = true; return; }
         if (!b) { all_read_ = true; return; }
+        if (st = check_ipc_batch(*b, rows_so_far_); !st.ok()) { read_status_ = st; all_read_ = true; return; }
         stream_retain(batches_, batch_first_row_, batch_num_rows_, rows_so_far_,
                       retain_all_, evicted_any_, std::move(b));
     }
@@ -310,6 +352,8 @@ public:
             return arrow::Status::IndexError("chunk ", i, " out of range");
         if (!batches_[i])
             return arrow::Status::CapacityError("chunk ", i, " was released by the streaming window");
+        if (auto st = check_ipc_columns(*batches_[i], col_indices, &checked_[i]); !st.ok())
+            return read_status_ = st;
         *out = batch_slice_to_table(*batches_[i], col_indices, schema_);
         return arrow::Status::OK();
     }
