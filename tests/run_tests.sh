@@ -3829,6 +3829,12 @@ PYEOF
     assert_contains "fingerprint_recorded_differs" "$FPT" "differs from the vv.fingerprint it records"
     assert_eq_file_inline "fingerprint_recorded_differs_exit" "$FPT_RC" "1"
 fi
+
+# A fixed-size list cell of a sliced array: row 4 is the second slot of its
+# chunk, so its values start at the slice's offset, not at slot 0.
+assert_eq_file_inline "fixed_list_sliced_cell" \
+    "$("$VV" --tsv --no-header --filter 'id == 4' --select id,fl "$DATA/tiny.jsonvals.arrow")" \
+    "$(printf '4\t(4, 5)')"
 # (column names only: the file's vv.select metadata names it)
 refute_contains "select_exclude_parquet_dropped_chrom" "$(awk '{print $1}' <<<"$RT")" "Chromosome"
 

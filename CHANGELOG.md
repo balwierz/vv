@@ -96,6 +96,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   same text shows in the viewer's status line and vvg's footer.
 
 ### Fixed
+- A fixed-size list cell past the first slot of a sliced array showed the
+  values of an earlier slot: `vv --tsv --filter 'id == 4' --select id,fl
+  tests/data/tiny.jsonvals.arrow` printed `(3.5, ∅)` for `(4, 5)`. The
+  text, table and delimited output now index the values from the slice's
+  offset, as the JSON writer does.
 - The viewer's `Y` and `:w` left out `--select` when every shown column was
   visible, so a run started with `--select id,score` copied `vv FILE` and
   wrote every column. They now write `--select` whenever the shown columns

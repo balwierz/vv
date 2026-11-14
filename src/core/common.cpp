@@ -1045,7 +1045,7 @@ std::string cell_to_string(const arrow::Array& arr, int64_t row) {
         case arrow::Type::FIXED_SIZE_LIST: {
             auto& la = static_cast<const arrow::FixedSizeListArray&>(arr);
             int32_t n = la.list_type()->list_size();
-            int64_t off = (int64_t)row * n;
+            int64_t off = la.value_offset(row);   // counts a slice's offset
             auto values = la.values();
             std::string s = "(";
             for (int32_t i = 0; i < n; ++i) {
