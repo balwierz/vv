@@ -96,6 +96,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   same text shows in the viewer's status line and vvg's footer.
 
 ### Fixed
+- Parquet files with null fixed-size list slots now read and write with
+  Arrow 24 and earlier (the static release builds bundle 23.0.1). Reading
+  failed with "Expected all lists to be of size=N but index I had size=0";
+  writing a null slot ahead of a valid one, or a null struct over a
+  fixed-size list, failed with "Lists with non-zero length null components
+  are not supported". Such columns are now read as lists and rebuilt, and
+  written as lists whose null slots hold no values; the stored Arrow schema
+  keeps the fixed-size type. A file written from `tiny.jsonvals.arrow`
+  reads back.
 - A fixed-size list cell past the first slot of a sliced array showed the
   values of an earlier slot: `vv --tsv --filter 'id == 4' --select id,fl
   tests/data/tiny.jsonvals.arrow` printed `(3.5, ∅)` for `(4, 5)`. The

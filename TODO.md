@@ -103,11 +103,13 @@ Deferred until a file needs them (owner's decision, 2026-10-07).
 
 ## Output
 
-- **A Parquet file written from `tiny.jsonvals.arrow` does not read back.**
-  `vv tests/data/tiny.jsonvals.arrow --parquet x.parquet` succeeds; reading
-  `x.parquet` fails with "Expected all lists to be of size=2 but index 2 had
-  size=0". The column is `fl` (`fixed_size_list<double>[2]`, a null in row
-  2); `--select id,fl` alone reproduces it.
+- **A list whose null slots hold values does not write to Parquet with
+  Arrow 24 or earlier** (the static release builds bundle 23.0.1): a
+  `list<int64>` with offsets `[0, 2, 4, 5]` and slot 1 null fails with "Lists
+  with non-zero length null components are not supported". Arrow 26 writes
+  it. Fixed-size lists are rebuilt before writing (`parquet_writable` in
+  `src/formats/parquet.cpp`); variable lists, and lists under a null struct,
+  are written as they are.
 
 ## Windows
 

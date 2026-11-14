@@ -3835,6 +3835,39 @@ fi
 assert_eq_file_inline "fixed_list_sliced_cell" \
     "$("$VV" --tsv --no-header --filter 'id == 4' --select id,fl "$DATA/tiny.jsonvals.arrow")" \
     "$(printf '4\t(4, 5)')"
+# Fixed-size lists with null slots through Parquet: a null slot ahead of a
+# valid one (--sort puts row 2's null fifth), read back with the type kept.
+FLW=$("$VV" --tsv --select id,fl --sort id:desc "$DATA/tiny.jsonvals.arrow")
+"$VV" --select id,fl --sort id:desc --parquet "$TMP/fl.parquet" "$DATA/tiny.jsonvals.arrow" 2>/dev/null
+assert_eq_file_inline "fixed_list_parquet_roundtrip" "$("$VV" --tsv "$TMP/fl.parquet" 2>&1)" "$FLW"
+assert_contains "fixed_list_parquet_type" "$("$VV" --schema "$TMP/fl.parquet")" \
+    "fixed_size_list<element: double>[2]"
+FLR=$("$VV" --tsv --select id,fl --filter 'id >= 2' "$DATA/tiny.jsonvals.arrow")
+assert_eq_file_inline "fixed_list_parquet_filter" \
+    "$("$VV" --tsv --filter 'id >= 2' "$TMP/fl.parquet" | sort -n)" "$(sort -n <<<"$FLR")"
+"$VV" "$DATA/tiny.jsonvals.arrow" --fingerprint --parquet "$TMP/fl_all.parquet" 2>/dev/null
+assert_contains "fixed_list_parquet_fingerprint" "$("$VV" --fingerprint "$TMP/fl_all.parquet" 2>&1)" \
+    "matches the vv.fingerprint it records"
+if python3 -c "import pyarrow" 2>/dev/null; then
+    # Nested: a null struct over a valid fixed-size list ahead of valid rows,
+    # a list of fixed-size lists, a map to them; null slots mid-chunk.
+    python3 - "$TMP/fl_nested.arrow" <<'PYEOF'
+import sys, pyarrow as pa, pyarrow.ipc as ipc
+fx = lambda vals, k, t, mask: pa.FixedSizeListArray.from_arrays(pa.array(vals, t), k, mask=pa.array(mask))
+st = pa.StructArray.from_arrays([pa.array([1, 2, 3, 4]), fx([1, 2, 3, 4, 5, 6, 7, 8], 2, pa.int64(), [False, True, False, False])],
+                                ["a", "v"], mask=pa.array([False, False, True, False]))
+lo = pa.ListArray.from_arrays(pa.array([0, 2, 2, 3, 3], pa.int32()), fx([1, 2, 3, 4, 5, 6], 2, pa.int32(), [False, True, False]),
+                              mask=pa.array([False, False, False, True]))
+mp = pa.MapArray.from_arrays(pa.array([0, 1, 1, 2, 2], pa.int32()), pa.array(["k", "q"]), fx([7, 8, 0, 0], 2, pa.int64(), [False, True]))
+t = pa.table({"id": pa.array([1, 2, 3, 4]), "st": st, "lo": lo, "mp": mp,
+              "fl": fx([1.0, 2.0, None, None, 3.5, None, 4.0, 5.0], 2, pa.float64(), [False, True, False, False])})
+with ipc.new_file(sys.argv[1], t.schema) as w:
+    w.write_table(t)
+PYEOF
+    "$VV" --parquet "$TMP/fl_nested.parquet" "$TMP/fl_nested.arrow" 2>/dev/null
+    assert_eq_file_inline "fixed_list_parquet_nested" "$("$VV" --tsv "$TMP/fl_nested.parquet" 2>&1)" \
+        "$("$VV" --tsv "$TMP/fl_nested.arrow")"
+fi
 # (column names only: the file's vv.select metadata names it)
 refute_contains "select_exclude_parquet_dropped_chrom" "$(awk '{print $1}' <<<"$RT")" "Chromosome"
 

@@ -690,8 +690,7 @@ std::string write_parquet(TabularSource& src, const Config& cfg) {
                       .store_schema()        // round-trip Arrow types
                       ->build();
 
-    auto writer_or = parquet::arrow::FileWriter::Open(
-        *out_schema, arrow::default_memory_pool(), sink, wprops, aprops);
+    auto writer_or = open_parquet_writer(out_schema, sink, wprops, aprops);
     if (!writer_or.ok()) {
         (void)sink->Close();
         return "Parquet writer init failed: " + writer_or.status().ToString();
@@ -744,7 +743,8 @@ std::string write_parquet(TabularSource& src, const Config& cfg) {
         if (take < table->num_rows()) table = table->Slice(0, take);
         // Project down to user-requested columns (drop filter-only loads).
         table = project_to_requested(table, col_indices, requested);
-        st = writer->WriteTable(*table, table->num_rows());
+        auto writable = parquet_writable(table);
+        st = writable.ok() ? writer->WriteTable(**writable, table->num_rows()) : writable.status();
         if (!st.ok()) {
             (void)writer->Close();
             (void)sink->Close();

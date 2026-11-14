@@ -5,6 +5,13 @@
 
 #include "internal.hpp"
 
+#include <arrow/array/concatenate.h>
+#include <arrow/util/base64.h>
+#include <arrow/util/bit_util.h>
+#include <arrow/util/bitmap_ops.h>
+#include <parquet/exception.h>
+#include <parquet/file_writer.h>
+
 // ── Generic Parquet coordinate-column detection ──────────────────────────────
 //
 // For region queries on plain Parquet (no LociSSD manifest), discover which
@@ -165,11 +172,335 @@ bool has_genomic_coord_columns(const arrow::Schema& schema) {
 // strings, and any nesting depth, are tracked so a `,` / `[` / `]` inside a
 // value is never mistaken for the array framing.
 
+// ── Fixed-size lists ─────────────────────────────────────────────────────────
+//
+// Parquet stores an Arrow fixed_size_list as a plain LIST and restores the
+// fixed size from the stored ARROW:schema. A null slot is written with no
+// child values. Arrow's reader up to 24.0.0 (and pyarrow 22) requires every
+// slot, the null ones included, to hold list_size values, so any null slot
+// fails the read with "Expected all lists to be of size=N but index I had
+// size=0"; Arrow 26.0.0 reads it. Such columns are read as plain lists
+// instead and rebuilt as fixed-size lists here, with list_size null values
+// under each null slot, on every Arrow version.
+
+static bool has_fixed_size_list(const arrow::DataType& t) {
+    if (t.id() == arrow::Type::FIXED_SIZE_LIST) return true;
+    for (const auto& f : t.fields())
+        if (has_fixed_size_list(*f->type())) return true;
+    return false;
+}
+
+// `t` with every fixed_size_list<T>[n] replaced by list<T>.
+static std::shared_ptr<arrow::DataType> fixed_lists_as_lists(const std::shared_ptr<arrow::DataType>& t) {
+    if (!has_fixed_size_list(*t)) return t;
+    auto child = [&](int i) { return t->field(i)->WithType(fixed_lists_as_lists(t->field(i)->type())); };
+    switch (t->id()) {
+    case arrow::Type::FIXED_SIZE_LIST:
+    case arrow::Type::LIST:       return arrow::list(child(0));
+    case arrow::Type::LARGE_LIST: return arrow::large_list(child(0));
+    case arrow::Type::MAP: {
+        const auto& m = static_cast<const arrow::MapType&>(*t);
+        auto entries = fixed_lists_as_lists(t->field(0)->type());   // struct<key, value>
+        return std::make_shared<arrow::MapType>(entries->field(0), entries->field(1), m.keys_sorted());
+    }
+    case arrow::Type::STRUCT: {
+        arrow::FieldVector fs;
+        for (int i = 0; i < t->num_fields(); ++i) fs.push_back(child(i));
+        return arrow::struct_(std::move(fs));
+    }
+    default: return t;
+    }
+}
+
+// Point the reader's schema manifest at plain lists wherever the stored schema
+// has a fixed-size list, so the reader builds ListReaders for them. Returns
+// whether anything changed. The manifest is a non-const member of the
+// reader, which builds its column readers from these fields on every read
+// (GetSchema derives the schema from the file metadata, not the manifest).
+static bool read_fixed_lists_as_lists(parquet::arrow::FileReader& reader) {
+    auto& manifest = const_cast<parquet::arrow::SchemaManifest&>(reader.manifest());
+    bool changed = false;
+    std::function<void(parquet::arrow::SchemaField&)> walk = [&](parquet::arrow::SchemaField& sf) {
+        for (auto& ch : sf.children) walk(ch);
+        if (sf.field && has_fixed_size_list(*sf.field->type())) {
+            sf.field = sf.field->WithType(fixed_lists_as_lists(sf.field->type()));
+            changed = true;
+        }
+    };
+    for (auto& sf : manifest.schema_fields) walk(sf);
+    return changed;
+}
+
+// `a`, read with the types fixed_lists_as_lists(want) gives, rebuilt as `want`.
+static arrow::Result<std::shared_ptr<arrow::Array>>
+restore_fixed_lists(const std::shared_ptr<arrow::Array>& a, const std::shared_ptr<arrow::DataType>& want) {
+    if (a->type()->Equals(*want)) return a;
+    const int64_t len = a->length();
+    std::shared_ptr<arrow::Buffer> bitmap = a->null_count() > 0 ? a->data()->buffers[0] : nullptr;
+    switch (want->id()) {
+    case arrow::Type::FIXED_SIZE_LIST: {
+        if (a->type_id() != arrow::Type::LIST)
+            return arrow::Status::Invalid("expected a list column for ", want->ToString());
+        const auto& la = static_cast<const arrow::ListArray&>(*a);
+        const int32_t n = static_cast<const arrow::FixedSizeListType&>(*want).list_size();
+        auto value_type = want->field(0)->type();
+        ARROW_ASSIGN_OR_RAISE(auto vals, restore_fixed_lists(la.values(), value_type));
+        arrow::ArrayVector pieces;
+        int64_t run_start = -1;   // first slot of the current run of valid slots
+        auto flush = [&](int64_t end) {
+            if (run_start < 0) return;
+            pieces.push_back(vals->Slice(la.value_offset(run_start), (end - run_start) * int64_t{n}));
+            run_start = -1;
+        };
+        for (int64_t i = 0; i < len; ++i) {
+            if (la.IsNull(i)) {
+                flush(i);
+                ARROW_ASSIGN_OR_RAISE(auto nulls, arrow::MakeArrayOfNull(value_type, n));
+                pieces.push_back(std::move(nulls));
+                continue;
+            }
+            if (la.value_length(i) != n)
+                return arrow::Status::Invalid("Expected all lists to be of size=", n,
+                                              " but index ", i, " had size=", la.value_length(i));
+            if (run_start < 0) run_start = i;
+        }
+        flush(len);
+        std::shared_ptr<arrow::Array> values;
+        if (pieces.empty()) values = vals->Slice(0, 0);
+        else if (pieces.size() == 1) values = pieces[0];
+        else { ARROW_ASSIGN_OR_RAISE(values, arrow::Concatenate(pieces)); }
+        if (bitmap && a->offset() != 0) {
+            ARROW_ASSIGN_OR_RAISE(bitmap, arrow::internal::CopyBitmap(
+                arrow::default_memory_pool(), a->null_bitmap_data(), a->offset(), len));
+        }
+        return std::make_shared<arrow::FixedSizeListArray>(want, len, values, bitmap, a->null_count());
+    }
+    case arrow::Type::LIST:
+    case arrow::Type::MAP: {
+        const auto& la = static_cast<const arrow::ListArray&>(*a);
+        ARROW_ASSIGN_OR_RAISE(auto vals, restore_fixed_lists(la.values(), want->field(0)->type()));
+        if (want->id() == arrow::Type::MAP)
+            return std::make_shared<arrow::MapArray>(want, len, la.value_offsets(), vals, bitmap,
+                                                     a->null_count(), a->offset());
+        return std::make_shared<arrow::ListArray>(want, len, la.value_offsets(), vals, bitmap,
+                                                  a->null_count(), a->offset());
+    }
+    case arrow::Type::LARGE_LIST: {
+        const auto& la = static_cast<const arrow::LargeListArray&>(*a);
+        ARROW_ASSIGN_OR_RAISE(auto vals, restore_fixed_lists(la.values(), want->field(0)->type()));
+        return std::make_shared<arrow::LargeListArray>(want, len, la.value_offsets(), vals, bitmap,
+                                                       a->null_count(), a->offset());
+    }
+    case arrow::Type::STRUCT: {
+        arrow::ArrayVector children;
+        for (int i = 0; i < want->num_fields(); ++i) {
+            ARROW_ASSIGN_OR_RAISE(auto c, restore_fixed_lists(
+                arrow::MakeArray(a->data()->child_data[i]), want->field(i)->type()));
+            children.push_back(std::move(c));
+        }
+        return std::make_shared<arrow::StructArray>(want, len, children, bitmap,
+                                                    a->null_count(), a->offset());
+    }
+    default:
+        return a;
+    }
+}
+
+// Every column of `t` whose type differs from the schema field of the same
+// name rebuilt to that field's type.
+static arrow::Result<std::shared_ptr<arrow::Table>>
+restore_fixed_lists(const std::shared_ptr<arrow::Table>& t, const arrow::Schema& schema) {
+    arrow::FieldVector fields = t->schema()->fields();
+    std::vector<std::shared_ptr<arrow::ChunkedArray>> columns = t->columns();
+    bool changed = false;
+    for (int c = 0; c < t->num_columns(); ++c) {
+        const auto& have = fields[c]->type();
+        std::shared_ptr<arrow::DataType> want;
+        for (const auto& f : schema.fields())
+            if (f->name() == fields[c]->name() && has_fixed_size_list(*f->type()) &&
+                fixed_lists_as_lists(f->type())->Equals(*have)) { want = f->type(); break; }
+        if (!want) continue;
+        arrow::ArrayVector chunks;
+        for (const auto& ch : columns[c]->chunks()) {
+            auto r = restore_fixed_lists(ch, want);
+            if (!r.ok()) return r.status().WithMessage("column '", fields[c]->name(), "': ",
+                                                      r.status().message());
+            chunks.push_back(std::move(*r));
+        }
+        columns[c] = std::make_shared<arrow::ChunkedArray>(std::move(chunks), want);
+        fields[c] = fields[c]->WithType(want);
+        changed = true;
+    }
+    if (!changed) return t;
+    return arrow::Table::Make(arrow::schema(std::move(fields), t->schema()->metadata()),
+                              std::move(columns), t->num_rows());
+}
+
+// `a` with every fixed_size_list rebuilt as a list whose null slots hold no
+// values. Arrow's Parquet writer up to 24.0.0 needs the leaf values of a
+// column contiguous, and refuses a null fixed-size slot followed by a valid
+// one, or a null struct over a valid one ("Lists with non-zero length null
+// components are not supported"). `hidden` (one flag per slot of `a`) marks
+// the slots under a null struct, which are written null too: nothing below
+// a null struct is read back. Lengths are unchanged at every level.
+static arrow::Result<std::shared_ptr<arrow::Array>> fixed_lists_to_lists(
+    const std::shared_ptr<arrow::Array>& a, const std::vector<bool>* hidden = nullptr) {
+    if (!has_fixed_size_list(*a->type())) return a;
+    const auto want = fixed_lists_as_lists(a->type());
+    const int64_t len = a->length();
+    std::shared_ptr<arrow::Buffer> bitmap = a->null_count() > 0 ? a->data()->buffers[0] : nullptr;
+    auto is_null = [&](int64_t i) { return a->IsNull(i) || (hidden && (*hidden)[i]); };
+    // The validity of `a` at offset 0, with the hidden slots null.
+    auto own_bitmap = [&](int64_t* null_count) -> arrow::Result<std::shared_ptr<arrow::Buffer>> {
+        *null_count = 0;
+        if (!hidden) {
+            *null_count = a->null_count();
+            if (!bitmap || a->offset() == 0) return bitmap;
+            return arrow::internal::CopyBitmap(arrow::default_memory_pool(), a->null_bitmap_data(),
+                                               a->offset(), len);
+        }
+        ARROW_ASSIGN_OR_RAISE(auto bm, arrow::AllocateEmptyBitmap(len));
+        for (int64_t i = 0; i < len; ++i) {
+            if (is_null(i)) ++*null_count;
+            else arrow::bit_util::SetBit(bm->mutable_data(), i);
+        }
+        return *null_count ? std::shared_ptr<arrow::Buffer>(std::move(bm)) : nullptr;
+    };
+    switch (a->type_id()) {
+    case arrow::Type::FIXED_SIZE_LIST: {
+        const auto& fa = static_cast<const arrow::FixedSizeListArray&>(*a);
+        const int64_t n = fa.list_type()->list_size();
+        ARROW_ASSIGN_OR_RAISE(auto vals, fixed_lists_to_lists(fa.values()));
+        if (int64_t{len} * n > INT32_MAX)
+            return arrow::Status::CapacityError("fixed-size list column of ", len * n,
+                                                " values in one chunk");
+        ARROW_ASSIGN_OR_RAISE(auto offsets, arrow::AllocateBuffer((len + 1) * sizeof(int32_t)));
+        auto* off = reinterpret_cast<int32_t*>(offsets->mutable_data());
+        arrow::ArrayVector pieces;
+        int64_t run_start = -1;
+        auto flush = [&](int64_t end) {
+            if (run_start < 0) return;
+            pieces.push_back(vals->Slice(fa.value_offset(run_start), (end - run_start) * n));
+            run_start = -1;
+        };
+        int32_t cur = 0;
+        for (int64_t i = 0; i < len; ++i) {
+            off[i] = cur;
+            if (is_null(i)) { flush(i); continue; }
+            if (run_start < 0) run_start = i;
+            cur += static_cast<int32_t>(n);
+        }
+        off[len] = cur;
+        flush(len);
+        std::shared_ptr<arrow::Array> values;
+        if (pieces.empty()) values = vals->Slice(0, 0);
+        else if (pieces.size() == 1) values = pieces[0];
+        else { ARROW_ASSIGN_OR_RAISE(values, arrow::Concatenate(pieces)); }
+        int64_t nulls = 0;
+        ARROW_ASSIGN_OR_RAISE(auto bm, own_bitmap(&nulls));
+        return std::make_shared<arrow::ListArray>(want, len, std::move(offsets), values, bm, nulls);
+    }
+    case arrow::Type::LIST:
+    case arrow::Type::MAP: {
+        const auto& la = static_cast<const arrow::ListArray&>(*a);
+        ARROW_ASSIGN_OR_RAISE(auto vals, fixed_lists_to_lists(la.values()));
+        if (a->type_id() == arrow::Type::MAP)
+            return std::make_shared<arrow::MapArray>(want, len, la.value_offsets(), vals, bitmap,
+                                                     a->null_count(), a->offset());
+        return std::make_shared<arrow::ListArray>(want, len, la.value_offsets(), vals, bitmap,
+                                                  a->null_count(), a->offset());
+    }
+    case arrow::Type::LARGE_LIST: {
+        const auto& la = static_cast<const arrow::LargeListArray&>(*a);
+        ARROW_ASSIGN_OR_RAISE(auto vals, fixed_lists_to_lists(la.values()));
+        return std::make_shared<arrow::LargeListArray>(want, len, la.value_offsets(), vals, bitmap,
+                                                       a->null_count(), a->offset());
+    }
+    case arrow::Type::STRUCT: {
+        const auto& sa = static_cast<const arrow::StructArray&>(*a);
+        std::vector<bool> below;   // the children's hidden slots
+        if (a->null_count() > 0 || hidden) {
+            below.resize(len);
+            for (int64_t i = 0; i < len; ++i) below[i] = is_null(i);
+        }
+        arrow::ArrayVector children;
+        for (int i = 0; i < a->num_fields(); ++i) {
+            ARROW_ASSIGN_OR_RAISE(auto c, fixed_lists_to_lists(sa.field(i), below.empty() ? nullptr : &below));
+            children.push_back(std::move(c));
+        }
+        int64_t nulls = 0;
+        ARROW_ASSIGN_OR_RAISE(auto bm, own_bitmap(&nulls));
+        return std::make_shared<arrow::StructArray>(want, len, children, bm, nulls);
+    }
+    default:
+        return a;
+    }
+}
+
+arrow::Result<std::shared_ptr<arrow::Table>> parquet_writable(const std::shared_ptr<arrow::Table>& t) {
+    arrow::FieldVector fields = t->schema()->fields();
+    std::vector<std::shared_ptr<arrow::ChunkedArray>> columns = t->columns();
+    bool changed = false;
+    for (int c = 0; c < t->num_columns(); ++c) {
+        if (!has_fixed_size_list(*fields[c]->type())) continue;
+        arrow::ArrayVector chunks;
+        for (const auto& ch : columns[c]->chunks()) {
+            ARROW_ASSIGN_OR_RAISE(auto a, fixed_lists_to_lists(ch));
+            chunks.push_back(std::move(a));
+        }
+        auto type = fixed_lists_as_lists(fields[c]->type());
+        columns[c] = std::make_shared<arrow::ChunkedArray>(std::move(chunks), type);
+        fields[c] = fields[c]->WithType(type);
+        changed = true;
+    }
+    if (!changed) return t;
+    return arrow::Table::Make(arrow::schema(std::move(fields), t->schema()->metadata()),
+                              std::move(columns), t->num_rows());
+}
+
+arrow::Result<std::unique_ptr<parquet::arrow::FileWriter>> open_parquet_writer(
+    const std::shared_ptr<arrow::Schema>& schema, std::shared_ptr<arrow::io::OutputStream> sink,
+    std::shared_ptr<parquet::WriterProperties> props,
+    std::shared_ptr<parquet::ArrowWriterProperties> arrow_props) {
+    bool fixed = false;
+    for (const auto& f : schema->fields()) fixed = fixed || has_fixed_size_list(*f->type());
+    if (!fixed)
+        return parquet::arrow::FileWriter::Open(*schema, arrow::default_memory_pool(),
+                                                std::move(sink), std::move(props),
+                                                std::move(arrow_props));
+    // FileWriter::Open, with the written schema's fixed-size lists as lists
+    // (a fixed_size_list and a list map to the same Parquet LIST node) and
+    // the ARROW:schema serialised from the schema as given.
+    std::shared_ptr<parquet::SchemaDescriptor> descr;
+    ARROW_RETURN_NOT_OK(parquet::arrow::ToParquetSchema(schema.get(), *props, *arrow_props, &descr));
+    std::shared_ptr<const arrow::KeyValueMetadata> kv;
+    if (arrow_props->store_schema()) {
+        auto m = schema->metadata() ? schema->metadata()->Copy()
+                                    : std::make_shared<arrow::KeyValueMetadata>();
+        ARROW_ASSIGN_OR_RAISE(auto serialized,
+                              arrow::ipc::SerializeSchema(*schema, arrow::default_memory_pool()));
+        m->Append("ARROW:schema", arrow::util::base64_encode(serialized->ToString()));
+        kv = std::move(m);
+    }
+    std::unique_ptr<parquet::ParquetFileWriter> base;
+    PARQUET_CATCH_NOT_OK(base = parquet::ParquetFileWriter::Open(
+        std::move(sink), std::static_pointer_cast<parquet::schema::GroupNode>(descr->schema_root()),
+        std::move(props), std::move(kv)));
+    arrow::FieldVector fields;
+    for (const auto& f : schema->fields()) fields.push_back(f->WithType(fixed_lists_as_lists(f->type())));
+    std::unique_ptr<parquet::arrow::FileWriter> out;
+    ARROW_RETURN_NOT_OK(parquet::arrow::FileWriter::Make(
+        arrow::default_memory_pool(), std::move(base), arrow::schema(std::move(fields), schema->metadata()),
+        std::move(arrow_props), &out));
+    return out;
+}
+
 // ── Parquet source ────────────────────────────────────────────────────────────
 
 class ParquetSource : public TabularSource {
     std::unique_ptr<parquet::arrow::FileReader> reader_;
     int64_t batch_size_ = 0;   // the reader's batch size as opened (-n's)
+    bool fixed_lists_ = false; // fixed-size lists read as lists (restore_fixed_lists)
     std::shared_ptr<parquet::FileMetaData>      meta_;
     std::shared_ptr<arrow::Schema>              schema_;
     std::string                                  path_;
@@ -254,6 +585,7 @@ public:
             return "Not a valid Parquet file: " + e;
         st = self->reader_->GetSchema(&self->schema_);
         if (!st.ok()) return "Error reading schema: " + st.ToString();
+        self->fixed_lists_ = read_fixed_lists_as_lists(*self->reader_);
         // The Arrow schema's metadata comes from the stored ARROW:schema, which
         // a writer serialises before keys added at the end (vv.fingerprint):
         // add the file's keys it lacks.
@@ -574,6 +906,7 @@ public:
 #else
             ARROW_RETURN_NOT_OK(reader_->ReadRowGroups({i}, arrow_to_leaf_indices(cols), out));
 #endif
+            if (fixed_lists_) { ARROW_ASSIGN_OR_RAISE(*out, restore_fixed_lists(*out, *schema_)); }
             return check_dictionaries(**out);
         }
 
@@ -615,6 +948,7 @@ public:
             ARROW_RETURN_NOT_OK(reader_->ReadRowGroups(
                 {s.row_group}, arrow_to_leaf_indices(need), &raw));
 #endif
+            if (fixed_lists_) { ARROW_ASSIGN_OR_RAISE(raw, restore_fixed_lists(raw, *schema_)); }
             ARROW_RETURN_NOT_OK(check_dictionaries(*raw));
             rg_cache_.insert(rg_cache_.begin(),
                              RgCacheEntry{s.row_group, need, raw});
@@ -798,8 +1132,10 @@ public:
         }
         auto r = arrow::Table::FromRecordBatches(rb->schema(), batches);
         ARROW_RETURN_NOT_OK(r.status());
-        ARROW_RETURN_NOT_OK(check_dictionaries(**r));
-        *out = r.ValueOrDie();
+        std::shared_ptr<arrow::Table> t = r.ValueOrDie();
+        if (fixed_lists_) { ARROW_ASSIGN_OR_RAISE(t, restore_fixed_lists(t, *schema_)); }
+        ARROW_RETURN_NOT_OK(check_dictionaries(*t));
+        *out = std::move(t);
         return arrow::Status::OK();
     }
     const std::string& path() const override { return path_; }
