@@ -336,16 +336,31 @@ restore_fixed_lists(const std::shared_ptr<arrow::Table>& t, const arrow::Schema&
                               std::move(columns), t->num_rows());
 }
 
-// `a` with every fixed_size_list rebuilt as a list whose null slots hold no
-// values. Arrow's Parquet writer up to 24.0.0 needs the leaf values of a
-// column contiguous, and refuses a null fixed-size slot followed by a valid
-// one, or a null struct over a valid one ("Lists with non-zero length null
-// components are not supported"). `hidden` (one flag per slot of `a`) marks
-// the slots under a null struct, which are written null too: nothing below
-// a null struct is read back. Lengths are unchanged at every level.
-static arrow::Result<std::shared_ptr<arrow::Array>> fixed_lists_to_lists(
+static bool has_list(const arrow::DataType& t) {
+    switch (t.id()) {
+    case arrow::Type::LIST: case arrow::Type::LARGE_LIST:
+    case arrow::Type::MAP:  case arrow::Type::FIXED_SIZE_LIST:
+        return true;
+    default:
+        for (const auto& f : t.fields())
+            if (has_list(*f->type())) return true;
+        return false;
+    }
+}
+
+// `a` in the form Arrow's Parquet writer up to 24.0.0 takes: every list,
+// large list, map and fixed-size list (rebuilt as a list) with no values
+// under a null slot. That writer needs the leaf values of a column
+// contiguous: a null slot holding values (always so for a fixed-size list,
+// whose null slots keep their list_size values) ahead of a valid one, or a
+// null struct over a list holding values, fails with "Lists with non-zero
+// length null components are not supported". `hidden` (one flag per slot of
+// `a`) marks the slots under a null struct, which are written null too:
+// nothing below a null struct is read back. Lengths are unchanged at every
+// level; `a` itself is returned when nothing changes.
+static arrow::Result<std::shared_ptr<arrow::Array>> writable_lists(
     const std::shared_ptr<arrow::Array>& a, const std::vector<bool>* hidden = nullptr) {
-    if (!has_fixed_size_list(*a->type())) return a;
+    if (!has_list(*a->type())) return a;
     const auto want = fixed_lists_as_lists(a->type());
     const int64_t len = a->length();
     std::shared_ptr<arrow::Buffer> bitmap = a->null_count() > 0 ? a->data()->buffers[0] : nullptr;
@@ -366,55 +381,89 @@ static arrow::Result<std::shared_ptr<arrow::Array>> fixed_lists_to_lists(
         }
         return *null_count ? std::shared_ptr<arrow::Buffer>(std::move(bm)) : nullptr;
     };
+    // The values of the slots kept (valid and not hidden) of a list-like
+    // array, and offsets from 0 over them: `start(i)` / `size(i)` give slot
+    // i's values in `vals`.
+    auto compact = [&](const std::shared_ptr<arrow::Array>& vals, auto start, auto size,
+                       auto* off) -> arrow::Result<std::shared_ptr<arrow::Array>> {
+        arrow::ArrayVector pieces;
+        int64_t run_start = -1, run_values = 0;
+        auto flush = [&]() {
+            if (run_start >= 0 && run_values > 0) pieces.push_back(vals->Slice(start(run_start), run_values));
+            run_start = -1; run_values = 0;
+        };
+        int64_t cur = 0;
+        for (int64_t i = 0; i < len; ++i) {
+            off[i] = static_cast<std::remove_pointer_t<decltype(off)>>(cur);
+            if (is_null(i)) { flush(); continue; }
+            if (run_start < 0) run_start = i;
+            run_values += size(i);
+            cur += size(i);
+        }
+        off[len] = static_cast<std::remove_pointer_t<decltype(off)>>(cur);
+        flush();
+        if (pieces.empty()) return vals->Slice(0, 0);
+        if (pieces.size() == 1) return pieces[0];
+        return arrow::Concatenate(pieces);
+    };
     switch (a->type_id()) {
     case arrow::Type::FIXED_SIZE_LIST: {
         const auto& fa = static_cast<const arrow::FixedSizeListArray&>(*a);
         const int64_t n = fa.list_type()->list_size();
-        ARROW_ASSIGN_OR_RAISE(auto vals, fixed_lists_to_lists(fa.values()));
-        if (int64_t{len} * n > INT32_MAX)
+        ARROW_ASSIGN_OR_RAISE(auto vals, writable_lists(fa.values()));
+        if (len * n > INT32_MAX)
             return arrow::Status::CapacityError("fixed-size list column of ", len * n,
                                                 " values in one chunk");
         ARROW_ASSIGN_OR_RAISE(auto offsets, arrow::AllocateBuffer((len + 1) * sizeof(int32_t)));
-        auto* off = reinterpret_cast<int32_t*>(offsets->mutable_data());
-        arrow::ArrayVector pieces;
-        int64_t run_start = -1;
-        auto flush = [&](int64_t end) {
-            if (run_start < 0) return;
-            pieces.push_back(vals->Slice(fa.value_offset(run_start), (end - run_start) * n));
-            run_start = -1;
-        };
-        int32_t cur = 0;
-        for (int64_t i = 0; i < len; ++i) {
-            off[i] = cur;
-            if (is_null(i)) { flush(i); continue; }
-            if (run_start < 0) run_start = i;
-            cur += static_cast<int32_t>(n);
-        }
-        off[len] = cur;
-        flush(len);
-        std::shared_ptr<arrow::Array> values;
-        if (pieces.empty()) values = vals->Slice(0, 0);
-        else if (pieces.size() == 1) values = pieces[0];
-        else { ARROW_ASSIGN_OR_RAISE(values, arrow::Concatenate(pieces)); }
+        ARROW_ASSIGN_OR_RAISE(auto values, compact(vals, [&](int64_t i) { return fa.value_offset(i); },
+                                                   [&](int64_t) { return n; },
+                                                   reinterpret_cast<int32_t*>(offsets->mutable_data())));
         int64_t nulls = 0;
         ARROW_ASSIGN_OR_RAISE(auto bm, own_bitmap(&nulls));
         return std::make_shared<arrow::ListArray>(want, len, std::move(offsets), values, bm, nulls);
     }
     case arrow::Type::LIST:
-    case arrow::Type::MAP: {
-        const auto& la = static_cast<const arrow::ListArray&>(*a);
-        ARROW_ASSIGN_OR_RAISE(auto vals, fixed_lists_to_lists(la.values()));
-        if (a->type_id() == arrow::Type::MAP)
-            return std::make_shared<arrow::MapArray>(want, len, la.value_offsets(), vals, bitmap,
-                                                     a->null_count(), a->offset());
-        return std::make_shared<arrow::ListArray>(want, len, la.value_offsets(), vals, bitmap,
-                                                  a->null_count(), a->offset());
-    }
+    case arrow::Type::MAP:
     case arrow::Type::LARGE_LIST: {
-        const auto& la = static_cast<const arrow::LargeListArray&>(*a);
-        ARROW_ASSIGN_OR_RAISE(auto vals, fixed_lists_to_lists(la.values()));
-        return std::make_shared<arrow::LargeListArray>(want, len, la.value_offsets(), vals, bitmap,
-                                                       a->null_count(), a->offset());
+        const bool large = a->type_id() == arrow::Type::LARGE_LIST;
+        auto values_of = [&]() {
+            return large ? static_cast<const arrow::LargeListArray&>(*a).values()
+                         : static_cast<const arrow::ListArray&>(*a).values();
+        };
+        auto start = [&](int64_t i) -> int64_t {
+            return large ? static_cast<const arrow::LargeListArray&>(*a).value_offset(i)
+                         : static_cast<const arrow::ListArray&>(*a).value_offset(i);
+        };
+        auto size = [&](int64_t i) -> int64_t { return start(i + 1) - start(i); };
+        ARROW_ASSIGN_OR_RAISE(auto vals, writable_lists(values_of()));
+        bool dirty = false;   // a null or hidden slot holding values
+        if (a->null_count() > 0 || hidden)
+            for (int64_t i = 0; i < len && !dirty; ++i) dirty = is_null(i) && size(i) != 0;
+        auto make = [&](std::shared_ptr<arrow::Buffer> offsets, std::shared_ptr<arrow::Array> v,
+                        std::shared_ptr<arrow::Buffer> bm, int64_t nulls,
+                        int64_t offset) -> std::shared_ptr<arrow::Array> {
+            if (large) return std::make_shared<arrow::LargeListArray>(want, len, offsets, v, bm, nulls, offset);
+            if (a->type_id() == arrow::Type::MAP)
+                return std::make_shared<arrow::MapArray>(want, len, offsets, v, bm, nulls, offset);
+            return std::make_shared<arrow::ListArray>(want, len, offsets, v, bm, nulls, offset);
+        };
+        if (!dirty) {
+            if (vals == values_of()) return a;
+            return make(a->data()->buffers[1], vals, bitmap, a->null_count(), a->offset());
+        }
+        const size_t width = large ? sizeof(int64_t) : sizeof(int32_t);
+        ARROW_ASSIGN_OR_RAISE(auto offsets, arrow::AllocateBuffer((len + 1) * width));
+        std::shared_ptr<arrow::Array> values;
+        if (large) {
+            ARROW_ASSIGN_OR_RAISE(values, compact(vals, start, size,
+                                                  reinterpret_cast<int64_t*>(offsets->mutable_data())));
+        } else {
+            ARROW_ASSIGN_OR_RAISE(values, compact(vals, start, size,
+                                                  reinterpret_cast<int32_t*>(offsets->mutable_data())));
+        }
+        int64_t nulls = 0;
+        ARROW_ASSIGN_OR_RAISE(auto bm, own_bitmap(&nulls));
+        return make(std::move(offsets), values, bm, nulls, 0);
     }
     case arrow::Type::STRUCT: {
         const auto& sa = static_cast<const arrow::StructArray&>(*a);
@@ -424,10 +473,14 @@ static arrow::Result<std::shared_ptr<arrow::Array>> fixed_lists_to_lists(
             for (int64_t i = 0; i < len; ++i) below[i] = is_null(i);
         }
         arrow::ArrayVector children;
+        bool changed = false;
         for (int i = 0; i < a->num_fields(); ++i) {
-            ARROW_ASSIGN_OR_RAISE(auto c, fixed_lists_to_lists(sa.field(i), below.empty() ? nullptr : &below));
+            auto field = sa.field(i);   // sliced to the struct's offset and length
+            ARROW_ASSIGN_OR_RAISE(auto c, writable_lists(field, below.empty() ? nullptr : &below));
+            changed = changed || c != field;
             children.push_back(std::move(c));
         }
+        if (!changed) return a;
         int64_t nulls = 0;
         ARROW_ASSIGN_OR_RAISE(auto bm, own_bitmap(&nulls));
         return std::make_shared<arrow::StructArray>(want, len, children, bm, nulls);
@@ -442,12 +495,15 @@ arrow::Result<std::shared_ptr<arrow::Table>> parquet_writable(const std::shared_
     std::vector<std::shared_ptr<arrow::ChunkedArray>> columns = t->columns();
     bool changed = false;
     for (int c = 0; c < t->num_columns(); ++c) {
-        if (!has_fixed_size_list(*fields[c]->type())) continue;
+        if (!has_list(*fields[c]->type())) continue;
         arrow::ArrayVector chunks;
+        bool col_changed = false;
         for (const auto& ch : columns[c]->chunks()) {
-            ARROW_ASSIGN_OR_RAISE(auto a, fixed_lists_to_lists(ch));
+            ARROW_ASSIGN_OR_RAISE(auto a, writable_lists(ch));
+            col_changed = col_changed || a != ch;
             chunks.push_back(std::move(a));
         }
+        if (!col_changed) continue;
         auto type = fixed_lists_as_lists(fields[c]->type());
         columns[c] = std::make_shared<arrow::ChunkedArray>(std::move(chunks), type);
         fields[c] = fields[c]->WithType(type);

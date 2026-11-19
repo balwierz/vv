@@ -965,14 +965,16 @@ bool is_parquet_source(const TabularSource& src);
 // the message for a footer that claims more rows than a chunk holds.
 std::string parquet_row_count_error(const parquet::FileMetaData& meta);
 // A Parquet writer for `schema`. A fixed_size_list column is written from
-// list arrays (parquet_writable gives them): Arrow's writer up to 24.0.0
-// refuses a null fixed-size slot followed by a valid one. The stored ARROW:schema keeps the
-// fixed-size type, so ParquetSource reads the column back as written.
+// list arrays (parquet_writable gives them), and the stored ARROW:schema
+// keeps the fixed-size type, so ParquetSource reads the column back as
+// written.
 arrow::Result<std::unique_ptr<parquet::arrow::FileWriter>> open_parquet_writer(
     const std::shared_ptr<arrow::Schema>& schema, std::shared_ptr<arrow::io::OutputStream> sink,
     std::shared_ptr<parquet::WriterProperties> props,
     std::shared_ptr<parquet::ArrowWriterProperties> arrow_props);
-// `t` in the types an open_parquet_writer writer takes.
+// `t` as an open_parquet_writer writer takes it: no list slot that is null,
+// or under a null struct, holds values (Arrow's writer up to 24.0.0 refuses
+// one), and fixed-size lists as lists.
 arrow::Result<std::shared_ptr<arrow::Table>> parquet_writable(const std::shared_ptr<arrow::Table>& t);
 
 enum class DelimKind { CSV, TSV, BED, VCF, GFF, SAM, PAF, Mpileup, Mtx };

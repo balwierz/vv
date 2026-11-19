@@ -3867,6 +3867,24 @@ PYEOF
     "$VV" --parquet "$TMP/fl_nested.parquet" "$TMP/fl_nested.arrow" 2>/dev/null
     assert_eq_file_inline "fixed_list_parquet_nested" "$("$VV" --tsv "$TMP/fl_nested.parquet" 2>&1)" \
         "$("$VV" --tsv "$TMP/fl_nested.arrow")"
+    # Lists, large lists and maps whose null slots hold values, ahead of
+    # valid slots, and a list under a null struct.
+    python3 - "$TMP/null_lists.arrow" <<'PYEOF'
+import sys, pyarrow as pa, pyarrow.ipc as ipc
+m = pa.array([False, True, False])
+st = pa.StructArray.from_arrays([pa.array([1, 2, 3]), pa.ListArray.from_arrays(pa.array([0, 1, 2, 3], pa.int32()), pa.array([7, 8, 9]))],
+                                ["a", "l"], mask=m)
+t = pa.table({"id": pa.array([1, 2, 3]),
+              "lo": pa.ListArray.from_arrays(pa.array([0, 2, 4, 5], pa.int32()), pa.array([1, 2, 3, 4, 5]), mask=m),
+              "ll": pa.LargeListArray.from_arrays(pa.array([0, 2, 4, 5], pa.int64()), pa.array(list("abcde")), mask=m),
+              "mp": pa.MapArray.from_arrays(pa.array([0, 1, 2, 3], pa.int32()), pa.array(["k", "q", "r"]), pa.array([1, 2, 3]), mask=m),
+              "st": st})
+with ipc.new_file(sys.argv[1], t.schema) as w:
+    w.write_table(t)
+PYEOF
+    "$VV" --parquet "$TMP/null_lists.parquet" "$TMP/null_lists.arrow" 2>/dev/null
+    assert_eq_file_inline "null_list_slots_parquet" "$("$VV" --tsv "$TMP/null_lists.parquet" 2>&1)" \
+        "$("$VV" --tsv "$TMP/null_lists.arrow")"
 fi
 # (column names only: the file's vv.select metadata names it)
 refute_contains "select_exclude_parquet_dropped_chrom" "$(awk '{print $1}' <<<"$RT")" "Chromosome"

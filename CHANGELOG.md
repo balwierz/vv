@@ -96,6 +96,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   same text shows in the viewer's status line and vvg's footer.
 
 ### Fixed
+- `--parquet` (and the viewer's `:w`, vvg's export) with Arrow 24 and
+  earlier failed on a list, large list or map whose null slots hold values,
+  or a list under a null struct: "Lists with non-zero length null components
+  are not supported". Such slots are now written with no values; the values
+  read back are unchanged.
 - Parquet files with null fixed-size list slots now read and write with
   Arrow 24 and earlier (the static release builds bundle 23.0.1). Reading
   failed with "Expected all lists to be of size=N but index I had size=0";
