@@ -156,7 +156,7 @@ jobs:
           for f in tiny.bw:0 tiny.bb:1 tiny.2bit:2 tiny.oobchrom.bw:0 tiny.unterminated.bb:1; do seed ucsc "${f#*:}" "${f%%:*}"; done
           for f in tiny.gb:0 tiny.embl:1 tiny.maf:2 tiny.wig:3 tiny.mtx:4 tiny.csv:5 tiny.tsv:6 tiny.bed:7 tiny.gff:8 \
                    tiny.pileup:9 tiny.paf:10; do seed text "${f#*:}" "${f%%:*}"; done
-          for f in tiny.xlsx:0 tiny.ods:1; do seed workbook "${f#*:}" "${f%%:*}"; done
+          for f in tiny.xlsx:0 tiny.ods:1 tiny.npz:2 tiny.slices.npz:2; do seed workbook "${f#*:}" "${f%%:*}"; done
           for f in tiny.sqlite:0; do seed sqlite "${f#*:}" "${f%%:*}"; done
           # As for Parquet, an allocation a header asks for (an IPC message body
           # of exactly 2 GiB) returns null below libFuzzer's 2 GB malloc limit.

@@ -74,6 +74,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   error, as before.
 
 ### Changed
+- An `.npz` reads each array when its tab is read, not every array at
+  open: a stored member (`np.savez`) straight from the mapped archive, a
+  deflated one (`np.savez_compressed`) inflated only as far as the rows or
+  slice shown. A 1.0 GB `savez_compressed` archive of a 11140 × 4 × 32 × 667
+  float32 array opens to its first slice in 0.06 s and 53 MB instead of
+  7.8 s and 4.2 GB; the next slice takes 0.01 s, and jumping back (or to the
+  last slice) inflates the member again from its start, 6.5 s at most. A
+  member that cannot be read is now reported by its tab, not when the file
+  is opened.
 - NumPy array tabs read a block of rows and only the columns shown, and a
   `.npy` is memory-mapped instead of read whole. A 320 MB `.npy` (5 M × 8
   float64) shows its first rows in 0.00 s and 30 MB instead of 0.42 s and

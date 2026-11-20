@@ -2129,13 +2129,26 @@ void source_fuzz_one(const char* ext, const uint8_t* buf, size_t n) {
                 }
             }
     };
-    std::shared_ptr<arrow::Table> t;
-    if (src->read_first(10, cols, &t).ok()) check(t);
-    for (int c = 0; c < 64; ++c) {
-        src->ensure(c);
-        if (c >= src->num_chunks()) break;
-        if (!src->read_chunk(c, cols, &t).ok()) break;
-        check(t);
+    // The tab, then its sibling tabs (workbook sheets, an .npz's arrays), each
+    // read through its first chunks.
+    auto read_tab = [&](TabularSource& s, int max_chunks) {
+        std::vector<int> cs;
+        for (int j = 0; j < s.schema()->num_fields() && j < 256; ++j) cs.push_back(j);
+        std::shared_ptr<arrow::Table> t;
+        if (s.read_first(10, cs, &t).ok()) check(t);
+        for (int c = 0; c < max_chunks; ++c) {
+            s.ensure(c);
+            if (c >= s.num_chunks()) break;
+            if (!s.read_chunk(c, cs, &t).ok()) break;
+            check(t);
+        }
+    };
+    (void)cols;
+    read_tab(*src, 64);
+    int tabs = 0;
+    for (auto& sib : src->expand_tabs()) {
+        if (++tabs > 16) break;
+        read_tab(*sib, 4);
     }
 }
 #endif

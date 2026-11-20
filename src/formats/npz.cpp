@@ -109,7 +109,10 @@ static size_t npy_element_bytes(arrow::Type::type id) {
     }
 }
 
-static std::string parse_npy_header(const uint8_t* buf, size_t n, NpyHeader* out) {
+// `total`: the bytes the whole .npy holds, when `buf` is only its start (an
+// .npz member's header, checked against the member's declared size); else n.
+static std::string parse_npy_header(const uint8_t* buf, size_t n, NpyHeader* out,
+                                    uint64_t total = UINT64_MAX) {
     if (n < 10) return "npy: too short";
     if (std::memcmp(buf, "\x93NUMPY", 6) != 0) return "npy: bad magic";
     uint8_t major = buf[6], minor = buf[7]; (void)minor;
@@ -262,7 +265,8 @@ static std::string parse_npy_header(const uint8_t* buf, size_t n, NpyHeader* out
         if (elems > UINT64_MAX / (uint64_t)out->item_size)
             return "npy: shape too large (" + sh + ")";
         uint64_t need  = elems * (uint64_t)out->item_size;
-        uint64_t avail = (uint64_t)n - (uint64_t)out->data_offset;  // data_offset<=n
+        const uint64_t whole = total == UINT64_MAX ? (uint64_t)n : total;
+        uint64_t avail = whole >= out->data_offset ? whole - (uint64_t)out->data_offset : 0;
         if (need > avail)
             return "npy: declared shape needs " + std::to_string(need) +
                    " bytes but only " + std::to_string(avail) + " present";
@@ -526,10 +530,12 @@ class NpyArraySource final : public TabularSource {
     int64_t                   base_ = 0, row_stride_ = 0;
     size_t                    row_axis_ = 0;
     std::vector<int64_t>      strides_;   // F order: element stride per axis
-    std::vector<bool>         binary_;    // per column: |S values not all UTF-8
-    std::shared_ptr<arrow::Schema> schema_;
+    // The column types, set by types() on first use: an |S column's needs a
+    // scan of its values, which tab listing should not pay for.
+    mutable std::vector<bool>         binary_;    // per column: |S values not all UTF-8
+    mutable std::shared_ptr<arrow::Schema> schema_;
     std::string               footer_;
-    arrow::Status             status_;
+    mutable arrow::Status     status_;
 
     int64_t col_offset(int64_t c) const {
         if (!h_.fortran_order || h_.shape.size() < 2) return c;
@@ -561,6 +567,13 @@ class NpyArraySource final : public TabularSource {
             const auto [a, b] = col_span(c, r0, n);
             lo = std::min(lo, a);
             hi = std::max(hi, b);
+        }
+        // A source read in order (a deflated member) fetches whole rows of
+        // a C-order chunk, which it keeps, so another set of columns of the
+        // same rows does not inflate the member again from its start.
+        if (!bytes_->random() && !(h_.fortran_order && h_.shape.size() >= 2)) {
+            lo = base_ + r0 * row_stride_;
+            hi = base_ + (r0 + n) * row_stride_ - 1;
         }
         std::vector<uint8_t> buf, slab((size_t)n * item);
         std::string err;
@@ -627,6 +640,12 @@ class NpyArraySource final : public TabularSource {
             footer_ += "  |  showing first " + std::to_string(cols_) + " of " + std::to_string(full_cols_) +
                        " columns";
         block_ = std::clamp<int64_t>((int64_t{1} << 20) / std::max<int64_t>(cols_, 1), 1, 65536);
+        schema_.reset();
+    }
+
+    void types() const {
+        if (schema_) return;
+        auto* self = const_cast<NpyArraySource*>(this);
         // |S: a column is binary when any of its values is not UTF-8, as the
         // whole-column build decided.
         binary_.assign((size_t)cols_, false);
@@ -635,7 +654,7 @@ class NpyArraySource final : public TabularSource {
             for (int64_t c = 0; c < cols_; ++c) all[(size_t)c] = c;
             for (int64_t r0 = 0; r0 < rows_ && status_.ok(); r0 += block_) {
                 const int64_t n = std::min(block_, rows_ - r0);
-                status_ = gather(r0, n, all, [&](int64_t c, const uint8_t* slab) {
+                status_ = self->gather(r0, n, all, [&](int64_t c, const uint8_t* slab) {
                     if (binary_[(size_t)c]) return;
                     for (int64_t r = 0; r < n && !binary_[(size_t)c]; ++r) {
                         const uint8_t* p = slab + (size_t)r * h_.item_size;
@@ -663,7 +682,7 @@ public:
         : path_(std::move(path)), name_(std::move(name)), bare_(bare), h_(std::move(h)), bytes_(std::move(bytes)) {
         layout();
     }
-    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    std::shared_ptr<arrow::Schema> schema() const override { types(); return schema_; }
     int64_t total_rows() const override { return rows_; }
     int num_chunks() const override { return (int)((rows_ + block_ - 1) / block_); }
     ChunkMeta chunk_meta(int i) const override {
@@ -671,7 +690,7 @@ public:
         return {first, std::max<int64_t>(0, std::min(block_, rows_ - first))};
     }
     bool random_access() const override { return true; }
-    arrow::Status read_status() const override { return status_; }
+    arrow::Status read_status() const override { types(); return status_; }
     const std::string& path() const override { return path_; }
     std::string footer() const override { return footer_; }
     std::string tab_label() const override { return name_; }
@@ -680,6 +699,7 @@ public:
         return PreviewLimit{rows_, rows_, cols_, full_cols_};
     }
     arrow::Status read_chunk(int i, const std::vector<int>& cols, std::shared_ptr<arrow::Table>* out) override {
+        types();
         ARROW_RETURN_NOT_OK(status_);
         const ChunkMeta m = chunk_meta(i);
         std::vector<int64_t> want;   // distinct, in order
@@ -720,77 +740,126 @@ public:
     }
 };
 
-// One ZIP entry (one .npy) — name, full extracted bytes, parsed header.
+// One ZIP member (one .npy): its name, parsed header and where its bytes
+// are. Only the header is read at open; the data when its tab reads it.
 struct Entry {
-    std::string                       name;     // without .npy suffix
-    std::shared_ptr<std::vector<uint8_t>> bytes;
-    NpyHeader                         header;
+    std::string name;                 // without .npy suffix
+    NpyHeader   header;
+    uint64_t    cd_pos   = 0;         // its central-directory entry (unzSetOffset64)
+    bool        stored   = false;     // compression method 0
+    int64_t     data_pos = -1;        // stored: file offset of the member's first byte, -1 unknown
+    uint64_t    size     = 0;         // declared uncompressed size
 };
 
-// Read all entries from the .npz archive into memory. The .npy bodies are
-// kept compressed-in / decompressed-out: minizip handles inflation on
-// read. We don't stream — once the file's on disk, materialising the
-// arrays in RAM is the simplest path (and they're typically small).
-static std::string load_archive(const std::string& path,
-                                  std::vector<Entry>* out) {
+static uint32_t le32(const uint8_t* p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
+static uint16_t le16(const uint8_t* p) { return (uint16_t)(p[0] | p[1] << 8); }
+static uint64_t le64(const uint8_t* p) { return (uint64_t)le32(p) | (uint64_t)le32(p + 4) << 32; }
+
+// File offset of a member's first data byte, read from its central-directory
+// entry at `cd` and its local header (ZIP64 offsets included); -1 when a
+// signature or the .npy magic there does not match, and the member is then
+// read through the zip library instead.
+static int64_t member_data_pos(const MappedFile& f, uint64_t cd) {
+    const uint8_t* d = f.data();
+    const uint64_t n = f.size();
+    if (cd > n || n - cd < 46 || le32(d + cd) != 0x02014b50) return -1;
+    const uint8_t* c = d + cd;
+    const uint16_t name_len = le16(c + 28), extra_len = le16(c + 30);
+    if (n - cd < 46u + name_len + extra_len) return -1;
+    uint64_t local = le32(c + 42);
+    if (local == 0xFFFFFFFFu) {
+        // ZIP64 extra field: the 8-byte values present are those whose
+        // 32-bit field is 0xFFFFFFFF, in the order uncompressed, compressed,
+        // local header offset.
+        const uint8_t* x = c + 46 + name_len;
+        const uint8_t* end = x + extra_len;
+        bool found = false;
+        while (x + 4 <= end) {
+            const uint16_t id = le16(x), len = le16(x + 2);
+            if (x + 4 + len > end) break;
+            if (id == 0x0001) {
+                size_t at = 0;
+                if (le32(c + 24) == 0xFFFFFFFFu) at += 8;
+                if (le32(c + 20) == 0xFFFFFFFFu) at += 8;
+                if (at + 8 > len) return -1;
+                local = le64(x + 4 + at);
+                found = true;
+                break;
+            }
+            x += 4 + len;
+        }
+        if (!found) return -1;
+    }
+    if (local > n || n - local < 30 || le32(d + local) != 0x04034b50) return -1;
+    const uint64_t data = local + 30 + le16(d + local + 26) + le16(d + local + 28);
+    if (data > n || n - data < 6 || std::memcmp(d + data, "\x93NUMPY", 6) != 0) return -1;
+    return (int64_t)data;
+}
+
+// The first bytes of the open member, through the end of its .npy header.
+static std::string read_member_header(unzFile zf, std::vector<uint8_t>* out) {
+    auto read_to = [&](size_t want) -> bool {
+        while (out->size() < want) {
+            uint8_t chunk[64 * 1024];
+            const int r = unzReadCurrentFile(zf, chunk, (unsigned)std::min<size_t>(sizeof(chunk), want - out->size()));
+            if (r <= 0) return r == 0;
+            out->insert(out->end(), chunk, chunk + r);
+        }
+        return true;
+    };
+    out->clear();
+    if (!read_to(12)) return "read error";
+    if (out->size() < 10) return "";   // parse_npy_header reports it
+    const uint8_t major = (*out)[6];
+    size_t need = 0;
+    if (major == 1) need = 10 + le16(out->data() + 8);
+    else if ((major == 2 || major == 3) && out->size() >= 12) need = 12 + (size_t)le32(out->data() + 8);
+    else return "";
+    if (need > (size_t{1} << 24)) return "npy: header of " + std::to_string(need) + " bytes";
+    if (!read_to(need)) return "read error";
+    return "";
+}
+
+// List the archive: each member's name, header and location. Member data is
+// not read.
+static std::string load_archive(const std::string& path, const MappedFile* map, std::vector<Entry>* out) {
     unzFile zf = unzOpen(path.c_str());
     if (!zf) return "Cannot open '" + path + "' as NPZ (zip)";
-
-    if (unzGoToFirstFile(zf) != UNZ_OK) {
-        unzClose(zf);
-        return "'" + path + "': NPZ archive is empty";
-    }
-
+    std::unique_ptr<void, int (*)(unzFile)> guard(zf, unzClose);
+    if (unzGoToFirstFile(zf) != UNZ_OK) return "'" + path + "': NPZ archive is empty";
     do {
         char name_buf[1024] = {0};
-        unz_file_info info{};
-        if (unzGetCurrentFileInfo(zf, &info, name_buf, sizeof(name_buf) - 1,
-                                   nullptr, 0, nullptr, 0) != UNZ_OK) {
-            unzClose(zf);
+        unz_file_info64 info{};
+        if (unzGetCurrentFileInfo64(zf, &info, name_buf, sizeof(name_buf) - 1, nullptr, 0, nullptr, 0) != UNZ_OK)
             return "'" + path + "': cannot read NPZ entry metadata";
-        }
         std::string name = name_buf;
         // Strip .npy suffix.
         if (name.size() > 4 && name.compare(name.size() - 4, 4, ".npy") == 0)
             name.resize(name.size() - 4);
-
-        if (unzOpenCurrentFile(zf) != UNZ_OK) {
-            unzClose(zf);
+        Entry e;
+        e.name   = name;
+        e.cd_pos = (uint64_t)unzGetOffset64(zf);
+        e.stored = info.compression_method == 0;
+        e.size   = (uint64_t)info.uncompressed_size;
+        if (unzOpenCurrentFile(zf) != UNZ_OK)
             return "'" + path + "': cannot open '" + name + "' inside NPZ";
-        }
-        auto buf = std::make_shared<std::vector<uint8_t>>();
-        // `info.uncompressed_size` is from the zip central directory — i.e.
-        // attacker-controllable. Reserving it blindly lets a tiny crafted entry
-        // that claims gigabytes force a huge allocation (OOM / crash). It's only
-        // a pre-sizing hint (the read loop grows the vector as needed), so clamp
-        // it to a sane ceiling; a genuinely large array still loads via the loop.
-        constexpr uint64_t kMaxReserve = 64u << 20;   // 64 MiB
-        buf->reserve((size_t)std::min<uint64_t>(
-            (uint64_t)info.uncompressed_size, kMaxReserve));
-        uint8_t chunk[64 * 1024];
-        while (true) {
-            int n = unzReadCurrentFile(zf, chunk, sizeof(chunk));
-            if (n < 0) {
-                unzCloseCurrentFile(zf); unzClose(zf);
-                return "'" + path + "': read error in '" + name + "'";
-            }
-            if (n == 0) break;
-            buf->insert(buf->end(), chunk, chunk + n);
-        }
+        std::vector<uint8_t> head;
+        std::string err = read_member_header(zf, &head);
         unzCloseCurrentFile(zf);
-
-        NpyHeader h;
-        std::string err = parse_npy_header(buf->data(), buf->size(), &h);
-        if (!err.empty()) {
-            unzClose(zf);
-            return "'" + path + "' / '" + name + "': " + err;
-        }
+        if (err == "read error") return "'" + path + "': read error in '" + name + "'";
+        if (!err.empty()) return "'" + path + "' / '" + name + "': " + err;
+        // `uncompressed_size` comes from the central directory, so it is
+        // untrusted: the data is checked against it here, and against what
+        // the member really holds when it is read.
+        err = parse_npy_header(head.data(), head.size(), &e.header, e.size);
+        if (!err.empty()) return "'" + path + "' / '" + name + "': " + err;
+        if (e.stored && map) e.data_pos = member_data_pos(*map, e.cd_pos);
         // A ZIP may carry two members with the same name; numpy's np.load keeps
         // the last (its central-directory dict overwrites earlier keys), so the
         // earlier bytes are dead. Match that — overwrite the existing entry in
         // place (its first position, the later value) instead of appending a
-        // second, unreachable tab that find_entry would always shadow. Warn so
-        // the replaced member is not dropped silently.
+        // second, unreachable tab. Warn so the replaced member is not dropped
+        // silently.
         bool merged = false;
         for (auto& prev : *out) {
             if (prev.name == name) {
@@ -798,19 +867,112 @@ static std::string load_archive(const std::string& path,
                     "vv: NPZ '%s': member '%s' appears more than once; "
                     "showing the last, as numpy does\n",
                     path.c_str(), name.c_str());
-                prev.bytes  = std::move(buf);
-                prev.header = std::move(h);
+                prev = std::move(e);
                 merged = true;
                 break;
             }
         }
-        if (!merged)
-            out->push_back({std::move(name), std::move(buf), std::move(h)});
+        if (!merged) out->push_back(std::move(e));
     } while (unzGoToNextFile(zf) == UNZ_OK);
-
-    unzClose(zf);
     return "";
 }
+
+// A deflated member's data, inflated in order through the zip library:
+// get() reads forward from where the last one stopped, and a range before it
+// inflates the member again from its start. Only the range asked for is
+// kept.
+class ZipStreamBytes final : public NpyBytes {
+    std::string path_, name_;
+    uint64_t    cd_pos_, skip_;      // skip_: the .npy header's bytes
+    unzFile     zf_  = nullptr;
+    uint64_t    pos_ = 0;            // member bytes inflated so far
+    // The last range read, kept: a range inside it is served from here.
+    std::vector<uint8_t> last_;
+    int64_t              last_off_ = -1;
+    void close() {
+        if (zf_) { unzCloseCurrentFile(zf_); unzClose(zf_); zf_ = nullptr; }
+    }
+    bool reopen(std::string* err) {
+        close();
+        pos_ = 0;
+        zf_ = unzOpen(path_.c_str());
+        if (!zf_ || unzSetOffset64(zf_, cd_pos_) != UNZ_OK || unzOpenCurrentFile(zf_) != UNZ_OK) {
+            close();
+            *err = "cannot open '" + name_ + "' inside NPZ";
+            return false;
+        }
+        return true;
+    }
+    // Inflate n bytes, appended to *dst (null: discarded). *dst grows with
+    // the bytes inflated, not with n: sizes come from the archive and are
+    // untrusted, so a member that is shorter fails here at its real end.
+    bool read(std::vector<uint8_t>* dst, uint64_t n, std::string* err) {
+        uint8_t chunk[64 * 1024];
+        while (n > 0) {
+            const unsigned want = (unsigned)std::min<uint64_t>(n, sizeof(chunk));
+            const int r = unzReadCurrentFile(zf_, chunk, want);
+            if (r <= 0) {
+                *err = r < 0 ? "read error in '" + name_ + "'"
+                             : "'" + name_ + "' ends at byte " + std::to_string(pos_) + ", before its data does";
+                close();
+                return false;
+            }
+            if (dst) dst->insert(dst->end(), chunk, chunk + r);
+            pos_ += (uint64_t)r;
+            n -= (uint64_t)r;
+        }
+        return true;
+    }
+public:
+    ZipStreamBytes(std::string path, std::string name, uint64_t cd_pos, uint64_t header_bytes)
+        : path_(std::move(path)), name_(std::move(name)), cd_pos_(cd_pos), skip_(header_bytes) {}
+    ~ZipStreamBytes() override { close(); }
+    bool random() const override { return false; }
+    const uint8_t* get(int64_t off, int64_t n, std::vector<uint8_t>* buf, std::string* err) override {
+        if (last_off_ >= 0 && off >= last_off_ && off + n <= last_off_ + (int64_t)last_.size())
+            return last_.data() + (off - last_off_);
+        (void)buf;
+        const uint64_t at = skip_ + (uint64_t)off;
+        if (!zf_ || at < pos_)
+            if (!reopen(err)) return nullptr;
+        last_off_ = -1;
+        if (!read(nullptr, at - pos_, err)) return nullptr;
+        last_.clear();
+        last_.reserve((size_t)std::min<int64_t>(n, int64_t{64} << 20));
+        if (!read(&last_, (uint64_t)n, err)) return nullptr;
+        last_off_ = off;
+        static const uint8_t kEmpty = 0;
+        return last_.empty() ? &kEmpty : last_.data();
+    }
+};
+
+// A deflated member read whole on first use (an F-order array, whose
+// columns are far apart in the member), then served from memory.
+class ZipWholeBytes final : public NpyBytes {
+    ZipStreamBytes        stream_;   // keeps the whole member as its last range
+    uint64_t              size_;
+    const uint8_t*        data_ = nullptr;
+    int64_t               have_ = 0;
+    bool                  loaded_ = false;
+    std::string           error_;
+public:
+    ZipWholeBytes(std::string path, std::string name, uint64_t cd_pos, uint64_t header_bytes, uint64_t data_size)
+        : stream_(std::move(path), std::move(name), cd_pos, header_bytes), size_(data_size) {}
+    const uint8_t* get(int64_t off, int64_t n, std::vector<uint8_t>*, std::string* err) override {
+        if (!loaded_) {
+            loaded_ = true;
+            std::vector<uint8_t> unused;
+            data_ = stream_.get(0, (int64_t)size_, &unused, &error_);
+            have_ = data_ ? (int64_t)size_ : 0;
+        }
+        if (!error_.empty()) { *err = error_; return nullptr; }
+        if (off < 0 || n < 0 || off > have_ || n > have_ - off) {
+            *err = "array data ends at byte " + std::to_string(have_);
+            return nullptr;
+        }
+        return data_ + off;
+    }
+};
 
 // The summary tab's table: one row per member.
 static std::shared_ptr<arrow::Table> summary_table(const std::vector<Entry>& a) {
@@ -846,11 +1008,22 @@ static std::shared_ptr<arrow::Table> summary_table(const std::vector<Entry>& a) 
     return arrow::Table::Make(schema, {na, sa, da, ka}, (int64_t)a.size());
 }
 
-// An in-memory member's data as NpyBytes.
-static std::shared_ptr<NpyBytes> entry_bytes(const Entry& e) {
-    const auto& v = *e.bytes;
-    return std::make_shared<ViewBytes>(e.bytes, v.data() + e.header.data_offset,
-                                       (int64_t)(v.size() - e.header.data_offset));
+// A member's data as NpyBytes: a stored member found in the mapped
+// archive is read from the mapping; any other is inflated in order (C order
+// or one axis) or whole on first use (Fortran order).
+static std::shared_ptr<NpyBytes> entry_bytes(const std::string& path, const Entry& e,
+                                             const std::shared_ptr<const MappedFile>& map) {
+    const NpyHeader& h = e.header;
+    const uint64_t data_size = e.size >= h.data_offset ? e.size - h.data_offset : 0;
+    if (e.stored && e.data_pos >= 0 && map) {
+        const uint64_t at = (uint64_t)e.data_pos + h.data_offset;
+        const uint64_t have = at <= map->size() ? map->size() - at : 0;
+        return std::make_shared<ViewBytes>(map, map->data() + std::min<uint64_t>(at, map->size()),
+                                           (int64_t)std::min(have, data_size), map.get());
+    }
+    if (h.fortran_order && h.shape.size() >= 2)
+        return std::make_shared<ZipWholeBytes>(path, e.name, e.cd_pos, h.data_offset, data_size);
+    return std::make_shared<ZipStreamBytes>(path, e.name, e.cd_pos, h.data_offset);
 }
 
 #ifdef VV_FUZZ
@@ -877,12 +1050,13 @@ void npy_fuzz_one(const uint8_t* buf, size_t n) {
 
 // The summary tab of an .npz; its siblings are the array tabs.
 class NpzSource : public WorkbookSource {
-    std::shared_ptr<std::vector<Entry>> archive_;   // shared with the array tabs
+    std::shared_ptr<std::vector<Entry>> archive_;
+    std::shared_ptr<const MappedFile>   map_;      // the archive, for stored members
 
     NpzSource(std::shared_ptr<arrow::Table> table, std::string path, std::string footer,
-              std::shared_ptr<std::vector<Entry>> archive)
+              std::shared_ptr<std::vector<Entry>> archive, std::shared_ptr<const MappedFile> map)
         : WorkbookSource(std::move(table), std::move(path), std::move(footer)),
-          archive_(std::move(archive)) {}
+          archive_(std::move(archive)), map_(std::move(map)) {}
 
 public:
     // A bare .npy is a single array with no container around it: one array
@@ -913,7 +1087,13 @@ public:
 
     static std::string open_first(const std::string& path, std::unique_ptr<NpzSource>* out) {
         auto archive = std::make_shared<std::vector<Entry>>();
-        std::string err = load_archive(path, archive.get());
+        // Stored members (np.savez) are read straight from a mapping; without
+        // one (an empty or unmappable file) every member goes through the zip
+        // library.
+        auto map = std::make_shared<MappedFile>();
+        std::shared_ptr<const MappedFile> mapped;
+        if (map->open(path).empty() && map->size() > 0) mapped = map;
+        std::string err = load_archive(path, mapped.get(), archive.get());
         if (!err.empty()) return err;
         if (archive->empty()) return "'" + path + "': NPZ has no arrays";
         size_t tabs = 0;
@@ -921,7 +1101,7 @@ public:
         std::string footer = "Format: NumPy NPZ  |  Tab: summary  |  Arrays: " + std::to_string(archive->size());
         if (tabs) footer += "  |  +" + std::to_string(tabs) + " more tab(s)";
         auto table = summary_table(*archive);
-        out->reset(new NpzSource(std::move(table), path, std::move(footer), std::move(archive)));
+        out->reset(new NpzSource(std::move(table), path, std::move(footer), std::move(archive), std::move(mapped)));
         return "";
     }
 
@@ -932,7 +1112,8 @@ public:
         std::vector<std::unique_ptr<TabularSource>> result;
         for (const auto& e : *archive_) {
             if (e.header.unsupported) continue;
-            result.push_back(std::make_unique<NpyArraySource>(path(), e.name, false, e.header, entry_bytes(e)));
+            result.push_back(std::make_unique<NpyArraySource>(path(), e.name, false, e.header,
+                                                              entry_bytes(path(), e, map_)));
         }
         return result;
     }

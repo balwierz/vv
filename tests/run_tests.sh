@@ -5155,6 +5155,66 @@ if [ -f "$DATA/tiny.slices.npz" ] && command -v python3 >/dev/null 2>&1; then
     else
         FAIL=$((FAIL+1)); echo "  FAIL  numpy_leading_axis_slices"
     fi
+    # The same members deflated: read in order through the zip library (C
+    # order) or whole on first use (Fortran order), slices stepped both ways.
+    python3 - "$DATA/tiny.slices.npz" "$TMP/slices_deflated.npz" <<'PYEOF'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as src, zipfile.ZipFile(sys.argv[2], "w", zipfile.ZIP_DEFLATED) as dst:
+    for info in src.infolist():
+        dst.writestr(info.filename, src.read(info.filename))
+PYEOF
+    if python3 "$HERE/numpy_slice_check.py" "$VV" "$TMP/slices_deflated.npz" \
+        "$TMP" "${NPY_TUI[@]}"; then
+        PASS=$((PASS+1)); echo "  ok    numpy_leading_axis_slices_deflated"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL  numpy_leading_axis_slices_deflated"
+    fi
+fi
+# .npz members are read when their tab is: a stored member from the mapped
+# archive (its offset from the central directory, ZIP64 included), a deflated
+# one inflated in order. Each array reads the same through every path.
+if python3 -c "import numpy" 2>/dev/null; then
+    python3 - "$TMP/npzpaths" <<'PYEOF'
+import sys, io, struct, zipfile, numpy as np
+d = sys.argv[1]
+r = np.random.default_rng(3)
+arrs = dict(c2=r.integers(-9, 9, (40, 7)).astype(np.int32), f2=np.asfortranarray(r.random((30, 5))),
+            v=np.arange(3000.0), t3=r.integers(0, 99, (6, 4, 5)).astype(np.int16),
+            s=np.array([b"ab", b"\xff", b"ok"] * 5), u=np.array(["é", "xyz", ""] * 4))
+np.savez(d + "_stored.npz", **arrs)
+np.savez_compressed(d + "_deflated.npz", **arrs)
+for k, a in arrs.items():
+    np.save(d + "_" + k + ".npy", a)
+# The stored archive with every local-header offset moved into a ZIP64 extra
+# field of the central directory (its 32-bit field 0xFFFFFFFF).
+data = open(d + "_stored.npz", "rb").read()
+eocd = data.rfind(b"PK\x05\x06")
+cd_size, cd_off = struct.unpack("<II", data[eocd + 12:eocd + 20])
+cd, out, p = data[cd_off:cd_off + cd_size], bytearray(), 0
+while p < len(cd):
+    nl, xl, cl = struct.unpack("<HHH", cd[p + 28:p + 34])
+    hdr = bytearray(cd[p:p + 46])
+    off = struct.unpack("<I", hdr[42:46])[0]
+    hdr[42:46] = b"\xff\xff\xff\xff"
+    extra = struct.pack("<HHQ", 1, 8, off) + cd[p + 46 + nl:p + 46 + nl + xl]
+    hdr[30:32] = struct.pack("<H", len(extra))
+    out += hdr + cd[p + 46:p + 46 + nl] + extra + cd[p + 46 + nl + xl:p + 46 + nl + xl + cl]
+    p += 46 + nl + xl + cl
+e = bytearray(data[eocd:])
+e[12:16] = struct.pack("<I", len(out))
+open(d + "_zip64.npz", "wb").write(data[:cd_off] + bytes(out) + data[cd_off + cd_size:eocd] + bytes(e))
+PYEOF
+    for K in c2 f2 v t3 s u; do
+        # A 1-D array's column is named after it: v here, npzpaths_v as a .npy.
+        WANT=$("$VV" --tsv --no-header "$TMP/npzpaths_$K.npy" | md5sum)
+        for KIND in stored deflated zip64; do
+            assert_eq_file_inline "npz_member_${KIND}_$K" \
+                "$("$VV" --tab "$K" --tsv --no-header "$TMP/npzpaths_$KIND.npz" | md5sum)" "$WANT"
+        done
+        assert_eq_file_inline "npz_member_deflated_select_$K" \
+            "$("$VV" --tab "$K" --select 1-2 --tail 3 --tsv --no-header "$TMP/npzpaths_deflated.npz" 2>&1)" \
+            "$("$VV" --select 1-2 --tail 3 --tsv --no-header "$TMP/npzpaths_$K.npy" 2>&1)"
+    done
 fi
 # Duplicate member names: a ZIP can carry two members with the same name.
 # numpy's np.load keeps the last (its central-directory dict overwrites earlier
