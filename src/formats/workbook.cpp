@@ -327,38 +327,43 @@ std::string open_xlsx_source(const std::string& path, std::unique_ptr<TabularSou
 // in which case it would balloon the CSV. We detect trailing empties by
 // buffering the row's cells and dropping the empty suffix at row close.
 
-static std::string ods_unzip_content_xml(const std::string& path,
-                                          std::string* out) {
-    unzFile zf = unzOpen(path.c_str());
-    if (!zf) return "Cannot open '" + path + "' as ODS (zip)";
-    if (unzLocateFile(zf, "content.xml", /*iCaseSensitivity=*/1) != UNZ_OK) {
-        unzClose(zf);
-        return "'" + path + "': not an ODS (missing content.xml)";
-    }
-    if (unzOpenCurrentFile(zf) != UNZ_OK) {
-        unzClose(zf);
-        return "'" + path + "': cannot open content.xml inside the zip";
-    }
-    char chunk[64 * 1024];
-    out->clear();
-    while (true) {
-        int n = unzReadCurrentFile(zf, chunk, sizeof(chunk));
-        if (n < 0) {
-            unzCloseCurrentFile(zf); unzClose(zf);
-            return "'" + path + "': error inflating content.xml";
-        }
-        if (n == 0) break;
-        out->append(chunk, n);
-    }
-    unzCloseCurrentFile(zf);
-    unzClose(zf);
-    return "";
+// Position of the current event in the XML stream, and its length (-1 when
+// unknown). Expat before 2.9 has only the `long` forms, 32 bits on Windows:
+// a sheet past 2 GiB there then gets no span and is found by a full parse.
+static int64_t ods_byte_index(XML_Parser p) {
+#if XML_MAJOR_VERSION > 2 || (XML_MAJOR_VERSION == 2 && XML_MINOR_VERSION >= 9)
+    return XML_GetCurrentByteIndex64(p);
+#else
+    return (int64_t)XML_GetCurrentByteIndex(p);
+#endif
+}
+static int64_t ods_byte_count(XML_Parser p) {
+#if XML_MAJOR_VERSION > 2 || (XML_MAJOR_VERSION == 2 && XML_MINOR_VERSION >= 9)
+    return XML_GetCurrentByteCount64(p);
+#else
+    return (int64_t)XML_GetCurrentByteCount(p);
+#endif
 }
 
 namespace {
 struct OdsParserState {
-    // Output: name → CSV buffer, plus name order.
-    std::vector<std::pair<std::string, std::string>> sheets;
+    // Every sheet in document order: its name, whether any cell holds a
+    // value (an empty sheet gets no tab), and the bytes of its table:table
+    // element in the XML, [begin, end) (-1: unknown).
+    struct Sheet { std::string name; bool nonempty = false; int64_t begin = -1, end = -1; };
+    std::vector<Sheet> sheets;
+
+    // Which sheet's text to keep: `target` >= 0 is a sheet's position in
+    // `sheets`; -1 keeps the first non-empty sheet. Only that sheet's rows
+    // are buffered; the others are scanned for a value and dropped.
+    int          target = -1;
+    bool         stop_after_target = false;  // stop parsing once it closes
+    int          found = -1;                 // position of the sheet kept
+    std::string  csv;                        // its CSV text
+    bool         collect = false;            // keeping the current sheet's rows
+    XML_Parser   parser = nullptr;
+    bool         stopped = false;
+    std::vector<int> open_tables;            // positions of the table:table elements open
 
     // Current sheet state.
     std::string row_csv;                 // bytes for the current row (un-terminated)
@@ -392,12 +397,23 @@ struct OdsParserState {
 
 static void XMLCALL ods_start(void* ud, const char* name, const char** atts) {
     auto* s = static_cast<OdsParserState*>(ud);
+    // Everything inside a cell is that cell's content, a table:table too:
+    // only its text:p text is kept, joined to the cell's. A sheet is a
+    // table:table outside any cell.
+    if (s->cell_depth > 0) {
+        s->cell_depth++;
+        if (std::strcmp(name, "text:p") == 0) s->in_text_p = true;
+        return;
+    }
     if (std::strcmp(name, "table:table") == 0) {
-        s->sheets.push_back({"Sheet" + std::to_string(s->sheets.size() + 1),
-                              std::string{}});
+        s->sheets.push_back({"Sheet" + std::to_string(s->sheets.size() + 1)});
         if (auto n = OdsParserState::attr(atts, "table:name"))
-            s->sheets.back().first = n;
+            s->sheets.back().name = n;
+        if (s->parser) s->sheets.back().begin = ods_byte_index(s->parser);
+        s->open_tables.push_back((int)s->sheets.size() - 1);
         s->in_sheet = true;
+        s->collect = s->found < 0 &&
+                     (s->target < 0 || s->target == (int)s->sheets.size() - 1);
         s->sheet_rows.clear();
         s->sheet_widths.clear();
     } else if (s->in_sheet && std::strcmp(name, "table:table-row") == 0) {
@@ -445,9 +461,6 @@ static void XMLCALL ods_start(void* ud, const char* name, const char** atts) {
             int n = std::atoi(v);
             if (n > 0 && n < 1000000) s->cell_repeat = n;
         }
-    } else if (s->cell_depth > 0) {
-        s->cell_depth++;
-        if (std::strcmp(name, "text:p") == 0) s->in_text_p = true;
     }
 }
 
@@ -461,8 +474,10 @@ static void XMLCALL ods_end(void* ud, const char* name) {
     auto* s = static_cast<OdsParserState*>(ud);
     if (s->cell_depth > 0) {
         if (std::strcmp(name, "text:p") == 0) s->in_text_p = false;
-        if (std::strcmp(name, "table:table-cell") == 0 ||
-            std::strcmp(name, "table:covered-table-cell") == 0) {
+        // The cell's own end tag (depth 1), not one of a table inside it.
+        if (s->cell_depth == 1 &&
+            (std::strcmp(name, "table:table-cell") == 0 ||
+             std::strcmp(name, "table:covered-table-cell") == 0)) {
             // Pick the canonical value: typed attribute wins for numeric /
             // date / boolean cells; text is the fallback (string cells +
             // anything without office:value). A covered cell holds no value —
@@ -484,8 +499,11 @@ static void XMLCALL ods_end(void* ud, const char* name) {
             // but few biology-data consumers will look for.
             for (char& c : v) if (c == '\n' || c == '\r') c = ' ';
 
-            s->row_cells.push_back(std::move(v));
-            s->row_repeat.push_back(s->cell_repeat);
+            if (!v.empty() && !s->sheets.empty()) s->sheets.back().nonempty = true;
+            if (s->collect) {
+                s->row_cells.push_back(std::move(v));
+                s->row_repeat.push_back(s->cell_repeat);
+            }
             s->cell_depth = 0;
             s->cell_covered = false;
         } else {
@@ -494,6 +512,7 @@ static void XMLCALL ods_end(void* ud, const char* name) {
         return;
     }
     if (s->in_sheet && std::strcmp(name, "table:table-row") == 0) {
+        if (!s->collect) return;
         // Drop trailing empty cells so a million-column-wide repeated
         // empty doesn't poison the CSV. Keep the row only if it has at
         // least one non-empty cell.
@@ -532,78 +551,114 @@ static void XMLCALL ods_end(void* ud, const char* name) {
             s->sheet_widths.push_back(emitted);
         }
     } else if (std::strcmp(name, "table:table") == 0) {
-        s->sheets.back().second =
-            assemble_ragged_csv(s->sheet_rows, s->sheet_widths);
+        if (!s->open_tables.empty()) {
+            const int k = s->open_tables.back();
+            s->open_tables.pop_back();
+            const int64_t at = s->parser ? ods_byte_index(s->parser) : -1;
+            const int64_t n = s->parser ? ods_byte_count(s->parser) : -1;
+            if (at >= 0 && n > 0) s->sheets[(size_t)k].end = at + n;
+        }
+        if (s->collect && !s->sheets.empty()) {
+            std::string csv = assemble_ragged_csv(s->sheet_rows, s->sheet_widths);
+            if (!csv.empty() || s->target >= 0) {
+                s->csv = std::move(csv);
+                s->found = (int)s->sheets.size() - 1;
+            }
+        }
+        s->collect = false;
         s->sheet_rows.clear();
+        s->sheet_rows.shrink_to_fit();
         s->sheet_widths.clear();
+        s->sheet_widths.shrink_to_fit();
         s->in_sheet = false;
+        if (s->found >= 0 && s->stop_after_target && s->parser) {
+            s->stopped = true;
+            XML_StopParser(s->parser, XML_FALSE);
+        }
     }
 }
 
-static std::string ods_parse_sheets(const std::string& xml,
-                                     std::vector<std::pair<std::string,
-                                                            std::string>>* out) {
-    OdsParserState state;
+// Parse an ODS's content.xml (inflated from the zip in 64 KiB pieces) or a
+// flat .fods file through `state`, without holding the document: only the
+// target sheet's rows are kept (OdsParserState::target). With a span
+// [begin, end), only those bytes are parsed — one table:table element, a
+// well-formed document on its own (the parser does no namespace processing,
+// and ODS declares no entities); the bytes before it are inflated or seeked
+// past, not parsed.
+static std::string ods_parse(const std::string& path, bool flat, OdsParserState* state,
+                             int64_t begin = -1, int64_t end = -1) {
+    const bool span = begin >= 0 && end > begin;
     XML_Parser p = XML_ParserCreate(nullptr);
-    if (!p) return "expat: cannot create parser";
-    XML_SetUserData(p, &state);
+    if (!p) return "Error parsing '" + path + "': expat: cannot create parser";
+    std::unique_ptr<std::remove_pointer_t<XML_Parser>, decltype(&XML_ParserFree)> guard(p, XML_ParserFree);
+    XML_SetUserData(p, state);
     XML_SetElementHandler(p, ods_start, ods_end);
     XML_SetCharacterDataHandler(p, ods_chardata);
-    if (XML_Parse(p, xml.data(), (int)xml.size(), 1) != XML_STATUS_OK) {
-        std::string err = "expat: ";
-        err += XML_ErrorString(XML_GetErrorCode(p));
-        XML_ParserFree(p);
-        return err;
+    state->parser = p;
+    // false: stop reading (an expat error, or the target sheet is done).
+    auto feed = [&](const char* data, int n, bool last) -> bool {
+        return XML_Parse(p, data, n, last ? 1 : 0) == XML_STATUS_OK;
+    };
+    auto parse_error = [&]() -> std::string {
+        if (state->stopped) return "";
+        return "Error parsing '" + path + "': expat: " + XML_ErrorString(XML_GetErrorCode(p));
+    };
+    char chunk[64 * 1024];
+    int64_t left = span ? end - begin : INT64_MAX;   // bytes still to parse
+    if (flat) {
+        std::ifstream in(path, std::ios::binary);
+        if (!in) return "Cannot open '" + path + "'";
+        if (span && !in.seekg(begin)) return "'" + path + "': read error";
+        while (true) {
+            in.read(chunk, (std::streamsize)std::min<int64_t>(sizeof(chunk), left));
+            const std::streamsize n = in.gcount();
+            if (in.bad()) return "'" + path + "': read error";
+            left -= n;
+            const bool last = left == 0 || n == 0 || (!span && n < (std::streamsize)sizeof(chunk));
+            if (!feed(chunk, (int)n, last)) return parse_error();
+            if (last) return "";
+        }
     }
-    XML_ParserFree(p);
-    *out = std::move(state.sheets);
-    return "";
+    unzFile zf = unzOpen(path.c_str());
+    if (!zf) return "Cannot open '" + path + "' as ODS (zip)";
+    std::unique_ptr<void, int (*)(unzFile)> zguard(zf, unzClose);
+    if (unzLocateFile(zf, "content.xml", /*iCaseSensitivity=*/1) != UNZ_OK)
+        return "'" + path + "': not an ODS (missing content.xml)";
+    if (unzOpenCurrentFile(zf) != UNZ_OK)
+        return "'" + path + "': cannot open content.xml inside the zip";
+    std::string err;
+    for (int64_t skip = span ? begin : 0; skip > 0;) {   // inflate past the bytes before the span
+        const int n = unzReadCurrentFile(zf, chunk, (unsigned)std::min<int64_t>(sizeof(chunk), skip));
+        if (n <= 0) { err = "'" + path + "': error inflating content.xml"; break; }
+        skip -= n;
+    }
+    while (err.empty()) {
+        const int n = unzReadCurrentFile(zf, chunk, (unsigned)std::min<int64_t>(sizeof(chunk), left));
+        if (n < 0) { err = "'" + path + "': error inflating content.xml"; break; }
+        left -= n;
+        const bool last = n == 0 || left == 0;
+        if (!feed(chunk, n, last)) { err = parse_error(); break; }
+        if (last) break;
+    }
+    unzCloseCurrentFile(zf);
+    return err;
 }
 
 class OdsSource : public WorkbookSource {
-    // The full set of (sheet_name, csv_buffer) pairs, shared across sibling
-    // sources via shared_ptr so a multi-sheet .ods is parsed once.
-    std::shared_ptr<std::vector<std::pair<std::string, std::string>>> all_sheets_;
+    // The other non-empty sheets: name and position in the document. A
+    // sibling tab parses the document again when first read, keeping only
+    // its sheet, so no sheet's text outlives its conversion to Arrow.
+    struct Sibling { std::string name; int index; int64_t begin, end; };
+    bool                      flat_ = false;
     std::string               sheet_;
-    std::vector<std::string>  sibling_sheets_;
+    std::vector<Sibling>      sibling_sheets_;
 
-    OdsSource(std::shared_ptr<arrow::Table>  table,
-               std::string                     path,
-               std::string                     footer,
-               std::shared_ptr<std::vector<std::pair<std::string,
-                                                       std::string>>> all,
-               std::string                     sheet,
-               std::vector<std::string>        siblings)
-        : WorkbookSource(std::move(table), std::move(path),
-                          std::move(footer)),
-          all_sheets_(std::move(all)),
+    OdsSource(std::shared_ptr<arrow::Table> table, std::string path, std::string footer, bool flat,
+              std::string sheet, std::vector<Sibling> siblings)
+        : WorkbookSource(std::move(table), std::move(path), std::move(footer)),
+          flat_(flat),
           sheet_(std::move(sheet)),
           sibling_sheets_(std::move(siblings)) {}
-
-    static std::string build_one(const std::string& path,
-                                  std::shared_ptr<std::vector<std::pair<
-                                      std::string, std::string>>> all,
-                                  const std::string& sheet,
-                                  std::vector<std::string> siblings,
-                                  std::unique_ptr<OdsSource>* out) {
-        const std::string* csv = nullptr;
-        for (auto& p : *all) if (p.first == sheet) { csv = &p.second; break; }
-        if (!csv || csv->empty())
-            return "'" + path + "': sheet '" + sheet + "' is empty";
-
-        auto tbl_or = csv_buffer_to_table(*csv);
-        if (!tbl_or.ok())
-            return tbl_or.status().ToString();
-
-        std::string footer = "Format: ODS  |  Sheet: " + sheet;
-        if (!siblings.empty())
-            footer += "  |  +" + std::to_string(siblings.size()) +
-                      " more sheet(s)";
-        out->reset(new OdsSource(*tbl_or, path, std::move(footer),
-                                  std::move(all), sheet,
-                                  std::move(siblings)));
-        return "";
-    }
 
 public:
     // `flat`: a flat OpenDocument file (.fods) — the same office:spreadsheet
@@ -611,36 +666,26 @@ public:
     static std::string open_first(const std::string& path,
                                    std::unique_ptr<OdsSource>* out,
                                    bool flat = false) {
-        std::string xml;
-        std::string err;
-        if (flat) {
-            std::ifstream in(path, std::ios::binary);
-            if (!in) return "Cannot open '" + path + "'";
-            xml.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-            if (in.bad()) return "'" + path + "': read error";
-        } else {
-            err = ods_unzip_content_xml(path, &xml);
-        }
-        if (!err.empty()) return err;
-
-        auto all = std::make_shared<std::vector<std::pair<std::string,
-                                                            std::string>>>();
-        err = ods_parse_sheets(xml, all.get());
-        if (!err.empty())
-            return "Error parsing '" + path + "': " + err;
-        // Filter out sheets that turned out fully empty after trim.
-        all->erase(std::remove_if(all->begin(), all->end(),
-                                    [](const std::pair<std::string,std::string>& p){
-                                        return p.second.empty();
-                                    }),
-                     all->end());
-        if (all->empty())
+        OdsParserState state;   // target -1: keep the first non-empty sheet
+        if (auto err = ods_parse(path, flat, &state); !err.empty()) return err;
+        if (state.found < 0)
             return "'" + path + "': ODS file has no data sheets";
+        const std::string sheet = state.sheets[(size_t)state.found].name;
+        std::vector<Sibling> siblings;
+        for (size_t i = (size_t)state.found + 1; i < state.sheets.size(); ++i)
+            if (state.sheets[i].nonempty)
+                siblings.push_back({state.sheets[i].name, (int)i, state.sheets[i].begin, state.sheets[i].end});
 
-        std::vector<std::string> siblings;
-        for (size_t i = 1; i < all->size(); ++i)
-            siblings.push_back((*all)[i].first);
-        return build_one(path, all, (*all)[0].first, std::move(siblings), out);
+        auto tbl_or = csv_buffer_to_table(state.csv);
+        if (!tbl_or.ok())
+            return tbl_or.status().ToString();
+        std::string footer = "Format: ODS  |  Sheet: " + sheet;
+        if (!siblings.empty())
+            footer += "  |  +" + std::to_string(siblings.size()) +
+                      " more sheet(s)";
+        out->reset(new OdsSource(*tbl_or, path, std::move(footer), flat, sheet,
+                                 std::move(siblings)));
+        return "";
     }
 
     std::string tab_label() const override { return sheet_; }
@@ -650,11 +695,21 @@ public:
         std::vector<std::unique_ptr<TabularSource>> out;
         for (const auto& s : sibling_sheets_) {
             out.push_back(std::make_unique<DeferredSheetSource>(
-                path(), s, "ODS",
-                [all = all_sheets_, sheet = s]() -> arrow::Result<std::shared_ptr<arrow::Table>> {
-                    for (const auto& entry : *all)
-                        if (entry.first == sheet) return csv_buffer_to_table(entry.second);
-                    return arrow::Status::Invalid("ODS: missing sheet '", sheet, "'");
+                path(), s.name, "ODS",
+                [path = path(), flat = flat_, s]() -> arrow::Result<std::shared_ptr<arrow::Table>> {
+                    // Its own bytes when the open pass recorded them, else a
+                    // parse of the document up to the sheet's end.
+                    const bool span = s.begin >= 0 && s.end > s.begin;
+                    OdsParserState state;
+                    state.target = span ? 0 : s.index;
+                    state.stop_after_target = true;
+                    if (auto err = span ? ods_parse(path, flat, &state, s.begin, s.end)
+                                        : ods_parse(path, flat, &state);
+                        !err.empty())
+                        return arrow::Status::IOError(err);
+                    if (state.found != state.target || state.csv.empty())
+                        return arrow::Status::Invalid("ODS: missing sheet '", s.name, "'");
+                    return csv_buffer_to_table(state.csv);
                 }));
         }
         return out;

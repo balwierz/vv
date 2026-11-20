@@ -4713,6 +4713,37 @@ if [ -f "$DATA/tiny.merged.ods" ]; then
     MRG_ROW=$("$VV" --tsv --no-header "$DATA/tiny.merged.ods" | sed -n '1p')
     assert_eq_file_inline "ods_merged_cell_alignment" "$MRG_ROW" "$(printf 'M\t\tx\ty')"
 fi
+# Each sheet is read on its own: the first non-empty one at open, another
+# from its own bytes of content.xml when its tab is read. Empty sheets
+# between them get no tab; a table:table inside a cell is that cell's text.
+python3 - "$TMP/sheets" <<'PYEOF'
+import sys, zipfile
+NS = ('xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+      'xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" '
+      'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"')
+cell = lambda v: f'<table:table-cell office:value-type="string"><text:p>{v}</text:p></table:table-cell>'
+row = lambda *vs: '<table:table-row>' + ''.join(cell(v) for v in vs) + '</table:table-row>'
+sheet = lambda n, *rows: f'<table:table table:name="{n}">' + ''.join(rows) + '</table:table>'
+empty = lambda n: sheet(n, '<table:table-row><table:table-cell/></table:table-row>')
+inner = ('<table:table-row><table:table-cell><text:p>x</text:p>' + sheet('inner', row('n')) +
+         '</table:table-cell><table:table-cell><text:p>y</text:p></table:table-cell></table:table-row>')
+body = (empty('e1') + sheet('a', row('h1', 'h2'), row('1', '2')) + empty('e2') +
+        sheet('b', row('k'), row('&lt;x&gt; &amp; &#233;')) + sheet('c', row('p', 'q'), inner, row('3', '4')) + empty('e3'))
+xml = (f'<?xml version="1.0" encoding="UTF-8"?><office:document-content {NS}><office:body>'
+       f'<office:spreadsheet>{body}</office:spreadsheet></office:body></office:document-content>')
+with zipfile.ZipFile(sys.argv[1] + '.ods', 'w') as z:
+    z.writestr(zipfile.ZipInfo('mimetype'), 'application/vnd.oasis.opendocument.spreadsheet')
+    z.writestr('content.xml', xml, compress_type=zipfile.ZIP_DEFLATED)
+open(sys.argv[1] + '.fods', 'w').write(xml.replace('office:document-content', 'office:document'))
+PYEOF
+for EXT in ods fods; do
+    assert_eq_file_inline "${EXT}_sheet_tabs" "$("$VV" --list-tabs "$TMP/sheets.$EXT" | tr '\n' ' ')" "a b c "
+    assert_eq_file_inline "${EXT}_sheet_first" "$("$VV" --tsv "$TMP/sheets.$EXT" | tr '\t\n' ',;')" "h1,h2;1,2;"
+    assert_eq_file_inline "${EXT}_sheet_entities" "$("$VV" --tab b --tsv "$TMP/sheets.$EXT" | tr '\t\n' ',;')" \
+        "k;<x> & é;"
+    assert_eq_file_inline "${EXT}_sheet_table_in_cell" "$("$VV" --tab c --tsv "$TMP/sheets.$EXT" | tr '\t\n' ',;')" \
+        "p,q;xn,y;3,4;"
+done
 
 # AnnData (.h5ad) — first tab is the summary; siblings are obs / var /
 # X-preview / obsm[X_umap]. Footer reports sibling count.

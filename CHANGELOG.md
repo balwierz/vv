@@ -74,6 +74,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   error, as before.
 
 ### Changed
+- ODS and flat ODS (`.fods`) workbooks are parsed as a stream and keep one
+  sheet's text at a time: the first sheet at open, another when its tab is
+  first read, from that sheet's own bytes of the document. On a 14 MB
+  `.ods` with three 150,000-row sheets (288 MB of XML), peak memory is
+  160-255 MB instead of 625 MB; the first sheet opens in the same 1.2 s,
+  and each other sheet takes about 0.5 s more on first read. A table
+  inside a cell is that cell's text, where it ended the sheet and lost its
+  remaining rows; two sheets with the same name each show their own rows.
 - Cooler files read a resolution's bins when one of its tabs first needs
   them, not every resolution's at open, and a pixels or bins tab reads only
   the datasets of the columns shown. On an hg38 `.mcool` (1 kb, 10 kb and
