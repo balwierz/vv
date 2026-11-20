@@ -74,6 +74,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   error, as before.
 
 ### Changed
+- `--samples long` splits each batch of records into chunks of about 1 M
+  rows (records × samples), so a pass holds one of them instead of the
+  whole batch repeated per sample. A slice's size estimate now uses the
+  bytes per record of the whole batch, not the shared buffers of the slice.
+  1000 Genomes chr22 BCF (2,504 samples), `-r 22:16050000-17300000
+  --samples long --select POS,sample,GT,INFO --tsv` (59.5 M rows): 39.8 s
+  and 8.6 GB peak RSS before, 7.8 s and 1.1 GB after; output unchanged.
 - An `.npz` reads each array when its tab is read, not every array at
   open: a stored member (`np.savez`) straight from the mapped archive, a
   deflated one (`np.savez_compressed`) inflated only as far as the rows or

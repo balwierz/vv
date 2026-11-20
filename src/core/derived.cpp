@@ -953,8 +953,39 @@ class VcfSamplesSource : public TabularSource {
     std::vector<OutCol>                   out_;
     std::shared_ptr<arrow::Schema>        schema_;
     std::shared_ptr<arrow::DataType>      struct_type_;
+    // Long form: an inner chunk of n records is n × nsamp() rows, so it is
+    // split into chunks of at most rps_ records (about kLongChunkRows rows):
+    // a 1000 Genomes BCF batch of 23,766 records × 2,504 samples would
+    // otherwise be one 59.5 M-row chunk that every pass holds whole.
+    // first_outer_[k] is the first chunk of inner chunk k; it grows as the
+    // inner chunks become known. The struct form keeps one chunk per inner
+    // chunk (rps_ = 0).
+    static constexpr int64_t              kLongChunkRows = int64_t(1) << 20;
+    int64_t                               rps_ = 0;
+    mutable std::vector<int>              first_outer_{0};
 
     int64_t nsamp() const { return (int64_t)samp_cols_.size(); }
+
+    int slices_of(int64_t records) const {
+        if (rps_ <= 0 || records <= rps_) return 1;
+        return (int)((records + rps_ - 1) / rps_);
+    }
+    void map_known() const {
+        const int n = inner_->num_chunks();
+        while ((int)first_outer_.size() <= n) {
+            const int k = (int)first_outer_.size() - 1;
+            first_outer_.push_back(first_outer_.back() + slices_of(inner_->chunk_meta(k).num_rows));
+        }
+    }
+    // Chunk o → inner chunk *k, its records [*r0, *r0 + *nr).
+    void locate(int o, int* k, int64_t* r0, int64_t* nr) const {
+        map_known();
+        *k = (int)(std::upper_bound(first_outer_.begin(), first_outer_.end(), o) - first_outer_.begin()) - 1;
+        const int64_t records = inner_->chunk_meta(*k).num_rows;
+        if (slices_of(records) == 1) { *r0 = 0; *nr = records; return; }
+        *r0 = (int64_t)(o - first_outer_[(size_t)*k]) * rps_;
+        *nr = std::min(rps_, records - *r0);
+    }
 
     static std::string cell_at(const arrow::ChunkedArray& c, int64_t r) {
         for (const auto& ch : c.chunks()) {
@@ -1135,6 +1166,13 @@ public:
             }
         }
         self->schema_ = arrow::schema(fields);
+        if (long_form) {
+            static const int64_t rows = [] {
+                const char* e = std::getenv("VV_SAMPLES_CHUNK_ROWS");   // tests
+                return e && *e ? std::max<int64_t>(1, std::atoll(e)) : kLongChunkRows;
+            }();
+            self->rps_ = std::max<int64_t>(1, rows / std::max<int64_t>(self->nsamp(), 1));
+        }
         self->inner_ = std::move(inner);
         return self;
     }
@@ -1176,11 +1214,20 @@ public:
         if (any_field) { want(fmt_col_); for (int sc : samp_cols_) want(sc); }
         if (need.empty()) want(fmt_col_);                 // for the row count
         std::shared_ptr<arrow::Table> in;
+        // Bytes per record, from the whole inner chunk: a slice's
+        // TotalBufferSize counts the buffers it shares with the rest.
+        int64_t in_bytes_per_record = -1;
         if (rows >= 0) {
             const int64_t per = long_ ? std::max<int64_t>(nsamp(), 1) : 1;
             ARROW_RETURN_NOT_OK(inner_->read_first((rows + per - 1) / per, need, &in));
         } else {
-            ARROW_RETURN_NOT_OK(inner_->read_chunk(i, need, &in));
+            int k = 0;
+            int64_t r0 = 0, nr = 0;
+            locate(i, &k, &r0, &nr);
+            ARROW_RETURN_NOT_OK(inner_->read_chunk(k, need, &in));
+            if (in && in->num_rows() > 0)
+                in_bytes_per_record = arrow::util::TotalBufferSize(*in) / in->num_rows();
+            if (in && (r0 > 0 || nr < in->num_rows())) in = in->Slice(r0, nr);
         }
         if (!in) { *out = nullptr; return arrow::Status::OK(); }
         // Long form repeats each record once per sample: a chunk of 32 768
@@ -1194,7 +1241,8 @@ public:
                 const char* e = std::getenv("VV_SAMPLES_SLICE_BYTES");   // tests
                 return e && *e ? std::max<int64_t>(1, std::atoll(e)) : int64_t(256) << 20;
             }();
-            const int64_t per_record = std::max<int64_t>(1, arrow::util::TotalBufferSize(*in) / n_all) *
+            if (in_bytes_per_record < 0) in_bytes_per_record = arrow::util::TotalBufferSize(*in) / n_all;
+            const int64_t per_record = std::max<int64_t>(1, in_bytes_per_record) *
                                        std::max<int64_t>(nsamp(), 1);
             step = std::clamp<int64_t>(budget / per_record, 1, n_all);
         }
@@ -1331,17 +1379,40 @@ public:
         const int64_t t = inner_->total_rows();
         return (t >= 0 && long_) ? t * nsamp() : t;
     }
-    int     num_chunks() const override { return inner_->num_chunks(); }
+    int     num_chunks() const override {
+        map_known();
+        return first_outer_.back();
+    }
     ChunkMeta chunk_meta(int i) const override {
-        ChunkMeta m = inner_->chunk_meta(i);
-        if (long_) { m.first_row *= nsamp(); m.num_rows *= nsamp(); }
+        int k = 0;
+        int64_t r0 = 0, nr = 0;
+        locate(i, &k, &r0, &nr);
+        ChunkMeta m = inner_->chunk_meta(k);
+        if (long_) { m.first_row = (m.first_row + r0) * nsamp(); m.num_rows = nr * nsamp(); }
         return m;
     }
-    void    ensure(int i)           override { inner_->ensure(i); }
+    void    ensure(int i)           override {
+        // Read inner chunks forward until chunk i is known or the input ends.
+        map_known();
+        while (i >= first_outer_.back()) {
+            const int known = inner_->num_chunks();
+            inner_->ensure(known);
+            if (inner_->num_chunks() == known) break;
+            map_known();
+        }
+    }
     void    set_retain_all(bool b)  override { inner_->set_retain_all(b); }
     bool    random_access() const   override { return inner_->random_access(); }
     bool    evicted_any()     const override { return inner_->evicted_any(); }
-    int64_t chunk_bytes(int i) const override { return inner_->chunk_bytes(i); }
+    // The inner chunk's bytes, shared among its chunks by records.
+    int64_t chunk_bytes(int i) const override {
+        int k = 0;
+        int64_t r0 = 0, nr = 0;
+        locate(i, &k, &r0, &nr);
+        const int64_t b = inner_->chunk_bytes(k), records = inner_->chunk_meta(k).num_rows;
+        if (b < 0 || records <= 0 || nr >= records) return b;
+        return (int64_t)((double)b * (double)nr / (double)records);
+    }
     arrow::Status read_status() const override { return inner_->read_status(); }
     bool    region_applied()  const override { return inner_->region_applied(); }
     bool    has_slices()      const override { return inner_->has_slices(); }

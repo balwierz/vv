@@ -2369,6 +2369,25 @@ for f in "$DATA/tiny.samples.bcf" "$TMP/sites.vcf"; do
         done
     done
 done
+# Long form splits each inner chunk into chunks of about 1 M rows
+# (VV_SAMPLES_CHUNK_ROWS; one record each at 1), so a pass holds one of them,
+# not a whole BCF batch × every sample. BCF batches end at a byte budget
+# (VV_FASTX_BATCH_BYTES; one record each at 1). Same output either way.
+for f in "$DATA/tiny.samples.bcf" "$TMP/sites.vcf"; do
+    for env in "VV_SAMPLES_CHUNK_ROWS=1" "VV_SAMPLES_CHUNK_ROWS=7" "VV_SAMPLES_CHUNK_ROWS=1 VV_FASTX_BATCH_BYTES=1"; do
+        for args in "--tsv" "--count" "-n 4 --tsv" "--select POS,sample,GT --tsv" "--tail 5 --tsv" \
+                    "--sort POS:desc --select POS,sample,GT --tsv" "--describe --select POS,GT"; do
+            assert_eq_file_inline "vcf_samples_chunks_same_$(basename "$f" | tr -c 'a-z0-9' _)_$(printf '%s_%s' "$env" "$args" | tr -c 'A-Za-z0-9' _)" \
+                "$(env $env "$VV" $args --samples long "$f" 2>&1)" \
+                "$("$VV" $args --samples long "$f" 2>&1)"
+        done
+    done
+done
+# The split is real: chunk 1 exists only when a record is a chunk.
+assert_exit_code "vcf_samples_one_chunk_default" 0 sh -c 'VV_TEST_FAIL_CHUNK=1 "$0" --tsv --samples long "$1" >/dev/null' "$VV" "$DATA/tiny.samples.bcf"
+assert_contains "vcf_samples_chunk_per_record" \
+    "$(VV_SAMPLES_CHUNK_ROWS=1 VV_TEST_FAIL_CHUNK=1 "$VV" --tsv --samples long "$DATA/tiny.samples.bcf" 2>&1 >/dev/null)" \
+    "chunk 1 failed (VV_TEST_FAIL_CHUNK)"
 # A chunk that cannot be read is no longer skipped silently: the run ends
 # with its error and exit 1 (VV_TEST_FAIL_CHUNK fails chunk N of the samples
 # source); a count that reads no chunk is unaffected.
