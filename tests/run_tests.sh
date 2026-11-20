@@ -931,7 +931,20 @@ PY
     # proves the resumed rows carry the right payload, not just the right count.
     BW_BIG_LAST=$("$VV" --tsv --no-header "$BW_BIG" | tail -1 | awk -F'\t' '{print $4}')
     assert_eq_file_inline "bigwig_batch_resume_last_value" "$BW_BIG_LAST" "39999"
+    # One data block per iterator step: the window is read in many steps,
+    # and steps and batches end at different rows.
+    assert_eq_file_inline "bigwig_iterator_steps_big" \
+        "$(VV_BIG_BLOCKS=1 "$VV" --tsv "$BW_BIG" | md5sum)" "$("$VV" --tsv "$BW_BIG" | md5sum)"
 fi
+# The same records whatever the number of blocks per iterator step.
+for F in tiny.bw tiny.bb; do
+    [ -f "$DATA/$F" ] || continue
+    for R in "" "-r chr1:300-1100"; do
+        # shellcheck disable=SC2086
+        assert_eq_file_inline "big_iterator_steps_${F}${R:+_region}" \
+            "$(VV_BIG_BLOCKS=1 "$VV" --tsv $R "$DATA/$F")" "$("$VV" --tsv $R "$DATA/$F")"
+    done
+done
 
 # Hostile bigWig: the chromosome B-tree names a chromId outside the itemCount
 # the file itself declares. libBigWig used it directly as the subscript for

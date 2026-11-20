@@ -12,9 +12,10 @@
 // are the loci fields and the rest come from parsing the embedded
 // autoSql with parse_autosql() above.
 //
-// Reads are batched per-chromosome (libBigWig's overlap API works one
-// chromosome at a time anyway). With --region, only the requested
-// windows are queried.
+// Reads go one chromosome (or --region window) at a time through
+// libBigWig's block iterator: each step decodes `blocks_` data blocks, so
+// memory holds one step's records rather than a whole chromosome's.
+// Batches of BATCH_SIZE rows are cut from the steps.
 class BigSource : public TabularSource {
     std::string                              path_;
     std::shared_ptr<arrow::Schema>           schema_;
@@ -30,13 +31,13 @@ class BigSource : public TabularSource {
     mutable size_t                           cur_chrom_  = 0;
     mutable bool                             all_read_   = false;
 
-    // A single window (chrom span) can hold far more than BATCH_SIZE
-    // intervals. Retain its libBigWig container across advance() calls and
-    // resume at cur_off_ so nothing past the batch boundary is dropped.
-    mutable bwOverlappingIntervals_t*        cur_iv_    = nullptr;  // bigWig
-    mutable bbOverlappingEntries_t*          cur_bb_    = nullptr;  // bigBed
-    mutable uint32_t                         cur_off_   = 0;        // next unread index
+    // The current window's iterator. A step can hold more records than a
+    // batch takes: cur_off_ resumes it across advance() calls so nothing
+    // past the batch boundary is dropped.
+    mutable bwOverlapIterator_t*             cur_it_    = nullptr;
+    mutable uint32_t                         cur_off_   = 0;        // next unread index in the step
     mutable std::string                      cur_label_;           // chrom of the window
+    uint32_t                                 blocks_    = 16;      // data blocks per step (VV_BIG_BLOCKS)
 
     mutable std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
     mutable std::vector<int64_t>             batch_first_row_;
@@ -120,32 +121,37 @@ class BigSource : public TabularSource {
         };
 
         while (count < BATCH_SIZE) {
-            // Fetch the next window's intervals only once the previous one
-            // is fully drained; cur_off_ resumes a window split across
-            // batches so nothing past BATCH_SIZE is discarded.
-            if (!cur_iv_ && !cur_bb_) {
+            // Open the next window's iterator once the previous one is done.
+            if (!cur_it_) {
                 if (idx >= n_iter) break;
                 cur_label_ = chrom_at(idx);
                 uint32_t qs, qe;
                 chrom_span(idx, &qs, &qe);
                 ++idx;
                 cur_off_ = 0;
-                // Unknown chrom — libBigWig will return NULL.
-                if (is_bb_) {
-                    cur_bb_ = bbGetOverlappingEntries(
-                        fp_, cur_label_.c_str(), qs, qe, /*withString=*/1);
-                } else {
-                    cur_iv_ = bwGetOverlappingIntervals(
-                        fp_, cur_label_.c_str(), qs, qe);
-                }
-                if (!cur_iv_ && !cur_bb_) continue;
+                // NULL for a chromosome the file lacks.
+                cur_it_ = is_bb_
+                    ? bbOverlappingEntriesIterator(fp_, cur_label_.c_str(), qs, qe,
+                                                   /*withString=*/1, blocks_)
+                    : bwOverlappingIntervalsIterator(fp_, cur_label_.c_str(), qs, qe, blocks_);
+                if (!cur_it_) continue;
             }
+            // No records left in the window (or none overlap it, or a block
+            // failed to decode: libBigWig does not tell these apart).
+            if (!cur_it_->data) {
+                bwIteratorDestroy(cur_it_);
+                cur_it_ = nullptr;
+                continue;
+            }
+            uint32_t step_len;
             if (is_bb_) {
-                for (; cur_off_ < cur_bb_->l && count < BATCH_SIZE; ++cur_off_) {
+                const bbOverlappingEntries_t* bb = cur_it_->entries;
+                step_len = bb->l;
+                for (; cur_off_ < bb->l && count < BATCH_SIZE; ++cur_off_) {
                     ARROW_RETURN_NOT_OK(chrom_b.Append(cur_label_));
-                    ARROW_RETURN_NOT_OK(start_b.Append(cur_bb_->start[cur_off_]));
-                    ARROW_RETURN_NOT_OK(end_b.Append(cur_bb_->end[cur_off_]));
-                    const char* s = cur_bb_->str[cur_off_];
+                    ARROW_RETURN_NOT_OK(start_b.Append(bb->start[cur_off_]));
+                    ARROW_RETURN_NOT_OK(end_b.Append(bb->end[cur_off_]));
+                    const char* s = bb->str[cur_off_];
                     // Split s on tabs into N fields.
                     std::vector<std::string> toks;
                     if (s) {
@@ -170,25 +176,26 @@ class BigSource : public TabularSource {
                     }
                     ++count;
                 }
-                if (cur_off_ >= cur_bb_->l) {
-                    bbDestroyOverlappingEntries(cur_bb_);
-                    cur_bb_ = nullptr;
-                }
             } else {
-                for (; cur_off_ < cur_iv_->l && count < BATCH_SIZE; ++cur_off_) {
+                const bwOverlappingIntervals_t* iv = cur_it_->intervals;
+                step_len = iv->l;
+                for (; cur_off_ < iv->l && count < BATCH_SIZE; ++cur_off_) {
                     ARROW_RETURN_NOT_OK(chrom_b.Append(cur_label_));
-                    ARROW_RETURN_NOT_OK(start_b.Append(cur_iv_->start[cur_off_]));
-                    ARROW_RETURN_NOT_OK(end_b.Append(cur_iv_->end[cur_off_]));
-                    ARROW_RETURN_NOT_OK(value_b.Append(cur_iv_->value[cur_off_]));
+                    ARROW_RETURN_NOT_OK(start_b.Append(iv->start[cur_off_]));
+                    ARROW_RETURN_NOT_OK(end_b.Append(iv->end[cur_off_]));
+                    ARROW_RETURN_NOT_OK(value_b.Append(iv->value[cur_off_]));
                     ++count;
                 }
-                if (cur_off_ >= cur_iv_->l) {
-                    bwDestroyOverlappingIntervals(cur_iv_);
-                    cur_iv_ = nullptr;
-                }
+            }
+            if (cur_off_ >= step_len) {
+                // Step drained: decode the next blocks. bwIteratorNext frees
+                // the iterator and returns NULL when a block fails to decode;
+                // the window then ends there.
+                cur_off_ = 0;
+                cur_it_ = bwIteratorNext(cur_it_);
             }
         }
-        if (idx >= n_iter && !cur_iv_ && !cur_bb_) all_read_ = true;
+        if (idx >= n_iter && !cur_it_) all_read_ = true;
         if (count == 0) return arrow::Status::OK();
 
         std::vector<std::shared_ptr<arrow::Array>> a;
@@ -213,8 +220,7 @@ class BigSource : public TabularSource {
 
 public:
     ~BigSource() {
-        if (cur_iv_) { bwDestroyOverlappingIntervals(cur_iv_); cur_iv_ = nullptr; }
-        if (cur_bb_) { bbDestroyOverlappingEntries(cur_bb_);   cur_bb_ = nullptr; }
+        if (cur_it_) { bwIteratorDestroy(cur_it_); cur_it_ = nullptr; }
         if (fp_) { bwClose(fp_); fp_ = nullptr; }
         bwCleanup();
     }
@@ -280,6 +286,11 @@ public:
             fields.push_back(arrow::field("value", arrow::float32()));
         }
         self->schema_ = arrow::schema(fields);
+
+        if (const char* e = std::getenv("VV_BIG_BLOCKS")) {
+            const long n = std::strtol(e, nullptr, 10);
+            if (n >= 1 && n <= 1 << 20) self->blocks_ = (uint32_t)n;
+        }
 
         // Region plan.
         if (!cfg.region.empty()) {

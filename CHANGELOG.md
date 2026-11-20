@@ -74,6 +74,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   error, as before.
 
 ### Changed
+- bigWig and bigBed files are read a few data blocks at a time instead of a
+  chromosome at a time. On a 336 MB bigWig (ENCFF247SXC), `--count` peaks
+  at 110 MB instead of 200 MB and `--tsv` at 125 MB instead of 220 MB, in
+  the same 2.3 s; `-n 5` takes 0.01 s and 26 MB instead of 0.15 s and
+  85 MB. A block that fails to decode now ends its chromosome after the
+  rows before it, where the whole chromosome was skipped.
 - `--filter` on Parquet (a file or a directory of them) skips the row groups
   whose column statistics rule out every row, for `==`, `<`, `<=`, `>`,
   `>=`, `in (…)`, `is null` and `is not null` on number, text, date and
