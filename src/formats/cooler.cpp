@@ -189,12 +189,16 @@ std::string bp_label(int64_t bp) {
     return std::to_string(bp) + "bp";
 }
 
-// One cooler (the file root, or /resolutions/<bp> of an .mcool): its
-// chromosomes and bins, read once and shared by its tabs.
+// One cooler (the file root, or /resolutions/<bp> of an .mcool), shared by
+// its tabs. load() reads the chromosomes and the dataset sizes; the bins
+// themselves (chrom, start, end, weight: 28 bytes a bin) are read by
+// load_bins() when a tab first needs them, so an .mcool holds only the
+// resolutions read.
 struct Cooler {
     H5File      file;
     std::string root;                 // "/" or "/resolutions/<bp>"
-    int64_t     binsize = -1, nnz = 0;
+    int64_t     binsize = -1, nnz = 0, nbins_ = 0;
+    bool        balanced = false;     // bins/weight has nbins rows
     std::vector<std::string> chroms;
     std::vector<int64_t>     lengths;
     std::vector<int32_t>     bin_chrom;    // -1: out of range in the file
@@ -202,16 +206,17 @@ struct Cooler {
     std::vector<int64_t>     chrom_offset; // nchroms + 1, clamped and monotone
     std::vector<double>      weight;       // empty: not balanced
     std::shared_ptr<arrow::Array> chrom_dict;
-    std::string error;
-    bool loaded = false;
+    std::string error, bins_error;
+    bool loaded = false, bins_loaded = false;
     bool has_pixels = true;           // false: an .scool root (pixels are per cell)
 
-    int64_t nbins() const { return (int64_t)bin_start.size(); }
+    int64_t nbins() const { return nbins_; }
     std::string path(const std::string& sub) const {
         return root == "/" ? "/" + sub : root + "/" + sub;
     }
 
-    // Read chroms and bins; "" or an error (also kept in `error`).
+    // Read chroms and the bins / pixels sizes; "" or an error (also kept in
+    // `error`).
     const std::string& load() {
         if (loaded) return error;
         loaded = true;
@@ -228,18 +233,41 @@ struct Cooler {
             const int64_t n = len_1d(f, path("bins/start"));
             if (n < 0 || len_1d(f, path("bins/end")) != n || len_1d(f, path("bins/chrom")) != n)
                 return "bins/chrom, bins/start and bins/end must be 1-D of one length";
-            if (auto er = read_1d(f, path("bins/chrom"), 0, n, &bin_chrom); !er.empty()) return er;
-            if (auto er = read_1d(f, path("bins/start"), 0, n, &bin_start); !er.empty()) return er;
-            if (auto er = read_1d(f, path("bins/end"), 0, n, &bin_end); !er.empty()) return er;
-            for (auto& c : bin_chrom)
-                if (c < 0 || c >= (int32_t)chroms.size()) c = -1;
-            if (len_1d(f, path("bins/weight")) == n)
-                if (auto er = read_1d(f, path("bins/weight"), 0, n, &weight); !er.empty()) return er;
+            nbins_ = n;
+            balanced = len_1d(f, path("bins/weight")) == n;
             if (has_pixels) {
                 nnz = std::max<int64_t>(0, len_1d(f, path("pixels/bin1_id")));
                 if (len_1d(f, path("pixels/bin2_id")) != nnz || len_1d(f, path("pixels/count")) != nnz)
                     return "pixels/bin1_id, bin2_id and count must be 1-D of one length";
             }
+            arrow::StringBuilder b;
+            ARROW_UNUSED(b.AppendValues(chroms));
+            if (!b.Finish(&chrom_dict).ok()) return "out of memory";
+            return "";
+        }();
+        } catch (const std::bad_alloc&) {
+            error = "out of memory reading chroms (declared sizes too large?)";
+        }
+        if (!error.empty()) error = "'" + root + "': " + error;
+        return error;
+    }
+
+    // Read the bins (after load()); "" or an error (also kept in `bins_error`).
+    const std::string& load_bins() {
+        if (bins_loaded) return bins_error;
+        bins_loaded = true;
+        if (!load().empty()) return bins_error = error;
+        hid_t f = *file;
+        const int64_t n = nbins_;
+        try {
+        bins_error = [&]() -> std::string {
+            if (auto er = read_1d(f, path("bins/chrom"), 0, n, &bin_chrom); !er.empty()) return er;
+            if (auto er = read_1d(f, path("bins/start"), 0, n, &bin_start); !er.empty()) return er;
+            if (auto er = read_1d(f, path("bins/end"), 0, n, &bin_end); !er.empty()) return er;
+            for (auto& c : bin_chrom)
+                if (c < 0 || c >= (int32_t)chroms.size()) c = -1;
+            if (balanced)
+                if (auto er = read_1d(f, path("bins/weight"), 0, n, &weight); !er.empty()) return er;
             // chrom_offset (indexes) or, when absent, from bins/chrom.
             const int64_t nc = (int64_t)chroms.size();
             if (len_1d(f, path("indexes/chrom_offset")) == nc + 1) {
@@ -252,16 +280,13 @@ struct Cooler {
             }
             for (size_t k = 0; k < chrom_offset.size(); ++k)
                 chrom_offset[k] = std::clamp<int64_t>(chrom_offset[k], k ? chrom_offset[k - 1] : 0, n);
-            arrow::StringBuilder b;
-            ARROW_UNUSED(b.AppendValues(chroms));
-            if (!b.Finish(&chrom_dict).ok()) return "out of memory";
             return "";
         }();
         } catch (const std::bad_alloc&) {
-            error = "out of memory reading chroms / bins (declared sizes too large?)";
+            bins_error = "out of memory reading bins (declared sizes too large?)";
         }
-        if (!error.empty()) error = "'" + root + "': " + error;
-        return error;
+        if (!bins_error.empty()) bins_error = "'" + root + "': " + bins_error;
+        return bins_error;
     }
 
     // Bin-id ranges [lo, hi) overlapping the region windows, in window order.
@@ -383,6 +408,10 @@ class BinsSource : public CoolerTab {
         auto* self = const_cast<BinsSource*>(this);
         if (const std::string& e = c_->load(); !e.empty()) { self->status_ = arrow::Status::IOError(e); return; }
         if (region_) {
+            if (const std::string& e = c_->load_bins(); !e.empty()) {
+                self->status_ = arrow::Status::IOError(e);
+                return;
+            }
             auto ws = windows_;
             resolve_region_chroms(ws, [&](const std::string& n) {
                 return std::find(c_->chroms.begin(), c_->chroms.end(), n) != c_->chroms.end();
@@ -425,12 +454,19 @@ public:
     std::string footer() const override {
         init();
         return "Format: Cooler bins  |  " + what_() + "  |  " + std::to_string(c_->nbins()) + " bins" +
-               (c_->weight.empty() ? "" : "  |  balanced (weight)");
+               (c_->balanced ? "  |  balanced (weight)" : "");
     }
     arrow::Status read_chunk(int i, const std::vector<int>& cols, std::shared_ptr<arrow::Table>* out) override {
         init();
         ARROW_RETURN_NOT_OK(status_);
         const ChunkMeta m = chunk_meta(i);
+        // Read only what the requested columns need: the in-memory bins for
+        // chrom / start / end, and each requested extra dataset.
+        std::vector<bool> want(schema_->num_fields(), false);
+        for (int c : cols) if (c >= 0 && c < (int)want.size()) want[(size_t)c] = true;
+        const bool coords = want[0] || want[1] || want[2];
+        if (coords)
+            if (const std::string& e = c_->load_bins(); !e.empty()) return arrow::Status::IOError(e);
         std::vector<int32_t> chrom;
         std::vector<int64_t> start, end;
         std::vector<std::vector<int64_t>> ei(extra_.size());
@@ -443,12 +479,13 @@ public:
         while (left > 0 && r < ranges_.size()) {
             const int64_t lo = ranges_[r].first + (row - range_first_[r]);
             const int64_t n = std::min(left, ranges_[r].second - lo);
-            for (int64_t b = lo; b < lo + n; ++b) {
+            for (int64_t b = lo; coords && b < lo + n; ++b) {
                 chrom.push_back(c_->bin_chrom[(size_t)b]);
                 start.push_back(c_->bin_start[(size_t)b]);
                 end.push_back(c_->bin_end[(size_t)b]);
             }
             for (size_t k = 0; k < extra_.size(); ++k) {
+                if (!want[3 + k]) continue;
                 std::string e;
                 if (extra_float_[k]) {
                     std::vector<double> v;
@@ -463,11 +500,13 @@ public:
             }
             row += n; left -= n; ++r;
         }
-        std::vector<std::shared_ptr<arrow::Array>> all{c_->chrom_column(chrom), int64_array(start),
-                                                       int64_array(end)};
+        std::vector<std::shared_ptr<arrow::Array>> all(want.size());
+        if (want[0]) all[0] = c_->chrom_column(chrom);
+        if (want[1]) all[1] = int64_array(start);
+        if (want[2]) all[2] = int64_array(end);
         for (size_t k = 0; k < extra_.size(); ++k)
-            all.push_back(extra_float_[k] ? double_array(ef[k]) : int64_array(ei[k]));
-        *out = select(schema_, all, cols, (int64_t)chrom.size());
+            if (want[3 + k]) all[3 + k] = extra_float_[k] ? double_array(ef[k]) : int64_array(ei[k]);
+        *out = select(schema_, all, cols, m.num_rows);
         return arrow::Status::OK();
     }
 };
@@ -513,6 +552,7 @@ class PixelsSource : public CoolerTab {
             done_ = true;
             return;
         }
+        if (const std::string& e = c_->load_bins(); !e.empty()) { self->status_ = arrow::Status::IOError(e); return; }
         auto ws = windows_;
         resolve_region_chroms(ws, [&](const std::string& n) {
             return std::find(c_->chroms.begin(), c_->chroms.end(), n) != c_->chroms.end();
@@ -536,13 +576,6 @@ class PixelsSource : public CoolerTab {
                 self->cand_.emplace_back(off[(size_t)r.first], off[(size_t)r.second]);
         if (cand_.empty()) done_ = true;
     }
-    arrow::Status read_ids(int64_t p0, int64_t n, std::vector<int64_t>* b1, std::vector<int64_t>* b2) const {
-        if (auto e = read_1d(*c_->file, pix("pixels/bin1_id"), p0, n, b1); !e.empty())
-            return arrow::Status::IOError(e);
-        if (auto e = read_1d(*c_->file, pix("pixels/bin2_id"), p0, n, b2); !e.empty())
-            return arrow::Status::IOError(e);
-        return arrow::Status::OK();
-    }
     // Slice the next run of candidates and count its rows in the region.
     void advance() const {
         while (!done_ && status_.ok()) {
@@ -552,9 +585,9 @@ class PixelsSource : public CoolerTab {
             const int64_t n = std::min(kRowsPerChunk, hi - p0);
             cand_pos_ = p0 + n;
             if (cand_pos_ >= hi) { ++cand_i_; cand_pos_ = 0; }
-            std::vector<int64_t> b1, b2;
-            if (auto st = read_ids(p0, n, &b1, &b2); !st.ok()) {
-                const_cast<PixelsSource*>(this)->status_ = st;
+            std::vector<int64_t> b2;   // a candidate's bin1 is in the region; test its bin2
+            if (auto e = read_1d(*c_->file, pix("pixels/bin2_id"), p0, n, &b2); !e.empty()) {
+                const_cast<PixelsSource*>(this)->status_ = arrow::Status::IOError(e);
                 return;
             }
             int64_t rows = 0;
@@ -614,42 +647,72 @@ public:
         if (i < 0 || i >= (int)slices_.size()) return arrow::Status::IndexError("chunk ", i);
         const Slice s = slices_[(size_t)i];
         const int64_t n = s.p1 - s.p0;
+        // Read only what the requested columns need: bin1_id for chrom1 /
+        // start1 / end1, bin2_id for chrom2 / start2 / end2 (and for -r,
+        // which tests bin2), count for count, all three and the in-memory
+        // bins for balanced.
+        std::vector<bool> want(schema_->num_fields(), false);
+        for (int c : cols) if (c >= 0 && c < (int)want.size()) want[(size_t)c] = true;
+        const bool bal = balanced_ && want[7];
+        const bool need1 = want[0] || want[1] || want[2] || bal;
+        const bool need2 = want[3] || want[4] || want[5] || bal || region_;
+        const bool need_count = want[6] || bal;
+        if (need1 || need2)
+            if (const std::string& e = c_->load_bins(); !e.empty()) return arrow::Status::IOError(e);
         std::vector<int64_t> b1, b2, ci;
         std::vector<double> cf;
-        ARROW_RETURN_NOT_OK(read_ids(s.p0, n, &b1, &b2));
+        if (need1)
+            if (auto e = read_1d(*c_->file, pix("pixels/bin1_id"), s.p0, n, &b1); !e.empty())
+                return arrow::Status::IOError(e);
+        if (need2)
+            if (auto e = read_1d(*c_->file, pix("pixels/bin2_id"), s.p0, n, &b2); !e.empty())
+                return arrow::Status::IOError(e);
         const std::string cnt = pix("pixels/count");
-        if (auto e = count_float_ ? read_1d(*c_->file, cnt, s.p0, n, &cf) : read_1d(*c_->file, cnt, s.p0, n, &ci);
-            !e.empty())
-            return arrow::Status::IOError(e);
+        if (need_count)
+            if (auto e = count_float_ ? read_1d(*c_->file, cnt, s.p0, n, &cf) : read_1d(*c_->file, cnt, s.p0, n, &ci);
+                !e.empty())
+                return arrow::Status::IOError(e);
         const int64_t nb = c_->nbins();
         std::vector<int32_t> c1, c2;
         std::vector<int64_t> s1, e1, s2, e2, count_i;
         std::vector<bool> ok1, ok2;
-        std::vector<double> count_f, bal;
+        std::vector<double> count_f, bal_v;
+        int64_t rows = 0;
         for (int64_t k = 0; k < n; ++k) {
-            const int64_t x = b1[(size_t)k], y = b2[(size_t)k];
+            const int64_t y = need2 ? b2[(size_t)k] : 0;
             if (region_ && !in_region(y)) continue;
+            ++rows;
+            const int64_t x = need1 ? b1[(size_t)k] : 0;
             const bool vx = x >= 0 && x < nb, vy = y >= 0 && y < nb;   // ids are untrusted
-            c1.push_back(vx ? c_->bin_chrom[(size_t)x] : -1);
-            s1.push_back(vx ? c_->bin_start[(size_t)x] : 0);
-            e1.push_back(vx ? c_->bin_end[(size_t)x] : 0);
-            c2.push_back(vy ? c_->bin_chrom[(size_t)y] : -1);
-            s2.push_back(vy ? c_->bin_start[(size_t)y] : 0);
-            e2.push_back(vy ? c_->bin_end[(size_t)y] : 0);
-            ok1.push_back(vx);
-            ok2.push_back(vy);
-            const double v = count_float_ ? cf[(size_t)k] : (double)ci[(size_t)k];
-            if (count_float_) count_f.push_back(v);
-            else count_i.push_back(ci[(size_t)k]);
-            if (balanced_)
-                bal.push_back(vx && vy ? v * c_->weight[(size_t)x] * c_->weight[(size_t)y] : NAN);
+            if (need1) {
+                c1.push_back(vx ? c_->bin_chrom[(size_t)x] : -1);
+                s1.push_back(vx ? c_->bin_start[(size_t)x] : 0);
+                e1.push_back(vx ? c_->bin_end[(size_t)x] : 0);
+                ok1.push_back(vx);
+            }
+            if (need2) {
+                c2.push_back(vy ? c_->bin_chrom[(size_t)y] : -1);
+                s2.push_back(vy ? c_->bin_start[(size_t)y] : 0);
+                e2.push_back(vy ? c_->bin_end[(size_t)y] : 0);
+                ok2.push_back(vy);
+            }
+            if (need_count) {
+                const double v = count_float_ ? cf[(size_t)k] : (double)ci[(size_t)k];
+                if (count_float_) count_f.push_back(v);
+                else count_i.push_back(ci[(size_t)k]);
+                if (bal) bal_v.push_back(vx && vy ? v * c_->weight[(size_t)x] * c_->weight[(size_t)y] : NAN);
+            }
         }
-        std::vector<std::shared_ptr<arrow::Array>> all{
-            c_->chrom_column(c1), int64_array(s1, &ok1), int64_array(e1, &ok1),
-            c_->chrom_column(c2), int64_array(s2, &ok2), int64_array(e2, &ok2),
-            count_float_ ? double_array(count_f) : int64_array(count_i)};
-        if (balanced_) all.push_back(double_array(bal));
-        *out = select(schema_, all, cols, (int64_t)c1.size());
+        std::vector<std::shared_ptr<arrow::Array>> all(want.size());
+        if (want[0]) all[0] = c_->chrom_column(c1);
+        if (want[1]) all[1] = int64_array(s1, &ok1);
+        if (want[2]) all[2] = int64_array(e1, &ok1);
+        if (want[3]) all[3] = c_->chrom_column(c2);
+        if (want[4]) all[4] = int64_array(s2, &ok2);
+        if (want[5]) all[5] = int64_array(e2, &ok2);
+        if (want[6]) all[6] = count_float_ ? double_array(count_f) : int64_array(count_i);
+        if (bal) all[7] = double_array(bal_v);
+        *out = select(schema_, all, cols, rows);
         return arrow::Status::OK();
     }
 };
@@ -803,7 +866,7 @@ std::string build_summary(const std::string& path, const std::vector<std::shared
         std::string v = std::to_string(c->nbins()) + " bins, " + std::to_string(c->nnz) + " pixels";
         Hid g(H5Oopen(f, c->root.c_str(), H5P_DEFAULT), H5Oclose);
         if (H5Aexists(g.id, "sum") > 0) v += ", sum " + std::to_string(int_attr(g.id, "sum"));
-        v += c->weight.empty() ? ", not balanced" : ", balanced";
+        v += c->balanced ? ", balanced" : ", not balanced";
         add(mcool ? bp_label(c->binsize) : bp_label(c->binsize) + " bins", v);
     }
     add("generated-by", h5v::read_string_attr(g0.id, "generated-by"));

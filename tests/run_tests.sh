@@ -1635,6 +1635,22 @@ assert_eq_file_inline "scool_bins" "$("$VV" --tab bins --count "$SC")" "8"
 assert_contains "scool_summary" "$("$VV" --tsv "$SC")" "$(printf 'cells\t3')"
 assert_eq_file_inline "scool_h5_ext" "$(cp "$SC" "$TMP/sc.h5"; "$VV" --list-tabs "$TMP/sc.h5" | head -3 | tr '\n' ' ')" \
     "summary chroms cells "
+# A projection reads only the datasets its columns need: the same values as
+# those columns of the full rows, with and without -r.
+cooler_projection() {   # name, file, tab, columns, field numbers, region
+    local r=()
+    [ -n "$6" ] && r=(-r "$6")
+    assert_eq_file_inline "$1" "$("$VV" --tab "$3" "${r[@]}" --select "$4" --tsv "$2")" \
+        "$("$VV" --tab "$3" "${r[@]}" --tsv "$2" | cut -f"$5")"
+}
+cooler_projection cool_select_count       "$DATA/tiny.cool" pixels count 7 ""
+cooler_projection cool_select_balanced    "$DATA/tiny.cool" pixels start2,balanced 5,8 ""
+cooler_projection cool_select_bin1_region "$DATA/tiny.cool" pixels chrom1,end1,count 1,3,7 chr1:100-400
+cooler_projection cool_select_bin2_region "$DATA/tiny.cool" pixels end2,balanced 6,8 chr1:100-400
+cooler_projection cool_bins_select_weight "$DATA/tiny.cool" bins weight 4 ""
+cooler_projection cool_bins_select_region "$DATA/tiny.mcool" bins@100bp end,weight 3,4 chr2
+cooler_projection scool_select_count      "$SC" pixels cell,count 1,8 ""
+cooler_projection scool_select_region     "$SC" pixels start2,count 6,8 chr1:0-30
 
 echo '── R data (.rds / .RData) ─────────────────────────────'
 # tests/data/make_rdata.R writes the fixtures. Types: character, double,

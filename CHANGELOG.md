@@ -74,6 +74,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   error, as before.
 
 ### Changed
+- Cooler files read a resolution's bins when one of its tabs first needs
+  them, not every resolution's at open, and a pixels or bins tab reads only
+  the datasets of the columns shown. On an hg38 `.mcool` (1 kb, 10 kb and
+  100 kb; 20 M pixels at 1 kb), `--list-tabs` takes 0.00 s and 29 MB
+  instead of 0.18 s and 125 MB, `--tab pixels@1kb --select count --tsv`
+  0.23 s and 72 MB instead of 1.05 s and 303 MB, and `--tab bins@1kb
+  --select weight --tsv` 0.09 s and 136 MB instead of 0.41 s and 308 MB.
+  A bins dataset that cannot be read is now reported by the tab that
+  reads it, not when the file is opened.
 - bigWig and bigBed files are read a few data blocks at a time instead of a
   chromosome at a time. On a 336 MB bigWig (ENCFF247SXC), `--count` peaks
   at 110 MB instead of 200 MB and `--tsv` at 125 MB instead of 220 MB, in
