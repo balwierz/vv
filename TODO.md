@@ -16,11 +16,11 @@ Deferred until a file needs them (owner's decision, 2026-10-07).
 - Delta Lake tables (`_delta_log/`): vv names one and points at DuckDB's
   `delta_scan`; reading one means replaying the log's add / remove actions
   and Parquet checkpoints to find the live files.
-- NumPy `.npy` / `.npz` 2-D arrays past 4,096 columns are still a preview
-  (kNpzMaxCols; build_2d_table builds the table at open). The AnnData,
-  Loom, 10x and R matrix tabs read a block of rows and the requested
-  columns instead (H5ViewportSource / H5MatrixStreamSource / RWideSource);
-  an NPY source of that kind over the memory-mapped array would lift it.
+- NumPy arrays past 65,536 columns are a preview (kNpyMaxCols in
+  `src/formats/npz.cpp`): the schema holds one Arrow field per column, and
+  the table view builds every column of the rows it prints (1,455,328
+  columns: 320 MB of schema, 7.9 s and 3.9 GB for `-t -n 3`). Lifting it
+  needs exports and the table view that do not hold the whole schema.
 - Sixel image protocol (xterm / mlterm / WezTerm-no-iterm) for the
   markdown viewer. Needs PNG → RGB decode + palette quantisation;
   ~500 LOC vendored (stb_image.h + sixel encoder).
@@ -82,13 +82,12 @@ Deferred until a file needs them (owner's decision, 2026-10-07).
   overflow), but a whole inner chunk is still held: 23,766 records × 2,504
   samples with INFO selected is 10.5 GB of RSS. Smaller BCF batches for
   many-sample files (a byte budget, as FASTX has) would bound it.
-- **Remaining reader stages:** XLSX now defers sibling sheet parsing; ODS
-  defers Arrow conversion, but still buffers the whole XML/all-sheet CSV.
-  Follow with selected-sheet streaming only if schema inference stays stable.
-  NPY memory mapping and lazy NPZ member inflation, projected Cooler bin extras,
-  bounded bigWig/bigBed iterators and progressive SQLite counts need their own
-  measured changes. Arbitrary compressed NPZ paging and out-of-core R object
-  parsing are separate designs, not consequences of the HDF5 paging changes.
+- **Remaining reader stages:** an ODS sheet's text is still buffered whole
+  for Arrow's type inference (row streaming would change the inferred
+  types), and an XLSX sheet likewise. A deflated `.npz` member seeks back by
+  inflating again from its start (6.5 s to the last slice of a 1 GB
+  member); inflate checkpoints would bound that. Out-of-core R object
+  parsing is a separate design.
 - **Export quirks kept for byte-identical output:** a string cell equal to
   `∅` exports as an empty field, and an unquoted TSV / CSV field ends at its
   first NUL byte (`finish_csv_field`, `src/core/format_fast.cpp`).
@@ -152,6 +151,10 @@ Deferred until a file needs them (owner's decision, 2026-10-07).
 
 ## Deliberately not doing — do not re-propose without new information
 
+- **Progressive SQLite row counts** — measured 2026-11-20 and not done: the
+  `SELECT COUNT(*)` that `total_rows()` runs on first use takes 0.20 s for a
+  20,000,000-row, 840 MB table (warm cache; `--count` 0.20 s and 21 MB,
+  `-n 5` 0.18 s). Nothing for a count in progress to hide.
 - **`--group-by` / `--agg`** — where vv stops being a viewer and becomes a
   query engine. `duckdb -c "select … from 'f.parquet'"` is one command away,
   and `vv in.bam --tags CB --parquet - | duckdb` reaches the only real
