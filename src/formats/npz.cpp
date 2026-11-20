@@ -325,8 +325,10 @@ static std::shared_ptr<arrow::DataType> special_type(const NpyHeader& h) {
 
 // Decode n elements of a string / datetime dtype. A value that does not fit
 // the Arrow type (a date beyond int32 days, a multiplied count that
-// overflows) is null, as is NaT.
-static std::shared_ptr<arrow::Array> decode_special(const NpyHeader& h, const uint8_t* data, int64_t n) {
+// overflows) is null, as is NaT. |S values become binary when one of them is
+// not UTF-8, or when `force_binary` (another block of the column was not).
+static std::shared_ptr<arrow::Array> decode_special(const NpyHeader& h, const uint8_t* data, int64_t n,
+                                                    bool force_binary = false) {
     std::shared_ptr<arrow::Array> a;
     if (h.special == 'S' || h.special == 'U') {
         std::vector<std::string> vals((size_t)n);
@@ -359,7 +361,7 @@ static std::shared_ptr<arrow::Array> decode_special(const NpyHeader& h, const ui
                 }
             }
         }
-        if (all_utf8) {
+        if (all_utf8 && !force_binary) {
             arrow::StringBuilder b;
             for (auto& v : vals) (void)b.Append(v);
             (void)b.Finish(&a);
@@ -418,9 +420,9 @@ static std::shared_ptr<arrow::Array> decode_special(const NpyHeader& h, const ui
 }
 
 static std::shared_ptr<arrow::Array>
-slab_to_arrow(const NpyHeader& h, const uint8_t* data, int64_t n) {
+slab_to_arrow(const NpyHeader& h, const uint8_t* data, int64_t n, bool force_binary = false) {
     using T = arrow::Type;
-    if (h.special) return decode_special(h, data, n);
+    if (h.special) return decode_special(h, data, n, force_binary);
     switch (h.dtype_id) {
         case T::BOOL: {
             // numpy bool is 1 byte (0/1). Arrow BoolBuilder appends bool.
@@ -443,78 +445,280 @@ slab_to_arrow(const NpyHeader& h, const uint8_t* data, int64_t n) {
     }
 }
 
-// Convert a 1-D slab to a single-column table.
-static std::shared_ptr<arrow::Table>
-build_1d_table(const std::string& name, const NpyHeader& h,
-                const uint8_t* data, int64_t n) {
-    auto col = slab_to_arrow(h, data, n);
-    if (!col) return nullptr;
-    auto schema = arrow::schema({arrow::field(name, col->type())});
-    return arrow::Table::Make(schema, {col}, n);
+// The Arrow type of an array's column; |S columns holding non-UTF-8 bytes
+// are binary.
+static std::shared_ptr<arrow::DataType> column_type(const NpyHeader& h, bool binary) {
+    using T = arrow::Type;
+    if (h.special == 'S') return binary ? arrow::binary() : arrow::utf8();
+    if (h.special) return special_type(h);
+    switch (h.dtype_id) {
+        case T::BOOL:   return arrow::boolean();
+        case T::INT8:   return arrow::int8();
+        case T::INT16:  return arrow::int16();
+        case T::INT32:  return arrow::int32();
+        case T::INT64:  return arrow::int64();
+        case T::UINT8:  return arrow::uint8();
+        case T::UINT16: return arrow::uint16();
+        case T::UINT32: return arrow::uint32();
+        case T::UINT64: return arrow::uint64();
+        case T::FLOAT:  return arrow::float32();
+        case T::DOUBLE: return arrow::float64();
+        default:        return nullptr;
+    }
 }
 
-// Convert a 2-D slab (rows × cols) to an Arrow table.
-// Cap on the number of columns rendered from a 2-D array: one Arrow Array +
-// Field is built per column, so a genuinely-wide array (or a hostile one that
-// passes the shape/buffer bounds check) would otherwise allocate unboundedly.
-// The full width is reported to the caller so the footer can flag truncation.
-static constexpr int64_t kNpzMaxCols = 4096;
+// The bytes of one array's data (what follows its .npy header).
+class NpyBytes {
+public:
+    virtual ~NpyBytes() = default;
+    // Bytes [off, off + n) of the data: a pointer into the source when it
+    // holds them, else copied into *buf. nullptr with *err set on a failure.
+    virtual const uint8_t* get(int64_t off, int64_t n, std::vector<uint8_t>* buf, std::string* err) = 0;
+    // Any range costs the same (memory, a mapping); false for a source read
+    // in order (a deflated .npz member), where a range far from the last one
+    // costs a re-read.
+    virtual bool random() const { return true; }
+};
 
-// row_axis is 1 for a leading-axis slice, otherwise 0. Flatten the remaining
-// axes in logical C order, regardless of the array's physical storage order.
-// Only the first kNpzMaxCols columns are materialised; `full_cols_out` (when
-// non-null) receives the declared width so callers can note any truncation.
-static std::shared_ptr<arrow::Table> build_2d_table(const NpyHeader& h, const uint8_t* data,
-                                                    int64_t rows, int64_t cols, size_t item_size,
-                                                    bool     fortran_order,
-                                                    int64_t* full_cols_out = nullptr,
-                                                    size_t   row_axis      = 0) {
-    if (full_cols_out) *full_cols_out = cols;
-    const int64_t full_cols = cols;        // row stride in the C-order buffer
-    if (cols > kNpzMaxCols) cols = kNpzMaxCols;
-    arrow::FieldVector                         fields;
-    std::vector<std::shared_ptr<arrow::Array>> cols_out;
-    std::vector<uint8_t>                       tmp;
-    std::vector<int64_t>                       strides;
-    if (fortran_order) {
-        strides.resize(h.shape.size(), 1);
-        for (size_t i = 1; i < h.shape.size(); ++i) strides[i] = strides[i - 1] * h.shape[i - 1];
+// Data in memory or in a mapped file; `keep` owns it.
+class ViewBytes final : public NpyBytes {
+    std::shared_ptr<const void> keep_;
+    const uint8_t*              data_;
+    int64_t                     size_;
+    const MappedFile*           map_;   // to tell a truncated file, or null
+public:
+    ViewBytes(std::shared_ptr<const void> keep, const uint8_t* data, int64_t size, const MappedFile* map = nullptr)
+        : keep_(std::move(keep)), data_(data), size_(size), map_(map) {}
+    const uint8_t* get(int64_t off, int64_t n, std::vector<uint8_t>*, std::string* err) override {
+        if (off < 0 || n < 0 || off > size_ || n > size_ - off) {
+            *err = "array data ends at byte " + std::to_string(size_);
+            return nullptr;
+        }
+        if (map_ && map_->truncated()) {
+            *err = "the file was truncated while it was read";
+            return nullptr;
+        }
+        return data_ + off;
     }
-    for (int64_t c = 0; c < cols; ++c) {
-        tmp.assign(rows * item_size, 0);
-        // rows == 0 leaves tmp empty, so tmp.data() is null and the F-order
-        // gather would call memcpy(nullptr, …, 0) — a zero length does not
-        // make a null argument legal (the parameters are declared
-        // non-null), and UBSan traps it. The C-order loop below is already a
-        // no-op at rows == 0; guard both so the intent is explicit.
-        if (rows > 0) {
-            int64_t row_stride = full_cols;
-            int64_t col_offset = c;
-            if (fortran_order) {
-                row_stride        = strides[row_axis];
-                col_offset        = 0;
-                int64_t remaining = c;
-                for (size_t axis = h.shape.size(); axis-- > row_axis + 1;) {
-                    col_offset += (remaining % h.shape[axis]) * strides[axis];
-                    remaining /= h.shape[axis];
-                }
-            }
-            if (row_stride == 1) {
-                std::memcpy(tmp.data(), data + col_offset * item_size, rows * item_size);
+};
+
+// Widest schema an array tab gets: one Arrow field per column, and the table
+// view builds every column of the rows it prints (1,455,328 columns: 320 MB
+// of schema, 7.9 s and 3.9 GB for `-t -n 3`). A wider array shows its first
+// kNpyMaxCols columns as a preview, which exports refuse. An array with no
+// rows declares its width without data to back it, so a header could claim
+// any width; the cap bounds that too.
+static constexpr int64_t kNpyMaxCols = 65536;
+
+// One array as a table read on demand: a block of rows, only the columns
+// asked for. 0-D: one cell. 1-D: one column named after the array. 2-D:
+// rows × columns c0…. 3-D+: slice i of the leading axis, axis 1 as rows and
+// the rest flattened (C order) as columns; change_slice moves the slice.
+class NpyArraySource final : public TabularSource {
+    std::string               path_, name_;
+    bool                      bare_;
+    NpyHeader                 h_;
+    std::shared_ptr<NpyBytes> bytes_;
+    int64_t                   slice_ = 0;
+    // Layout of the current view: element (r, c) is
+    // base_ + r * row_stride_ + col_offset(c), in elements of the data.
+    int64_t                   rows_ = 0, cols_ = 0, full_cols_ = 0, block_ = 1;
+    int64_t                   base_ = 0, row_stride_ = 0;
+    size_t                    row_axis_ = 0;
+    std::vector<int64_t>      strides_;   // F order: element stride per axis
+    std::vector<bool>         binary_;    // per column: |S values not all UTF-8
+    std::shared_ptr<arrow::Schema> schema_;
+    std::string               footer_;
+    arrow::Status             status_;
+
+    int64_t col_offset(int64_t c) const {
+        if (!h_.fortran_order || h_.shape.size() < 2) return c;
+        int64_t off = 0, rem = c;
+        for (size_t axis = h_.shape.size(); axis-- > row_axis_ + 1;) {
+            off += (rem % h_.shape[axis]) * strides_[axis];
+            rem /= h_.shape[axis];
+        }
+        return off;
+    }
+    // Elements [first, last] spanning column c's rows [r0, r0 + n).
+    std::pair<int64_t, int64_t> col_span(int64_t c, int64_t r0, int64_t n) const {
+        const int64_t first = base_ + r0 * row_stride_ + col_offset(c);
+        return {first, first + (n - 1) * row_stride_};
+    }
+    // Rows [r0, r0 + n) of the columns in `want` (each set column true),
+    // gathered one column at a time into contiguous slabs: `fn(c, slab)`.
+    template <typename Fn>
+    arrow::Status gather(int64_t r0, int64_t n, const std::vector<int64_t>& cols, Fn fn) {
+        if (n <= 0 || cols.empty()) {
+            for (int64_t c : cols) fn(c, (const uint8_t*)nullptr);
+            return arrow::Status::OK();
+        }
+        const size_t item = h_.item_size;
+        // One read covering every requested column's rows: for C order a run
+        // of whole rows, at most a block's worth of elements.
+        int64_t lo = INT64_MAX, hi = -1;
+        for (int64_t c : cols) {
+            const auto [a, b] = col_span(c, r0, n);
+            lo = std::min(lo, a);
+            hi = std::max(hi, b);
+        }
+        std::vector<uint8_t> buf, slab((size_t)n * item);
+        std::string err;
+        const uint8_t* base = bytes_->get(lo * (int64_t)item, (hi - lo + 1) * (int64_t)item, &buf, &err);
+        if (!base) return arrow::Status::IOError("'", path_, "' / '", name_, "': ", err);
+        for (int64_t c : cols) {
+            const int64_t first = col_span(c, r0, n).first - lo;
+            if (row_stride_ == 1) {
+                std::memcpy(slab.data(), base + first * item, (size_t)n * item);
             } else {
-                for (int64_t r = 0; r < rows; ++r) {
-                    std::memcpy(tmp.data() + r * item_size,
-                                data + (r * row_stride + col_offset) * item_size, item_size);
-                }
+                for (int64_t r = 0; r < n; ++r)
+                    std::memcpy(slab.data() + (size_t)r * item, base + (first + r * row_stride_) * item, item);
+            }
+            fn(c, slab.data());
+        }
+        return arrow::Status::OK();
+    }
+
+    void layout() {
+        const auto& sh = h_.shape;
+        const std::string fmt = std::string("Format: NumPy ") + (bare_ ? "NPY" : "NPZ");
+        base_ = 0;
+        row_axis_ = 0;
+        strides_.assign(sh.size(), 1);
+        for (size_t i = 1; i < sh.size(); ++i) strides_[i] = strides_[i - 1] * sh[i - 1];
+        if (sh.empty()) {
+            rows_ = 1; cols_ = 1; row_stride_ = 1;
+            footer_ = fmt + "  |  Array: " + name_ + "  |  scalar  |  dtype: " + h_.dtype_str;
+        } else if (sh.size() == 1) {
+            rows_ = sh[0]; cols_ = 1; row_stride_ = 1;
+            footer_ = fmt + "  |  Array: " + name_ + "  |  " + shape_str(sh) + "  |  dtype: " + h_.dtype_str;
+        } else if (sh.size() == 2) {
+            rows_ = sh[0]; cols_ = sh[1];
+            row_stride_ = h_.fortran_order ? 1 : sh[1];
+            footer_ = fmt + "  |  Array: " + name_ + "  |  " + shape_str(sh) + "  |  dtype: " + h_.dtype_str;
+        } else if (sh[0] <= 0) {
+            // Empty leading axis (e.g. shape (0, …)): nothing to slice.
+            rows_ = 0; cols_ = 1; row_stride_ = 1;
+            footer_ = fmt + "  |  Array: " + name_ + "  |  " + shape_str(sh) + "  |  dtype: " + h_.dtype_str +
+                      "  |  empty";
+        } else {
+            slice_ = std::clamp<int64_t>(slice_, 0, sh[0] - 1);
+            rows_ = sh[1];
+            cols_ = 1;
+            for (size_t i = 2; i < sh.size(); ++i) cols_ *= sh[i];
+            row_axis_ = 1;
+            if (h_.fortran_order) {
+                base_ = slice_;                // strides_[0] == 1
+                row_stride_ = strides_[1];
+            } else {
+                base_ = slice_ * rows_ * cols_;
+                row_stride_ = cols_;
+            }
+            std::string desc = "[" + std::to_string(slice_) + ", :, :";
+            for (size_t i = 3; i < sh.size(); ++i) desc += ", :";
+            desc += "]";
+            footer_ = fmt + "  |  Array: " + name_ + "  |  " + shape_str(sh) + "  |  dtype: " + h_.dtype_str +
+                      "  |  slice " + desc + " (" + std::to_string(slice_ + 1) + "/" + std::to_string(sh[0]) +
+                      ")  |  [ / ] step slice  •  :slice N jumps";
+        }
+        full_cols_ = cols_;
+        cols_ = std::min(cols_, kNpyMaxCols);
+        if (cols_ < full_cols_)
+            footer_ += "  |  showing first " + std::to_string(cols_) + " of " + std::to_string(full_cols_) +
+                       " columns";
+        block_ = std::clamp<int64_t>((int64_t{1} << 20) / std::max<int64_t>(cols_, 1), 1, 65536);
+        // |S: a column is binary when any of its values is not UTF-8, as the
+        // whole-column build decided.
+        binary_.assign((size_t)cols_, false);
+        if (h_.special == 'S' && rows_ > 0) {
+            std::vector<int64_t> all((size_t)cols_);
+            for (int64_t c = 0; c < cols_; ++c) all[(size_t)c] = c;
+            for (int64_t r0 = 0; r0 < rows_ && status_.ok(); r0 += block_) {
+                const int64_t n = std::min(block_, rows_ - r0);
+                status_ = gather(r0, n, all, [&](int64_t c, const uint8_t* slab) {
+                    if (binary_[(size_t)c]) return;
+                    for (int64_t r = 0; r < n && !binary_[(size_t)c]; ++r) {
+                        const uint8_t* p = slab + (size_t)r * h_.item_size;
+                        size_t len = h_.item_size;
+                        while (len > 0 && p[len - 1] == 0) --len;
+                        std::string v((const char*)p, len);
+                        if (valid_utf8(v) != v) binary_[(size_t)c] = true;
+                    }
+                });
             }
         }
-        auto a = slab_to_arrow(h, tmp.data(), rows);
-        if (!a) return nullptr;
-        fields.push_back(arrow::field("c" + std::to_string(c), a->type()));
-        cols_out.push_back(a);
+        arrow::FieldVector fields;
+        fields.reserve((size_t)cols_);
+        if (h_.shape.size() <= 1) {
+            fields.push_back(arrow::field(name_, column_type(h_, cols_ > 0 && binary_[0])));
+        } else {
+            for (int64_t c = 0; c < cols_; ++c)
+                fields.push_back(arrow::field("c" + std::to_string(c), column_type(h_, binary_[(size_t)c])));
+        }
+        schema_ = arrow::schema(std::move(fields));
     }
-    return arrow::Table::Make(arrow::schema(fields), cols_out, rows);
-}
+
+public:
+    NpyArraySource(std::string path, std::string name, bool bare, NpyHeader h, std::shared_ptr<NpyBytes> bytes)
+        : path_(std::move(path)), name_(std::move(name)), bare_(bare), h_(std::move(h)), bytes_(std::move(bytes)) {
+        layout();
+    }
+    std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+    int64_t total_rows() const override { return rows_; }
+    int num_chunks() const override { return (int)((rows_ + block_ - 1) / block_); }
+    ChunkMeta chunk_meta(int i) const override {
+        const int64_t first = (int64_t)i * block_;
+        return {first, std::max<int64_t>(0, std::min(block_, rows_ - first))};
+    }
+    bool random_access() const override { return true; }
+    arrow::Status read_status() const override { return status_; }
+    const std::string& path() const override { return path_; }
+    std::string footer() const override { return footer_; }
+    std::string tab_label() const override { return name_; }
+    PreviewLimit preview_limit() const override {
+        if (cols_ >= full_cols_) return PreviewLimit{};
+        return PreviewLimit{rows_, rows_, cols_, full_cols_};
+    }
+    arrow::Status read_chunk(int i, const std::vector<int>& cols, std::shared_ptr<arrow::Table>* out) override {
+        ARROW_RETURN_NOT_OK(status_);
+        const ChunkMeta m = chunk_meta(i);
+        std::vector<int64_t> want;   // distinct, in order
+        for (int c : cols) {
+            if (c < 0 || c >= cols_) return arrow::Status::IndexError("column ", c, " of ", cols_);
+            want.push_back(c);
+        }
+        std::sort(want.begin(), want.end());
+        want.erase(std::unique(want.begin(), want.end()), want.end());
+        std::unordered_map<int64_t, std::shared_ptr<arrow::Array>> by_col;
+        auto st = gather(m.first_row, m.num_rows, want, [&](int64_t c, const uint8_t* slab) {
+            static const uint8_t kNone = 0;
+            by_col[c] = slab_to_arrow(h_, slab ? slab : &kNone, m.num_rows, binary_[(size_t)c]);
+        });
+        if (!st.ok()) {
+            status_ = st;
+            return st;
+        }
+        arrow::FieldVector fields;
+        arrow::ArrayVector arrays;
+        for (int c : cols) {
+            fields.push_back(schema_->field(c));
+            arrays.push_back(by_col[c]);
+        }
+        *out = arrow::Table::Make(arrow::schema(std::move(fields)), arrays, m.num_rows);
+        return arrow::Status::OK();
+    }
+    bool has_slices() const override { return h_.shape.size() >= 3; }
+    bool change_slice(int delta, bool absolute, int64_t target) override {
+        if (h_.shape.size() < 3 || h_.shape[0] <= 0) return false;
+        int64_t idx = absolute ? target : slice_ + delta;
+        idx = std::clamp<int64_t>(idx, 0, h_.shape[0] - 1);
+        if (idx == slice_) return false;
+        slice_ = idx;
+        status_ = arrow::Status::OK();
+        layout();
+        return true;
+    }
+};
 
 // One ZIP entry (one .npy) — name, full extracted bytes, parsed header.
 struct Entry {
@@ -608,358 +812,129 @@ static std::string load_archive(const std::string& path,
     return "";
 }
 
-// Spec for one tab: either the summary or one named array. Slice index
-// applies only to 3-D+ arrays; otherwise -1.
-struct OpenSpec {
-    // A bare .npy has no container, so its footer says NPY rather than NPZ
-    // and it has no summary tab.
-    bool        bare_npy   = false;
-    bool        is_summary = false;
-    std::string entry_name;          // key into archive
-    int64_t     slice_idx = 0;
-};
+// The summary tab's table: one row per member.
+static std::shared_ptr<arrow::Table> summary_table(const std::vector<Entry>& a) {
+    arrow::StringBuilder nb, sb, db, kb;
+    for (const auto& e : a) {
+        (void)nb.Append(e.name);
+        (void)sb.Append(shape_str(e.header.shape));
+        (void)db.Append(e.header.dtype_str);
+        std::string kind;
+        if (e.header.unsupported) {
+            // descr is endian + kind + size ("<U11", "|O", "<M8[ns]").
+            const char k = e.header.dtype_str.size() >= 2 ? e.header.dtype_str[1] : '?';
+            kind = k == 'O' ? "(pickled / object — skipped)"
+                 : (k == 'S' || k == 'U') ? "(strings — unsupported width / byte order)"
+                 : (k == 'M' || k == 'm') ? "(datetime — unsupported unit / byte order)"
+                 : "(unsupported dtype — skipped)";
+        }
+        else if (e.header.shape.empty()) kind = "scalar";
+        else if (e.header.shape.size() == 1) kind = "1-D";
+        else if (e.header.shape.size() == 2) kind = "2-D";
+        else kind = std::to_string(e.header.shape.size()) + "-D";
+        (void)kb.Append(kind);
+    }
+    std::shared_ptr<arrow::Array> na, sa, da, ka;
+    (void)nb.Finish(&na); (void)sb.Finish(&sa);
+    (void)db.Finish(&da); (void)kb.Finish(&ka);
+    auto schema = arrow::schema({
+        arrow::field("name",  arrow::utf8()),
+        arrow::field("shape", arrow::utf8()),
+        arrow::field("dtype", arrow::utf8()),
+        arrow::field("kind",  arrow::utf8()),
+    });
+    return arrow::Table::Make(schema, {na, sa, da, ka}, (int64_t)a.size());
+}
+
+// An in-memory member's data as NpyBytes.
+static std::shared_ptr<NpyBytes> entry_bytes(const Entry& e) {
+    const auto& v = *e.bytes;
+    return std::make_shared<ViewBytes>(e.bytes, v.data() + e.header.data_offset,
+                                       (int64_t)(v.size() - e.header.data_offset));
+}
 
 #ifdef VV_FUZZ
 // Fuzz entry (see tests/fuzz/fuzz_npy.cpp): parse an untrusted .npy buffer and
-// build its table, mirroring NpzSource's shape dispatch. parse_npy_header
-// validates the declared shape against the buffer size, so an accepted header
-// never drives the builders out of bounds — the harness fuzzes the real
-// parse + build path (header parsing, slab_to_arrow, build_1d/2d_table).
+// read its table, as an array tab does. parse_npy_header validates the
+// declared shape against the buffer size, so an accepted header never drives
+// the reads out of bounds — the harness fuzzes the real parse + read path
+// (header parsing, the layout, every chunk of every column, a slice step).
 void npy_fuzz_one(const uint8_t* buf, size_t n) {
     NpyHeader h;
     if (!parse_npy_header(buf, n, &h).empty()) return;
     if (h.unsupported) return;
-    const uint8_t* data = buf + h.data_offset;
-    std::shared_ptr<arrow::Table> tbl;
-    if (h.shape.empty()) {
-        (void)slab_to_arrow(h, data, 1);
-    } else if (h.shape.size() == 1) {
-        tbl = build_1d_table("x", h, data, h.shape[0]);
-    } else if (h.shape.size() == 2) {
-        int64_t fc = 0;
-        tbl = build_2d_table(h, data, h.shape[0], h.shape[1],
-                             h.item_size, h.fortran_order, &fc);
-    } else {
-        int64_t leading = h.shape[0];
-        if (leading > 0) {
-            int64_t rest = 1;   // product of the trailing dims (bounded: the full
-            for (size_t i = 1; i < h.shape.size(); ++i) rest *= h.shape[i]; // product fit `n`)
-            tbl = build_2d_table(h, data, leading, rest,
-                                 h.item_size, h.fortran_order);
-        } else {
-            tbl = build_2d_table(h, data, 0, 1, h.item_size, h.fortran_order);
-        }
+    auto bytes = std::make_shared<ViewBytes>(nullptr, buf + h.data_offset, (int64_t)(n - h.data_offset));
+    NpyArraySource src("fuzz.npy", "x", true, h, bytes);
+    std::vector<int> cols;
+    for (int c = 0; c < src.schema()->num_fields() && c < 64; ++c) cols.push_back(c);
+    for (int i = 0; i < src.num_chunks() && i < 64; ++i) {
+        std::shared_ptr<arrow::Table> t;
+        (void)src.read_chunk(i, cols, &t);
     }
-    (void)tbl;
+    if (src.has_slices()) (void)src.change_slice(1, false, 0);
 }
 #endif
 
+// The summary tab of an .npz; its siblings are the array tabs.
 class NpzSource : public WorkbookSource {
-    std::shared_ptr<std::vector<Entry>> archive_;   // shared across siblings
-    OpenSpec    spec_;
-    std::vector<OpenSpec> siblings_;
-    PreviewLimit limit_;   // set when a 2-D / sliced array exceeds kNpzMaxCols
+    std::shared_ptr<std::vector<Entry>> archive_;   // shared with the array tabs
 
-    NpzSource(std::shared_ptr<arrow::Table> table,
-               std::string path,
-               std::string footer,
-               std::shared_ptr<std::vector<Entry>> archive,
-               OpenSpec spec,
-               std::vector<OpenSpec> siblings)
-        : WorkbookSource(std::move(table), std::move(path),
-                          std::move(footer)),
-          archive_(std::move(archive)),
-          spec_(std::move(spec)),
-          siblings_(std::move(siblings)) {}
-
-    // Locate an entry by name. Returns nullptr if not found.
-    static const Entry* find_entry(const std::vector<Entry>& a,
-                                     const std::string& nm) {
-        for (const auto& e : a) if (e.name == nm) return &e;
-        return nullptr;
-    }
-
-    // Build the table for a given spec. Returns "" on success.
-    static std::string build_table(const std::vector<Entry>& a,
-                                    const OpenSpec& spec,
-                                    std::shared_ptr<arrow::Table>* tbl,
-                                    std::string* footer,
-                                    PreviewLimit* limit = nullptr) {
-        if (limit) *limit = PreviewLimit{};
-        if (spec.is_summary) {
-            arrow::StringBuilder nb, sb, db, kb;
-            for (const auto& e : a) {
-                (void)nb.Append(e.name);
-                (void)sb.Append(shape_str(e.header.shape));
-                (void)db.Append(e.header.dtype_str);
-                std::string kind;
-                if (e.header.unsupported) {
-                    // descr is endian + kind + size ("<U11", "|O", "<M8[ns]").
-                    const char k = e.header.dtype_str.size() >= 2 ? e.header.dtype_str[1] : '?';
-                    kind = k == 'O' ? "(pickled / object — skipped)"
-                         : (k == 'S' || k == 'U') ? "(strings — unsupported width / byte order)"
-                         : (k == 'M' || k == 'm') ? "(datetime — unsupported unit / byte order)"
-                         : "(unsupported dtype — skipped)";
-                }
-                else if (e.header.shape.empty()) kind = "scalar";
-                else if (e.header.shape.size() == 1) kind = "1-D";
-                else if (e.header.shape.size() == 2) kind = "2-D";
-                else kind = std::to_string(e.header.shape.size()) + "-D";
-                (void)kb.Append(kind);
-            }
-            std::shared_ptr<arrow::Array> na, sa, da, ka;
-            (void)nb.Finish(&na); (void)sb.Finish(&sa);
-            (void)db.Finish(&da); (void)kb.Finish(&ka);
-            auto schema = arrow::schema({
-                arrow::field("name",  arrow::utf8()),
-                arrow::field("shape", arrow::utf8()),
-                arrow::field("dtype", arrow::utf8()),
-                arrow::field("kind",  arrow::utf8()),
-            });
-            *tbl = arrow::Table::Make(schema, {na, sa, da, ka},
-                                       (int64_t)a.size());
-            *footer = "Format: NumPy NPZ  |  Tab: summary  |  Arrays: "
-                    + std::to_string(a.size());
-            return "";
-        }
-
-        const Entry* e = find_entry(a, spec.entry_name);
-        if (!e) return "NPZ: entry '" + spec.entry_name + "' not found";
-        const auto& h = e->header;
-        if (h.unsupported) {
-            return "'" + spec.entry_name + "': dtype " + h.dtype_str +
-                   " (object/structured) not displayable. "
-                   "Convert to a fixed numeric dtype with python.";
-        }
-        const uint8_t* data = e->bytes->data() + h.data_offset;
-
-        if (h.shape.empty()) {
-            // 0-D scalar — render as a single-cell table.
-            auto col = slab_to_arrow(h, data, 1);
-            if (!col) return "NPZ: dtype not supported for '" + e->name + "'";
-            auto schema = arrow::schema({arrow::field(e->name, col->type())});
-            *tbl = arrow::Table::Make(schema, {col}, 1);
-            *footer = std::string("Format: NumPy ") + (spec.bare_npy ? "NPY" : "NPZ") +
-                      "  |  Array: " + e->name +
-                      "  |  scalar  |  dtype: " + h.dtype_str;
-            return "";
-        }
-
-        if (h.shape.size() == 1) {
-            *tbl = build_1d_table(e->name, h, data, h.shape[0]);
-            if (!*tbl) return "NPZ: dtype not supported for '" + e->name + "'";
-            *footer = std::string("Format: NumPy ") + (spec.bare_npy ? "NPY" : "NPZ") +
-                      "  |  Array: " + e->name +
-                      "  |  " + shape_str(h.shape) +
-                      "  |  dtype: " + h.dtype_str;
-            return "";
-        }
-
-        if (h.shape.size() == 2) {
-            int64_t full_c = 0;
-            *tbl = build_2d_table(h, data, h.shape[0], h.shape[1],
-                                   h.item_size, h.fortran_order, &full_c);
-            if (!*tbl) return "NPZ: dtype not supported for '" + e->name + "'";
-            *footer = std::string("Format: NumPy ") + (spec.bare_npy ? "NPY" : "NPZ") +
-                      "  |  Array: " + e->name +
-                      "  |  " + shape_str(h.shape) +
-                      "  |  dtype: " + h.dtype_str;
-            if (limit)
-                *limit = PreviewLimit{(*tbl)->num_rows(), (*tbl)->num_rows(),
-                                      (*tbl)->num_columns(), full_c};
-            if ((*tbl)->num_columns() < full_c)
-                *footer += "  |  showing first " +
-                           std::to_string((*tbl)->num_columns()) + " of " +
-                           std::to_string(full_c) + " columns";
-            return "";
-        }
-
-        // 3-D+. Render a 2-D slice along the leading axis.
-        int64_t leading = h.shape[0];
-        if (leading <= 0) {
-            // Empty leading axis (e.g. shape (0, …)): nothing to slice, and a
-            // negative idx clamp would otherwise form a wild pointer.
-            *tbl = build_2d_table(h, data, /*rows=*/0, /*cols=*/1,
-                                   h.item_size, h.fortran_order);
-            if (!*tbl) return "NPZ: dtype not supported for '" + e->name + "'";
-            *footer = std::string("Format: NumPy ") + (spec.bare_npy ? "NPY" : "NPZ") +
-                      "  |  Array: " + e->name +
-                      "  |  " + shape_str(h.shape) +
-                      "  |  dtype: " + h.dtype_str + "  |  empty";
-            return "";
-        }
-        int64_t idx = spec.slice_idx;
-        if (idx < 0) idx = 0;
-        if (idx >= leading) idx = leading - 1;
-        // Treat dims [1:] as (rows, cols). For >3-D we collapse the
-        // tail into a single column dimension.
-        int64_t inner_rows = h.shape[1];
-        int64_t inner_cols = 1;
-        for (size_t i = 2; i < h.shape.size(); ++i) inner_cols *= h.shape[i];
-        size_t slice_bytes = (size_t)inner_rows * inner_cols * h.item_size;
-        size_t slice_offset = (size_t)idx * slice_bytes;
-        if (h.fortran_order && inner_rows > 0 && inner_cols > 0)
-            slice_offset = (size_t)idx * h.item_size;
-        const uint8_t* slice_data = data + slice_offset;
-
-        int64_t full_c = 0;
-        *tbl = build_2d_table(h, slice_data, inner_rows, inner_cols, h.item_size, h.fortran_order,
-                              &full_c,
-                              /*row_axis=*/1);
-        if (!*tbl) return "NPZ: dtype not supported for '" + e->name + "'";
-
-        std::string slice_desc = "[" + std::to_string(idx) + ", :, :";
-        for (size_t i = 3; i < h.shape.size(); ++i) slice_desc += ", :";
-        slice_desc += "]";
-        *footer = std::string("Format: NumPy ") + (spec.bare_npy ? "NPY" : "NPZ") +
-                      "  |  Array: " + e->name +
-                  "  |  " + shape_str(h.shape) +
-                  "  |  dtype: " + h.dtype_str +
-                  "  |  slice " + slice_desc +
-                  " (" + std::to_string(idx + 1) + "/" + std::to_string(leading)
-                  + ")  |  [ / ] step slice  •  :slice N jumps";
-        if (limit)
-            *limit = PreviewLimit{(*tbl)->num_rows(), (*tbl)->num_rows(),
-                                  (*tbl)->num_columns(), full_c};
-        if ((*tbl)->num_columns() < full_c)
-            *footer += "  |  showing first " +
-                       std::to_string((*tbl)->num_columns()) + " of " +
-                       std::to_string(full_c) + " columns";
-        return "";
-    }
-
-    static std::string build_one(const std::string& path,
-                                   std::shared_ptr<std::vector<Entry>> archive,
-                                   OpenSpec spec,
-                                   std::vector<OpenSpec> siblings,
-                                   std::unique_ptr<NpzSource>* out) {
-        std::shared_ptr<arrow::Table> tbl;
-        std::string footer;
-        PreviewLimit limit;
-        std::string err = build_table(*archive, spec, &tbl, &footer, &limit);
-        if (!err.empty()) return err;
-        if (!siblings.empty())
-            footer += "  |  +" + std::to_string(siblings.size()) +
-                       " more tab(s)";
-        out->reset(new NpzSource(std::move(tbl), path, std::move(footer),
-                                   std::move(archive), std::move(spec),
-                                   std::move(siblings)));
-        (*out)->limit_ = limit;
-        return "";
-    }
+    NpzSource(std::shared_ptr<arrow::Table> table, std::string path, std::string footer,
+              std::shared_ptr<std::vector<Entry>> archive)
+        : WorkbookSource(std::move(table), std::move(path), std::move(footer)),
+          archive_(std::move(archive)) {}
 
 public:
-    // A bare .npy is a single array with no container around it. Wrap it as a
-    // one-entry archive and reuse the whole NPZ path — same parser, same
-    // hardening, no second implementation to keep in step.
-    //
-    // README has documented `.npy` since the NumPy viewer landed, but no
-    // dispatch branch ever existed, so `vv x.npy` answered "unrecognised file
-    // extension". Building the format registry is what surfaced that.
-    static std::string open_npy(const std::string& path,
-                                 std::unique_ptr<NpzSource>* out) {
-        std::ifstream f(path, std::ios::binary);
-        if (!f) return "Cannot open '" + path + "'";
-        auto bytes = std::make_shared<std::vector<uint8_t>>(
-            std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
-        if (bytes->empty()) return "'" + path + "': empty file";
-
-        Entry e;
+    // A bare .npy is a single array with no container around it: one array
+    // tab over the file, mapped, with the NPZ path's parser and hardening.
+    static std::string open_npy(const std::string& path, std::unique_ptr<TabularSource>* out) {
+        auto map = std::make_shared<MappedFile>();
+        if (auto e = map->open(path); !e.empty()) return e;
+        if (map->size() == 0) return "'" + path + "': empty file";
         // Tab label: the basename without the .npy suffix, mirroring how an
         // in-archive member is named.
-        {
-            std::string base = path;
-            auto slash = base.find_last_of('/');
-            if (slash != std::string::npos) base.erase(0, slash + 1);
-            if (base.size() > 4 &&
-                fends_ci(base, ".npy")) base.erase(base.size() - 4);
-            e.name = base.empty() ? std::string("array") : base;
-        }
-        e.bytes = bytes;
-        std::string err = parse_npy_header(bytes->data(), bytes->size(),
-                                            &e.header);
+        std::string name = path;
+        if (auto slash = name.find_last_of('/'); slash != std::string::npos) name.erase(0, slash + 1);
+        if (name.size() > 4 && fends_ci(name, ".npy")) name.erase(name.size() - 4);
+        if (name.empty()) name = "array";
+        NpyHeader h;
+        std::string err = parse_npy_header(map->data(), map->size(), &h);
         if (!err.empty()) return "'" + path + "': " + err;
-        if (e.header.unsupported)
-            return "'" + path + "': unsupported dtype '" + e.header.dtype_str +
+        if (h.unsupported)
+            return "'" + path + "': unsupported dtype '" + h.dtype_str +
                    "' (object / structured arrays are not displayed)";
-
-        auto archive = std::make_shared<std::vector<Entry>>();
-        archive->push_back(std::move(e));
-        OpenSpec spec;
-        spec.bare_npy   = true;
-        spec.entry_name = (*archive)[0].name;
-        return build_one(path, std::move(archive), std::move(spec), {}, out);
+        const uint8_t* data = map->data() + h.data_offset;
+        const int64_t size = (int64_t)(map->size() - h.data_offset);
+        const MappedFile* m = map.get();
+        auto bytes = std::make_shared<ViewBytes>(std::move(map), data, size, m);
+        *out = std::make_unique<NpyArraySource>(path, name, true, std::move(h), std::move(bytes));
+        return "";
     }
 
-    static std::string open_first(const std::string& path,
-                                    std::unique_ptr<NpzSource>* out) {
+    static std::string open_first(const std::string& path, std::unique_ptr<NpzSource>* out) {
         auto archive = std::make_shared<std::vector<Entry>>();
         std::string err = load_archive(path, archive.get());
         if (!err.empty()) return err;
         if (archive->empty()) return "'" + path + "': NPZ has no arrays";
-
-        // Tab order: summary, then one tab per non-object array in the
-        // order they appear in the archive.
-        std::vector<OpenSpec> specs;
-        specs.push_back({/*bare_npy=*/false, /*is_summary=*/true, "", 0});
-        for (const auto& e : *archive) {
-            if (!e.header.unsupported)
-                specs.push_back({false, false, e.name, 0});
-        }
-
-        OpenSpec first = specs.front();
-        std::vector<OpenSpec> siblings(specs.begin() + 1, specs.end());
-        return build_one(path, std::move(archive), std::move(first),
-                          std::move(siblings), out);
+        size_t tabs = 0;
+        for (const auto& e : *archive) tabs += !e.header.unsupported;
+        std::string footer = "Format: NumPy NPZ  |  Tab: summary  |  Arrays: " + std::to_string(archive->size());
+        if (tabs) footer += "  |  +" + std::to_string(tabs) + " more tab(s)";
+        auto table = summary_table(*archive);
+        out->reset(new NpzSource(std::move(table), path, std::move(footer), std::move(archive)));
+        return "";
     }
 
-    std::string tab_label() const override {
-        return spec_.is_summary ? std::string("summary") : spec_.entry_name;
-    }
-    PreviewLimit preview_limit() const override { return limit_; }
+    std::string tab_label() const override { return "summary"; }
 
-    std::vector<std::unique_ptr<TabularSource>>
-    open_sibling_sheets() const override {
+    // One tab per displayable array, in archive order.
+    std::vector<std::unique_ptr<TabularSource>> open_sibling_sheets() const override {
         std::vector<std::unique_ptr<TabularSource>> result;
-        for (const auto& s : siblings_) {
-            std::unique_ptr<NpzSource> src;
-            std::string err = build_one(path(), archive_, s,
-                                         /*siblings=*/{}, &src);
-            if (!err.empty()) {
-                std::fprintf(stderr, "vv: NPZ tab '%s': %s\n",
-                              s.entry_name.c_str(), err.c_str());
-                continue;
-            }
-            result.push_back(std::move(src));
+        for (const auto& e : *archive_) {
+            if (e.header.unsupported) continue;
+            result.push_back(std::make_unique<NpyArraySource>(path(), e.name, false, e.header, entry_bytes(e)));
         }
         return result;
-    }
-
-    bool has_slices() const override {
-        if (spec_.is_summary) return false;
-        const Entry* e = find_entry(*archive_, spec_.entry_name);
-        return e && e->header.shape.size() >= 3;
-    }
-    // Slice-axis navigation. Returns true if the slice changed.
-    bool change_slice(int delta, bool absolute, int64_t target) override {
-        if (spec_.is_summary) return false;
-        const Entry* e = find_entry(*archive_, spec_.entry_name);
-        if (!e || e->header.shape.size() < 3) return false;
-        int64_t max = e->header.shape[0];
-        int64_t new_idx = absolute ? target : spec_.slice_idx + delta;
-        if (new_idx < 0) new_idx = 0;
-        if (new_idx >= max) new_idx = max - 1;
-        if (new_idx == spec_.slice_idx) return false;
-        spec_.slice_idx = new_idx;
-        // Rebuild the underlying table + footer in place.
-        std::shared_ptr<arrow::Table> tbl;
-        std::string footer;
-        PreviewLimit limit;
-        std::string err = build_table(*archive_, spec_, &tbl, &footer, &limit);
-        if (!err.empty()) return false;
-        replace_table(std::move(tbl), std::move(footer));
-        limit_ = limit;
-        return true;
     }
 };
 
@@ -970,10 +945,7 @@ std::string open_npz_source(const std::string& path, std::unique_ptr<TabularSour
     return e;
 }
 std::string open_npy_source(const std::string& path, std::unique_ptr<TabularSource>* out) {
-    std::unique_ptr<NpzSource> s;
-    std::string e = NpzSource::open_npy(path, &s);
-    if (e.empty()) *out = std::move(s);
-    return e;
+    return NpzSource::open_npy(path, out);
 }
 
 }  // namespace npz

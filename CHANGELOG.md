@@ -74,6 +74,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   error, as before.
 
 ### Changed
+- NumPy array tabs read a block of rows and only the columns shown, and a
+  `.npy` is memory-mapped instead of read whole. A 320 MB `.npy` (5 M × 8
+  float64) shows its first rows in 0.00 s and 30 MB instead of 0.42 s and
+  692 MB. Arrays up to 65,536 columns (4,096 before) are tables in full,
+  so `--tsv` / `--parquet` export a 5,000-column array that was refused as
+  a preview; a wider one shows its first 65,536 columns.
 - ODS and flat ODS (`.fods`) workbooks are parsed as a stream and keep one
   sheet's text at a time: the first sheet at open, another when its tab is
   first read, from that sheet's own bytes of the document. On a 14 MB

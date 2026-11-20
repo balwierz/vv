@@ -221,3 +221,47 @@ void unmap_file(void* view) {
 
 }  // namespace vvjson
 #endif
+
+MappedFile::~MappedFile() {
+    vvjson::map_guard_remove(guard_);
+#ifdef _WIN32
+    vvjson::unmap_file(view_);
+#else
+    if (view_) munmap(view_, size_);
+#endif
+}
+
+std::string MappedFile::open(const std::string& path) {
+#ifdef _WIN32
+    return vvjson::map_file(path, &view_, &size_);
+#else
+    const int fd = ::open(path.c_str(), O_RDONLY);
+    if (fd < 0) return "Cannot open '" + path + "': " + std::strerror(errno);
+    struct stat st {};
+    if (fstat(fd, &st) != 0) {
+        ::close(fd);
+        return "Cannot stat '" + path + "'";
+    }
+    size_ = (size_t)st.st_size;
+    if (size_ > 0) {
+        void* m = mmap(nullptr, size_, PROT_READ, MAP_PRIVATE, fd, 0);
+        if (m == MAP_FAILED) {
+            ::close(fd);
+            size_ = 0;
+            return "Cannot map '" + path + "': " + std::strerror(errno);
+        }
+        view_  = m;
+        guard_ = vvjson::map_guard_add(m, size_);
+    }
+    ::close(fd);
+    return "";
+#endif
+}
+
+bool MappedFile::truncated() const {
+#ifdef _WIN32
+    return false;   // Windows does not truncate a mapped file
+#else
+    return guard_ >= 0 && vvjson::g_map_guard[guard_].hit.load() != 0;
+#endif
+}

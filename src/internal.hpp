@@ -1708,6 +1708,26 @@ void init_console();
 // stderr_unmute, which restores it.
 int stderr_mute();
 void stderr_unmute(int saved);
+// A whole file mapped read-only (mmap / MapViewOfFile). An empty file maps
+// to no bytes. On POSIX the mapping is registered with vvjson's SIGBUS guard,
+// so a file truncated while mapped reads as zeros past its new end and
+// truncated() turns true, instead of the process dying.
+class MappedFile {
+public:
+    MappedFile() = default;
+    MappedFile(const MappedFile&) = delete;
+    MappedFile& operator=(const MappedFile&) = delete;
+    ~MappedFile();
+    // "" or why the file could not be mapped.
+    std::string open(const std::string& path);
+    const uint8_t* data() const { return static_cast<const uint8_t*>(view_); }
+    size_t size() const { return size_; }
+    bool truncated() const;
+private:
+    void*  view_  = nullptr;
+    size_t size_  = 0;
+    int    guard_ = -1;
+};
 
 // ── Remote input (src/core/remote.cpp) ───────────────────────────────────────
 // A URL (https://, s3://, gs://, ...; not file://) names remote input, read

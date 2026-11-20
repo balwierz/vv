@@ -638,7 +638,7 @@ that need every row (export, \fB\-\-count\fR, \fB\-\-describe\fR, ...).
 A matrix (\fBX\fR, layers, obsm / varm, 2-D datasets, Loom and Cell
 Ranger matrices) is streamed in full, in row blocks, by those modes; a CSC
 matrix is first transposed in memory (about 12 bytes per stored value). A
-NumPy array wider than 4096 columns is only ever a preview, so exporting
+NumPy array wider than 65,536 columns is only ever a preview, so exporting
 or aggregating a capped one exits 1 with its real shape instead of writing
 the preview; \fB\-\-count\fR works when every row is in the preview.
 .TP

@@ -5171,25 +5171,37 @@ if [ -f "$DATA/tiny.dupmember.npz" ]; then
     DUP_WARN=$("$VV" --count "$DATA/tiny.dupmember.npz" 2>&1 1>/dev/null)
     assert_contains "npz_dup_warns" "$DUP_WARN" "appears more than once"
 fi
-# Wide .npz: a 2-D array with 5000 columns. vv builds one Arrow column per
-# declared column, so it must render only the first kNpzMaxCols (4096) and flag
-# the truncation in the footer — otherwise a genuinely-wide (or hostile) array
-# would allocate unboundedly.
+# Wide .npz: a 2-D array with 5000 columns. An array tab reads the columns
+# asked for, so every column is in the schema and exports write them all.
 if [ -f "$DATA/tiny.wide.npz" ]; then
     # The array is a sibling tab (the summary tab opens first); --tab selects it.
     NPZ_WIDE=$("$VV" --no-interactive --color=never --tab wide \
         "$DATA/tiny.wide.npz" 2>&1)
-    assert_contains "npz_wide_col_cap_footer" "$NPZ_WIDE" \
-        "showing first 4096 of 5000 columns"
-    refute_contains "npz_wide_no_overflow_col" "$NPZ_WIDE" "c4096"
-    # Exporting it would drop 904 columns silently: refused, exit 1.
-    assert_exit_code "npz_wide_export_refused" 1 "$VV" --tab wide --tsv "$DATA/tiny.wide.npz"
-    assert_contains "npz_wide_export_refused_msg" \
-        "$("$VV" --tab wide --parquet "$TMP/wide.parquet" "$DATA/tiny.wide.npz" 2>&1)" \
-        "is a 2 × 4096 preview of a 2 × 5000"
-    assert_eq_file_inline "npz_wide_export_refused_no_file" \
-        "$([ -e "$TMP/wide.parquet" ] && echo written || echo none)" "none"
+    refute_contains "npz_wide_no_preview_footer" "$NPZ_WIDE" "showing first"
+    assert_eq_file_inline "npz_wide_all_columns" \
+        "$("$VV" --tab wide --list-columns "$DATA/tiny.wide.npz" | wc -l | tr -d ' ')" "5000"
+    assert_eq_file_inline "npz_wide_export_last_column" \
+        "$("$VV" --tab wide --tsv "$DATA/tiny.wide.npz" | cut -f5000 | tr '\n' ' ')" \
+        "$("$VV" --tab wide --select c4999 --tsv "$DATA/tiny.wide.npz" | tr '\n' ' ')"
+    assert_eq_file_inline "npz_wide_export_fields" \
+        "$("$VV" --tab wide --tsv --no-header "$DATA/tiny.wide.npz" | awk -F'\t' '{print NF}' | sort -u)" "5000"
 fi
+# Past 65,536 columns an array tab is a preview: one Arrow field per column
+# bounds the schema. Exports refuse it rather than drop columns.
+python3 - "$TMP/wider.npy" <<'PYEOF'
+import sys
+rows, cols = 2, 70000
+hdr = "{'descr': '|u1', 'fortran_order': False, 'shape': (%d, %d), }" % (rows, cols)
+hdr += " " * (63 - (10 + len(hdr)) % 64) + "\n"
+with open(sys.argv[1], "wb") as f:
+    f.write(b"\x93NUMPY\x01\x00" + len(hdr).to_bytes(2, "little") + hdr.encode())
+    f.write(bytes(i % 251 for i in range(rows * cols)))
+PYEOF
+NPY_WIDER=$("$VV" --no-interactive --color=never -c 3 "$TMP/wider.npy" 2>&1)
+assert_contains "npy_wider_col_cap_footer" "$NPY_WIDER" "showing first 65536 of 70000 columns"
+assert_exit_code "npy_wider_export_refused" 1 "$VV" --tsv "$TMP/wider.npy"
+assert_contains "npy_wider_export_refused_msg" "$("$VV" --tsv "$TMP/wider.npy" 2>&1)" \
+    "is a 2 × 65536 preview of a 2 × 70000"
 # Shape whose sub-products overflow int64 while the array itself is empty.
 # A single zero dimension makes the total element count zero, so the
 # declared-size check passed for free — but the 3-D+ reader still collapses

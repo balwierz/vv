@@ -121,9 +121,10 @@ def main():
         print("tui_stream_pass: capped-preview check skipped (numpy unavailable)")
     else:
         capped = os.path.join(scratch, "tui_stream_capped.npy")
-        np.save(capped, np.zeros((1, 4097), dtype=np.int8))
+        # One column past the widest array tab (kNpyMaxCols, npz.cpp).
+        np.save(capped, np.zeros((1, 65537), dtype=np.int8))
         check("capped scope is visible", [], [],
-              lambda f: "[CAPPED cols 4_096/4_097]" in f, data=capped)
+              lambda f: "[CAPPED cols 65_536/65_537]" in f, data=capped)
 
     if failed:
         sys.stderr.write("tui_stream_pass: %d checks failed\n" % len(failed))
