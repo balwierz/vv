@@ -134,6 +134,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   same text shows in the viewer's status line and vvg's footer.
 
 ### Fixed
+- A stored (`np.savez`) `.npz` member whose local-header offset is in a
+  ZIP64 extra field now opens when vv is built against minizip 1.1 (Ubuntu
+  22.04's `libminizip-dev` 1.1-8build1), which fails to open such members
+  with `UNZ_BADZIPFILE` on 64-bit Linux. The member's `.npy` header is read
+  from the mapped archive.
 - `--parquet` (and the viewer's `:w`, vvg's export) with Arrow 24 and
   earlier failed on a list, large list or map whose null slots hold values,
   or a list under a null struct: "Lists with non-zero length null components

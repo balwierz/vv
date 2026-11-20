@@ -796,12 +796,15 @@ static int64_t member_data_pos(const MappedFile& f, uint64_t cd) {
     return (int64_t)data;
 }
 
-// The first bytes of the open member, through the end of its .npy header.
-static std::string read_member_header(unzFile zf, std::vector<uint8_t>* out) {
+// The first bytes of a member, through the end of its .npy header.
+// `next(buf, n)` returns up to n further member bytes: 0 at the member's end,
+// negative on a read error.
+template <class Next>
+static std::string read_member_header(Next next, std::vector<uint8_t>* out) {
     auto read_to = [&](size_t want) -> bool {
         while (out->size() < want) {
             uint8_t chunk[64 * 1024];
-            const int r = unzReadCurrentFile(zf, chunk, (unsigned)std::min<size_t>(sizeof(chunk), want - out->size()));
+            const int r = next(chunk, (unsigned)std::min<size_t>(sizeof(chunk), want - out->size()));
             if (r <= 0) return r == 0;
             out->insert(out->end(), chunk, chunk + r);
         }
@@ -841,11 +844,30 @@ static std::string load_archive(const std::string& path, const MappedFile* map, 
         e.cd_pos = (uint64_t)unzGetOffset64(zf);
         e.stored = info.compression_method == 0;
         e.size   = (uint64_t)info.uncompressed_size;
-        if (unzOpenCurrentFile(zf) != UNZ_OK)
-            return "'" + path + "': cannot open '" + name + "' inside NPZ";
+        // A stored member's header is read from the mapped archive, so it
+        // does not depend on the zip library's ZIP64 support (minizip 1.1
+        // on LP64 does not read ZIP64 local-header offsets).
+        if (e.stored && map) e.data_pos = member_data_pos(*map, e.cd_pos);
         std::vector<uint8_t> head;
-        std::string err = read_member_header(zf, &head);
-        unzCloseCurrentFile(zf);
+        std::string err;
+        if (e.data_pos >= 0) {
+            const uint8_t* p = map->data() + e.data_pos;
+            uint64_t left = std::min<uint64_t>(e.size, map->size() - (uint64_t)e.data_pos);
+            err = read_member_header([&](uint8_t* buf, unsigned n) -> int {
+                const unsigned k = (unsigned)std::min<uint64_t>(n, left);
+                std::memcpy(buf, p, k);
+                p += k;
+                left -= k;
+                return (int)k;
+            }, &head);
+        } else {
+            if (unzOpenCurrentFile(zf) != UNZ_OK)
+                return "'" + path + "': cannot open '" + name + "' inside NPZ";
+            err = read_member_header([&](uint8_t* buf, unsigned n) {
+                return unzReadCurrentFile(zf, buf, n);
+            }, &head);
+            unzCloseCurrentFile(zf);
+        }
         if (err == "read error") return "'" + path + "': read error in '" + name + "'";
         if (!err.empty()) return "'" + path + "' / '" + name + "': " + err;
         // `uncompressed_size` comes from the central directory, so it is
@@ -853,7 +875,6 @@ static std::string load_archive(const std::string& path, const MappedFile* map, 
         // the member really holds when it is read.
         err = parse_npy_header(head.data(), head.size(), &e.header, e.size);
         if (!err.empty()) return "'" + path + "' / '" + name + "': " + err;
-        if (e.stored && map) e.data_pos = member_data_pos(*map, e.cd_pos);
         // A ZIP may carry two members with the same name; numpy's np.load keeps
         // the last (its central-directory dict overwrites earlier keys), so the
         // earlier bytes are dead. Match that — overwrite the existing entry in
