@@ -164,6 +164,17 @@ _jv = _jv.set_column(_jv.schema.get_field_index("fl"), "fl", pa.array(
     [[1.0, 2.0], [None, None], [3.5, None], [4.0, 5.0], [6.0, 7.0], [8.0, 9.25]], _jv_fl))
 pq.write_table(_jv, HERE / "tiny.jsonvals.parquet", row_group_size=2)
 
+# List columns whose rows are all empty: the IPC reader gives their values a
+# data buffer with no address (--sort / --distinct / --tail gather from it).
+_el = pa.table({
+    "k": pa.array([2, 3, 1], pa.int64()),
+    "v": pa.array([[], [], []], pa.list_(pa.int64())),
+    "w": pa.array([[], [], []], pa.large_list(pa.float64())),
+})
+with pa.OSFile(str(HERE / "tiny.emptylists.arrow"), "wb") as f:
+    with ipc.new_file(f, _el.schema) as w:
+        w.write_table(_el, max_chunksize=2)
+
 # ── Arrow IPC ────────────────────────────────────────────────────────────────
 with pa.OSFile(str(HERE / "tiny.arrow"), "wb") as f:
     with ipc.new_file(f, schema) as w:

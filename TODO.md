@@ -123,15 +123,6 @@ Deferred until a file needs them (owner's decision, 2026-10-07).
   code. Both are library faults: an upstream report, or a CI run that
   restarts past timeouts. DuckDB has no harness: the file is parsed by
   libduckdb, and the CI fuzz build has no libduckdb.
-- **`--sort` trips UBSan on an empty list's values.** A `list<int64>`
-  column whose slots are all empty (an IPC file from pyarrow:
-  `pa.array([[], []], pa.list_(pa.int64()))`) has a zero-length values
-  array with no data buffer; `gather_chunked` (`src/output/reports.cpp`)
-  copies each row with `AppendArraySlice`, and Arrow's
-  `BufferBuilder::UnsafeAppend` then calls `memcpy(dst, nullptr, 0)`:
-  "null pointer passed as argument 2" in the ASan + UBSan build, which
-  stops there. The release build sorts correctly. Avoiding it means
-  skipping zero-length appends, or gathering list columns another way.
 - **ORC aborts on a malformed footer** inside the ORC library (protobuf's
   has-bits check destroying `orc.proto.Footer` in `orc::createReader`;
   apache-orc 2.3.1 / protobuf 36.1 on Arch), before Arrow returns a status:

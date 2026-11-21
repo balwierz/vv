@@ -4398,6 +4398,15 @@ assert_eq_file_inline "distinct_nulls" "$("$VV" --distinct --count "$DNULL")" "2
 # Footer reports kept / total.
 DIST_FOOT=$("$VV" --distinct --color=never "$DISTF" 2>&1)
 assert_contains "distinct_footer" "$DIST_FOOT" "Distinct rows: 4 / 5"
+# List columns whose rows are all empty (values with no data buffer) gather
+# like any other: sorted, deduplicated and tailed, clean under UBSan.
+EMPTYL="$DATA/tiny.emptylists.arrow"
+assert_eq_file_inline "sort_empty_lists" "$("$VV" --sort k --tsv "$EMPTYL")" \
+    "$(printf 'k\tv\tw\n1\t[]\t[]\n2\t[]\t[]\n3\t[]\t[]')"
+assert_eq_file_inline "distinct_empty_lists" \
+    "$("$VV" --distinct --select v,w --tsv --no-header "$EMPTYL")" "$(printf '[]\t[]')"
+assert_eq_file_inline "tail_empty_lists" "$("$VV" --tail 1 --tsv --no-header "$EMPTYL")" \
+    "$(printf '1\t[]\t[]')"
 # An unknown --select column is a clean error.
 assert_exit_code "distinct_unknown_column_exit1" 1 "$VV" --distinct --select nope "$DISTF"
 

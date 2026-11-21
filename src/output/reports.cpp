@@ -659,6 +659,38 @@ static std::shared_ptr<arrow::Table> empty_table(const std::shared_ptr<arrow::Sc
     return arrow::Table::Make(schema, cols, 0);
 }
 
+// `d` with every absent or null-pointer data buffer of an empty array, at any
+// depth, replaced by a zero-size allocated one. The IPC reader gives the values
+// of a list whose rows are all empty a data buffer with no address; a builder's
+// AppendArraySlice copies even zero rows with memcpy, and a null source pointer
+// is undefined there.
+static arrow::Result<std::shared_ptr<arrow::ArrayData>>
+fill_empty_buffers(const std::shared_ptr<arrow::ArrayData>& d) {
+    std::shared_ptr<arrow::ArrayData> out;
+    auto own = [&] { if (!out) out = d->Copy(); };
+    if (d->length == 0 && d->type) {
+        const auto layout = d->type->layout();
+        for (size_t i = 1; i < d->buffers.size() && i < layout.buffers.size(); ++i) {
+            if ((d->buffers[i] && d->buffers[i]->data())
+                || layout.buffers[i].kind == arrow::DataTypeLayout::ALWAYS_NULL)
+                continue;
+            own();
+            ARROW_ASSIGN_OR_RAISE(out->buffers[i], arrow::AllocateBuffer(0));
+        }
+    }
+    for (size_t i = 0; i < d->child_data.size(); ++i) {
+        ARROW_ASSIGN_OR_RAISE(auto ch, fill_empty_buffers(d->child_data[i]));
+        if (ch == d->child_data[i]) continue;
+        own();
+        out->child_data[i] = std::move(ch);
+    }
+    if (d->dictionary) {
+        ARROW_ASSIGN_OR_RAISE(auto dict, fill_empty_buffers(d->dictionary));
+        if (dict != d->dictionary) { own(); out->dictionary = std::move(dict); }
+    }
+    return out ? out : d;
+}
+
 // Rows `idx` of the concatenation of `ca`'s chunks, in that order. Arrow has no
 // builder for an extension type: gather its storage and re-wrap it.
 static arrow::Result<std::shared_ptr<arrow::Array>>
@@ -677,13 +709,16 @@ gather_chunked(const arrow::ChunkedArray& ca, const std::vector<int64_t>& idx) {
     ARROW_RETURN_NOT_OK(arrow::MakeBuilder(arrow::default_memory_pool(), type, &b));
     if (!idx.empty()) ARROW_RETURN_NOT_OK(b->Reserve((int64_t)idx.size()));
     std::vector<int64_t> starts;
+    std::vector<std::shared_ptr<arrow::ArrayData>> datas;
     std::vector<arrow::ArraySpan> spans;
     int64_t at = 0;
     for (const auto& ch : ca.chunks()) {
         starts.push_back(at);
-        spans.emplace_back(*ch->data());
+        ARROW_ASSIGN_OR_RAISE(auto d, fill_empty_buffers(ch->data()));
+        datas.push_back(std::move(d));
         at += ch->length();
     }
+    for (const auto& d : datas) spans.emplace_back(*d);
     for (int64_t i : idx) {
         const size_t c = spans.size() == 1 ? 0
             : (size_t)(std::upper_bound(starts.begin(), starts.end(), i) - starts.begin()) - 1;

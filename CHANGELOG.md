@@ -148,6 +148,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   same text shows in the viewer's status line and vvg's footer.
 
 ### Fixed
+- `--sort`, `--distinct` and `--tail` over a list column whose rows are all
+  empty (an Arrow IPC file from pyarrow, `[[], []]` as `list<int64>`) no
+  longer pass a null pointer to `memcpy`: the IPC reader gives such values a
+  data buffer with no address, which the gather now replaces with an
+  allocated zero-size one. The output was already correct; the ASan + UBSan
+  build stopped with "null pointer passed as argument 2".
 - A stored (`np.savez`) `.npz` member whose local-header offset is in a
   ZIP64 extra field now opens when vv is built against minizip 1.1 (Ubuntu
   22.04's `libminizip-dev` 1.1-8build1), which fails to open such members
