@@ -1026,7 +1026,9 @@ inline int stream_batch_cap() {
 // defeating the trailing-window eviction above. Cap the accumulated payload per
 // batch so memory stays bounded by record size, not file size. A single record
 // larger than the budget still forms its own (one-row) batch — no record is
-// split or dropped. Override with VV_FASTX_BATCH_BYTES (used by the test suite).
+// split or dropped. BCF batches use the same budget for their record text (a
+// 2,504-sample record is ~10 KB). Override with VV_FASTX_BATCH_BYTES (used by
+// the test suite).
 inline int64_t fastx_byte_budget() {
     static const int64_t budget = [] () -> int64_t {
         if (const char* e = std::getenv("VV_FASTX_BATCH_BYTES")) {
@@ -1043,6 +1045,22 @@ int64_t csv_block_bytes();
 // The block size the delimited reader parses in: csv_block_bytes(), or the
 // smaller block chosen after the first one at the default size (make_reader).
 int64_t csv_parse_block_bytes();
+
+// The window's byte bound: after the count cap, older batches are freed while
+// the ones still held exceed this many bytes (the newest two are always
+// kept). 64 batches of a 2,504-sample BCF are ~10 GB; of a BAM, ~1 GB.
+// Override with VV_STREAM_BYTE_CAP (tests).
+inline int64_t stream_byte_cap() {
+    static const int64_t cap = [] () -> int64_t {
+        if (const char* e = std::getenv("VV_STREAM_BYTE_CAP")) {
+            char* end = nullptr;
+            long long v = std::strtoll(e, &end, 10);
+            if (end != e && v > 0) return (int64_t)v;
+        }
+        return (int64_t)1 << 30;   // 1 GiB
+    }();
+    return cap;
+}
 
 // Append a freshly-decoded batch to a forward-only streaming source's storage:
 // record its (first_row, num_rows) metadata (kept forever, so chunk_meta() /
@@ -1067,6 +1085,19 @@ inline void stream_retain(
         if (drop > 0 && batches[drop - 1]) {
             batches[drop - 1].reset();
             evicted_any = true;
+        }
+        // Held batches are within the last stream_batch_cap(); sum them
+        // newest first and free the older ones past the byte cap.
+        const int n = (int)batches.size();
+        const int lo = std::max(0, n - stream_batch_cap());
+        int64_t held = 0;
+        for (int i = n - 1; i >= lo; --i) {
+            if (!batches[(size_t)i]) continue;
+            held += arrow::util::TotalBufferSize(*batches[(size_t)i]);
+            if (i < n - 2 && held > stream_byte_cap()) {
+                batches[(size_t)i].reset();
+                evicted_any = true;
+            }
         }
     }
 }

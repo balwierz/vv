@@ -1108,6 +1108,11 @@ class BcfSource : public TabularSource {
             return -1;
         };
 
+        // Close the batch once its text passes the byte budget (as FASTX
+        // does), even below the row cap: a record of a 2,504-sample BCF is
+        // ~10 KB, so 32,768 of them would be one ~600 MB batch.
+        const int64_t byte_budget = fastx_byte_budget();
+        int64_t bytes = 0;
         while (count < cap && (ret = next_record()) == 0) {
             bcf_unpack(rec_, BCF_UN_ALL);
 
@@ -1181,6 +1186,8 @@ class BcfSource : public TabularSource {
             }
 
             ++count;
+            bytes += (int64_t)line.size();
+            if (bytes >= byte_budget) break;
         }
         if (s.s) free(s.s);
 

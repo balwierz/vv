@@ -74,6 +74,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   error, as before.
 
 ### Changed
+- Forward-only streams keep at most 1 GiB of decoded batches behind the
+  current one (as well as at most 64 batches), and BCF batches end at
+  64 MiB of record text as FASTX batches do. A whole-file pass over the
+  1000 Genomes chr22 BCF (2,504 samples, `--select POS,INFO --tsv`) peaked
+  above 12 GB before (64 batches of 32,768 records) and at 1.7 GB now,
+  in 48 s instead of 103 s under a 12 GB memory cap. The TUI's backward
+  scroll over a stream reaches back 1 GiB of batches at most.
 - `--samples long` splits each batch of records into chunks of about 1 M
   rows (records × samples), so a pass holds one of them instead of the
   whole batch repeated per sample. A slice's size estimate now uses the

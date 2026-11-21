@@ -2388,6 +2388,16 @@ assert_exit_code "vcf_samples_one_chunk_default" 0 sh -c 'VV_TEST_FAIL_CHUNK=1 "
 assert_contains "vcf_samples_chunk_per_record" \
     "$(VV_SAMPLES_CHUNK_ROWS=1 VV_TEST_FAIL_CHUNK=1 "$VV" --tsv --samples long "$DATA/tiny.samples.bcf" 2>&1 >/dev/null)" \
     "chunk 1 failed (VV_TEST_FAIL_CHUNK)"
+# The trailing window of a forward stream is bounded in bytes as well as in
+# batches (VV_STREAM_BYTE_CAP; the newest two batches stay). A forward pass
+# and a pass that pins retention (--sort) read the same rows.
+for f in "$DATA/tiny.samples.bcf" "$TMP/sites.vcf" "$DATA/tiny.bam"; do
+    for args in "--tsv" "--sort POS:desc --tsv" "--count"; do
+        assert_eq_file_inline "stream_byte_cap_same_$(basename "$f" | tr -c 'a-z0-9' _)_$(printf '%s' "$args" | tr -c 'A-Za-z0-9' _)" \
+            "$(VV_STREAM_BYTE_CAP=1 VV_FASTX_BATCH_BYTES=1 "$VV" $args "$f" 2>&1)" \
+            "$("$VV" $args "$f" 2>&1)"
+    done
+done
 # A chunk that cannot be read is no longer skipped silently: the run ends
 # with its error and exit 1 (VV_TEST_FAIL_CHUNK fails chunk N of the samples
 # source); a count that reads no chunk is unaffected.

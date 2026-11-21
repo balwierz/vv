@@ -78,10 +78,6 @@ Deferred until a file needs them (owner's decision, 2026-10-07).
 - **TUI long passes:** signal polling, visible read errors and partial/capped
   scope are implemented. Cancellation is between bounded reads, not inside
   a blocking HDF5 call.
-- **`--samples long` memory.** Long form is now derived in slices (no 2 GB
-  overflow), but a whole inner chunk is still held: 23,766 records × 2,504
-  samples with INFO selected is 10.5 GB of RSS. Smaller BCF batches for
-  many-sample files (a byte budget, as FASTX has) would bound it.
 - **Remaining reader stages:** an ODS sheet's text is still buffered whole
   for Arrow's type inference (row streaming would change the inferred
   types), and an XLSX sheet likewise. A deflated `.npz` member seeks back by
