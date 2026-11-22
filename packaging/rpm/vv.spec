@@ -22,7 +22,7 @@
 %global xlsxio_version 0.2.36
 
 Name:           vv
-Version:        1.35.0
+Version:        1.36.0
 Release:        1%{?dist}
 Summary:        Universal data/genomic file viewer (Parquet, Arrow, HDF5, BAM, VCF, BED, …)
 License:        MIT
@@ -137,6 +137,13 @@ XLSXIO_A="$(echo $PWD/xlsxio-local/lib*/libxlsxio_read.a)"
 %{_datadir}/thumbnailers/vv.thumbnailer
 
 %changelog
+* Sun Nov 22 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.36.0-1
+- Update to 1.36.0: vv.* provenance metadata in Parquet / Arrow output;
+  --fingerprint, --check and --diff; --types for CSV / TSV columns;
+  --bins for bigWig; viewer :w, :region, Y, Z, counts and marks;
+  colorblind and mono themes; memory-bounded NumPy, ODS, Cooler,
+  bigWig / bigBed and --samples long readers; Parquet fixed-size list
+  fixes on Arrow <= 24.
 * Wed Nov 04 2026 Piotr Balwierz <piotr.balwierz@genomika.ai> - 1.35.0-1
 - Update to 1.35.0: --info file details for every format (Parquet row
   groups, encodings, codecs; VCF / BAM headers; HDF5 storage; ...); vvg

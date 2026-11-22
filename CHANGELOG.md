@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.36.0] - 2026-11-22
+
 ### Added
 - Parquet and Arrow files written with `--parquet` / `--arrow` carry what
   made them as key-value metadata: `vv.version`, `vv.source` (the input's
