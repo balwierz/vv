@@ -4646,6 +4646,19 @@ if [ -f "$DATA/tiny.orc" ] && \
     # --filter on the typed double column works as expected.
     ORC_FLT=$("$VV" --tsv --no-header --filter 'score > 5.0' "$DATA/tiny.orc" | wc -l | tr -d ' ')
     assert_eq_file_inline "orc_filter_by_real"      "$ORC_FLT" "2"
+    # Malformed sections liborc would parse with protobuf, and a decimal
+    # precision Arrow's decimal128() aborts on, are refused by vv first, with
+    # exit 1 (tiny.badfooter.orc aborted with exit 134 against Arch's
+    # apache-orc, whose protobuf keeps its debug checks; tiny.baddecimal.orc
+    # with any Arrow).
+    for b in badfooter:"Not a valid ORC file: footer chunk 0 runs past the section" \
+             badstripe:"ORC stripe 0 footer chunk 0 runs past the section" \
+             badproto:"Not a valid ORC file: footer is not a well-formed protobuf message" \
+             baddecimal:"footer type 1 is a decimal of precision 64 (at most 38)"; do
+        f="$DATA/tiny.${b%%:*}.orc"
+        assert_exit_code "orc_${b%%:*}_exit1" 1 "$VV" --tsv "$f"
+        assert_contains "orc_${b%%:*}_message" "$("$VV" --tsv "$f" 2>&1 >/dev/null)" "${b#*:}"
+    done
     # Many stripes: each is located from the footer and decodes only the
     # requested columns (a struct with its children), in the requested order.
     if python3 -c "import pyarrow.orc" 2>/dev/null; then

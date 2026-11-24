@@ -5,6 +5,7 @@ Run from the repo root: `python3 tests/data/generate.py`.
 """
 from __future__ import annotations
 import gzip
+import zlib
 import re
 import shutil
 import subprocess
@@ -2214,6 +2215,104 @@ else:
     })
     # 2 rows per stripe → 2 stripes so num_chunks > 1 in vv's output.
     paorc.write_table(orc_tbl, orc_path, compression="zstd", stripe_size=2)
+
+    # Malformed ORC files. liborc parses the footer and each stripe footer
+    # with protobuf, reading through its decompressing stream; when that stream
+    # throws part-way (a chunk claiming more bytes than its section holds), a
+    # protobuf built without NDEBUG aborts in the message's destructor. vv
+    # refuses these sections first. Each file rewrites one section of a valid
+    # file in place, at the same length.
+    def _orc_varint(b, i):
+        v = sh = 0
+        while True:
+            c = b[i]; i += 1
+            v |= (c & 0x7f) << sh; sh += 7
+            if not c & 0x80:
+                return v, i
+
+    def _orc_fields(b):
+        """(field, wire type, value, start) of each field of message b."""
+        i, out = 0, []
+        while i < len(b):
+            start = i
+            tag, i = _orc_varint(b, i)
+            f, wt = tag >> 3, tag & 7
+            if wt == 0:
+                v, i = _orc_varint(b, i)
+            elif wt == 2:
+                n, i = _orc_varint(b, i); v = b[i:i + n]; i += n
+            else:
+                i += 8 if wt == 1 else 4; v = None
+            out.append((f, wt, v, start))
+        return out
+
+    def _orc_tail(raw):
+        """The postscript's varint fields and the footer's [start, end)."""
+        ps_len = raw[-1]
+        ps = {f: v for f, wt, v, _ in _orc_fields(raw[-1 - ps_len:-1]) if wt == 0}
+        end = len(raw) - 1 - ps_len
+        return ps, end - ps[1], end
+
+    def _orc_inflate(sec):
+        out, j = b"", 0
+        while j < len(sec):
+            h = sec[j] | sec[j + 1] << 8 | sec[j + 2] << 16
+            j += 3
+            out += sec[j:j + (h >> 1)] if h & 1 else zlib.decompress(sec[j:j + (h >> 1)], -15)
+            j += h >> 1
+        return out
+
+    def _orc_overrun(sec):
+        """A zlib section as one stored chunk whose header claims 64 bytes more
+        than the section holds, followed by as much of its decoded message as
+        fits: protobuf reads those fields, then the stream throws."""
+        dec, room = _orc_inflate(sec), len(sec) - 3
+        assert len(dec) > room, "decoded section fits its compressed length"
+        h = (room + 64) << 1 | 1
+        return bytes([h & 0xff, h >> 8 & 0xff, h >> 16]) + dec[:room]
+
+    orc_z = HERE / "tiny.badfooter.orc"
+    paorc.write_table(orc_tbl, orc_z, compression="zlib", stripe_size=2)
+    good = orc_z.read_bytes()
+    raw = bytearray(good)
+    ps, fs, fe = _orc_tail(raw)
+    assert ps[2] == 1
+    raw[fs:fe] = _orc_overrun(bytes(raw[fs:fe]))
+    orc_z.write_bytes(bytes(raw))
+
+    # Stripe 0's footer overrun the same way; the file footer stays valid.
+    raw = bytearray(good)
+    stripe = next(v for f, wt, v, _ in _orc_fields(_orc_inflate(good[fs:fe])) if f == 3)
+    si = {f: v for f, wt, v, _ in _orc_fields(stripe) if wt == 0}
+    s0 = si.get(1, 0) + si.get(2, 0) + si.get(3, 0)
+    raw[s0:s0 + si[4]] = _orc_overrun(bytes(raw[s0:s0 + si[4]]))
+    (HERE / "tiny.badstripe.orc").write_bytes(bytes(raw))
+
+    # An uncompressed footer whose last field is a length running past the
+    # message (protobuf fails the parse and returns false).
+    orc_p = HERE / "tiny.badproto.orc"
+    paorc.write_table(orc_tbl, orc_p, compression="uncompressed")
+    raw = bytearray(orc_p.read_bytes())
+    ps, fs, fe = _orc_tail(raw)
+    start = _orc_fields(bytes(raw[fs:fe]))[-1][3]
+    raw[fs + start:fe] = b"\x0a\x7f" + bytes(fe - fs - start - 2)
+    orc_p.write_bytes(bytes(raw))
+
+    # A decimal(10, 2) column whose footer type says precision 64: Arrow's
+    # decimal128(64, 2) aborts (ARROW_CHECK) when the schema is read.
+    import decimal as _orc_dec
+    orc_d = HERE / "tiny.baddecimal.orc"
+    paorc.write_table(pa.table({"d": pa.array([_orc_dec.Decimal("1.25")], pa.decimal128(10, 2))}),
+                      orc_d, compression="uncompressed")
+    raw = bytearray(orc_d.read_bytes())
+    ps, fs, fe = _orc_tail(raw)
+    footer = bytes(raw[fs:fe])
+    body, at = [(v, st) for f, wt, v, st in _orc_fields(footer) if f == 4 and wt == 2][1]
+    body_at = fs + footer.index(body, at)                 # type 1 (0 is the root struct)
+    p_at = next(st for f, wt, v, st in _orc_fields(body) if f == 5)
+    assert body[p_at:p_at + 2] == b"\x28\x0a", body[p_at:p_at + 2]
+    raw[body_at + p_at + 1] = 64                          # precision 10 -> 64
+    orc_d.write_bytes(bytes(raw))
 
 # ── Excel (.xlsx, two sheets, requires openpyxl) ─────────────────────────────
 # Soft-skip if openpyxl isn't installed (CI installs it in the venv alongside

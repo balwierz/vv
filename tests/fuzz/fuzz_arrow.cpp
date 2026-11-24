@@ -3,10 +3,12 @@
 // (source_fuzz_one, src/core/open.cpp). The first byte picks the extension;
 // the rest is the file.
 //
-// ORC is not fuzzed: a malformed ORC footer aborts the process inside the
-// ORC library (protobuf's has-bits check while destroying orc.proto.Footer,
-// in orc::createReader, apache-orc 2.3.1 / protobuf 36.1), before vv sees a
-// status it could report.
+// ORC is not fuzzed: malformed stripe data crashes liborc's column decoding
+// (StringDirectColumnReader sizes a buffer from the LENGTH stream and
+// DataBuffer::reserve writes through malloc's unchecked result; apache-orc
+// 2.3.1), past anything vv can check before ReadStripe. The footer and stripe
+// footers, which liborc parses with protobuf, are checked by vv first
+// (orc_check in src/formats/arrow.cpp); adding "orc" to kExt fuzzes them.
 //
 //   cmake -S . -B build-fuzz -DVV_BUILD_FUZZERS=ON \
 //     -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++

@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- A malformed ORC file no longer aborts vv (exit 134) when the ORC library's
+  protobuf keeps its debug checks (Arch's `apache-orc`, so the AUR
+  package): a footer or stripe footer whose compressed chunk runs past its
+  section made protobuf abort in the message's destructor. vv now reads the
+  postscript, the footer and each stripe footer first and reports a
+  malformed one ("Not a valid ORC file: footer chunk 0 runs past the
+  section"), exit 1. A DECIMAL type of precision over 38, which aborted in
+  Arrow's `decimal128()` with any Arrow build, is reported the same way.
+
 ## [1.36.0] - 2026-11-22
 
 ### Added

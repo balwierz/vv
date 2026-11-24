@@ -123,11 +123,17 @@ Deferred until a file needs them (owner's decision, 2026-10-07).
   code. Both are library faults: an upstream report, or a CI run that
   restarts past timeouts. DuckDB has no harness: the file is parsed by
   libduckdb, and the CI fuzz build has no libduckdb.
-- **ORC aborts on a malformed footer** inside the ORC library (protobuf's
-  has-bits check destroying `orc.proto.Footer` in `orc::createReader`;
-  apache-orc 2.3.1 / protobuf 36.1 on Arch), before Arrow returns a status:
-  `vv bad.orc` exits 134. Not fuzzed for that reason; an upstream report,
-  or a footer check of vv's own before handing the file to ORC.
+- **ORC stripe data crashes liborc.** Malformed column data in a stripe
+  makes apache-orc 2.3.1 write through a null pointer:
+  `StringDirectColumnReader::next` sizes its blob from the LENGTH stream, and
+  `DataBuffer::reserve` uses the default pool's `malloc` result unchecked, so
+  `vv --tsv bad.orc` exits 139. Arrow's adapter passes no `orc::MemoryPool`.
+  vv checks the footer, the stripe footers and decimal precision before
+  liborc / Arrow parse them (`orc_check`, src/formats/arrow.cpp); checking
+  the data streams would mean decoding ORC's integer RLE. An upstream report
+  (ORC: check the allocation, or bound the length total by the stream size);
+  until then ORC stays out of the fuzz harness (`fuzz_arrow` lists how to
+  fuzz it locally).
 - Code coverage badge.
 - Reproducible builds.
 

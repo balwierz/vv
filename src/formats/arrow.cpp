@@ -5,6 +5,7 @@
 
 #include "internal.hpp"
 #include <arrow/util/byte_size.h>
+#include <zlib.h>
 
 // ── Arrow IPC / Feather source ────────────────────────────────────────────────
 
@@ -387,6 +388,306 @@ bool looks_like_ipc_stream(const uint8_t* m, size_t n) {
 }
 
 #if VV_HAVE_ORC
+// ── ORC section check ────────────────────────────────────────────────────────
+//
+// liborc parses the postscript, the footer and each stripe footer with
+// protobuf. When one of those parses fails part-way (malformed wire data, or a
+// decompression error thrown from inside the parse), protobuf built without
+// NDEBUG (Arch's apache-orc is) aborts the process in the message's destructor
+// (TcParser::CheckHasBitConsistency) before ORC's ParseError reaches Arrow:
+// `vv bad.orc` exited 134. vv reads these sections first and refuses any that
+// protobuf might fail on, by a stricter rule than protobuf's own: no group or
+// reserved wire types, varints of at most 10 bytes, lengths inside the
+// message, the message fields of orc_proto.proto checked recursively and
+// packed repeated fields whole. Compressed sections must split into chunks
+// that each decode, whole, to at most the compression block. A file a real
+// writer produced passes; one that fails gets an error instead of an abort.
+// LZO sections are left to ORC (no LZO decoder here).
+namespace orc_check {
+
+// The orc_proto.proto messages whose length-delimited fields are checked
+// further: kPlain stands for every message holding only scalars and strings.
+enum Msg : uint8_t {
+    kPlain, kPostScript, kFooter, kType, kColStats, kBucket, kGeo, kEncryption,
+    kDataMask, kEncVariant, kStripeFooter, kStripeEncVariant,
+};
+enum class Kind : uint8_t { Opaque, Packed, Message };
+struct Sub { Kind kind; Msg msg; };
+
+// What field `f` of message `m` holds when it arrives length-delimited:
+// another message, a packed repeated varint, or bytes protobuf does not read.
+static Sub sub(Msg m, uint32_t f) {
+    const Sub opaque{Kind::Opaque, kPlain}, packed{Kind::Packed, kPlain};
+    auto msg = [](Msg x) { return Sub{Kind::Message, x}; };
+    switch (m) {
+        case kPostScript:        if (f == 4) return packed; break;               // version
+        case kFooter:
+            switch (f) {
+                case 3:  return msg(kPlain);       // StripeInformation
+                case 4:  return msg(kType);
+                case 5:  return msg(kPlain);       // UserMetadataItem
+                case 7:  return msg(kColStats);
+                case 10: return msg(kEncryption);
+            }
+            break;
+        case kType:              if (f == 2) return packed;                      // subtypes
+                                 if (f == 7) return msg(kPlain); break;          // StringPair
+        case kColStats:          if (f == 5) return msg(kBucket);
+                                 if (f == 13) return msg(kGeo);
+                                 if ((f >= 2 && f <= 9) || f == 12) return msg(kPlain); break;
+        case kBucket:            if (f == 1) return packed; break;
+        case kGeo:               if (f == 1) return msg(kPlain);                 // BoundingBox
+                                 if (f == 2) return packed; break;
+        case kEncryption:        if (f == 1) return msg(kDataMask);
+                                 if (f == 2) return msg(kPlain);                 // EncryptionKey
+                                 if (f == 3) return msg(kEncVariant); break;
+        case kDataMask:          if (f == 3) return packed; break;
+        case kEncVariant:        if (f == 4) return msg(kPlain); break;          // Stream
+        case kStripeFooter:      if (f == 1 || f == 2) return msg(kPlain);       // Stream, ColumnEncoding
+                                 if (f == 4) return msg(kStripeEncVariant); break;
+        case kStripeEncVariant:  if (f == 1 || f == 2) return msg(kPlain); break;
+        case kPlain: break;
+    }
+    return opaque;
+}
+
+static bool varint(const uint8_t*& p, const uint8_t* end, uint64_t* v) {
+    uint64_t r = 0;
+    for (int i = 0; i < 10 && p < end; ++i) {
+        const uint8_t b = *p++;
+        if (i == 9 && b > 1) return false;
+        r |= uint64_t(b & 0x7f) << (7 * i);
+        if (!(b & 0x80)) { *v = r; return true; }
+    }
+    return false;
+}
+
+// Calls fn(field, wire type, varint value, bytes, length) for each field of
+// the message in [p, end); false when one is malformed or fn refuses it.
+template <class Fn>
+static bool fields(const uint8_t* p, const uint8_t* end, Fn&& fn) {
+    while (p < end) {
+        uint64_t tag = 0, v = 0;
+        if (!varint(p, end, &tag) || tag > 0xffffffffu || (tag >> 3) == 0) return false;
+        const uint32_t f = (uint32_t)(tag >> 3);
+        const int wt = (int)(tag & 7);
+        const uint8_t* data = nullptr;
+        size_t len = 0;
+        switch (wt) {
+            case 0: if (!varint(p, end, &v)) return false; break;
+            case 1: if (end - p < 8) return false; p += 8; break;
+            case 5: if (end - p < 4) return false; p += 4; break;
+            case 2:
+                if (!varint(p, end, &v) || v > (uint64_t)(end - p)) return false;
+                data = p; len = (size_t)v; p += len;
+                break;
+            default: return false;   // groups (3, 4) and the reserved 6, 7
+        }
+        if (!fn(f, wt, v, data, len)) return false;
+    }
+    return true;
+}
+
+static bool message(const uint8_t* p, const uint8_t* end, Msg m) {
+    return fields(p, end, [m](uint32_t f, int wt, uint64_t, const uint8_t* d, size_t n) {
+        if (wt != 2) return true;
+        const Sub s = sub(m, f);
+        if (s.kind == Kind::Message) return message(d, d + n, s.msg);
+        if (s.kind == Kind::Packed) {
+            const uint8_t* q = d;
+            uint64_t v;
+            while (q < d + n) if (!varint(q, d + n, &v)) return false;
+        }
+        return true;
+    });
+}
+
+// Upper bound on a section's decoded size; a real footer is a few megabytes.
+constexpr uint64_t kMaxSection = uint64_t(1) << 30;
+
+// The decoded bytes of a section compressed with ORC kind `kind` (1 zlib,
+// 2 snappy, 4 lz4, 5 zstd): chunks of a 3-byte little-endian header
+// (length << 1 | original) followed by that many bytes, stored as they are
+// or compressed, each decoding to at most `block` bytes. "" on success.
+static std::string decode(int kind, uint64_t block, const uint8_t* p, size_t n, std::string* out) {
+    std::unique_ptr<arrow::util::Codec> codec;
+    if (kind != 1) {
+        const auto t = kind == 2 ? arrow::Compression::SNAPPY
+                     : kind == 4 ? arrow::Compression::LZ4 : arrow::Compression::ZSTD;
+        auto c = arrow::util::Codec::Create(t);
+        if (!c.ok()) return "skip";
+        codec = std::move(*c);
+    }
+    out->clear();
+    size_t at = 0;
+    for (int chunk = 0; at < n; ++chunk) {
+        if (n - at < 3) return "chunk " + std::to_string(chunk) + " header is cut short";
+        const uint32_t h = (uint32_t)p[at] | (uint32_t)p[at + 1] << 8 | (uint32_t)p[at + 2] << 16;
+        at += 3;
+        const size_t len = h >> 1;
+        if (len > n - at) return "chunk " + std::to_string(chunk) + " runs past the section";
+        if (len > block) return "chunk " + std::to_string(chunk) + " exceeds the compression block";
+        const uint8_t* src = p + at;
+        at += len;
+        const size_t have = out->size();
+        if (have + block > kMaxSection) return "over 1 GiB decoded";
+        if (h & 1) { out->append((const char*)src, len); continue; }
+        out->resize(have + block);
+        uint8_t* dst = (uint8_t*)out->data() + have;
+        size_t got = 0;
+        if (kind == 1) {
+            z_stream z{};
+            if (inflateInit2(&z, -15) != Z_OK) return "zlib: cannot start";
+            z.next_in = const_cast<Bytef*>(src);
+            z.avail_in = (uInt)len;
+            z.next_out = dst;
+            z.avail_out = (uInt)block;
+            const int r = inflate(&z, Z_FINISH);
+            got = block - z.avail_out;
+            const bool whole = r == Z_STREAM_END && z.avail_in == 0;
+            inflateEnd(&z);
+            if (!whole) return "chunk " + std::to_string(chunk) + " does not decompress (zlib)";
+        } else if (kind == 5) {
+            // Arrow's one-shot ZSTD decode wants the exact output size, which
+            // an ORC chunk does not record: stream it, one whole frame.
+            auto dec = codec->MakeDecompressor();
+            if (!dec.ok()) return "skip";
+            size_t used = 0;
+            bool whole = false;
+            for (;;) {
+                auto r = (*dec)->Decompress((int64_t)(len - used), src + used,
+                                            (int64_t)(block - got), dst + got);
+                if (!r.ok()) break;
+                used += (size_t)r->bytes_read;
+                got += (size_t)r->bytes_written;
+                if ((*dec)->IsFinished()) { whole = used == len; break; }
+                if (r->bytes_read == 0 && r->bytes_written == 0) break;
+            }
+            if (!whole) return "chunk " + std::to_string(chunk) + " does not decompress (zstd)";
+        } else {
+            auto r = codec->Decompress((int64_t)len, src, (int64_t)block, dst);
+            if (!r.ok()) return "chunk " + std::to_string(chunk) + " does not decompress";
+            got = (size_t)*r;
+        }
+        out->resize(have + got);
+    }
+    return "";
+}
+
+// The section [off, off + len) of `file` as message `m`; "" when it passes or
+// cannot be checked here (LZO), else what is wrong with it.
+static std::string section(arrow::io::RandomAccessFile& file, int64_t size, uint64_t off,
+                           uint64_t len, int kind, uint64_t block, Msg m) {
+    if (off > (uint64_t)size || len > (uint64_t)size - off) return "lies outside the file";
+    if (len > kMaxSection) return "is over 1 GiB";
+    auto buf = file.ReadAt((int64_t)off, (int64_t)len);
+    if (!buf.ok()) return "cannot be read: " + buf.status().ToString();
+    if ((uint64_t)(*buf)->size() != len) return "is cut short";
+    const uint8_t* p = (*buf)->data();
+    std::string decoded;
+    if (kind != 0) {
+        if (kind == 3) return "";
+        std::string e = decode(kind, block, p, (size_t)len, &decoded);
+        if (e == "skip") return "";
+        if (!e.empty()) return e;
+        p = (const uint8_t*)decoded.data();
+        len = decoded.size();
+    }
+    return message(p, p + len, m) ? "" : "is not a well-formed protobuf message";
+}
+
+// Where a stripe's footer lies and how the file is compressed, from the tail.
+struct Tail {
+    int      kind = 0;
+    uint64_t block = 256 * 1024;
+    struct Stripe { uint64_t start = 0, length = 0; bool ok = true; };
+    std::vector<Stripe> stripes;
+};
+
+// The postscript and footer of `file` checked as liborc will parse them, and
+// the stripe footers located. "" when they pass.
+static std::string tail(arrow::io::RandomAccessFile& file, Tail* t) {
+    auto size_or = file.GetSize();
+    if (!size_or.ok()) return "";                     // ORC reports it
+    const int64_t size = *size_or;
+    if (size < 4) return "";
+    auto last = file.ReadAt(size - 1, 1);
+    if (!last.ok() || (*last)->size() != 1) return "";
+    const uint64_t ps_len = (*last)->data()[0];
+    if (ps_len < 3 || 1 + ps_len > (uint64_t)std::min<int64_t>(size, 16 * 1024)) return "";
+    auto ps_buf = file.ReadAt(size - 1 - (int64_t)ps_len, (int64_t)ps_len);
+    if (!ps_buf.ok() || (uint64_t)(*ps_buf)->size() != ps_len) return "";
+    const uint8_t* ps = (*ps_buf)->data();
+    if (!message(ps, ps + ps_len, kPostScript)) return "malformed postscript";
+    uint64_t footer_len = 0;
+    bool has_kind = false;
+    fields(ps, ps + ps_len, [&](uint32_t f, int wt, uint64_t v, const uint8_t*, size_t) {
+        if (wt != 0) return true;
+        if (f == 1) footer_len = v;
+        // An enum value outside CompressionKind stays unset, as in protobuf.
+        if (f == 2 && v <= 6) { t->kind = (int)v; has_kind = true; }
+        if (f == 3) t->block = v;
+        return true;
+    });
+    if (!has_kind) return "";                         // ORC: "Unknown compression type"
+    if (t->kind != 0 && (t->block == 0 || t->block >= (1u << 23)))
+        return "invalid compression block size " + std::to_string(t->block);
+    if (t->kind == 6) return "";                      // brotli: ORC refuses it before parsing
+    const uint64_t tail_len = 1 + ps_len + footer_len;
+    if (footer_len >= (uint64_t)size || tail_len >= (uint64_t)size) return "";  // ORC reports it
+    std::string e = section(file, size, (uint64_t)size - tail_len, footer_len, t->kind, t->block, kFooter);
+    if (!e.empty()) return "footer " + e;
+    if (t->kind == 3) return "";
+    // The stripes, for their footers' ranges (StripeInformation 1-4).
+    auto buf = file.ReadAt(size - (int64_t)tail_len, (int64_t)footer_len);
+    if (!buf.ok()) return "";
+    std::string decoded;
+    const uint8_t* p = (*buf)->data();
+    size_t n = (size_t)(*buf)->size();
+    if (t->kind != 0) {
+        if (!decode(t->kind, t->block, p, n, &decoded).empty()) return "";
+        p = (const uint8_t*)decoded.data();
+        n = decoded.size();
+    }
+    // Arrow's adapter turns a DECIMAL type into decimal128(precision, scale),
+    // whose constructor aborts (ARROW_CHECK) on a precision outside [1, 38];
+    // 0 stands for 38 (Hive 0.11). Type: kind 1, precision 5 (uint32).
+    std::string bad_type;
+    int type_index = 0;
+    fields(p, p + n, [&](uint32_t f, int wt, uint64_t, const uint8_t* d, size_t dn) {
+        if (f == 4 && wt == 2) {
+            uint64_t kind = 0;
+            uint32_t precision = 0;
+            fields(d, d + dn, [&](uint32_t tf, int twt, uint64_t tv, const uint8_t*, size_t) {
+                if (twt != 0) return true;
+                if (tf == 1) kind = tv <= 20 ? tv : 0;   // outside Type.Kind: unset
+                if (tf == 5) precision = (uint32_t)tv;
+                return true;
+            });
+            if (kind == 14 && precision > 38 && bad_type.empty())
+                bad_type = "type " + std::to_string(type_index) + " is a decimal of precision " +
+                           std::to_string(precision) + " (at most 38)";
+            ++type_index;
+            return true;
+        }
+        if (f != 3 || wt != 2) return true;
+        uint64_t v[5] = {0, 0, 0, 0, 0};
+        fields(d, d + dn, [&](uint32_t sf, int swt, uint64_t sv, const uint8_t*, size_t) {
+            if (swt == 0 && sf >= 1 && sf <= 4) v[sf] = sv;
+            return true;
+        });
+        Tail::Stripe s;
+        s.ok = !(v[1] > UINT64_MAX - v[2] || v[1] + v[2] > UINT64_MAX - v[3]);
+        s.start = s.ok ? v[1] + v[2] + v[3] : 0;
+        s.length = v[4];
+        t->stripes.push_back(s);
+        return true;
+    });
+    return bad_type.empty() ? "" : "footer " + bad_type;
+}
+
+}  // namespace orc_check
+
 class OrcSource : public TabularSource {
     std::string                                              path_;
     std::shared_ptr<arrow::Schema>                           schema_;
@@ -401,6 +702,11 @@ class OrcSource : public TabularSource {
     // columns of one stripe (nothing is cached; the callers cache chunks).
     std::vector<ChunkMeta>                                   stripes_;
     mutable arrow::Status                                    read_status_;  // sticky error
+    // The file and its tail as orc_check read them: each stripe footer is
+    // checked before ORC first parses it.
+    std::shared_ptr<arrow::io::RandomAccessFile>             file_;
+    orc_check::Tail                                          tail_;
+    std::vector<char>                                        stripe_checked_;
 
     static std::string fmt_size(int64_t sz) {
         char buf[32];
@@ -423,6 +729,24 @@ class OrcSource : public TabularSource {
         }
     }
 
+    // Stripe `i`'s footer, checked once before ORC parses it.
+    arrow::Status check_stripe(int i) {
+        if (i < 0 || (size_t)i >= tail_.stripes.size()) return arrow::Status::OK();
+        if (stripe_checked_.size() < tail_.stripes.size()) stripe_checked_.resize(tail_.stripes.size(), 0);
+        if (stripe_checked_[(size_t)i]) return arrow::Status::OK();
+        const auto& s = tail_.stripes[(size_t)i];
+        std::string e = "lies outside the file";
+        if (s.ok) {
+            auto size = file_->GetSize();
+            if (!size.ok()) return size.status();
+            e = orc_check::section(*file_, *size, s.start, s.length, tail_.kind, tail_.block,
+                                   orc_check::kStripeFooter);
+        }
+        if (!e.empty()) return arrow::Status::Invalid("ORC stripe ", i, " footer ", e);
+        stripe_checked_[(size_t)i] = 1;
+        return arrow::Status::OK();
+    }
+
 public:
     static std::string open(const std::string& path,
                              std::unique_ptr<OrcSource>* out) {
@@ -433,6 +757,9 @@ public:
         if (!maybe_file.ok())
             return "Cannot open '" + path + "': " + maybe_file.status().ToString();
         auto file = maybe_file.ValueOrDie();
+        if (std::string e = orc_check::tail(*file, &self->tail_); !e.empty())
+            return "Not a valid ORC file: " + e;
+        self->file_ = file;
 
         auto maybe_rdr = arrow::adapters::orc::ORCFileReader::Open(
             file, arrow::default_memory_pool());
@@ -490,6 +817,10 @@ public:
         std::vector<int> wanted(col_indices.begin(), col_indices.end());
         std::sort(wanted.begin(), wanted.end());
         wanted.erase(std::unique(wanted.begin(), wanted.end()), wanted.end());
+        if (arrow::Status st = check_stripe(i); !st.ok()) {
+            if (read_status_.ok()) read_status_ = st;
+            return st;
+        }
         auto b = reader_->ReadStripe(i, wanted);
         if (!b.ok()) {
             // A failed stripe read must not become a short table with exit 0.
