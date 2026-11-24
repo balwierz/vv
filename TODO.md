@@ -70,13 +70,13 @@ Deferred until a file needs them (owner's decision, 2026-10-07).
   gave 0.93 s (`--tsv`), 0.58 s vs 0.68 s (`--select POS`) and no change
   (`-n 20M`): no consistent gain. Revisit only for slower storage (S3 /
   HTTP), where a one-group lookahead would need Arrow's own async reads.
-- **HDF5 viewport reads:** metadata-backed projected blocks and a bounded
-  dataset-handle/raw-chunk cache are implemented. Frames, 1-D arrays, dense
-  and CSR expose all rows. CSC remains row-capped in the viewer (first
-  1,000 rows); exports transpose it in memory. Chunk caches are sized to a
-  band of chunks across the dataset's width, which brings a column pass to
-  the cost of decompressing each chunk once, so the logical block size
-  stays fixed.
+- **HDF5 CSC exports transpose in memory.** Every HDF5 matrix tab reads
+  all rows and columns on demand, and chunk caches hold a band of chunks
+  across a dataset's width (a column pass costs one decompression per
+  chunk). A CSC read wider than the 256 MiB column cache (a full-width
+  export) still transposes the whole matrix to CSR first, 12 bytes per
+  stored value: a 2-billion-value matrix needs about 24 GB. Streaming it
+  would mean an external sort by row.
 - **TUI long passes:** signal polling, visible read errors and partial/capped
   scope are implemented. Cancellation is between bounded reads, not inside
   a blocking HDF5 call.

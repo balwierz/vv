@@ -718,7 +718,6 @@ class Hdf5Source;
 // ~4.7M-row obs and a 4.7M×62k X); reading one in full stalls for minutes on a
 // slow mount and burns GBs of RAM. Cap every component to a head preview (the
 // CSR X path already did); the real row count is still reported in the footer.
-static constexpr int64_t kDense2DRowCap   = 1000;   // dense 2-D matrix rows
 static constexpr int64_t kDense2DColCap   = 200;    // dense 2-D matrix cols
 // A categorical column whose dictionary exceeds this is shown as integer codes
 // rather than decoded to strings: a per-cell-unique categorical (e.g. a barcode
@@ -1795,6 +1794,36 @@ class H5ViewportSource final : public TabularSource {
     // cells, 128 to 8,192 rows.
     int64_t block_ = kBlock;
     static constexpr int64_t kDictionaryBytes = 8 << 20;
+    // CSC: the column pointers, and the columns read so far as their stored
+    // (row, value) pairs sorted by row, within csc_cache_bytes() (the least
+    // recently used go first): a block of rows is then a binary search in
+    // each requested column. A request whose columns hold more than that
+    // (a full-width export) reads csc_stream_, the whole-matrix source that
+    // transposes the matrix to CSR once, as exports did before.
+    struct CscColumn {
+        std::vector<int64_t> rows;
+        std::vector<double>  vals;
+    };
+    // 256 MiB; VV_CSC_CACHE_BYTES overrides it (the test suite sends a
+    // small matrix through the stream that way).
+    static int64_t csc_cache_bytes() {
+        static const int64_t bytes = [] () -> int64_t {
+            if (const char* e = std::getenv("VV_CSC_CACHE_BYTES")) {
+                char*     end = nullptr;
+                long long v   = std::strtoll(e, &end, 10);
+                if (end != e && v > 0) return (int64_t)v;
+            }
+            return (int64_t)256 << 20;
+        }();
+        return bytes;
+    }
+    std::vector<int64_t>                                        csc_ptr_;
+    std::list<std::pair<int64_t, CscColumn>>                    csc_cols_;
+    std::map<int64_t, std::list<std::pair<int64_t, CscColumn>>::iterator> csc_index_;
+    int64_t                                                     csc_bytes_ = 0;
+    std::unique_ptr<TabularSource>                              csc_stream_;
+    // The stream's chunks read last, with the columns they were read for.
+    std::vector<std::tuple<int, std::vector<int>, std::shared_ptr<arrow::Table>>> stream_chunks_;
 
     arrow::Result<Column> describe_column(const std::string& name, const std::string& path) const {
         Column c;
@@ -1945,10 +1974,9 @@ class H5ViewportSource final : public TabularSource {
             }
             if (full_rows_ < 0 || full_cols_ < 0)
                 return arrow::Status::Invalid(spec_.h5_path, ": negative matrix shape");
-            // Every column: a viewer reads the ones it shows (read_chunk's
-            // column list), and a CSC matrix, whose rows are read by a scan
-            // of each requested column, keeps the first kDense2DRowCap rows.
-            rows_      = sparse_ && !csr_ ? std::min(full_rows_, kDense2DRowCap) : full_rows_;
+            // Every row and column: a viewer reads the columns it shows
+            // (read_chunk's column list).
+            rows_      = full_rows_;
             data_cols_ = full_cols_;
             std::vector<std::string> names;
             if (spec_.kind != K::Dataset2D) {
@@ -1990,11 +2018,124 @@ class H5ViewportSource final : public TabularSource {
         }
         if (frame_ || data_cols_ <= 1)
             block_ = 8192;
+        else if (sparse_ && !csr_)
+            // The whole-matrix stream's block (H5MatrixStreamSource), so a
+            // full-width read is one of its chunks, not two stitched.
+            block_ = std::clamp<int64_t>(4000000 / std::max<int64_t>(1, full_cols_), 1, 65536);
         else if (!sparse_)
             block_ = std::clamp<int64_t>((256 << 10) / std::max<int64_t>(1, data_cols_), kBlock, 8192);
         if (rows_ / block_ >= INT_MAX)
             return arrow::Status::CapacityError(spec_.h5_path, ": too many row blocks");
         schema_ = arrow::schema(fields);
+        return arrow::Status::OK();
+    }
+
+    arrow::Status load_csc_pointers() {
+        if (!csc_ptr_.empty()) return arrow::Status::OK();
+        const auto    base = spec_.h5_path;
+        const int64_t available =
+            std::min(h5_len_1d(*file_, base + "/indices"), h5_len_1d(*file_, base + "/data"));
+        std::vector<int64_t> ptr((size_t)full_cols_ + 1);
+        ARROW_RETURN_NOT_OK(file_->read_i64(base + "/indptr", 0, full_cols_ + 1, ptr.data()));
+        for (int64_t c = 0; c < full_cols_; ++c)
+            if (ptr[(size_t)c] < 0 || ptr[(size_t)c + 1] < ptr[(size_t)c] ||
+                ptr[(size_t)c + 1] > available)
+                return arrow::Status::Invalid(base, ": invalid sparse pointers");
+        csc_ptr_ = std::move(ptr);
+        return arrow::Status::OK();
+    }
+
+    // Column `c` of a CSC matrix, from the cache or read and sorted by row.
+    arrow::Result<const CscColumn*> csc_column(int64_t c) {
+        if (auto it = csc_index_.find(c); it != csc_index_.end()) {
+            csc_cols_.splice(csc_cols_.begin(), csc_cols_, it->second);
+            return &csc_cols_.front().second;
+        }
+        ARROW_RETURN_NOT_OK(load_csc_pointers());
+        const auto    base = spec_.h5_path;
+        const int64_t p0 = csc_ptr_[(size_t)c], nnz = csc_ptr_[(size_t)c + 1] - p0;
+        CscColumn     col;
+        col.rows.resize((size_t)nnz);
+        col.vals.resize((size_t)nnz);
+        for (int64_t k = 0; k < nnz; k += kSparseStep) {
+            const int64_t take = std::min(kSparseStep, nnz - k);
+            ARROW_RETURN_NOT_OK(file_->read_i64(base + "/indices", p0 + k, take, col.rows.data() + k));
+            ARROW_RETURN_NOT_OK(file_->read_f64(base + "/data", p0 + k, take, col.vals.data() + k));
+        }
+        for (int64_t r : col.rows)
+            if (r < 0 || r >= full_rows_)
+                return arrow::Status::Invalid(base, ": sparse index out of range");
+        if (!std::is_sorted(col.rows.begin(), col.rows.end())) {
+            std::vector<size_t> order(col.rows.size());
+            std::iota(order.begin(), order.end(), size_t(0));
+            std::stable_sort(order.begin(), order.end(),
+                             [&](size_t a, size_t b) { return col.rows[a] < col.rows[b]; });
+            CscColumn sorted;
+            sorted.rows.reserve(order.size());
+            sorted.vals.reserve(order.size());
+            for (size_t k : order) {
+                sorted.rows.push_back(col.rows[k]);
+                sorted.vals.push_back(col.vals[k]);
+            }
+            col = std::move(sorted);
+        }
+        csc_bytes_ += nnz * 16;
+        csc_cols_.emplace_front(c, std::move(col));
+        csc_index_[c] = csc_cols_.begin();
+        while (csc_bytes_ > csc_cache_bytes() && csc_cols_.size() > 1) {
+            csc_bytes_ -= (int64_t)csc_cols_.back().second.rows.size() * 16;
+            csc_index_.erase(csc_cols_.back().first);
+            csc_cols_.pop_back();
+        }
+        return &csc_cols_.front().second;
+    }
+
+    // True when the CSC columns `cols` (schema indexes) not yet cached hold
+    // more than the cache: such a read goes through csc_stream_.
+    arrow::Result<bool> csc_too_wide(const std::vector<int>& cols) {
+        ARROW_RETURN_NOT_OK(load_csc_pointers());
+        const int shift = row_label_ ? 1 : 0;
+        int64_t   bytes = 0;
+        for (int c : cols) {
+            const int64_t d = c - shift;
+            if (d < 0 || csc_index_.count(d)) continue;
+            bytes += (csc_ptr_[(size_t)d + 1] - csc_ptr_[(size_t)d]) * 16;
+            if (bytes > csc_cache_bytes()) return true;
+        }
+        return false;
+    }
+
+    // Rows [off, off + n) of columns `cols` from the whole-matrix stream.
+    arrow::Status read_csc_stream(int64_t off, int64_t n, const std::vector<int>& cols,
+                                  std::shared_ptr<arrow::Table>* out) {
+        if (!csc_stream_) {
+            csc_stream_ = make_h5_matrix_stream(file_, path_, spec_);
+            if (!csc_stream_ || !csc_stream_->schema()->Equals(*schema_))
+                return arrow::Status::Invalid(spec_.h5_path, ": cannot stream the CSC matrix");
+        }
+        std::vector<std::shared_ptr<arrow::Table>> parts;
+        for (int i = 0; i < csc_stream_->num_chunks(); ++i) {
+            const auto m = csc_stream_->chunk_meta(i);
+            if (m.first_row + m.num_rows <= off) continue;
+            if (m.first_row >= off + n) break;
+            std::shared_ptr<arrow::Table> t;
+            for (const auto& [ci, cc, ct] : stream_chunks_)
+                if (ci == i && cc == cols) t = ct;
+            if (!t) {
+                ARROW_RETURN_NOT_OK(csc_stream_->read_chunk(i, cols, &t));
+                if (stream_chunks_.size() >= 2) stream_chunks_.erase(stream_chunks_.begin());
+                stream_chunks_.emplace_back(i, cols, t);
+            }
+            const int64_t a = std::max(off, m.first_row) - m.first_row;
+            const int64_t b = std::min(off + n, m.first_row + m.num_rows) - m.first_row;
+            parts.push_back(t->Slice(a, b - a));
+        }
+        if (parts.size() == 1) {
+            *out = parts.front();
+            return arrow::Status::OK();
+        }
+        ARROW_ASSIGN_OR_RAISE(auto joined, arrow::ConcatenateTables(parts));
+        ARROW_ASSIGN_OR_RAISE(*out, joined->CombineChunks());
         return arrow::Status::OK();
     }
 
@@ -2007,57 +2148,48 @@ class H5ViewportSource final : public TabularSource {
         std::sort(selected.begin(), selected.end());
         selected.erase(std::unique(selected.begin(), selected.end()), selected.end());
         std::map<int, std::shared_ptr<arrow::Array>> values;
-        if (sparse_ && !selected.empty()) {
+        if (sparse_ && !csr_ && !selected.empty()) {
+            for (int c : selected) {
+                ARROW_ASSIGN_OR_RAISE(const CscColumn* col, csc_column(c));
+                std::vector<double> dense((size_t)n, 0);
+                auto lo = std::lower_bound(col->rows.begin(), col->rows.end(), off);
+                auto hi = std::lower_bound(lo, col->rows.end(), off + n);
+                // A repeated row keeps its last stored value, as a scan did.
+                for (auto it = lo; it != hi; ++it)
+                    dense[(size_t)(*it - off)] = col->vals[(size_t)(it - col->rows.begin())];
+                values[c] = float_column(n, f32_, [&](int64_t i) { return dense[(size_t)i]; });
+            }
+        } else if (sparse_ && !selected.empty()) {        // CSR: the block's rows
             std::vector<std::vector<double>> dense(selected.size(),
                                                    std::vector<double>((size_t)n, 0));
             const auto                       base = spec_.h5_path;
             const int64_t                    available =
                 std::min(h5_len_1d(*file_, base + "/indices"), h5_len_1d(*file_, base + "/data"));
-            const int64_t        majors = csr_ ? 1 : (int64_t)selected.size();
-            std::vector<int64_t> ptr;
-            if (csr_) {
-                ptr.resize((size_t)n + 1);
-                ARROW_RETURN_NOT_OK(file_->read_i64(base + "/indptr", off, n + 1, ptr.data()));
-                for (int64_t r = 0; r < n; ++r)
-                    if (ptr[(size_t)r] < 0 || ptr[(size_t)r + 1] < ptr[(size_t)r] ||
-                        ptr[(size_t)r + 1] > available)
-                        return arrow::Status::Invalid(base, ": invalid sparse pointers");
-            }
+            std::vector<int64_t> ptr((size_t)n + 1);
+            ARROW_RETURN_NOT_OK(file_->read_i64(base + "/indptr", off, n + 1, ptr.data()));
+            for (int64_t r = 0; r < n; ++r)
+                if (ptr[(size_t)r] < 0 || ptr[(size_t)r + 1] < ptr[(size_t)r] ||
+                    ptr[(size_t)r + 1] > available)
+                    return arrow::Status::Invalid(base, ": invalid sparse pointers");
             std::vector<int64_t> idx;
             std::vector<double>  data;
-            for (int64_t m = 0; m < majors; ++m) {
-                int64_t p[2];
-                if (csr_) {
-                    p[0] = ptr.front();
-                    p[1] = ptr.back();
-                } else
-                    ARROW_RETURN_NOT_OK(
-                        file_->read_i64(base + "/indptr", selected[(size_t)m], 2, p));
-                if (p[0] < 0 || p[1] < p[0] || p[1] > available)
-                    return arrow::Status::Invalid(base, ": invalid sparse pointers");
-                int64_t row = 0;
-                for (int64_t k = p[0]; k < p[1];) {
-                    const int64_t take = std::min(kSparseStep, p[1] - k);
-                    idx.resize((size_t)take);
-                    data.resize((size_t)take);
-                    ARROW_RETURN_NOT_OK(file_->read_i64(base + "/indices", k, take, idx.data()));
-                    ARROW_RETURN_NOT_OK(file_->read_f64(base + "/data", k, take, data.data()));
-                    for (int64_t j = 0; j < take; ++j) {
-                        const int64_t v = idx[(size_t)j];
-                        if (v < 0 || v >= (csr_ ? full_cols_ : full_rows_))
-                            return arrow::Status::Invalid(base, ": sparse index out of range");
-                        if (csr_) {
-                            while (row + 1 < n && k + j >= ptr[(size_t)row + 1]) ++row;
-                            auto it = std::lower_bound(selected.begin(), selected.end(), v);
-                            if (it != selected.end() && *it == v)
-                                dense[(size_t)(it - selected.begin())][(size_t)row] =
-                                    data[(size_t)j];
-                        } else if (v >= off && v - off < n) {
-                            dense[(size_t)m][(size_t)(v - off)] = data[(size_t)j];
-                        }
-                    }
-                    k += take;
+            int64_t              row = 0;
+            for (int64_t k = ptr.front(); k < ptr.back();) {
+                const int64_t take = std::min(kSparseStep, ptr.back() - k);
+                idx.resize((size_t)take);
+                data.resize((size_t)take);
+                ARROW_RETURN_NOT_OK(file_->read_i64(base + "/indices", k, take, idx.data()));
+                ARROW_RETURN_NOT_OK(file_->read_f64(base + "/data", k, take, data.data()));
+                for (int64_t j = 0; j < take; ++j) {
+                    const int64_t v = idx[(size_t)j];
+                    if (v < 0 || v >= full_cols_)
+                        return arrow::Status::Invalid(base, ": sparse index out of range");
+                    while (row + 1 < n && k + j >= ptr[(size_t)row + 1]) ++row;
+                    auto it = std::lower_bound(selected.begin(), selected.end(), v);
+                    if (it != selected.end() && *it == v)
+                        dense[(size_t)(it - selected.begin())][(size_t)row] = data[(size_t)j];
                 }
+                k += take;
             }
             for (size_t j = 0; j < selected.size(); ++j)
                 values[selected[j]] =
@@ -2122,6 +2254,15 @@ class H5ViewportSource final : public TabularSource {
                 arrays.push_back(*a);
             }
         } else {
+            if (sparse_ && !csr_) {
+                auto wide = csc_too_wide(cols);
+                if (!wide.ok()) return status_ = wide.status();
+                if (*wide) {
+                    auto st = read_csc_stream(off, n, cols, out);
+                    if (!st.ok()) return status_ = st;
+                    return arrow::Status::OK();
+                }
+            }
             auto st = read_matrix(off, n, cols, &arrays);
             if (!st.ok()) return status_ = st;
         }
@@ -3193,10 +3334,8 @@ static std::vector<OpenSpec> scan_anndata(const Store& store, const std::string&
                           " \xc3\x97 " + std::to_string(x_cols) + ")");
                 defer_profile(at("X"), "X profile");
                 defer_storage(at("X"), "X");
-                // Every row and column of a CSR matrix; a CSC one of more
-                // than kDense2DRowCap rows shows the first ones (a preview).
-                specs.push_back({OpenSpec::Kind::Sparse, at("X"),
-                                  xenc == "csc_matrix" && x_rows > kDense2DRowCap ? "X (preview)" : "X",
+                // Every row and column, CSR or CSC.
+                specs.push_back({OpenSpec::Kind::Sparse, at("X"), "X",
                                   xenc + "  shape: " +
                                   std::to_string(x_rows) + " \xc3\x97 " +
                                   std::to_string(x_cols)});
@@ -3317,9 +3456,7 @@ static std::vector<OpenSpec> scan_anndata(const Store& store, const std::string&
                     add("raw.X", xenc + "  (" + dims + ")");
                     defer_profile(at("raw/X"), "raw.X profile");
                     defer_storage(at("raw/X"), "raw.X");
-                    specs.push_back({OpenSpec::Kind::Sparse, at("raw/X"),
-                                     xenc == "csc_matrix" && shape[0] > kDense2DRowCap
-                                         ? "raw.X (preview)" : "raw.X",
+                    specs.push_back({OpenSpec::Kind::Sparse, at("raw/X"), "raw.X",
                                      xenc + "  shape: " + dims,
                                      AnnMatrixAxes::ObsByRawVar, ""});
                 }

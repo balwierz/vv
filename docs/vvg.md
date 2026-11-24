@@ -250,7 +250,7 @@ Command* goes the other way.
 
 An AnnData / HDF5 / Zarr tab pages through every row of a frame, a 1-D or
 2-D array, and a dense or CSR matrix; a matrix tab shows at most 200 data
-columns, a CSC matrix at most 1,000 rows, and Loom / Cell Ranger previews
+columns, and Loom / Cell Ranger previews
 keep their limits.
 
 ![vvg: the Column tab summarising an AnnData obs column](img/vvg/column-stats.png)

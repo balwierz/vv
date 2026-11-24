@@ -10,7 +10,10 @@ gene with values equal to the stored matrix transposed, and `--select` of a
 few columns (a projected read, as a viewer does) gives the same columns. An AnnData file whose X is a CSC matrix
 (1200 cells × 300 genes, written with h5py in AnnData's on-disk layout) must
 export as cells × genes equal to the dense matrix (transposed to CSR in
-memory by vv), and, having more than 1000 rows, is labelled "X (preview)".
+memory by vv when its columns exceed the column cache, VV_CSC_CACHE_BYTES),
+and its tab "X" holds every row: a `--select` of a few columns reads each
+column once, sorted by row (also when the stored indices are not), and
+equals the same columns of the dense matrix.
 An AnnData CSR X of 300 genes holds all 300 as columns, a repeated gene
 name made unique with " #<index>" and named by --filter.
 
@@ -27,8 +30,9 @@ import numpy as np
 import scipy.sparse as sp
 
 
-def export(vv, tab, path):
-    r = subprocess.run([vv, "--tab", tab, "--tsv", path], capture_output=True, text=True)
+def export(vv, tab, path, env=None):
+    r = subprocess.run([vv, "--tab", tab, "--tsv", path], capture_output=True, text=True,
+                       env=dict(os.environ, **(env or {})))
     if r.returncode != 0:
         raise SystemExit("h5_matrix_export: %s %s: exit %d: %s" % (path, tab, r.returncode, r.stderr))
     rows = list(csv.reader(io.StringIO(r.stdout), delimiter="\t"))
@@ -143,10 +147,38 @@ def main():
     if why := projection_matches(vv, "X", h5ad, head, vals, 3):
         bad.append("anndata CSC X --select: " + why)
 
-    # A CSC matrix of more than 1000 rows is a row preview: "X (preview)".
+    # The same export through the whole-matrix stream (the column cache
+    # holds less than the request's columns).
+    head2, labels2, vals2 = export(vv, "X", h5ad, {"VV_CSC_CACHE_BYTES": "1"})
+    if head2 != head or labels2 != labels or not np.array_equal(vals2, Y.toarray()):
+        bad.append("anndata CSC X through the stream: %d rows" % len(labels2))
+
+    # Every row of a CSC matrix is in its tab, which is not a preview.
     tabs = subprocess.run([vv, "--list-tabs", h5ad], capture_output=True, text=True).stdout.split("\n")
-    if "X (preview)" not in tabs:
-        bad.append("anndata CSC X of 1200 rows: tabs %r, want 'X (preview)'" % tabs)
+    if "X" not in tabs or "X (preview)" in tabs:
+        bad.append("anndata CSC X of 1200 rows: tabs %r, want 'X'" % tabs)
+
+    # A CSC matrix whose columns store their rows out of order reads the same.
+    unsorted = os.path.join(tmp, "csc_unsorted.h5ad")
+    with h5py.File(unsorted, "w") as f:
+        f.attrs["encoding-type"] = "anndata"
+        f.attrs["encoding-version"] = "0.1.0"
+        x = f.create_group("X")
+        x.attrs["encoding-type"] = "csc_matrix"
+        x.attrs["encoding-version"] = "0.1.0"
+        x.attrs["shape"] = np.array([nc, ng])
+        ind, dat = Y.indices.copy(), Y.data.copy()
+        for j in range(ng):
+            a, b = Y.indptr[j], Y.indptr[j + 1]
+            ind[a:b], dat[a:b] = ind[a:b][::-1], dat[a:b][::-1]
+        x["data"] = dat; x["indices"] = ind.astype(np.int32); x["indptr"] = Y.indptr.astype(np.int64)
+        index_frame(f.create_group("obs"), ["c%d" % i for i in range(nc)])
+        index_frame(f.create_group("var"), ["g%d" % i for i in range(ng)])
+    head3, labels3, vals3 = export(vv, "X", unsorted)
+    if head3 != head or labels3 != labels or not np.array_equal(vals3, Y.toarray()):
+        bad.append("anndata CSC X with unsorted indices: values differ")
+    if why := projection_matches(vv, "X", unsorted, head, vals, 5):
+        bad.append("anndata CSC X with unsorted indices, --select: " + why)
 
     # A CSR X holds every gene as a column; a repeated gene name gets
     # " #<index>", so --filter can name each copy.

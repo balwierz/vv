@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- An AnnData CSC matrix (`X`, `raw.X`, layers) shows every row, not the
+  first 1,000: the tab is `X`, no longer `X (preview)`. Each column the view
+  reads is read once, as its stored (row, value) pairs sorted by row, and
+  kept within 256 MiB, so a block of rows is a binary search per column; a
+  read whose columns hold more (a full-width export) goes through the
+  in-memory CSR transpose exports used before. 100,000 x 20,000 gzip CSC,
+  2 % stored: a 20-column `--tsv` pass 1.55 s / 604 MB -> 0.06 s / 38 MB,
+  one column 1.53 s -> 0.02 s; a full `--tsv` 29.6 s -> 28.8 s, output
+  unchanged.
 - HDF5 datasets get a raw chunk cache sized to one band of their chunks
   across the full width (2 to 64 MiB) instead of a fixed 2 MiB, so a
   compressed matrix whose chunks a row block cannot hold no longer
