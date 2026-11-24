@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- HDF5 datasets get a raw chunk cache sized to one band of their chunks
+  across the full width (2 to 64 MiB) instead of a fixed 2 MiB, so a
+  compressed matrix whose chunks a row block cannot hold no longer
+  decompresses the same chunks once per block. gzip 50,000 x 3,000 float
+  matrix: in 1,024 x 1,024 chunks a 20-column pass 2.48 s -> 0.32 s and a
+  full `--tsv` 8.01 s -> 2.91 s; in h5py's default 782 x 47 chunks a full
+  `--tsv` 6.91 s -> 2.76 s. Output unchanged.
+
 ### Fixed
 - A malformed ORC file no longer aborts vv (exit 134) when the ORC library's
   protobuf keeps its debug checks (Arch's `apache-orc`, so the AUR

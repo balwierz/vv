@@ -72,9 +72,11 @@ Deferred until a file needs them (owner's decision, 2026-10-07).
   HTTP), where a one-group lookahead would need Arrow's own async reads.
 - **HDF5 viewport reads:** metadata-backed projected blocks and a bounded
   dataset-handle/raw-chunk cache are implemented. Frames, 1-D arrays, dense
-  and CSR expose all rows. CSC remains row-capped and matrices column-capped;
-  full exports stay separate. Measure physical-chunk-aware cache tuning on
-  compressed workloads before changing the fixed logical block size.
+  and CSR expose all rows. CSC remains row-capped in the viewer (first
+  1,000 rows); exports transpose it in memory. Chunk caches are sized to a
+  band of chunks across the dataset's width, which brings a column pass to
+  the cost of decompressing each chunk once, so the logical block size
+  stays fixed.
 - **TUI long passes:** signal polling, visible read errors and partial/capped
   scope are implemented. Cancellation is between bounded reads, not inside
   a blocking HDF5 call.

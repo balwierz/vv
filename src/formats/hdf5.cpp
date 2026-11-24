@@ -401,16 +401,63 @@ class Hdf5Store : public Store {
         hid_t       id;
     };
     mutable std::list<Dataset> datasets_;
-    // At most 16 raw chunk caches of 2 MiB each, shared by sibling sources.
+    // The raw chunk cache a dataset gets: one band of chunks across its whole
+    // width (every chunk a block of rows touches), between 2 and 64 MiB. A
+    // row block of a chunked matrix is read in several pieces (one per
+    // viewer block, column run or export batch); when the chunks it touches
+    // fit, each is decompressed once per pass instead of once per piece
+    // (a gzip 50,000 x 3,000 float matrix in 1,024 x 1,024 chunks: 8 times).
+    static void chunk_cache_for(hid_t id, size_t* bytes, size_t* slots) {
+        *bytes = 2 << 20;
+        *slots = 521;
+        hid_t dcpl = H5Dget_create_plist(id);
+        if (dcpl < 0) return;
+        hsize_t chunk[H5S_MAX_RANK];
+        const int rank = H5Pget_layout(dcpl) == H5D_CHUNKED ? H5Pget_chunk(dcpl, H5S_MAX_RANK, chunk) : -1;
+        H5Pclose(dcpl);
+        if (rank < 1) return;
+        hid_t s = H5Dget_space(id), t = H5Dget_type(id);
+        hsize_t dims[H5S_MAX_RANK];
+        const int nd = s >= 0 ? H5Sget_simple_extent_dims(s, dims, nullptr) : -1;
+        const size_t item = t >= 0 ? H5Tget_size(t) : 0;
+        if (s >= 0) H5Sclose(s);
+        if (t >= 0) H5Tclose(t);
+        if (nd != rank || item == 0) return;
+        // Chunks in one band: those sharing the first dimension's chunk index.
+        double band = (double)item, nchunks = 1;
+        for (int d = 0; d < rank; ++d) {
+            band *= (double)chunk[d];
+            if (d > 0 && chunk[d] > 0) {
+                const double across = std::ceil((double)dims[d] / (double)chunk[d]);
+                band *= across;
+                nchunks *= across;
+            }
+        }
+        constexpr double kMax = 64 << 20;
+        *bytes = (size_t)std::clamp(band, (double)(2 << 20), kMax);
+        // HDF5 suggests about 100 slots per cached chunk; a prime limits collisions.
+        static constexpr size_t kPrimes[] = {521, 2053, 8209, 32771, 131101};
+        for (size_t p : kPrimes) {
+            *slots = p;
+            if ((double)p >= 10 * std::min(nchunks, 13107.0)) break;
+        }
+    }
+    // At most 16 open datasets, each with the raw chunk cache above, shared
+    // by sibling sources.
     hid_t dataset(const std::string& path) const {
         for (auto it = datasets_.begin(); it != datasets_.end(); ++it) {
             if (it->path != path) continue;
             datasets_.splice(datasets_.begin(), datasets_, it);
             return datasets_.front().id;
         }
+        hid_t probe = H5Dopen2(fid_, path.c_str(), H5P_DEFAULT);
+        if (probe < 0) return probe;
+        size_t cache_bytes, cache_slots;
+        chunk_cache_for(probe, &cache_bytes, &cache_slots);
+        H5Dclose(probe);
         hid_t dapl = H5Pcreate(H5P_DATASET_ACCESS);
         if (dapl < 0) return -1;
-        if (H5Pset_chunk_cache(dapl, 521, 2 << 20, 0.75) < 0) {
+        if (H5Pset_chunk_cache(dapl, cache_slots, cache_bytes, 0.75) < 0) {
             H5Pclose(dapl);
             return -1;
         }
