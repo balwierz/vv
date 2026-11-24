@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- `-n N` with `--tsv`, `--csv`, `--delimiter` or `--md` writes its rows a
+  block at a time once they exceed 4 M cells (rows x columns), instead of
+  reading all N rows into one table first. `--tab X -n 20000 --tsv` of a
+  28,523-gene AnnData matrix: 63.6 s / 5.6 GB -> 15.1 s / 170 MB; `-n
+  1000000 --tsv` of a 2.2 M-row Parquet file: 1.85 s / 1.35 GB -> 0.35 s /
+  372 MB. Output unchanged.
 - An AnnData CSC matrix (`X`, `raw.X`, layers) shows every row, not the
   first 1,000: the tab is `X`, no longer `X (preview)`. Each column the view
   reads is read once, as its stored (row, value) pairs sorted by row, and

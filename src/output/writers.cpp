@@ -240,6 +240,15 @@ void submit_delimited(OrderedWriter& writer, const std::shared_ptr<arrow::Table>
 }  // namespace
 
 // ── Delimited output ──────────────────────────────────────────────────────────
+
+// Whether -n's first `rows` rows of `cols` columns may be read as one table
+// (TabularSource::read_first). Past 4 M cells the chunk loop writes them a
+// block at a time instead: `-n 20000` of a 28,523-gene matrix built 570 M
+// cells (5.6 GB) before writing any.
+static bool head_fits_one_table(int64_t rows, size_t cols) {
+    constexpr int64_t kCells = 4 << 20;
+    return rows <= kCells / std::max<int64_t>(1, (int64_t)cols);
+}
 // (write_csv_field is defined above)
 
 // Returns "" on success, an error message otherwise — same contract as
@@ -292,8 +301,9 @@ std::string write_delimited(TabularSource& src, const Config& cfg) {
     // -n on Parquet: ask the source for just `head_rows` rows. ParquetSource's
     // override fetches only the row groups that contain them, skipping a scan
     // of the rest of the file. Skip this fast path when --filter is active
-    // (we'd over-count rows once the filter prunes some).
-    if (cfg.head_rows > 0 && !have_filter) {
+    // (we'd over-count rows once the filter prunes some), and when the rows
+    // are too many cells to build as one table (head_fits_one_table).
+    if (cfg.head_rows > 0 && !have_filter && head_fits_one_table(rows_left, col_indices.size())) {
         std::shared_ptr<arrow::Table> table;
         if (src.read_first(rows_left, col_indices, &table).ok() && table) {
             print_rows(table, std::min(table->num_rows(), rows_left));
@@ -415,7 +425,7 @@ std::string write_markdown(TabularSource& src, const Config& cfg) {
         }
     };
 
-    if (cfg.head_rows > 0 && !have_filter) {
+    if (cfg.head_rows > 0 && !have_filter && head_fits_one_table(rows_left, col_indices.size())) {
         std::shared_ptr<arrow::Table> table;
         if (src.read_first(rows_left, col_indices, &table).ok() && table) {
             print_rows(*table, std::min(table->num_rows(), rows_left));

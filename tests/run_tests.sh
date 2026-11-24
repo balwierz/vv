@@ -7221,6 +7221,22 @@ MD_TBL=$("$VV" --md "$DATA/tiny.md" 2>/dev/null)
 assert_contains  "markdown_md_emits_table"      "$MD_TBL" "| --- |"
 refute_contains  "markdown_md_omits_prose"      "$MD_TBL" "Hand-crafted fixture"
 
+# ── -n past 4 M cells is written a block at a time ──────────────────────────
+# Up to 4 M cells (rows x columns) -n reads its rows as one table
+# (read_first); past that the chunk loop writes them a block at a time. Both
+# must give the head of the full export (8 columns: 524,288 rows is the line).
+WIDE_N="$TMP/wide_n.tsv"
+awk 'BEGIN { print "a\tb\tc\td\te\tf\tg\th";
+             for (i = 0; i < 600000; i++) print i "\t" i%7 "\t" i%11 "\tx" i%13 "\t" i*3 "\t" i%5 "\t" i%17 "\ty" i }' > "$WIDE_N"
+"$VV" --tsv "$WIDE_N" > "$TMP/wide_n.all"
+for n in 524288 590000; do
+    assert_eq_file_inline "head_n_${n}_tsv_matches_full" \
+        "$("$VV" -n "$n" --tsv "$WIDE_N" | cksum)" "$(head -n $((n + 1)) "$TMP/wide_n.all" | cksum)"
+done
+assert_eq_file_inline "head_n_md_past_cells_rows" \
+    "$("$VV" -n 590000 --md "$WIDE_N" | wc -l | tr -d ' ')" "590002"
+rm -f "$WIDE_N" "$TMP/wide_n.all"
+
 # ── Every file that hard-codes the version must agree with the binary ────────
 # There is no single source of truth for vv's version — seven files carry it
 # independently. CITATION.cff sat at 1.5.0 for 11 releases and docs/USAGE.md
